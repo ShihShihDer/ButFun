@@ -212,6 +212,201 @@ function applyDayNight(dt) {
   hemi.intensity = dnHemiI;
 }
 
+// ============================================================
+// 天氣在 3D 裡落下來（ROADMAP 613）：快照早就帶著伺服器權威的 weather
+// （weather_type／intensity／wind，見 protocol.rs WeatherView，2D game.js 一直在用它畫雨絲沙塵），
+// 還有 rainbow（雨後彩虹），3D 卻一直忽略——不管伺服器走到細雨、風沙還是海霧，3D 裡永遠晴空無物。
+// 本區塊把它接上：一片圍著鏡頭的低多邊形粒子場（雨／沙／晶塵／海霧各有顏色、落速、隨風漂向），
+// 配上霧色微染與遠空的彩虹弧——天色（612）之後，世界第一次有了「天氣」。純讀快照、零後端／協議改動。
+// 沿用日夜系統同一套手法：純函式算視覺、每幀 1-exp 平滑趨近、壞值安全降級不拋。
+// ============================================================
+let latestWeather = null; // 最新一筆快照的 weather（沒有就當晴天）
+let latestRainbow = null; // 最新一筆快照的 rainbow（沒有就無彩虹）
+const WX_RATE = 1.3;      // 天氣視覺平滑趨近速率（每秒，1-exp；淡入淡出、不跟著 15Hz 快照跳變）
+
+// 各天氣的視覺規格（顏色鏡像 2D game.js：雨#88ccff／沙#c9a24b／晶#aaddff／霧淡白）。
+//   color  ── 粒子顏色 [r,g,b]∈[0,1]
+//   size   ── 粒子大小（場景單位，sizeAttenuation 會隨遠近縮放）
+//   fall   ── 垂直落速（場景單位/秒；負值＝上飄，海霧用）
+//   drift  ── 對世界風的易感度（鏡像 2D WEATHER_WIND_SUSCEPT 的相對關係）
+//   fog    ── 此天氣把霧／天空往哪個色調微染 [r,g,b]
+//   fogMix ── 染色強度上限（再乘當下 intensity）
+//   fogFar ── 此天氣把霧的「看得見的距離」拉近到多遠（場景單位；起霧／風沙視野變短）
+//   sparkle── 是否忽明忽暗閃爍（晶塵專用）
+const WEATHER_SPEC = {
+  grassland_rain:     { color: [0.53, 0.80, 1.00], size: 0.7, fall: 46, drift: 0.55, fog: [0.60, 0.66, 0.76], fogMix: 0.32, fogFar: 460, sparkle: false },
+  desert_sandstorm:   { color: [0.79, 0.63, 0.29], size: 1.5, fall: 7,  drift: 1.40, fog: [0.78, 0.64, 0.40], fogMix: 0.48, fogFar: 300, sparkle: false },
+  rocky_crystal_dust: { color: [0.67, 0.87, 1.00], size: 1.2, fall: 16, drift: 0.90, fog: [0.70, 0.78, 0.90], fogMix: 0.22, fogFar: 520, sparkle: true  },
+  water_sea_mist:     { color: [0.85, 0.90, 0.93], size: 2.1, fall: -6, drift: 0.70, fog: [0.80, 0.85, 0.89], fogMix: 0.42, fogFar: 360, sparkle: false },
+};
+
+// 純函式：把一筆 weather 算成這一刻的視覺參數。確定性、壞值安全（缺欄位／晴天／非有限 → density 0、
+// 不染色、不掉粒子），供每幀平滑趨近，亦供 render-smoke 斷言。
+function weatherVisual(weather) {
+  const type = weather && typeof weather.weather_type === "string" ? weather.weather_type : "clear";
+  const spec = WEATHER_SPEC[type];
+  const intensity = weather && Number.isFinite(weather.intensity) ? dnClamp01(weather.intensity) : 0;
+  if (!spec || intensity <= 0.001) {
+    return { density: 0, color: [0.8, 0.85, 0.9], size: 1, fall: 0, windX: 0, windZ: 0,
+             fogTint: null, fogMix: 0, fogFar: 600, sparkle: false };
+  }
+  // 世界風：水平分量推動粒子橫向漂移（與 2D、與會吹彎樹梢的同一陣風一致）
+  const w = weather.wind;
+  const wx = w && Number.isFinite(w.dir_x) ? w.dir_x : 0;
+  const wz = w && Number.isFinite(w.dir_y) ? w.dir_y : 0;
+  const ws = w && Number.isFinite(w.strength) ? dnClamp01(w.strength) : 0;
+  const windMag = ws * spec.drift * 22; // 風速 → 粒子橫移速度（場景單位/秒）
+  return {
+    density: intensity,
+    color: spec.color,
+    size: spec.size,
+    fall: spec.fall,
+    windX: wx * windMag,
+    windZ: wz * windMag,
+    fogTint: spec.fog,
+    fogMix: spec.fogMix * intensity,
+    // 晴天視野 600 ↔ 此天氣 fogFar，按強度內插（強度越大視野越短）
+    fogFar: dnLerp(600, spec.fogFar, intensity),
+    sparkle: spec.sparkle,
+  };
+}
+
+// 天氣 → 面向玩家的 HUD 標籤（glyph 鏡像 2D WEATHER_INFO；後端只送穩定 snake_case 碼＝留 i18n 空間）。
+const WX_LABEL = { grassland_rain: "🌧️ 細雨", desert_sandstorm: "🌪️ 風沙", rocky_crystal_dust: "✨ 晶塵", water_sea_mist: "🌊 海霧" };
+// 純函式：取天氣＋彩虹的 HUD 標籤；晴天且無彩虹 → 空字串（HUD 不顯示，向後相容）。
+function weatherHudLabel(weather, rainbow) {
+  let s = "";
+  if (weather && typeof weather.weather_type === "string") {
+    const intensity = Number.isFinite(weather.intensity) ? weather.intensity : 0;
+    if (intensity > 0.05) s = WX_LABEL[weather.weather_type] || "";
+  }
+  if (rainbow && rainbow.active) s = s ? s + " · 🌈 彩虹" : "🌈 彩虹";
+  return s;
+}
+
+// ── 粒子場：一片圍著鏡頭的盒子，粒子在盒內以本地座標循環（永遠跟著玩家，落出底就從頂回收）──
+const _wxTouch = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
+const WX_CAP = _wxTouch ? 300 : 620;   // 粒子上限（手機減量，省 GPU）
+const WX_BOX_XZ = 140, WX_BOX_Y = 96;  // 取樣盒水平／垂直尺寸（場景單位）
+const wxPositions = new Float32Array(WX_CAP * 3); // 本地偏移（相對 wxPoints.position，每幀吸到鏡頭）
+const wxJitter = new Float32Array(WX_CAP * 3);    // 每顆的個別落速倍率＋橫向抖動（破除整齊感）
+for (let i = 0; i < WX_CAP; i++) {
+  wxPositions[i * 3]     = (Math.random() - 0.5) * WX_BOX_XZ;
+  wxPositions[i * 3 + 1] = Math.random() * WX_BOX_Y;
+  wxPositions[i * 3 + 2] = (Math.random() - 0.5) * WX_BOX_XZ;
+  wxJitter[i * 3]        = (Math.random() - 0.5) * 6;  // x 抖動速度
+  wxJitter[i * 3 + 1]    = 0.6 + Math.random() * 0.8;  // 落速倍率（雨絲快慢不一）
+  wxJitter[i * 3 + 2]    = (Math.random() - 0.5) * 6;  // z 抖動速度
+}
+const wxGeo = new THREE.BufferGeometry();
+wxGeo.setAttribute("position", new THREE.BufferAttribute(wxPositions, 3));
+const wxMat = new THREE.PointsMaterial({ size: 1, transparent: true, opacity: 0, depthWrite: false, sizeAttenuation: true });
+const wxPoints = new THREE.Points(wxGeo, wxMat);
+wxPoints.frustumCulled = false; // 永遠繞著鏡頭，不要被視錐剔除
+wxPoints.visible = false;
+scene.add(wxPoints);
+
+// ── 彩虹弧：七條同心半環疊出彩虹，掛在遠空、鏡頭走它也守在天邊（雨後彩虹祝福，鏡像 2D 361）──
+const WX_RAINBOW_BANDS = [
+  [0.86, 0.27, 0.24], [0.93, 0.55, 0.22], [0.95, 0.85, 0.32],
+  [0.36, 0.78, 0.40], [0.30, 0.56, 0.92], [0.36, 0.40, 0.82], [0.52, 0.32, 0.70],
+];
+const rainbowGroup = new THREE.Group();
+for (let i = 0; i < WX_RAINBOW_BANDS.length; i++) {
+  const c = WX_RAINBOW_BANDS[i];
+  const band = new THREE.Mesh(
+    new THREE.TorusGeometry(150 + i * 6, 3.0, 6, 48, Math.PI), // arc=π → 上半環
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(c[0], c[1], c[2]), transparent: true, opacity: 0, depthWrite: false })
+  );
+  rainbowGroup.add(band);
+}
+rainbowGroup.visible = false;
+scene.add(rainbowGroup);
+let rainbowFade = 0; // 彩虹淡入淡出進度 [0,1]
+
+// 平滑趨近的目前天氣視覺狀態（初始＝晴天）。
+const _wxInit = weatherVisual(null);
+let wxDensity = _wxInit.density;
+const wxColor = _wxInit.color.slice();
+let wxSize = _wxInit.size;
+let wxFall = _wxInit.fall;
+let wxWindX = 0, wxWindZ = 0;
+let wxFogMix = 0;
+let wxFogFar = 600;
+const wxFogTint = [0.8, 0.85, 0.9]; // 持有最後一次有效染色（淡出時續用、不閃白）
+
+// 每幀：算目標、平滑趨近、推進粒子、把霧／天空往天氣色微染、流轉彩虹。
+// 在 applyDayNight 之後呼叫——日夜先把 dnFog/dnSky 寫好，天氣再疊染在其上。
+function applyWeather(dt) {
+  const target = weatherVisual(latestWeather);
+  const a = 1 - Math.exp(-Math.max(0, dt) * WX_RATE);
+  wxDensity = dnLerp(wxDensity, target.density, a);
+  for (let i = 0; i < 3; i++) wxColor[i] = dnLerp(wxColor[i], target.color[i], a);
+  wxSize = dnLerp(wxSize, target.size, a);
+  wxFall = dnLerp(wxFall, target.fall, a);
+  wxWindX = dnLerp(wxWindX, target.windX, a);
+  wxWindZ = dnLerp(wxWindZ, target.windZ, a);
+  wxFogMix = dnLerp(wxFogMix, target.fogMix, a);
+  wxFogFar = dnLerp(wxFogFar, target.fogFar, a);
+  if (target.fogTint) { wxFogTint[0] = target.fogTint[0]; wxFogTint[1] = target.fogTint[1]; wxFogTint[2] = target.fogTint[2]; }
+
+  // 霧色／天空往天氣色微染（疊在日夜已寫好的 dnFog/dnSky 之上），並把霧拉近製造起霧感。
+  if (scene.fog) {
+    const m = dnClamp01(wxFogMix);
+    if (m > 0.001) {
+      scene.fog.color.setRGB(dnLerp(dnFog[0], wxFogTint[0], m), dnLerp(dnFog[1], wxFogTint[1], m), dnLerp(dnFog[2], wxFogTint[2], m));
+      dnSkyColor.setRGB(dnLerp(dnSky[0], wxFogTint[0], m * 0.7), dnLerp(dnSky[1], wxFogTint[1], m * 0.7), dnLerp(dnSky[2], wxFogTint[2], m * 0.7));
+    }
+    scene.fog.far = wxFogFar;
+  }
+
+  // 粒子推進：偏好減少動態時不顯示粒子（鏡像 2D drawWeatherParticles 在 reduceMotion 直接早退），
+  // 但保留霧染／彩虹（皆靜態、無刺眼動態）。
+  if (!reduceMotion && wxDensity > 0.01) {
+    wxPoints.visible = true;
+    let op = wxDensity * 0.72;
+    if (target.sparkle) op *= 0.7 + 0.3 * Math.sin(clock.elapsedTime * 4); // 晶塵忽明忽暗
+    wxMat.opacity = op;
+    wxMat.size = wxSize;
+    wxMat.color.setRGB(wxColor[0], wxColor[1], wxColor[2]);
+    // 盒子吸到鏡頭（略往下偏，讓粒子多半在視線高度以上落下）
+    wxPoints.position.set(camera.position.x, camera.position.y - WX_BOX_Y * 0.35, camera.position.z);
+    const halfXZ = WX_BOX_XZ / 2;
+    const active = Math.max(1, Math.round(WX_CAP * dnClamp01(wxDensity)));
+    for (let i = 0; i < active; i++) {
+      const ix = i * 3;
+      wxPositions[ix]     += (wxWindX + wxJitter[ix]) * dt;
+      wxPositions[ix + 1] += (-wxFall * wxJitter[ix + 1]) * dt;
+      wxPositions[ix + 2] += (wxWindZ + wxJitter[ix + 2]) * dt;
+      // 在本地盒內循環回收（落出底→回頂，上飄出頂→回底，水平出界→繞回另一側）
+      let y = wxPositions[ix + 1];
+      if (y < 0) y += WX_BOX_Y; else if (y > WX_BOX_Y) y -= WX_BOX_Y;
+      wxPositions[ix + 1] = y;
+      let x = wxPositions[ix];
+      if (x < -halfXZ) x += WX_BOX_XZ; else if (x > halfXZ) x -= WX_BOX_XZ;
+      wxPositions[ix] = x;
+      let z = wxPositions[ix + 2];
+      if (z < -halfXZ) z += WX_BOX_XZ; else if (z > halfXZ) z -= WX_BOX_XZ;
+      wxPositions[ix + 2] = z;
+    }
+    wxGeo.setDrawRange(0, active);
+    wxGeo.attributes.position.needsUpdate = true;
+  } else {
+    wxPoints.visible = false;
+  }
+
+  // 彩虹弧：依權威 active 旗標淡入淡出，掛在遠空、每幀守在鏡頭天邊（固定世界朝向、不隨鏡頭轉）。
+  const rbTarget = (latestRainbow && latestRainbow.active) ? 1 : 0;
+  rainbowFade = dnLerp(rainbowFade, rbTarget, a);
+  if (rainbowFade > 0.01) {
+    rainbowGroup.visible = true;
+    rainbowGroup.position.set(camera.position.x - 80, camera.position.y - 30, camera.position.z - 300);
+    for (const band of rainbowGroup.children) band.material.opacity = rainbowFade * 0.45;
+  } else {
+    rainbowGroup.visible = false;
+  }
+}
+
 // 地面：一塊草綠平面 + 格線，給尺度感
 {
   const size = worldW * WORLD_SCALE;
@@ -645,6 +840,9 @@ function handleServerMsg(msg) {
       snapshotCount++;
       // 日夜狀態：留存最新一筆權威 daynight，render 每幀據此讓世界的天色／光照流轉（ROADMAP 612）。
       if (msg.daynight && typeof msg.daynight === "object") latestDayNight = msg.daynight;
+      // 天氣／彩虹：留存最新一筆權威 weather／rainbow，render 每幀據此讓粒子場與遠空彩虹流轉（ROADMAP 613）。
+      if (msg.weather && typeof msg.weather === "object") latestWeather = msg.weather;
+      if (msg.rainbow && typeof msg.rainbow === "object") latestRainbow = msg.rainbow;
       // 這份快照的到達時間：全類共用一個時間戳，內插時間軸才一致。
       const recvT = performance.now();
       // 玩家：火柴人（自己金色、別人藍色），帶名字標籤
@@ -724,8 +922,9 @@ function handleServerMsg(msg) {
       const meItem = Array.isArray(msg.players) ? msg.players.find((p) => p.id === myId) : null;
       const myName = meItem ? (meItem.name || "玩家") : "（加入中…）";
       const phaseLabel = dayNightPhaseLabel(latestDayNight);
+      const weatherLabel = weatherHudLabel(latestWeather, latestRainbow);
       hudEl.innerHTML =
-        `<b>${myName}</b> · 線上 ${players.size} 人${phaseLabel ? " · " + phaseLabel : ""}\n` +
+        `<b>${myName}</b> · 線上 ${players.size} 人${phaseLabel ? " · " + phaseLabel : ""}${weatherLabel ? " · " + weatherLabel : ""}\n` +
         `NPC ${npcs.size} · 野生 ${wildlife.size} · 敵人 ${enemies.size}\n` +
         `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳"}`;
 
@@ -1128,6 +1327,8 @@ function safeRender() {
     updateInput();
     // 日夜流轉：依最新權威 daynight 平滑更新天空／太陽／環境光（ROADMAP 612）
     applyDayNight(dt);
+    // 天氣流轉：依最新權威 weather／rainbow 平滑更新粒子場／霧染／遠空彩虹（ROADMAP 613，疊在日夜之後）
+    applyWeather(dt);
 
     // 視覺跳（cosmetic）：只動自己膠囊的本地高度，不送伺服器
     if (wantJump && jumpZ <= 0.01) { jumpV = JUMP_V; }
@@ -1201,7 +1402,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel };
 }
 
 // 啟動
