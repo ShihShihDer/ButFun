@@ -46,6 +46,29 @@ const worldCenter = { x: worldW / 2, y: worldH / 2 };
 function sx(x) { return (x - worldCenter.x) * WORLD_SCALE; }
 function sz(y) { return (y - worldCenter.y) * WORLD_SCALE; }
 
+// ============================================================
+// Netcode 調校常數（現代做法，全部可調）
+// ============================================================
+// 後端 15Hz 廣播權威快照（~66ms 一筆）。直接「lerp 追最新位置」會抽動／過衝，
+// 別人看起來瞬移亂飛、自己走起來鈍。下面三招是業界標準做法（自己寫碼，不抄外部碼）：
+//
+// 1) 實體內插（entity interpolation, render-in-the-past）— 給「別人」用
+//    每個遠端實體緩衝最近數筆快照（位置＋到達時間），渲染時取「現在 − 內插延遲」
+//    這個時間點，在包夾它的兩筆快照之間線性內插 → 平滑、不過衝、不抽動。
+const INTERP_DELAY_MS = 100;   // 內插延遲（render-in-past），約 1.5 個 15Hz 間隔
+const SNAP_BUFFER_MAX = 12;    // 每個遠端實體保留的快照樣本上限（夠覆蓋延遲即可）
+
+// 2) 自身客戶端預測 + 對帳（client-side prediction + reconciliation）— 給「自己」用
+//    輸入時本地立即往同方向推（零延遲手感）；權威快照回來時平滑拉回（不硬瞬移）。
+//    後端 PLAYER_SPEED=180px/s × WORLD_SCALE(0.05) = 9 場景單位/秒。
+const PREDICT_SCENE_SPEED = 9; // 自身預測速度（場景單位/秒），會由權威快照自我校準
+const RECONCILE_RATE = 5;      // 小誤差柔和拉回速率（每秒，越大越快貼回權威）
+const RECONCILE_SNAP_DIST = 50;// 誤差超過此距離（場景單位，視為瞬移／重生）→ 快速拉回
+const RECONCILE_SNAP_RATE = 18;// 大誤差時的快速拉回速率（仍平滑，不硬瞬移）
+
+// 3) AOI 進出淡入淡出 — 實體第一次出現淡入、離開快照淡出再移除，不啪一下彈出/消失。
+const FADE_RATE = 6;           // 淡入淡出速率（每秒，1-exp 收斂）
+
 // ---- Three.js 基礎場景 ----
 const app = document.getElementById("app");
 const scene = new THREE.Scene();
@@ -132,11 +155,20 @@ function makeEntity(body, label) {
   const g = new THREE.Group();
   g.add(body);
   if (label) g.add(makeLabel(label));
-  // 內插：tx/tz 是目標場景座標，render loop 每幀往目標 lerp，動起來才不頓
+  // tx/tz：最新一筆快照的目標場景座標（內插資料不足時的 lerp 退路）
   g.userData.tx = g.position.x;
   g.userData.tz = g.position.z;
+  initNetState(g);
   scene.add(g);
   return g;
+}
+
+// 初始化一個 group 的 netcode 狀態：快照緩衝 + 淡入淡出。
+function initNetState(g) {
+  g.userData.buf = [];          // 快照樣本緩衝 {t,x,z}，給 render-in-past 內插
+  g.userData.fade = 0;          // 淡入淡出當前值（0=透明且縮小，1=完整）
+  g.userData.fadeTarget = 1;    // 目標：新生 → 淡入到 1
+  g.userData.removing = false;  // 離開 AOI 時設 true，淡出完才真正移除
 }
 
 // 採集節點（樹／石／乙太礦）：靜態地形物，給世界一點「地形在」的實感
@@ -154,6 +186,9 @@ function makeNode(kind) {
   }
   const g = new THREE.Group();
   g.add(mesh);
+  g.userData.tx = g.position.x;
+  g.userData.tz = g.position.z;
+  initNetState(g); // 節點也走 AOI 淡入淡出（靜態，不做內插/轉身/起伏）
   scene.add(g);
   return g;
 }
@@ -170,9 +205,17 @@ let snapshotCount = 0;
 let firstFollowDone = false;
 let missingSelfWarned = false;
 
-// 通用 reconcile：依快照陣列建立／更新／移除某一類實體。每筆都包 try/catch，
+// 自身客戶端預測 + 對帳的狀態（場景座標）：權威座標來自快照，自己的 mesh 平滑拉回它。
+let selfAuthX = 0, selfAuthZ = 0;         // 最新權威座標（場景單位）
+let selfHasAuth = false;                  // 是否已收到過自己的權威座標
+let lastSelfAuthT = 0;                     // 上一筆自己權威快照的到達時間（performance.now）
+let selfMeasuredSpeed = PREDICT_SCENE_SPEED; // 實測自身速度（場景單位/秒），由快照自我校準
+
+// 通用 reconcile：依快照陣列建立／更新／淡出某一類實體。每筆都包 try/catch，
 // 單筆資料壞掉不該讓整個 render 掛掉。
-function reconcile(list, map, keyOf, create) {
+// recvT＝這份快照的到達時間（performance.now，全類共用一個值，時間軸才一致），
+// 內插用它把每筆位置標上時間戳。
+function reconcile(list, map, keyOf, create, recvT) {
   const seen = new Set();
   if (Array.isArray(list)) {
     for (const item of list) {
@@ -180,17 +223,34 @@ function reconcile(list, map, keyOf, create) {
         if (typeof item.x !== "number" || typeof item.y !== "number") continue;
         const key = keyOf(item);
         seen.add(key);
+        const tx = sx(item.x), tz = sz(item.y);
         let g = map.get(key);
-        if (!g) { g = create(item); map.set(key, g); }
-        g.userData.tx = sx(item.x);
-        g.userData.tz = sz(item.y);
+        if (!g) {
+          // 新生：就地出現在第一筆位置（別從原點飛入），並啟動淡入
+          g = create(item); map.set(key, g);
+          g.position.x = tx; g.position.z = tz;
+          g.userData.fade = 0; g.userData.fadeTarget = 1; g.userData.removing = false;
+        } else if (g.userData.removing) {
+          // 曾離開 AOI 正在淡出、現在又回來 → 取消移除、重新淡入
+          g.userData.removing = false; g.userData.fadeTarget = 1;
+        }
+        g.userData.tx = tx;
+        g.userData.tz = tz;
+        // 推一筆帶時間戳的快照樣本進緩衝（render-in-past 內插用）
+        const buf = g.userData.buf || (g.userData.buf = []);
+        buf.push({ t: recvT, x: tx, z: tz });
+        if (buf.length > SNAP_BUFFER_MAX) buf.shift();
       } catch (e) {
         console.warn("reconcile 單筆失敗，已略過", e);
       }
     }
   }
+  // 沒在這份快照出現的 → 標記淡出（不立即刪），淡完才在 render 移除（AOI 不啪一下消失）
   for (const [key, g] of map) {
-    if (!seen.has(key)) { scene.remove(g); map.delete(key); }
+    if (!seen.has(key) && !g.userData.removing) {
+      g.userData.removing = true;
+      g.userData.fadeTarget = 0;
+    }
   }
 }
 
@@ -208,37 +268,61 @@ function handleServerMsg(msg) {
       break;
     case "snapshot": {
       snapshotCount++;
+      // 這份快照的到達時間：全類共用一個時間戳，內插時間軸才一致。
+      const recvT = performance.now();
       // 玩家：膠囊（自己金色、別人藍色），帶名字標籤
       reconcile(
         msg.players, players,
         (p) => p.id,
-        (p) => makeEntity(makeCapsule(p.id === myId ? SELF_COLOR : PLAYER_COLOR), p.name || "玩家")
+        (p) => makeEntity(makeCapsule(p.id === myId ? SELF_COLOR : PLAYER_COLOR), p.name || "玩家"),
+        recvT
       );
       // NPC（含居民／商人）：暖棕盒子，帶名字
       reconcile(
         msg.npcs, npcs,
         (n) => n.id,
-        (n) => makeEntity(makeBox(NPC_COLOR, 4, 8, 4), n.name || "NPC")
+        (n) => makeEntity(makeBox(NPC_COLOR, 4, 8, 4), n.name || "NPC"),
+        recvT
       );
       // 野生動物：綠色小盒（不加標籤，避免太雜）
       reconcile(
         msg.wildlife, wildlife,
         (w) => "w" + w.id,
-        () => makeEntity(makeBox(WILDLIFE_COLOR, 3, 3, 5))
+        () => makeEntity(makeBox(WILDLIFE_COLOR, 3, 3, 5)),
+        recvT
       );
       // 敵人：紅色盒子；被打倒（alive=false）就當作消失移除
       reconcile(
         Array.isArray(msg.enemies) ? msg.enemies.filter((e) => e.alive !== false) : [],
         enemies,
         (e) => e.eid || (e.x + "_" + e.y),
-        () => makeEntity(makeBox(ENEMY_COLOR, 4, 6, 4))
+        () => makeEntity(makeBox(ENEMY_COLOR, 4, 6, 4)),
+        recvT
       );
       // 採集節點（樹／石／乙太礦）：以座標當 key（節點無穩定 id）
       reconcile(
         msg.nodes, nodes,
         (n) => n.kind + "@" + Math.round(n.x) + "," + Math.round(n.y),
-        (n) => makeNode(n.kind)
+        (n) => makeNode(n.kind),
+        recvT
       );
+
+      // 自己的權威座標：給客戶端預測對帳用；順便用相鄰快照實測移動速度自我校準
+      // （含跑步／加速／載具，全自動適應，不必硬寫死）。
+      const meAuth = Array.isArray(msg.players) ? msg.players.find((p) => p.id === myId) : null;
+      if (meAuth && typeof meAuth.x === "number" && typeof meAuth.y === "number") {
+        const nx = sx(meAuth.x), nz = sz(meAuth.y);
+        const moving = inputKeys.up || inputKeys.down || inputKeys.left || inputKeys.right;
+        if (selfHasAuth && moving) {
+          const dtSnap = (recvT - lastSelfAuthT) / 1000;
+          if (dtSnap > 0.001) {
+            const obs = Math.hypot(nx - selfAuthX, nz - selfAuthZ) / dtSnap;
+            // 合理範圍才採信（過濾瞬移／傳送造成的離群值），EMA 平滑校準
+            if (obs > 0.5 && obs < 60) selfMeasuredSpeed += (obs - selfMeasuredSpeed) * 0.25;
+          }
+        }
+        selfAuthX = nx; selfAuthZ = nz; selfHasAuth = true; lastSelfAuthT = recvT;
+      }
 
       // 找出「自己」：快照裡 id === myId 的那個玩家。沒找到就提示（不白屏）。
       const meGroup = myId ? players.get(myId) : null;
@@ -523,13 +607,89 @@ function faceAndBob(g, dx, dz, dt, t) {
   g.position.y = Math.abs(Math.sin(t * 9 + g.userData.phase)) * 0.7 * g.userData.bobW;
 }
 
-function lerpEntities(map, k, skipKey, animate, dt, t) {
+// 在快照緩衝裡取 renderTime（= 現在 − 內插延遲）這個時間點的位置：
+// 找包夾它的兩筆樣本線性內插（render-in-past）。找不到包夾回傳 bracketed:false，
+// 呼叫端就退回原本的「lerp 追最新」行為（資料不足時不 throw、不亂飛）。
+function sampleBufferAt(buf, renderTime) {
+  if (!buf || buf.length === 0) return null;
+  if (buf.length === 1) return { x: buf[0].x, z: buf[0].z, bracketed: false };
+  // renderTime 比最舊樣本還舊（剛出現、歷史不足）→ 資料不足
+  if (renderTime <= buf[0].t) return { x: buf[0].x, z: buf[0].z, bracketed: false };
+  const last = buf[buf.length - 1];
+  // renderTime 比最新樣本還新（斷線／離開 AOI、沒新資料）→ 資料不足（飢餓）
+  if (renderTime >= last.t) return { x: last.x, z: last.z, bracketed: false };
+  for (let i = 0; i < buf.length - 1; i++) {
+    const a = buf[i], b = buf[i + 1];
+    if (renderTime >= a.t && renderTime <= b.t) {
+      const span = b.t - a.t;
+      const f = span > 1e-6 ? (renderTime - a.t) / span : 0;
+      return { x: a.x + (b.x - a.x) * f, z: a.z + (b.z - a.z) * f, bracketed: true };
+    }
+  }
+  return { x: last.x, z: last.z, bracketed: false };
+}
+
+// 把淡入淡出推進一格並套到 mesh：縮放（pop 感）＋ 透明度。
+// 回傳 true 表示「已淡出完畢、可移除」。
+function updateFade(g, dt) {
+  const cur = g.userData.fade ?? 1;
+  const tgt = g.userData.fadeTarget ?? 1;
+  const nf = cur + (tgt - cur) * Math.min(1, dt * FADE_RATE);
+  g.userData.fade = nf;
+  const sc = 0.55 + 0.45 * nf;       // 淡入時從小長到正常，淡出時縮回（柔和不啪一下）
+  g.scale.setScalar(sc);
+  for (const child of g.children) {  // 每個子 mesh/sprite 材質一起調透明度
+    const mat = child.material;
+    if (!mat) continue;
+    if (!mat.transparent) mat.transparent = true;
+    mat.opacity = nf;
+  }
+  return g.userData.removing && nf < 0.02;
+}
+
+// 遠端實體（別的玩家／NPC／敵人／野生動物／節點）：正規實體內插 + 淡入淡出 + 離開移除。
+// renderTime＝現在 − 內插延遲；kFallback＝資料不足時退回的 lerp 係數。
+function updateRemoteEntities(map, scene_, renderTime, animate, dt, t, skipKey, kFallback) {
   for (const [key, g] of map) {
-    if (skipKey !== undefined && key === skipKey) continue; // 自己另外處理（要疊視覺跳）
+    if (skipKey !== undefined && key === skipKey) continue; // 自己走預測，另外處理
     const ox = g.position.x, oz = g.position.z;
-    g.position.x += (g.userData.tx - g.position.x) * k;
-    g.position.z += (g.userData.tz - g.position.z) * k;
+    const s = sampleBufferAt(g.userData.buf, renderTime);
+    if (s && s.bracketed) {
+      // 正規內插：在包夾的兩筆快照之間，平滑、不過衝、不抽動
+      g.position.x = s.x;
+      g.position.z = s.z;
+    } else {
+      // 資料不足（剛出現／飢餓／AOI 邊緣）→ 退回原本的 lerp 追最新目標
+      g.position.x += (g.userData.tx - g.position.x) * kFallback;
+      g.position.z += (g.userData.tz - g.position.z) * kFallback;
+    }
     if (animate) faceAndBob(g, g.position.x - ox, g.position.z - oz, dt, t);
+    if (updateFade(g, dt)) { scene_.remove(g); map.delete(key); }
+  }
+}
+
+// 自身客戶端預測 + 平滑對帳：輸入時本地立即往同方向推（零延遲），權威回來時柔和拉回。
+// 不改協議、不改伺服器——這是伺服器權威下的純視覺預測。
+function updateSelfPrediction(g, dt) {
+  // 預測位移：用「正要送出的世界四向意圖」立刻往前推（與伺服器一致地對角正規化）。
+  let dx = (inputKeys.right ? 1 : 0) - (inputKeys.left ? 1 : 0);
+  let dz = (inputKeys.down ? 1 : 0) - (inputKeys.up ? 1 : 0);
+  const len = Math.hypot(dx, dz);
+  if (len > 0) {
+    dx /= len; dz /= len;
+    // selfMeasuredSpeed 已含跑步／加速／載具（由快照實測），不必再乘 run 倍率
+    g.position.x += dx * selfMeasuredSpeed * dt;
+    g.position.z += dz * selfMeasuredSpeed * dt;
+  }
+  // 對帳：往權威平滑拉回。差太多（瞬移／重生）→ 快速但仍平滑；否則小幅柔和修正。
+  if (selfHasAuth) {
+    const ex = selfAuthX - g.position.x;
+    const ez = selfAuthZ - g.position.z;
+    const err = Math.hypot(ex, ez);
+    const rate = err > RECONCILE_SNAP_DIST ? RECONCILE_SNAP_RATE : RECONCILE_RATE;
+    const a = 1 - Math.exp(-dt * rate); // 1-exp → 跟幀率無關
+    g.position.x += ex * a;
+    g.position.z += ez * a;
   }
 }
 
@@ -549,24 +709,27 @@ function safeRender() {
       if (jumpZ < 0) { jumpZ = 0; jumpV = 0; }
     }
 
-    // 內插係數隨幀時間調整，不同更新率都平滑（採目標 ~8/s 收斂）
+    // 退路 lerp 係數（資料不足時用）：隨幀時間調整，不同更新率都平滑（~8/s 收斂）
     const k = Math.min(1, dt * 8);
     const t = clock.elapsedTime;
+    // render-in-past 的目標時間點：現在 − 內插延遲（在過去重建別人的位置 → 平滑）
+    const renderTime = performance.now() - INTERP_DELAY_MS;
     const meGroup = myId ? players.get(myId) : null;
-    lerpEntities(players, k, myId, true, dt, t);
-    lerpEntities(npcs, k, undefined, true, dt, t);
-    lerpEntities(wildlife, k, undefined, true, dt, t);
-    lerpEntities(enemies, k, undefined, true, dt, t);
-    lerpEntities(nodes, 1, undefined, false, dt, t); // 節點靜態：直接吸附，不做轉身/起伏
+    // 別人／NPC／敵人／野生動物：正規實體內插（自己 myId 跳過，走預測）
+    updateRemoteEntities(players, scene, renderTime, true, dt, t, myId, k);
+    updateRemoteEntities(npcs, scene, renderTime, true, dt, t, undefined, k);
+    updateRemoteEntities(wildlife, scene, renderTime, true, dt, t, undefined, k);
+    updateRemoteEntities(enemies, scene, renderTime, true, dt, t, undefined, k);
+    // 節點靜態：不轉身/起伏；位置吸最新目標（內插對靜態無差），仍走 AOI 淡入淡出
+    updateRemoteEntities(nodes, scene, renderTime, false, dt, t, undefined, 1);
 
-    // 自己：位置以伺服器快照為準（內插），再疊上視覺跳的高度
+    // 自己：客戶端預測（零延遲）+ 平滑對帳權威，再疊上視覺跳的高度
     if (meGroup) {
       const ox = meGroup.position.x, oz = meGroup.position.z;
-      meGroup.position.x += (meGroup.userData.tx - meGroup.position.x) * k;
-      meGroup.position.z += (meGroup.userData.tz - meGroup.position.z) * k;
+      updateSelfPrediction(meGroup, dt);
       meGroup.position.y = jumpZ;
 
-      // 自己也朝移動方向平滑轉身（呈現層；位置仍是伺服器權威）
+      // 自己也朝移動方向平滑轉身（呈現層；位置仍對帳伺服器權威）
       const sdx = meGroup.position.x - ox, sdz = meGroup.position.z - oz;
       if (Math.hypot(sdx, sdz) / Math.max(dt, 1e-3) > 0.6) {
         const target = Math.atan2(sdx, sdz);
