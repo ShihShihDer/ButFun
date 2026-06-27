@@ -5796,6 +5796,36 @@ for (const sc of scenarios) {
   else console.log("  ✅ 放流養塘（ROADMAP 561）：anglerBondLabel/releaseFloatText/anglerModeText(標籤遞增+壞值夾鉗+尾數+開關相異)");
 }
 
+// ── 勘礦造詣（ROADMAP 562）：prospectorLabel / mineTierUpText 純函式 ──────────────
+{
+  let ok = true;
+  try {
+    const lbl = sandbox.__bfTest && sandbox.__bfTest.prospectorLabel;
+    const tut = sandbox.__bfTest && sandbox.__bfTest.mineTierUpText;
+    if (typeof lbl !== "function" || typeof tut !== "function") {
+      throw new Error("prospecting 函式未掛載");
+    }
+    // 造詣身段：0 階＝生手；各階相異；壞值（NaN/負/超界）夾鉗至合法字串。
+    if (lbl(0) !== "生手") { ok = false; console.error(`  ❌ prospectorLabel(0) 應「生手」，得 ${lbl(0)}`); }
+    if (lbl(3) !== "礦脈大師") { ok = false; console.error(`  ❌ prospectorLabel(3) 應「礦脈大師」，得 ${lbl(3)}`); }
+    if (lbl(0) === lbl(1) || lbl(1) === lbl(2) || lbl(2) === lbl(3)) {
+      ok = false; console.error("  ❌ prospectorLabel 各階應相異");
+    }
+    if (typeof lbl(NaN) !== "string" || typeof lbl(-2) !== "string" || typeof lbl(999) !== "string") {
+      ok = false; console.error("  ❌ prospectorLabel 壞值未回字串");
+    }
+    if (lbl(-2) !== lbl(0)) { ok = false; console.error("  ❌ prospectorLabel(負) 應夾到 0 階"); }
+    if (lbl(999) !== lbl(3)) { ok = false; console.error("  ❌ prospectorLabel(超界) 應夾到最高階"); }
+    // 升階慶賀飄字：含對應身段名。
+    if (!tut(2).includes(lbl(2))) { ok = false; console.error(`  ❌ mineTierUpText(2) 應含身段名，得 ${tut(2)}`); }
+    if (tut(NaN).indexOf("NaN") !== -1) { ok = false; console.error("  ❌ mineTierUpText 壞值不應印出 NaN"); }
+  } catch (e) {
+    ok = false; console.error("  ❌ 勘礦造詣：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 勘礦造詣（ROADMAP 562）：測試失敗"); }
+  else console.log("  ✅ 勘礦造詣（ROADMAP 562）：prospectorLabel/mineTierUpText(身段遞增+壞值夾鉗+升階飄字含身段名)");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

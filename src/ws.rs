@@ -167,6 +167,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             mine_cooldown: 0.0,
             mine_attempt_count: 0,
             mining: None,
+            mine_hauls: 0,
             current_locale: None,
             cook_cooldown: 0.0,
             cook_attempt_count: 0,
@@ -319,6 +320,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             mine_cooldown: 0.0,
             mine_attempt_count: 0,
             mining: None,
+            mine_hauls: 0,
             current_locale: None,
             cook_cooldown: 0.0,
             cook_attempt_count: 0,
@@ -5579,6 +5581,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                 haul: Some(haul),
                                                 depth: Some(depth),
                                                 tremor: Some(tremor.as_str().to_string()),
+                                                // 敲礦途中造詣不變：帶當下身段、無升階、無安慰。
+                                                mine_tier: crate::prospecting::mastery_tier(
+                                                    p.mine_hauls,
+                                                ),
+                                                tier_up: false,
+                                                consolation_xp: 0,
                                                 x: p.x,
                                                 y: p.y,
                                             })
@@ -5588,6 +5596,18 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                             p.mining = None;
                                             p.mine_cooldown =
                                                 crate::mining_vein::MINE_COOLDOWN_SECS;
+                                            // ROADMAP 562：老礦工級即便整袋落空，也從崩塌中學到東西
+                                            // ——給一小筆安慰探索 XP（零礦石、不碰經濟），撫平失手的刺。
+                                            let consolation =
+                                                crate::prospecting::collapse_consolation_xp(
+                                                    p.mine_hauls,
+                                                );
+                                            if consolation > 0 {
+                                                p.masteries.gain_explorer(consolation);
+                                            }
+                                            let mine_tier = crate::prospecting::mastery_tier(
+                                                p.mine_hauls,
+                                            );
                                             tracing::info!(player = %p.name, "礦脈崩塌、整袋礦全埋");
                                             Some(ServerMsg::MineResult {
                                                 player_id: id,
@@ -5596,6 +5616,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                 haul: None,
                                                 depth: None,
                                                 tremor: None,
+                                                mine_tier,
+                                                tier_up: false,
+                                                consolation_xp: consolation,
                                                 x: p.x,
                                                 y: p.y,
                                             })
@@ -5625,17 +5648,35 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             match p.mining.take() {
                                 None => None,
                                 Some(vein) => {
-                                    let (ore, xp) = vein.haul_out();
+                                    let (ore, base_xp) = vein.haul_out();
                                     let depth = vein.depth();
+                                    // ROADMAP 562：只有「真的落了袋」（ore>0）才算一次安全落袋、累積勘礦造詣；
+                                    // 探索回報依「落袋前」的造詣放大（你以當下身段賺得這趟、再晉升）。
+                                    let mut tier_up_flag = false;
                                     if ore > 0 {
                                         p.add_item_overflow(MiningVein::ore_kind(), ore);
-                                    }
-                                    if xp > 0 {
-                                        p.masteries.gain_explorer(xp);
+                                        let prev_hauls = p.mine_hauls;
+                                        let new_hauls = prev_hauls.saturating_add(1);
+                                        let xp = crate::prospecting::explorer_xp_for_haul(
+                                            base_xp, prev_hauls,
+                                        );
+                                        if xp > 0 {
+                                            p.masteries.gain_explorer(xp);
+                                        }
+                                        p.mine_hauls = new_hauls;
+                                        tier_up_flag = crate::prospecting::tier_up(
+                                            prev_hauls, new_hauls,
+                                        )
+                                        .is_some();
+                                    } else if base_xp > 0 {
+                                        // 空手撤（理論上不會發生：開礦脈即敲第一層）——保險仍給原始 XP、不計造詣。
+                                        p.masteries.gain_explorer(base_xp);
                                     }
                                     p.mine_cooldown = MINE_COOLDOWN_SECS;
+                                    let mine_tier =
+                                        crate::prospecting::mastery_tier(p.mine_hauls);
                                     tracing::info!(
-                                        player = %p.name, ore, depth, "收礦撤出"
+                                        player = %p.name, ore, depth, mine_tier, "收礦撤出"
                                     );
                                     Some(ServerMsg::MineResult {
                                         player_id: id,
@@ -5644,6 +5685,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         haul: Some(ore),
                                         depth: Some(depth),
                                         tremor: None,
+                                        mine_tier,
+                                        tier_up: tier_up_flag,
+                                        consolation_xp: 0,
                                         x: p.x,
                                         y: p.y,
                                     })
