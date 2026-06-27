@@ -398,6 +398,29 @@ if (authedBtn.label === guestBtn.label) fail("登入/訪客鈕標籤應有區別
 if (!authedBtn.hint || !guestBtn.hint) fail("種樹鈕兩態都應有提示文案");
 console.log("✅ 種樹互動 wire 訊息固定（plant_tree）／登入·訪客鈕態區隔／提示文案全綠");
 
+// ── ①i 照料農地互動純邏輯（ROADMAP 619）：澆水／收成 wire 訊息固定、登入/訪客鈕態正確區隔 ──
+if (typeof T.waterAllWireMsg !== "function" || typeof T.harvestAllWireMsg !== "function" || typeof T.tendButtonState !== "function") {
+  fail("__bf3dTest 未暴露 waterAllWireMsg/harvestAllWireMsg/tendButtonState");
+}
+const waterMsg = T.waterAllWireMsg();
+const harvestMsg = T.harvestAllWireMsg();
+if (!waterMsg || waterMsg.type !== "water_all") fail("waterAllWireMsg 應送 {type:'water_all'}（與 2D 同協議），得 " + JSON.stringify(waterMsg));
+if (!harvestMsg || harvestMsg.type !== "harvest_all") fail("harvestAllWireMsg 應送 {type:'harvest_all'}（與 2D 同協議），得 " + JSON.stringify(harvestMsg));
+for (const kind of ["water", "harvest"]) {
+  const onAuthed = T.tendButtonState(true, kind);
+  const onGuest = T.tendButtonState(false, kind);
+  if (onAuthed.locked !== false) fail(`登入態 ${kind} 鈕不該鎖定`);
+  if (onGuest.locked !== true) fail(`訪客態 ${kind} 鈕應鎖定（沒地·送了不留痕跡）`);
+  if (onAuthed.label === onGuest.label) fail(`登入/訪客 ${kind} 鈕標籤應有區別（訪客標明需登入）`);
+  if (!onAuthed.hint || !onGuest.hint) fail(`${kind} 鈕兩態都應有提示文案`);
+}
+if (!/澆水/.test(T.tendButtonState(true, "water").label)) fail("澆水鈕標籤應含「澆水」字樣");
+if (!/收成/.test(T.tendButtonState(true, "harvest").label)) fail("收成鈕標籤應含「收成」字樣");
+// 未知 kind 保守降級不 throw、且仍是合法鈕態（預設走澆水路徑）
+const tendUnknown = T.tendButtonState(true, "bogus");
+if (!tendUnknown || typeof tendUnknown.label !== "string" || typeof tendUnknown.locked !== "boolean") fail("tendButtonState 未知 kind 應安全回合法鈕態，不 throw");
+console.log("✅ 照料農地 wire 訊息固定（water_all／harvest_all）／登入·訪客鈕態區隔／未知 kind 安全降級全綠");
+
 // ── ② 逐幀跑：先 welcome，再餵含各種內心生活的 NPC 快照，跑多幀抓例外 ──
 function drive(msg) { lastWS.onmessage({ data: JSON.stringify(msg) }); }
 function frames(n) { for (let i = 0; i < n; i++) { perfNow += 33; if (rafCb) { const cb = rafCb; rafCb = null; cb(); } } }
@@ -526,6 +549,11 @@ drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }]
   weather: { weather_type: "water_sea_mist", intensity: 0.7, wind: { dir_x: -0.5, dir_y: 0.3, strength: 0.4 }, fish_phase: 1 },
   rainbow: { active: false, remaining_secs: 0 } });
 frames(12);
+
+// 照料回饋 chat 路徑（ROADMAP 619）：系統單播與一般聊天都不該讓 onmessage 拋例外（窗外/非系統靜默忽略）。
+drive({ type: "chat", from: "系統", text: "💧 一鍵澆水：替 3 株缺水作物補滿了水！" });
+drive({ type: "chat", from: "某玩家", text: "嗨大家" });
+frames(2);
 
 if (caught.length) {
   console.error("❌ 跑了多幀後攔到 " + caught.length + " 筆繪製例外/警告：");
