@@ -1459,6 +1459,201 @@ function updateStructures(dt, t) {
   }
 }
 
+// ============================================================
+// 玩家親手種下的世界樹群在 3D 裡長大（ROADMAP 617）：把快照裡早就有、2D 一直看得到、3D 卻整個忽略的
+// `world_groves`（TreeView）接進 3D——全服共享、隨真實時間一階階長大的樹。讓「這個世界是大家一起種出來的」
+// 一眼看得見：今天一株嫩芽 🌱，過些時候回來，它已抽成幼樹、長成松、最後撐成能遮蔭的成樹 🌳。
+//   · 階段（與後端 world_grove::GrowStage.wire 對齊、別重排）：0🌱嫩芽 / 1🌿幼苗 / 2🌲幼樹 / 3🌳成樹。
+//   · 成樹（🌳）在腳邊投下一汪清涼樹蔭——呼應林蔭小憩（ROADMAP 467，後端在樹蔭下加速脫戰回血），
+//     讓玩家一眼看出「這棵社群種大的樹能遮蔭、能在底下歇腳」。半徑鏡像 2D GROVE_SHADE_RADIUS。
+// 純讀快照、零後端改動、零協議改動——資料本來就在 TreeView 裡（2D game.js drawWorldGroves 早在用）。
+// 樹是「不會走動的固定地景」、但**會隨時間換階段**，故以座標當 key、stage 變了才重塑樹身（rebuild），
+// 平時只走 AOI 淡入淡出 + 成樹的微風輕擺（皆尊重 reduceMotion）。
+// ============================================================
+
+const GROVE_TRUNK_COLOR = 0x6b4a2f;        // 樹幹：深木褐
+// 各階段樹冠配色：嫩芽鮮嫩 → 成樹沉綠（越長越深，成長一眼可讀）。
+const GROVE_LEAF_SPROUT = 0x8ed27a;        // 嫩芽：鮮嫩黃綠
+const GROVE_LEAF_SAPLING = 0x6cbf5a;       // 幼苗：嫩綠
+const GROVE_LEAF_PINE = 0x2f7d32;          // 幼樹松：標準林綠（對齊採集樹節點 makeNode）
+const GROVE_LEAF_MATURE = 0x276b2b;        // 成樹：沉穩深綠
+const GROVE_SHADE_COLOR = 0x3f6b3a;        // 樹蔭：清涼草綠（鏡像 2D）
+// 成樹樹蔭半徑（世界像素，鏡像 2D GROVE_SHADE_RADIUS=44，與後端 world_grove::SHADE_RADIUS 同契約）。
+const GROVE_SHADE_RADIUS_PX = 44;
+
+// 世界樹視覺（純函式）：成長階段 → 樹幹高、樹冠尺寸、松型/圓冠、是否成樹遮蔭、是否隨風擺。
+// 只讀權威 stage（夾 0..3）、確定性、壞值安全；前端據此把同一棵樹塑成對應階段身形。
+function groveVisual(item) {
+  const raw = item && typeof item === "object" && Number.isFinite(item.stage) ? Math.floor(item.stage) : 0;
+  const stage = raw < 0 ? 0 : raw > 3 ? 3 : raw;
+  // 樹幹高（場景單位）：嫩芽幾乎無幹、越長越高（單調遞增）。
+  const trunkH = [0.0, 2.4, 4.8, 7.6][stage];
+  // 樹冠尺寸倍率：成樹樹冠最闊。
+  const crownScale = [0.5, 0.95, 1.15, 1.65][stage];
+  return {
+    stage,
+    trunkH,
+    crownScale,
+    sprout: stage === 0,   // 嫩芽：貼地小葉簇，無幹無冠
+    pine: stage === 2,     // 幼樹：松型尖冠；其餘有冠階段用圓冠
+    shade: stage === 3,    // 只有成樹投樹蔭（與林蔭小憩契約一致）
+    sway: stage >= 2,      // 幼樹／成樹隨風輕擺；嫩芽幼苗太小不擺
+  };
+}
+
+// 共用幾何（全模組只建一次，整片林子也不重建頂點）。材質一律「每棵一份」——AOI 淡入淡出
+// 才能各自獨立調 opacity，不牽連同階段的別棵。
+const GROVE_GEO = {
+  trunk:  new THREE.CylinderGeometry(0.42, 0.6, 1, 6),   // 樹幹（高度由 scale.y 撐）
+  round:  new THREE.SphereGeometry(2.6, 9, 7),           // 圓冠（幼苗／成樹，尺寸由 scale 撐）
+  pine:   new THREE.ConeGeometry(2.4, 4.4, 7),           // 松型尖冠（幼樹，雙層）
+  leaf:   new THREE.ConeGeometry(0.5, 1.7, 5),           // 嫩芽小葉
+  shade:  new THREE.CylinderGeometry(1, 1, 0.16, 22),    // 樹蔭圓盤（鋪地，半徑由 scale 撐）
+};
+
+// 一棵世界樹：含「全階段」零件（樹幹／圓冠／松冠×2／嫩芽小葉×3／樹蔭圓盤），由 applyGroveStage
+// 依當前階段切換可見性與尺寸——這樣樹長大時不必 dispose／重建幾何，只切顯隱＋縮放。
+function makeGroveTree(item) {
+  const g = new THREE.Group();
+  // 樹幹（高度由 applyGroveStage 撐）。
+  const trunk = new THREE.Mesh(GROVE_GEO.trunk, new THREE.MeshLambertMaterial({ color: GROVE_TRUNK_COLOR }));
+  g.add(trunk);
+  // 圓冠：幼苗（嫩綠）與成樹（深綠）各一顆，依階段切顯隱（不在執行期改色，貼齊測試 mock 行為）。
+  const roundSap = new THREE.Mesh(GROVE_GEO.round, new THREE.MeshLambertMaterial({ color: GROVE_LEAF_SAPLING }));
+  const roundMat = new THREE.Mesh(GROVE_GEO.round, new THREE.MeshLambertMaterial({ color: GROVE_LEAF_MATURE }));
+  g.add(roundSap); g.add(roundMat);
+  // 松型尖冠（幼樹，雙層尖塔）。
+  const pineLo = new THREE.Mesh(GROVE_GEO.pine, new THREE.MeshLambertMaterial({ color: GROVE_LEAF_PINE }));
+  const pineHi = new THREE.Mesh(GROVE_GEO.pine, new THREE.MeshLambertMaterial({ color: GROVE_LEAF_PINE }));
+  pineHi.scale.setScalar(0.66);
+  g.add(pineLo); g.add(pineHi);
+  // 嫩芽小葉簇（三片小葉外張，貼地）。
+  const sprout = new THREE.Group();
+  for (let i = 0; i < 3; i++) {
+    const leaf = new THREE.Mesh(GROVE_GEO.leaf, new THREE.MeshLambertMaterial({ color: GROVE_LEAF_SPROUT }));
+    const ang = (i / 3) * Math.PI * 2;
+    leaf.position.set(Math.cos(ang) * 0.35, 0.9, Math.sin(ang) * 0.35);
+    leaf.rotation.z = Math.cos(ang) * 0.4; leaf.rotation.x = -Math.sin(ang) * 0.4;
+    sprout.add(leaf);
+  }
+  g.add(sprout);
+  // 樹蔭圓盤（只有成樹現身；半徑＝GROVE_SHADE_RADIUS_PX×WORLD_SCALE）。
+  const shade = new THREE.Mesh(GROVE_GEO.shade, new THREE.MeshBasicMaterial({ color: GROVE_SHADE_COLOR, transparent: true, opacity: 0.16, depthWrite: false }));
+  const sr = Math.max(1.2, GROVE_SHADE_RADIUS_PX * WORLD_SCALE);
+  shade.scale.set(sr, 1, sr);
+  shade.position.y = 0.1;
+  g.add(shade);
+  g.userData.trunk = trunk;
+  g.userData.roundSap = roundSap;
+  g.userData.roundMat = roundMat;
+  g.userData.pineLo = pineLo;
+  g.userData.pineHi = pineHi;
+  g.userData.sprout = sprout;
+  g.userData.shade = shade;
+  // 整棵樹隨機朝向，整片林子才不會同手同腳（用座標當相位，確定性、不每幀亂跳）。
+  g.userData.phase = (Number.isFinite(item && item.x) ? item.x : 0) + (Number.isFinite(item && item.y) ? item.y : 0);
+  applyGroveStage(g, groveVisual(item));
+  return g;
+}
+
+// 依成長階段把一棵樹塑成對應身形：撐樹幹高、切換圓冠／松冠／嫩芽可見性與尺寸、成樹才現樹蔭。
+function applyGroveStage(g, v) {
+  const u = g.userData;
+  const h = v.trunkH;
+  // 樹幹：嫩芽階段近乎無幹（藏起）；有幹階段把高度撐到 h、底部貼地。
+  if (h > 0.01) {
+    u.trunk.visible = true;
+    u.trunk.scale.y = h; u.trunk.position.y = h / 2;
+  } else {
+    u.trunk.visible = false;
+  }
+  // 嫩芽小葉：只在 stage 0 現身（貼地）。
+  u.sprout.visible = v.sprout;
+  // 圓冠：幼苗（stage1·嫩綠）與成樹（stage3·深綠）各用一顆，縮放＋座落樹幹頂；幼樹／嫩芽不現圓冠。
+  const wantRound = !v.sprout && !v.pine;
+  const mature = v.stage >= 3;
+  const round = mature ? u.roundMat : u.roundSap;
+  const other = mature ? u.roundSap : u.roundMat;
+  other.visible = false;
+  if (wantRound) {
+    round.visible = true;
+    round.scale.setScalar(v.crownScale);
+    round.position.y = h + 2.4 * v.crownScale * 0.5;
+  } else {
+    round.visible = false;
+  }
+  // 松冠：只在幼樹（stage2）現身，雙層尖塔疊在樹幹頂。
+  if (v.pine) {
+    u.pineLo.visible = true; u.pineHi.visible = true;
+    u.pineLo.position.y = h + 2.0; u.pineHi.position.y = h + 4.0;
+  } else {
+    u.pineLo.visible = false; u.pineHi.visible = false;
+  }
+  // 樹蔭：只有成樹現身。
+  u.shade.visible = v.shade;
+  u.userData_h = h;
+}
+
+const worldGroves = new Map(); // key 用座標字串（樹無穩定 id）
+
+// 世界樹群 reconcile：以座標當 key（樹位置固定）、stage 變了才重塑樹身、AOI 淡入淡出。
+// 走跟農地一樣的固定地景模式（位置一次定位、不做內插/轉身）。
+function reconcileGroves(list, recvT) {
+  const seen = new Set();
+  if (Array.isArray(list)) {
+    for (const item of list) {
+      try {
+        if (!item || typeof item !== "object") continue;
+        if (!Number.isFinite(item.x) || !Number.isFinite(item.y)) continue;
+        const key = "g" + Math.round(item.x) + "," + Math.round(item.y);
+        seen.add(key);
+        let g = worldGroves.get(key);
+        if (!g) {
+          g = makeGroveTree(item);
+          worldGroves.set(key, g);
+          g.position.set(sx(item.x), 0, sz(item.y));
+          g.userData.fade = 0; g.userData.fadeTarget = 1; g.userData.removing = false;
+          g.userData.stage = groveVisual(item).stage;
+          scene.add(g);
+        } else {
+          if (g.userData.removing) { g.userData.removing = false; g.userData.fadeTarget = 1; }
+          // 長大了（階段變動）→ 重塑樹身（只切顯隱＋縮放，不重建幾何）。
+          const st = groveVisual(item).stage;
+          if (st !== g.userData.stage) { applyGroveStage(g, groveVisual(item)); g.userData.stage = st; }
+        }
+        g.userData.item = item;
+      } catch (e) {
+        console.warn("reconcileGroves 單筆失敗，已略過", e);
+      }
+    }
+  }
+  // 沒在這份快照出現的樹 → 淡出移除（AOI 邊緣不啪一下消失）。
+  for (const [key, g] of worldGroves) {
+    if (!seen.has(key) && !g.userData.removing) { g.userData.removing = true; g.userData.fadeTarget = 0; }
+  }
+}
+
+// 每幀更新世界樹群：幼樹／成樹隨風輕擺（reduceMotion 下不擺）、AOI 淡入淡出。
+function updateGroves(dt, t) {
+  for (const [key, g] of worldGroves) {
+    if (!reduceMotion) {
+      const v = groveVisual(g.userData.item || { stage: g.userData.stage });
+      g.rotation.z = v.sway ? Math.sin(t * 1.2 + g.userData.phase * 0.05) * (v.stage >= 3 ? 0.05 : 0.035) : 0;
+    } else {
+      g.rotation.z = 0;
+    }
+    if (updateFade(g, dt)) { scene.remove(g); worldGroves.delete(key); }
+  }
+}
+
+// 視野內世界樹群的 HUD 標籤：幾棵樹／其中幾棵已長成成樹（🌳）。純函式、壞值安全；無樹則回空字串。
+function groveHudLabel(groves) {
+  if (!Array.isArray(groves) || !groves.length) return "";
+  let mature = 0;
+  for (const g of groves) if (g && (g.stage | 0) === 3) mature++;
+  return mature > 0 ? `🌳 樹 ${groves.length}（成樹 ${mature}）` : `🌱 樹 ${groves.length}`;
+}
+
 // 各類實體用各自的 Map 追蹤（id → group），快照進來時 reconcile。
 const players = new Map();
 const npcs = new Map();
@@ -1597,6 +1792,9 @@ function handleServerMsg(msg) {
         (g, item) => applyTowerProgress(g, watchtowerVisual(item)), recvT);
       reconcileStatic(msg.snowmen, snowmen, "sm", makeSnowman, null, recvT);
 
+      // 玩家親手種下、隨真實時間長大的世界樹群（ROADMAP 617）：以座標當 key、長大了才重塑樹身。
+      reconcileGroves(msg.world_groves, recvT);
+
       // 自己的權威座標：給客戶端預測對帳用；順便用相鄰快照實測移動速度自我校準
       // （含跑步／加速／載具，全自動適應，不必硬寫死）。
       const meAuth = Array.isArray(msg.players) ? msg.players.find((p) => p.id === myId) : null;
@@ -1636,9 +1834,10 @@ function handleServerMsg(msg) {
       const farmLabel = farmHudLabel(msg.fields); // 視野內農地數＋待收成作物株數（ROADMAP 614）
       const wildLabel = wildlifeHudLabel(msg.wildlife); // 野生動物數＋其中已馴養數（ROADMAP 615）
       const builtLabel = structuresHudLabel(msg.campfires, msg.watchtowers, msg.snowmen); // 視野內人造地標（ROADMAP 616）
+      const groveLabel = groveHudLabel(msg.world_groves); // 視野內世界樹群＋其中成樹數（ROADMAP 617）
       hudEl.innerHTML =
         `<b>${myName}</b> · 線上 ${players.size} 人${phaseLabel ? " · " + phaseLabel : ""}${weatherLabel ? " · " + weatherLabel : ""}\n` +
-        `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · 敵人 ${enemies.size}${farmLabel ? " · " + farmLabel : ""}${builtLabel ? " · " + builtLabel : ""}\n` +
+        `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · 敵人 ${enemies.size}${farmLabel ? " · " + farmLabel : ""}${builtLabel ? " · " + builtLabel : ""}${groveLabel ? " · " + groveLabel : ""}\n` +
         `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳"}`;
 
       setStatus(
@@ -2073,6 +2272,8 @@ function safeRender() {
     updateFields(dt, t);
     // 人造地標：篝火火焰跳動／暖圈入夜更亮、塔頂燈入夜亮起、雪人愛心數（ROADMAP 616）
     updateStructures(dt, t);
+    // 世界樹群：幼樹／成樹隨風輕擺、AOI 淡入淡出（ROADMAP 617）
+    updateGroves(dt, t);
 
     // 自己：客戶端預測（零延遲）+ 平滑對帳權威，再疊上視覺跳的高度
     if (meGroup) {
@@ -2121,7 +2322,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel };
 }
 
 // 啟動
