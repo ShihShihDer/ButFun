@@ -5765,6 +5765,37 @@ for (const sc of scenarios) {
   else console.log("  ✅ 居民思想泡泡（ROADMAP 553）：residentThoughtAlpha(確定性+夾界+靜默/露出期+相位錯開+壞值保守)");
 }
 
+// ── 放流養塘（ROADMAP 561）：anglerBondLabel / releaseFloatText / anglerModeText 純函式 ──
+{
+  let ok = true;
+  try {
+    const lbl = sandbox.__bfTest && sandbox.__bfTest.anglerBondLabel;
+    const rft = sandbox.__bfTest && sandbox.__bfTest.releaseFloatText;
+    const amt = sandbox.__bfTest && sandbox.__bfTest.anglerModeText;
+    if (typeof lbl !== "function" || typeof rft !== "function" || typeof amt !== "function") {
+      throw new Error("angler 函式未掛載");
+    }
+    // 結緣標籤：0 階＝初識；逐階遞增不同；壞值（NaN/負/超界）夾鉗至合法。
+    if (lbl(0) !== "初識") { ok = false; console.error(`  ❌ anglerBondLabel(0) 應「初識」，得 ${lbl(0)}`); }
+    if (lbl(0) === lbl(1)) { ok = false; console.error("  ❌ anglerBondLabel 各階應相異"); }
+    if (typeof lbl(NaN) !== "string" || typeof lbl(-3) !== "string" || typeof lbl(999) !== "string") {
+      ok = false; console.error("  ❌ anglerBondLabel 壞值未回字串");
+    }
+    if (lbl(-3) !== lbl(0)) { ok = false; console.error("  ❌ anglerBondLabel(負) 應夾到 0 階"); }
+    // 放流飄字：含尾數與結緣標籤；壞 released 夾至 0、不印 NaN。
+    const t = rft(5, 1);
+    if (!t.includes("5") || !t.includes(lbl(1))) { ok = false; console.error(`  ❌ releaseFloatText 應含尾數與結緣標籤，得 ${t}`); }
+    if (!rft(-1, 0).includes("0")) { ok = false; console.error("  ❌ releaseFloatText(負) 應夾至 0 尾"); }
+    if (rft(NaN, NaN).indexOf("NaN") !== -1) { ok = false; console.error("  ❌ releaseFloatText 壞值不應印出 NaN"); }
+    // 模式提示：開／關回不同字串。
+    if (amt(true) === amt(false)) { ok = false; console.error("  ❌ anglerModeText 開/關應相異"); }
+  } catch (e) {
+    ok = false; console.error("  ❌ 放流養塘：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 放流養塘（ROADMAP 561）：測試失敗"); }
+  else console.log("  ✅ 放流養塘（ROADMAP 561）：anglerBondLabel/releaseFloatText/anglerModeText(標籤遞增+壞值夾鉗+尾數+開關相異)");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

@@ -162,6 +162,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             fishing: None,
+            release_mode: false,
+            angler_released: 0,
             mine_cooldown: 0.0,
             mine_attempt_count: 0,
             mining: None,
@@ -312,6 +314,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             fishing: None,
+            release_mode: false,
+            angler_released: 0,
             mine_cooldown: 0.0,
             mine_attempt_count: 0,
             mining: None,
@@ -5329,7 +5333,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 拋竿：驗未倒地、冷卻到期、站水邊、目前沒在釣 → 開一趟「等咬鉤」。
                     // 不再立即得魚；魚會在 1.5~4.5 秒後咬鉤（game.rs 每 tick 推進），
                     // 玩家須在咬鉤反應窗口內送 Reel 收竿。同一把 players 寫鎖、純記憶體。
-                    use crate::fishing::{is_near_water, FISH_COOLDOWN_SECS};
+                    use crate::fishing::is_near_water;
                     use crate::fishing_bite::FishingCast;
                     // 水畔魚汛相位（ROADMAP 431）：先取全服共享相位（短讀鎖、語句即釋放），
                     // 再進 players 寫鎖——weather 鎖與 players 鎖不巢狀，守 prod-deadlock 鐵律。
@@ -5347,7 +5351,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             };
                             p.fish_attempt_count = p.fish_attempt_count.wrapping_add(1);
                             // 拋竿即起冷卻（防連拋刷竿）；收竿成敗都不重置冷卻。
-                            p.fish_cooldown = FISH_COOLDOWN_SECS;
+                            // ROADMAP 561 放流養塘：與水結緣越深、冷卻越短（有地板、不開水龍頭）；
+                            // 未放流者 angler_released=0 → cooldown_secs 回基礎 FISH_COOLDOWN_SECS。
+                            p.fish_cooldown = crate::angler_bond::cooldown_secs(p.angler_released);
                             // 循汛判定（ROADMAP 431）：站在自身分區魚群半徑內、且魚群中心確實落在
                             // 水面上，才算「循汛」（與前端只在水面繪漣漪一致）；循汛下竿咬鉤略快。
                             let in_school = {
@@ -5386,6 +5392,33 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 沒在釣：靜默忽略，不廣播。
                                 None => None,
                                 Some(cast) => match cast.reel() {
+                                    // ROADMAP 561 放流養塘：開了放流模式→魚放回水裡，不入袋、
+                                    // 不記體長、不入大賽，換更高漁夫熟練度＋累積養塘度（與水結緣越深、
+                                    // 釣魚冷卻越短）。放流天生對經濟為負（主動放棄這尾魚）。
+                                    ReelOutcome::Caught(_) if p.release_mode => {
+                                        p.angler_released = p.angler_released.saturating_add(1);
+                                        p.masteries
+                                            .gain_farmer(crate::angler_bond::release_farmer_xp());
+                                        let released_total = p.angler_released;
+                                        let tier = crate::angler_bond::bond_tier(released_total);
+                                        tracing::info!(
+                                            player = %p.name, released_total, tier, "放流養塘"
+                                        );
+                                        Some(ServerMsg::FishResult {
+                                            player_id: id,
+                                            outcome: "released".into(),
+                                            fish: None,
+                                            quality: None,
+                                            in_season: None,
+                                            size_cm: None,
+                                            personal_best: None,
+                                            prev_best_cm: None,
+                                            released_total: Some(released_total),
+                                            bond_tier: Some(tier),
+                                            x: p.x,
+                                            y: p.y,
+                                        })
+                                    }
                                     ReelOutcome::Caught(react_quality) => {
                                         // 反應品質決定魚種加權；種子沿用 attempt_count 推進。
                                         let seed = {
@@ -5444,6 +5477,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                             size_cm: Some(size_mm as f32 / 10.0),
                                             personal_best: Some(personal_best),
                                             prev_best_cm,
+                                            released_total: None,
+                                            bond_tier: None,
                                             x: p.x,
                                             y: p.y,
                                         })
@@ -5457,6 +5492,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         size_cm: None,
                                         personal_best: None,
                                         prev_best_cm: None,
+                                        released_total: None,
+                                        bond_tier: None,
                                         x: p.x,
                                         y: p.y,
                                     }),
@@ -5473,6 +5510,31 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 3. ROADMAP 523 出鎖後才取 fishing_contest 鎖——兩把鎖絕不巢狀。
                     if let Some((cname, cmm)) = contest_catch {
                         app.fishing_contest.write().unwrap().record_catch(id, &cname, cmm);
+                    }
+                }
+
+                // ── 切換放流模式（ROADMAP 561 放流養塘）──────────────────────────────
+                Ok(ClientMsg::ToggleRelease) => {
+                    // 翻轉放流旗標、把當下養塘度回給切換者本人（更新按鈕與提示）。
+                    // 全程同一把 players 寫鎖、純記憶體；廣播在出鎖後送（守 prod-deadlock）。
+                    let confirm = {
+                        let mut players = app.players.write().unwrap();
+                        players.get_mut(&id).map(|p| {
+                            p.release_mode = !p.release_mode;
+                            tracing::info!(
+                                player = %p.name, on = p.release_mode,
+                                released_total = p.angler_released, "切換放流模式"
+                            );
+                            ServerMsg::AnglerMode {
+                                player_id: id,
+                                on: p.release_mode,
+                                released_total: p.angler_released,
+                                bond_tier: crate::angler_bond::bond_tier(p.angler_released),
+                            }
+                        })
+                    };
+                    if let Some(msg) = confirm {
+                        let _ = app.tx.send(Arc::new(msg));
                     }
                 }
 

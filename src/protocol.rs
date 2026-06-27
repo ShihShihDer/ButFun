@@ -541,6 +541,9 @@ pub enum ClientMsg {
     /// 收竿（ROADMAP 346）：拋竿後在魚咬鉤的反應窗口內送出即釣到魚（反應越快魚越好）；
     /// 魚還沒咬就收會嚇跑魚、空手而回。沒有進行中的釣魚則靜默忽略。
     Reel,
+    /// 切換「放流模式」（ROADMAP 561 放流養塘）：開啟時收竿上鉤的魚放回水裡（不入袋），
+    /// 換更高漁夫熟練度並累積養塘度（與水結緣越深、釣魚冷卻越短）。伺服器回 `AnglerMode` 確認。
+    ToggleRelease,
     /// 敲礦／往更深一層挖（ROADMAP 348 礦脈深掘）：站在岩地（`Biome::Rocky`）邊緣（80px 內）敲擊。
     /// 沒有進行中的礦脈→開一條新礦脈（須冷卻到期）並挖第一層；已有→再往下敲一層。
     /// 越深礦量越多但某個隱藏深度會崩塌、整袋礦全埋。不在岩地旁 / 倒地中靜默忽略；
@@ -1740,8 +1743,23 @@ pub enum ServerMsg {
         /// 破紀錄時的舊紀錄體長（公分）；這趟第一次釣到此種則不帶（ROADMAP 449）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prev_best_cm: Option<f32>,
+        /// 放流養塘累積尾數＝養塘度（ROADMAP 561；僅 outcome="released" 帶）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        released_total: Option<u32>,
+        /// 與水結緣等級（ROADMAP 561；僅 outcome="released" 帶，前端據此演出結緣升級慶賀）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bond_tier: Option<u8>,
         x: f32,
         y: f32,
+    },
+    /// 放流模式切換確認（ROADMAP 561 放流養塘）：一次性事件、只送給切換者本人。
+    /// `on` ＝ 切換後是否開啟放流；`released_total`/`bond_tier` ＝ 當下養塘度與結緣等級（前端更新按鈕與提示）。
+    /// 不入快照、不持久化、零 migration。
+    AnglerMode {
+        player_id: Uuid,
+        on: bool,
+        released_total: u32,
+        bond_tier: u8,
     },
     /// 礦脈深掘結果（ROADMAP 348）：一次性事件、廣播；前端只對 `player_id == 自己` 演出飄字／震動。
     /// `outcome`："struck"（敲到礦、可繼續挖或收礦）／"collapsed"（崩塌、整袋礦全埋）／
