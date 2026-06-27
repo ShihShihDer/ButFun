@@ -149,6 +149,14 @@ impl DynamicPriceMarket {
         let mut total = 0u32;
         let mut remaining = qty;
         while remaining > 0 {
+            // 已觸地板價：bps 不會再降，後續每單位同價，O(1) 一次收尾即可。
+            // （安全硬化：否則 client 傳近 u32::MAX 的 qty 會逼出上億次迴圈、持金庫寫鎖釘 CPU。
+            //  地板後每塊單價相同，逐塊累加與一次乘算的結果完全等價。）
+            if bps <= FLOOR_BPS {
+                let price_per = ((base_price as u64 * bps as u64) / BASE_BPS as u64).max(1) as u32;
+                total = total.saturating_add(price_per.saturating_mul(remaining));
+                break;
+            }
             // 桶還剩多少空間才觸發下一次跌價
             let space = DECAY_VOLUME.saturating_sub(bucket);
             let chunk = remaining.min(space);
@@ -199,6 +207,17 @@ impl DynamicPriceMarket {
         let mut remaining_budget = treasury_balance;
         let mut remaining_qty = requested_qty;
         while remaining_qty > 0 && remaining_budget > 0 {
+            // 已觸地板價：後續每單位同價、不再受桶空間影響跌價，預算內可買多少一次算清。
+            // （安全硬化：同 calculate_bulk_total，避免巨量 qty／大金庫逼出上億次迴圈。）
+            if bps <= FLOOR_BPS {
+                let price_per = ((base_price as u64 * bps as u64) / BASE_BPS as u64).max(1) as u32;
+                let affordable = (remaining_budget / price_per).min(remaining_qty);
+                if affordable > 0 {
+                    total_qty += affordable;
+                    total_cost = total_cost.saturating_add(affordable.saturating_mul(price_per));
+                }
+                break;
+            }
             let space = DECAY_VOLUME.saturating_sub(bucket);
             let price_per = ((base_price as u64 * bps as u64) / BASE_BPS as u64).max(1) as u32;
             // 在當前單價下最多買幾個（受預算、桶空間、剩餘數量三重限制）
@@ -425,5 +444,34 @@ mod tests {
         let uniform = single_price.saturating_mul(qty);
         assert!(bulk <= uniform,
             "批量總收益 {bulk} 應 ≤ 均一價 {uniform}（批量漸降）");
+    }
+
+    // ── 安全硬化：巨量 qty 不得逼出無界迴圈（持金庫寫鎖釘 CPU 的 DoS）──────────
+    // base=100：bps 每滿 20 個降一階（1000→900→…→300 地板）。
+    // 前 140 個逐階：20×(100+90+80+70+60+50+40)=9800；之後每個固定地板價 30。
+
+    #[test]
+    fn bulk_total_huge_qty_bounded_and_correct() {
+        let market = DynamicPriceMarket::new();
+        assert_eq!(market.calculate_bulk_total(ItemKind::Wood, 100, 140, 0), 9800);
+        // 140 + N 個：9800 + 30×N（地板後等價於一次乘算）。
+        assert_eq!(market.calculate_bulk_total(ItemKind::Wood, 100, 1000, 0), 9800 + 30 * 860);
+        // 巨量 qty 不得 hang；溢位以 saturating 收斂到 u32::MAX。
+        assert_eq!(market.calculate_bulk_total(ItemKind::Wood, 100, u32::MAX, 0), u32::MAX);
+    }
+
+    #[test]
+    fn find_bulk_affordable_huge_qty_bounded() {
+        let market = DynamicPriceMarket::new();
+        // 巨量 qty + 有限金庫：受預算限制、需提示，且不得 hang。
+        let (qty, cost, notice) = market.find_bulk_affordable(ItemKind::Wood, 100, u32::MAX, 1000, 0);
+        assert!(qty > 0 && cost <= 1000 && notice);
+        // 巨量 qty + 巨量金庫：走全量路徑瞬間回傳，數量精確。
+        let (qty2, _cost2, notice2) = market.find_bulk_affordable(ItemKind::Wood, 100, 1_000_000, u32::MAX, 0);
+        assert_eq!(qty2, 1_000_000);
+        assert!(!notice2);
+        // 巨量 qty + 巨量金庫但 full_cost 仍 > 預算：進迴圈也必須因地板短路而瞬間收斂。
+        let (qty3, cost3, _n3) = market.find_bulk_affordable(ItemKind::Wood, 100, u32::MAX, 1_000_000_000, 0);
+        assert!(qty3 > 0 && cost3 <= 1_000_000_000);
     }
 }
