@@ -447,8 +447,68 @@ function makeLabel(text) {
 const SELF_COLOR = 0xffd54a;     // 自己：金色火柴人
 const PLAYER_COLOR = 0x4aa3ff;   // 其他玩家：藍色火柴人
 const NPC_COLOR = 0xd8b070;      // NPC／居民：暖棕火柴人
-const WILDLIFE_COLOR = 0x7fd87f; // 野生動物：綠色小盒（盒子，跟「人」一眼區分）
+const WILDLIFE_COLOR = 0x7fd87f; // 野生動物：未知種類的安全後備色（綠）
 const ENEMY_COLOR = 0xff5a5a;    // 敵人：紅色盒子（盒子，跟「人」一眼區分）
+
+// ============================================================
+// 野生動物在 3D 裡有了模樣（ROADMAP 615）：把快照裡早就有、2D 一直畫得活靈活現、
+// 3D 卻全擠成同一個綠盒子的 `wildlife`（種類 wild_bird／wild_deer／small_critter／
+// wild_wolf／wild_fox、行為 state、馴養 tamed／親近 familiarity、幼獸 juvenile／scale）
+// 在 3D 呈現出來——鳥／鹿／小獸／野狼／野狐各有低多邊形身形，馴養的頂著 💛、
+// 幼獸縮小一號頂著 ✨、歇息的飄 💤。純讀快照、零後端改動、零協議改動。
+// ============================================================
+// 各種野生動物的視覺規格：顏色鏡像 2D game.js（SPECIES rgb），身形分四型——
+// bird（小鳥）／quadruped（鹿，帶角）／critter（圓滾小獸）／predator（狼狐，尖耳長尾）。
+// 後端只送穩定的 snake_case 種類碼，身形／顏色由前端對照＝留 i18n／美術一致空間。
+const WILDLIFE_SPEC = {
+  wild_bird:     { type: "bird",      color: 0x87cefa }, // 野鳥：天藍（2D 135,206,250）
+  wild_deer:     { type: "quadruped", color: 0x6cb45a }, // 野鹿：草綠（2D 60,180,80）
+  small_critter: { type: "critter",   color: 0xd2aa64 }, // 小動物：土黃（2D 210,170,100）
+  wild_wolf:     { type: "predator",  color: 0x9098a0 }, // 野狼：灰
+  wild_fox:      { type: "predator",  color: 0xe0883c }, // 野狐：橘
+};
+const WILDLIFE_DEFAULT_SPEC = { type: "box", color: WILDLIFE_COLOR }; // 未知種類 → 退回綠盒（向後相容）
+
+// 把一筆 WildlifeView 算成「這隻該怎麼呈現」。純函式、確定性、壞值安全（null／非物件 →
+// 安全的綠盒後備，永不 throw）。只讀權威欄位、不嵌任何生態規則（行為是伺服器的事，前端純呈現）。
+function wildlifeVisual(item) {
+  const spec = (item && typeof item === "object" && WILDLIFE_SPEC[item.kind]) || WILDLIFE_DEFAULT_SPEC;
+  // 幼獸縮一號：優先用伺服器送的相對體型 scale，缺漏／非有限時退回 juvenile 旗標推估。
+  let scale = item && Number.isFinite(item.scale) ? item.scale : (item && item.juvenile ? 0.62 : 1.0);
+  if (!(scale > 0.2)) scale = 0.2; // 夾住下限，別縮成看不見
+  if (scale > 1.6) scale = 1.6;     // 也夾上限，壞值不爆大
+  const state = item && typeof item.state === "string" ? item.state : "";
+  return {
+    type: spec.type,
+    color: spec.color,
+    scale,
+    tamed: !!(item && item.tamed),
+    familiarity: item && Number.isFinite(item.familiarity) ? Math.max(0, Math.min(1, item.familiarity)) : 0,
+    juvenile: !!(item && item.juvenile),
+    // 歇息（resting／sleeping／napping）：穩定靜止，前端飄 💤、不上下彈
+    resting: state === "resting" || state === "sleeping" || state === "napping",
+  };
+}
+
+// 野生動物頭頂狀態 emoji（優先序：馴養 💛 ＞ 親近過半 💗 ＞ 幼獸 ✨ ＞ 歇息 💤 ＞ 無）。
+// 鏡像 2D「馴養顯示愛心、親近度漸滿、幼獸新生微光」。壞值安全（回 null＝不顯示）。
+function wildlifeStatusEmoji(item) {
+  const v = wildlifeVisual(item);
+  if (v.tamed) return "💛";
+  if (v.familiarity > 0.5) return "💗";
+  if (v.juvenile) return "✨";
+  if (v.resting) return "💤";
+  return null;
+}
+
+// 視野內野生動物的 HUD 標籤：幾隻、其中幾隻已馴養。純函式、壞值安全（空陣列回空字串）。
+// 面向玩家字串集中前端、glyph 留 i18n 空間（後端只送穩定欄位，文案由前端對照）。
+function wildlifeHudLabel(list) {
+  if (!Array.isArray(list) || list.length === 0) return "";
+  let tamed = 0;
+  for (const w of list) if (w && w.tamed) tamed++;
+  return `🦌 野生 ${list.length}${tamed > 0 ? " · 馴養 " + tamed : ""}`;
+}
 
 // ============================================================
 // AI 居民的內心生活（ROADMAP 611）：把快照裡早就有、2D 看得到、3D 卻一直忽略的
@@ -723,6 +783,8 @@ function makeEntity(body, label) {
   g.add(body);
   // 火柴人：記住身體 group，走路動畫要驅動它的關節（盒子實體沒有，會被跳過）
   if (body && body.userData && body.userData.isStickman) g.userData.stick = body;
+  // 野生動物：記住身體 group，幼獸體型縮放要套在它身上（與 fade 的 g.scale 相乘）
+  if (body && body.userData && body.userData.isCreature) g.userData.creature = body;
   if (label) g.add(makeLabel(label));
   // tx/tz：最新一筆快照的目標場景座標（內插資料不足時的 lerp 退路）
   g.userData.tx = g.position.x;
@@ -760,6 +822,112 @@ function makeNode(kind) {
   initNetState(g); // 節點也走 AOI 淡入淡出（靜態，不做內插/轉身/起伏）
   scene.add(g);
   return g;
+}
+
+// ---- 程序化野生動物（ROADMAP 615）----
+// 四型低多邊形身形：bird（小鳥）／quadruped（鹿）／critter（圓滾小獸）／predator（狼狐）。
+// 共用幾何（全模組只建一次，幾十隻也不重建頂點）；材質「每隻一份」（單色）——這樣 AOI
+// 淡入淡出能各自獨立調 opacity，不會牽連同種類的別隻。
+const WL_GEO = {
+  birdBody:  new THREE.SphereGeometry(1.4, 8, 6),       // 鳥身（小橢球，拉長當身體）
+  birdWing:  new THREE.ConeGeometry(0.5, 1.8, 4),       // 翅膀（扁錐）
+  birdBeak:  new THREE.ConeGeometry(0.3, 0.9, 4),       // 喙
+  quadBody:  new THREE.BoxGeometry(2.0, 1.5, 3.6),      // 四足身軀
+  quadLeg:   new THREE.CylinderGeometry(0.28, 0.22, 2.4, 5),
+  quadNeck:  new THREE.CylinderGeometry(0.42, 0.5, 1.8, 5),
+  quadHead:  new THREE.SphereGeometry(0.8, 8, 6),
+  antler:    new THREE.ConeGeometry(0.18, 1.2, 4),      // 鹿角
+  ear:       new THREE.ConeGeometry(0.32, 0.9, 4),      // 尖耳（小獸／掠食者）
+  critBody:  new THREE.SphereGeometry(1.2, 8, 6),       // 小獸圓身
+  tail:      new THREE.ConeGeometry(0.4, 2.0, 5),       // 長尾（掠食者）
+};
+
+// 建一隻指定種類的低多邊形動物：回傳一個 group（userData.isCreature／bodyType）。
+// 未知種類退回原本的綠盒，安全且向後相容。材質每隻一份（fade 可獨立）。
+function makeCreature(kind) {
+  const spec = WILDLIFE_SPEC[kind] || WILDLIFE_DEFAULT_SPEC;
+  const g = new THREE.Group();
+  const mat = new THREE.MeshLambertMaterial({ color: spec.color });
+  const add = (geo, x, y, z, rx, ry, rz) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    if (rx || ry || rz) m.rotation.set(rx || 0, ry || 0, rz || 0);
+    g.add(m);
+    return m;
+  };
+  if (spec.type === "bird") {
+    const body = add(WL_GEO.birdBody, 0, 2.2, 0); body.scale.set(0.8, 0.8, 1.4);
+    add(WL_GEO.birdWing, -0.9, 2.4, -0.2, 0, 0, 0.9);  // 左翼
+    add(WL_GEO.birdWing, 0.9, 2.4, -0.2, 0, 0, -0.9);  // 右翼
+    add(WL_GEO.birdBeak, 0, 2.3, 1.4, Math.PI / 2, 0, 0); // 喙朝前
+  } else if (spec.type === "quadruped") {
+    add(WL_GEO.quadBody, 0, 2.6, 0);
+    for (const sx2 of [-1, 1]) for (const sz2 of [-1, 1]) add(WL_GEO.quadLeg, sx2 * 0.8, 1.2, sz2 * 1.3); // 四腿
+    add(WL_GEO.quadNeck, 0, 3.6, 1.5, Math.PI / 5, 0, 0); // 前傾的脖子
+    add(WL_GEO.quadHead, 0, 4.4, 2.3);                     // 頭
+    add(WL_GEO.antler, -0.35, 5.2, 2.3, 0, 0, 0.3);        // 鹿角左
+    add(WL_GEO.antler, 0.35, 5.2, 2.3, 0, 0, -0.3);        // 鹿角右
+  } else if (spec.type === "predator") {
+    add(WL_GEO.quadBody, 0, 2.4, 0).scale.set(0.85, 0.8, 1.05); // 較精瘦的身軀
+    for (const sx2 of [-1, 1]) for (const sz2 of [-1, 1]) add(WL_GEO.quadLeg, sx2 * 0.7, 1.2, sz2 * 1.2);
+    add(WL_GEO.quadHead, 0, 3.2, 1.9).scale.set(0.9, 0.85, 1.1); // 略尖的頭
+    add(WL_GEO.ear, -0.4, 3.9, 1.9);  // 尖耳左
+    add(WL_GEO.ear, 0.4, 3.9, 1.9);   // 尖耳右
+    add(WL_GEO.tail, 0, 2.8, -1.9, -Math.PI / 3, 0, 0); // 翹起的長尾
+  } else if (spec.type === "critter") {
+    add(WL_GEO.critBody, 0, 1.4, 0);
+    add(WL_GEO.ear, -0.5, 2.4, 0.2).scale.set(0.7, 0.7, 0.7); // 小圓耳
+    add(WL_GEO.ear, 0.5, 2.4, 0.2).scale.set(0.7, 0.7, 0.7);
+    add(WL_GEO.tail, 0, 1.6, -1.0, -Math.PI / 2.4, 0, 0).scale.set(0.7, 0.7, 0.7); // 翹尾
+  } else {
+    // 未知種類：退回原本的綠盒（向後相容、永不空殼）
+    const box = new THREE.Mesh(new THREE.BoxGeometry(3, 3, 5), mat);
+    box.position.y = 1.5;
+    g.add(box);
+  }
+  g.userData.isCreature = true;
+  g.userData.bodyType = spec.type;
+  return g;
+}
+
+// 給一隻野生動物 group 掛上頭頂狀態 sprite（馴養 💛／親近 💗／幼獸 ✨／歇息 💤）。
+// 比居民的精簡：只一層 emoji、無思想泡泡；初始隱形，由 updateWildlifeStatus 每幀依快照決定。
+function attachWildlifeStatus(g) {
+  const status = makeEmojiSprite(3.4);
+  status.position.set(0, 7.5, 0); // 浮在動物頭頂之上
+  g.add(status);
+  g.userData.wlStatus = status;
+}
+
+// 每幀更新所有野生動物的呈現（在 updateRemoteEntities(wildlife) 之後呼叫：那裡 updateFade 已把
+// 子 sprite 的 opacity 設成 AOI 淡入淡出值，這裡再依快照覆寫狀態 sprite 與幼獸體型）。
+function updateWildlifeStatus(t) {
+  for (const [, g] of wildlife) {
+    const item = g.userData.item;
+    const v = wildlifeVisual(item);
+    // 幼獸縮一號：套在身體 group（creature）上，與 g.scale（fade）相乘，互不干擾。
+    const body = g.userData.creature;
+    if (body) {
+      const cur = body.userData.shownScale ?? 1;
+      const ns = cur + (v.scale - cur) * 0.2; // 平滑趨近，餵食長大不突跳
+      body.userData.shownScale = ns;
+      body.scale.setScalar(ns);
+    }
+    // 頭頂狀態 emoji
+    const status = g.userData.wlStatus;
+    if (!status) continue;
+    const fade = g.userData.fade ?? 1;
+    const emoji = wildlifeStatusEmoji(item);
+    if (setSpriteEmoji(status, emoji)) {
+      status.visible = true;
+      // 馴養／親近的愛心輕輕脈動（呼應 2D 漸滿的愛心）；其餘穩定顯示。皆尊重 reduceMotion。
+      const pulsing = !reduceMotion && (v.tamed || v.familiarity > 0.5);
+      const pulse = pulsing ? 0.72 + 0.28 * Math.abs(Math.sin(t * 3)) : 1;
+      status.material.opacity = fade * pulse;
+    } else {
+      status.visible = false;
+    }
+  }
 }
 
 // ============================================================
@@ -1088,11 +1256,15 @@ function handleServerMsg(msg) {
         },
         recvT
       );
-      // 野生動物：綠色小盒（不加標籤，避免太雜）
+      // 野生動物：低多邊形動物身形（鳥／鹿／小獸／狼狐），頭頂掛馴養／幼獸狀態（ROADMAP 615）
       reconcile(
         msg.wildlife, wildlife,
         (w) => "w" + w.id,
-        () => makeEntity(makeBox(WILDLIFE_COLOR, 3, 3, 5)),
+        (w) => {
+          const g = makeEntity(makeCreature(w.kind));
+          attachWildlifeStatus(g);
+          return g;
+        },
         recvT
       );
       // 敵人：紅色盒子；被打倒（alive=false）就當作消失移除
@@ -1150,9 +1322,10 @@ function handleServerMsg(msg) {
       const phaseLabel = dayNightPhaseLabel(latestDayNight);
       const weatherLabel = weatherHudLabel(latestWeather, latestRainbow);
       const farmLabel = farmHudLabel(msg.fields); // 視野內農地數＋待收成作物株數（ROADMAP 614）
+      const wildLabel = wildlifeHudLabel(msg.wildlife); // 野生動物數＋其中已馴養數（ROADMAP 615）
       hudEl.innerHTML =
         `<b>${myName}</b> · 線上 ${players.size} 人${phaseLabel ? " · " + phaseLabel : ""}${weatherLabel ? " · " + weatherLabel : ""}\n` +
-        `NPC ${npcs.size} · 野生 ${wildlife.size} · 敵人 ${enemies.size}${farmLabel ? " · " + farmLabel : ""}\n` +
+        `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · 敵人 ${enemies.size}${farmLabel ? " · " + farmLabel : ""}\n` +
         `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳"}`;
 
       setStatus(
@@ -1578,6 +1751,8 @@ function safeRender() {
     // NPC 內心生活呈現：在 npcs 的 updateFade 之後覆寫狀態/關懷/思想 sprite 的顯示（ROADMAP 611）
     updateResidentStatus(t);
     updateRemoteEntities(wildlife, scene, renderTime, true, dt, t, undefined, k);
+    // 野生動物呈現：在 wildlife 的 updateFade 之後覆寫頭頂狀態 sprite 與幼獸體型（ROADMAP 615）
+    updateWildlifeStatus(t);
     updateRemoteEntities(enemies, scene, renderTime, true, dt, t, undefined, k);
     // 節點靜態：不轉身/起伏；位置吸最新目標（內插對靜態無差），仍走 AOI 淡入淡出
     updateRemoteEntities(nodes, scene, renderTime, false, dt, t, undefined, 1);
@@ -1631,7 +1806,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel };
 }
 
 // 啟動
