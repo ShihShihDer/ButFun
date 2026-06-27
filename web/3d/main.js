@@ -762,6 +762,230 @@ function makeNode(kind) {
   return g;
 }
 
+// ============================================================
+// 農地在 3D 裡長出來（ROADMAP 614）：把快照裡早就有、2D 一直看得到、3D 卻整個忽略的
+// `fields`（每位玩家的耕地：翻好的土＋一格格成長中的作物＋稻草人）在 3D 呈現出來，
+// 讓「這個世界裡有人在種田」一眼看得見——翻好的土褐色一畦、種子冒土點、發芽抽綠莖、
+// 成熟結金果發光、缺水的格子透藍、立了稻草人守望。
+// 純讀快照、零後端改動、零協議改動——資料本來就在 FieldView/TileView 裡（2D game.js 早在用）。
+// ============================================================
+
+// 作物三階段的視覺規格（鏡像 2D game.js 的程式繪製 fallback 配色，留 i18n／美術一致）：
+// state 2=種子（土裡的小點，深棕褐）3=發芽（鮮綠抽莖）4=成熟（亮金發光果）。
+// 高度／顏色刻意拉開明度＋色相，跟 2D 的 stage pips 一樣讓三階段一眼分得開。
+const CROP_STAGE = {
+  2: { h: 0.5, color: 0xa8662e, glow: false }, // 種子：壓暗的棕，貼著土
+  3: { h: 1.4, color: 0x5ad94f, glow: false }, // 發芽：鮮綠抽高
+  4: { h: 2.0, color: 0xffd24a, glow: true },  // 成熟：亮金、會發光
+};
+const FIELD_SOIL_COLOR = 0x5b4636;      // 翻好的潮土（深咖啡，鏡像 2D state>=1 底色）
+const FIELD_SOIL_OWN_COLOR = 0x6b513c;  // 自己的地：暖一階，跟別人的地一眼分得開
+const FIELD_NATURAL_COLOR = 0x7a5f3c;   // 未翻的自然地（暖土黃，鏡像 2D state 0 底色）
+const CROP_DRY_COLOR = 0x5aaaff;        // 缺水：藍色提示（鏡像 2D 缺水藍虛線框）
+const SCARECROW_COLOR = 0xc9a24b;       // 稻草人：稻草棕黃
+
+// 單格耕地的視覺：把一筆 TileView 算成「這格該怎麼畫」。純函式、確定性、壞值安全。
+// 回傳 null＝這格不長作物（自然地／空土／壞值）——呼叫端就不替它生作物 mesh。
+// 只讀權威 `state`/`dry`，不嵌任何種田規則（能不能種是伺服器的事，前端純呈現）。
+function cropCellVisual(cell) {
+  if (!cell || typeof cell !== "object") return null;
+  const meta = CROP_STAGE[cell.state]; // state 0/1/未知 → undefined → 不長作物
+  if (!meta) return null;
+  return { state: cell.state, h: meta.h, color: meta.color, glow: meta.glow, dry: cell.dry === true };
+}
+
+// 視野內農地的 HUD 標籤：幾塊地、幾株作物待收成（state 4＝成熟）。純函式、壞值安全。
+// 面向玩家字串集中前端、glyph 留 i18n 空間（後端只送穩定數值 state，文案由前端對照）。
+function farmHudLabel(fieldList) {
+  if (!Array.isArray(fieldList) || fieldList.length === 0) return "";
+  let ripe = 0;
+  for (const f of fieldList) {
+    const cells = f && Array.isArray(f.cells) ? f.cells : [];
+    for (const c of cells) if (c && c.state === 4) ripe++;
+  }
+  return `🌾 農地 ${fieldList.length}${ripe > 0 ? " · " + ripe + " 株待收" : ""}`;
+}
+
+// 一塊田的「視覺指紋」：把每格的 state/dry 串成字串＋稻草人位置。只有指紋變了才重建作物
+// mesh（多數幀作物沒變、不必每幀重生 mesh＝近乎零增量開銷）。壞值安全（缺 cells → 空指紋）。
+function fieldDigest(field) {
+  if (!field || typeof field !== "object") return "x";
+  let d = "";
+  const cells = Array.isArray(field.cells) ? field.cells : [];
+  for (const c of cells) d += (c && typeof c.state === "number" ? c.state : 0) + (c && c.dry ? "w" : "") + ",";
+  const sc = field.scarecrow;
+  if (Array.isArray(sc) && sc.length === 2) d += "sc" + sc[0] + "_" + sc[1];
+  return d;
+}
+
+// 場景單位下的每格邊長（壞值退回預設 48px×scale）。
+function fieldTileScene(field) {
+  const ts = field && Number.isFinite(field.tile_size) && field.tile_size > 0 ? field.tile_size : 48;
+  return ts * WORLD_SCALE;
+}
+
+// 共用幾何體（所有田、所有格共用一份，省記憶體；顏色由各自材質帶）。
+const _cropSeedGeo = new THREE.SphereGeometry(0.5, 6, 4);    // 種子：小球貼土
+const _cropSproutGeo = new THREE.ConeGeometry(0.45, 1, 5);   // 發芽：細綠錐
+const _cropMatureGeo = new THREE.ConeGeometry(0.6, 1, 6);    // 成熟：飽滿金錐
+const _scarePoleGeo = new THREE.CylinderGeometry(0.12, 0.12, 2.2, 5);
+const _scareArmGeo = new THREE.BoxGeometry(1.6, 0.18, 0.18);
+
+// 替一塊田（FieldView）建/重建它的作物層：清掉舊作物群、依最新各格 state 長出新作物。
+// 土底（base plane）只建一次、之後重用；只有作物層隨 digest 變更重建。
+function rebuildFieldCrops(g, field) {
+  // 移除上一批作物 mesh（含稻草人），釋放它們的材質（共用幾何體不釋放）。
+  const old = g.userData.cropLayer;
+  if (old) {
+    old.traverse((o) => { if (o.material && o.material.dispose) o.material.dispose(); });
+    g.remove(old);
+  }
+  const layer = new THREE.Group();
+  g.userData.cropLayer = layer;
+  g.add(layer);
+
+  const cols = Number.isFinite(field.cols) && field.cols > 0 ? Math.min(field.cols, 64) : 0;
+  const rows = Number.isFinite(field.rows) && field.rows > 0 ? Math.min(field.rows, 64) : 0;
+  const tileS = fieldTileScene(field);
+  const cells = Array.isArray(field.cells) ? field.cells : [];
+  // 格子在群組本地座標的偏移（群組原點＝田中心，故減去半幅置中）。
+  const offOf = (col, row) => ({
+    x: (col + 0.5 - cols / 2) * tileS,
+    z: (row + 0.5 - rows / 2) * tileS,
+  });
+
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const cell = cells[row * cols + col];
+      const vis = cropCellVisual(cell);
+      if (!vis) continue;
+      const off = offOf(col, row);
+      let mesh;
+      if (vis.state === 2) {
+        mesh = new THREE.Mesh(_cropSeedGeo, new THREE.MeshLambertMaterial({ color: vis.color }));
+        mesh.position.set(off.x, vis.h, off.z);
+      } else {
+        const geo = vis.state === 4 ? _cropMatureGeo : _cropSproutGeo;
+        const mat = new THREE.MeshLambertMaterial({ color: vis.color });
+        if (vis.glow) { mat.emissive = new THREE.Color(0xffe9a0); mat.emissiveIntensity = 0.5; } // 成熟金果發光
+        mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(off.x, vis.h, off.z);
+        mesh.scale.y = vis.h; // 錐高隨階段拉伸（幾何體預設高 1）
+      }
+      mesh.userData.cropState = vis.state;
+      mesh.userData.glow = vis.glow;
+      mesh.userData.sway = vis.state >= 3; // 發芽／成熟會隨風輕搖
+      layer.add(mesh);
+      // 缺水：在這格上方插一根藍針提示「該澆水了」（鏡像 2D 缺水藍框）。
+      if (vis.dry) {
+        const dryMark = new THREE.Mesh(_cropSproutGeo, new THREE.MeshBasicMaterial({ color: CROP_DRY_COLOR, transparent: true, opacity: 0.75 }));
+        dryMark.position.set(off.x, vis.h + 0.9, off.z);
+        dryMark.scale.set(0.4, 0.6, 0.4);
+        layer.add(dryMark);
+      }
+    }
+  }
+
+  // 稻草人守望（ROADMAP 476）：在指定格立一座十字稻草人，讓「這塊地有人看著」一眼看得見。
+  const sc = field.scarecrow;
+  if (Array.isArray(sc) && sc.length === 2 && Number.isFinite(sc[0]) && Number.isFinite(sc[1])) {
+    const off = offOf(sc[0], sc[1]);
+    const crow = new THREE.Group();
+    const mat = new THREE.MeshLambertMaterial({ color: SCARECROW_COLOR });
+    const pole = new THREE.Mesh(_scarePoleGeo, mat);
+    pole.position.y = 1.1;
+    const arms = new THREE.Mesh(_scareArmGeo, mat);
+    arms.position.y = 1.5;
+    crow.add(pole); crow.add(arms);
+    crow.position.set(off.x, 0, off.z);
+    layer.add(crow);
+  }
+}
+
+// 替一塊田建立 group：一塊翻好的土底（單一平面，省 draw call）＋作物層。
+// 田不移動（per-player 固定地塊），故不做內插/轉身；走 AOI 淡入淡出（離開視野柔和消失）。
+function makeFieldPlot(field) {
+  const g = new THREE.Group();
+  const cols = Number.isFinite(field.cols) && field.cols > 0 ? field.cols : 1;
+  const rows = Number.isFinite(field.rows) && field.rows > 0 ? field.rows : 1;
+  const tileS = fieldTileScene(field);
+  const own = field.owner && myId && field.owner === myId;
+  // 土底：整塊田一張平面（翻好的潮土；自己的地暖一階）。鋪在地面之上、作物之下。
+  const base = new THREE.Mesh(
+    new THREE.PlaneGeometry(cols * tileS, rows * tileS),
+    new THREE.MeshLambertMaterial({ color: own ? FIELD_SOIL_OWN_COLOR : FIELD_SOIL_COLOR })
+  );
+  base.rotation.x = -Math.PI / 2;
+  base.position.y = -0.4; // 略高於草地（地面在 -0.45/-0.5），讓田畦浮出來
+  g.add(base);
+  g.userData.base = base;
+  g.userData.isOwn = own;
+  rebuildFieldCrops(g, field);
+  g.userData.digest = fieldDigest(field);
+  initNetState(g); // 田也走 AOI 淡入淡出
+  scene.add(g);
+  return g;
+}
+
+// 田的 reconcile：以 owner 當 key（per-player 一塊地）。位置不動（固定地塊），故不進
+// updateRemoteEntities（那是給會走動的實體內插用）；只在 digest 變更時重建作物層。
+const fields = new Map();
+function reconcileFields(list, recvT) {
+  const seen = new Set();
+  if (Array.isArray(list)) {
+    for (const field of list) {
+      try {
+        if (!field || typeof field !== "object") continue;
+        if (!Number.isFinite(field.origin_x) || !Number.isFinite(field.origin_y)) continue;
+        const key = String(field.owner || (field.origin_x + "_" + field.origin_y));
+        seen.add(key);
+        let g = fields.get(key);
+        const cols = Number.isFinite(field.cols) && field.cols > 0 ? field.cols : 1;
+        const rows = Number.isFinite(field.rows) && field.rows > 0 ? field.rows : 1;
+        const tileS = fieldTileScene(field);
+        // 田中心的場景座標（群組原點落在田中心）。
+        const cx = sx(field.origin_x + (cols * field.tile_size) / 2);
+        const cz = sz(field.origin_y + (rows * field.tile_size) / 2);
+        if (!g) {
+          g = makeFieldPlot(field);
+          g.position.set(cx, 0, cz);
+          g.userData.fade = 0; g.userData.fadeTarget = 1; g.userData.removing = false;
+        } else {
+          g.position.set(cx, 0, cz); // origin 理論上不變，仍每次對齊（防擴地等改動）
+          if (g.userData.removing) { g.userData.removing = false; g.userData.fadeTarget = 1; }
+          const dg = fieldDigest(field);
+          if (dg !== g.userData.digest) { rebuildFieldCrops(g, field); g.userData.digest = dg; }
+        }
+      } catch (e) {
+        console.warn("reconcileFields 單筆失敗，已略過", e);
+      }
+    }
+  }
+  // 沒在這份快照出現的田 → 淡出移除（AOI 邊緣不啪一下消失）。
+  for (const [key, g] of fields) {
+    if (!seen.has(key) && !g.userData.removing) { g.userData.removing = true; g.userData.fadeTarget = 0; }
+  }
+}
+
+// 每幀更新所有田：作物隨風輕搖、成熟金果發光脈動、AOI 淡入淡出。皆尊重 reduceMotion。
+function updateFields(dt, t) {
+  for (const [key, g] of fields) {
+    const layer = g.userData.cropLayer;
+    if (layer && !reduceMotion) {
+      for (const m of layer.children) {
+        if (m.userData && m.userData.sway) {
+          // 輕微搖擺：用世界位置當相位，整片田不會同手同腳。
+          m.rotation.z = Math.sin(t * 1.6 + (g.position.x + m.position.x) * 0.5) * 0.12;
+        }
+        if (m.userData && m.userData.glow && m.material) {
+          m.material.emissiveIntensity = 0.4 + 0.2 * (0.5 + 0.5 * Math.sin(t * 2.2 + g.position.z));
+        }
+      }
+    }
+    if (updateFade(g, dt)) { scene.remove(g); fields.delete(key); }
+  }
+}
+
 // 各類實體用各自的 Map 追蹤（id → group），快照進來時 reconcile。
 const players = new Map();
 const npcs = new Map();
@@ -886,6 +1110,8 @@ function handleServerMsg(msg) {
         (n) => makeNode(n.kind),
         recvT
       );
+      // 農地（每位玩家的耕地）：把翻好的土＋成長中的作物＋稻草人接進 3D（ROADMAP 614）。
+      reconcileFields(msg.fields, recvT);
 
       // 自己的權威座標：給客戶端預測對帳用；順便用相鄰快照實測移動速度自我校準
       // （含跑步／加速／載具，全自動適應，不必硬寫死）。
@@ -923,9 +1149,10 @@ function handleServerMsg(msg) {
       const myName = meItem ? (meItem.name || "玩家") : "（加入中…）";
       const phaseLabel = dayNightPhaseLabel(latestDayNight);
       const weatherLabel = weatherHudLabel(latestWeather, latestRainbow);
+      const farmLabel = farmHudLabel(msg.fields); // 視野內農地數＋待收成作物株數（ROADMAP 614）
       hudEl.innerHTML =
         `<b>${myName}</b> · 線上 ${players.size} 人${phaseLabel ? " · " + phaseLabel : ""}${weatherLabel ? " · " + weatherLabel : ""}\n` +
-        `NPC ${npcs.size} · 野生 ${wildlife.size} · 敵人 ${enemies.size}\n` +
+        `NPC ${npcs.size} · 野生 ${wildlife.size} · 敵人 ${enemies.size}${farmLabel ? " · " + farmLabel : ""}\n` +
         `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳"}`;
 
       setStatus(
@@ -1354,6 +1581,8 @@ function safeRender() {
     updateRemoteEntities(enemies, scene, renderTime, true, dt, t, undefined, k);
     // 節點靜態：不轉身/起伏；位置吸最新目標（內插對靜態無差），仍走 AOI 淡入淡出
     updateRemoteEntities(nodes, scene, renderTime, false, dt, t, undefined, 1);
+    // 農地：作物隨風輕搖、成熟金果發光脈動、AOI 淡入淡出（ROADMAP 614）
+    updateFields(dt, t);
 
     // 自己：客戶端預測（零延遲）+ 平滑對帳權威，再疊上視覺跳的高度
     if (meGroup) {
@@ -1402,7 +1631,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel };
 }
 
 // 啟動
