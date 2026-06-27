@@ -257,6 +257,38 @@ if (!/🌈/.test(T.weatherHudLabel({ weather_type: "clear", intensity: 0 }, { ac
 if (!/🌧️/.test(T.weatherHudLabel({ weather_type: "grassland_rain", intensity: 0.8 }, { active: true })) || !/🌈/.test(T.weatherHudLabel({ weather_type: "grassland_rain", intensity: 0.8 }, { active: true }))) fail("下雨+彩虹應同時顯示");
 console.log("✅ weatherVisual 合理性／雨沙晶霧區隔／晴天壞值安全／風向／HUD 標籤全綠");
 
+// ── ①d 農地視覺純邏輯：作物階段／指紋／HUD 標籤、壞值安全（ROADMAP 614）──
+if (typeof T.cropCellVisual !== "function" || typeof T.fieldDigest !== "function" || typeof T.farmHudLabel !== "function") fail("__bf3dTest 未暴露 cropCellVisual/fieldDigest/farmHudLabel");
+const ccv = T.cropCellVisual;
+// 自然地/空土/未知 state → 不長作物（null）
+for (const st of [0, 1, 5, 99]) if (ccv({ state: st }) !== null) fail(`state ${st} 不該長作物`);
+// 壞值安全：null / 非物件 → null，不拋
+if (ccv(null) !== null || ccv(undefined) !== null || ccv("x") !== null) fail("cropCellVisual 壞值應回 null");
+// 種子/發芽/成熟 → 有視覺，且高度遞增（三階段一眼分得開）、只有成熟發光
+const seed = ccv({ state: 2 }), sprout = ccv({ state: 3 }), mature = ccv({ state: 4 });
+for (const [v, d] of [[seed, "種子"], [sprout, "發芽"], [mature, "成熟"]]) {
+  if (!v || !Number.isFinite(v.h) || v.h <= 0) fail(`${d} 高度非法 ${v && v.h}`);
+  if (!Number.isFinite(v.color)) fail(`${d} 顏色非法`);
+}
+if (!(seed.h < sprout.h && sprout.h < mature.h)) fail("作物高度應隨階段遞增（種子<發芽<成熟）");
+if (seed.glow || sprout.glow || !mature.glow) fail("只有成熟作物該發光");
+// 缺水旗標忠實帶過
+if (ccv({ state: 3, dry: true }).dry !== true || ccv({ state: 3, dry: false }).dry !== false) fail("缺水旗標應忠實帶過");
+// fieldDigest：cells 變了指紋就變、沒變就同（重建作物層的依據）、壞值安全
+const fd = T.fieldDigest;
+const fA = { cells: [{ state: 2 }, { state: 4 }], scarecrow: null };
+const fB = { cells: [{ state: 3 }, { state: 4 }], scarecrow: null }; // 第一格長大了
+if (fd(fA) === fd(fB)) fail("作物階段變了，指紋應改變");
+if (fd(fA) !== fd({ cells: [{ state: 2 }, { state: 4 }], scarecrow: null })) fail("同狀態指紋應一致");
+if (fd({ cells: [{ state: 2 }] }) === fd({ cells: [{ state: 2 }], scarecrow: [1, 1] })) fail("立稻草人應改變指紋");
+if (typeof fd(null) !== "string" || typeof fd({}) !== "string") fail("fieldDigest 壞值應回字串不拋");
+// farmHudLabel：有田顯示塊數＋成熟株數、空陣列無字、壞值安全
+if (T.farmHudLabel([]) !== "" || T.farmHudLabel(null) !== "") fail("無田應回空字串");
+const hl = T.farmHudLabel([{ cells: [{ state: 4 }, { state: 4 }, { state: 2 }] }, { cells: [{ state: 1 }] }]);
+if (!/農地 2/.test(hl) || !/2 株待收/.test(hl)) fail(`farmHudLabel 應數出 2 塊地 2 株待收，得「${hl}」`);
+if (!/農地 1/.test(T.farmHudLabel([{ cells: [{ state: 1 }] }]))) fail("一塊無成熟的地仍應顯示塊數");
+console.log("✅ cropCellVisual 階段遞增／發光／指紋／farmHudLabel／壞值安全全綠");
+
 // ── ② 逐幀跑：先 welcome，再餵含各種內心生活的 NPC 快照，跑多幀抓例外 ──
 function drive(msg) { lastWS.onmessage({ data: JSON.stringify(msg) }); }
 function frames(n) { for (let i = 0; i < n; i++) { perfNow += 33; if (rafCb) { const cb = rafCb; rafCb = null; cb(); } } }
@@ -272,7 +304,19 @@ const npcsA = [
   { id: "n5", name: "農婦", x: 3400, y: 3000, needs_care: true, thought: "有點累了" },
   { id: "n6", name: "旅人", x: 3500, y: 3000 }, // 無任何內心生活欄位（其他 NPC）
 ];
+// 一塊 3×2 的田：含種子／發芽／成熟／缺水各種格＋稻草人——踩 makeFieldPlot/rebuildFieldCrops
+// 全路徑（ROADMAP 614）。owner === myId 走「自己的地」暖色底。
+const fieldsA = [{
+  owner: "me", origin_x: 2900, origin_y: 2900, tile_size: 48, cols: 3, rows: 2,
+  reach: 48,
+  cells: [
+    { state: 0, dry: false }, { state: 1, dry: false }, { state: 2, dry: true },
+    { state: 3, dry: false }, { state: 4, dry: false, quality: 2 }, { state: 4, dry: true },
+  ],
+  scarecrow: [1, 1],
+}];
 drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }], npcs: npcsA, wildlife: [], enemies: [], nodes: [],
+  fields: fieldsA,
   daynight: { phase: "day", day_fraction: 0.33, light: 1.0, night_danger: false },
   // 細雨＋橫風＋彩虹：踩 applyWeather 的粒子推進／回收、霧染、彩虹淡入路徑（ROADMAP 613）
   weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
@@ -287,8 +331,19 @@ const npcsB = [
   { id: "n5", name: "農婦", x: 3400, y: 3000 }, // 需求撫平
   // n4、n6 從快照消失 → 走 AOI 淡出移除
 ];
+// 田長大了（種子→發芽、發芽→成熟、稻草人移位）：digest 變更 → 踩 rebuildFieldCrops 重建作物層（ROADMAP 614）
+const fieldsB = [{
+  owner: "me", origin_x: 2900, origin_y: 2900, tile_size: 48, cols: 3, rows: 2,
+  reach: 48,
+  cells: [
+    { state: 1, dry: false }, { state: 2, dry: false }, { state: 3, dry: false },
+    { state: 4, dry: false, quality: 2 }, { state: 4, dry: false }, { state: 1, dry: false },
+  ],
+  scarecrow: [0, 0],
+}];
 // 同時把日夜推進到「夜間危機」：踩 applyDayNight 的天色／太陽流轉 + 危機紅化路徑
 drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }], npcs: npcsB, wildlife: [], enemies: [], nodes: [],
+  fields: fieldsB,
   daynight: { phase: "night", day_fraction: 0.82, light: 0.2, night_danger: true },
   // 天氣切到海霧（上飄粒子）＋彩虹消失：踩 fall<0 上飄回收、霧染轉色、彩虹淡出路徑
   weather: { weather_type: "water_sea_mist", intensity: 0.7, wind: { dir_x: -0.5, dir_y: 0.3, strength: 0.4 }, fish_phase: 1 },
