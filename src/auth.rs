@@ -38,7 +38,21 @@ impl AuthConfig {
             google_client_id: std::env::var("GOOGLE_CLIENT_ID").ok()?,
             google_client_secret: std::env::var("GOOGLE_CLIENT_SECRET").ok()?,
             google_redirect_uri: std::env::var("GOOGLE_REDIRECT_URI").ok()?,
-            session_secret: std::env::var("BUTFUN_SESSION_SECRET").ok()?.into_bytes(),
+            // 安全：session token 的 HMAC 簽章金鑰。空白／過短會讓 token 可被輕易偽造、
+            // 冒充任意使用者，因此「設了但太弱」一律 fail loud——絕不以可偽造的設定啟動。
+            // （未設＝走上面 GOOGLE_* 的 `?` 早已回 None＝訪客模式，不會到這。）
+            session_secret: {
+                let raw = std::env::var("BUTFUN_SESSION_SECRET").ok()?;
+                let trimmed = raw.trim();
+                if trimmed.len() < 32 {
+                    panic!(
+                        "BUTFUN_SESSION_SECRET 太弱：去空白後需至少 32 bytes（目前 {}）。\
+                         請改用高熵隨機字串，例如 `openssl rand -hex 32`。",
+                        trimmed.len()
+                    );
+                }
+                trimmed.as_bytes().to_vec()
+            },
             // 選用:沒設就不開放 AI 註冊。去頭尾空白後為空也視為沒設。
             ai_register_key: std::env::var("AI_REGISTER_KEY")
                 .ok()
