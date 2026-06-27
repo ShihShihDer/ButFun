@@ -5,9 +5,9 @@
 //! 慣例：純邏輯獨立可測，由上層接線餵呼叫。**戰鬥已接線上線**，呼叫鏈如下：
 //!   - 世界：`enemy_field` 在曠野撒佈若干 `Enemy`（比照 `gather_field.rs` 之於
 //!     `gather.rs`），並管「敵人擺哪、角色自動鎖定最近的哪一隻」。
-//!   - ws / 遊戲迴圈：角色靠近時自動攻擊 → `Enemy::attack(power)`（見 `game.rs`，攻擊力
-//!     目前是寫死常數 `PLAYER_ATTACK_POWER`，待武器接線後改查表）；打倒回傳掉落 → `add`
-//!     進背包；快照把 `remaining_hp` 廣播給前端畫血條。
+//!   - ws / 遊戲迴圈：角色攻擊 → `Enemy::attack(power)`；玩家攻擊力走
+//!     `equipment::equipped_weapon_power`（顯式裝備槽：武器基礎 + 精煉 + 附魔，已上線）。
+//!     打倒回傳掉落 → `add` 進背包；快照把 `remaining_hp` 廣播給前端畫血條。
 //!   - 遊戲迴圈：每 tick 對被打倒的敵人呼叫 `tick(dt)` 倒數重生。
 //!   - 載入：`enemy_field::from_saved` 收存檔敵人時逐隻走 `is_loadable` 驗證。
 //!
@@ -28,11 +28,12 @@ use crate::inventory::{Inventory, ItemKind};
 
 // ───────────────────────── 武器（Phase 1 武器 MVP，純邏輯查表）─────────────────────────
 //
-// 戰鬥的「裝備」這環：採集那側 `tools::gather_speed_multiplier` 依背包工具決定採集倍率，
-// 戰鬥這側鏡像它——`weapon_power` 依背包武器決定每下攻擊力。`game.rs` 的攻擊接線目前寫死
-// 常數 `PLAYER_ATTACK_POWER`（徒手值 2），接線輪只要把那一行換成 `weapon_power(&inv)`：
-// 身上有武器回高攻擊力、沒有回徒手值。無 IO、無新 protocol、不動廣播 shape——背包已隨快照
-// 廣播，武器只是多一種背包物品。本層純資料 + 純函式，便於自動測試。
+// 戰鬥的「裝備」這環：採集那側 `tools::gather_speed_multiplier` 依背包工具決定採集倍率。
+// ⚠️ 歷史備註：下面這個 `weapon_power(&inv)`（自動取背包最強武器）是**早期模型，已被取代**——
+// 現行玩家攻擊力走 `equipment::equipped_weapon_power`（顯式裝備槽 + 精煉 + 附魔）。`weapon_power`
+// 已無生產呼叫端、僅保留單元測試鎖「有武器→更痛」的設計不變式。**切勿把它接回遊戲迴圈**，
+// 否則會與 `equipped_weapon_power` 並存成第二條傷害路徑（雙重計算/衝突）。
+// `PLAYER_ATTACK_POWER` 常數亦已不復存在。
 
 /// 玩家用來戰鬥的武器。`Unarmed` 是身上沒武器時的退路（只有徒手攻擊力）。
 /// 鏡像 `tools::ToolKind`：日後加新武器階級（強化武器…）時，往這個 enum 加一個變體、
@@ -103,8 +104,8 @@ pub enum ArmorKind {
     StarCrystal,
 }
 
-/// 徒手的基礎攻擊力。沒有武器就是這個——刻意等於 `game.rs` 現行寫死的 `PLAYER_ATTACK_POWER`，
-/// 讓接線（把常數換成 `weapon_power` 查表）對「沒武器」的玩家行為零變化、純加法。
+/// 徒手的基礎攻擊力（沒有武器時）。現行 `equipment::equipped_weapon_power` 在空武器槽時
+/// 即回傳此值，武器/精煉/附魔再於其上疊加。
 pub const UNARMED_ATTACK_POWER: u32 = 2;
 
 /// 武器的攻擊力：嚴格高於徒手，讓「合成武器」這條配方鏈真的有感、值得攢素材去合
@@ -454,9 +455,9 @@ pub fn best_weapon(inv: &Inventory) -> WeaponKind {
         .unwrap_or(WeaponKind::Unarmed)
 }
 
-/// 玩家每下攻擊的傷害（自動取背包裡最好的武器）。`UNARMED_ATTACK_POWER`＝徒手基礎攻擊力。
-/// 戰鬥接線：`game.rs` 把寫死的 `PLAYER_ATTACK_POWER` 換成 `weapon_power(&inv)` 即可
-/// （有武器更痛、沒武器與現行一致）。
+/// 〔已棄用模型〕自動取背包裡最好的武器算每下傷害。**現行戰鬥不走這條**——
+/// 玩家攻擊力由 `equipment::equipped_weapon_power`（顯式裝備槽 + 精煉 + 附魔）結算。
+/// 本函式已無生產呼叫端，僅保留單元測試鎖「有武器→更痛」的設計不變式；切勿接回遊戲迴圈。
 #[allow(dead_code)]
 pub fn weapon_power(inv: &Inventory) -> u32 {
     best_weapon(inv).attack_power()
