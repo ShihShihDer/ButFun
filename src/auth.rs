@@ -38,7 +38,21 @@ impl AuthConfig {
             google_client_id: std::env::var("GOOGLE_CLIENT_ID").ok()?,
             google_client_secret: std::env::var("GOOGLE_CLIENT_SECRET").ok()?,
             google_redirect_uri: std::env::var("GOOGLE_REDIRECT_URI").ok()?,
-            session_secret: std::env::var("BUTFUN_SESSION_SECRET").ok()?.into_bytes(),
+            // 安全：session token 的 HMAC 簽章金鑰。空白／過短會讓 token 可被輕易偽造、
+            // 冒充任意使用者，因此「設了但太弱」一律 fail loud——絕不以可偽造的設定啟動。
+            // （未設＝走上面 GOOGLE_* 的 `?` 早已回 None＝訪客模式，不會到這。）
+            session_secret: {
+                let raw = std::env::var("BUTFUN_SESSION_SECRET").ok()?;
+                let trimmed = raw.trim();
+                if trimmed.len() < 32 {
+                    panic!(
+                        "BUTFUN_SESSION_SECRET 太弱：去空白後需至少 32 bytes（目前 {}）。\
+                         請改用高熵隨機字串，例如 `openssl rand -hex 32`。",
+                        trimmed.len()
+                    );
+                }
+                trimmed.as_bytes().to_vec()
+            },
             // 選用:沒設就不開放 AI 註冊。去頭尾空白後為空也視為沒設。
             ai_register_key: std::env::var("AI_REGISTER_KEY")
                 .ok()
@@ -98,6 +112,20 @@ async fn ai_register(State(app): State<AppState>, Json(req): Json<AiRegisterReq>
     // 常數時間比對金鑰,避免時序側信道。
     if !constant_time_eq(req.key.as_bytes(), expected.as_bytes()) {
         return (StatusCode::FORBIDDEN, "註冊金鑰錯誤").into_response();
+    }
+    // 總量上限（防金鑰外洩後被無限建帳號＋永不過期 session）。可用 BUTFUN_MAX_AI_ACCOUNTS
+    // 覆寫（沿用本專案「靠 env 放大、不必重建」的慣例）；預設給得寬，只擋災難級濫用。
+    const DEFAULT_MAX_AI_ACCOUNTS: usize = 10_000;
+    let max_ai = std::env::var("BUTFUN_MAX_AI_ACCOUNTS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAX_AI_ACCOUNTS);
+    if app.users.ai_account_count() >= max_ai {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "AI 帳號數已達上限(BUTFUN_MAX_AI_ACCOUNTS)",
+        )
+            .into_response();
     }
     // 沒給名字就配一個主題隨機代號;沒給物種就用預設。一律過既有 sanitizer(create_ai 內處理)。
     let name = req

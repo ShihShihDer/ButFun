@@ -273,9 +273,11 @@ pub fn spawn(app: AppState) {
 
             // C-3 碰撞:先快照 tile deltas（取讀鎖即放），供敵人與玩家移動共用，且不與
             // Dig handler（tile.write→players.write）的鎖序衝突（這裡 tile 讀鎖先放，再各自取寫鎖）。
-            let tile_deltas_snap: std::collections::HashMap<(i32, i32, u8, u8), world_core::TileKind> = {
+            // 取廉價 Arc 快照（非整張 HashMap 深拷貝）：每 tick 供敵人與玩家碰撞共用，
+            // 取讀鎖即放，且不與 Dig handler（tile.write→players.write）的鎖序衝突。
+            let tile_deltas_snap: std::sync::Arc<crate::tiles::TileDeltas> = {
                 let tw = app.tile_world.read().unwrap();
-                tw.deltas().clone()
+                tw.deltas_arc()
             };
 
             // 敵人移動需要玩家座標:先讀 players(短暫讀鎖)收集**沒被打趴**的玩家位置快照,
@@ -3035,13 +3037,9 @@ pub fn spawn(app: AppState) {
                         .collect();
                     let nearby_nodes: Vec<crate::npc_agent::NearbyNode> = {
                         let nodes = app.nodes.read().unwrap();
-                        nodes.nodes().into_iter()
+                        // M5：只取感知半徑內的節點（空間裁剪），不再 clone 全世界節點集再過濾。
+                        nodes.nodes_near(ax, ay, crate::npc_agent_wire::SENSE_RADIUS).into_iter()
                             .filter(|n| n.node.is_harvestable())
-                            .filter(|n| {
-                                let dx = n.x - ax;
-                                let dy = n.y - ay;
-                                dx * dx + dy * dy <= radius_sq
-                            })
                             .map(|n| crate::npc_agent::NearbyNode {
                                 kind: crate::npc_agent_wire::node_kind_label(n.node.kind()).to_string(),
                                 x: n.x,
@@ -4710,7 +4708,7 @@ pub fn spawn(app: AppState) {
                     };
 
                     // —— 路人居民（ROADMAP 115）——：純模板 NPC，無商店功能。
-                    let mut expedition_target = None;
+                    let expedition_target;
                     {
                         let res = app.residents.read().unwrap();
                         expedition_target = res.expedition_target();
@@ -5052,14 +5050,15 @@ pub fn spawn(app: AppState) {
                         // 戰鬥記跡（ROADMAP 499）：最近 20 筆擊殺地點，5 分鐘內有效。
                         combat_marks: app.combat_marks.read().unwrap().view(),
                         // 廣場英雄碑（ROADMAP 503）：掃一遍在線玩家，算本次對話採集/收穫/擊殺冠軍。
-                        session_champions: {
-                            let players_guard = app.players.read().unwrap();
-                            crate::session_champions::compute_champions(
-                                players_guard.values().map(|p| {
-                                    (p.name.as_str(), p.session_gather_count, p.session_harvest_count, p.kill_count)
-                                })
-                            )
-                        },
+                        // ⚠️ 死鎖修正：**沿用**本函式上方(4547)已持有的 `players` read guard，
+                        // **絕不可**對同一把 `app.players`(std RwLock)同執行緒二次上鎖——glibc 寫者優先下，
+                        // 若此刻有玩家動作的 writer 正在等鎖，第二次 read 會被擋住、外層 guard 永遠放不掉 → 永久死鎖。
+                        // （與上方 land_plots 同範式。）
+                        session_champions: crate::session_champions::compute_champions(
+                            players.values().map(|p| {
+                                (p.name.as_str(), p.session_gather_count, p.session_harvest_count, p.kill_count)
+                            })
+                        ),
                         // 乙太暴走事件（ROADMAP 504）：廣播當前暴走狀態供前端顯示特效。
                         ether_surge_secs: app.ether_surge.read().unwrap().remaining_secs(),
                         ether_surge_x: app.ether_surge.read().unwrap().x,

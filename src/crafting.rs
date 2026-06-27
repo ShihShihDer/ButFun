@@ -162,187 +162,187 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::Weapon,
         output_qty: 1,
     },
-    /// 斧頭 (ROADMAP 433)：木×4 + 石×3 → 斧頭×1。伐木工具，身上有它放倒一棵樹更快、木材更多。
+    // 斧頭 (ROADMAP 433)：木×4 + 石×3 → 斧頭×1。伐木工具，身上有它放倒一棵樹更快、木材更多。
     Recipe {
         id: "axe",
         inputs: &[(ItemKind::Wood, 4), (ItemKind::Stone, 3)],
         output: ItemKind::Axe,
         output_qty: 1,
     },
-    /// 釣竿 (ROADMAP 434)：木×3 + 乙太×2 → 釣竿×1。釣魚工具，身上有它收竿釣到的魚品質提升一階。
+    // 釣竿 (ROADMAP 434)：木×3 + 乙太×2 → 釣竿×1。釣魚工具，身上有它收竿釣到的魚品質提升一階。
     Recipe {
         id: "fishing_rod",
         inputs: &[(ItemKind::Wood, 3), (ItemKind::Ether, 2)],
         output: ItemKind::FishingRod,
         output_qty: 1,
     },
-    /// 活力藥水：野花種子×3 → 活力藥水×1。讓生態資源有「賣給 NPC」之外的「自用保命」出路。
+    // 活力藥水：野花種子×3 → 活力藥水×1。讓生態資源有「賣給 NPC」之外的「自用保命」出路。
     Recipe {
         id: "healing_potion",
         inputs: &[(ItemKind::WildflowerSeed, 3)],
         output: ItemKind::HealingPotion,
         output_qty: 1,
     },
-    /// 晶石強化液：晶石碎片×5 → 晶石強化液×1。回復 12 HP，深層晶洞探索的 Premium 回報。
+    // 晶石強化液：晶石碎片×5 → 晶石強化液×1。回復 12 HP，深層晶洞探索的 Premium 回報。
     Recipe {
         id: "crystal_potion",
         inputs: &[(ItemKind::CrystalShard, 5)],
         output: ItemKind::CrystalPotion,
         output_qty: 1,
     },
-    /// 蕈菇活化液：蕈菇孢子×4 → 蕈菇活化液×1。回復 8 HP 並重置回血冷卻，讓回血立刻開始。
+    // 蕈菇活化液：蕈菇孢子×4 → 蕈菇活化液×1。回復 8 HP 並重置回血冷卻，讓回血立刻開始。
     Recipe {
         id: "mushroom_elixir",
         inputs: &[(ItemKind::MushroomSpore, 4)],
         output: ItemKind::MushroomElixir,
         output_qty: 1,
     },
-    /// 古代乙太丸：古代碎片×3 → 古代乙太丸×1。使用即得 10 乙太，在野外兌換遺跡能量。
+    // 古代乙太丸：古代碎片×3 → 古代乙太丸×1。使用即得 10 乙太，在野外兌換遺跡能量。
     Recipe {
         id: "ether_pill",
         inputs: &[(ItemKind::AncientFragment, 3)],
         output: ItemKind::EtherPill,
         output_qty: 1,
     },
-    /// 珍珠復原藥：深海珍珠×1 → 珍珠復原藥×1。使用後回復至滿血，最稀有材料換來最強效果。
+    // 珍珠復原藥：深海珍珠×1 → 珍珠復原藥×1。使用後回復至滿血，最稀有材料換來最強效果。
     Recipe {
         id: "pearl_potion",
         inputs: &[(ItemKind::DeepSeaPearl, 1)],
         output: ItemKind::PearlPotion,
         output_qty: 1,
     },
-    /// 晶石之刃：晶石碎片×6 → 晶石之刃×1。持有後攻擊力 +8，Rocky 探索的進階武器。
+    // 晶石之刃：晶石碎片×6 → 晶石之刃×1。持有後攻擊力 +8，Rocky 探索的進階武器。
     Recipe {
         id: "crystal_blade",
         inputs: &[(ItemKind::CrystalShard, 6)],
         output: ItemKind::CrystalBlade,
         output_qty: 1,
     },
-    /// 珊瑚矛：深海珍珠×3 → 珊瑚矛×1。持有後攻擊力 +12，全遊戲最強武器。
+    // 珊瑚矛：深海珍珠×3 → 珊瑚矛×1。持有後攻擊力 +12，全遊戲最強武器。
     Recipe {
         id: "coral_lance",
         inputs: &[(ItemKind::DeepSeaPearl, 3)],
         output: ItemKind::CoralLance,
         output_qty: 1,
     },
-    /// 草原護符：野花種子×8 → 草原護符×1。持有後每次受傷減 1 點傷害。
+    // 草原護符：野花種子×8 → 草原護符×1。持有後每次受傷減 1 點傷害。
     Recipe {
         id: "meadow_amulet",
         inputs: &[(ItemKind::WildflowerSeed, 8)],
         output: ItemKind::MeadowAmulet,
         output_qty: 1,
     },
-    /// 晶石護盾：晶石碎片×8 + 石頭×4 → 晶石護盾×1。持有後每次受傷減 2 點傷害。
+    // 晶石護盾：晶石碎片×8 + 石頭×4 → 晶石護盾×1。持有後每次受傷減 2 點傷害。
     Recipe {
         id: "crystal_shield",
         inputs: &[(ItemKind::CrystalShard, 8), (ItemKind::Stone, 4)],
         output: ItemKind::CrystalShield,
         output_qty: 1,
     },
-    /// 星圖：古代碎片×5 → 星圖×1。使用後展開遠方星球的星圖快照，多星球旅程的序章。
+    // 星圖：古代碎片×5 → 星圖×1。使用後展開遠方星球的星圖快照，多星球旅程的序章。
     Recipe {
         id: "star_chart",
         inputs: &[(ItemKind::AncientFragment, 5)],
         output: ItemKind::StarChart,
         output_qty: 1,
     },
-    /// 蕈菇杖：蕈菇孢子×6 → 蕈菇杖×1。持有後攻擊力 +7，補足森林生態的武器空缺。
-    /// 比基礎武器（+5）強、比晶石之刃（+8）稍弱——蕈菇孢子比晶石碎片更容易取得。
+    // 蕈菇杖：蕈菇孢子×6 → 蕈菇杖×1。持有後攻擊力 +7，補足森林生態的武器空缺。
+    // 比基礎武器（+5）強、比晶石之刃（+8）稍弱——蕈菇孢子比晶石碎片更容易取得。
     Recipe {
         id: "mushroom_staff",
         inputs: &[(ItemKind::MushroomSpore, 6)],
         output: ItemKind::MushroomStaff,
         output_qty: 1,
     },
-    /// 符文刃：古代碎片×4 → 符文刃×1。持有後攻擊力 +10，沙漠文明鍛造的精英刃。
-    /// 比晶石之刃（+8）更強、比珊瑚矛（+12）略弱——沙漠探索的中段武器升段。
+    // 符文刃：古代碎片×4 → 符文刃×1。持有後攻擊力 +10，沙漠文明鍛造的精英刃。
+    // 比晶石之刃（+8）更強、比珊瑚矛（+12）略弱——沙漠探索的中段武器升段。
     Recipe {
         id: "rune_blade",
         inputs: &[(ItemKind::AncientFragment, 4)],
         output: ItemKind::RuneBlade,
         output_qty: 1,
     },
-    /// 翠幽精露：翠幽碎片×2 → 翠幽精露×1。使用後回復至等級滿血並重置回血冷卻。
-    /// 翠幽星異星植物萃取，結合珍珠復原藥（滿血）與蕈菇活化液（重置回血）的雙重效果。
+    // 翠幽精露：翠幽碎片×2 → 翠幽精露×1。使用後回復至等級滿血並重置回血冷卻。
+    // 翠幽星異星植物萃取，結合珍珠復原藥（滿血）與蕈菇活化液（重置回血）的雙重效果。
     Recipe {
         id: "jade_elixir",
         inputs: &[(ItemKind::JadeShard, 2)],
         output: ItemKind::JadeElixir,
         output_qty: 1,
     },
-    /// 翠幽刃：翠幽碎片×5 → 翠幽刃×1。持有後攻擊力 +15，翠幽星域強力武器。
-    /// 翠幽星獨有，超越珊瑚矛（+12），鼓勵玩家深入翠幽星探索。
+    // 翠幽刃：翠幽碎片×5 → 翠幽刃×1。持有後攻擊力 +15，翠幽星域強力武器。
+    // 翠幽星獨有，超越珊瑚矛（+12），鼓勵玩家深入翠幽星探索。
     Recipe {
         id: "jade_blade",
         inputs: &[(ItemKind::JadeShard, 5)],
         output: ItemKind::JadeBlade,
         output_qty: 1,
     },
-    /// 蒸汽精粹：熔晶碎片×2 → 蒸汽精粹×1。使用後回復至等級滿血，同時獲得 8 乙太。
-    /// 赤焰星蒸汽燃料轉換器——異星能量凝聚而成，結合滿血與乙太雙重獎勵。
+    // 蒸汽精粹：熔晶碎片×2 → 蒸汽精粹×1。使用後回復至等級滿血，同時獲得 8 乙太。
+    // 赤焰星蒸汽燃料轉換器——異星能量凝聚而成，結合滿血與乙太雙重獎勵。
     Recipe {
         id: "steam_elixir",
         inputs: &[(ItemKind::LavaCrystal, 2)],
         output: ItemKind::SteamElixir,
         output_qty: 1,
     },
-    /// 赤焰刃：熔晶碎片×6 → 赤焰刃×1。持有後攻擊力 +20，全遊戲最強武器。
-    /// 赤焰星獨有，超越翠幽刃（+15），蒸汽龐克文明的最高武裝結晶。
+    // 赤焰刃：熔晶碎片×6 → 赤焰刃×1。持有後攻擊力 +20，全遊戲最強武器。
+    // 赤焰星獨有，超越翠幽刃（+15），蒸汽龐克文明的最高武裝結晶。
     Recipe {
         id: "crimson_blade",
         inputs: &[(ItemKind::LavaCrystal, 6)],
         output: ItemKind::CrimsonBlade,
         output_qty: 1,
     },
-    /// 虛空精粹：虛空碎片×2 → 虛空精粹×1。使用後回復至等級滿血，同時獲得 10 乙太。
-    /// 虛空星宇宙深淵能量轉換器——比蒸汽精粹（+8 乙太）更強，終極異星精華。
+    // 虛空精粹：虛空碎片×2 → 虛空精粹×1。使用後回復至等級滿血，同時獲得 10 乙太。
+    // 虛空星宇宙深淵能量轉換器——比蒸汽精粹（+8 乙太）更強，終極異星精華。
     Recipe {
         id: "void_elixir",
         inputs: &[(ItemKind::VoidShard, 2)],
         output: ItemKind::VoidElixir,
         output_qty: 1,
     },
-    /// 虛空刃：虛空碎片×6 → 虛空刃×1。持有後攻擊力 +25，超越赤焰刃（+20），宇宙深淵高階武裝。
+    // 虛空刃：虛空碎片×6 → 虛空刃×1。持有後攻擊力 +25，超越赤焰刃（+20），宇宙深淵高階武裝。
     Recipe {
         id: "void_blade",
         inputs: &[(ItemKind::VoidShard, 6)],
         output: ItemKind::VoidBlade,
         output_qty: 1,
     },
-    /// 霧醚精粹：霧醚碎片×2 → 霧醚精粹×1。使用後回復至等級滿血，同時獲得 15 乙太。
-    /// 霧醚星乙太迷霧高密度能量轉換——四大星球最強補給，乙太迷霧比宇宙深淵更富饒。
+    // 霧醚精粹：霧醚碎片×2 → 霧醚精粹×1。使用後回復至等級滿血，同時獲得 15 乙太。
+    // 霧醚星乙太迷霧高密度能量轉換——四大星球最強補給，乙太迷霧比宇宙深淵更富饒。
     Recipe {
         id: "aether_essence",
         inputs: &[(ItemKind::AetherShard, 2)],
         output: ItemKind::AetherEssence,
         output_qty: 1,
     },
-    /// 霧醚之刃：霧醚碎片×8 → 霧醚之刃×1。持有後攻擊力 +30，全遊戲最強武器。
-    /// 霧醚星獨有，超越虛空刃（+25），乙太迷霧凝結的終極宇宙武裝。
+    // 霧醚之刃：霧醚碎片×8 → 霧醚之刃×1。持有後攻擊力 +30，全遊戲最強武器。
+    // 霧醚星獨有，超越虛空刃（+25），乙太迷霧凝結的終極宇宙武裝。
     Recipe {
         id: "aether_blade",
         inputs: &[(ItemKind::AetherShard, 8)],
         output: ItemKind::AetherBlade,
         output_qty: 1,
     },
-    /// 源晶精粹：源晶碎片×2 → 源晶精粹×1。使用後回復至等級滿血，同時獲得 20 乙太。
-    /// 星源星宇宙源頭能量轉換——五大星球最強補給，起源之力比乙太迷霧更為深邃。
+    // 源晶精粹：源晶碎片×2 → 源晶精粹×1。使用後回復至等級滿血，同時獲得 20 乙太。
+    // 星源星宇宙源頭能量轉換——五大星球最強補給，起源之力比乙太迷霧更為深邃。
     Recipe {
         id: "origin_essence",
         inputs: &[(ItemKind::OriginShard, 2)],
         output: ItemKind::OriginEssence,
         output_qty: 1,
     },
-    /// 源晶之刃：源晶碎片×10 → 源晶之刃×1。持有後攻擊力 +40，全遊戲最強武器。
-    /// 星源星獨有，超越霧醚之刃（+30），宇宙起源之力凝聚的終極武裝，只有踏上星源星才能鑄造。
+    // 源晶之刃：源晶碎片×10 → 源晶之刃×1。持有後攻擊力 +40，全遊戲最強武器。
+    // 星源星獨有，超越霧醚之刃（+30），宇宙起源之力凝聚的終極武裝，只有踏上星源星才能鑄造。
     Recipe {
         id: "origin_blade",
         inputs: &[(ItemKind::OriginShard, 10)],
         output: ItemKind::OriginBlade,
         output_qty: 1,
     },
-    /// 宇宙護盾：裂縫碎片×3 → 宇宙護盾×1。持有後每次受傷減 6 點傷害——全遊戲最強防禦裝備。
-    /// 宇宙裂縫事件限定材料，收集裂縫碎片並鍛造，遊歷宇宙的終極護盾。
+    // 宇宙護盾：裂縫碎片×3 → 宇宙護盾×1。持有後每次受傷減 6 點傷害——全遊戲最強防禦裝備。
+    // 宇宙裂縫事件限定材料，收集裂縫碎片並鍛造，遊歷宇宙的終極護盾。
     Recipe {
         id: "cosmic_shield",
         inputs: &[(ItemKind::RiftShard, 3)],
@@ -351,21 +351,21 @@ pub const RECIPES: &[Recipe] = &[
     },
 
     // ── 烹飪配方（ROADMAP 47 釣魚與烹飪）────────────────────────────────────
-    /// 烤魚：小魚×2 → 烤魚×1。使用後回復 8 HP。把最普通的漁獲轉成療癒食物。
+    // 烤魚：小魚×2 → 烤魚×1。使用後回復 8 HP。把最普通的漁獲轉成療癒食物。
     Recipe {
         id: "grilled_fish",
         inputs: &[(ItemKind::FishSmall, 2)],
         output: ItemKind::GrilledFish,
         output_qty: 1,
     },
-    /// 星燦刺身：星星魚×1 → 星燦刺身×1。使用後回復 15 HP。稀有魚的精緻料理。
+    // 星燦刺身：星星魚×1 → 星燦刺身×1。使用後回復 15 HP。稀有魚的精緻料理。
     Recipe {
         id: "star_sashimi",
         inputs: &[(ItemKind::FishStar, 1)],
         output: ItemKind::StarSashimi,
         output_qty: 1,
     },
-    /// 深海濃湯：深海魚×1 → 深海濃湯×1。使用後回復至等級滿血——最稀有漁獲換最強效果。
+    // 深海濃湯：深海魚×1 → 深海濃湯×1。使用後回復至等級滿血——最稀有漁獲換最強效果。
     Recipe {
         id: "deep_broth",
         inputs: &[(ItemKind::FishDeep, 1)],
@@ -374,7 +374,7 @@ pub const RECIPES: &[Recipe] = &[
     },
 
     // ── 牧場料理（ROADMAP 48 牧場系統）──────────────────────────────────────
-    /// 煎蛋：雞蛋×2 → 煎蛋×1。使用後回復 10 HP。農田地塊養雞的第一道料理。
+    // 煎蛋：雞蛋×2 → 煎蛋×1。使用後回復 10 HP。農田地塊養雞的第一道料理。
     Recipe {
         id: "fried_egg",
         inputs: &[(ItemKind::Egg, 2)],
@@ -383,21 +383,21 @@ pub const RECIPES: &[Recipe] = &[
     },
 
     // ── 農地料理（ROADMAP 49 農田地塊種作物）────────────────────────────────
-    /// 麵包：小麥×3 → 麵包×1。使用後回復 12 HP。農田種植最基礎的糧食，比煎蛋多兩滴血。
+    // 麵包：小麥×3 → 麵包×1。使用後回復 12 HP。農田種植最基礎的糧食，比煎蛋多兩滴血。
     Recipe {
         id: "bread",
         inputs: &[(ItemKind::WheatGrain, 3)],
         output: ItemKind::Bread,
         output_qty: 1,
     },
-    /// 蔬菜湯：胡蘿蔔×2 → 蔬菜湯×1。使用後回復 10 HP 並立即啟動自然回血。
+    // 蔬菜湯：胡蘿蔔×2 → 蔬菜湯×1。使用後回復 10 HP 並立即啟動自然回血。
     Recipe {
         id: "carrot_soup",
         inputs: &[(ItemKind::Carrot, 2)],
         output: ItemKind::CarrotSoup,
         output_qty: 1,
     },
-    /// 焗烤馬鈴薯：馬鈴薯×2 → 焗烤馬鈴薯×1。使用後回復 15 HP——農地料理最豐盛的一道。
+    // 焗烤馬鈴薯：馬鈴薯×2 → 焗烤馬鈴薯×1。使用後回復 15 HP——農地料理最豐盛的一道。
     Recipe {
         id: "potato_gratin",
         inputs: &[(ItemKind::Potato, 2)],
@@ -406,8 +406,8 @@ pub const RECIPES: &[Recipe] = &[
     },
 
     // ── 夜採星晶料理（ROADMAP 50 夜間限定採集）──────────────────────────────
-    /// 夜幻藥水：星晶碎片×3 → 夜幻藥水×1。使用後回復 20 HP——夜間探索最強效的補給。
-    /// 材料來自夜間採集的星晶礦脈，是探索者路線（第五活動路線）的專屬合成品。
+    // 夜幻藥水：星晶碎片×3 → 夜幻藥水×1。使用後回復 20 HP——夜間探索最強效的補給。
+    // 材料來自夜間採集的星晶礦脈，是探索者路線（第五活動路線）的專屬合成品。
     Recipe {
         id: "night_potion",
         inputs: &[(ItemKind::StarCrystalShard, 3)],
@@ -416,8 +416,8 @@ pub const RECIPES: &[Recipe] = &[
     },
 
     // ── 農耕自動化（ROADMAP 112 灑水器）──────────────────────────────────────
-    /// 灑水器：木×3 + 石×3 → 灑水器×1。
-    /// 放在農地旁，每 30 秒自動澆灌周圍 2 格的作物，與「下雨澆田」共用同一套澆水邏輯。
+    // 灑水器：木×3 + 石×3 → 灑水器×1。
+    // 放在農地旁，每 30 秒自動澆灌周圍 2 格的作物，與「下雨澆田」共用同一套澆水邏輯。
     Recipe {
         id: "sprinkler",
         inputs: &[(ItemKind::Wood, 3), (ItemKind::Stone, 3)],
@@ -425,14 +425,14 @@ pub const RECIPES: &[Recipe] = &[
         output_qty: 1,
     },
     // ── 城鎮慶典配方（ROADMAP 130）────────────────────────────────────────────
-    /// 城鎮特釀：野花種子×4 + 小麥×3 → 城鎮特釀×1。需城鎮達到【生機】才可合成。
+    // 城鎮特釀：野花種子×4 + 小麥×3 → 城鎮特釀×1。需城鎮達到【生機】才可合成。
     Recipe {
         id: "town_brew",
         inputs: &[(ItemKind::WildflowerSeed, 4), (ItemKind::WheatGrain, 3)],
         output: ItemKind::TownBrew,
         output_qty: 1,
     },
-    /// 繁盛精露：蕈菇孢子×3 + 深海珍珠×1 + 古代碎片×2 → 繁盛精露×1。需城鎮達到【繁盛】才可合成。
+    // 繁盛精露：蕈菇孢子×3 + 深海珍珠×1 + 古代碎片×2 → 繁盛精露×1。需城鎮達到【繁盛】才可合成。
     Recipe {
         id: "vibrant_elixir",
         inputs: &[
@@ -443,15 +443,15 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::VibrantElixir,
         output_qty: 1,
     },
-    /// 星光護符：星塵×3 → 星光護符×1（ROADMAP 133）。持有時採集/戰鬥 EXP +10%。
+    // 星光護符：星塵×3 → 星光護符×1（ROADMAP 133）。持有時採集/戰鬥 EXP +10%。
     Recipe {
         id: "star_amulet",
         inputs: &[(ItemKind::StarDust, 3)],
         output: ItemKind::StarAmulet,
         output_qty: 1,
     },
-    /// 星際守護符：彩虹星塵×1 + 星塵×4 + 星晶碎片×2 → 星際守護符×1（ROADMAP 134）。
-    /// 持有時採集/戰鬥 EXP +15%；流星雨期間每採集節點額外 +1 星塵。
+    // 星際守護符：彩虹星塵×1 + 星塵×4 + 星晶碎片×2 → 星際守護符×1（ROADMAP 134）。
+    // 持有時採集/戰鬥 EXP +15%；流星雨期間每採集節點額外 +1 星塵。
     Recipe {
         id: "star_guardian_amulet",
         inputs: &[(ItemKind::RainbowStarDust, 1), (ItemKind::StarDust, 4), (ItemKind::StarCrystalShard, 2)],
@@ -460,24 +460,24 @@ pub const RECIPES: &[Recipe] = &[
     },
 
     // ── 進階武器（ROADMAP 145 武器/裝備進階線）────────────────────────────────
-    /// 硬化刃：石頭×8 + 乙太×4 → 硬化刃×1。攻擊力 +7。
-    /// 不需探索特殊地形的「勤勞路」——與蕈菇杖（孢子路）同等級，給只在城附近採礦的玩家選擇。
+    // 硬化刃：石頭×8 + 乙太×4 → 硬化刃×1。攻擊力 +7。
+    // 不需探索特殊地形的「勤勞路」——與蕈菇杖（孢子路）同等級，給只在城附近採礦的玩家選擇。
     Recipe {
         id: "hardened_blade",
         inputs: &[(ItemKind::Stone, 8), (ItemKind::Ether, 4)],
         output: ItemKind::HardenedBlade,
         output_qty: 1,
     },
-    /// 星晶之刃：星晶碎片×7 → 星晶之刃×1。攻擊力 +14（需 Lv.10）。
-    /// 夜行者的橋接武器，填補珊瑚矛(+12)→翠幽刃(+15)的缺口。
+    // 星晶之刃：星晶碎片×7 → 星晶之刃×1。攻擊力 +14（需 Lv.10）。
+    // 夜行者的橋接武器，填補珊瑚矛(+12)→翠幽刃(+15)的缺口。
     Recipe {
         id: "star_crystal_blade",
         inputs: &[(ItemKind::StarCrystalShard, 7)],
         output: ItemKind::StarCrystalBlade,
         output_qty: 1,
     },
-    /// 裂縫刃：裂縫碎片×4 → 裂縫刃×1。攻擊力 +35（需 Lv.15）。
-    /// 宇宙裂縫事件限定，高風險換來超越霧醚之刃(+30)的高回報。
+    // 裂縫刃：裂縫碎片×4 → 裂縫刃×1。攻擊力 +35（需 Lv.15）。
+    // 宇宙裂縫事件限定，高風險換來超越霧醚之刃(+30)的高回報。
     Recipe {
         id: "rift_blade",
         inputs: &[(ItemKind::RiftShard, 4)],
@@ -486,24 +486,24 @@ pub const RECIPES: &[Recipe] = &[
     },
 
     // ── 進階護甲（ROADMAP 145 武器/裝備進階線）────────────────────────────────
-    /// 珊瑚鎧：深海珍珠×2 + 晶石碎片×6 → 珊瑚鎧×1。每次受傷減 3 點傷害。
-    /// 珊瑚礁探索者的獎賞，填補晶石護盾(def 2)→宇宙護盾(def 6)的空缺第一梯。
+    // 珊瑚鎧：深海珍珠×2 + 晶石碎片×6 → 珊瑚鎧×1。每次受傷減 3 點傷害。
+    // 珊瑚礁探索者的獎賞，填補晶石護盾(def 2)→宇宙護盾(def 6)的空缺第一梯。
     Recipe {
         id: "coral_armor",
         inputs: &[(ItemKind::DeepSeaPearl, 2), (ItemKind::CrystalShard, 6)],
         output: ItemKind::CoralArmor,
         output_qty: 1,
     },
-    /// 符文鎧：古代碎片×5 + 石頭×6 → 符文鎧×1。每次受傷減 4 點傷害。
-    /// 沙漠遺跡文明的防禦鎧甲，進階護甲第二梯，沙漠探索者的高級裝備。
+    // 符文鎧：古代碎片×5 + 石頭×6 → 符文鎧×1。每次受傷減 4 點傷害。
+    // 沙漠遺跡文明的防禦鎧甲，進階護甲第二梯，沙漠探索者的高級裝備。
     Recipe {
         id: "rune_armor",
         inputs: &[(ItemKind::AncientFragment, 5), (ItemKind::Stone, 6)],
         output: ItemKind::RuneArmor,
         output_qty: 1,
     },
-    /// 星晶鎧：星晶碎片×5 + 石頭×4 → 星晶鎧×1。每次受傷減 5 點傷害（需 Lv.10）。
-    /// 夜採星晶打造的全身護甲，防禦值僅次宇宙護盾(def 6)——夜行探索者的盔甲巔峰。
+    // 星晶鎧：星晶碎片×5 + 石頭×4 → 星晶鎧×1。每次受傷減 5 點傷害（需 Lv.10）。
+    // 夜採星晶打造的全身護甲，防禦值僅次宇宙護盾(def 6)——夜行探索者的盔甲巔峰。
     Recipe {
         id: "star_crystal_armor",
         inputs: &[(ItemKind::StarCrystalShard, 5), (ItemKind::Stone, 4)],
@@ -512,24 +512,24 @@ pub const RECIPES: &[Recipe] = &[
     },
 
     // ── 遠程武器（ROADMAP 146 遠程武器）────────────────────────────────────────
-    /// 乙太弓：乙太×5 + 木材×4 → 乙太弓×1。遠程攻擊力 +9。
-    /// 入門遠程武器，基礎材料就能打造——讓任何玩家都能嘗試「站遠打」的戰鬥風格。
+    // 乙太弓：乙太×5 + 木材×4 → 乙太弓×1。遠程攻擊力 +9。
+    // 入門遠程武器，基礎材料就能打造——讓任何玩家都能嘗試「站遠打」的戰鬥風格。
     Recipe {
         id: "ether_bow",
         inputs: &[(ItemKind::Ether, 5), (ItemKind::Wood, 4)],
         output: ItemKind::EtherBow,
         output_qty: 1,
     },
-    /// 晶石弩：晶石碎片×5 + 石頭×4 → 晶石弩×1。遠程攻擊力 +14。
-    /// 深層晶洞探索者的進階遠程武器，需要冒險採集晶石才能鑄造。
+    // 晶石弩：晶石碎片×5 + 石頭×4 → 晶石弩×1。遠程攻擊力 +14。
+    // 深層晶洞探索者的進階遠程武器，需要冒險採集晶石才能鑄造。
     Recipe {
         id: "crystal_ballista",
         inputs: &[(ItemKind::CrystalShard, 5), (ItemKind::Stone, 4)],
         output: ItemKind::CrystalBallista,
         output_qty: 1,
     },
-    /// 虛空炮：虛空碎片×5 + 石頭×3 → 虛空炮×1（需 Lv.18）。遠程攻擊力 +27。
-    /// 虛空星限定頂級遠程武器，需要踏上虛空星採集材料，配合等級門檻確保高端玩家才能使用。
+    // 虛空炮：虛空碎片×5 + 石頭×3 → 虛空炮×1（需 Lv.18）。遠程攻擊力 +27。
+    // 虛空星限定頂級遠程武器，需要踏上虛空星採集材料，配合等級門檻確保高端玩家才能使用。
     Recipe {
         id: "void_cannon",
         inputs: &[(ItemKind::VoidShard, 5), (ItemKind::Stone, 3)],
@@ -538,32 +538,32 @@ pub const RECIPES: &[Recipe] = &[
     },
 
     // ── 季節性限定合成（ROADMAP 154 季節性野外採集）────────────────────────────
-    /// 春日香囊：野花×2 → 春日香囊×1。使用後回血 25hp + 重置回血冷卻。
-    /// 春天城外野花田採集原料，春日獨有的療癒香囊。
+    // 春日香囊：野花×2 → 春日香囊×1。使用後回血 25hp + 重置回血冷卻。
+    // 春天城外野花田採集原料，春日獨有的療癒香囊。
     Recipe {
         id: "spring_sachet",
         inputs: &[(ItemKind::WildFlower, 2)],
         output: ItemKind::SpringSachet,
         output_qty: 1,
     },
-    /// 夏日精粹：太陽碎片×2 → 夏日精粹×1。使用後回血 15hp + 獲得 15 乙太。
-    /// 夏天城東日照強地帶採集，把太陽能量轉化為乙太。
+    // 夏日精粹：太陽碎片×2 → 夏日精粹×1。使用後回血 15hp + 獲得 15 乙太。
+    // 夏天城東日照強地帶採集，把太陽能量轉化為乙太。
     Recipe {
         id: "summer_elixir",
         inputs: &[(ItemKind::SolarShard, 2)],
         output: ItemKind::SummerElixir,
         output_qty: 1,
     },
-    /// 秋日補藥：楓葉×2 → 秋日補藥×1。使用後回血 20hp + 農夫熟練度 +20 XP。
-    /// 秋天城南楓林採集，滋養農夫的秋季補藥。
+    // 秋日補藥：楓葉×2 → 秋日補藥×1。使用後回血 20hp + 農夫熟練度 +20 XP。
+    // 秋天城南楓林採集，滋養農夫的秋季補藥。
     Recipe {
         id: "autumn_tonic",
         inputs: &[(ItemKind::MapleLeaf, 2)],
         output: ItemKind::AutumnTonic,
         output_qty: 1,
     },
-    /// 冬日神藥：冰晶碎片×2 → 冬日神藥×1。使用後回復至等級滿血。
-    /// 冬天城西北寒地採集最難，換得最強效果——凜冬的治癒。
+    // 冬日神藥：冰晶碎片×2 → 冬日神藥×1。使用後回復至等級滿血。
+    // 冬天城西北寒地採集最難，換得最強效果——凜冬的治癒。
     Recipe {
         id: "winter_medicine",
         inputs: &[(ItemKind::IceShard, 2)],
@@ -572,42 +572,42 @@ pub const RECIPES: &[Recipe] = &[
     },
 
     // ── 住家家具（ROADMAP 155）─────────────────────────────────────────────────
-    /// 蒸汽床鋪：木材×4 + 石頭×2 → 蒸汽床鋪×1。放置住家後每 30 秒回血 2。
+    // 蒸汽床鋪：木材×4 + 石頭×2 → 蒸汽床鋪×1。放置住家後每 30 秒回血 2。
     Recipe {
         id: "steam_bed",
         inputs: &[(ItemKind::Wood, 4), (ItemKind::Stone, 2)],
         output: ItemKind::SteamBed,
         output_qty: 1,
     },
-    /// 乙太寶箱：木材×3 + 石頭×4 → 乙太寶箱×1。放置後背包種類上限 +3。
+    // 乙太寶箱：木材×3 + 石頭×4 → 乙太寶箱×1。放置後背包種類上限 +3。
     Recipe {
         id: "aether_chest",
         inputs: &[(ItemKind::Wood, 3), (ItemKind::Stone, 4)],
         output: ItemKind::AetherChest,
         output_qty: 1,
     },
-    /// 乙太花盆：野花×2 + 木材×2 → 乙太花盆×1。放置後採集 EXP +8%。
+    // 乙太花盆：野花×2 + 木材×2 → 乙太花盆×1。放置後採集 EXP +8%。
     Recipe {
         id: "ether_plant",
         inputs: &[(ItemKind::WildFlower, 2), (ItemKind::Wood, 2)],
         output: ItemKind::EtherPlant,
         output_qty: 1,
     },
-    /// 星魂燈：星晶碎片×2 + 石頭×2 → 星魂燈×1。放置後夜間攻擊力 +2。
+    // 星魂燈：星晶碎片×2 + 石頭×2 → 星魂燈×1。放置後夜間攻擊力 +2。
     Recipe {
         id: "star_lantern",
         inputs: &[(ItemKind::StarCrystalShard, 2), (ItemKind::Stone, 2)],
         output: ItemKind::StarLantern,
         output_qty: 1,
     },
-    /// 古代擺件：古代碎片×2 + 石頭×1 → 古代擺件×1。放置後 NPC 收購 +10%。
+    // 古代擺件：古代碎片×2 + 石頭×1 → 古代擺件×1。放置後 NPC 收購 +10%。
     Recipe {
         id: "ancient_deco",
         inputs: &[(ItemKind::AncientFragment, 2), (ItemKind::Stone, 1)],
         output: ItemKind::AncientDeco,
         output_qty: 1,
     },
-    /// 水族缸：木材×3 + 石頭×3 → 水族缸×1。放置後依背包養著的魚種數每 25 秒回血（ROADMAP 437）。
+    // 水族缸：木材×3 + 石頭×3 → 水族缸×1。放置後依背包養著的魚種數每 25 秒回血（ROADMAP 437）。
     Recipe {
         id: "aquarium",
         inputs: &[(ItemKind::Wood, 3), (ItemKind::Stone, 3)],
@@ -616,16 +616,16 @@ pub const RECIPES: &[Recipe] = &[
     },
 
     // ── 入侵首領限定合成（ROADMAP 160）────────────────────────────────────────
-    /// 守城戰刃：霸主晶核×2 + 乙太×20 → 守城戰刃×1。攻擊力 +28。
-    /// 只有擊殺入侵首領乙太霸主才能取得霸主晶核，象徵守城英雄的最高榮耀。
+    // 守城戰刃：霸主晶核×2 + 乙太×20 → 守城戰刃×1。攻擊力 +28。
+    // 只有擊殺入侵首領乙太霸主才能取得霸主晶核，象徵守城英雄的最高榮耀。
     Recipe {
         id: "ether_overlord_blade",
         inputs: &[(ItemKind::EtherOverlordCore, 2), (ItemKind::Ether, 20)],
         output: ItemKind::EtherOverlordBlade,
         output_qty: 1,
     },
-    /// Alpha 之力：Alpha 晶核×2 + 乙太礦石×5 → Alpha 之力×1。
-    /// 使用後回滿血 + 獲得 +25 乙太——Alpha 的原始生命力傾注你的身體。
+    // Alpha 之力：Alpha 晶核×2 + 乙太礦石×5 → Alpha 之力×1。
+    // 使用後回滿血 + 獲得 +25 乙太——Alpha 的原始生命力傾注你的身體。
     Recipe {
         id: "alpha_force",
         inputs: &[(ItemKind::AlphaCrystal, 2), (ItemKind::Ether, 5)],
@@ -634,8 +634,8 @@ pub const RECIPES: &[Recipe] = &[
     },
 
     // ── 傳說古 Alpha 限定合成（ROADMAP 173）──────────────────────────────────
-    /// 傳說戰刃：傳說晶核×1 + Alpha 晶核×3 + 乙太礦石×30 → 傳說戰刃×1。攻擊力 +55。
-    /// 需擊倒傳說古 Alpha 取得傳說晶核（全遊戲最稀有），象徵「生態系征服者」的終極武器。
+    // 傳說戰刃：傳說晶核×1 + Alpha 晶核×3 + 乙太礦石×30 → 傳說戰刃×1。攻擊力 +55。
+    // 需擊倒傳說古 Alpha 取得傳說晶核（全遊戲最稀有），象徵「生態系征服者」的終極武器。
     Recipe {
         id: "legendary_blade",
         inputs: &[(ItemKind::LegendaryCore, 1), (ItemKind::AlphaCrystal, 3), (ItemKind::Ether, 30)],

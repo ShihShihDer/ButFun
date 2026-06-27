@@ -59,6 +59,33 @@ impl NodeField {
         self.chunks.values().flatten().cloned().collect()
     }
 
+    /// 只走訪與 `(ax, ay)` 半徑 `radius` AABB 重疊的區塊，回傳半徑內的節點。
+    /// 唯讀：不生成新區塊（感知不該觸發世界擴張，與 `nodes()` 同語義、只是空間裁剪）。
+    /// M5：取代「`nodes()` clone 全世界再過濾」——成本從 O(已探索世界) 降為 O(半徑內節點)。
+    pub fn nodes_near(&self, ax: f32, ay: f32, radius: f32) -> Vec<PlacedNode> {
+        if !ax.is_finite() || !ay.is_finite() {
+            return Vec::new();
+        }
+        let (cx_min, cy_min) = chunk_key(ax - radius, ay - radius);
+        let (cx_max, cy_max) = chunk_key(ax + radius, ay + radius);
+        let r_sq = radius * radius;
+        let mut out = Vec::new();
+        for cy in cy_min..=cy_max {
+            for cx in cx_min..=cx_max {
+                if let Some(nodes) = self.chunks.get(&(cx, cy)) {
+                    for n in nodes {
+                        let dx = n.x - ax;
+                        let dy = n.y - ay;
+                        if dx * dx + dy * dy <= r_sq {
+                            out.push(n.clone());
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// 確保玩家周圍的區塊已生成。
     pub fn ensure_chunks_around(&mut self, px: f32, py: f32, radius: f32) {
         let (cx_min, cy_min) = chunk_key(px - radius, py - radius);
@@ -308,6 +335,38 @@ mod tests {
         // 確保範圍大一點，增加遇到適合生態域（Meadow/Forest）且非實心的機率。
         f.ensure_chunks_around(0.0, 0.0, 2000.0);
         assert!(f.nodes().len() > 0);
+    }
+
+    #[test]
+    fn nodes_near_returns_only_in_radius_subset_of_nodes() {
+        // M5：nodes_near 只回半徑內節點、且必為 nodes() 的子集（空間裁剪不漏不多）。
+        let mut f = NodeField::new();
+        f.ensure_chunks_around(0.0, 0.0, 3000.0);
+        let all = f.nodes();
+        assert!(!all.is_empty());
+        let (ax, ay, r) = (all[0].x, all[0].y, 360.0_f32);
+        let near = f.nodes_near(ax, ay, r);
+        // 至少含中心那個節點本身。
+        assert!(near.iter().any(|n| n.id == all[0].id), "應含中心節點");
+        // 全部都在半徑內。
+        for n in &near {
+            let d2 = (n.x - ax).powi(2) + (n.y - ay).powi(2);
+            assert!(d2 <= r * r, "nodes_near 回了半徑外的節點");
+        }
+        // 與「全量過濾」結果一致（同一份幾何裁剪）。
+        let brute: std::collections::HashSet<_> = all.iter()
+            .filter(|n| (n.x - ax).powi(2) + (n.y - ay).powi(2) <= r * r)
+            .map(|n| n.id)
+            .collect();
+        let got: std::collections::HashSet<_> = near.iter().map(|n| n.id).collect();
+        assert_eq!(got, brute, "nodes_near 應等於對全量做同樣半徑過濾");
+    }
+
+    #[test]
+    fn nodes_near_rejects_nan() {
+        let mut f = NodeField::new();
+        f.ensure_chunks_around(0.0, 0.0, 1000.0);
+        assert!(f.nodes_near(f32::NAN, 0.0, 360.0).is_empty());
     }
 
     #[test]

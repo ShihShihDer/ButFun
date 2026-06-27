@@ -264,8 +264,12 @@ impl NpcRelationsState {
             return String::new();
         }
 
-        // 按差距降序，最多取 3 個
-        notable.sort_by_key(|(_, v)| -((v - NEUTRAL).abs()));
+        // 按差距降序，最多取 3 個；平手時以 id 升序打破，
+        // 避免 HashMap 疊代順序造成非確定輸出（L15：穩定 LLM flavor text／可重現測試）。
+        notable.sort_by(|a, b| {
+            let (ma, mb) = ((a.1 - NEUTRAL).abs(), (b.1 - NEUTRAL).abs());
+            mb.cmp(&ma).then_with(|| a.0.cmp(b.0))
+        });
         notable.truncate(3);
 
         let parts: Vec<String> = notable

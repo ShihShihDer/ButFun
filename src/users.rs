@@ -214,6 +214,18 @@ impl UserStore {
         user
     }
 
+    /// 目前 `provider="ai"` 的帳號總數（供 AI 自助註冊端點做總量上限，
+    /// 防金鑰外洩後被無限建帳號）。註冊頻率低，掃一遍 by_id 即可。
+    pub fn ai_account_count(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap()
+            .by_id
+            .values()
+            .filter(|u| u.provider == "ai")
+            .count()
+    }
+
     /// 改顯示名:把該 user 的 `name` 換成清理後的新名,更新記憶體索引並落地到耐久層。
     /// 回傳更新後的 `User`;查無此人回 `None`。
     ///
@@ -741,6 +753,19 @@ mod tests {
         assert_eq!(a.external_id, a.id.to_string());
         // 名字過 sanitizer 後可由 get 取回。
         assert_eq!(store.get(a.id).unwrap().name, "機器人");
+    }
+
+    #[tokio::test]
+    async fn ai_account_count_tracks_only_ai_provider() {
+        // L11：總量上限靠這個計數——只算 provider=ai，不含 Google 等外部帳號。
+        let store = UserStore::in_memory();
+        assert_eq!(store.ai_account_count(), 0);
+        store.create_ai("甲", "terran").await;
+        store.create_ai("乙", "terran").await;
+        assert_eq!(store.ai_account_count(), 2);
+        // 非 AI 帳號不計入。
+        store.find_or_create("google", "sub-x", None, "人類").await;
+        assert_eq!(store.ai_account_count(), 2);
     }
 
     #[tokio::test]
