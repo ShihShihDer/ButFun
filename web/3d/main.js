@@ -84,11 +84,133 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 app.appendChild(renderer.domElement);
 
-// 燈光：半球光給柔和環境色 + 一盞方向光給立體感
-scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x20303a, 1.1));
+// 燈光：半球光給柔和環境色 + 一盞方向光（太陽／月亮）給立體感。
+// 兩盞的強度／顏色／太陽位置都會隨「日夜循環」每幀流轉（見下方 day/night 區塊）。
+const hemi = new THREE.HemisphereLight(0xbfd4ff, 0x20303a, 1.1);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffffff, 1.2);
 sun.position.set(120, 200, 80);
 scene.add(sun);
+
+// ============================================================
+// 日夜循環在 3D 裡流轉（ROADMAP 612）：快照早就帶著權威的 daynight
+// （phase／light／day_fraction／night_danger，見 protocol.rs DayNightView，2D 一直在用），
+// 3D 卻一直忽略、世界永遠是同一個灰藍午後。本區塊把它接上——天空色、霧色、太陽弧線與
+// 顏色、環境光強度全隨 live 日夜緩緩流轉：破曉天邊泛紅、正午湛藍高陽、黃昏橙金、入夜墨藍月光。
+// 純讀快照、零後端／協議改動（資料本來就在快照裡）。
+// ============================================================
+let latestDayNight = null; // 最新一筆快照的 daynight（沒有就用預設白天）
+const DN_RATE = 1.6;       // 視覺平滑趨近速率（每秒，1-exp；緩緩流轉、不跳變、不被 15Hz 快照打頓）
+
+function dnClamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+function dnLerp(a, b, t) { return a + (b - a) * t; }
+function dnSmoothstep(e0, e1, x) { const t = dnClamp01((x - e0) / (e1 - e0 || 1e-6)); return t * t * (3 - 2 * t); }
+
+// 沿「日循環比例 f∈[0,1)」環狀內插一張 {f,r,g,b} 關鍵幀表（會跨 1.0→0.0 邊界 wrap）。
+// f 壞值（非有限）退回 0；永不 throw。
+function dnKeyLerp(table, f) {
+  f = Number.isFinite(f) ? ((f % 1) + 1) % 1 : 0;
+  const n = table.length;
+  for (let i = 0; i < n; i++) {
+    const a = table[i], b = table[(i + 1) % n];
+    const af = a.f;
+    let bf = b.f; if (bf <= af) bf += 1;       // 末段跨 1.0 回到第一幀
+    let ff = f; if (ff < af) ff += 1;          // 讓 f 落進 [af, bf)
+    if (ff >= af && ff < bf) {
+      const t = (ff - af) / (bf - af);
+      return [dnLerp(a.r, b.r, t), dnLerp(a.g, b.g, t), dnLerp(a.b, b.b, t)];
+    }
+  }
+  return [table[0].r, table[0].g, table[0].b];
+}
+
+// 天空／霧色關鍵幀（與 daynight.rs 的階段邊界對齊：破曉 0–0.15、白天 0.15–0.5、黃昏 0.5–0.65、夜晚 0.65–1）。
+const DN_SKY_KEYS = [
+  { f: 0.00, r: 0.10, g: 0.11, b: 0.21 }, // 將明未明的深藍
+  { f: 0.07, r: 0.78, g: 0.50, b: 0.45 }, // 破曉天邊泛紅
+  { f: 0.15, r: 0.50, g: 0.68, b: 0.92 }, // 晨光轉藍
+  { f: 0.33, r: 0.38, g: 0.64, b: 0.96 }, // 正午湛藍（最亮）
+  { f: 0.50, r: 0.55, g: 0.62, b: 0.82 }, // 午後偏白
+  { f: 0.57, r: 0.90, g: 0.48, b: 0.30 }, // 黃昏橙金
+  { f: 0.65, r: 0.20, g: 0.16, b: 0.30 }, // 暮色轉紫
+  { f: 0.80, r: 0.05, g: 0.06, b: 0.13 }, // 入夜墨藍
+];
+// 太陽／月亮的光色關鍵幀：晨昏暖橙、正午純白、入夜轉冷月光。
+const DN_SUN_KEYS = [
+  { f: 0.00, r: 0.55, g: 0.62, b: 0.95 }, // 殘月冷光
+  { f: 0.07, r: 1.00, g: 0.62, b: 0.42 }, // 破曉暖橙
+  { f: 0.20, r: 1.00, g: 0.96, b: 0.88 }, // 晨光近白
+  { f: 0.40, r: 1.00, g: 0.98, b: 0.92 }, // 正午純白
+  { f: 0.57, r: 1.00, g: 0.55, b: 0.32 }, // 黃昏暖橙
+  { f: 0.66, r: 0.60, g: 0.62, b: 0.96 }, // 入夜月光
+  { f: 0.85, r: 0.52, g: 0.60, b: 1.00 }, // 深夜冷月
+];
+
+// 日夜階段 → 面向玩家的標籤（後端只送穩定的 snake_case 階段碼，文案／emoji 由前端對照＝留 i18n 空間）。
+const DN_PHASE_LABEL = { dawn: "🌅 破曉", day: "☀️ 白天", dusk: "🌆 黃昏", night: "🌙 夜晚" };
+// 純函式：取一筆 daynight 的階段標籤；缺欄位／未知碼 → 空字串（HUD 就不顯示，向後相容）。
+function dayNightPhaseLabel(dn) {
+  if (!dn || typeof dn.phase !== "string") return "";
+  return DN_PHASE_LABEL[dn.phase] || "";
+}
+
+// 純函式：把一筆 daynight 算成這一刻的視覺參數（天空／霧色 RGB、太陽光色／強度／位置、環境光強度）。
+// 確定性、壞值安全（缺欄位／非有限 → 當成晴朗白天），供每幀平滑趨近，亦供 render-smoke 斷言。
+function dayNightVisual(dn) {
+  const f = dn && Number.isFinite(dn.day_fraction) ? dn.day_fraction : 0.33;
+  const light = dnClamp01(dn && Number.isFinite(dn.light) ? dn.light : 1.0); // 後端保證 [0.2,1]，仍夾界
+  const danger = !!(dn && dn.night_danger);
+
+  let sky = dnKeyLerp(DN_SKY_KEYS, f);
+  const sun = dnKeyLerp(DN_SUN_KEYS, f);
+  // 夜間危機：天色／霧色微微壓向不祥的暗紅（純氛圍、輕微、不刺眼）
+  if (danger) sky = [dnLerp(sky[0], 0.22, 0.14), dnLerp(sky[1], 0.05, 0.14), dnLerp(sky[2], 0.07, 0.14)];
+
+  const lit = dnSmoothstep(0.2, 1.0, light);
+  const sunIntensity = 0.08 + lit * 1.35;   // 夜裡僅微光、正午最盛
+  const hemiIntensity = 0.35 + light * 0.9; // 環境光隨亮度起落
+  // 太陽位置：方位角隨日循環掃過天際、仰角隨亮度（正午最高、夜裡貼近地平）
+  const ang = (Number.isFinite(f) ? f : 0.33) * Math.PI * 2;
+  const sunPos = { x: Math.cos(ang) * 160, y: 35 + light * 190, z: Math.sin(ang) * 160 };
+  return { sky, fog: sky.slice(), sun, sunIntensity, hemiIntensity, sunPos };
+}
+
+// 背景／霧／太陽光色用持久 Color 實例，每幀 setRGB 寫入（不每幀 new、省 GC）。
+const dnSkyColor = new THREE.Color();
+const dnSunColor = new THREE.Color();
+scene.background = dnSkyColor;
+sun.color = dnSunColor;
+
+// 平滑趨近的目前視覺狀態（初始＝預設白天，第一幀不從黑畫面淡入）。
+const _dnInit = dayNightVisual(null);
+const dnSky = _dnInit.sky.slice();
+const dnFog = _dnInit.fog.slice();
+const dnSun = _dnInit.sun.slice();
+let dnSunI = _dnInit.sunIntensity;
+let dnHemiI = _dnInit.hemiIntensity;
+const dnSunPos = { ..._dnInit.sunPos };
+
+// 每幀：算出目標視覺、平滑趨近、寫進場景（天空／霧／太陽／環境光）。
+function applyDayNight(dt) {
+  const target = dayNightVisual(latestDayNight);
+  const a = 1 - Math.exp(-Math.max(0, dt) * DN_RATE); // 1-exp → 與幀率無關
+  for (let i = 0; i < 3; i++) {
+    dnSky[i] = dnLerp(dnSky[i], target.sky[i], a);
+    dnFog[i] = dnLerp(dnFog[i], target.fog[i], a);
+    dnSun[i] = dnLerp(dnSun[i], target.sun[i], a);
+  }
+  dnSunI = dnLerp(dnSunI, target.sunIntensity, a);
+  dnHemiI = dnLerp(dnHemiI, target.hemiIntensity, a);
+  dnSunPos.x = dnLerp(dnSunPos.x, target.sunPos.x, a);
+  dnSunPos.y = dnLerp(dnSunPos.y, target.sunPos.y, a);
+  dnSunPos.z = dnLerp(dnSunPos.z, target.sunPos.z, a);
+  dnSkyColor.setRGB(dnSky[0], dnSky[1], dnSky[2]);
+  if (scene.fog && scene.fog.color) scene.fog.color.setRGB(dnFog[0], dnFog[1], dnFog[2]);
+  dnSunColor.setRGB(dnSun[0], dnSun[1], dnSun[2]);
+  sun.intensity = dnSunI;
+  sun.position.set(dnSunPos.x, dnSunPos.y, dnSunPos.z);
+  hemi.intensity = dnHemiI;
+}
 
 // 地面：一塊草綠平面 + 格線，給尺度感
 {
@@ -521,6 +643,8 @@ function handleServerMsg(msg) {
       break;
     case "snapshot": {
       snapshotCount++;
+      // 日夜狀態：留存最新一筆權威 daynight，render 每幀據此讓世界的天色／光照流轉（ROADMAP 612）。
+      if (msg.daynight && typeof msg.daynight === "object") latestDayNight = msg.daynight;
       // 這份快照的到達時間：全類共用一個時間戳，內插時間軸才一致。
       const recvT = performance.now();
       // 玩家：火柴人（自己金色、別人藍色），帶名字標籤
@@ -596,11 +720,12 @@ function handleServerMsg(msg) {
         setStatus("已連上，但在快照裡找不到自己（myId=" + myId + "）。\n世界仍在顯示，移動可能未生效。", true);
       }
 
-      // HUD：線上人數／自己名字／操作提示
+      // HUD：線上人數／自己名字／日夜階段／操作提示
       const meItem = Array.isArray(msg.players) ? msg.players.find((p) => p.id === myId) : null;
       const myName = meItem ? (meItem.name || "玩家") : "（加入中…）";
+      const phaseLabel = dayNightPhaseLabel(latestDayNight);
       hudEl.innerHTML =
-        `<b>${myName}</b> · 線上 ${players.size} 人\n` +
+        `<b>${myName}</b> · 線上 ${players.size} 人${phaseLabel ? " · " + phaseLabel : ""}\n` +
         `NPC ${npcs.size} · 野生 ${wildlife.size} · 敵人 ${enemies.size}\n` +
         `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳"}`;
 
@@ -1001,6 +1126,8 @@ function safeRender() {
     const dt = Math.min(0.05, clock.getDelta());
     // 每幀把目前操控意圖換算並（在改變時）送出
     updateInput();
+    // 日夜流轉：依最新權威 daynight 平滑更新天空／太陽／環境光（ROADMAP 612）
+    applyDayNight(dt);
 
     // 視覺跳（cosmetic）：只動自己膠囊的本地高度，不送伺服器
     if (wantJump && jumpZ <= 0.01) { jumpV = JUMP_V; }
@@ -1074,7 +1201,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel };
 }
 
 // 啟動
