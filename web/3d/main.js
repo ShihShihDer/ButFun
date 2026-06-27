@@ -1838,7 +1838,7 @@ function handleServerMsg(msg) {
       hudEl.innerHTML =
         `<b>${myName}</b> · 線上 ${players.size} 人${phaseLabel ? " · " + phaseLabel : ""}${weatherLabel ? " · " + weatherLabel : ""}\n` +
         `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · 敵人 ${enemies.size}${farmLabel ? " · " + farmLabel : ""}${builtLabel ? " · " + builtLabel : ""}${groveLabel ? " · " + groveLabel : ""}\n` +
-        `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳"}`;
+        `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳 · 🌱鈕種樹" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳 · T 種樹"}`;
 
       setStatus(
         `真實世界已連上 · 快照 #${snapshotCount}` +
@@ -1888,6 +1888,7 @@ function keyToDir(e) {
 window.addEventListener("keydown", (e) => {
   if (e.code === "Space") { wantJump = true; e.preventDefault(); return; }
   if (e.code === "ShiftLeft" || e.code === "ShiftRight") { runHeld = true; return; }
+  if (e.code === "KeyT" && !e.repeat) { tryPlantTree(); e.preventDefault(); return; } // 種樹（ROADMAP 618）
   const dir = keyToDir(e);
   if (dir) { heldKeys[dir] = true; e.preventDefault(); }
 });
@@ -1896,6 +1897,95 @@ window.addEventListener("keyup", (e) => {
   const dir = keyToDir(e);
   if (dir) heldKeys[dir] = false;
 });
+
+// ============================================================
+// 照料世界·互動（ROADMAP 618）：3D 世界第一次能「動手」——登入後可在 3D 裡親手種下世界樹。
+//   · 純前端、純送既有權威意圖 `plant_tree`（與 2D web/game.js 同協議），零後端／協議／world-core 改動。
+//   · 伺服器才是權威：種樹需「已登入＋戶外」（3D 一律戶外），訪客送了不留痕跡，故 UI 誠實鎖定、不假裝能種。
+//   · 登入態同源自動帶（cookie session）；開頁查 /auth/me 確認後點亮鈕。
+//   · 種下後嫩芽會在下一份快照的 world_groves 冒出來、隨真實時間一階階長大（ROADMAP 617 已會畫）。
+// ============================================================
+let isLoggedIn = false;          // /auth/me 查到帳號才為 true（純供 UI 誠實；真正權限由後端 cookie 決定）
+let myName3d = "3D玩家";          // 顯示名：登入後換成帳號名（authed 身分仍由 cookie 決定，與此無關）
+let mySpecies3d = "terran";
+let lastPlantAt = -1e9;           // 上次種樹的本地時戳，做點擊冷卻防手滑連點
+const PLANT_COOLDOWN_MS = 600;    // 本地冷卻（後端另有每秒 3 次限流，這只是前端手感防呆）
+
+// 要送給伺服器的「種樹」意圖（與 2D 同形 `{type:"plant_tree"}`）。抽成純函式供 smoke 斷言。
+function plantTreeWireMsg() { return { type: "plant_tree" }; }
+
+// 種樹鈕的顯示狀態（登入→可種、訪客→鎖定提示）。純函式、面向玩家字串集中可 i18n、供 smoke 真值表。
+function plantButtonState(loggedIn) {
+  return loggedIn
+    ? { label: "🌱 種樹", locked: false, hint: "在你站的地方種下一株嫩芽" }
+    : { label: "🌱 種樹（登入後）", locked: true, hint: "在 but-fun.com 登入後，就能在世界種下你的樹" };
+}
+
+// 只在 ws 開著時送，避免未連線時丟訊息拋例外。回傳是否真的送出。
+function safeSend(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(obj)); return true; }
+  return false;
+}
+
+// 短暫飄字回饋（種樹確認／訪客提示）。reduceMotion 下照常顯示（淡入淡出屬輕量、不擾人）。
+let toastTimer = null;
+function flashToast(text) {
+  const el = document.getElementById("toast");
+  if (!el) return;
+  el.textContent = text;
+  el.classList.add("show");
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.classList.remove("show"); }, 2200);
+}
+
+// 依登入態刷新種樹鈕外觀。
+function updatePlantBtn() {
+  const btn = document.getElementById("plantBtn");
+  if (!btn) return;
+  const st = plantButtonState(isLoggedIn);
+  btn.textContent = st.label;
+  btn.classList.toggle("locked", st.locked);
+  btn.title = st.hint;
+}
+
+// 嘗試種樹：訪客給登入提示、登入者送權威意圖＋冷卻＋確認飄字。
+function tryPlantTree() {
+  if (!isLoggedIn) {
+    flashToast("🌱 在 but-fun.com 登入後，就能在世界裡種下你的樹");
+    return;
+  }
+  const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+  if (now - lastPlantAt < PLANT_COOLDOWN_MS) return; // 冷卻內忽略連點
+  if (safeSend(plantTreeWireMsg())) {
+    lastPlantAt = now;
+    flashToast("🌱 種下一株嫩芽，它會隨時間慢慢長大");
+  }
+}
+
+// 接線：點 🌱 鈕種樹（桌機 + 手機）；T 鍵在上方 keydown 處理。
+(function wirePlantAction() {
+  const btn = document.getElementById("plantBtn");
+  if (btn && btn.addEventListener) {
+    btn.addEventListener("click", (e) => { if (e && e.preventDefault) e.preventDefault(); tryPlantTree(); });
+  }
+  updatePlantBtn();
+})();
+
+// 開頁查 /auth/me：已登入就點亮種樹鈕、進場用帳號名（authed 身分仍由 cookie 決定）。
+// OAuth 未設定／未登入回非 2xx → 維持訪客態（照常觀賞）。fetch 不可用（如 smoke 沙箱）就跳過。
+if (typeof fetch === "function") {
+  fetch("/auth/me", { credentials: "same-origin" })
+    .then((r) => (r && r.ok ? r.json() : null))
+    .then((me) => {
+      if (me && me.id) {
+        isLoggedIn = true;
+        if (me.name) myName3d = me.name;
+        if (me.species) mySpecies3d = me.species;
+        updatePlantBtn();
+      }
+    })
+    .catch(() => { /* 查不到就當訪客，不影響觀賞 */ });
+}
 
 // ---- 滑鼠拖曳轉鏡頭（桌機）----
 let dragging = false, lastMX = 0, lastMY = 0;
@@ -2049,7 +2139,8 @@ function connect() {
   ws.onopen = () => {
     reconnectAttempts = 0;
     // 以玩家身分加入（訪客即可動：伺服器不擋訪客 Input）。名字／物種只是顯示用。
-    ws.send(JSON.stringify({ type: "join", name: "3D玩家", species: "terran" }));
+    // 進場：訪客用預設名「3D玩家」，登入者用帳號名（authed 身分一律由 cookie 決定，與名字無關）。
+    ws.send(JSON.stringify({ type: "join", name: myName3d, species: mySpecies3d }));
     setStatus("已加入，等待世界快照…");
     // 重連後清掉上次的 input 簽章，下一幀 updateInput 會把意圖重送給新連線
     lastSentInput = "";
@@ -2322,7 +2413,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState };
 }
 
 // 啟動
