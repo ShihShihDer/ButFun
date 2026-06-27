@@ -374,10 +374,36 @@ async fn groq_chat(system: &str, user: &str) -> Option<String> {
     }
 }
 
-/// Cerebras API key（雲端推論，OpenAI 相容、免費、超快）。有設且非空才啟用 Cerebras tier。
-/// key 一律走環境變數 / `.env`（gitignored），絕不寫進 repo。沒設就跳過這條供應商。
-fn cerebras_key() -> Option<String> {
-    std::env::var("BUTFUN_CEREBRAS_API_KEY").ok().filter(|k| !k.trim().is_empty())
+/// Cerebras API key 清單（雲端推論，OpenAI 相容、免費、超快）。
+/// `BUTFUN_CEREBRAS_API_KEY` 支援**逗號分隔多把 key**：維護者每註冊一個免費 Cerebras
+/// 帳號就多放一把 key、免費思考額度線性疊加。各把 trim、濾掉空字串；單一把即向後相容。
+/// 沒設 / 全空 → 空 Vec（＝跳過 Cerebras，行為同單 key 時代）。
+/// key 值一律走環境變數 / `.env`（gitignored），絕不寫進 repo。
+fn cerebras_keys() -> Vec<String> {
+    std::env::var("BUTFUN_CEREBRAS_API_KEY")
+        .unwrap_or_default()
+        .split(',')
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .collect()
+}
+
+/// 是否啟用 Cerebras tier（至少有一把有效 key）。
+fn cerebras_enabled() -> bool {
+    !cerebras_keys().is_empty()
+}
+
+/// 用全域 round-robin 計數器，從多把 key 中挑「這次輪到的那把」，把負載平均分攤到各帳號。
+/// 對 keys 長度取模、保證不越界。沒有任何 key → None（呼叫端跳過 Cerebras）。
+fn cerebras_next_key() -> Option<String> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static RR: AtomicUsize = AtomicUsize::new(0);
+    let keys = cerebras_keys();
+    if keys.is_empty() {
+        return None;
+    }
+    let idx = RR.fetch_add(1, Ordering::Relaxed) % keys.len();
+    Some(keys[idx].clone())
 }
 
 /// Cerebras 對話模型（可用 `BUTFUN_CEREBRAS_MODEL` 覆寫）。
@@ -386,10 +412,29 @@ fn cerebras_model() -> String {
     std::env::var("BUTFUN_CEREBRAS_MODEL").unwrap_or_else(|_| "llama-3.3-70b".to_string())
 }
 
+/// 每把 key 的 per-min / per-day 上限（可 env 覆寫）。輪替時把這基準乘上 key 數＝有效上限。
+/// Cerebras 免費 tier 每分鐘上限較緊，預設保守值 30/分、14400/日。
+fn cerebras_per_key_min() -> u32 {
+    groq_env_u32("BUTFUN_CEREBRAS_MAX_PER_MIN", 30)
+}
+fn cerebras_per_key_day() -> u32 {
+    groq_env_u32("BUTFUN_CEREBRAS_MAX_PER_DAY", 14400)
+}
+
+/// 給定 key 數，算出有效（全域）上限：每把上限 × key 數。輪替把負載分攤到 N 個帳號，
+/// 故 N 把 key 的整體額度應為單把的 N 倍。純邏輯抽出來方便測試。
+fn cerebras_effective_caps(key_count: usize) -> (u32, u32) {
+    let n = key_count.max(1) as u32; // 至少 1，避免 0 把時上限歸零
+    (
+        cerebras_per_key_min().saturating_mul(n),
+        cerebras_per_key_day().saturating_mul(n),
+    )
+}
+
 /// Cerebras 全域額度上限（鏡像 Groq 的 `groq_rate_ok`）：防單一/協同玩家輪流跟多個 NPC 聊、
 /// 繞過 per-NPC 冷卻、持續打爆免費額度。超過每分鐘或每日上限就一律回 None（降級到 Groq/ollama/罐頭）。
-/// 可用環境變數覆寫；近似計數（窗邊界可能略過量），對「成本上限」足夠。
-/// Cerebras 免費 tier 每分鐘上限較緊，預設保守值 30/分、14400/日。
+/// 近似計數（窗邊界可能略過量），對「成本上限」足夠。
+/// **有效上限隨 key 數放大**：輪替把負載分攤到 N 個免費帳號，整體額度＝每把上限 × key 數。
 fn cerebras_rate_ok() -> bool {
     use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
     static MIN_WIN: AtomicU64 = AtomicU64::new(0);
@@ -407,15 +452,17 @@ fn cerebras_rate_ok() -> bool {
     if DAY_WIN.swap(day, Ordering::Relaxed) != day {
         DAY_CNT.store(0, Ordering::Relaxed);
     }
+    let (max_min, max_day) = cerebras_effective_caps(cerebras_keys().len());
     let m = MIN_CNT.fetch_add(1, Ordering::Relaxed) + 1;
     let d = DAY_CNT.fetch_add(1, Ordering::Relaxed) + 1;
-    m <= groq_env_u32("BUTFUN_CEREBRAS_MAX_PER_MIN", 30) && d <= groq_env_u32("BUTFUN_CEREBRAS_MAX_PER_DAY", 14400)
+    m <= max_min && d <= max_day
 }
 
 /// 呼叫 Cerebras（OpenAI 相容 `/chat/completions`）。失敗（無 key / HTTP 錯 / 逾時 / 解析錯）
 /// 一律回 None，由上層降級。鏡像 `groq_chat`：免費、超快、雲端並發，當降級鏈的主力。
 async fn cerebras_chat(system: &str, user: &str) -> Option<String> {
-    let key = cerebras_key()?;
+    // 從多把 key 中 round-robin 挑這次輪到的那把（單把＝固定那把，沒設＝None 跳過）。
+    let key = cerebras_next_key()?;
     // 全域額度上限——超過就降級（不再呼叫 Cerebras），保護免費額度。
     if !cerebras_rate_ok() {
         return None;
@@ -467,7 +514,7 @@ async fn cerebras_chat(system: &str, user: &str) -> Option<String> {
 /// 註：ollama tier 的位址由 `BUTFUN_OLLAMA_URL` 決定——指向本機 CPU、或指向一台
 /// 有顯卡的機器（例如透過 Tailscale 的私網 IP）皆可，無需改碼即可換成 GPU 推論。
 async fn llm_chat(system: &str, user: &str) -> Option<String> {
-    if cerebras_key().is_some() {
+    if cerebras_enabled() {
         if let Some(t) = cerebras_chat(system, user).await {
             return Some(t);
         }
@@ -615,15 +662,60 @@ mod tests {
         assert!(m.contains("llama") || m.contains("qwen"));
     }
 
+    // 註：解析與輪替兩組斷言都動同一把 env（`BUTFUN_CEREBRAS_API_KEY`），合成單一測試，
+    // 避免 cargo 預設並行跑測試時對同一環境變數產生競態。
     #[test]
-    fn cerebras_key_absent_is_none() {
-        // 沒設 key（CI 預設）時 Cerebras tier 應被跳過——回 None，路由自動降級到 Groq/ollama。
+    fn cerebras_keys_parse_and_round_robin() {
+        // 沒設（CI 預設）→ 空 Vec＝跳過 Cerebras，行為同單 key 時代；next_key 回 None。
         std::env::remove_var("BUTFUN_CEREBRAS_API_KEY");
-        assert!(cerebras_key().is_none());
-        // 空字串（含純空白）也算沒設，避免誤判啟用。
+        assert!(cerebras_keys().is_empty());
+        assert!(!cerebras_enabled());
+        assert!(cerebras_next_key().is_none());
+
+        // 全空白 / 全是分隔的空字串 → 濾乾淨後仍為空。
         std::env::set_var("BUTFUN_CEREBRAS_API_KEY", "   ");
-        assert!(cerebras_key().is_none());
+        assert!(cerebras_keys().is_empty());
+        std::env::set_var("BUTFUN_CEREBRAS_API_KEY", " , , ");
+        assert!(cerebras_keys().is_empty());
+
+        // 單一把 → 正好一把（向後相容）。
+        std::env::set_var("BUTFUN_CEREBRAS_API_KEY", "key_a");
+        assert_eq!(cerebras_keys(), vec!["key_a".to_string()]);
+        assert!(cerebras_enabled());
+
+        // 多把（逗號分隔，含多餘空白與空項）→ 各自 trim、濾掉空、保序。
+        std::env::set_var("BUTFUN_CEREBRAS_API_KEY", " key_a , key_b ,, key_c ,");
+        assert_eq!(
+            cerebras_keys(),
+            vec!["key_a".to_string(), "key_b".to_string(), "key_c".to_string()]
+        );
+
+        // 三把 key：連續取多次都落在這三把裡（取模不越界），且會輪到每一把。
+        std::env::set_var("BUTFUN_CEREBRAS_API_KEY", "k0,k1,k2");
+        let valid = ["k0", "k1", "k2"];
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..30 {
+            let k = cerebras_next_key().expect("有 key 時必回 Some");
+            assert!(valid.contains(&k.as_str()), "輪到的 key 必在清單內、不越界");
+            seen.insert(k);
+        }
+        // 連取 30 次（>3）應把三把都輪到（round-robin 平均分攤）。
+        assert_eq!(seen.len(), 3, "round-robin 應輪到每一把 key");
         std::env::remove_var("BUTFUN_CEREBRAS_API_KEY");
+    }
+
+    #[test]
+    fn cerebras_caps_scale_with_key_count() {
+        // 有效上限＝每把上限 × key 數；確保新環境不受 env 覆寫干擾用預設基準。
+        std::env::remove_var("BUTFUN_CEREBRAS_MAX_PER_MIN");
+        std::env::remove_var("BUTFUN_CEREBRAS_MAX_PER_DAY");
+        let (min1, day1) = cerebras_effective_caps(1);
+        assert_eq!((min1, day1), (30, 14400)); // 預設單把基準
+        let (min3, day3) = cerebras_effective_caps(3);
+        assert_eq!(min3, min1 * 3);
+        assert_eq!(day3, day1 * 3);
+        // 0 把（理論上不會走到 rate 檢查）至少當 1 把，不把上限歸零。
+        assert_eq!(cerebras_effective_caps(0), (min1, day1));
     }
 
     #[test]
