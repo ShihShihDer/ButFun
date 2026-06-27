@@ -193,48 +193,6 @@ pub const VOID_BUY_LIST: &[ShopEntry] = &[
 /// 虛空星商人不販售（玩家需自行合成虛空裝備；沒有販售清單）。
 pub const VOID_SELL_LIST: &[ShopEntry] = &[];
 
-/// 玩家向虛空星商人**賣出** qty 個 item。
-/// 純函式，便於測試（caller 負責驗距離）。
-pub fn sell_to_void_npc(inv: &mut Inventory, ether: u32, item: ItemKind, qty: u32) -> Option<u32> {
-    if qty == 0 {
-        return None;
-    }
-    let price = VOID_BUY_LIST.iter().find(|e| e.item == item)?.price_per;
-    if !inv.take(item, qty) {
-        return None;
-    }
-    let earned = price.saturating_mul(qty);
-    Some(ether.saturating_add(earned))
-}
-
-/// 玩家向赤焰星商人**賣出** qty 個 item。
-/// 純函式，便於測試（caller 負責驗距離）。
-pub fn sell_to_crimson_npc(inv: &mut Inventory, ether: u32, item: ItemKind, qty: u32) -> Option<u32> {
-    if qty == 0 {
-        return None;
-    }
-    let price = CRIMSON_BUY_LIST.iter().find(|e| e.item == item)?.price_per;
-    if !inv.take(item, qty) {
-        return None;
-    }
-    let earned = price.saturating_mul(qty);
-    Some(ether.saturating_add(earned))
-}
-
-/// 玩家向翠幽星商人**賣出** qty 個 item。
-/// 純函式，便於測試（caller 負責驗距離）。
-pub fn sell_to_verdant_npc(inv: &mut Inventory, ether: u32, item: ItemKind, qty: u32) -> Option<u32> {
-    if qty == 0 {
-        return None;
-    }
-    let price = VERDANT_BUY_LIST.iter().find(|e| e.item == item)?.price_per;
-    if !inv.take(item, qty) {
-        return None;
-    }
-    let earned = price.saturating_mul(qty);
-    Some(ether.saturating_add(earned))
-}
-
 /// 霧醚星商人在世界上的位置：霧醚星出生點附近偏左，讓玩家傳送後立刻看得到商人。
 pub fn aether_merchant_pos() -> (f32, f32) {
     (AETHER_SPAWN_X - 120.0, AETHER_SPAWN_Y)
@@ -266,20 +224,6 @@ pub const AETHER_BUY_LIST: &[ShopEntry] = &[
 
 /// 霧醚星商人不販售（玩家需自行合成霧醚裝備；沒有販售清單）。
 pub const AETHER_SELL_LIST: &[ShopEntry] = &[];
-
-/// 玩家向霧醚星商人**賣出** qty 個 item。
-/// 純函式，便於測試（caller 負責驗距離）。
-pub fn sell_to_aether_npc(inv: &mut Inventory, ether: u32, item: ItemKind, qty: u32) -> Option<u32> {
-    if qty == 0 {
-        return None;
-    }
-    let price = AETHER_BUY_LIST.iter().find(|e| e.item == item)?.price_per;
-    if !inv.take(item, qty) {
-        return None;
-    }
-    let earned = price.saturating_mul(qty);
-    Some(ether.saturating_add(earned))
-}
 
 /// 星源星商人在世界上的位置：星源星出生點附近偏左，讓玩家傳送後立刻看得到商人。
 pub fn origin_merchant_pos() -> (f32, f32) {
@@ -313,20 +257,6 @@ pub const ORIGIN_BUY_LIST: &[ShopEntry] = &[
 
 /// 星源星商人不販售（玩家需自行合成源晶裝備；沒有販售清單）。
 pub const ORIGIN_SELL_LIST: &[ShopEntry] = &[];
-
-/// 玩家向星源星商人**賣出** qty 個 item。
-/// 純函式，便於測試（caller 負責驗距離）。
-pub fn sell_to_origin_npc(inv: &mut Inventory, ether: u32, item: ItemKind, qty: u32) -> Option<u32> {
-    if qty == 0 {
-        return None;
-    }
-    let price = ORIGIN_BUY_LIST.iter().find(|e| e.item == item)?.price_per;
-    if !inv.take(item, qty) {
-        return None;
-    }
-    let earned = price.saturating_mul(qty);
-    Some(ether.saturating_add(earned))
-}
 
 /// 偵測 buy_list 與 sell_list 之間是否存在可套利的物品（ROADMAP 103）。
 ///
