@@ -3062,6 +3062,8 @@ pub fn spawn(app: AppState) {
                         world_news: String::new(),
                     };
                     let persona_str = crate::npc_agent_wire::resident_agent_persona(name, persona);
+                    // 居民名先 clone 進 task，供「若有禱告就寫檔」用（task 內無鎖、純檔寫）。
+                    let resident_name = name.to_string();
                     let sem = app.npc_llm_sem.clone();
                     let bus = app.agent_bus.clone();
                     tokio::spawn(async move {
@@ -3071,6 +3073,11 @@ pub fn spawn(app: AppState) {
                             sem.acquire_owned(),
                         ).await.ok().and_then(|r| r.ok());
                         let decision = crate::npc_agent::npc_think(&sense, &persona_str).await;
+                        // 居民禱告第一塊：LLM 偶爾許下的心願（非空才有）就地 append 進 data/prayers.jsonl。
+                        // 此處在無鎖 async task 內、且 npc_think 已回傳——不碰 players/residents/nodes 任何遊戲鎖。
+                        if let Some(prayer) = &decision.prayer {
+                            crate::npc_agent::append_prayer(&resident_name, prayer);
+                        }
                         bus.push_decision(id.clone(), decision);
                         bus.end_thinking(&id);
                     });

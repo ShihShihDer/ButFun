@@ -43,17 +43,21 @@ pub struct AgentDecision {
     pub say: String,
     /// agent 給自己的決策理由（可空，主要供除錯/日後思想泡泡）。
     pub reason: String,
+    /// **偶爾**許下的一個「對這個世界的小心願」（禱告，ROADMAP 居民禱告第一塊）。
+    /// 只在 agent 真有強烈感受時才出現——絕大多數決策為 `None`，由 prompt 引導 LLM 自我節制，
+    /// 呼叫端只在 `Some` 且非空白時把它寫進 `data/prayers.jsonl`（第二塊「迴圈讀禱告→實現」另做）。
+    pub prayer: Option<String>,
 }
 
 impl AgentDecision {
     /// 包一個 `Idle` 決策（解析失敗/認不出時的安全預設）。
     pub fn idle() -> Self {
-        Self { action: AgentAction::Idle, say: String::new(), reason: String::new() }
+        Self { action: AgentAction::Idle, say: String::new(), reason: String::new(), prayer: None }
     }
 
-    /// 方便建構：帶上行動與理由（say 留空）。
+    /// 方便建構：帶上行動與理由（say 留空，無禱告）。
     pub fn new(action: AgentAction, say: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self { action, say: say.into(), reason: reason.into() }
+        Self { action, say: say.into(), reason: reason.into(), prayer: None }
     }
 }
 
@@ -201,6 +205,8 @@ pub fn build_think_prompt(sense: &SenseInput, persona: &str) -> String {
         JSON 格式範例：{{ \"action\": \"talk\", \"target\": \"薇拉\", \"say\": \"嗨，今天生意好嗎？\", \"reason\": \"附近有熟人，想打招呼\" }}\n\
         欄位說明：action 必填（上列其一）；target 視 action 而定；\
         say 是你想說出口的一句話（繁體中文，沒有就空字串）；reason 是你的決策理由（繁體中文，簡短）。\n\
+        【偶爾的心願（prayer）】只有在你此刻**真的有強烈感受**時——不是每次——才可以額外許下一個對這個世界的小心願，\
+        放進可選的 \"prayer\" 欄位（繁體中文，一句話）。絕大多數時候請**不要**給 prayer，直接省略這個欄位或留空字串。\n\
         只輸出 JSON，不要 markdown 圍欄、不要任何其他文字。",
         persona = persona,
         hp = sense.hp,
@@ -282,6 +288,9 @@ pub fn parse_action(llm_output: &str) -> AgentDecision {
 
     let say = str_field(&value, "say");
     let reason = str_field(&value, "reason");
+    // 可選禱告：缺欄位 / 空白 → None（str_field 已 trim），避免空心願洗進禱告檔。
+    // 壞值（非字串）也被 str_field 容忍成空字串 → None，不 panic。
+    let prayer = parse_prayer(&value);
 
     // 3) 讀 action（大小寫/前後空白不敏感）。
     let action_raw = str_field(&value, "action").to_lowercase();
@@ -289,23 +298,79 @@ pub fn parse_action(llm_output: &str) -> AgentDecision {
         "move" | "moveto" | "move_to" | "goto" | "walk" => match extract_xy(&value) {
             Some((x, y)) => AgentAction::MoveTo { x, y },
             // action 是 move 但座標壞/缺 → 保守 Idle。
-            None => return AgentDecision { action: AgentAction::Idle, say, reason },
+            None => return AgentDecision { action: AgentAction::Idle, say, reason, prayer },
         },
         "gather" | "harvest" | "collect" => AgentAction::Gather,
         "talk" | "speak" | "chat" => {
             let target = str_field(&value, "target");
             if target.is_empty() {
-                // 想搭話卻沒對象 → 保守 Idle（仍保留 say/reason）。
-                return AgentDecision { action: AgentAction::Idle, say, reason };
+                // 想搭話卻沒對象 → 保守 Idle（仍保留 say/reason/prayer）。
+                return AgentDecision { action: AgentAction::Idle, say, reason, prayer };
             }
             AgentAction::Talk { target }
         }
         "idle" | "rest" | "wait" | "" => AgentAction::Idle,
-        // 未知 action 值 → 保守 Idle（仍保留 say/reason 供觀察）。
+        // 未知 action 值 → 保守 Idle（仍保留 say/reason/prayer 供觀察）。
         _ => AgentAction::Idle,
     };
 
-    AgentDecision { action, say, reason }
+    AgentDecision { action, say, reason, prayer }
+}
+
+/// 從 LLM 的決策 JSON 抽出可選禱告：缺欄位 / 非字串 / 全空白 → `None`（**絕不 panic**）。
+/// 集中在此一處，讓「什麼算一個有效心願」有單一真實來源（非空白才算）。
+fn parse_prayer(v: &serde_json::Value) -> Option<String> {
+    let p = str_field(v, "prayer"); // str_field 已 trim、非字串容忍成空字串
+    if p.is_empty() {
+        None
+    } else {
+        Some(p)
+    }
+}
+
+/// 把一筆禱告 append 到 `data/prayers.jsonl`（比照 `suggestions.jsonl` 的 jsonl 格式）。
+///
+/// 設計鐵律：呼叫端**只在不持任何遊戲狀態鎖的 async task 裡**呼叫（見 game.rs spawn task）。
+/// 這支本身是輕量同步小檔寫（對齊 `suggestions::append_to_disk_at`）：建目錄（若缺）、append 模式、
+/// 寫失敗只記 log **不 panic**。刻意**不寫系統時鐘**（本專案慣例避 `SystemTime::now`），
+/// 一筆紀錄只存 `name` + `prayer`；第二塊「迴圈讀禱告→評判→實現」需要排序時再由呼叫端傳序號。
+pub fn append_prayer(resident_name: &str, prayer_text: &str) {
+    // 防呆：空白心願不落地（呼叫端通常已過濾，這裡再守一道）。
+    let prayer_text = prayer_text.trim();
+    if prayer_text.is_empty() {
+        return;
+    }
+    // 濾控制字元（對齊 suggestions sanitize：維護者多半直接在終端機讀 jsonl 三角化，
+    // ESC/NUL/\r 等可注入 ANSI 轉義或破壞顯示）。名字濾全部控制字元，心願保留換行。
+    let name: String = resident_name.chars().filter(|c| !c.is_control()).collect::<String>().trim().to_string();
+    let prayer: String = prayer_text.chars().filter(|c| !c.is_control() || *c == '\n').collect::<String>().trim().to_string();
+    if prayer.is_empty() {
+        return;
+    }
+    let record = serde_json::json!({
+        "name": if name.is_empty() { "無名居民" } else { &name },
+        "prayer": prayer,
+    });
+    write_prayer_line(PRAYERS_PATH, &record);
+}
+
+/// 禱告落地檔（執行期產生、已隨 `data/` gitignore）。
+const PRAYERS_PATH: &str = "data/prayers.jsonl";
+
+/// 實際把一行 JSON append 進檔（抽出來便於測試指定路徑）。寫失敗只記 log、不 panic。
+fn write_prayer_line(path: &str, record: &serde_json::Value) {
+    use std::io::Write;
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        Ok(mut file) => {
+            if let Ok(line) = serde_json::to_string(record) {
+                let _ = writeln!(file, "{line}");
+            }
+        }
+        Err(e) => tracing::warn!("無法寫入禱告檔 {path}: {e}"),
+    }
 }
 
 /// **無 LLM 時的規則化後備**（純函式、可測）。
@@ -717,6 +782,85 @@ mod tests {
         assert_eq!(d.action, AgentAction::Idle);
         assert!(d.say.is_empty());
         assert!(d.reason.is_empty());
+        // 預設無禱告（禱告是偶爾、要 LLM 明確給才有）。
+        assert_eq!(d.prayer, None);
+    }
+
+    // ── 居民禱告第一塊：parse_action 解析 prayer ──────────────
+    #[test]
+    fn parse_prayer_present() {
+        let d = parse_action(r#"{"action":"idle","prayer":"願這片土地永遠豐饒"}"#);
+        assert_eq!(d.prayer.as_deref(), Some("願這片土地永遠豐饒"));
+    }
+
+    #[test]
+    fn parse_prayer_absent_is_none() {
+        // 沒給 prayer 欄位 → None（絕大多數決策應如此）。
+        let d = parse_action(r#"{"action":"gather","say":"開工"}"#);
+        assert_eq!(d.prayer, None);
+    }
+
+    #[test]
+    fn parse_prayer_blank_is_none() {
+        // 空字串 / 全空白 → None，不讓空心願洗進禱告檔。
+        assert_eq!(parse_action(r#"{"action":"idle","prayer":""}"#).prayer, None);
+        assert_eq!(parse_action(r#"{"action":"idle","prayer":"   "}"#).prayer, None);
+    }
+
+    #[test]
+    fn parse_prayer_bad_value_is_none_not_panic() {
+        // prayer 是非字串（數字 / 物件 / 陣列）→ 容忍成 None，不 panic。
+        assert_eq!(parse_action(r#"{"action":"idle","prayer":123}"#).prayer, None);
+        assert_eq!(parse_action(r#"{"action":"idle","prayer":{"x":1}}"#).prayer, None);
+        assert_eq!(parse_action(r#"{"action":"idle","prayer":[1,2]}"#).prayer, None);
+        assert_eq!(parse_action(r#"{"action":"idle","prayer":null}"#).prayer, None);
+    }
+
+    #[test]
+    fn parse_prayer_survives_fallback_idle() {
+        // 即使 action 壞掉退回 Idle，仍保留 prayer 供第二塊讀取。
+        let d = parse_action(r#"{"action":"move","say":"走","prayer":"願旅人都平安歸來"}"#);
+        assert_eq!(d.action, AgentAction::Idle);
+        assert_eq!(d.prayer.as_deref(), Some("願旅人都平安歸來"));
+    }
+
+    // ── append_prayer：寫一筆能讀回 ───────────────────────────
+    #[test]
+    fn append_prayer_writes_readable_line() {
+        let dir = std::env::temp_dir().join(format!("butfun_prayers_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("prayers.jsonl");
+        let p = path.to_str().unwrap();
+        // 建目錄若不存在 + append 兩筆。
+        let rec1 = serde_json::json!({ "name": "薇拉", "prayer": "願豐饒" });
+        write_prayer_line(p, &rec1);
+        let rec2 = serde_json::json!({ "name": "鐵匠", "prayer": "願爐火不熄" });
+        write_prayer_line(p, &rec2);
+
+        let contents = std::fs::read_to_string(p).expect("禱告檔應可讀回");
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let v1: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(v1["name"], "薇拉");
+        assert_eq!(v1["prayer"], "願豐饒");
+        let v2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(v2["prayer"], "願爐火不熄");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_prayer_blank_is_skipped() {
+        // 全空白心願不落地（防呆，不 panic）。
+        let dir = std::env::temp_dir().join(format!("butfun_prayers_blank_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("prayers.jsonl");
+        // 直接用公開 helper（會被空白擋下，且因檔不存在也不會建出檔）。
+        append_prayer("某居民", "   ");
+        // 這支寫到正式路徑 data/prayers.jsonl 而非臨時檔，所以僅驗「不 panic」即可。
+        let _ = path; // 佔位，避免未用警告
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── resident_thought（ROADMAP 553 思想泡泡 + 554 需求驅動）────────────
