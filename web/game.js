@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, soonestCropEta, harvestEtaLabel, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint, materialUses, progressGoal, residentThoughtAlpha, nearestCareResident }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, soonestCropEta, harvestEtaLabel, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint, materialUses, progressGoal, residentThoughtAlpha, nearestCareResident, cropRipeBadge, goldenHarvestText }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -6686,6 +6686,20 @@
         announce(`獲得戰利品：${lpName} ${lpQty | 0} 個`);
         break;
       }
+      case "farm_harvest": {
+        // 正當時收割飄字（ROADMAP 560）：在黃金熟成期採收作物時，私信本人慶祝。
+        const fhGolden = msg.golden | 0;
+        const fhBonus = msg.bonus | 0;
+        if (fhGolden > 0) {
+          floaters.push({
+            wx: msg.x, wy: (msg.y || 0) - 40,
+            text: goldenHarvestText(fhBonus),
+            color: "255,221,120", born: performance.now(),
+          });
+          announce(`正當時收割，多得 ${fhBonus} 份`);
+        }
+        break;
+      }
       case "attack_hit": {
         // 命中即時數字（ROADMAP 387）：伺服器廣播，所有玩家都能看到附近攻擊數字。
         // 蓄力重擊（ROADMAP 423）：滿蓄💥／半蓄⚡ 優先；破綻直擊（ROADMAP 489）：金色 ❉；
@@ -8838,6 +8852,22 @@
   const SEASON_PEAK_CROP = { winter: "sprout", summer: "etherbloom" };
   function cropPeakVariety(season) {
     return SEASON_PEAK_CROP[season] || null;
+  }
+
+  // ROADMAP 560「正當時」黃金熟成期：純函式，好測、零副作用。
+  // cropRipeBadge：個人農田作物腳邊標記——黃金期亮 ✨（現在收最划算）、已成熟未進黃金期亮 ✅、其餘無標記。
+  function cropRipeBadge(crop) {
+    if (!crop) return null;
+    if (crop.golden) return "✨";
+    if (crop.ripe) return "✅";
+    return null;
+  }
+  // goldenHarvestText：正當時收割飄字，呈現「✨ 正當時！＋N」。壞值（NaN／負）夾鉗至 0。
+  function goldenHarvestText(bonus) {
+    let n = Number(bonus);
+    if (!Number.isFinite(n) || n < 0) n = 0;
+    n = Math.floor(n);
+    return `✨ 正當時！＋${n}`;
   }
 
   // 玩家當下選的播種品種（線格式字串）。預設主食穀＝既有單一作物：不主動選就跟改動前一模一樣。
@@ -18782,11 +18812,13 @@
               ctx.textBaseline = "middle";
               ctx.fillText((CROP_EMOJI[c.kind] || "🌱"), cx, sy - 10);
             }
-            if (c.ripe) {
+            const badge = cropRipeBadge(c);
+            if (badge) {
+              // 已成熟：✨＝正當時黃金期（現在收最划算，ROADMAP 560）、✅＝一般成熟。
               ctx.font = `11px ${UI_FONT}`;
               ctx.textAlign = "center";
               ctx.textBaseline = "middle";
-              ctx.fillText("✅", cx, sy + 12);
+              ctx.fillText(badge, cx, sy + 12);
             } else if (c.grow != null) {
               // 成長中：腳邊畫熟成進度條（ROADMAP 457，對齊公田 421）。
               drawCropSlotBar(cx, sy + 11, c.grow);
@@ -18808,9 +18840,11 @@
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
             ctx.fillText((CROP_EMOJI[c.kind] || "🌱"), cx, sy - 10);
-            if (c.ripe) {
+            const badge = cropRipeBadge(c);
+            if (badge) {
+              // ✨＝正當時黃金期（ROADMAP 560）、✅＝一般成熟。
               ctx.font = `11px ${UI_FONT}`;
-              ctx.fillText("✅", cx, sy + 12);
+              ctx.fillText(badge, cx, sy + 12);
             } else if (c.grow != null) {
               drawCropSlotBar(cx, sy + 11, c.grow);
             }
