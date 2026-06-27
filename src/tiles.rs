@@ -9,6 +9,7 @@
 //! C-4 建造：`apply_delta` 從 Empty → 實心格。
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use world_core::{tile_kind_at, TileKind, CHUNK_SIZE, TILE_PX, TILES_PER_CHUNK};
 
@@ -65,20 +66,27 @@ pub fn item_for_placeable_tile(kind: TileKind) -> Option<ItemKind> {
 }
 
 /// 記憶體裡的地形格世界（記憶體前置、寫後非同步落地到 `TileStore`）。
+pub type TileDeltas = HashMap<(i32, i32, u8, u8), TileKind>;
+
 pub struct TileWorld {
     /// 玩家修改的差異：鍵 = (chunk_cx, chunk_cy, cell_x, cell_y)，值 = 覆蓋材質。
     /// 初始世界裡任何座標都由 `tile_kind_at` 決定；被挖／建過才進 deltas。
-    deltas: HashMap<(i32, i32, u8, u8), TileKind>,
+    ///
+    /// 以 `Arc` 包覆：遊戲迴圈每 tick 取一份快照供敵人/玩家碰撞共用（不可在碰撞期間
+    /// 持 tile 鎖，鎖序會與 Dig 衝突），原本是整張 `HashMap` 深拷貝——隨世界改動單調
+    /// 成長、零玩家在線也每 tick 拷一次。改 Arc 後 tick 只取廉價 refcount clone；
+    /// 寫入（apply_delta）走 copy-on-write，只有在快照仍存活時才複製一次（Dig 遠低於 15 Hz）。
+    deltas: Arc<TileDeltas>,
 }
 
 impl TileWorld {
     pub fn new() -> Self {
-        Self { deltas: HashMap::new() }
+        Self { deltas: Arc::new(HashMap::new()) }
     }
 
     /// 把啟動時從 DB 讀出的 delta 全部載入。
-    pub fn with_deltas(deltas: HashMap<(i32, i32, u8, u8), TileKind>) -> Self {
-        Self { deltas }
+    pub fn with_deltas(deltas: TileDeltas) -> Self {
+        Self { deltas: Arc::new(deltas) }
     }
 
     /// 查某個 cell 的當前種類：先查 delta 覆蓋、再回落確定性生成。
@@ -99,13 +107,20 @@ impl TileWorld {
     }
 
     /// C-2 起使用：把一格改成指定材質並記入 deltas（C-2 挖掘 / C-4 建造）。
+    /// copy-on-write：若此刻有 tick 快照仍持有同一份 Arc，`make_mut` 複製一次後再寫；
+    /// 否則就地改（唯一持有者）。
     pub fn apply_delta(&mut self, cx: i32, cy: i32, tx: u8, ty: u8, kind: TileKind) {
-        self.deltas.insert((cx, cy, tx, ty), kind);
+        Arc::make_mut(&mut self.deltas).insert((cx, cy, tx, ty), kind);
     }
 
     /// 取當前 deltas 的 immutable 參考（供 TileStore flush 用）。
-    pub fn deltas(&self) -> &HashMap<(i32, i32, u8, u8), TileKind> {
+    pub fn deltas(&self) -> &TileDeltas {
         &self.deltas
+    }
+
+    /// 取當前 deltas 的廉價 Arc 快照（供遊戲迴圈每 tick 碰撞查詢用，免整張深拷貝）。
+    pub fn deltas_arc(&self) -> Arc<TileDeltas> {
+        Arc::clone(&self.deltas)
     }
 }
 
@@ -220,6 +235,21 @@ mod tests {
         // 再改成 Stone
         world.apply_delta(0, 0, 0, 0, TileKind::Stone);
         assert_eq!(world.tile_kind(0, 0, 0, 0), TileKind::Stone);
+    }
+
+    #[test]
+    fn deltas_arc_snapshot_is_copy_on_write() {
+        // M7：tick 取出的 Arc 快照在後續寫入時不得被改動（copy-on-write 正確性）。
+        let mut world = TileWorld::new();
+        world.apply_delta(0, 0, 0, 0, TileKind::Stone);
+        let snap = world.deltas_arc();
+        assert_eq!(snap.get(&(0, 0, 0, 0)).copied(), Some(TileKind::Stone));
+        // 取快照後再寫一格，舊快照不應看到新寫入。
+        world.apply_delta(1, 1, 1, 1, TileKind::Dirt);
+        assert!(snap.get(&(1, 1, 1, 1)).is_none(), "舊快照不應看到新寫入");
+        // 世界本身與 flush 用的 deltas() 都看得到新值。
+        assert_eq!(world.tile_kind(1, 1, 1, 1), TileKind::Dirt);
+        assert_eq!(world.deltas().get(&(1, 1, 1, 1)).copied(), Some(TileKind::Dirt));
     }
 
     #[test]

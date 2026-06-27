@@ -273,9 +273,11 @@ pub fn spawn(app: AppState) {
 
             // C-3 碰撞:先快照 tile deltas（取讀鎖即放），供敵人與玩家移動共用，且不與
             // Dig handler（tile.write→players.write）的鎖序衝突（這裡 tile 讀鎖先放，再各自取寫鎖）。
-            let tile_deltas_snap: std::collections::HashMap<(i32, i32, u8, u8), world_core::TileKind> = {
+            // 取廉價 Arc 快照（非整張 HashMap 深拷貝）：每 tick 供敵人與玩家碰撞共用，
+            // 取讀鎖即放，且不與 Dig handler（tile.write→players.write）的鎖序衝突。
+            let tile_deltas_snap: std::sync::Arc<crate::tiles::TileDeltas> = {
                 let tw = app.tile_world.read().unwrap();
-                tw.deltas().clone()
+                tw.deltas_arc()
             };
 
             // 敵人移動需要玩家座標:先讀 players(短暫讀鎖)收集**沒被打趴**的玩家位置快照,
@@ -3035,13 +3037,9 @@ pub fn spawn(app: AppState) {
                         .collect();
                     let nearby_nodes: Vec<crate::npc_agent::NearbyNode> = {
                         let nodes = app.nodes.read().unwrap();
-                        nodes.nodes().into_iter()
+                        // M5：只取感知半徑內的節點（空間裁剪），不再 clone 全世界節點集再過濾。
+                        nodes.nodes_near(ax, ay, crate::npc_agent_wire::SENSE_RADIUS).into_iter()
                             .filter(|n| n.node.is_harvestable())
-                            .filter(|n| {
-                                let dx = n.x - ax;
-                                let dy = n.y - ay;
-                                dx * dx + dy * dy <= radius_sq
-                            })
                             .map(|n| crate::npc_agent::NearbyNode {
                                 kind: crate::npc_agent_wire::node_kind_label(n.node.kind()).to_string(),
                                 x: n.x,
