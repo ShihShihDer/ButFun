@@ -38,11 +38,20 @@ pub fn agents_enabled() -> bool {
     std::env::var("BUTFUN_NPC_AGENT").map(|v| v != "0").unwrap_or(true)
 }
 
-/// 判斷某居民 id（`"resident_{n}"`）是否落在 agent 名額內（`n < AGENT_ENABLED_COUNT`）。
+/// 現行 agent 名額：可用環境變數 `BUTFUN_AGENT_COUNT` 覆寫（**不必重建即可調**），
+/// 未設或壞值時退回常數 `AGENT_ENABLED_COUNT`（2）。設成 ≥ `MAX_POPULATION`(12) ＝ 全部居民都是 agent。
+pub fn agent_count() -> usize {
+    std::env::var("BUTFUN_AGENT_COUNT")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(AGENT_ENABLED_COUNT)
+}
+
+/// 判斷某居民 id（`"resident_{n}"`）是否落在 agent 名額內（`n < agent_count()`）。
 pub fn is_agent_id(id: &str) -> bool {
     id.strip_prefix("resident_")
         .and_then(|n| n.parse::<usize>().ok())
-        .map(|n| n < AGENT_ENABLED_COUNT)
+        .map(|n| n < agent_count())
         .unwrap_or(false)
 }
 
@@ -123,17 +132,31 @@ mod tests {
     use crate::npc_agent::{AgentAction, AgentDecision};
 
     #[test]
-    fn is_agent_id_only_first_n() {
+    fn is_agent_id_and_count_env() {
+        // 同一個 env 變數的測試全放這支裡、順序執行，避免平行測試互搶 process 全域 env。
+        // 也釘住值，讓本測試不受部署環境 .env 的 BUTFUN_AGENT_COUNT 影響（否則 cargo test 會掛、部署中止）。
+        // 名額讀 env：未設退回預設、壞值退回預設、不 panic。
+        std::env::remove_var("BUTFUN_AGENT_COUNT");
+        assert_eq!(agent_count(), AGENT_ENABLED_COUNT, "未設時退回預設常數");
+        std::env::set_var("BUTFUN_AGENT_COUNT", "壞值");
+        assert_eq!(agent_count(), AGENT_ENABLED_COUNT, "壞值退回預設、不 panic");
+        std::env::set_var("BUTFUN_AGENT_COUNT", "12");
+        assert_eq!(agent_count(), 12);
+        // 名額 = 2 時只有 resident_0/1 是 agent。
+        std::env::set_var("BUTFUN_AGENT_COUNT", "2");
         assert!(is_agent_id("resident_0"));
         assert!(is_agent_id("resident_1"));
-        // 名額外的居民不是 agent。
-        assert!(!is_agent_id(&format!("resident_{}", AGENT_ENABLED_COUNT)));
+        assert!(!is_agent_id("resident_2"));
         assert!(!is_agent_id("resident_9"));
+        // 名額 = 12 時 resident_9 也是 agent（驗證 env 真的生效）。
+        std::env::set_var("BUTFUN_AGENT_COUNT", "12");
+        assert!(is_agent_id("resident_9"));
         // 格式不符一律 false（不 panic）。
         assert!(!is_agent_id("merchant"));
         assert!(!is_agent_id("resident_"));
         assert!(!is_agent_id("resident_abc"));
         assert!(!is_agent_id(""));
+        std::env::remove_var("BUTFUN_AGENT_COUNT");
     }
 
     #[test]
