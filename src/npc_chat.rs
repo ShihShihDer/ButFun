@@ -374,13 +374,104 @@ async fn groq_chat(system: &str, user: &str) -> Option<String> {
     }
 }
 
-/// LLM 對話路由 + 降級鏈：**Groq（雲端，快/並發）→ 本機/Tailscale ollama → None（罐頭）**。
-/// 哪個 tier 沒設好（無 key / 連不到）就自動跳下一層；全失敗回 None，由呼叫端退罐頭。
+/// Cerebras API key（雲端推論，OpenAI 相容、免費、超快）。有設且非空才啟用 Cerebras tier。
+/// key 一律走環境變數 / `.env`（gitignored），絕不寫進 repo。沒設就跳過這條供應商。
+fn cerebras_key() -> Option<String> {
+    std::env::var("BUTFUN_CEREBRAS_API_KEY").ok().filter(|k| !k.trim().is_empty())
+}
+
+/// Cerebras 對話模型（可用 `BUTFUN_CEREBRAS_MODEL` 覆寫）。
+/// 預設挑 Cerebras 免費層現有、夠聰明、中文也行的模型；不確定時用此預設並可 env 覆寫。
+fn cerebras_model() -> String {
+    std::env::var("BUTFUN_CEREBRAS_MODEL").unwrap_or_else(|_| "llama-3.3-70b".to_string())
+}
+
+/// Cerebras 全域額度上限（鏡像 Groq 的 `groq_rate_ok`）：防單一/協同玩家輪流跟多個 NPC 聊、
+/// 繞過 per-NPC 冷卻、持續打爆免費額度。超過每分鐘或每日上限就一律回 None（降級到 Groq/ollama/罐頭）。
+/// 可用環境變數覆寫；近似計數（窗邊界可能略過量），對「成本上限」足夠。
+/// Cerebras 免費 tier 每分鐘上限較緊，預設保守值 30/分、14400/日。
+fn cerebras_rate_ok() -> bool {
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+    static MIN_WIN: AtomicU64 = AtomicU64::new(0);
+    static MIN_CNT: AtomicU32 = AtomicU32::new(0);
+    static DAY_WIN: AtomicU64 = AtomicU64::new(0);
+    static DAY_CNT: AtomicU32 = AtomicU32::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (min, day) = (now / 60, now / 86400);
+    if MIN_WIN.swap(min, Ordering::Relaxed) != min {
+        MIN_CNT.store(0, Ordering::Relaxed);
+    }
+    if DAY_WIN.swap(day, Ordering::Relaxed) != day {
+        DAY_CNT.store(0, Ordering::Relaxed);
+    }
+    let m = MIN_CNT.fetch_add(1, Ordering::Relaxed) + 1;
+    let d = DAY_CNT.fetch_add(1, Ordering::Relaxed) + 1;
+    m <= groq_env_u32("BUTFUN_CEREBRAS_MAX_PER_MIN", 30) && d <= groq_env_u32("BUTFUN_CEREBRAS_MAX_PER_DAY", 14400)
+}
+
+/// 呼叫 Cerebras（OpenAI 相容 `/chat/completions`）。失敗（無 key / HTTP 錯 / 逾時 / 解析錯）
+/// 一律回 None，由上層降級。鏡像 `groq_chat`：免費、超快、雲端並發，當降級鏈的主力。
+async fn cerebras_chat(system: &str, user: &str) -> Option<String> {
+    let key = cerebras_key()?;
+    // 全域額度上限——超過就降級（不再呼叫 Cerebras），保護免費額度。
+    if !cerebras_rate_ok() {
+        return None;
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .ok()?;
+    let body = serde_json::json!({
+        "model": cerebras_model(),
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0.8,
+        "max_tokens": 400,
+    });
+    let resp = client
+        .post("https://api.cerebras.ai/v1/chat/completions")
+        .bearer_auth(key)
+        .json(&body)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: serde_json::Value = resp.json().await.ok()?;
+    let text = v
+        .get("choices")?
+        .get(0)?
+        .get("message")?
+        .get("content")?
+        .as_str()?
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// LLM 對話路由 + 降級鏈：**Cerebras（雲端，免費/超快/主力）→ Groq（雲端，第二）→
+/// 本機/Tailscale ollama → None（罐頭）**。
+/// 哪個 tier 沒設好（無 key / 超速率 / 連不到）就自動跳下一層；全失敗回 None，由呼叫端退罐頭。
 /// 永遠不卡 15Hz 迴圈、永遠回得出東西。
 ///
 /// 註：ollama tier 的位址由 `BUTFUN_OLLAMA_URL` 決定——指向本機 CPU、或指向一台
 /// 有顯卡的機器（例如透過 Tailscale 的私網 IP）皆可，無需改碼即可換成 GPU 推論。
 async fn llm_chat(system: &str, user: &str) -> Option<String> {
+    if cerebras_key().is_some() {
+        if let Some(t) = cerebras_chat(system, user).await {
+            return Some(t);
+        }
+    }
     if groq_key().is_some() {
         if let Some(t) = groq_chat(system, user).await {
             return Some(t);
@@ -391,7 +482,7 @@ async fn llm_chat(system: &str, user: &str) -> Option<String> {
 
 /// 給「自主 agent 決策」（npc_agent）共用同一條 LLM 路由 + 降級鏈。
 /// 只是把私有的 `llm_chat` 開一個 crate 內可見的窗口，行為完全一致：
-/// Groq → ollama → None（呼叫端退罐頭）。永遠不卡迴圈、永遠回得出東西。
+/// Cerebras → Groq → ollama → None（呼叫端退罐頭）。永遠不卡迴圈、永遠回得出東西。
 pub(crate) async fn agent_llm_chat(system: &str, user: &str) -> Option<String> {
     llm_chat(system, user).await
 }
@@ -513,6 +604,26 @@ mod tests {
         std::env::set_var("GROQ_API_KEY", "   ");
         assert!(groq_key().is_none());
         std::env::remove_var("GROQ_API_KEY");
+    }
+
+    #[test]
+    fn cerebras_model_has_sane_default() {
+        // 沒設 BUTFUN_CEREBRAS_MODEL 時要有可用的免費層預設，不能空。
+        std::env::remove_var("BUTFUN_CEREBRAS_MODEL");
+        let m = cerebras_model();
+        assert!(!m.is_empty());
+        assert!(m.contains("llama") || m.contains("qwen"));
+    }
+
+    #[test]
+    fn cerebras_key_absent_is_none() {
+        // 沒設 key（CI 預設）時 Cerebras tier 應被跳過——回 None，路由自動降級到 Groq/ollama。
+        std::env::remove_var("BUTFUN_CEREBRAS_API_KEY");
+        assert!(cerebras_key().is_none());
+        // 空字串（含純空白）也算沒設，避免誤判啟用。
+        std::env::set_var("BUTFUN_CEREBRAS_API_KEY", "   ");
+        assert!(cerebras_key().is_none());
+        std::env::remove_var("BUTFUN_CEREBRAS_API_KEY");
     }
 
     #[test]
