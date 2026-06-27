@@ -360,6 +360,31 @@ if (T.structuresHudLabel([], [], []) !== "" || T.structuresHudLabel(null, null, 
 if (/🗼/.test(T.structuresHudLabel([{ id: 1 }], [], []))) fail("無塔時不應顯示 🗼");
 console.log("✅ campfireVisual 旺度遞增／瞭望塔進度落成／雪人圍巾取模／HUD 標籤／壞值安全全綠");
 
+// ── ①g 世界樹群純邏輯：groveVisual 階段身形遞增／成樹遮蔭／groveHudLabel、壞值安全（ROADMAP 617）──
+if (typeof T.groveVisual !== "function" || typeof T.groveHudLabel !== "function") fail("__bf3dTest 未暴露 groveVisual/groveHudLabel");
+const gv = T.groveVisual;
+// 階段夾 0..3；樹幹高隨階段單調遞增（嫩芽近乎無幹）；樹冠尺寸隨階段遞增
+if (gv({ stage: 0 }).stage !== 0 || gv({ stage: 3 }).stage !== 3) fail("groveVisual stage 應原樣帶過");
+if (gv({ stage: 9 }).stage !== 3 || gv({ stage: -2 }).stage !== 0) fail("groveVisual stage 應夾在 [0,3]");
+if (!(gv({ stage: 0 }).trunkH < gv({ stage: 1 }).trunkH && gv({ stage: 1 }).trunkH < gv({ stage: 2 }).trunkH && gv({ stage: 2 }).trunkH < gv({ stage: 3 }).trunkH)) fail("樹幹高應隨階段單調遞增");
+if (gv({ stage: 0 }).trunkH > 0.01) fail("嫩芽階段應近乎無樹幹");
+if (!(gv({ stage: 1 }).crownScale < gv({ stage: 3 }).crownScale)) fail("樹冠尺寸應隨階段變闊");
+// 身形旗標：只有嫩芽 sprout、只有幼樹 pine、只有成樹 shade/sway 在 stage>=2
+if (!gv({ stage: 0 }).sprout || gv({ stage: 1 }).sprout || gv({ stage: 2 }).sprout) fail("只有嫩芽應 sprout");
+if (gv({ stage: 1 }).pine || !gv({ stage: 2 }).pine || gv({ stage: 3 }).pine) fail("只有幼樹應 pine 松冠");
+if (gv({ stage: 2 }).shade || !gv({ stage: 3 }).shade) fail("只有成樹應投樹蔭");
+if (gv({ stage: 1 }).sway || !gv({ stage: 2 }).sway || !gv({ stage: 3 }).sway) fail("幼樹／成樹才隨風擺、幼苗不擺");
+// 壞值安全：null/非物件/壞 stage → 退回嫩芽（stage 0），不爆
+if (gv(null).stage !== 0 || gv("x").stage !== 0 || gv({ stage: NaN }).stage !== 0) fail("groveVisual 壞值應退回 stage 0");
+// 確定性
+if (JSON.stringify(gv({ stage: 2 })) !== JSON.stringify(gv({ stage: 2 }))) fail("groveVisual 非確定性");
+// HUD 標籤：數出總棵數＋成樹數；無樹回空字串；只有未成樹時顯 🌱、有成樹顯 🌳
+const ghl = T.groveHudLabel([{ stage: 0 }, { stage: 2 }, { stage: 3 }, { stage: 3 }]);
+if (!/🌳 樹 4/.test(ghl) || !/成樹 2/.test(ghl)) fail(`groveHudLabel 應數出 4 棵其中成樹 2，得「${ghl}」`);
+if (!/^🌱 樹 2$/.test(T.groveHudLabel([{ stage: 0 }, { stage: 1 }]))) fail("全未成樹應顯 🌱 不顯成樹數");
+if (T.groveHudLabel([]) !== "" || T.groveHudLabel(null) !== "") fail("無樹應回空字串");
+console.log("✅ groveVisual 階段身形遞增／嫩芽無幹／松冠成樹遮蔭／隨風擺旗標／HUD 標籤／壞值安全全綠");
+
 // ── ② 逐幀跑：先 welcome，再餵含各種內心生活的 NPC 快照，跑多幀抓例外 ──
 function drive(msg) { lastWS.onmessage({ data: JSON.stringify(msg) }); }
 function frames(n) { for (let i = 0; i < n; i++) { perfNow += 33; if (rafCb) { const cb = rafCb; rafCb = null; cb(); } } }
@@ -412,8 +437,17 @@ const snowmenA = [
   { id: 2, wx: 2950, wy: 2850, builder: "小華", style: 2, cheers: 5 }, // 有愛心
   { id: 3, wx: 3000, wy: 2800, builder: "旅人", style: 7, cheers: 0 }, // style 取模
 ];
+// 世界樹群：各階段一棵（嫩芽／幼苗／幼樹松／成樹遮蔭）＋壞 stage 後備——踩 makeGroveTree 建構
+// ＋applyGroveStage 各身形＋updateGroves 隨風擺全路徑（ROADMAP 617）。
+const grovesA = [
+  { x: 3050, y: 2950, stage: 0 }, // 嫩芽（無幹小葉）
+  { x: 2980, y: 3050, stage: 1 }, // 幼苗（圓冠）
+  { x: 3120, y: 3020, stage: 2 }, // 幼樹（松冠）
+  { x: 2920, y: 2980, stage: 3 }, // 成樹（投樹蔭）
+  { x: 3080, y: 2880, stage: 9 }, // 壞 stage → 夾成成樹
+];
 drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }], npcs: npcsA, wildlife: wildlifeA, enemies: [], nodes: [],
-  fields: fieldsA, campfires: campfiresA, watchtowers: watchtowersA, snowmen: snowmenA,
+  fields: fieldsA, campfires: campfiresA, watchtowers: watchtowersA, snowmen: snowmenA, world_groves: grovesA,
   daynight: { phase: "day", day_fraction: 0.33, light: 1.0, night_danger: false },
   // 細雨＋橫風＋彩虹：踩 applyWeather 的粒子推進／回收、霧染、彩虹淡入路徑（ROADMAP 613）
   weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
@@ -464,8 +498,16 @@ const snowmenB = [
   { id: 2, wx: 2950, wy: 2850, builder: "小華", style: 2, cheers: 5 },
   // id 3 融化 → 從快照消失 → AOI 淡出移除
 ];
+// 樹長大了（嫩芽→幼苗、幼樹→成樹）：stage 變動 → 踩 applyGroveStage 重塑樹身路徑；一棵被砍/消失走 AOI 淡出。
+const grovesB = [
+  { x: 3050, y: 2950, stage: 1 }, // 嫩芽長成幼苗
+  { x: 2980, y: 3050, stage: 1 }, // 不變
+  { x: 3120, y: 3020, stage: 3 }, // 幼樹長成成樹（投樹蔭）
+  { x: 2920, y: 2980, stage: 3 }, // 不變
+  // x3080,y2880 那棵從快照消失 → AOI 淡出移除
+];
 drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }], npcs: npcsB, wildlife: wildlifeB, enemies: [], nodes: [],
-  fields: fieldsB, campfires: campfiresB, watchtowers: watchtowersB, snowmen: snowmenB,
+  fields: fieldsB, campfires: campfiresB, watchtowers: watchtowersB, snowmen: snowmenB, world_groves: grovesB,
   daynight: { phase: "night", day_fraction: 0.82, light: 0.2, night_danger: true },
   // 天氣切到海霧（上飄粒子）＋彩虹消失：踩 fall<0 上飄回收、霧染轉色、彩虹淡出路徑
   weather: { weather_type: "water_sea_mist", intensity: 0.7, wind: { dir_x: -0.5, dir_y: 0.3, strength: 0.4 }, fish_phase: 1 },
@@ -477,5 +519,5 @@ if (caught.length) {
   for (const c of caught.slice(0, 10)) console.error("   · " + c);
   process.exit(1);
 }
-console.log("✅ NPC 內心生活（活動／思想／關懷／危機／歡慶＋狀態轉移＋AOI 淡出）＋野生動物（五種身形／幼獸縮放／馴養脈動／轉移）＋人造地標（篝火圍爐／將熄／塔施工→落成入夜亮燈／雪人讚賞＋AOI 淡出）跑 20 幀零例外");
+console.log("✅ NPC 內心生活（活動／思想／關懷／危機／歡慶＋狀態轉移＋AOI 淡出）＋野生動物（五種身形／幼獸縮放／馴養脈動／轉移）＋人造地標（篝火圍爐／將熄／塔施工→落成入夜亮燈／雪人讚賞＋AOI 淡出）＋世界樹群（嫩芽→幼苗→幼樹松→成樹遮蔭、長大重塑＋AOI 淡出）跑 20 幀零例外");
 console.log("✅ render-smoke-3d 全綠");
