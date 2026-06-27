@@ -14,8 +14,21 @@ use std::time::Duration;
 
 use crate::inventory::ItemKind;
 
-/// 全域 LLM 並發上限：同時最多這麼多條 ollama 呼叫（防 CPU 被打滿）。
+/// 全域 LLM 並發上限**預設值**：同時最多這麼多條 LLM 呼叫。
+/// 純本機 ollama 時這擋的是 CPU 被打滿；走雲端（Cerebras/Groq）多 key 後天然並發，
+/// 可由 `BUTFUN_MAX_CONCURRENT_LLM` 拉高（見 `max_concurrent_llm()`）。此常數仍是預設來源。
 pub const MAX_CONCURRENT_LLM: usize = 5;
+
+/// 實際採用的全域 LLM 並發上限：讀 `BUTFUN_MAX_CONCURRENT_LLM`，沒設 / 壞值 / 0 → 退預設
+/// （`MAX_CONCURRENT_LLM`），下限 clamp 到 1（永不 panic、永不歸零拿不到許可）。
+/// 維護者可在 .env 視免費腦池（多 key 雲端）放多高就設多高；沒設則行為與現在完全一樣。
+pub fn max_concurrent_llm() -> usize {
+    std::env::var("BUTFUN_MAX_CONCURRENT_LLM")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(MAX_CONCURRENT_LLM)
+}
 /// 每位玩家對同一個 NPC 的對話冷卻（秒）。防單人狂送吃掉所有許可。
 pub const PER_PLAYER_NPC_COOLDOWN_SECS: u64 = 8;
 
@@ -287,15 +300,63 @@ async fn ollama_chat(system: &str, user: &str) -> Option<String> {
     }
 }
 
-/// Groq API key（雲端推論，OpenAI 相容）。有設且非空才啟用 Groq tier。
-/// key 一律走環境變數 / `.env`（gitignored），絕不寫進 repo。
-fn groq_key() -> Option<String> {
-    std::env::var("GROQ_API_KEY").ok().filter(|k| !k.trim().is_empty())
+/// Groq API key 清單（雲端推論，OpenAI 相容）。
+/// `GROQ_API_KEY` 支援**逗號分隔多把 key**：維護者每註冊一個免費 Groq 帳號就多放一把
+/// key、免費思考額度線性疊加。各把 trim、濾掉空字串；單一把即向後相容。
+/// 沒設 / 全空 → 空 Vec（＝跳過 Groq，行為同單 key 時代）。
+/// key 值一律走環境變數 / `.env`（gitignored），絕不寫進 repo。
+fn groq_keys() -> Vec<String> {
+    std::env::var("GROQ_API_KEY")
+        .unwrap_or_default()
+        .split(',')
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .collect()
+}
+
+/// 是否啟用 Groq tier（至少有一把有效 key）。
+fn groq_enabled() -> bool {
+    !groq_keys().is_empty()
+}
+
+/// 用全域 round-robin 計數器，從多把 key 中挑「這次輪到的那把」，把負載平均分攤到各帳號。
+/// 對 keys 長度取模、保證不越界。沒有任何 key → None（呼叫端跳過 Groq）。
+fn groq_next_key() -> Option<String> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static RR: AtomicUsize = AtomicUsize::new(0);
+    let keys = groq_keys();
+    if keys.is_empty() {
+        return None;
+    }
+    let idx = RR.fetch_add(1, Ordering::Relaxed) % keys.len();
+    Some(keys[idx].clone())
 }
 
 /// Groq 對話模型（可用 `BUTFUN_GROQ_MODEL` 覆寫）。預設挑免費層裡夠聰明、中文也行的。
 fn groq_model() -> String {
     std::env::var("BUTFUN_GROQ_MODEL").unwrap_or_else(|_| "llama-3.3-70b-versatile".to_string())
+}
+
+fn groq_env_u32(key: &str, default: u32) -> u32 {
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+/// 每把 key 的 per-min / per-day 上限（可 env 覆寫）。輪替時把這基準乘上 key 數＝有效上限。
+fn groq_per_key_min() -> u32 {
+    groq_env_u32("BUTFUN_GROQ_MAX_PER_MIN", 30)
+}
+fn groq_per_key_day() -> u32 {
+    groq_env_u32("BUTFUN_GROQ_MAX_PER_DAY", 3000)
+}
+
+/// 給定 key 數，算出有效（全域）上限：每把上限 × key 數。輪替把負載分攤到 N 個帳號，
+/// 故 N 把 key 的整體額度應為單把的 N 倍。純邏輯抽出來方便測試。
+fn groq_effective_caps(key_count: usize) -> (u32, u32) {
+    let n = key_count.max(1) as u32; // 至少 1，避免 0 把時上限歸零
+    (
+        groq_per_key_min().saturating_mul(n),
+        groq_per_key_day().saturating_mul(n),
+    )
 }
 
 /// 呼叫 Groq（OpenAI 相容 `/chat/completions`）。失敗（無 key / HTTP 錯 / 逾時 / 解析錯）
@@ -304,9 +365,7 @@ fn groq_model() -> String {
 /// 全域 Groq 呼叫上限（H1 安全強化）：防單一/協同玩家輪流跟多個 NPC 聊、繞過 per-NPC 冷卻、
 /// 持續打爆免費額度 / 燒錢。超過每分鐘或每日上限就一律回 None（降級到 ollama/罐頭）。
 /// 可用環境變數覆寫；近似計數（窗邊界可能略過量），對「成本上限」足夠。
-fn groq_env_u32(key: &str, default: u32) -> u32 {
-    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
-}
+/// **有效上限隨 key 數放大**：輪替把負載分攤到 N 個免費帳號，整體額度＝每把上限 × key 數。
 fn groq_rate_ok() -> bool {
     use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
     static MIN_WIN: AtomicU64 = AtomicU64::new(0);
@@ -324,13 +383,15 @@ fn groq_rate_ok() -> bool {
     if DAY_WIN.swap(day, Ordering::Relaxed) != day {
         DAY_CNT.store(0, Ordering::Relaxed);
     }
+    let (max_min, max_day) = groq_effective_caps(groq_keys().len());
     let m = MIN_CNT.fetch_add(1, Ordering::Relaxed) + 1;
     let d = DAY_CNT.fetch_add(1, Ordering::Relaxed) + 1;
-    m <= groq_env_u32("BUTFUN_GROQ_MAX_PER_MIN", 30) && d <= groq_env_u32("BUTFUN_GROQ_MAX_PER_DAY", 3000)
+    m <= max_min && d <= max_day
 }
 
 async fn groq_chat(system: &str, user: &str) -> Option<String> {
-    let key = groq_key()?;
+    // 從多把 key 中 round-robin 挑這次輪到的那把（單把＝固定那把，沒設＝None 跳過）。
+    let key = groq_next_key()?;
     // H1：全域額度上限——超過就降級（不再呼叫 Groq），保護免費額度 / 不燒錢。
     if !groq_rate_ok() {
         return None;
@@ -657,7 +718,7 @@ async fn llm_chat(system: &str, user: &str) -> Option<String> {
             return Some(t);
         }
     }
-    if groq_key().is_some() {
+    if groq_enabled() {
         if let Some(t) = groq_chat(system, user).await {
             return Some(t);
         }
@@ -780,15 +841,86 @@ mod tests {
         assert!(m.contains("llama") || m.contains("qwen"));
     }
 
+    // 註：解析與輪替兩組斷言都動同一把 env（`GROQ_API_KEY`），合成單一測試，
+    // 避免 cargo 預設並行跑測試時對同一環境變數產生競態。
     #[test]
-    fn groq_key_absent_is_none() {
-        // 沒設 key（CI 預設）時 Groq tier 應被跳過——回 None，路由自動降級到 ollama。
+    fn groq_keys_parse_and_round_robin() {
+        // 沒設（CI 預設）→ 空 Vec＝跳過 Groq，行為同單 key 時代；next_key 回 None。
         std::env::remove_var("GROQ_API_KEY");
-        assert!(groq_key().is_none());
-        // 空字串也算沒設，避免誤判啟用。
+        assert!(groq_keys().is_empty());
+        assert!(!groq_enabled());
+        assert!(groq_next_key().is_none());
+
+        // 全空白 / 全是分隔的空字串 → 濾乾淨後仍為空。
         std::env::set_var("GROQ_API_KEY", "   ");
-        assert!(groq_key().is_none());
+        assert!(groq_keys().is_empty());
+        std::env::set_var("GROQ_API_KEY", " , , ");
+        assert!(groq_keys().is_empty());
+
+        // 單一把 → 正好一把（向後相容）。
+        std::env::set_var("GROQ_API_KEY", "key_a");
+        assert_eq!(groq_keys(), vec!["key_a".to_string()]);
+        assert!(groq_enabled());
+
+        // 多把（逗號分隔，含多餘空白與空項）→ 各自 trim、濾掉空、保序。
+        std::env::set_var("GROQ_API_KEY", " key_a , key_b ,, key_c ,");
+        assert_eq!(
+            groq_keys(),
+            vec!["key_a".to_string(), "key_b".to_string(), "key_c".to_string()]
+        );
+
+        // 三把 key：連續取多次都落在這三把裡（取模不越界），且會輪到每一把。
+        std::env::set_var("GROQ_API_KEY", "k0,k1,k2");
+        let valid = ["k0", "k1", "k2"];
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..30 {
+            let k = groq_next_key().expect("有 key 時必回 Some");
+            assert!(valid.contains(&k.as_str()), "輪到的 key 必在清單內、不越界");
+            seen.insert(k);
+        }
+        // 連取 30 次（>3）應把三把都輪到（round-robin 平均分攤）。
+        assert_eq!(seen.len(), 3, "round-robin 應輪到每一把 key");
         std::env::remove_var("GROQ_API_KEY");
+    }
+
+    #[test]
+    fn groq_caps_scale_with_key_count() {
+        // 有效上限＝每把上限 × key 數；確保新環境不受 env 覆寫干擾用預設基準。
+        std::env::remove_var("BUTFUN_GROQ_MAX_PER_MIN");
+        std::env::remove_var("BUTFUN_GROQ_MAX_PER_DAY");
+        let (min1, day1) = groq_effective_caps(1);
+        assert_eq!((min1, day1), (30, 3000)); // 預設單把基準
+        let (min3, day3) = groq_effective_caps(3);
+        assert_eq!(min3, min1 * 3);
+        assert_eq!(day3, day1 * 3);
+        // 0 把（理論上不會走到 rate 檢查）至少當 1 把，不把上限歸零。
+        assert_eq!(groq_effective_caps(0), (min1, day1));
+    }
+
+    // 註：操作同一把 env（`BUTFUN_MAX_CONCURRENT_LLM`）的斷言合成單一測試，避免並行競態。
+    #[test]
+    fn max_concurrent_llm_env_adjustable_with_clamp() {
+        // 沒設 → 退既有預設常數（行為與現在完全一樣）。
+        std::env::remove_var("BUTFUN_MAX_CONCURRENT_LLM");
+        assert_eq!(max_concurrent_llm(), MAX_CONCURRENT_LLM);
+
+        // 設合理數字 → 生效。
+        std::env::set_var("BUTFUN_MAX_CONCURRENT_LLM", "32");
+        assert_eq!(max_concurrent_llm(), 32);
+
+        // 含空白也能解析。
+        std::env::set_var("BUTFUN_MAX_CONCURRENT_LLM", "  16  ");
+        assert_eq!(max_concurrent_llm(), 16);
+
+        // 0 → 不合法（會拿不到許可），clamp 退預設。
+        std::env::set_var("BUTFUN_MAX_CONCURRENT_LLM", "0");
+        assert_eq!(max_concurrent_llm(), MAX_CONCURRENT_LLM);
+
+        // 壞值 → 退預設、不 panic。
+        std::env::set_var("BUTFUN_MAX_CONCURRENT_LLM", "abc");
+        assert_eq!(max_concurrent_llm(), MAX_CONCURRENT_LLM);
+
+        std::env::remove_var("BUTFUN_MAX_CONCURRENT_LLM");
     }
 
     #[test]

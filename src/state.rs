@@ -1760,7 +1760,7 @@ impl AppState {
                 }
                 stock
             })),
-            npc_llm_sem: Arc::new(Semaphore::new(crate::npc_chat::MAX_CONCURRENT_LLM)),
+            npc_llm_sem: Arc::new(Semaphore::new(crate::npc_chat::max_concurrent_llm())),
             agent_bus: Arc::new(crate::npc_agent_wire::AgentBus::new()),
             npc_last_chat: Arc::new(RwLock::new(HashMap::new())),
             npc_memory_store,
