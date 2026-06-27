@@ -6,6 +6,7 @@
 mod achievement;
 mod active_skill;
 mod affliction;
+mod angler_bond;
 mod auth;
 mod class;
 mod director;

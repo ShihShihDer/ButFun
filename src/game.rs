@@ -1863,6 +1863,8 @@ pub fn spawn(app: AppState) {
                     size_cm: None,
                     personal_best: None,
                     prev_best_cm: None,
+                    released_total: None,
+                    bond_tier: None,
                     x,
                     y,
                 }));

@@ -277,6 +277,12 @@ pub struct Player {
     /// 進行中的一趟釣魚小遊戲（ROADMAP 346）：拋竿後等咬鉤／反應窗口。
     /// 記憶體前置、不持久化、重啟清空（沒在釣＝None）。由 game.rs 每 tick 推進。
     pub fishing: Option<crate::fishing_bite::FishingCast>,
+    /// 放流養塘（ROADMAP 561）：是否開啟「放流模式」——開啟時上鉤的魚放回水裡（不入袋）。
+    /// 記憶體前置、不持久化、重啟歸 false（鏡像 `fish_attempt_count` 的記憶體模式）。
+    pub release_mode: bool,
+    /// 放流養塘（ROADMAP 561）：累積放流過的尾數＝「養塘度」，越高與水越結緣、釣魚冷卻越短。
+    /// 記憶體前置、不持久化、重啟歸零。
+    pub angler_released: u32,
 
     // ── 礦脈深掘（ROADMAP 348）────────────────────────────────────────────
     /// 採礦冷卻剩餘秒數（0.0 = 可開新礦脈；> 0 = 冷卻中）。一輪結束（收礦／崩塌）後起算，
@@ -1985,6 +1991,8 @@ mod tests {
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             fishing: None,
+            release_mode: false,
+            angler_released: 0,
             mine_cooldown: 0.0,
             mine_attempt_count: 0,
             mining: None,

@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, soonestCropEta, harvestEtaLabel, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint, materialUses, progressGoal, residentThoughtAlpha, nearestCareResident, cropRipeBadge, goldenHarvestText }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, soonestCropEta, harvestEtaLabel, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint, materialUses, progressGoal, residentThoughtAlpha, nearestCareResident, cropRipeBadge, goldenHarvestText, anglerBondLabel, releaseFloatText, anglerModeText }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -6279,7 +6279,34 @@
         } else if (msg.outcome === "escaped") {
           floaters.push({ wx, wy, text: "💨 魚脫鉤跑了…", color: "190,190,190", born: now });
           announce("等太久，魚脫鉤跑了");
+        } else if (msg.outcome === "released") {
+          // ROADMAP 561 放流養塘：把魚放回水裡——柔和水藍飄字＋清音，呈現養塘度與結緣等級。
+          const text = releaseFloatText(msg.released_total, msg.bond_tier);
+          floaters.push({ wx, wy, text, color: "150,210,235", born: now });
+          announce(text.replace("·", "，"));
+          SFX.chime(); // 放流的清柔水音（與收下的 success 區隔）
+          // 養塘度的權威值隨放流回填（伺服器不入快照以省頻寬），釣魚面板據此即時刷新。
+          if (typeof msg.released_total === "number") anglerReleased = msg.released_total;
+          if (typeof msg.bond_tier === "number") {
+            // 升階慶賀：結緣等級較上次更高時，多疊一道金色飄字＋報讀。
+            if (msg.bond_tier > anglerBondTier && anglerBondTier >= 0) {
+              floaters.push({ wx, wy: wy - 22,
+                text: `🌊 與水更結緣了：${anglerBondLabel(msg.bond_tier)}`,
+                color: "120,210,235", born: now });
+              announce(`與水更結緣了，${anglerBondLabel(msg.bond_tier)}`);
+            }
+            anglerBondTier = msg.bond_tier;
+          }
         }
+        break;
+      }
+      case "angler_mode": {
+        // ROADMAP 561 放流養塘：切換放流模式的確認，只對自己 id 生效（更新面板按鈕與養塘度）。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        anglerReleaseMode = !!msg.on;
+        if (typeof msg.released_total === "number") anglerReleased = msg.released_total;
+        if (typeof msg.bond_tier === "number") anglerBondTier = msg.bond_tier;
+        announce(anglerModeText(anglerReleaseMode));
         break;
       }
       case "mine_result": {
@@ -8868,6 +8895,29 @@
     if (!Number.isFinite(n) || n < 0) n = 0;
     n = Math.floor(n);
     return `✨ 正當時！＋${n}`;
+  }
+
+  // ROADMAP 561 放流養塘：純函式，好測、零副作用、i18n 集中於此（前端對照標籤）。
+  // anglerBondLabel：與水「結緣等級」→ 中文標籤；0＝未結緣，逐階遞增；壞值退「初識」。
+  // 標籤數需 ≥ 後端 max_tier()+1（後端 BOND_THRESHOLDS 5 階 → 0..5 共 6 級）。
+  const ANGLER_BOND_LABELS = ["初識", "相熟", "結緣", "知水", "通靈", "水之友"];
+  function anglerBondLabel(tier) {
+    let t = Number(tier);
+    if (!Number.isFinite(t) || t < 0) t = 0;
+    t = Math.floor(t);
+    if (t >= ANGLER_BOND_LABELS.length) t = ANGLER_BOND_LABELS.length - 1;
+    return ANGLER_BOND_LABELS[t];
+  }
+  // releaseFloatText：放流飄字「🕊️ 放流 · 養塘 N 尾（結緣 X）」。壞值（NaN／負）夾鉗至 0。
+  function releaseFloatText(releasedTotal, bondTier) {
+    let n = Number(releasedTotal);
+    if (!Number.isFinite(n) || n < 0) n = 0;
+    n = Math.floor(n);
+    return `🕊️ 放流 · 養塘 ${n} 尾（結緣 ${anglerBondLabel(bondTier)}）`;
+  }
+  // anglerModeText：放流模式切換提示（開／關）。供按鈕標籤與報讀。
+  function anglerModeText(on) {
+    return on ? "🕊️ 放流模式：開（上鉤即放生養塘）" : "🎣 放流模式：關（上鉤即收下）";
   }
 
   // 玩家當下選的播種品種（線格式字串）。預設主食穀＝既有單一作物：不主動選就跟改動前一模一樣。
@@ -30151,6 +30201,11 @@
 
   // 釣魚面板（ROADMAP 47）：顯示釣魚說明、垂釣按鈕（近水才亮）、魚類介紹。
   let lastFishSig = null;
+  // ROADMAP 561 放流養塘：放流模式與養塘度的權威值由伺服器 angler_mode 訊息回填（記憶體前置、
+  // 不入快照以省頻寬），前端只在切換與放流時更新，供面板按鈕與報讀呈現。
+  let anglerReleaseMode = false;
+  let anglerReleased = 0;
+  let anglerBondTier = 0;
   const FISH_INFO = [
     { item: "fish_small", emoji: "🐟", name: "小魚",   pct: "70%", npc: 2,  recipe: "烤魚（×2）→ 回 8 HP" },
     { item: "fish_star",  emoji: "⭐", name: "星星魚", pct: "25%", npc: 5,  recipe: "星燦刺身（×1）→ 回 15 HP" },
@@ -30164,7 +30219,9 @@
     // ROADMAP 346：進行中釣魚階段（"waiting"＝等咬鉤、"biting"＝該收竿）。
     const phase = me ? (me.fishing_phase || null) : null;
     // sig 用整秒數而非布林:冷卻倒數每秒要刷新,否則秒數凍結在初值直到歸零。phase 也納入即時切鈕。
-    const sig = [isGuestUser, Math.ceil(cooldown), nearWater, phase].join("|");
+    // ROADMAP 561：放流模式與養塘度納入 sig，切換／放流後面板即時刷新。
+    const sig = [isGuestUser, Math.ceil(cooldown), nearWater, phase,
+                 anglerReleaseMode, anglerReleased, anglerBondTier].join("|");
     if (sig === lastFishSig) return;
     lastFishSig = sig;
     body.innerHTML = "";
@@ -30211,6 +30268,28 @@
       castBtn.style.cursor = "default";
     }
     body.appendChild(castBtn);
+
+    // ROADMAP 561 放流養塘：放流模式切換 + 養塘度。開啟時上鉤的魚放回水裡（不入袋），
+    // 換更高熟練度＋累積養塘度（與水結緣越深、釣魚冷卻越短）。
+    const relBtn = document.createElement("button");
+    relBtn.type = "button";
+    const relOn = anglerReleaseMode;
+    relBtn.style.cssText = "width:100%;padding:7px 0;border:1px solid "
+      + (relOn ? "#4fb0d8" : "#3a6a7a") + ";border-radius:8px;background:"
+      + (relOn ? "rgba(96,200,235,.14)" : "transparent") + ";color:"
+      + (relOn ? "#9fdcf0" : "#7fa8b6") + ";cursor:pointer;font-size:.9rem;margin-bottom:8px;"
+      + (relOn ? "font-weight:bold;" : "");
+    relBtn.textContent = relOn ? "🕊️ 放流模式：開（再按關閉）" : "🕊️ 放流養塘（上鉤即放生）";
+    relBtn.setAttribute("aria-pressed", relOn ? "true" : "false");
+    relBtn.addEventListener("click", () => { safeSend({ type: "toggle_release" }); });
+    body.appendChild(relBtn);
+
+    if (anglerReleased > 0) {
+      const bond = document.createElement("div");
+      bond.style.cssText = "color:rgba(159,220,240,0.8);font-size:.78rem;margin-bottom:8px;";
+      bond.textContent = `🐟 養塘 ${anglerReleased} 尾 · 與水結緣：${anglerBondLabel(anglerBondTier)}`;
+      body.appendChild(bond);
+    }
 
     // 魚種介紹表。
     const table = document.createElement("div");
