@@ -506,8 +506,141 @@ async fn cerebras_chat(system: &str, user: &str) -> Option<String> {
     }
 }
 
-/// LLM 對話路由 + 降級鏈：**Cerebras（雲端，免費/超快/主力）→ Groq（雲端，第二）→
-/// 本機/Tailscale ollama → None（罐頭）**。
+/// Google Gemini API key 清單（雲端推論，OpenAI 相容端點、免費 tier）。
+/// `BUTFUN_GEMINI_API_KEY` 支援**逗號分隔多把 key**：維護者每註冊一個免費 Google 帳號就
+/// 多放一把 key、免費思考額度線性疊加。各把 trim、濾掉空字串；單一把即向後相容。
+/// 沒設 / 全空 → 空 Vec（＝跳過 Gemini，行為同沒接 Gemini 時）。
+/// key 值一律走環境變數 / `.env`（gitignored），絕不寫進 repo。
+fn gemini_keys() -> Vec<String> {
+    std::env::var("BUTFUN_GEMINI_API_KEY")
+        .unwrap_or_default()
+        .split(',')
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .collect()
+}
+
+/// 是否啟用 Gemini tier（至少有一把有效 key）。
+fn gemini_enabled() -> bool {
+    !gemini_keys().is_empty()
+}
+
+/// 用全域 round-robin 計數器，從多把 key 中挑「這次輪到的那把」，把負載平均分攤到各帳號。
+/// 對 keys 長度取模、保證不越界。沒有任何 key → None（呼叫端跳過 Gemini）。
+fn gemini_next_key() -> Option<String> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static RR: AtomicUsize = AtomicUsize::new(0);
+    let keys = gemini_keys();
+    if keys.is_empty() {
+        return None;
+    }
+    let idx = RR.fetch_add(1, Ordering::Relaxed) % keys.len();
+    Some(keys[idx].clone())
+}
+
+/// Gemini 對話模型（可用 `BUTFUN_GEMINI_MODEL` 覆寫）。
+/// **預設一定要 `gemini-2.5-flash`**：實測免費 tier 只有 2.5-flash 有免費額度，
+/// 2.0-flash 免費配額是 0；故別改成 2.0-flash。
+fn gemini_model() -> String {
+    std::env::var("BUTFUN_GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".to_string())
+}
+
+/// 每把 key 的 per-min / per-day 上限（可 env 覆寫）。輪替時把這基準乘上 key 數＝有效上限。
+/// Gemini 免費 tier 速率較緊，預設保守值 15/分、1000/日。
+fn gemini_per_key_min() -> u32 {
+    groq_env_u32("BUTFUN_GEMINI_MAX_PER_MIN", 15)
+}
+fn gemini_per_key_day() -> u32 {
+    groq_env_u32("BUTFUN_GEMINI_MAX_PER_DAY", 1000)
+}
+
+/// 給定 key 數，算出有效（全域）上限：每把上限 × key 數。輪替把負載分攤到 N 個帳號，
+/// 故 N 把 key 的整體額度應為單把的 N 倍。純邏輯抽出來方便測試。
+fn gemini_effective_caps(key_count: usize) -> (u32, u32) {
+    let n = key_count.max(1) as u32; // 至少 1，避免 0 把時上限歸零
+    (
+        gemini_per_key_min().saturating_mul(n),
+        gemini_per_key_day().saturating_mul(n),
+    )
+}
+
+/// Gemini 全域額度上限（鏡像 Cerebras 的 `cerebras_rate_ok`）：防單一/協同玩家輪流跟多個
+/// NPC 聊、繞過 per-NPC 冷卻、持續打爆免費額度。超過每分鐘或每日上限就一律回 None
+/// （降級到 Groq/ollama/罐頭）。近似計數（窗邊界可能略過量），對「成本上限」足夠。
+/// **有效上限隨 key 數放大**：輪替把負載分攤到 N 個免費帳號，整體額度＝每把上限 × key 數。
+fn gemini_rate_ok() -> bool {
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+    static MIN_WIN: AtomicU64 = AtomicU64::new(0);
+    static MIN_CNT: AtomicU32 = AtomicU32::new(0);
+    static DAY_WIN: AtomicU64 = AtomicU64::new(0);
+    static DAY_CNT: AtomicU32 = AtomicU32::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (min, day) = (now / 60, now / 86400);
+    if MIN_WIN.swap(min, Ordering::Relaxed) != min {
+        MIN_CNT.store(0, Ordering::Relaxed);
+    }
+    if DAY_WIN.swap(day, Ordering::Relaxed) != day {
+        DAY_CNT.store(0, Ordering::Relaxed);
+    }
+    let (max_min, max_day) = gemini_effective_caps(gemini_keys().len());
+    let m = MIN_CNT.fetch_add(1, Ordering::Relaxed) + 1;
+    let d = DAY_CNT.fetch_add(1, Ordering::Relaxed) + 1;
+    m <= max_min && d <= max_day
+}
+
+/// 呼叫 Gemini（OpenAI 相容端點 `/v1beta/openai/chat/completions`）。失敗（無 key / HTTP 錯 /
+/// 逾時 / 解析錯）一律回 None，由上層降級。鏡像 `cerebras_chat`：免費、雲端並發，當降級鏈的一環。
+async fn gemini_chat(system: &str, user: &str) -> Option<String> {
+    // 從多把 key 中 round-robin 挑這次輪到的那把（單把＝固定那把，沒設＝None 跳過）。
+    let key = gemini_next_key()?;
+    // 全域額度上限——超過就降級（不再呼叫 Gemini），保護免費額度。
+    if !gemini_rate_ok() {
+        return None;
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .ok()?;
+    let body = serde_json::json!({
+        "model": gemini_model(),
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0.8,
+        "max_tokens": 400,
+    });
+    let resp = client
+        .post("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
+        .bearer_auth(key)
+        .json(&body)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: serde_json::Value = resp.json().await.ok()?;
+    let text = v
+        .get("choices")?
+        .get(0)?
+        .get("message")?
+        .get("content")?
+        .as_str()?
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// LLM 對話路由 + 降級鏈：**Cerebras（雲端，免費/超快/主力）→ Gemini（雲端，免費）→
+/// Groq（雲端）→ 本機/Tailscale ollama → None（罐頭）**。
 /// 哪個 tier 沒設好（無 key / 超速率 / 連不到）就自動跳下一層；全失敗回 None，由呼叫端退罐頭。
 /// 永遠不卡 15Hz 迴圈、永遠回得出東西。
 ///
@@ -516,6 +649,11 @@ async fn cerebras_chat(system: &str, user: &str) -> Option<String> {
 async fn llm_chat(system: &str, user: &str) -> Option<String> {
     if cerebras_enabled() {
         if let Some(t) = cerebras_chat(system, user).await {
+            return Some(t);
+        }
+    }
+    if gemini_enabled() {
+        if let Some(t) = gemini_chat(system, user).await {
             return Some(t);
         }
     }
@@ -716,6 +854,70 @@ mod tests {
         assert_eq!(day3, day1 * 3);
         // 0 把（理論上不會走到 rate 檢查）至少當 1 把，不把上限歸零。
         assert_eq!(cerebras_effective_caps(0), (min1, day1));
+    }
+
+    #[test]
+    fn gemini_model_has_sane_default() {
+        // 沒設 BUTFUN_GEMINI_MODEL 時要有可用的免費層預設；**一定要 2.5-flash**（2.0-flash 免費配額是 0）。
+        std::env::remove_var("BUTFUN_GEMINI_MODEL");
+        let m = gemini_model();
+        assert_eq!(m, "gemini-2.5-flash", "Gemini 預設模型一定要 gemini-2.5-flash");
+    }
+
+    // 註：解析與輪替兩組斷言都動同一把 env（`BUTFUN_GEMINI_API_KEY`），合成單一測試，
+    // 避免 cargo 預設並行跑測試時對同一環境變數產生競態。
+    #[test]
+    fn gemini_keys_parse_and_round_robin() {
+        // 沒設（CI 預設）→ 空 Vec＝跳過 Gemini，行為同沒接 Gemini 時；next_key 回 None。
+        std::env::remove_var("BUTFUN_GEMINI_API_KEY");
+        assert!(gemini_keys().is_empty());
+        assert!(!gemini_enabled());
+        assert!(gemini_next_key().is_none());
+
+        // 全空白 / 全是分隔的空字串 → 濾乾淨後仍為空。
+        std::env::set_var("BUTFUN_GEMINI_API_KEY", "   ");
+        assert!(gemini_keys().is_empty());
+        std::env::set_var("BUTFUN_GEMINI_API_KEY", " , , ");
+        assert!(gemini_keys().is_empty());
+
+        // 單一把 → 正好一把（向後相容）。
+        std::env::set_var("BUTFUN_GEMINI_API_KEY", "key_a");
+        assert_eq!(gemini_keys(), vec!["key_a".to_string()]);
+        assert!(gemini_enabled());
+
+        // 多把（逗號分隔，含多餘空白與空項）→ 各自 trim、濾掉空、保序。
+        std::env::set_var("BUTFUN_GEMINI_API_KEY", " key_a , key_b ,, key_c ,");
+        assert_eq!(
+            gemini_keys(),
+            vec!["key_a".to_string(), "key_b".to_string(), "key_c".to_string()]
+        );
+
+        // 三把 key：連續取多次都落在這三把裡（取模不越界），且會輪到每一把。
+        std::env::set_var("BUTFUN_GEMINI_API_KEY", "k0,k1,k2");
+        let valid = ["k0", "k1", "k2"];
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..30 {
+            let k = gemini_next_key().expect("有 key 時必回 Some");
+            assert!(valid.contains(&k.as_str()), "輪到的 key 必在清單內、不越界");
+            seen.insert(k);
+        }
+        // 連取 30 次（>3）應把三把都輪到（round-robin 平均分攤）。
+        assert_eq!(seen.len(), 3, "round-robin 應輪到每一把 key");
+        std::env::remove_var("BUTFUN_GEMINI_API_KEY");
+    }
+
+    #[test]
+    fn gemini_caps_scale_with_key_count() {
+        // 有效上限＝每把上限 × key 數；確保新環境不受 env 覆寫干擾用預設基準。
+        std::env::remove_var("BUTFUN_GEMINI_MAX_PER_MIN");
+        std::env::remove_var("BUTFUN_GEMINI_MAX_PER_DAY");
+        let (min1, day1) = gemini_effective_caps(1);
+        assert_eq!((min1, day1), (15, 1000)); // 預設單把基準（免費 tier 保守）
+        let (min3, day3) = gemini_effective_caps(3);
+        assert_eq!(min3, min1 * 3);
+        assert_eq!(day3, day1 * 3);
+        // 0 把（理論上不會走到 rate 檢查）至少當 1 把，不把上限歸零。
+        assert_eq!(gemini_effective_caps(0), (min1, day1));
     }
 
     #[test]
