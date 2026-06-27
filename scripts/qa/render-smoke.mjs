@@ -4036,6 +4036,54 @@ for (const sc of scenarios) {
   else console.log("  ✅ 戰利品飄字（ROADMAP 509）：純函式真值表(7 cases) + 三情境 loot_pickup 飄字渲染，全路徑零例外");
 }
 
+// ── ROADMAP 560「正當時」黃金熟成期 ───────────────────────────────────────────
+{
+  const before = caughtRenderErrors.length;
+  let ok = true;
+  try {
+    const cropRipeBadge = sandbox.__bfTest && sandbox.__bfTest.cropRipeBadge;
+    const goldenHarvestText = sandbox.__bfTest && sandbox.__bfTest.goldenHarvestText;
+    if (!cropRipeBadge) throw new Error("cropRipeBadge 未匯出");
+    if (!goldenHarvestText) throw new Error("goldenHarvestText 未匯出");
+
+    // cropRipeBadge 真值表：黃金期 ✨ ＞ 一般成熟 ✅ ＞ 生長中無標記。
+    if (cropRipeBadge({ ripe: true, golden: true }) !== "✨") {
+      ok = false; console.error("  ❌ 黃金期作物應回 ✨");
+    }
+    if (cropRipeBadge({ ripe: true, golden: false }) !== "✅") {
+      ok = false; console.error("  ❌ 一般成熟作物應回 ✅");
+    }
+    if (cropRipeBadge({ ripe: false }) !== null) {
+      ok = false; console.error("  ❌ 生長中作物應無標記(null)");
+    }
+    if (cropRipeBadge(null) !== null) {
+      ok = false; console.error("  ❌ 壞值應回 null 不 crash");
+    }
+    // goldenHarvestText：正常與壞值（NaN/負）夾鉗至 0。
+    if (!goldenHarvestText(1).includes("＋1")) {
+      ok = false; console.error(`  ❌ goldenHarvestText(1) 應含 ＋1，got "${goldenHarvestText(1)}"`);
+    }
+    if (!goldenHarvestText(NaN).includes("＋0")) {
+      ok = false; console.error("  ❌ goldenHarvestText(NaN) 應夾 ＋0");
+    }
+    if (!goldenHarvestText(-5).includes("＋0")) {
+      ok = false; console.error("  ❌ goldenHarvestText(-5) 應夾 ＋0");
+    }
+
+    // 注入 farm_harvest 訊息，驗多幀渲染零例外。
+    lastWS.onmessage({ data: JSON.stringify({ type: "farm_harvest", x: 2400, y: 2400, golden: 2, bonus: 2 }) });
+    if (pump("正當時收割飄字渲染", 4) instanceof Error) ok = false;
+    // golden=0 不該飄字、也不 crash。
+    lastWS.onmessage({ data: JSON.stringify({ type: "farm_harvest", x: 2400, y: 2400, golden: 0, bonus: 0 }) });
+    if (pump("一般收割不飄字", 2) instanceof Error) ok = false;
+  } catch (e) {
+    ok = false; console.error("  ❌ 正當時黃金熟成期：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 正當時黃金熟成期：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 正當時黃金熟成期（ROADMAP 560）：cropRipeBadge/goldenHarvestText 真值表 + farm_harvest 飄字渲染，全路徑零例外");
+}
+
 // ── ROADMAP 510：遠程飛矢軌跡 ─────────────────────────────────────────────────
 {
   const before = caughtRenderErrors.length;

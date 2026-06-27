@@ -6582,17 +6582,29 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let downed = app.players.read().unwrap().get(&uid)
                                 .map(|p| p.vitals.is_downed()).unwrap_or(true);
                             if !downed {
-                                let (items, xp) = app.farm_crops.write().unwrap().harvest(plot_id);
-                                if !items.is_empty() {
+                                let y = app.farm_crops.write().unwrap().harvest(plot_id);
+                                if !y.items.is_empty() {
+                                    // 收割位置取玩家當下座標，供「正當時」飄字定位。
+                                    let mut pos = (0.0f32, 0.0f32);
                                     if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
-                                        for (item, qty) in &items {
+                                        for (item, qty) in &y.items {
                                             p.add_item_overflow(*item, *qty);
                                         }
-                                        p.masteries.gain_farmer(xp);
-                                        tracing::info!(player = %p.name, plot_id, items = items.len(), "收割作物");
+                                        p.masteries.gain_farmer(y.farmer_xp);
+                                        pos = (p.x, p.y);
+                                        tracing::info!(player = %p.name, plot_id, items = y.items.len(), golden = y.golden_crops, "收割作物");
                                     }
                                     // 新手引導：收成你的作物（ROADMAP 396）。
                                     advance_onboarding(&app, uid, crate::onboarding::OnboardStep::Harvest, &tx_direct);
+                                    // 正當時收割（ROADMAP 560）：私信飄字慶祝（鎖外、零頻寬增量）。
+                                    if y.golden_crops > 0 {
+                                        let msg = crate::protocol::ServerMsg::FarmHarvest {
+                                            x: pos.0, y: pos.1, golden: y.golden_crops, bonus: y.bonus_items,
+                                        };
+                                        if let Ok(j) = serde_json::to_string(&msg) {
+                                            let _ = tx_direct.try_send(j);
+                                        }
+                                    }
                                 }
                             }
                         }
