@@ -290,11 +290,9 @@ impl GuildStore {
             if let Backend::Postgres(pool) = &self.backend {
                 let pool = pool.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = db_insert_guild(&pool, guild_id, &name, &tag, founder_id).await {
-                        tracing::error!(%e, %guild_id, "工會 INSERT 失敗");
-                    }
-                    if let Err(e) = db_insert_member(&pool, guild_id, founder_id).await {
-                        tracing::error!(%e, %guild_id, %founder_id, "工會創始人 member INSERT 失敗");
+                    // 建會 + 寫入創始成員包在單一交易：避免中途失敗留下「有公會無創始成員」的孤兒態。
+                    if let Err(e) = db_create_guild_atomic(&pool, guild_id, &name, &tag, founder_id).await {
+                        tracing::error!(%e, %guild_id, "工會建立交易失敗");
                     }
                 });
             }
@@ -333,11 +331,9 @@ impl GuildStore {
                                 }
                             }
                             LeaveEffect::FounderChanged { guild_id, new_founder } => {
-                                if let Err(e) = db_delete_member(&pool, guild_id, player_id).await {
-                                    tracing::error!(%e, "公會成員 DELETE 失敗");
-                                }
-                                if let Err(e) = db_update_founder(&pool, guild_id, new_founder).await {
-                                    tracing::error!(%e, "公會換會長 UPDATE 失敗");
+                                // 刪離開成員 + 換會長包在單一交易：避免「成員已刪但會長沒換」的不一致。
+                                if let Err(e) = db_change_founder_atomic(&pool, guild_id, player_id, new_founder).await {
+                                    tracing::error!(%e, %guild_id, "公會換會長交易失敗");
                                 }
                             }
                             LeaveEffect::MemberLeft { guild_id } => {
@@ -419,12 +415,15 @@ async fn load_from_db(pool: &sqlx::postgres::PgPool, inner: &mut GuildInner) {
                 use sqlx::Row;
                 let guild_id: Uuid = match r.try_get("guild_id") { Ok(v) => v, Err(_) => continue };
                 let player_id: Uuid = match r.try_get("player_id") { Ok(v) => v, Err(_) => continue };
+                // 只有 guild 真實存在時才建 member→guild 映射：否則孤兒 guild_members 列
+                // （例如公會刪除後殘留）會把玩家綁到一個查不到、退不掉的「幽靈公會」，
+                // 從此無法加入/建立公會（線上鎖死）。
                 if let Some(guild) = inner.guilds.get_mut(&guild_id) {
                     if !guild.member_ids.contains(&player_id) {
                         guild.member_ids.push(player_id);
                     }
+                    inner.member_to_guild.insert(player_id, guild_id);
                 }
-                inner.member_to_guild.insert(player_id, guild_id);
             }
         }
         Err(e) => {
@@ -437,13 +436,16 @@ async fn load_from_db(pool: &sqlx::postgres::PgPool, inner: &mut GuildInner) {
     tracing::info!(%guild_count, %member_count, "公會資料從 DB 載回完成");
 }
 
-async fn db_insert_guild(
+/// 建立公會 + 寫入創始成員：兩語句包在單一交易，任一失敗整筆回滾，
+/// 不留下「有公會無成員」或「有成員無公會」的不一致列。
+async fn db_create_guild_atomic(
     pool: &sqlx::postgres::PgPool,
     id: Uuid,
     name: &str,
     tag: &str,
     founder_id: Uuid,
 ) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO guilds (id, name, tag, founder_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
     )
@@ -451,9 +453,16 @@ async fn db_insert_guild(
     .bind(name)
     .bind(tag)
     .bind(founder_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
-    Ok(())
+    sqlx::query(
+        "INSERT INTO guild_members (guild_id, player_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+    )
+    .bind(id)
+    .bind(founder_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
 }
 
 async fn db_insert_member(
@@ -484,33 +493,44 @@ async fn db_delete_member(
     Ok(())
 }
 
-/// 公會解散：先刪成員，再刪公會主體。
+/// 公會解散：先刪成員，再刪公會主體——包在單一交易，避免「成員刪了但公會還在」
+/// （或反之）的不一致殘留。
 async fn db_delete_guild(
     pool: &sqlx::postgres::PgPool,
     guild_id: Uuid,
 ) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM guild_members WHERE guild_id = $1")
         .bind(guild_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     sqlx::query("DELETE FROM guilds WHERE id = $1")
         .bind(guild_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
-    Ok(())
+    tx.commit().await
 }
 
-async fn db_update_founder(
+/// 換會長：刪去離開的成員 + 更新 founder，包在單一交易，避免
+/// 「成員已刪但會長沒換」這種會讓公會頓失會長的不一致。
+async fn db_change_founder_atomic(
     pool: &sqlx::postgres::PgPool,
     guild_id: Uuid,
+    leaving_player: Uuid,
     new_founder: Uuid,
 ) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM guild_members WHERE guild_id = $1 AND player_id = $2")
+        .bind(guild_id)
+        .bind(leaving_player)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("UPDATE guilds SET founder_id = $1 WHERE id = $2")
         .bind(new_founder)
         .bind(guild_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
-    Ok(())
+    tx.commit().await
 }
 
 async fn db_update_treasury(
