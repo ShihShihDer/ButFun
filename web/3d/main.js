@@ -133,6 +133,185 @@ const NPC_COLOR = 0xd8b070;      // NPC／居民：暖棕火柴人
 const WILDLIFE_COLOR = 0x7fd87f; // 野生動物：綠色小盒（盒子，跟「人」一眼區分）
 const ENEMY_COLOR = 0xff5a5a;    // 敵人：紅色盒子（盒子，跟「人」一眼區分）
 
+// ============================================================
+// AI 居民的內心生活（ROADMAP 611）：把快照裡早就有、2D 看得到、3D 卻一直忽略的
+// activity／thought／needs_care／alarmed／celebrating 在 3D 頭頂呈現出來，
+// 讓住在這個世界裡的 AI 居民「看得出在做什麼、在想什麼、心情如何」。
+// 純讀快照、零後端改動、零協議改動——資料本來就在 NpcView 裡。
+// ============================================================
+// 偏好減少動態：尊重系統設定，關掉跳動／脈動（鏡像 2D game.js 的 reduceMotion）。
+const reduceMotion =
+  typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// 故鄉七大居民的「當前活動 → 頭頂符號」對照（鏡像 web/game.js 的 NPC_ACTIVITY_ICON；
+// 後端只送穩定的 activity 代碼，文案／符號由前端對照＝留 i18n 空間，別把字面意義寫死進後端）。
+const NPC_ACTIVITY_ICON = {
+  commuting: "🚶",   // 趕路中
+  resting: "💤",     // 夜間休憩
+  lunching: "🍲",    // 正午聚到廣場用餐
+  tallying: "🪙",    // 商人點算貨銀
+  hammering: "🔨",   // 工匠敲打鍛造
+  sharpening: "🏹",  // 獵手擦拭上弦
+  mapping: "🗺️",     // 探勘員看地圖
+  stocktaking: "📦", // 採購清點備貨
+  judging: "📋",     // 評審打分
+  patrolling: "👀",  // 里長巡視
+  visiting: "🤝",    // 黃昏串門子
+};
+
+// 純函式：依一筆 NpcView 算出「頭頂主狀態 emoji」。優先序與 2D 一致——
+// 危機避難 😰 ＞ 凱旋歡慶 🎉 ＞ 當前活動符號；都沒有則回 null（不顯示）。
+// 壞資料（item 為 null／activity 對不到）一律安全回 null，不讓渲染掛掉。
+function residentStatusEmoji(item) {
+  if (!item) return null;
+  if (item.alarmed) return "😰";
+  if (item.celebrating) return "🎉";
+  if (item.activity) return NPC_ACTIVITY_ICON[item.activity] || null;
+  return null;
+}
+
+// 共用 emoji 貼圖快取：同一顆 emoji 全場共用一張 CanvasTexture（distinct emoji 數很小、自然有界）。
+const emojiTexCache = new Map();
+function emojiTexture(emoji) {
+  let tex = emojiTexCache.get(emoji);
+  if (tex) return tex;
+  const canvas = document.createElement("canvas");
+  canvas.width = 64; canvas.height = 64;
+  const ctx = canvas.getContext("2d");
+  ctx.font = "48px system-ui, sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(emoji, 32, 36);
+  tex = new THREE.CanvasTexture(canvas);
+  tex.anisotropy = 4;
+  emojiTexCache.set(emoji, tex);
+  return tex;
+}
+
+// 思想泡泡 💭 貼圖：淡紫圓角底 + 白字（鏡像 2D drawResidentThought 的柔和調性）。
+// 文案是後端罐頭短句、種類有界，仍加 FIFO 上限保險，避免長跑累積貼圖。
+const thoughtTexCache = new Map();
+const THOUGHT_CACHE_MAX = 48;
+function thoughtTexture(text) {
+  const key = String(text == null ? "" : text);
+  let tex = thoughtTexCache.get(key);
+  if (tex) return tex;
+  const canvas = document.createElement("canvas");
+  canvas.width = 512; canvas.height = 96;
+  const ctx = canvas.getContext("2d");
+  // 內心話本就短：過長截斷（與 2D 一致，泡泡不撐爆）
+  let label = "💭 " + key;
+  if (label.length > 22) label = label.slice(0, 21) + "…";
+  ctx.font = "30px system-ui, sans-serif";
+  const tw = Math.min(500, ctx.measureText(label).width + 36);
+  const bx = (512 - tw) / 2, by = 20, bw = tw, bh = 56, r = 16;
+  // 圓角底（淡紫、半透明，比對話泡泡更柔）
+  ctx.fillStyle = "rgba(70,55,110,0.78)";
+  ctx.beginPath();
+  ctx.moveTo(bx + r, by);
+  ctx.arcTo(bx + bw, by, bx + bw, by + bh, r);
+  ctx.arcTo(bx + bw, by + bh, bx, by + bh, r);
+  ctx.arcTo(bx, by + bh, bx, by, r);
+  ctx.arcTo(bx, by, bx + bw, by, r);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "#f3ecff";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(label, 256, by + bh / 2 + 1);
+  tex = new THREE.CanvasTexture(canvas);
+  tex.anisotropy = 4;
+  // FIFO 汰換：超量就丟最舊一張並釋放 GPU 資源
+  if (thoughtTexCache.size >= THOUGHT_CACHE_MAX) {
+    const oldestKey = thoughtTexCache.keys().next().value;
+    const old = thoughtTexCache.get(oldestKey);
+    if (old) old.dispose();
+    thoughtTexCache.delete(oldestKey);
+  }
+  thoughtTexCache.set(key, tex);
+  return tex;
+}
+
+// 建一個透明的小 emoji sprite（一開始隱形；setSpriteEmoji 換上貼圖時才現身）。
+function makeEmojiSprite(size) {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, depthTest: false, opacity: 0 }));
+  s.scale.set(size, size, 1);
+  s.visible = false;
+  return s;
+}
+// 設定 sprite 顯示的 emoji（只在改變時換貼圖，省每幀重建）；回傳是否有東西可顯示。
+function setSpriteEmoji(sprite, emoji) {
+  if (sprite.userData.emoji !== emoji) {
+    sprite.userData.emoji = emoji;
+    if (emoji) { sprite.material.map = emojiTexture(emoji); sprite.material.needsUpdate = true; }
+  }
+  return !!emoji;
+}
+
+// 給一個 NPC group 掛上三層內心生活的呈現 sprite（主狀態 emoji／💚 關懷側標／💭 思想泡泡）。
+// 都疊在名字標籤之上，depthTest:false 浮在最前；初始隱形，由 updateResidentStatus 每幀依快照決定。
+function attachResidentStatus(g) {
+  const status = makeEmojiSprite(5);
+  status.position.set(0, 13.5, 0);
+  const care = makeEmojiSprite(3.6);
+  care.position.set(3.6, 11.5, 0);
+  const thought = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, depthTest: false, opacity: 0 }));
+  thought.scale.set(16, 3, 1);
+  thought.position.set(0, 18, 0);
+  thought.visible = false;
+  g.add(status); g.add(care); g.add(thought);
+  g.userData.statusSprite = status;
+  g.userData.careSprite = care;
+  g.userData.thoughtSprite = thought;
+}
+
+// 每幀更新所有 NPC 的內心生活呈現（在 updateRemoteEntities(npcs) 之後呼叫：
+// 那裡的 updateFade 會把每個子 sprite 的 opacity 設成 AOI 淡入淡出值，這裡再乘上各自的
+// 顯示強度覆寫上去，故 AOI 淡入淡出仍生效、又不被它壓掉內心生活的呈現）。
+function updateResidentStatus(t) {
+  for (const [, g] of npcs) {
+    const status = g.userData.statusSprite;
+    if (!status) continue; // 非居民類 NPC group 沒掛（理論上都掛了，保險）
+    const item = g.userData.item;
+    const fade = g.userData.fade ?? 1; // AOI 淡入淡出基底
+    const care = g.userData.careSprite, thought = g.userData.thoughtSprite;
+
+    // ① 主狀態 emoji（危機／歡慶／活動）
+    const emoji = residentStatusEmoji(item);
+    if (setSpriteEmoji(status, emoji)) {
+      status.visible = true;
+      let bob = 0;
+      if (!reduceMotion && item) {
+        // 危機輕跳、歡慶更快更高跳（鏡像 2D 的節奏暗示）
+        if (item.alarmed) bob = Math.sin(t * 6 + g.position.x * 0.3) * 0.5;
+        else if (item.celebrating) bob = Math.abs(Math.sin(t * 9 + g.position.x * 0.3)) * 1.1;
+      }
+      status.position.y = 13.5 + bob;
+      status.material.opacity = fade;
+    } else {
+      status.visible = false;
+    }
+
+    // ② 關懷側標 💚（needs_care）：輕輕脈動，呼應 2D 的「這位需要被關心」
+    if (item && item.needs_care) {
+      setSpriteEmoji(care, "💚");
+      care.visible = true;
+      const pulse = reduceMotion ? 1 : 0.72 + 0.28 * Math.abs(Math.sin(t * 3));
+      care.material.opacity = fade * pulse;
+    } else if (care) {
+      care.visible = false;
+    }
+
+    // ③ 思想泡泡 💭（thought）：有內心話才飄；柔和半透明
+    if (item && item.thought) {
+      thought.material.map = thoughtTexture(item.thought);
+      thought.material.needsUpdate = true;
+      thought.visible = true;
+      thought.material.opacity = fade * 0.92;
+    } else if (thought) {
+      thought.visible = false;
+    }
+  }
+}
+
 // ---- 程序化火柴人（stickman）----
 // 人形＝純幾何組裝：球當頭、膠囊當軀幹、細圓柱當四肢，零美術資產。
 // 套用對象＝玩家（自己＋別人）＋ NPC／居民；敵人／野生動物／節點維持盒子等好區分。
@@ -309,6 +488,7 @@ function reconcile(list, map, keyOf, create, recvT) {
         }
         g.userData.tx = tx;
         g.userData.tz = tz;
+        g.userData.item = item; // 留存最新一筆快照欄位（NPC 內心生活呈現要讀 activity/thought/…）
         // 推一筆帶時間戳的快照樣本進緩衝（render-in-past 內插用）
         const buf = g.userData.buf || (g.userData.buf = []);
         buf.push({ t: recvT, x: tx, z: tz });
@@ -354,7 +534,12 @@ function handleServerMsg(msg) {
       reconcile(
         msg.npcs, npcs,
         (n) => n.id,
-        (n) => makeEntity(makeStickman(NPC_COLOR), n.name || "NPC"),
+        (n) => {
+          // 暖棕火柴人 + 名字（沿用 #767 程序化 stickman），再掛上內心生活的三層呈現（狀態／關懷／思想）
+          const g = makeEntity(makeStickman(NPC_COLOR), n.name || "NPC");
+          attachResidentStatus(g);
+          return g;
+        },
         recvT
       );
       // 野生動物：綠色小盒（不加標籤，避免太雜）
@@ -835,6 +1020,8 @@ function safeRender() {
     // 別人／NPC／敵人／野生動物：正規實體內插（自己 myId 跳過，走預測）
     updateRemoteEntities(players, scene, renderTime, true, dt, t, myId, k);
     updateRemoteEntities(npcs, scene, renderTime, true, dt, t, undefined, k);
+    // NPC 內心生活呈現：在 npcs 的 updateFade 之後覆寫狀態/關懷/思想 sprite 的顯示（ROADMAP 611）
+    updateResidentStatus(t);
     updateRemoteEntities(wildlife, scene, renderTime, true, dt, t, undefined, k);
     updateRemoteEntities(enemies, scene, renderTime, true, dt, t, undefined, k);
     // 節點靜態：不轉身/起伏；位置吸最新目標（內插對靜態無差），仍走 AOI 淡入淡出
@@ -884,6 +1071,11 @@ window.addEventListener("resize", () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
+
+// 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
+if (typeof globalThis !== "undefined") {
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture };
+}
 
 // 啟動
 setStatus("連線中…");
