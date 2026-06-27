@@ -1154,6 +1154,311 @@ function updateFields(dt, t) {
   }
 }
 
+// ============================================================
+// 人造地標在 3D 裡立起來（ROADMAP 616）：把快照裡早就有、2D 一直看得到、3D 卻整個忽略的
+// 三種「眾人一起蓋出來」的世界地標接進 3D，讓「這個世界裡住著會動手蓋東西的人」一眼看得見——
+//   · 篝火 `campfires`（CampfireView）：交叉柴堆＋跳動火焰＋地面暖意圈，圍爐越多火越旺、入夜更亮、將熄漸弱。
+//   · 協力瞭望塔 `watchtowers`（WatchtowerView）：依進度從工地一節節升起，落成後入夜亮起塔頂燈。
+//   · 署名雪人 `snowmen`（SnowmanView）：三球疊起＋圍巾＋表情，頭頂署名與愛心數（天回暖即消融）。
+// 純讀快照、零後端改動、零協議改動——資料本來就在 CampfireView/WatchtowerView/SnowmanView 裡（2D game.js 早在用）。
+// 這三者都是「不會走動的固定地標」，故不進 updateRemoteEntities（那是給會移動的實體內插用），
+// 走跟農地一樣的 reconcileStatic：以 id 為 key、位置一次定位、只走 AOI 淡入淡出。
+// ============================================================
+
+// 雪人圍巾配色（鏡像 2D game.js SNOWMAN_STYLES，與後端 snowman::SNOWMAN_STYLES(4) 對齊）。
+// 同 style 永遠同圍巾色＋表情，每座雪人各有個性。未知 style 取模保守落在合法款。
+const SNOWMAN_STYLES_3D = [
+  { scarf: 0xd4533f, face: "🙂" }, // 紅圍巾
+  { scarf: 0x3f7bd4, face: "😊" }, // 藍圍巾
+  { scarf: 0x3fae72, face: "😌" }, // 綠圍巾
+  { scarf: 0xc46fd0, face: "🤗" }, // 紫圍巾
+];
+
+const CAMPFIRE_LOG_COLOR = 0x6b4a2f;   // 柴薪：深木褐
+const CAMPFIRE_FLAME_COLOR = 0xff8a2a; // 火焰：暖橙（會發光）
+const CAMPFIRE_GLOW_COLOR = 0xffb060;  // 暖意圈：柔橙
+const TOWER_WOOD_COLOR = 0x8a6a44;     // 塔身：木黃褐
+const TOWER_BEACON_COLOR = 0xffe08a;   // 塔頂燈：暖黃（落成後入夜亮起）
+const SNOW_COLOR = 0xeef4ff;           // 雪：帶藍的白
+
+// 篝火視覺（純函式）：圍爐人數→火旺（鏡像 2D campfireBlazeScale）、剩餘秒數→將熄漸弱、warmth_radius→暖意圈大小。
+// 只讀權威欄位、確定性、壞值安全；前端據此調火焰縮放／暖圈半徑／將熄透明度。
+function campfireVisual(item) {
+  if (!item || typeof item !== "object") return { blaze: 1, warmthRadius: 60, gather: 0, dying: false };
+  const n = Number.isFinite(item.gather_count) ? Math.max(0, Math.floor(item.gather_count)) : 0;
+  // 圍爐越多火越旺（鏡像 2D：1 + min((n-1)*0.10, 0.40)）
+  const blaze = 1 + Math.min(Math.max(0, n - 1) * 0.10, 0.40);
+  const wr = Number.isFinite(item.warmth_radius) && item.warmth_radius > 0 ? item.warmth_radius : 60;
+  // 剩餘秒數低（將熄）→ dying，前端讓火光漸弱
+  const dying = Number.isFinite(item.remaining_secs) && item.remaining_secs <= 10;
+  return { blaze, warmthRadius: wr, gather: n, dying };
+}
+
+// 瞭望塔視覺（純函式）：進度 0..1（夾）、是否落成、本拍協力工人數。前端據此把塔身升到對應高度、落成後亮燈。
+function watchtowerVisual(item) {
+  if (!item || typeof item !== "object") return { progress: 0, done: false, builders: 0 };
+  let p = Number.isFinite(item.progress) ? item.progress / 100 : 0;
+  p = p < 0 ? 0 : p > 1 ? 1 : p;
+  const done = item.done === true || p >= 1;
+  const builders = Number.isFinite(item.builders) ? Math.max(0, Math.floor(item.builders)) : 0;
+  return { progress: done ? 1 : p, done, builders };
+}
+
+// 雪人視覺（純函式）：style→圍巾色＋表情、累積愛心數、署名。確定性、壞值安全。
+function snowmanVisual(item) {
+  const n = SNOWMAN_STYLES_3D.length;
+  if (!item || typeof item !== "object") return { ...SNOWMAN_STYLES_3D[0], cheers: 0, builder: "" };
+  const raw = Number.isFinite(item.style) ? Math.floor(item.style) : 0;
+  const spec = SNOWMAN_STYLES_3D[((raw % n) + n) % n];
+  const cheers = Number.isFinite(item.cheers) ? Math.max(0, Math.floor(item.cheers)) : 0;
+  return { scarf: spec.scarf, face: spec.face, cheers, builder: typeof item.builder === "string" ? item.builder : "" };
+}
+
+// 視野內人造地標的 HUD 標籤：幾座篝火／瞭望塔／雪人。純函式、壞值安全；全無則回空字串。
+function structuresHudLabel(campfires, watchtowers, snowmen) {
+  const c = Array.isArray(campfires) ? campfires.length : 0;
+  const w = Array.isArray(watchtowers) ? watchtowers.length : 0;
+  const s = Array.isArray(snowmen) ? snowmen.length : 0;
+  const parts = [];
+  if (c) parts.push("🔥" + c);
+  if (w) parts.push("🗼" + w);
+  if (s) parts.push("⛄" + s);
+  return parts.join(" ");
+}
+
+// 入夜程度（0＝大白天，1＝全黑）：篝火／塔頂燈據此入夜更亮。讀最新權威 daynight.light。
+function nightFactor() {
+  const lt = latestDayNight && Number.isFinite(latestDayNight.light) ? latestDayNight.light : 1;
+  const c = lt < 0 ? 0 : lt > 1 ? 1 : lt;
+  return 1 - c;
+}
+
+// 共用幾何（全模組只建一次，幾十座地標也不重建頂點）。材質一律「每座一份」——AOI 淡入淡出
+// 才能各自獨立調 opacity，不牽連同型的別座。
+const ST_GEO = {
+  log:       new THREE.CylinderGeometry(0.4, 0.4, 5, 5),    // 篝火柴薪（細圓木）
+  flame:     new THREE.ConeGeometry(1.6, 4.2, 7),           // 火焰（尖錐）
+  ember:     new THREE.ConeGeometry(0.9, 2.4, 6),           // 內焰（亮心）
+  glowDisc:  new THREE.CylinderGeometry(1, 1, 0.2, 24),     // 暖意圈（扁圓盤，鋪地，半徑由 scale 撐）
+  towerPost: new THREE.BoxGeometry(0.9, 1, 0.9),            // 塔柱（高度由 scale.y 撐）
+  towerDeck: new THREE.BoxGeometry(6, 0.8, 6),              // 瞭望平台
+  towerRoof: new THREE.ConeGeometry(4.6, 3.2, 4),           // 塔頂尖頂
+  beacon:    new THREE.SphereGeometry(1.1, 8, 6),           // 塔頂燈
+  snowBall:  new THREE.SphereGeometry(1, 10, 8),            // 雪球（三球疊起，半徑由 scale 撐）
+  scarf:     new THREE.TorusGeometry(2.2, 0.5, 6, 12),      // 圍巾
+  nose:      new THREE.ConeGeometry(0.35, 1.6, 5),          // 紅蘿蔔鼻
+};
+
+// 一座篝火：交叉柴堆＋雙層火焰（外焰/亮心，會跳動發光）＋地面暖意圈。火焰／暖圈引用留在 userData 供每幀調。
+function makeCampfire(item) {
+  const v = campfireVisual(item);
+  const g = new THREE.Group();
+  // 交叉柴薪：四根斜放圍成井字火堆
+  for (let i = 0; i < 4; i++) {
+    const log = new THREE.Mesh(ST_GEO.log, new THREE.MeshLambertMaterial({ color: CAMPFIRE_LOG_COLOR }));
+    const ang = (i / 4) * Math.PI;
+    log.position.set(0, 0.7, 0);
+    log.rotation.set(Math.PI / 2.4, ang, 0);
+    g.add(log);
+  }
+  // 外焰（橙、發光）
+  const flame = new THREE.Mesh(ST_GEO.flame, new THREE.MeshBasicMaterial({ color: CAMPFIRE_FLAME_COLOR, transparent: true }));
+  flame.position.y = 2.6;
+  g.add(flame);
+  // 內焰亮心（亮黃、更小）
+  const ember = new THREE.Mesh(ST_GEO.ember, new THREE.MeshBasicMaterial({ color: 0xfff0a0, transparent: true }));
+  ember.position.y = 2.2;
+  g.add(ember);
+  // 地面暖意圈：扁圓盤，半徑＝warmth_radius（世界像素）×WORLD_SCALE
+  const glow = new THREE.Mesh(ST_GEO.glowDisc, new THREE.MeshBasicMaterial({ color: CAMPFIRE_GLOW_COLOR, transparent: true, opacity: 0.16, depthWrite: false }));
+  const r = Math.max(2, v.warmthRadius * WORLD_SCALE);
+  glow.scale.set(r, 1, r);
+  glow.position.y = 0.12;
+  g.add(glow);
+  g.userData.flame = flame;
+  g.userData.ember = ember;
+  g.userData.glow = glow;
+  return g;
+}
+
+// 一座瞭望塔：四根升起的塔柱＋平台＋尖頂＋塔頂燈。塔身高度由進度撐（工地→落成）；燈在落成入夜時亮。
+function makeWatchtower(item) {
+  const v = watchtowerVisual(item);
+  const g = new THREE.Group();
+  const posts = [];
+  for (const sx2 of [-1, 1]) for (const sz2 of [-1, 1]) {
+    const post = new THREE.Mesh(ST_GEO.towerPost, new THREE.MeshLambertMaterial({ color: TOWER_WOOD_COLOR }));
+    post.position.set(sx2 * 2.2, 0, sz2 * 2.2); // y/縮放由 applyTowerProgress 設
+    g.add(post);
+    posts.push(post);
+  }
+  const deck = new THREE.Mesh(ST_GEO.towerDeck, new THREE.MeshLambertMaterial({ color: TOWER_WOOD_COLOR }));
+  g.add(deck);
+  const roof = new THREE.Mesh(ST_GEO.towerRoof, new THREE.MeshLambertMaterial({ color: 0x9a5a3a }));
+  roof.rotation.y = Math.PI / 4;
+  g.add(roof);
+  const beacon = new THREE.Mesh(ST_GEO.beacon, new THREE.MeshBasicMaterial({ color: TOWER_BEACON_COLOR, transparent: true, opacity: 0 }));
+  g.add(beacon);
+  g.userData.posts = posts;
+  g.userData.deck = deck;
+  g.userData.roof = roof;
+  g.userData.beacon = beacon;
+  applyTowerProgress(g, v);
+  return g;
+}
+
+// 依瞭望塔進度把塔柱升到對應高度、平台/尖頂/燈座落到塔頂。落成的塔比施工中更高、更挺。
+const TOWER_MAX_H = 18; // 落成塔身高（場景單位）
+function applyTowerProgress(g, v) {
+  const h = Math.max(1.5, TOWER_MAX_H * (0.25 + 0.75 * v.progress)); // 即使剛起也有一截工地
+  for (const post of g.userData.posts) {
+    post.scale.y = h;
+    post.position.y = h / 2;
+  }
+  g.userData.deck.position.y = h;
+  g.userData.deck.visible = v.progress > 0.5; // 過半才架平台
+  g.userData.roof.position.y = h + 2;
+  g.userData.roof.visible = v.done; // 落成才封頂
+  g.userData.beacon.position.y = h + 1;
+  g.userData.builtH = h;
+}
+
+// 一座雪人：三球疊起（下大上小）＋圍巾＋紅蘿蔔鼻＋頭頂表情/署名/愛心。圍巾色由 style 決定。
+function makeSnowman(item) {
+  const v = snowmanVisual(item);
+  const g = new THREE.Group();
+  const snowMat = () => new THREE.MeshLambertMaterial({ color: SNOW_COLOR });
+  const base = new THREE.Mesh(ST_GEO.snowBall, snowMat()); base.scale.setScalar(2.4); base.position.y = 2.4; g.add(base);
+  const mid  = new THREE.Mesh(ST_GEO.snowBall, snowMat()); mid.scale.setScalar(1.8); mid.position.y = 6.0; g.add(mid);
+  const head = new THREE.Mesh(ST_GEO.snowBall, snowMat()); head.scale.setScalar(1.3); head.position.y = 8.8; g.add(head);
+  // 圍巾（套在中球與頭球之間）
+  const scarf = new THREE.Mesh(ST_GEO.scarf, new THREE.MeshLambertMaterial({ color: v.scarf }));
+  scarf.position.y = 7.4; scarf.rotation.x = Math.PI / 2; scarf.scale.set(0.9, 0.9, 0.6);
+  g.add(scarf);
+  // 紅蘿蔔鼻（朝前）
+  const nose = new THREE.Mesh(ST_GEO.nose, new THREE.MeshLambertMaterial({ color: 0xe8862f }));
+  nose.position.set(0, 8.8, 1.3); nose.rotation.x = Math.PI / 2;
+  g.add(nose);
+  // 頭頂表情 sprite（固定一張，依 style）
+  const faceSprite = makeEmojiSprite(3.4);
+  faceSprite.position.set(0, 12.5, 0);
+  g.add(faceSprite);
+  setSpriteEmoji(faceSprite, v.face);
+  faceSprite.visible = true;
+  // 署名標籤（堆雪人的人）
+  if (v.builder) g.add(makeLabel(v.builder));
+  // 愛心數 sprite（有讚才現身）
+  const cheerSprite = makeEmojiSprite(3.0);
+  cheerSprite.position.set(3.4, 11, 0);
+  g.add(cheerSprite);
+  g.userData.faceSprite = faceSprite;
+  g.userData.cheerSprite = cheerSprite;
+  return g;
+}
+
+// 固定地標的 reconcile：以 id 為 key、位置一次定位（讀 wx/wy，非 x/y）、只走 AOI 淡入淡出。
+// update(g, item) 在每次收到快照時呼叫，讓地標即時反映進度／圍爐人數等變化。
+function reconcileStatic(list, map, prefix, create, update, recvT) {
+  const seen = new Set();
+  if (Array.isArray(list)) {
+    for (const item of list) {
+      try {
+        if (!item || typeof item !== "object") continue;
+        if (!Number.isFinite(item.wx) || !Number.isFinite(item.wy)) continue;
+        const key = prefix + (item.id != null ? item.id : Math.round(item.wx) + "," + Math.round(item.wy));
+        seen.add(key);
+        let g = map.get(key);
+        if (!g) {
+          g = create(item); map.set(key, g);
+          g.position.set(sx(item.wx), 0, sz(item.wy));
+          g.userData.fade = 0; g.userData.fadeTarget = 1; g.userData.removing = false;
+        } else if (g.userData.removing) {
+          g.userData.removing = false; g.userData.fadeTarget = 1;
+        }
+        g.userData.item = item;
+        if (update) update(g, item);
+      } catch (e) {
+        console.warn("reconcileStatic 單筆失敗，已略過", e);
+      }
+    }
+  }
+  // 沒在這份快照出現的 → 淡出移除（AOI 邊緣不啪一下消失）。
+  for (const [key, g] of map) {
+    if (!seen.has(key) && !g.userData.removing) { g.userData.removing = true; g.userData.fadeTarget = 0; }
+  }
+}
+
+const campfires = new Map();
+const watchtowers = new Map();
+const snowmen = new Map();
+
+// 每幀更新所有人造地標：篝火火焰跳動／暖圈脈動（入夜更亮、將熄漸弱）、塔頂燈入夜亮起、雪人愛心數。
+// 在各自 Map 的 updateFade 之後跑：updateFade 把所有材質 opacity 壓成 AOI 淡入淡出值，這裡再
+// 乘上各自的呈現強度覆寫回去（火焰透明度、暖圈淡度、燈亮度、愛心顯示），故 AOI 仍生效又不被壓掉。
+function updateStructures(dt, t) {
+  const night = nightFactor();
+  // ── 篝火 ──
+  for (const [key, g] of campfires) {
+    const fade = g.userData.fade ?? 1;
+    if (updateFade(g, dt)) { scene.remove(g); campfires.delete(key); continue; }
+    const v = campfireVisual(g.userData.item);
+    const flame = g.userData.flame, ember = g.userData.ember, glow = g.userData.glow;
+    // 將熄的火整體變淡
+    const dim = v.dying ? 0.45 : 1;
+    // 火焰跳動：尊重 reduceMotion（靜止時不抖）。圍爐越多火越高。
+    const flick = reduceMotion ? 1 : 0.85 + 0.15 * Math.sin(t * 11 + g.position.x);
+    if (flame) {
+      flame.scale.y = v.blaze * flick;
+      flame.material.opacity = fade * dim * (reduceMotion ? 0.92 : 0.78 + 0.22 * Math.abs(Math.sin(t * 9)));
+    }
+    if (ember) {
+      ember.scale.y = v.blaze * (reduceMotion ? 1 : 0.9 + 0.2 * Math.sin(t * 14 + 1.3));
+      ember.material.opacity = fade * dim;
+    }
+    if (glow) {
+      // 暖意圈：入夜更顯（夜裡的火最暖）、將熄漸弱、輕緩脈動
+      const pulse = reduceMotion ? 1 : 0.85 + 0.15 * Math.sin(t * 3 + g.position.z);
+      glow.material.opacity = fade * dim * (0.10 + 0.22 * night) * pulse;
+    }
+  }
+  // ── 瞭望塔 ──
+  for (const [key, g] of watchtowers) {
+    const fade = g.userData.fade ?? 1;
+    if (updateFade(g, dt)) { scene.remove(g); watchtowers.delete(key); continue; }
+    const v = watchtowerVisual(g.userData.item);
+    const beacon = g.userData.beacon;
+    if (beacon) {
+      // 塔頂燈：只在落成後、且入夜才亮（白天落成的塔不點燈），輕緩脈動如守夜的火光
+      const lit = v.done ? night : 0;
+      const pulse = reduceMotion ? 1 : 0.8 + 0.2 * Math.sin(t * 2.5 + g.position.x);
+      beacon.material.opacity = fade * lit * pulse;
+      beacon.visible = lit > 0.02;
+    }
+  }
+  // ── 雪人 ──
+  for (const [key, g] of snowmen) {
+    const fade = g.userData.fade ?? 1;
+    if (updateFade(g, dt)) { scene.remove(g); snowmen.delete(key); continue; }
+    const v = snowmanVisual(g.userData.item);
+    const face = g.userData.faceSprite;
+    if (face) face.material.opacity = fade; // updateFade 已設成 fade，這裡確保表情一直看得見
+    const cheer = g.userData.cheerSprite;
+    if (cheer) {
+      if (v.cheers > 0) {
+        // 有人讚過 → 顯示 ♥（emoji sprite 只在改變時換貼圖）
+        if (setSpriteEmoji(cheer, "❤️")) {
+          cheer.visible = true;
+          // 愛心輕輕脈動，呼應 2D 雪人讚賞
+          const pulse = reduceMotion ? 1 : 0.72 + 0.28 * Math.abs(Math.sin(t * 3));
+          cheer.material.opacity = fade * pulse;
+        }
+      } else {
+        cheer.visible = false;
+      }
+    }
+  }
+}
+
 // 各類實體用各自的 Map 追蹤（id → group），快照進來時 reconcile。
 const players = new Map();
 const npcs = new Map();
@@ -1285,6 +1590,13 @@ function handleServerMsg(msg) {
       // 農地（每位玩家的耕地）：把翻好的土＋成長中的作物＋稻草人接進 3D（ROADMAP 614）。
       reconcileFields(msg.fields, recvT);
 
+      // 人造地標（眾人一起蓋的篝火／協力瞭望塔／署名雪人）：接進 3D（ROADMAP 616）。
+      // 都是固定地標、讀 wx/wy；瞭望塔在進度變動時即時把塔身升到對應高度。
+      reconcileStatic(msg.campfires, campfires, "cf", makeCampfire, null, recvT);
+      reconcileStatic(msg.watchtowers, watchtowers, "wt", makeWatchtower,
+        (g, item) => applyTowerProgress(g, watchtowerVisual(item)), recvT);
+      reconcileStatic(msg.snowmen, snowmen, "sm", makeSnowman, null, recvT);
+
       // 自己的權威座標：給客戶端預測對帳用；順便用相鄰快照實測移動速度自我校準
       // （含跑步／加速／載具，全自動適應，不必硬寫死）。
       const meAuth = Array.isArray(msg.players) ? msg.players.find((p) => p.id === myId) : null;
@@ -1323,9 +1635,10 @@ function handleServerMsg(msg) {
       const weatherLabel = weatherHudLabel(latestWeather, latestRainbow);
       const farmLabel = farmHudLabel(msg.fields); // 視野內農地數＋待收成作物株數（ROADMAP 614）
       const wildLabel = wildlifeHudLabel(msg.wildlife); // 野生動物數＋其中已馴養數（ROADMAP 615）
+      const builtLabel = structuresHudLabel(msg.campfires, msg.watchtowers, msg.snowmen); // 視野內人造地標（ROADMAP 616）
       hudEl.innerHTML =
         `<b>${myName}</b> · 線上 ${players.size} 人${phaseLabel ? " · " + phaseLabel : ""}${weatherLabel ? " · " + weatherLabel : ""}\n` +
-        `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · 敵人 ${enemies.size}${farmLabel ? " · " + farmLabel : ""}\n` +
+        `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · 敵人 ${enemies.size}${farmLabel ? " · " + farmLabel : ""}${builtLabel ? " · " + builtLabel : ""}\n` +
         `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳"}`;
 
       setStatus(
@@ -1758,6 +2071,8 @@ function safeRender() {
     updateRemoteEntities(nodes, scene, renderTime, false, dt, t, undefined, 1);
     // 農地：作物隨風輕搖、成熟金果發光脈動、AOI 淡入淡出（ROADMAP 614）
     updateFields(dt, t);
+    // 人造地標：篝火火焰跳動／暖圈入夜更亮、塔頂燈入夜亮起、雪人愛心數（ROADMAP 616）
+    updateStructures(dt, t);
 
     // 自己：客戶端預測（零延遲）+ 平滑對帳權威，再疊上視覺跳的高度
     if (meGroup) {
@@ -1806,7 +2121,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel };
 }
 
 // 啟動
