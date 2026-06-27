@@ -122,25 +122,96 @@ function makeLabel(text) {
   tex.anisotropy = 4;
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
   sprite.scale.set(16, 4, 1);
-  sprite.position.y = 9;
+  sprite.position.y = 12; // 浮在火柴人頭頂之上（頭頂約 y=10.6）
   return sprite;
 }
 
-// ---- 實體 mesh 工廠（低多邊形）----
-const SELF_COLOR = 0xffd54a;     // 自己：金色膠囊
-const PLAYER_COLOR = 0x4aa3ff;   // 其他玩家：藍色膠囊
-const NPC_COLOR = 0xd8b070;      // NPC：暖棕盒子
-const WILDLIFE_COLOR = 0x7fd87f; // 野生動物：綠色小盒
-const ENEMY_COLOR = 0xff5a5a;    // 敵人：紅色盒子
+// ---- 實體 mesh 工廠（低多邊形，零美術資產）----
+const SELF_COLOR = 0xffd54a;     // 自己：金色火柴人
+const PLAYER_COLOR = 0x4aa3ff;   // 其他玩家：藍色火柴人
+const NPC_COLOR = 0xd8b070;      // NPC／居民：暖棕火柴人
+const WILDLIFE_COLOR = 0x7fd87f; // 野生動物：綠色小盒（盒子，跟「人」一眼區分）
+const ENEMY_COLOR = 0xff5a5a;    // 敵人：紅色盒子（盒子，跟「人」一眼區分）
 
-function makeCapsule(color, h = 7) {
-  const m = new THREE.Mesh(
-    new THREE.CapsuleGeometry(2, h, 4, 8),
-    new THREE.MeshLambertMaterial({ color })
-  );
-  m.position.y = h / 2 + 2;
-  return m;
+// ---- 程序化火柴人（stickman）----
+// 人形＝純幾何組裝：球當頭、膠囊當軀幹、細圓柱當四肢，零美術資產。
+// 套用對象＝玩家（自己＋別人）＋ NPC／居民；敵人／野生動物／節點維持盒子等好區分。
+//
+// 比例（場景單位，可調）。腳底約落在 y=0（站在地面），整體高度與舊膠囊相近。
+const SK = {
+  HIP_Y: 4.6, THIGH_LEN: 2.4, SHIN_LEN: 2.2, HIP_HALF_W: 0.7,
+  SHOULDER_Y: 7.8, SHOULDER_HALF_W: 1.35, UPPER_ARM_LEN: 2.0, FORE_ARM_LEN: 1.9,
+  TORSO_Y: 6.2, HEAD_Y: 9.3, HEAD_R: 1.3,
+};
+
+// 共用幾何（全模組只建一次 → 幾十個火柴人也不重建頂點、不爆記憶體）。
+// 圓柱預設沿 +Y、以原點為中心；做四肢時讓 mesh 往下沉半截，關節樞紐就落在「上端」。
+const SK_GEO = {
+  thigh: new THREE.CylinderGeometry(0.50, 0.45, SK.THIGH_LEN, 6),
+  shin:  new THREE.CylinderGeometry(0.45, 0.34, SK.SHIN_LEN, 6),
+  upper: new THREE.CylinderGeometry(0.42, 0.38, SK.UPPER_ARM_LEN, 6),
+  fore:  new THREE.CylinderGeometry(0.38, 0.30, SK.FORE_ARM_LEN, 6),
+  torso: new THREE.CapsuleGeometry(1.0, 1.6, 3, 6),
+  head:  new THREE.SphereGeometry(SK.HEAD_R, 10, 8),
+};
+
+// 一節肢體：回傳一個「樞紐 group」（樞紐在關節處），子 mesh 往下掛半截。
+// 旋轉樞紐的 rotation.x 就能讓這節肢體前後擺。
+function skSegment(geo, mat, len) {
+  const pivot = new THREE.Group();
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.y = -len / 2; // 上端對齊樞紐原點
+  pivot.add(mesh);
+  return pivot;
 }
+
+// 組一隻火柴人：回傳一個 group，內含可動關節（大腿/小腿/上臂/前臂/頭/軀幹）放 userData.joints
+// 供走路動畫驅動。共用幾何省效能；材質「每隻一份」（單色）——這樣 AOI 淡入淡出能各自獨立調 opacity。
+function makeStickman(color) {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshLambertMaterial({ color });
+
+  // 軀幹 + 頭（直接掛在 group 上，固定不動）
+  const torso = new THREE.Mesh(SK_GEO.torso, mat); torso.position.y = SK.TORSO_Y;
+  const head = new THREE.Mesh(SK_GEO.head, mat); head.position.y = SK.HEAD_Y;
+  g.add(torso, head);
+
+  // 腿：大腿樞紐在髖部，小腿樞紐掛在大腿下端（膝蓋）
+  function leg(sign) {
+    const thigh = skSegment(SK_GEO.thigh, mat, SK.THIGH_LEN);
+    thigh.position.set(sign * SK.HIP_HALF_W, SK.HIP_Y, 0);
+    const shin = skSegment(SK_GEO.shin, mat, SK.SHIN_LEN);
+    shin.position.y = -SK.THIGH_LEN; // 膝蓋＝大腿下端
+    thigh.add(shin);
+    g.add(thigh);
+    return { thigh, shin };
+  }
+  // 臂：上臂樞紐在肩，前臂樞紐掛在上臂下端（手肘）
+  function arm(sign) {
+    const upper = skSegment(SK_GEO.upper, mat, SK.UPPER_ARM_LEN);
+    upper.position.set(sign * SK.SHOULDER_HALF_W, SK.SHOULDER_Y, 0);
+    const fore = skSegment(SK_GEO.fore, mat, SK.FORE_ARM_LEN);
+    fore.position.y = -SK.UPPER_ARM_LEN; // 手肘＝上臂下端
+    upper.add(fore);
+    g.add(upper);
+    return { upper, fore };
+  }
+  const legL = leg(1), legR = leg(-1);
+  const armL = arm(1), armR = arm(-1);
+
+  g.userData.isStickman = true;
+  g.userData.joints = {
+    torso, head,
+    legL_thigh: legL.thigh, legL_shin: legL.shin,
+    legR_thigh: legR.thigh, legR_shin: legR.shin,
+    armL_upper: armL.upper, armL_fore: armL.fore,
+    armR_upper: armR.upper, armR_fore: armR.fore,
+  };
+  g.userData.phase = Math.random() * 6.28; // 各自相位，整群不會整齊劃一
+  g.userData.walkW = 0;                     // 走路權重（平滑進出站姿）
+  return g;
+}
+
 function makeBox(color, w, h, d) {
   const m = new THREE.Mesh(
     new THREE.BoxGeometry(w, h, d),
@@ -154,6 +225,8 @@ function makeBox(color, w, h, d) {
 function makeEntity(body, label) {
   const g = new THREE.Group();
   g.add(body);
+  // 火柴人：記住身體 group，走路動畫要驅動它的關節（盒子實體沒有，會被跳過）
+  if (body && body.userData && body.userData.isStickman) g.userData.stick = body;
   if (label) g.add(makeLabel(label));
   // tx/tz：最新一筆快照的目標場景座標（內插資料不足時的 lerp 退路）
   g.userData.tx = g.position.x;
@@ -270,18 +343,18 @@ function handleServerMsg(msg) {
       snapshotCount++;
       // 這份快照的到達時間：全類共用一個時間戳，內插時間軸才一致。
       const recvT = performance.now();
-      // 玩家：膠囊（自己金色、別人藍色），帶名字標籤
+      // 玩家：火柴人（自己金色、別人藍色），帶名字標籤
       reconcile(
         msg.players, players,
         (p) => p.id,
-        (p) => makeEntity(makeCapsule(p.id === myId ? SELF_COLOR : PLAYER_COLOR), p.name || "玩家"),
+        (p) => makeEntity(makeStickman(p.id === myId ? SELF_COLOR : PLAYER_COLOR), p.name || "玩家"),
         recvT
       );
-      // NPC（含居民／商人）：暖棕盒子，帶名字
+      // NPC（含居民／商人）：暖棕火柴人，帶名字
       reconcile(
         msg.npcs, npcs,
         (n) => n.id,
-        (n) => makeEntity(makeBox(NPC_COLOR, 4, 8, 4), n.name || "NPC"),
+        (n) => makeEntity(makeStickman(NPC_COLOR), n.name || "NPC"),
         recvT
       );
       // 野生動物：綠色小盒（不加標籤，避免太雜）
@@ -589,6 +662,46 @@ function scheduleReconnect() {
 // ============================================================
 const clock = new THREE.Clock();
 
+// ---- 程序化走路動畫常數（純視覺，可調）----
+// sine 波驅動關節擺動：大腿前後擺、手臂反相擺、膝/肘自然彎，相位隨移動速度推進。
+const GAIT = {
+  THIGH: 0.85,  // 大腿前後擺幅（弧度）
+  KNEE: 0.9,    // 小腿（膝蓋）彎曲幅度
+  ARM: 0.7,     // 上臂擺幅（與同側腿反相）
+  ELBOW: 0.4,   // 前臂（手肘）彎曲幅度
+  LEAN: 0.08,   // 走路時整體略前傾（弧度）
+  FREQ: 0.85,   // 相位推進係數（× 移動速度 → 走越快步頻越快）
+  IDLE_FREQ: 0.6, // 站定時殘留的最小推進，讓關節平滑收回站姿
+};
+
+// 程序化走路：用 sine 波擺動火柴人關節。speed＝場景單位/秒；停下時平滑回站姿。
+// 盒子實體（無 stick）直接 return，不受影響。
+function animateStickman(g, speed, dt) {
+  const stick = g.userData.stick;
+  if (!stick) return;
+  const j = stick.userData.joints;
+  // 走路權重平滑進出（避免一停就僵、一動就跳）
+  const moving = speed > 0.6 ? 1 : 0;
+  stick.userData.walkW += (moving - stick.userData.walkW) * Math.min(1, dt * 6);
+  const w = stick.userData.walkW;
+  // 相位隨移動距離推進；殘留一點最小步頻讓站定也能把擺幅平滑歸零
+  stick.userData.phase += (speed * GAIT.FREQ + GAIT.IDLE_FREQ) * dt;
+  const ph = stick.userData.phase;
+  const s = Math.sin(ph);
+  // 腿：左右反相前後擺；膝蓋只往一個方向彎（clamp）→ 抬腿那側自然屈膝
+  j.legL_thigh.rotation.x = s * GAIT.THIGH * w;
+  j.legR_thigh.rotation.x = -s * GAIT.THIGH * w;
+  j.legL_shin.rotation.x = Math.max(0, -s) * GAIT.KNEE * w;
+  j.legR_shin.rotation.x = Math.max(0, s) * GAIT.KNEE * w;
+  // 手臂：與同側腿反相擺；前臂微彎（帶一點常態屈肘）
+  j.armL_upper.rotation.x = -s * GAIT.ARM * w;
+  j.armR_upper.rotation.x = s * GAIT.ARM * w;
+  j.armL_fore.rotation.x = (Math.max(0, s) * GAIT.ELBOW + 0.12) * w;
+  j.armR_fore.rotation.x = (Math.max(0, -s) * GAIT.ELBOW + 0.12) * w;
+  // 走路時整體略前傾（樞紐在腳底附近），停下回正
+  stick.rotation.x = GAIT.LEAN * w;
+}
+
 // 朝移動方向平滑轉身 + 走動起伏（讓角色不再僵硬滑行，呈現層手感參考成熟第三人稱）。
 // 只動「呈現」：rotation 與本地 y bob，完全不碰伺服器權威的 x/z 位置。
 function faceAndBob(g, dx, dz, dt, t) {
@@ -605,6 +718,8 @@ function faceAndBob(g, dx, dz, dt, t) {
   g.userData.bobW = (g.userData.bobW || 0) + (moving - (g.userData.bobW || 0)) * Math.min(1, dt * 6);
   if (g.userData.phase === undefined) g.userData.phase = Math.random() * 6.28; // 各自相位，不會整齊劃一
   g.position.y = Math.abs(Math.sin(t * 9 + g.userData.phase)) * 0.7 * g.userData.bobW;
+  // 火柴人：sine 波走路（盒子無 stick 會被跳過）
+  animateStickman(g, speed, dt);
 }
 
 // 在快照緩衝裡取 renderTime（= 現在 − 內插延遲）這個時間點的位置：
@@ -638,12 +753,14 @@ function updateFade(g, dt) {
   g.userData.fade = nf;
   const sc = 0.55 + 0.45 * nf;       // 淡入時從小長到正常，淡出時縮回（柔和不啪一下）
   g.scale.setScalar(sc);
-  for (const child of g.children) {  // 每個子 mesh/sprite 材質一起調透明度
-    const mat = child.material;
-    if (!mat) continue;
+  // 遞迴調所有子 mesh/sprite 透明度（火柴人是巢狀群組，材質藏在多層深處）。
+  // 材質「每隻實體一份」，所以這裡改 opacity 只影響本實體、不會牽連同色的別人。
+  g.traverse((obj) => {
+    const mat = obj.material;
+    if (!mat) return;
     if (!mat.transparent) mat.transparent = true;
     mat.opacity = nf;
-  }
+  });
   return g.userData.removing && nf < 0.02;
 }
 
@@ -731,13 +848,16 @@ function safeRender() {
 
       // 自己也朝移動方向平滑轉身（呈現層；位置仍對帳伺服器權威）
       const sdx = meGroup.position.x - ox, sdz = meGroup.position.z - oz;
-      if (Math.hypot(sdx, sdz) / Math.max(dt, 1e-3) > 0.6) {
+      const sSpeed = Math.hypot(sdx, sdz) / Math.max(dt, 1e-3);
+      if (sSpeed > 0.6) {
         const target = Math.atan2(sdx, sdz);
         let d = target - meGroup.rotation.y;
         while (d > Math.PI) d -= Math.PI * 2;
         while (d < -Math.PI) d += Math.PI * 2;
         meGroup.rotation.y += d * Math.min(1, dt * 10);
       }
+      // 自己的火柴人走路動畫（自己走預測、不經 faceAndBob，這裡單獨驅動關節）
+      animateStickman(meGroup, sSpeed, dt);
 
       // 第三人稱跟隨鏡頭：在自己後方、平滑跟隨（damping 用 1-exp → 跟幀率無關，像 Genshin 的滑順）
       const cx = Math.sin(camYaw) * Math.cos(camPitch) * camDist;
