@@ -113,6 +113,20 @@ async fn ai_register(State(app): State<AppState>, Json(req): Json<AiRegisterReq>
     if !constant_time_eq(req.key.as_bytes(), expected.as_bytes()) {
         return (StatusCode::FORBIDDEN, "註冊金鑰錯誤").into_response();
     }
+    // 總量上限（防金鑰外洩後被無限建帳號＋永不過期 session）。可用 BUTFUN_MAX_AI_ACCOUNTS
+    // 覆寫（沿用本專案「靠 env 放大、不必重建」的慣例）；預設給得寬，只擋災難級濫用。
+    const DEFAULT_MAX_AI_ACCOUNTS: usize = 10_000;
+    let max_ai = std::env::var("BUTFUN_MAX_AI_ACCOUNTS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAX_AI_ACCOUNTS);
+    if app.users.ai_account_count() >= max_ai {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "AI 帳號數已達上限(BUTFUN_MAX_AI_ACCOUNTS)",
+        )
+            .into_response();
+    }
     // 沒給名字就配一個主題隨機代號;沒給物種就用預設。一律過既有 sanitizer(create_ai 內處理)。
     let name = req
         .name
