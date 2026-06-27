@@ -10002,6 +10002,15 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
             None // 同帳號還有其他連線在線，保留玩家
         }
     };
+    // L5：玩家最後一條連線離線時，清掉他在 npc_last_chat 的所有 (player, npc) 冷卻項。
+    // 否則該 map 會隨「歷來玩家 × 對話過的 NPC」無界成長（慢速記憶體洩漏，只增不減）。
+    // 冷卻只在數秒內有意義，重連後可立即再對話無妨；此後 map 上限＝在線玩家活動量。
+    if removed.is_some() {
+        app.npc_last_chat
+            .write()
+            .unwrap()
+            .retain(|(pid, _), _| *pid != id);
+    }
     // Postgres 模式：離線時把最後狀態 upsert 到 DB,補上「最後一次 10s flush 後到離線之間」
     // 的移動（離線後就不再進線上快照了）。在鎖外 await（不可持 std 鎖跨 await）;cache 已在
     // 鎖內由 remember 更新,recall 不受此 await 時序影響。非 Postgres 模式此呼叫無動作。
