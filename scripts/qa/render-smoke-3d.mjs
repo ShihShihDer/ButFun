@@ -1,0 +1,209 @@
+// Render-smoke（3D／ROADMAP 611）：用假 THREE / 假 DOM / 假 WebSocket 載入「真正的」
+// web/3d/main.js，餵一份含各種內心生活狀態（活動／思想／關懷／危機／歡慶）的 NPC 快照，
+// 實際逐幀跑 safeRender()，抓任何在繪製中拋出的例外——這正是「3D 角色突然不見／畫面凍結」
+// 的根因型態（render 一拋就停 rAF 迴圈）。同時對 residentStatusEmoji 純邏輯驗真值表。
+// 用法：node scripts/qa/render-smoke-3d.mjs
+import { readFileSync } from "fs";
+import vm from "vm";
+
+let src = readFileSync(new URL("../../web/3d/main.js", import.meta.url), "utf8");
+// main.js 以 ESM `import * as THREE from "three"` 取得 THREE；vm 不解析 ESM，
+// 故把該行抽掉、改由 sandbox 注入全域 THREE（行為等價）。
+src = src.replace(/^import \* as THREE from "three";\s*$/m, "/* THREE 由 sandbox 注入 */");
+
+// ── 假 THREE：所有用到的類別都給最小可用實作（位置/縮放/旋轉是真的可變物件，
+//    才能讓內插、轉身、淡入淡出等真的跑起來、踩到真實程式路徑）──────────────────
+function v3() {
+  return {
+    x: 0, y: 0, z: 0,
+    set(a, b, c) { this.x = a; this.y = b; this.z = c; return this; },
+    copy(o) { this.x = o.x; this.y = o.y; this.z = o.z; return this; },
+    lerp(o, a) { this.x += (o.x - this.x) * a; this.y += (o.y - this.y) * a; this.z += (o.z - this.z) * a; return this; },
+  };
+}
+function scaleObj() {
+  return { x: 1, y: 1, z: 1, set(a, b, c) { this.x = a; this.y = b; this.z = c; return this; }, setScalar(s) { this.x = this.y = this.z = s; return this; } };
+}
+class Obj3D {
+  constructor() {
+    this.position = v3();
+    this.rotation = { x: 0, y: 0, z: 0 };
+    this.scale = scaleObj();
+    this.children = [];
+    this.userData = {};
+    this.material = null;
+    this.visible = true;
+  }
+  add(c) { this.children.push(c); return this; }
+  remove(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); return this; }
+  // 忠實鏡像 THREE.Object3D.traverse：先訪自己、再遞迴所有子節點（#767 起火柴人是巢狀群組，
+  // updateFade 用 traverse 才能調到藏在深處的材質 opacity）。
+  traverse(cb) { cb(this); for (const c of this.children) c.traverse(cb); }
+  lookAt() {}
+  updateProjectionMatrix() {}
+}
+class Mesh extends Obj3D { constructor(geo, mat) { super(); this.geometry = geo; this.material = mat; } }
+class Sprite extends Obj3D { constructor(mat) { super(); this.material = mat || {}; } }
+class Geo { constructor() {} }
+const geo = Geo;
+const THREE = {
+  Scene: class extends Obj3D { constructor() { super(); this.background = null; this.fog = null; } },
+  Color: class { constructor(c) { this.c = c; } },
+  Fog: class { constructor(c, n, f) { this.color = c; this.near = n; this.far = f; } },
+  FogExp2: class { constructor() {} },
+  PerspectiveCamera: class extends Obj3D { constructor(fov, aspect) { super(); this.fov = fov; this.aspect = aspect; } },
+  WebGLRenderer: class {
+    constructor() { this.domElement = makeEl("<canvas>"); }
+    setSize() {} setPixelRatio() {} render() {}
+  },
+  HemisphereLight: class extends Obj3D {}, DirectionalLight: class extends Obj3D {}, AmbientLight: class extends Obj3D {},
+  Mesh, Sprite, Group: class extends Obj3D {},
+  PlaneGeometry: geo, BoxGeometry: geo, CapsuleGeometry: geo, ConeGeometry: geo,
+  OctahedronGeometry: geo, DodecahedronGeometry: geo, SphereGeometry: geo, CylinderGeometry: geo,
+  MeshLambertMaterial: class { constructor(o) { Object.assign(this, o || {}); } },
+  MeshBasicMaterial: class { constructor(o) { Object.assign(this, o || {}); } },
+  SpriteMaterial: class { constructor(o) { Object.assign(this, o || {}); this.needsUpdate = false; } },
+  CanvasTexture: class { constructor(cv) { this.image = cv; this.anisotropy = 1; } dispose() {} },
+  GridHelper: class extends Obj3D {},
+  Clock: class { constructor() { this._t = 0; } getDelta() { return 0.016; } get elapsedTime() { return (this._t += 0.016); } },
+  Vector3: class { constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; } },
+};
+
+// ── 假 2D ctx（給 makeLabel／emojiTexture／thoughtTexture 的離屏 canvas 用）──
+function makeCtx() {
+  const noop = () => {};
+  return {
+    font: "", textAlign: "", textBaseline: "", fillStyle: "", strokeStyle: "", lineWidth: 0,
+    fillText: noop, strokeText: noop, beginPath: noop, moveTo: noop, lineTo: noop, arcTo: noop,
+    closePath: noop, fill: noop, stroke: noop, fillRect: noop, clearRect: noop,
+    measureText: (s) => ({ width: s == null ? 0 : String(s).length * 12 }),
+  };
+}
+const elCache = new Map();
+function makeEl(id) {
+  if (elCache.has(id)) return elCache.get(id);
+  const el = {
+    id, width: 256, height: 64, style: new Proxy({}, { get: () => "", set: () => true }),
+    textContent: "", innerHTML: "",
+    classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false },
+    appendChild: () => {}, addEventListener: () => {}, removeEventListener: () => {},
+    getContext: (t) => (t === "2d" ? makeCtx() : null),
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }),
+  };
+  elCache.set(id, el);
+  return el;
+}
+
+// ── 假 WebSocket：擷取實例，手動驅動 onopen/onmessage ──
+let lastWS = null;
+class FakeWS {
+  constructor(url) { this.url = url; this.readyState = 1; lastWS = this; this.onopen = null; this.onmessage = null; this.onclose = null; this.onerror = null; }
+  send() {} close() { this.readyState = 3; }
+}
+FakeWS.CONNECTING = 0; FakeWS.OPEN = 1; FakeWS.CLOSING = 2; FakeWS.CLOSED = 3;
+
+// ── requestAnimationFrame：擷取 callback，手動逐幀呼叫 ──
+let rafCb = null;
+let perfNow = 0;
+
+const documentStub = {
+  getElementById: (id) => makeEl(id),
+  createElement: (tag) => makeEl("<" + tag + ">"),
+  elementFromPoint: () => null,
+  addEventListener: () => {}, removeEventListener: () => {},
+  body: makeEl("body"),
+};
+
+// 攔截 console.error/warn：safeRender 把繪製例外印成 console.error；reconcile/handleServerMsg
+// 把單筆失敗印成 console.warn。任一被攔到都代表 3D 渲染踩到真 bug，測試要紅。
+const caught = [];
+const consoleProxy = {
+  ...console,
+  error: (...a) => { caught.push("ERROR " + a.map(x => (x && x.stack) ? x.stack : String(x)).join(" ")); console.error(...a); },
+  warn: (...a) => { caught.push("WARN " + a.map(x => (x && x.stack) ? x.stack : String(x)).join(" ")); console.warn(...a); },
+};
+
+const windowStub = {
+  THREE,
+  requestAnimationFrame: (cb) => { rafCb = cb; return 1; },
+  cancelAnimationFrame: () => {},
+  performance: { now: () => perfNow },
+  navigator: { maxTouchPoints: 0, userAgent: "node-render-smoke-3d" },
+  location: { host: "localhost:3000", protocol: "http:" },
+  devicePixelRatio: 1, innerWidth: 800, innerHeight: 600,
+  addEventListener: () => {}, removeEventListener: () => {},
+  matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }),
+  setTimeout: () => 0, clearTimeout: () => {},
+  WebSocket: FakeWS,
+};
+
+const sandbox = { ...windowStub, document: documentStub, console: consoleProxy };
+sandbox.window = sandbox; sandbox.self = sandbox; sandbox.globalThis = sandbox;
+vm.createContext(sandbox);
+
+function fail(msg) { console.error("❌ " + msg); process.exit(1); }
+
+// ── 載入真正的 3D 客戶端 ──
+try { vm.runInContext(src, sandbox, { filename: "web/3d/main.js" }); }
+catch (e) { fail("載入 web/3d/main.js 即拋例外：" + (e && e.stack ? e.stack : e)); }
+if (!lastWS) fail("connect() 未建立 WebSocket");
+console.log("✅ 3D 客戶端載入、WebSocket 已建立:", lastWS.url);
+
+// ── ① 純邏輯真值表：residentStatusEmoji 優先序與壞值安全 ──
+const T = sandbox.__bf3dTest;
+if (!T || typeof T.residentStatusEmoji !== "function") fail("__bf3dTest.residentStatusEmoji 未暴露");
+const rse = T.residentStatusEmoji;
+const cases = [
+  [null, null, "null item → 無 emoji"],
+  [{}, null, "空 NPC → 無 emoji"],
+  [{ activity: "hammering" }, "🔨", "活動 hammering → 🔨"],
+  [{ activity: "patrolling" }, "👀", "活動 patrolling → 👀"],
+  [{ activity: "no_such_code" }, null, "未知活動代碼 → 安全 null"],
+  [{ celebrating: true, activity: "hammering" }, "🎉", "歡慶蓋過活動 → 🎉"],
+  [{ alarmed: true, celebrating: true, activity: "hammering" }, "😰", "危機優先序最高 → 😰"],
+];
+for (const [item, want, desc] of cases) {
+  const got = rse(item);
+  if (got !== want) fail(`真值表失誤：${desc}（得 ${JSON.stringify(got)}，期望 ${JSON.stringify(want)}）`);
+}
+// thoughtTexture 對壞值不拋（null/長字串都該安全產出貼圖）
+try { T.thoughtTexture(null); T.thoughtTexture("這是一句很長很長的內心話用來測試截斷不會爆掉喔喔喔喔"); }
+catch (e) { fail("thoughtTexture 壞值拋例外：" + e); }
+console.log("✅ residentStatusEmoji 真值表 7 例全綠、thoughtTexture 壞值安全");
+
+// ── ② 逐幀跑：先 welcome，再餵含各種內心生活的 NPC 快照，跑多幀抓例外 ──
+function drive(msg) { lastWS.onmessage({ data: JSON.stringify(msg) }); }
+function frames(n) { for (let i = 0; i < n; i++) { perfNow += 33; if (rafCb) { const cb = rafCb; rafCb = null; cb(); } } }
+
+lastWS.onopen && lastWS.onopen();
+drive({ type: "welcome", id: "me", world: { width: 6000, height: 6000 } });
+
+const npcsA = [
+  { id: "n1", name: "鐵匠", x: 3000, y: 3000, activity: "hammering" },
+  { id: "n2", name: "里長", x: 3100, y: 3000, activity: "patrolling", thought: "今晚別出事就好" },
+  { id: "n3", name: "獵手", x: 3200, y: 3000, alarmed: true },
+  { id: "n4", name: "商人", x: 3300, y: 3000, celebrating: true },
+  { id: "n5", name: "農婦", x: 3400, y: 3000, needs_care: true, thought: "有點累了" },
+  { id: "n6", name: "旅人", x: 3500, y: 3000 }, // 無任何內心生活欄位（其他 NPC）
+];
+drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }], npcs: npcsA, wildlife: [], enemies: [], nodes: [] });
+frames(8);
+
+// 狀態轉移：活動結束（→null）、思想消失、危機解除轉歡慶、需求被撫平——踩 setSpriteEmoji 換貼圖/熄滅路徑
+const npcsB = [
+  { id: "n1", name: "鐵匠", x: 3000, y: 3000 }, // 活動結束
+  { id: "n2", name: "里長", x: 3100, y: 3000, activity: "patrolling" }, // 思想消失
+  { id: "n3", name: "獵手", x: 3200, y: 3000, celebrating: true }, // 危機→歡慶
+  { id: "n5", name: "農婦", x: 3400, y: 3000 }, // 需求撫平
+  // n4、n6 從快照消失 → 走 AOI 淡出移除
+];
+drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }], npcs: npcsB, wildlife: [], enemies: [], nodes: [] });
+frames(12);
+
+if (caught.length) {
+  console.error("❌ 跑了多幀後攔到 " + caught.length + " 筆繪製例外/警告：");
+  for (const c of caught.slice(0, 10)) console.error("   · " + c);
+  process.exit(1);
+}
+console.log("✅ NPC 內心生活（活動／思想／關懷／危機／歡慶＋狀態轉移＋AOI 淡出）跑 20 幀零例外");
+console.log("✅ render-smoke-3d 全綠");
