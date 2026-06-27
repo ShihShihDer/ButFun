@@ -664,6 +664,59 @@ function setSpriteEmoji(sprite, emoji) {
   return !!emoji;
 }
 
+// ============================================================
+// 玩家表情在 3D 裡比出來（ROADMAP 621）：把 2D 早有的「表情輪」接進 3D——
+// 玩家↔玩家的即時情緒表態。按表情鈕送既有權威 `ClientMsg::Emote`，伺服器查白名單後廣播
+// `ServerMsg::PlayerEmote` 回來，前端就在比表情的玩家頭頂彈跳浮起一枚大 emoji 後淡出。
+// 純前端、純送既有訊息＋讀既有廣播——零後端改動、零協議改動、零 migration、零 LLM、零經濟。
+// ============================================================
+
+// 表情白名單（wire key, glyph, 中文標籤）——次序與後端 `player_emote::EMOTES` 一致。
+// wire key 是穩定協議契約（不重排、只可尾端追加）；glyph 僅供按鈕顯示，真正畫在頭頂的 glyph
+// 由伺服器廣播帶回＝單一真實來源；面向玩家中文標籤集中此處（i18n 友善）。
+const EMOTE_CHOICES = [
+  ["wave", "👋", "揮手"],
+  ["cheer", "🎉", "歡呼"],
+  ["heart", "❤️", "愛心"],
+  ["laugh", "😆", "大笑"],
+  ["thumbsup", "👍", "比讚"],
+  ["cry", "😢", "哭哭"],
+  ["angry", "😠", "生氣"],
+  ["sleep", "💤", "想睡"],
+];
+const EMOTE_KEYS = new Set(EMOTE_CHOICES.map((c) => c[0]));
+
+// 純函式：把一個 wire key 包成送伺服器的權威表情意圖。未知 key 回 null（前端不送偽造表情，
+// 與後端白名單同一道防線）。確定性、壞值安全。
+function emoteWireMsg(kind) {
+  return EMOTE_KEYS.has(kind) ? { type: "emote", kind } : null;
+}
+
+// 純函式：一枚表情泡泡在 elapsedMs 這一刻的動畫參數（起手彈跳→緩緩上浮→末段淡出）。
+// displaySecs＝後端廣播的顯示秒數（預設 4，與後端 EMOTE_DISPLAY_SECS 對齊）。確定性、壞值安全
+// （非有限 elapsed／超出存活期 → visible:false，永不 throw）。
+function emoteBubbleVisual(elapsedMs, displaySecs) {
+  const dur = (Number.isFinite(displaySecs) && displaySecs > 0 ? displaySecs : 4) * 1000;
+  const e = Number.isFinite(elapsedMs) ? elapsedMs : -1;
+  if (e < 0 || e >= dur) return { visible: false, opacity: 0, rise: 0, scale: 1 };
+  const t = e / dur; // 0..1 存活進度
+  // 起手 18% 一個彈跳（easeOutCubic 彈起＋一個正弦過衝），之後回穩
+  const popT = Math.min(1, t / 0.18);
+  const pop = 1 - Math.pow(1 - popT, 3);
+  const scale = 0.55 + 0.45 * pop + 0.14 * Math.sin(popT * Math.PI);
+  const rise = 1.5 + 6 * t; // 緩緩上浮（場景單位）
+  const opacity = t > 0.7 ? Math.max(0, 1 - (t - 0.7) / 0.3) : 1; // 末 30% 淡出
+  return { visible: true, opacity, rise, scale };
+}
+
+// 給玩家 group 掛一枚表情泡泡 sprite（初始隱形，由 updatePlayerEmotes 每幀依 playerEmotes 決定）。
+function attachEmoteBubble(g) {
+  const s = makeEmojiSprite(7); // 比頭頂狀態大一號、醒目
+  s.position.set(0, 15, 0);     // 浮在名字標籤（y=12）之上
+  g.add(s);
+  g.userData.emoteSprite = s;
+}
+
 // 給一個 NPC group 掛上三層內心生活的呈現 sprite（主狀態 emoji／💚 關懷側標／💭 思想泡泡）。
 // 都疊在名字標籤之上，depthTest:false 浮在最前；初始隱形，由 updateResidentStatus 每幀依快照決定。
 function attachResidentStatus(g) {
@@ -727,6 +780,36 @@ function updateResidentStatus(t) {
     } else if (thought) {
       thought.visible = false;
     }
+  }
+}
+
+// 每幀更新所有玩家頭頂的表情泡泡（ROADMAP 621；在 players 的 updateRemoteEntities 之後呼叫：
+// 那裡 updateFade 已把每個子 sprite 的 opacity 設成 AOI 淡入淡出值，這裡再乘上表情自己的存活淡出
+// 覆寫上去，故 AOI 淡入淡出仍生效、又不被它壓掉表情的顯示）。過期或玩家已離開即收掉。
+function updatePlayerEmotes(nowMs) {
+  for (const [fromId, em] of playerEmotes) {
+    const vis = emoteBubbleVisual(nowMs - em.startMs, em.displaySecs);
+    const g = players.get(fromId);
+    if (!vis.visible || !g) {
+      // 過期、或該玩家已離開視野/離線 → 隱藏其泡泡 sprite；存活期已過就從 Map 移除
+      if (g && g.userData.emoteSprite) g.userData.emoteSprite.visible = false;
+      if (!vis.visible) playerEmotes.delete(fromId);
+      continue;
+    }
+    const s = g.userData.emoteSprite;
+    if (!s) continue;
+    setSpriteEmoji(s, em.glyph);
+    s.visible = true;
+    const fade = g.userData.fade ?? 1; // AOI 淡入淡出基底
+    if (reduceMotion) {
+      // 尊重 reduceMotion：固定高度與大小、不彈跳不上浮，只保留柔和淡出
+      s.position.y = 16; s.scale.set(7, 7, 1);
+    } else {
+      s.position.y = 15 + vis.rise;
+      const sc = 7 * vis.scale;
+      s.scale.set(sc, sc, 1);
+    }
+    s.material.opacity = fade * vis.opacity;
   }
 }
 
@@ -1701,6 +1784,9 @@ const npcs = new Map();
 const wildlife = new Map();
 const enemies = new Map();
 const nodes = new Map(); // key 用座標字串（節點無穩定 id）
+// 玩家表情泡泡（ROADMAP 621）：from_id → { glyph, startMs, displaySecs }。收到 player_emote 即覆寫，
+// 每幀由 updatePlayerEmotes 依存活進度動畫＋過期自清，與玩家 group 鬆耦合（玩家離線/離開視野自然收掉）。
+const playerEmotes = new Map();
 
 let myId = null;
 let snapshotCount = 0;
@@ -1793,7 +1879,12 @@ function handleServerMsg(msg) {
       reconcile(
         msg.players, players,
         (p) => p.id,
-        (p) => makeEntity(makeStickman(p.id === myId ? SELF_COLOR : PLAYER_COLOR), p.name || "玩家"),
+        (p) => {
+          // 火柴人（自己金色／別人藍色）＋名字，再掛一枚頭頂表情泡泡（ROADMAP 621）
+          const g = makeEntity(makeStickman(p.id === myId ? SELF_COLOR : PLAYER_COLOR), p.name || "玩家");
+          attachEmoteBubble(g);
+          return g;
+        },
         recvT
       );
       // NPC（含居民／商人）：暖棕火柴人，帶名字
@@ -1890,12 +1981,24 @@ function handleServerMsg(msg) {
       hudEl.innerHTML =
         `<b>${myName}</b> · 線上 ${players.size} 人${phaseLabel ? " · " + phaseLabel : ""}${weatherLabel ? " · " + weatherLabel : ""}\n` +
         `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · 敵人 ${enemies.size}${farmLabel ? " · " + farmLabel : ""}${builtLabel ? " · " + builtLabel : ""}${groveLabel ? " · " + groveLabel : ""}\n` +
-        `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳 · 🌱鈕種樹" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳 · T 種樹"}`;
+        `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳 · 🌱鈕種樹 · 😊鈕比表情" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳 · T 種樹 · E 表情"}`;
 
       setStatus(
         `真實世界已連上 · 快照 #${snapshotCount}` +
         (meGroup ? "（鏡頭跟著你）" : "")
       );
+      break;
+    }
+    case "player_emote": {
+      // 玩家表情（ROADMAP 621）：在比表情的玩家頭頂彈跳浮起一枚大 emoji 後淡出。
+      // glyph 由伺服器權威帶回（白名單內合法表情）；同一玩家連發會覆蓋上一個未消的表情。
+      if (msg && msg.from_id) {
+        playerEmotes.set(msg.from_id, {
+          glyph: msg.glyph || "❓",
+          startMs: performance.now(),
+          displaySecs: msg.display_secs || 4,
+        });
+      }
       break;
     }
     default:
@@ -1943,6 +2046,7 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyT" && !e.repeat) { tryPlantTree(); e.preventDefault(); return; } // 種樹（ROADMAP 618）
   if (e.code === "KeyF" && !e.repeat) { tryTend("water"); e.preventDefault(); return; }   // 一鍵澆水（ROADMAP 619）
   if (e.code === "KeyH" && !e.repeat) { tryTend("harvest"); e.preventDefault(); return; } // 一鍵收成（ROADMAP 619）
+  if (e.code === "KeyE" && !e.repeat) { if (globalThis.__bf3dToggleEmoteWheel) globalThis.__bf3dToggleEmoteWheel(); e.preventDefault(); return; } // 表情輪（ROADMAP 621）
   const dir = keyToDir(e);
   if (dir) { heldKeys[dir] = true; e.preventDefault(); }
 });
@@ -2072,6 +2176,55 @@ function tryTend(kind) {
   bind("harvestBtn", () => tryTend("harvest"));
   updateActBtns();
 })();
+
+// ============================================================
+// 表情輪（ROADMAP 621）：點 😊 鈕展開 8 顆表情，選一個就送既有權威 `emote` 意圖；
+// 伺服器廣播回來後 updatePlayerEmotes 會在自己（與他人）頭頂浮起對應 emoji。
+// 表情不需擁有農地、人人可比，故不做登入鎖定（與 2D 一致；伺服器以連線玩家身分為準）。
+// ============================================================
+let lastEmoteAt = -1e9;          // 本地冷卻時戳（後端另有每秒 3 次限流，這只是手感防呆）
+const EMOTE_COOLDOWN_MS = 400;
+(function wireEmoteWheel() {
+  const btn = document.getElementById("emoteBtn");
+  const popup = document.getElementById("emotePopup");
+  if (!btn || !popup) return; // 舊頁／測試 DOM 無此 widget → 靜默跳過
+  const hide = () => { popup.classList.add("hidden"); btn.setAttribute("aria-expanded", "false"); };
+  const show = () => { popup.classList.remove("hidden"); btn.setAttribute("aria-expanded", "true"); };
+  const toggle = () => { popup.classList.contains("hidden") ? show() : hide(); };
+  // 動態建表情鈕一次（次序與白名單一致）
+  for (const [kind, glyph, label] of EMOTE_CHOICES) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "emote-choice";
+    b.title = label;
+    b.setAttribute("aria-label", label);
+    b.textContent = glyph;
+    b.addEventListener("click", (e) => {
+      if (e && e.preventDefault) e.preventDefault();
+      sendEmote(kind);
+      hide();
+    });
+    popup.appendChild(b);
+  }
+  btn.addEventListener("click", (e) => { if (e && e.preventDefault) e.preventDefault(); toggle(); });
+  // 點別處／按 Esc 收起表情輪（不擋遊戲操作）
+  window.addEventListener("pointerdown", (e) => {
+    if (popup.classList.contains("hidden")) return;
+    if (e.target === btn || popup.contains(e.target)) return;
+    hide();
+  });
+  window.addEventListener("keydown", (e) => { if (e.code === "Escape") hide(); });
+  globalThis.__bf3dToggleEmoteWheel = toggle; // 給 E 鍵共用
+})();
+
+// 送一個表情意圖（白名單外靜默忽略；本地冷卻防手滑連點）。
+function sendEmote(kind) {
+  const wire = emoteWireMsg(kind);
+  if (!wire) return;
+  const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+  if (now - lastEmoteAt < EMOTE_COOLDOWN_MS) return;
+  if (safeSend(wire)) lastEmoteAt = now;
+}
 
 // 開頁查 /auth/me：已登入就點亮種樹鈕、進場用帳號名（authed 身分仍由 cookie 決定）。
 // OAuth 未設定／未登入回非 2xx → 維持訪客態（照常觀賞）。fetch 不可用（如 smoke 沙箱）就跳過。
@@ -2475,6 +2628,8 @@ function safeRender() {
     const meGroup = myId ? players.get(myId) : null;
     // 別人／NPC／敵人／野生動物：正規實體內插（自己 myId 跳過，走預測）
     updateRemoteEntities(players, scene, renderTime, true, dt, t, myId, k);
+    // 玩家頭頂表情泡泡：在 players 的 updateFade 之後覆寫表情 sprite 的顯示（ROADMAP 621）
+    updatePlayerEmotes(performance.now());
     updateRemoteEntities(npcs, scene, renderTime, true, dt, t, undefined, k);
     // NPC 內心生活呈現：在 npcs 的 updateFade 之後覆寫狀態/關懷/思想 sprite 的顯示（ROADMAP 611）
     updateResidentStatus(t);
@@ -2540,7 +2695,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, dayClockReadout, fmtCountdown };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES };
 }
 
 // 啟動

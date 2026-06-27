@@ -99,6 +99,7 @@ function makeEl(id) {
     textContent: "", innerHTML: "",
     classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false },
     appendChild: () => {}, addEventListener: () => {}, removeEventListener: () => {},
+    setAttribute: () => {}, removeAttribute: () => {}, contains: () => false,
     getContext: (t) => (t === "2d" ? makeCtx() : null),
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }),
   };
@@ -462,6 +463,43 @@ if (T.fmtCountdown(0) !== "0:00") fail("fmtCountdown(0) 應為 0:00");
 if (T.fmtCountdown(null) !== "" || T.fmtCountdown(-3) !== "" || T.fmtCountdown(NaN) !== "") fail("fmtCountdown 缺值/負值/壞值應回空字串");
 console.log("✅ 天時盤 dayClockReadout 繞盤角度／倒數平滑遞減／時段·下一時段標籤／夜間危機旗標／壞值安全＋fmtCountdown 格式全綠");
 
+// ── 表情輪純函式（ROADMAP 621）：白名單意圖／頭頂泡泡動畫／壞值安全 ──
+if (typeof T.emoteWireMsg !== "function" || typeof T.emoteBubbleVisual !== "function" || !Array.isArray(T.EMOTE_CHOICES)) {
+  fail("__bf3dTest 未暴露 emoteWireMsg/emoteBubbleVisual/EMOTE_CHOICES");
+}
+// EMOTE_CHOICES：8 顆、每顆 [wire, glyph, label] 皆非空
+if (T.EMOTE_CHOICES.length !== 8) fail(`EMOTE_CHOICES 應有 8 顆，得 ${T.EMOTE_CHOICES.length}`);
+for (const c of T.EMOTE_CHOICES) {
+  if (!Array.isArray(c) || c.length !== 3 || !c[0] || !c[1] || !c[2]) fail(`EMOTE_CHOICES 元素格式錯：${JSON.stringify(c)}`);
+}
+// emoteWireMsg：白名單內回 {type:"emote",kind}，白名單外回 null（不送偽造表情）
+const wm = T.emoteWireMsg("wave");
+if (!wm || wm.type !== "emote" || wm.kind !== "wave") fail(`emoteWireMsg("wave") 應為 {type:emote,kind:wave}，得 ${JSON.stringify(wm)}`);
+if (T.emoteWireMsg("explode") !== null) fail("emoteWireMsg 白名單外應回 null");
+if (T.emoteWireMsg("WAVE") !== null) fail("emoteWireMsg 大小寫敏感，WAVE 應回 null");
+if (T.emoteWireMsg("") !== null || T.emoteWireMsg(undefined) !== null) fail("emoteWireMsg 空值/缺值應回 null");
+// emoteBubbleVisual：起手可見、會上浮、末段淡出、過期不可見、壞值安全
+const ev0 = T.emoteBubbleVisual(0, 4);      // 剛開始
+const evMid = T.emoteBubbleVisual(2000, 4); // 中段
+const evLate = T.emoteBubbleVisual(3900, 4);// 末段（>70% 淡出區）
+const evDone = T.emoteBubbleVisual(4000, 4);// 恰好到期
+const evOver = T.emoteBubbleVisual(9999, 4);// 早已過期
+if (!ev0.visible || !evMid.visible || !evLate.visible) fail("emoteBubbleVisual 存活期內應 visible");
+if (evDone.visible || evOver.visible) fail("emoteBubbleVisual 到期/過期應不可見");
+if (!(evMid.rise > ev0.rise)) fail("emoteBubbleVisual 泡泡應隨時間上浮（rise 遞增）");
+if (!(evLate.opacity < 1) || !(evLate.opacity >= 0)) fail(`emoteBubbleVisual 末段應淡出於 [0,1)，得 ${evLate.opacity}`);
+if (Math.abs(ev0.opacity - 1) > 1e-9) fail("emoteBubbleVisual 起手應全不透明");
+// 確定性
+if (JSON.stringify(T.emoteBubbleVisual(1234, 4)) !== JSON.stringify(T.emoteBubbleVisual(1234, 4))) fail("emoteBubbleVisual 非確定性");
+// 壞值安全（NaN elapsed／非法 displaySecs 皆不可見、不 throw）
+for (const bad of [NaN, -10, undefined, Infinity]) {
+  const r = T.emoteBubbleVisual(bad, 4);
+  if (r.visible) fail(`emoteBubbleVisual 壞 elapsed=${bad} 不應可見`);
+}
+const rBadDur = T.emoteBubbleVisual(100, 0); // displaySecs 非正 → 退回預設 4 秒，仍可見
+if (!rBadDur.visible) fail("emoteBubbleVisual displaySecs 非正應退回預設、仍可見");
+console.log("✅ 表情輪 emoteWireMsg 白名單意圖／emoteBubbleVisual 彈跳上浮淡出·確定性·壞值安全／EMOTE_CHOICES 對齊後端全綠");
+
 // ── ② 逐幀跑：先 welcome，再餵含各種內心生活的 NPC 快照，跑多幀抓例外 ──
 function drive(msg) { lastWS.onmessage({ data: JSON.stringify(msg) }); }
 function frames(n) { for (let i = 0; i < n; i++) { perfNow += 33; if (rafCb) { const cb = rafCb; rafCb = null; cb(); } } }
@@ -523,13 +561,21 @@ const grovesA = [
   { x: 2920, y: 2980, stage: 3 }, // 成樹（投樹蔭）
   { x: 3080, y: 2880, stage: 9 }, // 壞 stage → 夾成成樹
 ];
-drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }], npcs: npcsA, wildlife: wildlifeA, enemies: [], nodes: [],
+drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }, { id: "p2", name: "夥伴", x: 3050, y: 3000 }], npcs: npcsA, wildlife: wildlifeA, enemies: [], nodes: [],
   fields: fieldsA, campfires: campfiresA, watchtowers: watchtowersA, snowmen: snowmenA, world_groves: grovesA,
   daynight: { phase: "day", day_fraction: 0.33, light: 1.0, night_danger: false, next_phase: "dusk", secs_to_next: 180 },
   // 細雨＋橫風＋彩虹：踩 applyWeather 的粒子推進／回收、霧染、彩虹淡入路徑（ROADMAP 613）
   weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
   rainbow: { active: true, remaining_secs: 30 } });
 frames(8);
+
+// 玩家表情（ROADMAP 621）：自己與夥伴各比一個表情＋一筆未知 from_id（已離開的玩家）——
+// 踩 player_emote 事件處理＋attachEmoteBubble＋updatePlayerEmotes 的點亮／上浮／淡出／自清路徑。
+drive({ type: "player_emote", from_id: "me", from_name: "我", glyph: "👋", wx: 3000, wy: 3000, display_secs: 4 });
+drive({ type: "player_emote", from_id: "p2", from_name: "夥伴", glyph: "🎉", wx: 3050, wy: 3000, display_secs: 4 });
+drive({ type: "player_emote", from_id: "ghost", from_name: "幽靈", glyph: "❤️", wx: 9999, wy: 9999, display_secs: 4 }); // from_id 不在 players → 應安全跳過
+frames(6);   // 彈跳＋上浮階段
+frames(130); // 跑過 4 秒顯示窗 → 踩泡泡淡出與過期自清路徑（reduceMotion 與一般路徑都不該 throw）
 
 // 狀態轉移：活動結束（→null）、思想消失、危機解除轉歡慶、需求被撫平——踩 setSpriteEmoji 換貼圖/熄滅路徑
 const npcsB = [
@@ -601,5 +647,5 @@ if (caught.length) {
   for (const c of caught.slice(0, 10)) console.error("   · " + c);
   process.exit(1);
 }
-console.log("✅ NPC 內心生活（活動／思想／關懷／危機／歡慶＋狀態轉移＋AOI 淡出）＋野生動物（五種身形／幼獸縮放／馴養脈動／轉移）＋人造地標（篝火圍爐／將熄／塔施工→落成入夜亮燈／雪人讚賞＋AOI 淡出）＋世界樹群（嫩芽→幼苗→幼樹松→成樹遮蔭、長大重塑＋AOI 淡出）跑 20 幀零例外");
+console.log("✅ NPC 內心生活（活動／思想／關懷／危機／歡慶＋狀態轉移＋AOI 淡出）＋野生動物（五種身形／幼獸縮放／馴養脈動／轉移）＋人造地標（篝火圍爐／將熄／塔施工→落成入夜亮燈／雪人讚賞＋AOI 淡出）＋世界樹群（嫩芽→幼苗→幼樹松→成樹遮蔭、長大重塑＋AOI 淡出）＋玩家表情泡泡（揮手／歡呼點亮→彈跳上浮→4 秒淡出自清＋未知 from_id 安全跳過）跑多幀零例外");
 console.log("✅ render-smoke-3d 全綠");
