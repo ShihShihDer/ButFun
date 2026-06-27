@@ -421,6 +421,47 @@ const tendUnknown = T.tendButtonState(true, "bogus");
 if (!tendUnknown || typeof tendUnknown.label !== "string" || typeof tendUnknown.locked !== "boolean") fail("tendButtonState 未知 kind 應安全回合法鈕態，不 throw");
 console.log("✅ 照料農地 wire 訊息固定（water_all／harvest_all）／登入·訪客鈕態區隔／未知 kind 安全降級全綠");
 
+// ── ①j 天時盤純邏輯（ROADMAP 620）：繞盤角度／倒數平滑遞減／時段·下一時段標籤／壞值安全 ──
+if (typeof T.dayClockReadout !== "function" || typeof T.fmtCountdown !== "function") fail("__bf3dTest 未暴露 dayClockReadout/fmtCountdown");
+const dcr = T.dayClockReadout;
+// 繞盤角度：正午(0.5)在盤頂(~0°)、午夜(0)在底(180°)、破曉(0.25)在右(90°，東昇)、黃昏(0.75)在左(270°，西落)
+const near = (a, b) => Math.abs(((a - b) % 360 + 540) % 360 - 180) < 0.5;
+if (!near(dcr({ day_fraction: 0.5 }, 0).sunDeg, 0)) fail("正午太陽應在盤頂(0°)");
+if (!near(dcr({ day_fraction: 0 }, 0).sunDeg, 180)) fail("午夜應在盤底(180°)");
+if (!near(dcr({ day_fraction: 0.25 }, 0).sunDeg, 90)) fail("破曉應在右(90°，東昇)");
+if (!near(dcr({ day_fraction: 0.75 }, 0).sunDeg, 270)) fail("黃昏應在左(270°，西落)");
+// 角度恆落在 [0,360)
+for (const f of [-0.3, 0, 0.1, 0.999, 1.4, NaN]) { const d = dcr({ day_fraction: f }, 0).sunDeg; if (!(d >= 0 && d < 360)) fail(`sunDeg 應落 [0,360)，f=${f} 得 ${d}`); }
+// 倒數平滑遞減（錨點起算 elapsed），夾非負；day_fraction 隨 elapsed 平滑推進
+const r0 = dcr({ phase: "day", day_fraction: 0.4, next_phase: "dusk", secs_to_next: 120, night_danger: false }, 0);
+const r30 = dcr({ phase: "day", day_fraction: 0.4, next_phase: "dusk", secs_to_next: 120, night_danger: false }, 30);
+if (r0.secsLeft !== 120) fail(`elapsed 0 倒數應為 120，得 ${r0.secsLeft}`);
+if (r30.secsLeft !== 90) fail(`elapsed 30 倒數應遞減到 90，得 ${r30.secsLeft}`);
+if (!(r30.frac > r0.frac)) fail("day_fraction 應隨 elapsed 平滑推進");
+if (dcr({ secs_to_next: 10 }, 999).secsLeft !== 0) fail("倒數應夾非負（不變負數）");
+// 缺 secs_to_next（舊伺服器）→ null＝不顯示倒數；缺 next_phase → 空字串
+if (dcr({ phase: "day", day_fraction: 0.4 }, 0).secsLeft !== null) fail("缺 secs_to_next 倒數應回 null");
+if (dcr({ phase: "day", day_fraction: 0.4 }, 0).nextLabel !== "") fail("缺 next_phase 下一時段標籤應回空字串");
+// 時段標籤／夜間旗標／危機旗標
+const rNight = dcr({ phase: "night", day_fraction: 0.85, next_phase: "dawn", secs_to_next: 40, night_danger: true }, 0);
+if (rNight.isNight !== true || rNight.danger !== true) fail("夜間危機應 isNight＋danger 皆 true");
+if (!/夜晚/.test(rNight.phaseLabel) || !/破曉/.test(rNight.nextLabel)) fail("夜間時段／下一時段標籤錯");
+if (dcr({ phase: "day", day_fraction: 0.4 }, 0).isNight !== false) fail("白天 isNight 應為 false");
+// 壞值安全：null dn / 非物件 / NaN elapsed → 不拋、回合法結構
+for (const [dn, el, d] of [[null, 0, "null dn"], ["x", 5, "非物件 dn"], [{ day_fraction: NaN }, NaN, "NaN 全壞"]]) {
+  const r = dcr(dn, el);
+  if (!Number.isFinite(r.sunDeg) || !Number.isFinite(r.frac)) fail(`${d}：sunDeg/frac 應有限`);
+  if (r.secsLeft !== null) fail(`${d}：缺欄位倒數應回 null`);
+}
+// 確定性：同輸入同輸出
+if (JSON.stringify(dcr({ phase: "day", day_fraction: 0.3, secs_to_next: 50 }, 12)) !== JSON.stringify(dcr({ phase: "day", day_fraction: 0.3, secs_to_next: 50 }, 12))) fail("dayClockReadout 非確定性");
+// fmtCountdown：m:ss 格式、補零、壞值空字串
+if (T.fmtCountdown(200) !== "3:20") fail(`fmtCountdown(200) 應為 3:20，得 ${T.fmtCountdown(200)}`);
+if (T.fmtCountdown(5) !== "0:05") fail(`fmtCountdown(5) 應補零為 0:05，得 ${T.fmtCountdown(5)}`);
+if (T.fmtCountdown(0) !== "0:00") fail("fmtCountdown(0) 應為 0:00");
+if (T.fmtCountdown(null) !== "" || T.fmtCountdown(-3) !== "" || T.fmtCountdown(NaN) !== "") fail("fmtCountdown 缺值/負值/壞值應回空字串");
+console.log("✅ 天時盤 dayClockReadout 繞盤角度／倒數平滑遞減／時段·下一時段標籤／夜間危機旗標／壞值安全＋fmtCountdown 格式全綠");
+
 // ── ② 逐幀跑：先 welcome，再餵含各種內心生活的 NPC 快照，跑多幀抓例外 ──
 function drive(msg) { lastWS.onmessage({ data: JSON.stringify(msg) }); }
 function frames(n) { for (let i = 0; i < n; i++) { perfNow += 33; if (rafCb) { const cb = rafCb; rafCb = null; cb(); } } }
@@ -484,7 +525,7 @@ const grovesA = [
 ];
 drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }], npcs: npcsA, wildlife: wildlifeA, enemies: [], nodes: [],
   fields: fieldsA, campfires: campfiresA, watchtowers: watchtowersA, snowmen: snowmenA, world_groves: grovesA,
-  daynight: { phase: "day", day_fraction: 0.33, light: 1.0, night_danger: false },
+  daynight: { phase: "day", day_fraction: 0.33, light: 1.0, night_danger: false, next_phase: "dusk", secs_to_next: 180 },
   // 細雨＋橫風＋彩虹：踩 applyWeather 的粒子推進／回收、霧染、彩虹淡入路徑（ROADMAP 613）
   weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
   rainbow: { active: true, remaining_secs: 30 } });
@@ -544,7 +585,7 @@ const grovesB = [
 ];
 drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }], npcs: npcsB, wildlife: wildlifeB, enemies: [], nodes: [],
   fields: fieldsB, campfires: campfiresB, watchtowers: watchtowersB, snowmen: snowmenB, world_groves: grovesB,
-  daynight: { phase: "night", day_fraction: 0.82, light: 0.2, night_danger: true },
+  daynight: { phase: "night", day_fraction: 0.82, light: 0.2, night_danger: true, next_phase: "dawn", secs_to_next: 60 },
   // 天氣切到海霧（上飄粒子）＋彩虹消失：踩 fall<0 上飄回收、霧染轉色、彩虹淡出路徑
   weather: { weather_type: "water_sea_mist", intensity: 0.7, wind: { dir_x: -0.5, dir_y: 0.3, strength: 0.4 }, fish_phase: 1 },
   rainbow: { active: false, remaining_secs: 0 } });

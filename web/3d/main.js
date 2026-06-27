@@ -29,6 +29,13 @@ window.addEventListener("unhandledrejection", (e) => showErr(String(e.reason)));
 // ---- 浮層：狀態（連線／找不到自己）＋ HUD（線上人數／自己名字／提示）----
 const statusEl = document.getElementById("status");
 const hudEl = document.getElementById("hud");
+// 天時盤 widget 句柄（ROADMAP 620）：可能不存在（舊頁／極簡測試 DOM）→ updateDayClock 全程 guard。
+const dcDialEl = document.getElementById("dcDial");
+const dcOrbitEl = document.getElementById("dcOrbit");
+const dcSunEl = document.getElementById("dcSun");
+const dcPhaseEl = document.getElementById("dcPhase");
+const dcNextEl = document.getElementById("dcNext");
+let dcLastPhase = null, dcLastNext = null; // 省 DOM 寫入：只在文字真的變動時才改寫
 function setStatus(text, isErr = false) {
   if (!statusEl) return;
   statusEl.textContent = text;
@@ -100,6 +107,7 @@ scene.add(sun);
 // 純讀快照、零後端／協議改動（資料本來就在快照裡）。
 // ============================================================
 let latestDayNight = null; // 最新一筆快照的 daynight（沒有就用預設白天）
+let dayNightAnchorMs = (typeof performance !== "undefined" ? performance.now() : 0); // 收到最新 daynight 的本地時刻：天時盤倒數/繞盤錨點（ROADMAP 620）
 const DN_RATE = 1.6;       // 視覺平滑趨近速率（每秒，1-exp；緩緩流轉、不跳變、不被 15Hz 快照打頓）
 
 function dnClamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
@@ -152,6 +160,39 @@ const DN_PHASE_LABEL = { dawn: "🌅 破曉", day: "☀️ 白天", dusk: "🌆 
 function dayNightPhaseLabel(dn) {
   if (!dn || typeof dn.phase !== "string") return "";
   return DN_PHASE_LABEL[dn.phase] || "";
+}
+
+// ── 天時盤 HUD（ROADMAP 620）：3D 世界至此只在 HUD 文字行埋一個小小時段 emoji；
+// AI 居民反覆許願「醒目的時間狀態指示器／時間流速節奏指標」（data/suggestions.jsonl 居民-5/11/12/4）。
+// 快照早就帶著權威天時盤欄位（day_fraction／secs_to_next／next_phase／night_danger，見 419 天時盤），
+// 這裡據此在右上角畫一個醒目的日晷：太陽/月亮繞盤、時段大字、下一時段倒數、夜間危機暈輪。
+// 純讀快照、零後端／協議改動——資料本來就在 DayNightView 裡。
+const DAY_LENGTH_SECS = 600; // 一整輪日夜＝600 秒（與 2D game.js 天時盤錨點同步，見 419/497）
+// 純函式：把一筆權威 daynight + 自收到該快照起算的 elapsedSecs，算成天時盤顯示值。
+// 平滑推進 day_fraction 與倒數（不必等下一份快照），確定性、壞值安全，供 render-smoke 斷言。
+function dayClockReadout(dn, elapsedSecs) {
+  const e = Number.isFinite(elapsedSecs) ? Math.max(0, elapsedSecs) : 0;
+  const baseFrac = (dn && Number.isFinite(dn.day_fraction)) ? dn.day_fraction : 0;
+  // 平滑推進並夾進 [0,1)（負值也安全）
+  const frac = ((((baseFrac + e / DAY_LENGTH_SECS) % 1) + 1) % 1);
+  // 太陽/月亮繞盤角度（deg，0=盤頂、順時針為正）：正午(0.5)在頂、午夜(0)在底、
+  // 破曉(0.25)在右(東昇)、黃昏(0.75)在左(西落)——直覺的日行軌跡。
+  const sunDeg = (((180 - frac * 360) % 360) + 360) % 360;
+  // 倒數：權威 secs_to_next 減去已過秒數、夾非負；缺欄位（舊伺服器）→ null＝不顯示倒數。
+  const rawSecs = (dn && Number.isFinite(dn.secs_to_next)) ? dn.secs_to_next : null;
+  const secsLeft = (rawSecs == null) ? null : Math.max(0, Math.round(rawSecs - e));
+  const phaseLabel = dayNightPhaseLabel(dn);
+  const nextLabel = (dn && typeof dn.next_phase === "string") ? (DN_PHASE_LABEL[dn.next_phase] || "") : "";
+  const isNight = !!(dn && dn.phase === "night");
+  const danger = !!(dn && dn.night_danger);
+  const gameHour = Math.floor(frac * 24); // 0..23 遊戲整點
+  return { frac, sunDeg, secsLeft, phaseLabel, nextLabel, isNight, danger, gameHour };
+}
+// 純函式：把秒數格式成 m:ss 倒數字串；缺值／壞值 → 空字串（不顯示倒數）。
+function fmtCountdown(secs) {
+  if (secs == null || !Number.isFinite(secs) || secs < 0) return "";
+  const m = Math.floor(secs / 60), s = Math.floor(secs % 60);
+  return m + ":" + String(s).padStart(2, "0");
 }
 
 // 純函式：把一筆 daynight 算成這一刻的視覺參數（天空／霧色 RGB、太陽光色／強度／位置、環境光強度）。
@@ -1742,7 +1783,7 @@ function handleServerMsg(msg) {
     case "snapshot": {
       snapshotCount++;
       // 日夜狀態：留存最新一筆權威 daynight，render 每幀據此讓世界的天色／光照流轉（ROADMAP 612）。
-      if (msg.daynight && typeof msg.daynight === "object") latestDayNight = msg.daynight;
+      if (msg.daynight && typeof msg.daynight === "object") { latestDayNight = msg.daynight; dayNightAnchorMs = performance.now(); } // 重設天時盤倒數錨點（ROADMAP 620）
       // 天氣／彩虹：留存最新一筆權威 weather／rainbow，render 每幀據此讓粒子場與遠空彩虹流轉（ROADMAP 613）。
       if (msg.weather && typeof msg.weather === "object") latestWeather = msg.weather;
       if (msg.rainbow && typeof msg.rainbow === "object") latestRainbow = msg.rainbow;
@@ -2383,6 +2424,29 @@ function updateSelfPrediction(g, dt) {
   }
 }
 
+// 每幀更新天時盤 HUD（ROADMAP 620）：太陽/月亮繞盤、時段大字、下一時段倒數、夜間危機暈輪。
+// 純讀 latestDayNight + 本地錨點平滑推進；無 widget／壞值一律安全靜默（守 render-loop-resilience）。
+function updateDayClock() {
+  if (!dcOrbitEl) return; // 無此 widget（舊頁／測試 DOM）→ 靜默跳過
+  const elapsed = (performance.now() - dayNightAnchorMs) / 1000;
+  const r = dayClockReadout(latestDayNight, elapsed);
+  // 太陽/月亮繞盤：轉 orbit 容器把圖示帶著繞圈，圖示本體反轉抵銷避免倒置。
+  dcOrbitEl.style.transform = "rotate(" + r.sunDeg.toFixed(1) + "deg)";
+  if (dcSunEl) {
+    const icon = r.isNight ? "🌙" : "☀️";
+    if (dcSunEl.textContent !== icon) dcSunEl.textContent = icon;
+    dcSunEl.style.transform = "translateX(-50%) rotate(" + (-r.sunDeg).toFixed(1) + "deg)";
+  }
+  // 夜間危機暈輪：phase===night 時盤緣轉紅暈（呼應世界的危機紅化）。
+  if (dcDialEl) dcDialEl.classList.toggle("danger", r.danger);
+  // 時段大字（只在變動時改寫 DOM）。
+  if (dcPhaseEl && r.phaseLabel !== dcLastPhase) { dcPhaseEl.textContent = r.phaseLabel || ""; dcLastPhase = r.phaseLabel; }
+  // 下一時段倒數句：「再 m:ss → 🌙夜晚」——把抽象的「時間流速」具象成可讀的節奏感。
+  const cd = fmtCountdown(r.secsLeft);
+  const nextLine = (r.nextLabel && cd) ? ("再 " + cd + " → " + r.nextLabel) : (r.nextLabel || "");
+  if (dcNextEl && nextLine !== dcLastNext) { dcNextEl.textContent = nextLine; dcLastNext = nextLine; }
+}
+
 function safeRender() {
   requestAnimationFrame(safeRender);
   try {
@@ -2426,6 +2490,8 @@ function safeRender() {
     updateStructures(dt, t);
     // 世界樹群：幼樹／成樹隨風輕擺、AOI 淡入淡出（ROADMAP 617）
     updateGroves(dt, t);
+    // 天時盤 HUD：太陽/月亮繞盤、時段、下一時段倒數、夜間危機暈輪（ROADMAP 620）
+    updateDayClock();
 
     // 自己：客戶端預測（零延遲）+ 平滑對帳權威，再疊上視覺跳的高度
     if (meGroup) {
@@ -2474,7 +2540,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, dayClockReadout, fmtCountdown };
 }
 
 // 啟動
