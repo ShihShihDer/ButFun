@@ -1728,6 +1728,17 @@ function handleServerMsg(msg) {
       }
       setStatus("已以玩家身分加入，等待世界快照…");
       break;
+    case "chat": {
+      // 只接「自己剛觸發的照料動作」的系統權威回報（ROADMAP 619）：在送出 water_all／harvest_all
+      // 後開的 3 秒窗內、且來源是「系統」單播，才浮成 toast——誠實回饋（澆了幾株／太遠走近／作物剛好），
+      // 不洩漏其他玩家的聊天、也不假裝結果。窗外或非系統訊息一律忽略（3D 暫不顯示一般聊天）。
+      const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+      if (now < awaitTendReplyUntil && msg && msg.from === "系統" && typeof msg.text === "string") {
+        awaitTendReplyUntil = -1e9; // 用掉這次窗，避免一次動作吃到後續無關系統訊息
+        flashToast(msg.text);
+      }
+      break;
+    }
     case "snapshot": {
       snapshotCount++;
       // 日夜狀態：留存最新一筆權威 daynight，render 每幀據此讓世界的天色／光照流轉（ROADMAP 612）。
@@ -1889,6 +1900,8 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "Space") { wantJump = true; e.preventDefault(); return; }
   if (e.code === "ShiftLeft" || e.code === "ShiftRight") { runHeld = true; return; }
   if (e.code === "KeyT" && !e.repeat) { tryPlantTree(); e.preventDefault(); return; } // 種樹（ROADMAP 618）
+  if (e.code === "KeyF" && !e.repeat) { tryTend("water"); e.preventDefault(); return; }   // 一鍵澆水（ROADMAP 619）
+  if (e.code === "KeyH" && !e.repeat) { tryTend("harvest"); e.preventDefault(); return; } // 一鍵收成（ROADMAP 619）
   const dir = keyToDir(e);
   if (dir) { heldKeys[dir] = true; e.preventDefault(); }
 });
@@ -1910,15 +1923,35 @@ let myName3d = "3D玩家";          // 顯示名：登入後換成帳號名（au
 let mySpecies3d = "terran";
 let lastPlantAt = -1e9;           // 上次種樹的本地時戳，做點擊冷卻防手滑連點
 const PLANT_COOLDOWN_MS = 600;    // 本地冷卻（後端另有每秒 3 次限流，這只是前端手感防呆）
+let lastTendAt = -1e9;            // 上次澆水／收成的本地時戳（共用一個冷卻，避免連點洗系統訊息）
+const TEND_COOLDOWN_MS = 600;     // 本地冷卻
+let awaitTendReplyUntil = -1e9;   // 在此時戳前收到的系統單播回報，浮成 toast（只接自己剛觸發的那則）
+const TEND_REPLY_WINDOW_MS = 3000;// 等待窗：送出後 3 秒內的系統回覆視為本次照料的權威回報
 
 // 要送給伺服器的「種樹」意圖（與 2D 同形 `{type:"plant_tree"}`）。抽成純函式供 smoke 斷言。
 function plantTreeWireMsg() { return { type: "plant_tree" }; }
+// 一鍵澆水／一鍵收成意圖（ROADMAP 619，與 2D web/game.js 同協議 `water_all`／`harvest_all`）。
+// 都是無參數的權威意圖——伺服器自行判定「在自家農地可及範圍」才生效（鏡像 2D），3D 純送意圖。
+function waterAllWireMsg() { return { type: "water_all" }; }
+function harvestAllWireMsg() { return { type: "harvest_all" }; }
 
 // 種樹鈕的顯示狀態（登入→可種、訪客→鎖定提示）。純函式、面向玩家字串集中可 i18n、供 smoke 真值表。
 function plantButtonState(loggedIn) {
   return loggedIn
     ? { label: "🌱 種樹", locked: false, hint: "在你站的地方種下一株嫩芽" }
     : { label: "🌱 種樹（登入後）", locked: true, hint: "在 but-fun.com 登入後，就能在世界種下你的樹" };
+}
+
+// 照料農地鈕（澆水／收成）的顯示狀態。登入→可用（須走到自己農地旁才生效，由伺服器裁決）；
+// 訪客→鎖定（沒地、送了不留痕跡，故誠實鎖定不假裝）。純函式、字串集中可 i18n、供 smoke 真值表。
+// kind: "water"｜"harvest"。未知 kind 保守回種樹以外的安全鎖定態（不 throw）。
+function tendButtonState(loggedIn, kind) {
+  const spec = kind === "harvest"
+    ? { emoji: "🌾", name: "收成", doneHint: "走到自己的農地旁，把成熟的作物一次收完", lockHint: "在 but-fun.com 登入並擁有農地後，就能在 3D 裡收成" }
+    : { emoji: "💧", name: "澆水", doneHint: "走到自己的農地旁，把缺水的作物一次澆滿", lockHint: "在 but-fun.com 登入並擁有農地後，就能在 3D 裡澆水" };
+  return loggedIn
+    ? { label: `${spec.emoji} ${spec.name}`, locked: false, hint: spec.doneHint }
+    : { label: `${spec.emoji} ${spec.name}（登入後）`, locked: true, hint: spec.lockHint };
 }
 
 // 只在 ws 開著時送，避免未連線時丟訊息拋例外。回傳是否真的送出。
@@ -1938,14 +1971,18 @@ function flashToast(text) {
   toastTimer = setTimeout(() => { el.classList.remove("show"); }, 2200);
 }
 
-// 依登入態刷新種樹鈕外觀。
-function updatePlantBtn() {
-  const btn = document.getElementById("plantBtn");
-  if (!btn) return;
-  const st = plantButtonState(isLoggedIn);
-  btn.textContent = st.label;
-  btn.classList.toggle("locked", st.locked);
-  btn.title = st.hint;
+// 依登入態刷新所有照料鈕外觀（種樹／澆水／收成共用登入態）。
+function updateActBtns() {
+  const apply = (id, st) => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.textContent = st.label;
+    btn.classList.toggle("locked", st.locked);
+    btn.title = st.hint;
+  };
+  apply("plantBtn", plantButtonState(isLoggedIn));
+  apply("waterBtn", tendButtonState(isLoggedIn, "water"));
+  apply("harvestBtn", tendButtonState(isLoggedIn, "harvest"));
 }
 
 // 嘗試種樹：訪客給登入提示、登入者送權威意圖＋冷卻＋確認飄字。
@@ -1962,13 +1999,37 @@ function tryPlantTree() {
   }
 }
 
-// 接線：點 🌱 鈕種樹（桌機 + 手機）；T 鍵在上方 keydown 處理。
-(function wirePlantAction() {
-  const btn = document.getElementById("plantBtn");
-  if (btn && btn.addEventListener) {
-    btn.addEventListener("click", (e) => { if (e && e.preventDefault) e.preventDefault(); tryPlantTree(); });
+// 嘗試一鍵澆水／收成（ROADMAP 619）：訪客給登入提示；登入者送無參數權威意圖＋冷卻。
+// 真正結果（澆了幾株／太遠走近）由伺服器單播 ServerMsg::Chat 回報，下面 handleServerMsg 在
+// 短窗內把那則系統回覆浮成 toast＝誠實回饋（不過度宣稱、也不假裝站在田邊就一定有作物可照料）。
+function tryTend(kind) {
+  if (!isLoggedIn) {
+    flashToast(kind === "harvest"
+      ? "🌾 在 but-fun.com 登入並擁有農地後，就能在 3D 裡收成"
+      : "💧 在 but-fun.com 登入並擁有農地後，就能在 3D 裡澆水");
+    return;
   }
-  updatePlantBtn();
+  const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+  if (now - lastTendAt < TEND_COOLDOWN_MS) return; // 冷卻內忽略連點
+  const ok = safeSend(kind === "harvest" ? harvestAllWireMsg() : waterAllWireMsg());
+  if (ok) {
+    lastTendAt = now;
+    awaitTendReplyUntil = now + TEND_REPLY_WINDOW_MS; // 開窗等伺服器權威回報，浮成 toast
+  }
+}
+
+// 接線：點 🌱／💧／🌾 鈕（桌機 + 手機）；T／F／H 鍵在上方 keydown 處理。
+(function wireActButtons() {
+  const bind = (id, fn) => {
+    const btn = document.getElementById(id);
+    if (btn && btn.addEventListener) {
+      btn.addEventListener("click", (e) => { if (e && e.preventDefault) e.preventDefault(); fn(); });
+    }
+  };
+  bind("plantBtn", tryPlantTree);
+  bind("waterBtn", () => tryTend("water"));
+  bind("harvestBtn", () => tryTend("harvest"));
+  updateActBtns();
 })();
 
 // 開頁查 /auth/me：已登入就點亮種樹鈕、進場用帳號名（authed 身分仍由 cookie 決定）。
@@ -1981,7 +2042,7 @@ if (typeof fetch === "function") {
         isLoggedIn = true;
         if (me.name) myName3d = me.name;
         if (me.species) mySpecies3d = me.species;
-        updatePlantBtn();
+        updateActBtns();
       }
     })
     .catch(() => { /* 查不到就當訪客，不影響觀賞 */ });
@@ -2413,7 +2474,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState };
 }
 
 // 啟動
