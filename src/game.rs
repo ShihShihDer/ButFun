@@ -4710,7 +4710,7 @@ pub fn spawn(app: AppState) {
                     };
 
                     // —— 路人居民（ROADMAP 115）——：純模板 NPC，無商店功能。
-                    let mut expedition_target = None;
+                    let expedition_target;
                     {
                         let res = app.residents.read().unwrap();
                         expedition_target = res.expedition_target();
@@ -5052,14 +5052,15 @@ pub fn spawn(app: AppState) {
                         // 戰鬥記跡（ROADMAP 499）：最近 20 筆擊殺地點，5 分鐘內有效。
                         combat_marks: app.combat_marks.read().unwrap().view(),
                         // 廣場英雄碑（ROADMAP 503）：掃一遍在線玩家，算本次對話採集/收穫/擊殺冠軍。
-                        session_champions: {
-                            let players_guard = app.players.read().unwrap();
-                            crate::session_champions::compute_champions(
-                                players_guard.values().map(|p| {
-                                    (p.name.as_str(), p.session_gather_count, p.session_harvest_count, p.kill_count)
-                                })
-                            )
-                        },
+                        // ⚠️ 死鎖修正：**沿用**本函式上方(4547)已持有的 `players` read guard，
+                        // **絕不可**對同一把 `app.players`(std RwLock)同執行緒二次上鎖——glibc 寫者優先下，
+                        // 若此刻有玩家動作的 writer 正在等鎖，第二次 read 會被擋住、外層 guard 永遠放不掉 → 永久死鎖。
+                        // （與上方 land_plots 同範式。）
+                        session_champions: crate::session_champions::compute_champions(
+                            players.values().map(|p| {
+                                (p.name.as_str(), p.session_gather_count, p.session_harvest_count, p.kill_count)
+                            })
+                        ),
                         // 乙太暴走事件（ROADMAP 504）：廣播當前暴走狀態供前端顯示特效。
                         ether_surge_secs: app.ether_surge.read().unwrap().remaining_secs(),
                         ether_surge_x: app.ether_surge.read().unwrap().x,
