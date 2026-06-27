@@ -293,6 +293,9 @@ pub struct Player {
     /// 進行中的一條礦脈（ROADMAP 348）：press-your-luck 步步深掘／見好就收。
     /// 記憶體前置、不持久化、零 migration、重啟清空（沒在挖＝None）。
     pub mining: Option<crate::mining_vein::MiningVein>,
+    /// 累積「安全落袋」次數（ROADMAP 562 勘礦造詣）：每次沒崩、漂亮撤出 +1，由它即時推導
+    /// 勘礦造詣階位（生手→礦脈大師）。記憶體前置、不持久化、零 migration、重啟清空。
+    pub mine_hauls: u32,
 
     /// 玩家目前所在「在地地名」locale 的 id（ROADMAP 398 天地有名）。
     /// 記憶體前置、不持久化、零 migration、重啟清空（None＝尚未定位）。
@@ -660,6 +663,9 @@ impl Player {
             mining_depth: self.mining.map(|v| v.depth()),
             mining_haul: self.mining.map(|v| v.haul()),
             mining_tremor: self.mining.map(|v| v.tremor().as_str()),
+            // ROADMAP 562：勘礦造詣階位（由累積安全落袋次數即時推導，0=生手省流量）。
+            // 前端在採礦鈕標出「⛏️ 採礦·老礦工」，讓「越掘越懂礦脈」一眼看得見。
+            mine_tier: crate::prospecting::mastery_tier(self.mine_hauls),
             // ROADMAP 349：開灶冷卻，供前端料理「掌勺」鈕顯示冷卻倒數。
             cook_cooldown: self.cook_cooldown,
             // ROADMAP 350：進行中夜泉汲取的經過秒數（沒在汲取＝None，略過序列化）；
@@ -1996,6 +2002,7 @@ mod tests {
             mine_cooldown: 0.0,
             mine_attempt_count: 0,
             mining: None,
+            mine_hauls: 0,
             current_locale: None,
             cook_cooldown: 0.0,
             cook_attempt_count: 0,

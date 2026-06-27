@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, soonestCropEta, harvestEtaLabel, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint, materialUses, progressGoal, residentThoughtAlpha, nearestCareResident, cropRipeBadge, goldenHarvestText, anglerBondLabel, releaseFloatText, anglerModeText }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, soonestCropEta, harvestEtaLabel, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint, materialUses, progressGoal, residentThoughtAlpha, nearestCareResident, cropRipeBadge, goldenHarvestText, anglerBondLabel, releaseFloatText, anglerModeText, prospectorLabel, mineTierUpText }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -5168,6 +5168,8 @@
             // ROADMAP 348：礦脈深掘——進行中礦脈的深度／震動（供頭頂畫「⛏️ 深度＋震動晃動」世界訊號）。
             existing.mining_depth = (typeof p.mining_depth === "number") ? p.mining_depth : null;
             existing.mining_tremor = p.mining_tremor || null;
+            // ROADMAP 562：勘礦造詣階位（0=生手…3=礦脈大師）——採礦面板顯示身段（0 省略時當生手）。
+            existing.mine_tier = (p.mine_tier | 0) || 0;
             // ROADMAP 391：安靜打坐——是否正在打坐（前端畫呼吸光圈）。
             existing.meditating = !!p.meditating;
             // ROADMAP 552：打坐中已入的定境深度（0/1/2/3）——光圈隨定境加深而更盛、頭頂標定境名。
@@ -6326,11 +6328,24 @@
         } else if (msg.outcome === "collapsed") {
           floaters.push({ wx, wy, text: "💥 礦脈崩塌！整袋礦全埋", color: "255,90,90", born: now });
           announce("貪心了，礦脈崩塌，整袋礦全埋");
+          // ROADMAP 562：老礦工級即便整袋落空，也從崩塌中學到東西——綴一行安慰探索 XP。
+          const consolation = msg.consolation_xp || 0;
+          if (consolation > 0) {
+            floaters.push({ wx, wy: wy + 16, text: `🪨 老礦工的眼力 · 探索 +${consolation}`, color: "200,180,150", born: now + 1 });
+            announce(`雖然崩了，老礦工的眼力仍從中學到東西，探索熟練度加 ${consolation}`);
+          }
         } else if (msg.outcome === "hauled") {
           const haul = msg.haul || 0;
           floaters.push({ wx, wy, text: `🪨 收礦撤出 +${haul} 礦石`, color: "120,200,255", born: now });
           announce(`收礦撤出，落袋 ${haul} 礦石`);
           SFX.success(); // 收礦成功音效（ROADMAP 376）
+          // ROADMAP 562：恰好晉升新勘礦造詣階 → 金色慶賀飄字＋慶賀音效。
+          if (msg.tier_up) {
+            const tier = msg.mine_tier | 0;
+            floaters.push({ wx, wy: wy - 18, text: mineTierUpText(tier), color: "255,216,120", born: now + 1 });
+            announce(`勘礦造詣晉升：${prospectorLabel(tier)}`);
+            SFX.chime(); // 升階慶賀（與其他養成里程碑一致）
+          }
         }
         break;
       }
@@ -8918,6 +8933,22 @@
   // anglerModeText：放流模式切換提示（開／關）。供按鈕標籤與報讀。
   function anglerModeText(on) {
     return on ? "🕊️ 放流模式：開（上鉤即放生養塘）" : "🎣 放流模式：關（上鉤即收下）";
+  }
+
+  // ROADMAP 562 勘礦造詣：純函式，好測、零副作用、i18n 集中於此（前端對照標籤）。
+  // prospectorLabel：勘礦造詣階位 → 中文身段名；0=生手，逐階遞增；壞值夾鉗退「生手」。
+  // 標籤數需 ≥ 後端 max_tier()+1（後端 MASTERY_THRESHOLDS 3 階 → 0..3 共 4 級）。
+  const PROSPECTOR_LABELS = ["生手", "識礦人", "老礦工", "礦脈大師"];
+  function prospectorLabel(tier) {
+    let t = Number(tier);
+    if (!Number.isFinite(t) || t < 0) t = 0;
+    t = Math.floor(t);
+    if (t >= PROSPECTOR_LABELS.length) t = PROSPECTOR_LABELS.length - 1;
+    return PROSPECTOR_LABELS[t];
+  }
+  // mineTierUpText：晉升新造詣階的金色慶賀飄字。
+  function mineTierUpText(tier) {
+    return `⛏️ 勘礦造詣晉升：${prospectorLabel(tier)}！`;
   }
 
   // 玩家當下選的播種品種（線格式字串）。預設主食穀＝既有單一作物：不主動選就跟改動前一模一樣。
@@ -30324,9 +30355,10 @@
     const depth = me && typeof me.mining_depth === "number" ? me.mining_depth : null;
     const haul = me && typeof me.mining_haul === "number" ? me.mining_haul : null;
     const tremor = me ? (me.mining_tremor || null) : null;
+    const mineTier = me ? (me.mine_tier | 0) : 0; // ROADMAP 562 勘礦造詣階位
     const active = depth !== null;
-    // 冷卻每秒刷新；深度/袋量/震動/站位都納入 sig 即時切鈕。
-    const sig = [isGuestUser, Math.ceil(cooldown), nearRock, depth, haul, tremor].join("|");
+    // 冷卻每秒刷新；深度/袋量/震動/站位/造詣都納入 sig 即時切鈕。
+    const sig = [isGuestUser, Math.ceil(cooldown), nearRock, depth, haul, tremor, mineTier].join("|");
     if (sig === lastMineSig) return;
     lastMineSig = sig;
     body.innerHTML = "";
@@ -30338,6 +30370,12 @@
       body.appendChild(hint);
       return;
     }
+
+    // ROADMAP 562 勘礦造詣：頂端標出當下身段，讓「越掘越懂礦脈」一眼看得見。
+    const standing = document.createElement("div");
+    standing.style.cssText = "font-size:.8rem;margin-bottom:6px;color:#ffc488;";
+    standing.innerHTML = `⛏️ 勘礦造詣：<b style="color:#ffd24a;">${prospectorLabel(mineTier)}</b>`;
+    body.appendChild(standing);
 
     if (active) {
       // 進行中礦脈：顯示深度＋礦袋＋震動警示，兩顆鈕「再挖一層／收礦撤出」。
@@ -30388,7 +30426,7 @@
 
     const tip = document.createElement("div");
     tip.style.cssText = "color:rgba(232,224,207,0.38);font-size:.75rem;margin-top:4px;";
-    tip.textContent = "在岩地旁開礦脈：越挖越深、礦量越多，但礦脈會在某個說不準的深度崩塌、把整袋礦全埋。看震動警示「見好就收」——撤得越深、礦與探索熟練度回報越高。一輪結束 8 秒冷卻。";
+    tip.textContent = "在岩地旁開礦脈：越挖越深、礦量越多，但礦脈會在某個說不準的深度崩塌、把整袋礦全埋。看震動警示「見好就收」——撤得越深、礦與探索熟練度回報越高。每一次漂亮落袋都累積勘礦造詣（生手→礦脈大師），造詣越高探索熟練度回報越豐；老礦工級即便崩了也從中學到東西。一輪結束 8 秒冷卻。";
     body.appendChild(tip);
   }
 

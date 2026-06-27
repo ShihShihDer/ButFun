@@ -119,6 +119,7 @@ mod fish_size;
 mod fishing;
 mod fishing_bite;
 mod mining_vein;
+mod prospecting; // ROADMAP 562 勘礦造詣·越掘越懂礦脈（採礦個人養成曲線）
 mod cooking_steps;
 mod aether_draw;
 mod woodcutting;
