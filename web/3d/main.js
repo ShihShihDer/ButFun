@@ -1413,6 +1413,24 @@ function makeNode(kind) {
   return g;
 }
 
+// 夜採星晶礦脈（ROADMAP 629／50）：夜間限定、可採集的發光晶簇。比一般礦脈更大更亮（自發光晶藍），
+// 讓「夜裡才有的東西」在 3D 裡一眼認得出來——回應居民反覆許願的「夜間值得出門的目標」。
+// 白天伺服器不送＝reconcile 自動清掉，故只在夜空下浮現。靜態地形物，走 AOI 淡入淡出。
+function makeStarCrystal() {
+  const mat = new THREE.MeshLambertMaterial({ color: 0x8fd6ff });
+  mat.emissive = new THREE.Color(0x2f5fb0); // 自發光晶藍，夜裡也亮（呼應 makeNode 成熟金果的發光手法）
+  mat.emissiveIntensity = 0.7;
+  const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(3.6), mat);
+  mesh.position.y = 3.8;
+  const g = new THREE.Group();
+  g.add(mesh);
+  g.userData.tx = g.position.x;
+  g.userData.tz = g.position.z;
+  initNetState(g);
+  scene.add(g);
+  return g;
+}
+
 // ---- 程序化野生動物（ROADMAP 615）----
 // 四型低多邊形身形：bird（小鳥）／quadruped（鹿）／critter（圓滾小獸）／predator（狼狐）。
 // 共用幾何（全模組只建一次，幾十隻也不重建頂點）；材質「每隻一份」（單色）——這樣 AOI
@@ -2584,6 +2602,14 @@ const npcs = new Map();
 const wildlife = new Map();
 const enemies = new Map();
 const nodes = new Map(); // key 用座標字串（節點無穩定 id）
+// 夜採星晶礦脈（ROADMAP 629）：夜間限定可採集的發光晶脈，key 用座標字串（無穩定 id）。
+// 天亮後伺服器停送 star_crystals → reconcile 自動把它們淡出清除（鏡像節點）。
+const starCrystals = new Map();
+// 採集判距用的「最新一筆權威世界座標／快照」（世界 px，非場景單位）：每份快照更新，
+// render 每幀據此算「腳邊有沒有可採的東西」→ 點亮採集鈕（ROADMAP 629）。
+let latestSelfWorld = null; // {x,y}＝自己最新權威世界座標；沒有就還沒收到含自己的快照
+let latestNodes = [];       // 最新一筆採集節點（樹／石／乙太礦，世界 px）
+let latestCrystals = [];    // 最新一筆星晶礦脈（夜間限定，世界 px）
 // 寵物夥伴（ROADMAP 627）：key 用「主人 id:種類」——主人換了寵物時舊 key 自然淡出、新身形淡入。
 // 寵物有自己的世界座標（pet_x/pet_y，伺服器權威跟隨主人），走與玩家同套快照內插。
 const pets = new Map();
@@ -2761,6 +2787,14 @@ function handleServerMsg(msg) {
         (n) => makeNode(n.kind),
         recvT
       );
+      // 夜採星晶礦脈（ROADMAP 629）：夜間限定可採集晶脈，以座標當 key（無穩定 id）；
+      // 天亮後伺服器停送 → reconcile 自動淡出清除（與一般節點同套靜態淡入淡出）。
+      reconcile(
+        Array.isArray(msg.star_crystals) ? msg.star_crystals : [], starCrystals,
+        (c) => "sc@" + Math.round(c.x) + "," + Math.round(c.y),
+        () => makeStarCrystal(),
+        recvT
+      );
       // 農地（每位玩家的耕地）：把翻好的土＋成長中的作物＋稻草人接進 3D（ROADMAP 614）。
       reconcileFields(msg.fields, recvT);
 
@@ -2790,6 +2824,13 @@ function handleServerMsg(msg) {
         }
         selfAuthX = nx; selfAuthZ = nz; selfHasAuth = true; lastSelfAuthT = recvT;
       }
+
+      // 採集判距：留存自己的權威「世界座標」＋本份節點／星晶快照（世界 px），供 render 每幀算
+      // 「腳邊有沒有可採的東西」→ 點亮採集鈕（ROADMAP 629）。注意是世界 px、非場景單位（sx/sz）。
+      latestNodes = Array.isArray(msg.nodes) ? msg.nodes : [];
+      latestCrystals = Array.isArray(msg.star_crystals) ? msg.star_crystals : [];
+      latestSelfWorld = (meAuth && Number.isFinite(meAuth.x) && Number.isFinite(meAuth.y))
+        ? { x: meAuth.x, y: meAuth.y } : null;
 
       // 找出「自己」：快照裡 id === myId 的那個玩家。沒找到就提示（不白屏）。
       const meGroup = myId ? players.get(myId) : null;
@@ -2899,6 +2940,7 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyF" && !e.repeat) { tryTend("water"); e.preventDefault(); return; }   // 一鍵澆水（ROADMAP 619）
   if (e.code === "KeyH" && !e.repeat) { tryTend("harvest"); e.preventDefault(); return; } // 一鍵收成（ROADMAP 619）
   if (e.code === "KeyC" && !e.repeat) { tryLightCampfire(); e.preventDefault(); return; } // 野營篝火（ROADMAP 623）
+  if (e.code === "KeyG" && !e.repeat) { tryGather(); e.preventDefault(); return; } // 採集（ROADMAP 629）
   if (e.code === "KeyE" && !e.repeat) { if (globalThis.__bf3dToggleEmoteWheel) globalThis.__bf3dToggleEmoteWheel(); e.preventDefault(); return; } // 表情輪（ROADMAP 621）
   const dir = keyToDir(e);
   if (dir) { heldKeys[dir] = true; e.preventDefault(); }
@@ -2962,6 +3004,61 @@ function tendButtonState(loggedIn, kind) {
 // （伺服器只認連線玩家的權威座標＋戶外），故永不鎖定；純函式、字串集中可 i18n、供 smoke 真值表。
 function campfireButtonState() {
   return { label: "🔥 生火", locked: false, hint: "在你站的地方升起一堆篝火，火光暖意逼退附近野獸（燒完即熄）" };
+}
+
+// ============================================================
+// 在 3D 裡採集（ROADMAP 629）：3D 世界第一次能做「核心勞動」——走近樹／石／乙太礦按鍵採集，
+// 夜裡更有星晶礦脈現身可採。直接回應 AI 居民反覆許願的「夜間缺乏值得出門的目標」：
+// 過去 3D 的夜只有威脅（敵人），現在夜裡走出去，腳邊會冒出可採的星晶＝夜的第一個「正向理由」。
+//   · 純前端、純送既有權威意圖：一般節點 {type:"gather"}、星晶 {type:"gather_star_crystal"}
+//     （與 2D web/game.js 同協議）；零後端／協議／world-core 改動。
+//   · 伺服器才是權威：兩種採集都「不帶座標」——伺服器一律用採集者自己的權威座標判距（防隔空採集），
+//     星晶還會驗「現在是夜間」。前端只負責「走近了才點亮鈕、送出意圖」，採不採得到由後端裁決。
+//   · 採集不需登入（連線玩家即可，鏡像生火的誠實態）；星晶白天本就不存在＝鈕自然不亮。
+// ============================================================
+const GATHER_NODE_REACH = 56;     // 一般節點伸手範圍（px）——對齊後端 gather_field::GATHER_REACH
+const GATHER_CRYSTAL_REACH = 80;  // 星晶礦脈伸手範圍（px）——對齊後端 star_crystal::GATHER_REACH
+let lastGatherAt = -1e9;          // 上次採集的本地時戳（手感防呆；後端另有權威判定）
+const GATHER_COOLDOWN_MS = 320;   // 本地冷卻（連點上限；真正可否採由後端決定）
+
+// 採集意圖 wire（與 2D 同協議，無座標——伺服器用採集者權威座標判距）。抽成純函式供 smoke 斷言。
+function gatherWireMsg() { return { type: "gather" }; }
+function gatherStarCrystalWireMsg() { return { type: "gather_star_crystal" }; }
+
+// 採集目標判定（純函式、確定性、可測）：給自己的世界座標＋本份節點／星晶快照（世界 px），
+// 回最近且落在伸手範圍內的可採目標。星晶（夜間限定、80px）優先於一般節點（56px）——
+// 夜裡走到晶脈先採晶，否則採腳邊的樹／石／礦。壞座標／空快照／無自己座標一律安全回 null
+// （不 throw、不誤點亮鈕；守 render-loop-resilience）。
+function gatherTargetAt(self, nodes3, crystals) {
+  if (!self || !Number.isFinite(self.x) || !Number.isFinite(self.y)) return null;
+  const nearest = (list, reach, pick) => {
+    let best = null, bestD = reach * reach;
+    for (const it of (Array.isArray(list) ? list : [])) {
+      if (!it) continue;
+      const m = pick(it);
+      if (!m || !Number.isFinite(m.x) || !Number.isFinite(m.y)) continue;
+      const dx = m.x - self.x, dy = m.y - self.y, d = dx * dx + dy * dy;
+      if (d <= bestD) { bestD = d; best = m; }
+    }
+    return best;
+  };
+  // 星晶優先（夜間限定的稀客，別被腳邊普通節點蓋過）。
+  const crystal = nearest(crystals, GATHER_CRYSTAL_REACH, (c) => ({ x: c.x, y: c.y }));
+  if (crystal) return { kind: "crystal", x: crystal.x, y: crystal.y };
+  const node = nearest(nodes3, GATHER_NODE_REACH, (n) => ({ x: n.x, y: n.y, nodeKind: n.kind }));
+  if (node) return { kind: "node", nodeKind: node.nodeKind, x: node.x, y: node.y };
+  return null;
+}
+
+// 採集鈕的顯示狀態（純函式、面向玩家字串集中可 i18n、供 smoke 真值表）。
+// 走近可採目標才亮（依種類換字樣／提示），否則鎖定提示「走近資源」。
+function gatherButtonState(target) {
+  if (!target) return { label: "⛏️ 採集", locked: true, hint: "走到樹／礦脈／星晶旁，就能採集" };
+  if (target.kind === "crystal") return { label: "💎 採星晶", locked: false, hint: "採下這道夜間限定的星晶礦脈，得星晶碎片" };
+  const k = target.nodeKind;
+  if (k === "tree") return { label: "🪓 伐木", locked: false, hint: "採這棵樹得木材" };
+  if (k === "ether_ore") return { label: "🔮 採乙太", locked: false, hint: "採這道乙太礦脈得乙太礦" };
+  return { label: "⛏️ 採石", locked: false, hint: "採腳邊的礦脈得石材" };
 }
 
 // 只在 ws 開著時送，避免未連線時丟訊息拋例外。回傳是否真的送出。
@@ -3041,6 +3138,34 @@ function tryLightCampfire() {
   }
 }
 
+// 嘗試採集（ROADMAP 629）：依自己最新權威世界座標算腳邊有沒有可採目標；有就送對應權威意圖
+// ＋本地冷卻＋樂觀飄字，沒有就給一句「走近資源」的溫和提示（誠實、不假裝採到）。真正成敗
+// （太遠／白天採星晶／節點剛被採光）由伺服器裁決，採到的資源會在下一份背包快照反映。
+function tryGather() {
+  const target = gatherTargetAt(latestSelfWorld, latestNodes, latestCrystals);
+  if (!target) { flashToast("⛏️ 走到樹／礦脈／星晶旁，才能採集"); return; }
+  const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+  if (now - lastGatherAt < GATHER_COOLDOWN_MS) return; // 冷卻內忽略連點
+  const wire = target.kind === "crystal" ? gatherStarCrystalWireMsg() : gatherWireMsg();
+  if (safeSend(wire)) {
+    lastGatherAt = now;
+    flashToast(target.kind === "crystal" ? "💎 採下一道星晶礦脈" : "⛏️ 採集了腳邊的資源");
+  }
+}
+
+// 每幀依「腳邊有沒有可採目標」刷新採集鈕外觀（純讀 latest* 算 gatherTargetAt）。
+// 只在 label／鎖定態真的變動時才改寫 DOM（省排版）；無 widget／壞值一律安全靜默
+// （守 render-loop-resilience）。供 render 迴圈每幀呼叫。
+let gatherBtnLastLabel = null, gatherBtnLastLocked = null;
+function updateGatherBtn() {
+  const btn = document.getElementById("gatherBtn");
+  if (!btn) return; // 舊頁／測試 DOM 無此鈕 → 靜默跳過
+  const st = gatherButtonState(gatherTargetAt(latestSelfWorld, latestNodes, latestCrystals));
+  if (st.label !== gatherBtnLastLabel) { btn.textContent = st.label; gatherBtnLastLabel = st.label; }
+  if (st.locked !== gatherBtnLastLocked) { btn.classList.toggle("locked", st.locked); gatherBtnLastLocked = st.locked; }
+  btn.title = st.hint;
+}
+
 // 接線：點 🌱／💧／🌾 鈕（桌機 + 手機）；T／F／H 鍵在上方 keydown 處理。
 (function wireActButtons() {
   const bind = (id, fn) => {
@@ -3053,6 +3178,7 @@ function tryLightCampfire() {
   bind("waterBtn", () => tryTend("water"));
   bind("harvestBtn", () => tryTend("harvest"));
   bind("campfireBtn", tryLightCampfire);
+  bind("gatherBtn", tryGather);
   updateActBtns();
 })();
 
@@ -3529,6 +3655,8 @@ function safeRender() {
     updateEnemyStatus(t);
     // 節點靜態：不轉身/起伏；位置吸最新目標（內插對靜態無差），仍走 AOI 淡入淡出
     updateRemoteEntities(nodes, scene, renderTime, false, dt, t, undefined, 1);
+    // 夜採星晶礦脈：同節點走靜態 AOI 淡入淡出（夜間限定，天亮自動淡出，ROADMAP 629）
+    updateRemoteEntities(starCrystals, scene, renderTime, false, dt, t, undefined, 1);
     // 農地：作物隨風輕搖、成熟金果發光脈動、AOI 淡入淡出（ROADMAP 614）
     updateFields(dt, t);
     // 人造地標：篝火火焰跳動／暖圈入夜更亮、塔頂燈入夜亮起、雪人愛心數（ROADMAP 616）
@@ -3537,6 +3665,8 @@ function safeRender() {
     updateGroves(dt, t);
     // 天時盤 HUD：太陽/月亮繞盤、時段、下一時段倒數、夜間危機暈輪（ROADMAP 620）
     updateDayClock();
+    // 採集鈕：依腳邊有沒有可採目標（樹／石／乙太礦／夜間星晶）即時點亮／鎖定（ROADMAP 629）
+    updateGatherBtn();
 
     // 自己：客戶端預測（零延遲）+ 平滑對帳權威，再疊上視覺跳的高度
     if (meGroup) {
@@ -3585,7 +3715,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState };
 }
 
 // 啟動
