@@ -648,6 +648,66 @@ function thoughtTexture(text) {
   return tex;
 }
 
+// 對話泡泡貼圖（ROADMAP 622）：白底圓角＋深字（鏡像 2D drawNpcSpeechBubbles 的「說出口的話」調性，
+// 刻意比 💭 思想泡泡的淡紫底更明亮、更像真的在講話——一個是內心獨白、一個是對人說的話）。
+// 對白由後端 AI/罐頭生成、種類可多，仍加 FIFO 上限保險，避免長跑累積貼圖。
+const speechTexCache = new Map();
+const SPEECH_CACHE_MAX = 64;
+function speechTexture(text) {
+  const key = String(text == null ? "" : text);
+  let tex = speechTexCache.get(key);
+  if (tex) return tex;
+  const canvas = document.createElement("canvas");
+  canvas.width = 512; canvas.height = 96;
+  const ctx = canvas.getContext("2d");
+  // 對白可能偏長：過長截斷（與 2D 一致，泡泡不撐爆）
+  let label = key;
+  if (label.length > 24) label = label.slice(0, 23) + "…";
+  ctx.font = "30px system-ui, sans-serif";
+  const tw = Math.min(500, ctx.measureText(label).width + 40);
+  const bx = (512 - tw) / 2, by = 18, bw = tw, bh = 60, r = 18;
+  // 圓角底（近白、明亮——說出口的話比內心話醒目）
+  ctx.fillStyle = "rgba(252,250,245,0.94)";
+  ctx.beginPath();
+  ctx.moveTo(bx + r, by);
+  ctx.arcTo(bx + bw, by, bx + bw, by + bh, r);
+  ctx.arcTo(bx + bw, by + bh, bx, by + bh, r);
+  ctx.arcTo(bx, by + bh, bx, by, r);
+  ctx.arcTo(bx, by, bx + bw, by, r);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "#2a2326";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(label, 256, by + bh / 2 + 1);
+  tex = new THREE.CanvasTexture(canvas);
+  tex.anisotropy = 4;
+  // FIFO 汰換：超量就丟最舊一張並釋放 GPU 資源
+  if (speechTexCache.size >= SPEECH_CACHE_MAX) {
+    const oldestKey = speechTexCache.keys().next().value;
+    const old = speechTexCache.get(oldestKey);
+    if (old) old.dispose();
+    speechTexCache.delete(oldestKey);
+  }
+  speechTexCache.set(key, tex);
+  return tex;
+}
+
+// 純函式：一枚對話泡泡在 elapsedMs 這一刻的顯示參數（快速淡入→穩定停留→末段淡出）。
+// 對白泡泡比表情泡泡沉穩——不彈跳、不上浮，只是浮在頭頂幾秒後淡去（鏡像 2D 的對話泡泡）。
+// displaySecs＝後端廣播的顯示秒數（預設 8，與 2D `display_secs || 8` 對齊）。確定性、壞值安全
+// （非有限 elapsed／超出存活期 → visible:false，永不 throw）。
+function npcSpeechVisual(elapsedMs, displaySecs) {
+  const dur = (Number.isFinite(displaySecs) && displaySecs > 0 ? displaySecs : 8) * 1000;
+  const e = Number.isFinite(elapsedMs) ? elapsedMs : -1;
+  if (e < 0 || e >= dur) return { visible: false, opacity: 0 };
+  const t = e / dur; // 0..1 存活進度
+  // 起手 12% 快速淡入、末 28% 淡出、中間維持全亮
+  let opacity = 1;
+  if (t < 0.12) opacity = t / 0.12;
+  else if (t > 0.72) opacity = Math.max(0, 1 - (t - 0.72) / 0.28);
+  return { visible: true, opacity };
+}
+
 // 建一個透明的小 emoji sprite（一開始隱形；setSpriteEmoji 換上貼圖時才現身）。
 function makeEmojiSprite(size) {
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, depthTest: false, opacity: 0 }));
@@ -728,20 +788,28 @@ function attachResidentStatus(g) {
   thought.scale.set(16, 3, 1);
   thought.position.set(0, 18, 0);
   thought.visible = false;
-  g.add(status); g.add(care); g.add(thought);
+  // 對話泡泡（ROADMAP 622）：居民「說出口的話」。與思想泡泡同位（兩者互斥、不同時露出），
+  // 但明亮白底、略寬，一眼區分「對人說的話」與「內心獨白」。由 updateNpcSpeech 每幀依 npcSpeech 決定。
+  const speech = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, depthTest: false, opacity: 0 }));
+  speech.scale.set(18, 3.4, 1);
+  speech.position.set(0, 18, 0);
+  speech.visible = false;
+  g.add(status); g.add(care); g.add(thought); g.add(speech);
   g.userData.statusSprite = status;
   g.userData.careSprite = care;
   g.userData.thoughtSprite = thought;
+  g.userData.speechSprite = speech;
 }
 
 // 每幀更新所有 NPC 的內心生活呈現（在 updateRemoteEntities(npcs) 之後呼叫：
 // 那裡的 updateFade 會把每個子 sprite 的 opacity 設成 AOI 淡入淡出值，這裡再乘上各自的
 // 顯示強度覆寫上去，故 AOI 淡入淡出仍生效、又不被它壓掉內心生活的呈現）。
 function updateResidentStatus(t) {
-  for (const [, g] of npcs) {
+  for (const [id, g] of npcs) {
     const status = g.userData.statusSprite;
     if (!status) continue; // 非居民類 NPC group 沒掛（理論上都掛了，保險）
     const item = g.userData.item;
+    const speaking = npcSpeech.has(id); // 正在說出口的話 → 讓位給對話泡泡，不同時露出思想（鏡像 2D）
     const fade = g.userData.fade ?? 1; // AOI 淡入淡出基底
     const care = g.userData.careSprite, thought = g.userData.thoughtSprite;
 
@@ -771,8 +839,9 @@ function updateResidentStatus(t) {
       care.visible = false;
     }
 
-    // ③ 思想泡泡 💭（thought）：有內心話才飄；柔和半透明
-    if (item && item.thought) {
+    // ③ 思想泡泡 💭（thought）：有內心話、且當下沒在說出口的話時才飄；柔和半透明（鏡像 2D：
+    // 對話泡泡與內心話互斥，說話時讓位給對話泡泡，不互疊）
+    if (item && item.thought && !speaking) {
       thought.material.map = thoughtTexture(item.thought);
       thought.material.needsUpdate = true;
       thought.visible = true;
@@ -780,6 +849,25 @@ function updateResidentStatus(t) {
     } else if (thought) {
       thought.visible = false;
     }
+  }
+}
+
+// 每幀更新所有居民頭頂的對話泡泡（ROADMAP 622；在 npcs 的 updateFade／updateResidentStatus 之後呼叫：
+// updateFade 已把 sprite opacity 設成 AOI 淡入淡出值，這裡再乘上對白自己的存活淡出覆寫上去）。
+// 由 npcSpeech Map（npc_id → { text, startMs, displaySecs }）驅動；過期自清，說話者離開視野自然收掉。
+function updateNpcSpeech(nowMs) {
+  for (const [id, sp] of npcSpeech) {
+    const vis = npcSpeechVisual(nowMs - sp.startMs, sp.displaySecs);
+    if (!vis.visible) { npcSpeech.delete(id); } // 存活期已過 → 移除（對應 sprite 下面會被隱藏）
+    const g = npcs.get(id);
+    const s = g && g.userData.speechSprite;
+    if (!s) continue; // 說話者不在視野內（或非居民類 group）→ 無從定位，安全跳過
+    if (!vis.visible) { s.visible = false; continue; }
+    s.material.map = speechTexture(sp.text);
+    s.material.needsUpdate = true;
+    s.visible = true;
+    const fade = g.userData.fade ?? 1; // AOI 淡入淡出基底
+    s.material.opacity = fade * vis.opacity;
   }
 }
 
@@ -1787,6 +1875,9 @@ const nodes = new Map(); // key 用座標字串（節點無穩定 id）
 // 玩家表情泡泡（ROADMAP 621）：from_id → { glyph, startMs, displaySecs }。收到 player_emote 即覆寫，
 // 每幀由 updatePlayerEmotes 依存活進度動畫＋過期自清，與玩家 group 鬆耦合（玩家離線/離開視野自然收掉）。
 const playerEmotes = new Map();
+// 居民對話泡泡（ROADMAP 622）：npc_id → { text, startMs, displaySecs }。收到 npc_speech 即覆寫，
+// 每幀由 updateNpcSpeech 依存活進度淡入淡出＋過期自清，與 NPC group 鬆耦合（說話者離開視野自然收掉）。
+const npcSpeech = new Map();
 
 let myId = null;
 let snapshotCount = 0;
@@ -1997,6 +2088,19 @@ function handleServerMsg(msg) {
           glyph: msg.glyph || "❓",
           startMs: performance.now(),
           displaySecs: msg.display_secs || 4,
+        });
+      }
+      break;
+    }
+    case "npc_speech": {
+      // 居民對話泡泡（ROADMAP 92／622）：居民彼此互聊／向玩家打招呼／評論時，伺服器廣播這則事件——
+      // 在說話者頭頂浮起一枚白底對話泡泡、幾秒後淡出。AI 社會的對話第一次在 3D 裡「看得見、看得懂」。
+      // 同一位居民連說會覆蓋上一句（與 2D 一致）；缺欄位安全降級（空字串／預設秒數），永不拋。
+      if (msg && msg.npc_id) {
+        npcSpeech.set(msg.npc_id, {
+          text: typeof msg.text === "string" ? msg.text : "",
+          startMs: performance.now(),
+          displaySecs: msg.display_secs || 8,
         });
       }
       break;
@@ -2633,6 +2737,8 @@ function safeRender() {
     updateRemoteEntities(npcs, scene, renderTime, true, dt, t, undefined, k);
     // NPC 內心生活呈現：在 npcs 的 updateFade 之後覆寫狀態/關懷/思想 sprite 的顯示（ROADMAP 611）
     updateResidentStatus(t);
+    // 居民對話泡泡：在 updateResidentStatus 之後覆寫對話 sprite 的顯示（ROADMAP 622）
+    updateNpcSpeech(performance.now());
     updateRemoteEntities(wildlife, scene, renderTime, true, dt, t, undefined, k);
     // 野生動物呈現：在 wildlife 的 updateFade 之後覆寫頭頂狀態 sprite 與幼獸體型（ROADMAP 615）
     updateWildlifeStatus(t);
@@ -2695,7 +2801,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture };
 }
 
 // 啟動
