@@ -518,6 +518,20 @@ pub fn bond_deepened_line(bond_tier_ord: u8) -> Option<&'static str> {
     }
 }
 
+/// 玩家送一份心意（物品）給居民後，居民回的一句**收禮道謝**話（ROADMAP 639，就地 NpcSpeech 泡泡）。
+/// 與 [`comfort_line`]（撫平心事）、[`bond_deepened_line`]（跨層里程碑）刻意區隔——這是收下園丁
+/// 「實打實一份禮物」的暖意。`seed` 供模板輪替；純查表、確定性、永遠回得出一句；面向玩家字串集中
+/// 於此作為 i18n 替換點。
+pub fn gift_thanks_line(seed: usize) -> &'static str {
+    const LINES: &[&str] = &[
+        "🎁 哎呀，還特地帶東西來給我，這份心意我收下了！",
+        "🎁 你總惦記著我，謝謝你，這禮物我會好好用的。",
+        "🎁 有你這樣的鄰居，真是這座城鎮的福氣。",
+        "🎁 收到你的心意，今天整個人都暖起來了！",
+    ];
+    LINES[seed % LINES.len()]
+}
+
 /// 工作活動碼 → 一句反映該行當的心思；認不出 / 非工作態（resting/commuting/visiting）回 `None`，
 /// 交回 [`resident_thought`] 走通用心思。碼對齊 `npc_schedule::NpcActivity::code()`。
 fn work_thought(code: &str) -> Option<&'static str> {
@@ -955,5 +969,22 @@ mod tests {
         assert_ne!(one, two);
         // 越界序（>2）保守回 None（跨層只發生在 1/2 兩道門檻）。
         assert_eq!(bond_deepened_line(9), None);
+    }
+
+    #[test]
+    fn gift_thanks_line_deterministic_nonempty_and_covers_pool() {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for seed in 0..16 {
+            let a = gift_thanks_line(seed);
+            // 確定性：同 seed 同句。
+            assert_eq!(a, gift_thanks_line(seed));
+            // 永遠回得出一句、且是收禮道謝（🎁 開頭，與撫慰 💚 區隔）。
+            assert!(!a.is_empty());
+            assert!(a.starts_with("🎁"));
+            seen.insert(a);
+        }
+        // 模板有複數句、會隨 seed 輪替（不是恆回同一句）。
+        assert!(seen.len() >= 2);
     }
 }

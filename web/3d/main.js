@@ -3473,6 +3473,7 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyV" && !e.repeat) { tryComfort(); e.preventDefault(); return; } // 園丁關心有心事的居民（ROADMAP 634）
   if (e.code === "KeyX" && !e.repeat) { tryHelp(); e.preventDefault(); return; } // 幫忙正在求助的居民（ROADMAP 125）；F 已被一鍵澆水佔用，改 X（與 Z 搭話／V 撫慰同屬左下社交動作群）
   if (e.code === "KeyZ" && !e.repeat) { tryTalk(); e.preventDefault(); return; } // 跟居民／城鎮大人物搭話（ROADMAP 636）
+  if (e.code === "KeyQ" && !e.repeat) { tryGift(); e.preventDefault(); return; } // 送禮給故鄉居民（ROADMAP 639；社交動作群，挑未佔用的 Q 鍵）
   if (e.code === "KeyE" && !e.repeat) { if (globalThis.__bf3dToggleEmoteWheel) globalThis.__bf3dToggleEmoteWheel(); e.preventDefault(); return; } // 表情輪（ROADMAP 621）
   const dir = keyToDir(e);
   if (dir) { heldKeys[dir] = true; e.preventDefault(); }
@@ -4220,6 +4221,98 @@ function updateTalkBtn() {
 }
 
 // ============================================================
+// 送一份心意給故鄉居民（ROADMAP 639）：3D 弧「對 AI 居民做事」北極星軸再添一個動詞——
+// 你能從背包拿一樣東西，親手送給走到跟前的故鄉七大居民。638 才讓你旁觀「居民彼此互助送禮」；
+// 本片讓**你自己加入這份贈禮經濟**：送禮加深你倆的交情（複用撫慰同一份相熟度帳本＝「居民記得你的
+// 照料」，你常帶禮來的居民日後會認得你、點名招呼），居民就地道謝。撫慰回應「沒說出口的低落」、
+// 搭話是「閒聊」、幫忙回應「主動開口的請求」，送禮則是「實打實掏出一份心意」——又一個更主動的動詞。
+//   · 伺服器才是權威：送禮**不帶目標 id**（與撫慰同模式），只帶要送的物品；伺服器用玩家權威座標
+//     挑 GIFT_REACH 內最近的居民（防隔空）、扣 1 件、記交情、廣播道謝 NpcSpeech（既有泡泡 622 顯現）。
+//   · 零 LLM（道謝語走後端 npc_agent 模板）、零經濟產出（純把材料化作交情，不發任何乙太/物品回報）。
+// ============================================================
+const GIFT_REACH = 130;        // 送禮判距（px）——對齊後端 ws.rs GIFT_REACH／撫慰 COMFORT_REACH
+const GIFT_COOLDOWN_MS = 1200; // 本地冷卻（防連點；真正成敗由後端裁決）
+let lastGiftAt = -1e9;         // 上次送禮的本地時戳（手感防呆）
+// 故鄉七大居民穩定 id（鏡像後端 npc_schedule::VILLAGE_NPCS）——送禮對象就是這七位你朝夕相處的居民。
+const GIFT_NPC_IDS = new Set(["merchant", "workshop_npc", "bounty_npc", "expedition_npc", "procurement_npc", "farm_fair_npc", "village_chief"]);
+
+// 純函式、確定性、可測：從自己的背包挑「要送出的那件物品」——優先送庫存最多的（最不稀缺，避免誤送
+// 唯一的武器/工具），同量時以 item key 字典序定序（確定性）。空背包／無正數庫存安全回 null。供 smoke 斷言。
+function giftPickItem(inventory) {
+  const rows = Array.isArray(inventory) ? inventory : [];
+  let best = null;
+  for (const r of rows) {
+    if (!r || typeof r.item !== "string") continue;
+    const q = Number.isFinite(r.qty) ? r.qty : 0;
+    if (q <= 0) continue;
+    if (!best || q > best.qty || (q === best.qty && r.item < best.item)) best = { item: r.item, qty: q };
+  }
+  return best ? best.item : null;
+}
+
+// 純函式、確定性、可測：給自己的世界座標＋本份 npcs 快照，回「GIFT_REACH 內最近的故鄉七大居民」。
+// 非七大居民（他星商人／路人居民 resident_N／旅人）／壞座標一律跳過；無自己座標／空快照安全回 null
+// （不誤點亮鈕、不 throw；守 render-loop-resilience）。
+function giftTargetAt(self, npcList) {
+  if (!self || !Number.isFinite(self.x) || !Number.isFinite(self.y)) return null;
+  let best = null, bestD = GIFT_REACH * GIFT_REACH;
+  for (const n of (Array.isArray(npcList) ? npcList : [])) {
+    if (!n || typeof n.id !== "string" || !GIFT_NPC_IDS.has(n.id)) continue;
+    if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
+    const dx = n.x - self.x, dy = n.y - self.y, d = dx * dx + dy * dy;
+    if (d <= bestD) { bestD = d; best = { id: n.id, name: n.name, x: n.x, y: n.y }; }
+  }
+  return best;
+}
+
+// 純函式：送禮意圖 wire——不帶目標 id（伺服器用玩家權威座標挑最近居民，與撫慰同模式），只帶要送的物品。
+// 缺物品回 null（呼叫端不送）。供 smoke 斷言。
+function giftWireMsg(item) {
+  if (typeof item !== "string" || !item) return null;
+  return { type: "gift_resident", item };
+}
+
+// 純函式：送禮鈕的顯示狀態（字串集中可 i18n、供 smoke 真值表）。走近一位故鄉居民且背包有東西可送才亮
+// （提示帶對方名＋要送的物品）；沒對象→鎖定提示「走近居民」；有對象但空背包→鎖定提示「先去採集」。
+function giftButtonState(target, item) {
+  if (!target) return { label: "🎁 送禮", locked: true, hint: "走近一位故鄉居民，就能送他一份心意" };
+  const who = (target.name && typeof target.name === "string") ? target.name : "這位居民";
+  if (!item) return { label: "🎁 送禮", locked: true, hint: `背包空空，先去採集些東西，再來送 ${who} 一份心意` };
+  return { label: "🎁 送禮", locked: false, hint: `送 ${who} 一份 ${itemLabel(item)}，加深你倆的交情` };
+}
+
+// 嘗試送禮（ROADMAP 639）：依自己最新權威世界座標算腳邊有沒有故鄉居民、背包挑一件要送的東西；
+// 兩者皆備就送 {type:"gift_resident", item}＋本地冷卻＋一句「你送了什麼給誰」的飄字，否則給溫和提示
+// （誠實、不假裝送到）。居民的道謝由伺服器廣播 NpcSpeech、3D 既有對話泡泡（622）自動在他頭頂顯現。
+function tryGift() {
+  const target = giftTargetAt(latestSelfWorld, latestNpcs);
+  if (!target) { flashToast("🎁 走近一位故鄉居民，才能送他一份心意"); return; }
+  const item = giftPickItem(latestSelfItem && latestSelfItem.inventory);
+  if (!item) { flashToast("🎁 背包空空的，先去採集些東西再來送禮吧"); return; }
+  const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+  if (now - lastGiftAt < GIFT_COOLDOWN_MS) return; // 冷卻內忽略連點
+  const msg = giftWireMsg(item);
+  if (msg && safeSend(msg)) {
+    lastGiftAt = now;
+    const who = (target.name && typeof target.name === "string") ? target.name : "居民";
+    flashToast(`🎁 你送了 ${who} 一份 ${itemLabel(item)}`);
+  }
+}
+
+// 每幀依「腳邊有沒有故鄉居民＋背包有沒有可送物品」刷新送禮鈕外觀（純讀 latest* 算 giftTargetAt/giftPickItem）。
+// 只在 label／鎖定態真的變動時才改寫 DOM；無 widget／壞值一律安全靜默（守 render-loop-resilience）。
+let giftBtnLastLabel = null, giftBtnLastLocked = null;
+function updateGiftBtn() {
+  const btn = document.getElementById("giftBtn");
+  if (!btn) return; // 舊頁／測試 DOM 無此鈕 → 靜默跳過
+  const item = giftPickItem(latestSelfItem && latestSelfItem.inventory);
+  const st = giftButtonState(giftTargetAt(latestSelfWorld, latestNpcs), item);
+  if (st.label !== giftBtnLastLabel) { btn.textContent = st.label; giftBtnLastLabel = st.label; }
+  if (st.locked !== giftBtnLastLocked) { btn.classList.toggle("locked", st.locked); giftBtnLastLocked = st.locked; }
+  btn.title = st.hint;
+}
+
+// ============================================================
 // 城鎮交易（ROADMAP 630）：把既有「新手村商人商店」（#57）接進 3D——3D 世界第一次能「以物易乙太」。
 //   · 伺服器才是權威：買賣一律送既有意圖 {type:"shop_buy"|"shop_sell", item, qty}（與 2D web/game.js 同協議），
 //     伺服器用玩家權威座標判距（SHOP_REACH=96）、扣乙太/背包、不合法回滾，下一份快照反映真實結果。
@@ -4430,6 +4523,7 @@ function updateShopBtn() {
   bind("comfortBtn", tryComfort); // 園丁關心有心事的居民（ROADMAP 634）；V 鍵在上方 keydown 處理
   bind("helpResidentBtn", tryHelp); // 幫忙正在求助的居民（ROADMAP 125）；X 鍵在上方 keydown 處理
   bind("talkBtn", tryTalk); // 跟居民／城鎮大人物搭話（ROADMAP 636）；Z 鍵在上方 keydown 處理
+  bind("giftBtn", tryGift); // 送禮給故鄉居民（ROADMAP 639）；Q 鍵在上方 keydown 處理
   updateActBtns();
 })();
 
@@ -5066,6 +5160,8 @@ function safeRender() {
     updateHelpBtn();
     // 搭話鈕：走近一位居民／城鎮大人物才亮（ROADMAP 636：主動開口攀談、聽見回話）
     updateTalkBtn();
+    // 送禮鈕：走近一位故鄉居民＋背包有東西可送才亮（ROADMAP 639：送禮加深交情）
+    updateGiftBtn();
     updateMeleeSwing(performance.now());
     updateDamageFloats(performance.now());
     updateRewardFloats(performance.now()); // 戰利品入袋／連殺標語飄字上飄淡出（ROADMAP 635）
@@ -5120,7 +5216,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, townShareGiftSpec, townShareHudLabel, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, attackWireMsg, attackTargetAt, attackButtonState, damageFloatSpec, spawnMeleeSwing, comfortWireMsg, comfortTargetAt, comfortButtonState, helpWireMsg, helpTargetAt, helpButtonState, talkKindOf, talkTargetAt, talkWireMsg, talkButtonState, lootFloatSpec, killStreakFloatSpec, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel, radarBlips, radarHeading };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, townShareGiftSpec, townShareHudLabel, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, attackWireMsg, attackTargetAt, attackButtonState, damageFloatSpec, spawnMeleeSwing, comfortWireMsg, comfortTargetAt, comfortButtonState, helpWireMsg, helpTargetAt, helpButtonState, talkKindOf, talkTargetAt, talkWireMsg, talkButtonState, giftPickItem, giftTargetAt, giftWireMsg, giftButtonState, lootFloatSpec, killStreakFloatSpec, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel, radarBlips, radarHeading };
 }
 
 // 啟動
