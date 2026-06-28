@@ -254,6 +254,116 @@ function applyDayNight(dt) {
 }
 
 // ============================================================
+// 天上的日月星辰在 3D 裡現身（ROADMAP 628）：日夜系統（612）早把天色、霧色、隱形太陽光
+// 都接上了，HUD 角落也有日晷（620）——但抬頭看天，天上空空如也：沒有一輪會東昇西落的太陽、
+// 沒有與之相對的月亮、入夜也不見半顆星。AI 居民反覆許願「醒目的時間狀態指示器／時間流速節奏
+// 指標」（data/suggestions.jsonl 居民-5/11/12/4）——620 在 HUD 上回應了，這一塊把它做進「世界本身」：
+// 一輪太陽沿天弧東昇、登頂、西落，一輪月亮恆與它相對地起落，夜深時滿天星斗淡入、隨日輪緩緩斗轉。
+// 從此抬頭一眼便知此刻何時——時間第一次不只在儀表板上，而在天上。
+// 純讀既有 daynight 快照（day_fraction／light）、零後端／協議／成本；沿用日夜同一套手法：
+// 純函式算擺位明暗、每幀 1-exp 平滑趨近、壞值安全降級不拋。
+// ============================================================
+// 純函式：把一筆 daynight 算成天上日月星辰的方位、仰角與明暗。
+// 日月在同一條天弧的兩端：太陽正午(0.5)登頂、午夜沉到地平下；月亮恆與太陽相對地起落，
+// 破曉/黃昏兩者都貼近地平、雙雙轉淡（自然的晝夜接力交班）。星辰隨夜色轉濃、白天全隱。
+// 確定性、壞值安全（缺欄位／非有限 → 當成晴朗白天），供每幀平滑趨近，亦供 render-smoke 斷言。
+function celestialSky(dn) {
+  const f = dn && Number.isFinite(dn.day_fraction) ? (((dn.day_fraction % 1) + 1) % 1) : 0.33;
+  const light = dnClamp01(dn && Number.isFinite(dn.light) ? dn.light : 1.0); // 後端保證 [0.2,1]，仍夾界
+  // 天弧角：破曉(0.25)在東地平、正午(0.5)登頂、黃昏(0.75)在西地平、午夜(0)沉到地平下。
+  const theta = (f - 0.25) * Math.PI * 2;
+  const sunElev = Math.sin(theta);  // 太陽仰角分量 ∈[-1,1]（>0 在地平上）
+  const sunEW = Math.cos(theta);    // 東(+)西(-)分量
+  // 仰角→明暗：升出地平才現身、貼地平轉淡（smoothstep 讓日月在晨昏交班時柔和淡入淡出）
+  const sunOpacity = dnSmoothstep(-0.06, 0.18, sunElev);
+  const moonOpacity = dnSmoothstep(-0.06, 0.18, -sunElev) * 0.9; // 月色比日略淡
+  // 星辰：天色越暗越濃（white 白天全隱、深夜最盛）
+  const starOpacity = dnClamp01(1 - dnSmoothstep(0.30, 0.66, light));
+  return {
+    sun:  { ew: sunEW,  elev: sunElev,  opacity: sunOpacity },
+    moon: { ew: -sunEW, elev: -sunElev, opacity: moonOpacity }, // 恆與太陽相對
+    starOpacity,
+    spin: f * Math.PI * 2, // 夜空隨日輪緩緩斗轉星移
+  };
+}
+
+// 天球：圍著鏡頭、半徑固定（material.fog=false 不被霧吃掉），故日月星彷彿在無限遠的天上。
+// 整個天弧向前傾，讓日月落在前上方的可見天空、而非橫穿鏡頭兩側。
+const SKY_R = 560;
+const CELE_TILT = -0.55;
+const celestialGroup = new THREE.Group();
+celestialGroup.rotation.x = CELE_TILT;
+scene.add(celestialGroup);
+
+// 太陽：亮暖核 + 一圈柔光暈（MeshBasicMaterial 自發光、不吃場景燈，恰合自體發光的天體）。
+const sunCoreMat = new THREE.MeshBasicMaterial({ color: 0xffe6a6, transparent: true, opacity: 0, fog: false, depthWrite: false });
+const sunMesh = new THREE.Mesh(new THREE.SphereGeometry(26, 16, 12), sunCoreMat);
+const sunHaloMat = new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, opacity: 0, fog: false, depthWrite: false });
+const sunHalo = new THREE.Mesh(new THREE.SphereGeometry(46, 16, 12), sunHaloMat);
+celestialGroup.add(sunHalo);
+celestialGroup.add(sunMesh);
+// 月亮：清冷淡白。
+const moonMat = new THREE.MeshBasicMaterial({ color: 0xdde6ff, transparent: true, opacity: 0, fog: false, depthWrite: false });
+const moonMesh = new THREE.Mesh(new THREE.SphereGeometry(19, 16, 12), moonMat);
+celestialGroup.add(moonMesh);
+
+// 星辰：散在上半天球的點陣，入夜淡入、隨日輪緩緩斗轉（手機減量、省 GPU）。
+const _celeTouch = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
+const STAR_CAP = _celeTouch ? 140 : 320;
+const starGroup = new THREE.Group();
+celestialGroup.add(starGroup);
+const starPos = new Float32Array(STAR_CAP * 3);
+for (let i = 0; i < STAR_CAP; i++) {
+  // 均勻散在半徑略小於天球的上半殼（仰角恆非負，免得埋到地平下）
+  const phi = Math.acos(Math.max(0.05, Math.random()));   // 0=天頂、越大越貼地平
+  const ang = Math.random() * Math.PI * 2;
+  const r = SKY_R * 0.96;
+  const sinp = Math.sin(phi);
+  starPos[i * 3]     = Math.cos(ang) * sinp * r;
+  starPos[i * 3 + 1] = Math.cos(phi) * r; // ≥0：上半天球
+  starPos[i * 3 + 2] = Math.sin(ang) * sinp * r;
+}
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+const starMat = new THREE.PointsMaterial({ color: 0xeaf0ff, size: 3.2, transparent: true, opacity: 0, fog: false, depthWrite: false, sizeAttenuation: true });
+const starField = new THREE.Points(starGeo, starMat);
+starField.frustumCulled = false;
+starGroup.add(starField);
+
+// 平滑趨近的目前狀態（初始＝預設白天：日高懸、月星俱隱）。
+const _celeInit = celestialSky(null);
+let celeSunO = _celeInit.sun.opacity, celeMoonO = _celeInit.moon.opacity, celeStarO = _celeInit.starOpacity;
+const celeSunP = { ew: _celeInit.sun.ew, elev: _celeInit.sun.elev };
+const celeMoonP = { ew: _celeInit.moon.ew, elev: _celeInit.moon.elev };
+
+// 每幀：算出目標擺位明暗、平滑趨近、寫進場景；天球圍著鏡頭平移（不隨鏡頭旋轉→方位固定）。
+function applyCelestial(dt) {
+  const target = celestialSky(latestDayNight);
+  const a = 1 - Math.exp(-Math.max(0, dt) * DN_RATE);
+  celeSunP.ew = dnLerp(celeSunP.ew, target.sun.ew, a);
+  celeSunP.elev = dnLerp(celeSunP.elev, target.sun.elev, a);
+  celeMoonP.ew = dnLerp(celeMoonP.ew, target.moon.ew, a);
+  celeMoonP.elev = dnLerp(celeMoonP.elev, target.moon.elev, a);
+  celeSunO = dnLerp(celeSunO, target.sun.opacity, a);
+  celeMoonO = dnLerp(celeMoonO, target.moon.opacity, a);
+  celeStarO = dnLerp(celeStarO, target.starOpacity, a);
+  // 圍著鏡頭：日月星永遠在「無限遠」的天上（隨鏡頭平移、不隨鏡頭旋轉→世界方位固定，可繞看）
+  celestialGroup.position.set(camera.position.x, camera.position.y, camera.position.z);
+  sunMesh.position.set(celeSunP.ew * SKY_R, celeSunP.elev * SKY_R, 0);
+  sunHalo.position.copy(sunMesh.position);
+  moonMesh.position.set(celeMoonP.ew * SKY_R, celeMoonP.elev * SKY_R, 0);
+  sunCoreMat.opacity = celeSunO;
+  sunHaloMat.opacity = celeSunO * 0.35;
+  moonMat.opacity = celeMoonO;
+  starMat.opacity = celeStarO;
+  // 全隱時關掉可見性（省繪製；隱形物件無謂送 GPU）
+  sunMesh.visible = sunHalo.visible = celeSunO > 0.01;
+  moonMesh.visible = celeMoonO > 0.01;
+  starField.visible = celeStarO > 0.01;
+  starGroup.rotation.y = target.spin;
+}
+
+// ============================================================
 // 天氣在 3D 裡落下來（ROADMAP 613）：快照早就帶著伺服器權威的 weather
 // （weather_type／intensity／wind，見 protocol.rs WeatherView，2D game.js 一直在用它畫雨絲沙塵），
 // 還有 rainbow（雨後彩虹），3D 卻一直忽略——不管伺服器走到細雨、風沙還是海霧，3D 裡永遠晴空無物。
@@ -3379,6 +3489,8 @@ function safeRender() {
     applyDayNight(dt);
     // 天氣流轉：依最新權威 weather／rainbow 平滑更新粒子場／霧染／遠空彩虹（ROADMAP 613，疊在日夜之後）
     applyWeather(dt);
+    // 天上日月星辰：依最新權威 daynight 平滑更新太陽弧／月相對位／星空淡入斗轉（ROADMAP 628）
+    applyCelestial(dt);
 
     // 視覺跳（cosmetic）：只動自己膠囊的本地高度，不送伺服器
     if (wantJump && jumpZ <= 0.01) { jumpV = JUMP_V; }
@@ -3473,7 +3585,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel };
 }
 
 // 啟動
