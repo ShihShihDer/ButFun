@@ -194,6 +194,7 @@ mod soil_vitality;
 mod friends;
 mod party;
 mod sprinkler;
+mod village_well; // ROADMAP 640 禱告驅動·故鄉古井（應諾娃之禱，定時滋潤公田）
 mod warehouse;
 mod perishable;
 mod home_interior;
