@@ -1436,19 +1436,21 @@ function updatePlayerEmotes(nowMs) {
 // 套用對象＝玩家（自己＋別人）＋ NPC／居民；敵人／野生動物／節點維持盒子等好區分。
 //
 // 比例（場景單位，可調）。腳底約落在 y=0（站在地面），整體高度與舊膠囊相近。
+// 效能改版（perf/3d-fps）：四肢由「大腿+小腿／上臂+前臂」兩節各自一個 mesh，
+// 合併成「整條腿／整條臂」單一錐形圓柱。每隻火柴人 mesh 數 10→6（draw call 砍 4 成），
+// 走路動畫關節 8→4（每幀 CPU 砍半）；腿臂仍從髖／肩擺動＝走路視覺保留，只是不再彎膝彎肘。
 const SK = {
-  HIP_Y: 4.6, THIGH_LEN: 2.4, SHIN_LEN: 2.2, HIP_HALF_W: 0.7,
-  SHOULDER_Y: 7.8, SHOULDER_HALF_W: 1.35, UPPER_ARM_LEN: 2.0, FORE_ARM_LEN: 1.9,
+  HIP_Y: 4.6, LEG_LEN: 4.6, HIP_HALF_W: 0.7,          // LEG_LEN＝舊 THIGH_LEN(2.4)+SHIN_LEN(2.2)
+  SHOULDER_Y: 7.8, SHOULDER_HALF_W: 1.35, ARM_LEN: 3.9, // ARM_LEN＝舊 UPPER(2.0)+FORE(1.9)
   TORSO_Y: 6.2, HEAD_Y: 9.3, HEAD_R: 1.3,
 };
 
 // 共用幾何（全模組只建一次 → 幾十個火柴人也不重建頂點、不爆記憶體）。
 // 圓柱預設沿 +Y、以原點為中心；做四肢時讓 mesh 往下沉半截，關節樞紐就落在「上端」。
+// 腿／臂各只剩一節：半徑由上端（粗）漸縮到下端（細），保留人形錐度；面數仍取 6（夠看、省頂點）。
 const SK_GEO = {
-  thigh: new THREE.CylinderGeometry(0.50, 0.45, SK.THIGH_LEN, 6),
-  shin:  new THREE.CylinderGeometry(0.45, 0.34, SK.SHIN_LEN, 6),
-  upper: new THREE.CylinderGeometry(0.42, 0.38, SK.UPPER_ARM_LEN, 6),
-  fore:  new THREE.CylinderGeometry(0.38, 0.30, SK.FORE_ARM_LEN, 6),
+  leg:   new THREE.CylinderGeometry(0.50, 0.34, SK.LEG_LEN, 6), // 整條腿（髖→腳）
+  arm:   new THREE.CylinderGeometry(0.42, 0.30, SK.ARM_LEN, 6), // 整條臂（肩→手）
   torso: new THREE.CapsuleGeometry(1.0, 1.6, 3, 6),
   head:  new THREE.SphereGeometry(SK.HEAD_R, 10, 8),
 };
@@ -1474,25 +1476,19 @@ function makeStickman(color) {
   const head = new THREE.Mesh(SK_GEO.head, mat); head.position.y = SK.HEAD_Y;
   g.add(torso, head);
 
-  // 腿：大腿樞紐在髖部，小腿樞紐掛在大腿下端（膝蓋）
+  // 腿：單節，樞紐在髖部、整條腿往下掛，rotation.x 前後擺即走路
   function leg(sign) {
-    const thigh = skSegment(SK_GEO.thigh, mat, SK.THIGH_LEN);
-    thigh.position.set(sign * SK.HIP_HALF_W, SK.HIP_Y, 0);
-    const shin = skSegment(SK_GEO.shin, mat, SK.SHIN_LEN);
-    shin.position.y = -SK.THIGH_LEN; // 膝蓋＝大腿下端
-    thigh.add(shin);
-    g.add(thigh);
-    return { thigh, shin };
+    const l = skSegment(SK_GEO.leg, mat, SK.LEG_LEN);
+    l.position.set(sign * SK.HIP_HALF_W, SK.HIP_Y, 0);
+    g.add(l);
+    return l;
   }
-  // 臂：上臂樞紐在肩，前臂樞紐掛在上臂下端（手肘）
+  // 臂：單節，樞紐在肩、整條臂往下掛，rotation.x 與同側腿反相擺
   function arm(sign) {
-    const upper = skSegment(SK_GEO.upper, mat, SK.UPPER_ARM_LEN);
-    upper.position.set(sign * SK.SHOULDER_HALF_W, SK.SHOULDER_Y, 0);
-    const fore = skSegment(SK_GEO.fore, mat, SK.FORE_ARM_LEN);
-    fore.position.y = -SK.UPPER_ARM_LEN; // 手肘＝上臂下端
-    upper.add(fore);
-    g.add(upper);
-    return { upper, fore };
+    const a = skSegment(SK_GEO.arm, mat, SK.ARM_LEN);
+    a.position.set(sign * SK.SHOULDER_HALF_W, SK.SHOULDER_Y, 0);
+    g.add(a);
+    return a;
   }
   const legL = leg(1), legR = leg(-1);
   const armL = arm(1), armR = arm(-1);
@@ -1500,10 +1496,7 @@ function makeStickman(color) {
   g.userData.isStickman = true;
   g.userData.joints = {
     torso, head,
-    legL_thigh: legL.thigh, legL_shin: legL.shin,
-    legR_thigh: legR.thigh, legR_shin: legR.shin,
-    armL_upper: armL.upper, armL_fore: armL.fore,
-    armR_upper: armR.upper, armR_fore: armR.fore,
+    legL, legR, armL, armR,
   };
   g.userData.phase = Math.random() * 6.28; // 各自相位，整群不會整齊劃一
   g.userData.walkW = 0;                     // 走路權重（平滑進出站姿）
@@ -2215,6 +2208,11 @@ function reconcileFields(list, recvT) {
           g = makeFieldPlot(field);
           g.position.set(cx, 0, cz);
           g.userData.fade = 0; g.userData.fadeTarget = 1; g.userData.removing = false;
+          // 關鍵修補（perf/3d-fps）：把新建的田存進 fields 映射！漏了這行 → 每份快照都
+          // fields.get(key) 落空、又 makeFieldPlot 重建一份加進場景，舊的永不去重也永不移除
+          // （下方「離開 AOI 淡出」迴圈跑的是空 map），田畦 mesh 無限堆積＝幾百個殭屍 draw call，
+          // 正是真 QA 抓到的走路掉幀元兇。補上後：同一塊地重用、離場淡出移除、距離 LOD 才生效。
+          fields.set(key, g);
         } else {
           g.position.set(cx, 0, cz); // origin 理論上不變，仍每次對齊（防擴地等改動）
           if (g.userData.removing) { g.userData.removing = false; g.userData.fadeTarget = 1; }
@@ -2232,18 +2230,41 @@ function reconcileFields(list, recvT) {
   }
 }
 
-// 每幀更新所有田：作物隨風輕搖、成熟金果發光脈動、AOI 淡入淡出。皆尊重 reduceMotion。
+// 作物細節距離 LOD（perf/3d-fps）：每塊田的作物層是「每格一顆錐／一條進度條」的一堆獨立 mesh，
+// 一塊地就可能幾十個 draw call。遠到看不清單株時，整個作物層 visible=false（那堆 mesh 不畫、
+// 也省每幀逐株 sway/glow 的 CPU），只留翻好的土底平面 → 田畦仍在＝「這裡有人耕種」的視覺保留；
+// 近處照舊每株可見＋隨風搖。用遲滯帶（IN/OUT）避免剛好站在界線上時反覆開關。土底本身不收（便宜、
+// 又是田的識別），離開 AOI 仍走既有淡出移除。
+const CROP_LOD_IN = 66, CROP_LOD_OUT = 74;        // 作物細節：距鏡頭 <IN 展開、>OUT 收起（場景單位）
+const CROP_LOD_IN2 = CROP_LOD_IN * CROP_LOD_IN, CROP_LOD_OUT2 = CROP_LOD_OUT * CROP_LOD_OUT;
+
+// 每幀更新所有田：作物細節距離 LOD＋作物隨風輕搖、成熟金果發光脈動、AOI 淡入淡出。皆尊重 reduceMotion。
 function updateFields(dt, t) {
   for (const [key, g] of fields) {
     const layer = g.userData.cropLayer;
-    if (layer && !reduceMotion) {
-      for (const m of layer.children) {
-        if (m.userData && m.userData.sway) {
-          // 輕微搖擺：用世界位置當相位，整片田不會同手同腳。
-          m.rotation.z = Math.sin(t * 1.6 + (g.position.x + m.position.x) * 0.5) * 0.12;
-        }
-        if (m.userData && m.userData.glow && m.material) {
-          m.material.emissiveIntensity = 0.4 + 0.2 * (0.5 + 0.5 * Math.sin(t * 2.2 + g.position.z));
+    if (layer) {
+      // 與鏡頭的水平距離平方（田不動，只看 XZ）。無 camera（極早期）時當作很近＝照常展開。
+      let near = true;
+      if (camera) {
+        const dx = g.position.x - camera.position.x;
+        const dz = g.position.z - camera.position.z;
+        const d2 = dx * dx + dz * dz;
+        let hide = g.userData.lodCropsHidden || false; // 遲滯：保留上次狀態，只在跨過外/內界才翻轉
+        if (d2 > CROP_LOD_OUT2) hide = true;
+        else if (d2 < CROP_LOD_IN2) hide = false;
+        g.userData.lodCropsHidden = hide;
+        near = !hide;
+      }
+      if (layer.visible !== near) layer.visible = near; // 跨界才改，省無謂寫入
+      if (near && !reduceMotion) {
+        for (const m of layer.children) {
+          if (m.userData && m.userData.sway) {
+            // 輕微搖擺：用世界位置當相位，整片田不會同手同腳。
+            m.rotation.z = Math.sin(t * 1.6 + (g.position.x + m.position.x) * 0.5) * 0.12;
+          }
+          if (m.userData && m.userData.glow && m.material) {
+            m.material.emissiveIntensity = 0.4 + 0.2 * (0.5 + 0.5 * Math.sin(t * 2.2 + g.position.z));
+          }
         }
       }
     }
@@ -4927,11 +4948,11 @@ const clock = new THREE.Clock();
 
 // ---- 程序化走路動畫常數（純視覺，可調）----
 // sine 波驅動關節擺動：大腿前後擺、手臂反相擺、膝/肘自然彎，相位隨移動速度推進。
+// 單節四肢版（perf/3d-fps）：膝／肘合進整條腿臂，少了彎曲就把擺幅略加大，
+// 走路前後擺更明顯來補回「有在邁步」的辨識度。
 const GAIT = {
-  THIGH: 0.85,  // 大腿前後擺幅（弧度）
-  KNEE: 0.9,    // 小腿（膝蓋）彎曲幅度
-  ARM: 0.7,     // 上臂擺幅（與同側腿反相）
-  ELBOW: 0.4,   // 前臂（手肘）彎曲幅度
+  LEG: 1.0,     // 整條腿前後擺幅（弧度，較舊大腿 0.85 略大補回膝彎觀感）
+  ARM: 0.8,     // 整條臂擺幅（與同側腿反相）
   LEAN: 0.08,   // 走路時整體略前傾（弧度）
   FREQ: 0.85,   // 相位推進係數（× 移動速度 → 走越快步頻越快）
   IDLE_FREQ: 0.6, // 站定時殘留的最小推進，讓關節平滑收回站姿
@@ -4974,16 +4995,12 @@ function animateStickman(g, speed, dt) {
   stick.userData.phase += (speed * GAIT.FREQ + GAIT.IDLE_FREQ) * dt;
   const ph = stick.userData.phase;
   const s = Math.sin(ph);
-  // 腿：左右反相前後擺；膝蓋只往一個方向彎（clamp）→ 抬腿那側自然屈膝
-  j.legL_thigh.rotation.x = s * GAIT.THIGH * w;
-  j.legR_thigh.rotation.x = -s * GAIT.THIGH * w;
-  j.legL_shin.rotation.x = Math.max(0, -s) * GAIT.KNEE * w;
-  j.legR_shin.rotation.x = Math.max(0, s) * GAIT.KNEE * w;
-  // 手臂：與同側腿反相擺；前臂微彎（帶一點常態屈肘）
-  j.armL_upper.rotation.x = -s * GAIT.ARM * w;
-  j.armR_upper.rotation.x = s * GAIT.ARM * w;
-  j.armL_fore.rotation.x = (Math.max(0, s) * GAIT.ELBOW + 0.12) * w;
-  j.armR_fore.rotation.x = (Math.max(0, -s) * GAIT.ELBOW + 0.12) * w;
+  // 腿：整條腿左右反相前後擺（單節，無膝彎）
+  j.legL.rotation.x = s * GAIT.LEG * w;
+  j.legR.rotation.x = -s * GAIT.LEG * w;
+  // 手臂：整條臂與同側腿反相擺（單節，無肘彎）
+  j.armL.rotation.x = -s * GAIT.ARM * w;
+  j.armR.rotation.x = s * GAIT.ARM * w;
   // 走路時整體略前傾（樞紐在腳底附近），停下回正
   stick.rotation.x = GAIT.LEAN * w;
 }
