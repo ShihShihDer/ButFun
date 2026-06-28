@@ -422,6 +422,18 @@ const tendUnknown = T.tendButtonState(true, "bogus");
 if (!tendUnknown || typeof tendUnknown.label !== "string" || typeof tendUnknown.locked !== "boolean") fail("tendButtonState 未知 kind 應安全回合法鈕態，不 throw");
 console.log("✅ 照料農地 wire 訊息固定（water_all／harvest_all）／登入·訪客鈕態區隔／未知 kind 安全降級全綠");
 
+// ── ①i2 野營篝火互動純邏輯（ROADMAP 623）：wire 訊息固定、鈕態永不鎖定（訪客也能升火） ──
+if (typeof T.campfireWireMsg !== "function" || typeof T.campfireButtonState !== "function") {
+  fail("__bf3dTest 未暴露 campfireWireMsg/campfireButtonState");
+}
+const cfMsg = T.campfireWireMsg();
+if (!cfMsg || cfMsg.type !== "light_campfire") fail("campfireWireMsg 應送 {type:'light_campfire'}（與 2D web/game.js 同協議），得 " + JSON.stringify(cfMsg));
+const cfBtn = T.campfireButtonState();
+if (!cfBtn || cfBtn.locked !== false) fail("篝火鈕應永不鎖定（升火不需登入，連線玩家即可）");
+if (!/生火|篝火|🔥/.test(cfBtn.label)) fail("篝火鈕標籤應點明生火");
+if (!cfBtn.hint) fail("篝火鈕應有提示文案");
+console.log("✅ 野營篝火 wire 訊息固定（light_campfire）／鈕態永不鎖定·訪客也能升火全綠");
+
 // ── ①j 天時盤純邏輯（ROADMAP 620）：繞盤角度／倒數平滑遞減／時段·下一時段標籤／壞值安全 ──
 if (typeof T.dayClockReadout !== "function" || typeof T.fmtCountdown !== "function") fail("__bf3dTest 未暴露 dayClockReadout/fmtCountdown");
 const dcr = T.dayClockReadout;
