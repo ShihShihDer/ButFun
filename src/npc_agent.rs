@@ -43,9 +43,12 @@ pub struct AgentDecision {
     pub say: String,
     /// agent 給自己的決策理由（可空，主要供除錯/日後思想泡泡）。
     pub reason: String,
-    /// **偶爾**許下的一個「對這個世界的小心願」（禱告，ROADMAP 居民禱告第一塊）。
-    /// 只在 agent 真有強烈感受時才出現——絕大多數決策為 `None`，由 prompt 引導 LLM 自我節制，
-    /// 呼叫端只在 `Some` 且非空白時把它寫進 `data/prayers.jsonl`（第二塊「迴圈讀禱告→實現」另做）。
+    /// **向後相容的可選心願欄位**（禱告，ROADMAP 居民禱告第一塊）。
+    ///
+    /// 歷史包袱：原本想讓 LLM 把心願塞進「決策 JSON」的這個可選欄位——但實測小／一般模型
+    /// 在主任務是「選 action」時幾乎總是漏掉 optional 欄位，導致 `data/prayers.jsonl` 長期 0 筆。
+    /// 故禱告已改由**獨立的專門呼叫**（[`npc_pray`]）穩定產出，不再仰賴本欄位。
+    /// `parse_action` 仍保留解析（萬一模型主動給了就當 bonus 寫入），但絕大多數決策恆為 `None`。
     pub prayer: Option<String>,
 }
 
@@ -205,9 +208,6 @@ pub fn build_think_prompt(sense: &SenseInput, persona: &str) -> String {
         JSON 格式範例：{{ \"action\": \"talk\", \"target\": \"薇拉\", \"say\": \"嗨，今天生意好嗎？\", \"reason\": \"附近有熟人，想打招呼\" }}\n\
         欄位說明：action 必填（上列其一）；target 視 action 而定；\
         say 是你想說出口的一句話（繁體中文，沒有就空字串）；reason 是你的決策理由（繁體中文，簡短）。\n\
-        【心願（prayer）】當你心裡對這個世界或自己的生活有個願望、煩惱或盼望時——這很自然、常常會有——\
-        就把它說成一句心願（禱告），放進可選的 \"prayer\" 欄位（繁體中文，一句話，例如「願農田旁能有水源」「好想有個慶典熱鬧一下」「這一帶夜裡不安全，盼有人守望」）。\
-        大約每三、四次決策可以許一次願；不必每次都給，但也別吝嗇——你是這個世界的居民，本來就會對生活有期盼。沒有特別想許時就省略這個欄位。\n\
         只輸出 JSON，不要 markdown 圍欄、不要任何其他文字。",
         persona = persona,
         hp = sense.hp,
@@ -551,8 +551,184 @@ pub async fn npc_think(sense: &SenseInput, persona: &str) -> AgentDecision {
     let system = build_think_prompt(sense, persona);
     // user 訊息留一句固定指令即可——情境已全在 system prompt 裡。
     match crate::npc_chat::agent_llm_chat(&system, "現在，輸出你的決策 JSON。").await {
-        Some(text) => parse_action(&text),
-        None => canned_action(sense),
+        Some(text) => {
+            if agent_debug_enabled() {
+                tracing::info!(
+                    "[agent_debug] think 走 LLM，回應 {} 字：{}",
+                    text.chars().count(),
+                    one_line(&text),
+                );
+            }
+            parse_action(&text)
+        }
+        None => {
+            if agent_debug_enabled() {
+                tracing::info!("[agent_debug] think 無 LLM 回應 → 走罐頭規則");
+            }
+            canned_action(sense)
+        }
+    }
+}
+
+// ── 居民禱告（獨立生成）────────────────────────────────────────────────────
+//
+// 根因修正：原本把「可選的 prayer」塞在決策 JSON 裡，小／一般模型在主任務是「選 action」時
+// 幾乎總是漏掉這個 optional 欄位 → `data/prayers.jsonl` 長期 0 筆。改成**獨立、簡短的專門呼叫**：
+// 不要 JSON、不選 action，只請居民說出此刻心裡的一句心願——禱告不再跟「選 action」搶欄位，
+// 模型不會漏，禱告得以穩定產出。頻率以機率節流（見 [`should_pray`]），平均每位居民幾分鐘一次。
+
+/// 一位居民每次思考時「順便許願」的機率（擲一次決定）。
+///
+/// 思考間隔約 [`crate::npc_agent_wire::THINK_INTERVAL_SECS`]（15 秒）。本機率下，
+/// 平均每位居民約每 `15 / 0.1 = 150` 秒（兩分半）許一次願——足以證明「禱告會穩定產生」，
+/// 又不致 12 位居民每 15 秒都禱告洗版。
+pub const PRAYER_CHANCE: f64 = 0.1;
+
+/// 擲一個 `[0, 1)` 的亂數決定這次思考要不要順便許願（純函式、可測）。
+///
+/// 把「要不要許願」與「亂數來源」分離：呼叫端負責給 `roll`（例如 `rand::random()`），
+/// 本函式只判斷 `roll < PRAYER_CHANCE`。如此節流邏輯可被單元測試釘住邊界。
+pub fn should_pray(roll: f64) -> bool {
+    roll < PRAYER_CHANCE
+}
+
+/// 是否開啟 agent 診斷 log（`BUTFUN_AGENT_DEBUG=1`）。**預設關**、不洗 log；
+/// 部署後要驗證禱告流程時才打開，看每位居民這次有沒有走 LLM、拿到什麼、有沒有產禱告。
+pub fn agent_debug_enabled() -> bool {
+    std::env::var("BUTFUN_AGENT_DEBUG").map(|v| v == "1").unwrap_or(false)
+}
+
+/// 把多行文字壓成單行（換行→空白），純供 log 顯示不被換行打散。
+fn one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// 組「專門的禱告 prompt」（純函式、可測）。
+///
+/// 跟決策 prompt **完全分離**：不要 JSON、不選 action，只請居民依人設＋當下處境，
+/// 說出此刻心裡對這個世界或自己生活的一句心願（繁體中文、一句話）。
+/// 把當下處境（活力／心情／附近有沒有人）輕輕帶進來，讓心願貼合情境而非空泛。
+pub fn build_prayer_prompt(sense: &SenseInput, persona: &str) -> String {
+    // 附近有沒有人，影響心願語氣（孤單／熱鬧），只給一句概括即可。
+    let around = if sense.nearby_players.is_empty() {
+        "此刻你身邊沒什麼人。"
+    } else {
+        "此刻你身邊有些人來人往。"
+    };
+    let needs = if sense.needs_summary.trim().is_empty() {
+        String::new()
+    } else {
+        format!("你心裡的狀態：{}。", sense.needs_summary.trim())
+    };
+    format!(
+        "你是一位住在 ButFun 世界裡的居民。\n\
+        【你的人設】{persona}\n\
+        【你此刻】活力 {energy}/100・心情 {mood}/100。{around}{needs}\n\n\
+        請以這個身份，說出此刻你心裡對這個世界、或對自己生活的**一句心願**（也就是一句禱告）。\n\
+        要求：繁體中文、**只要一句話**、發自這位居民的口吻與處境，像「願農田旁能有水源」\
+        「好想有個慶典熱鬧一下」「這一帶夜裡不安全，盼有人守望」這樣具體而真切。\n\
+        只輸出那一句心願本身，不要引號、不要前綴（例如不要寫「我的心願是」）、不要任何解釋或多餘文字。",
+        persona = persona,
+        energy = sense.energy,
+        mood = sense.mood,
+        around = around,
+        needs = needs,
+    )
+}
+
+/// 一句心願最多保留的字元數（防模型囉嗦寫成長篇；超過就截斷）。
+const PRAYER_MAX_CHARS: usize = 120;
+
+/// 把禱告 LLM 的回應清成一句乾淨心願（純函式、可測）。
+///
+/// 容忍：模型加了 markdown 圍欄、引號、「我的心願是：」之類前綴、多行（只取第一段非空行）、
+/// 甚至還是回了 JSON（盡力抽 `prayer`／`text`／`say` 欄位，否則退回原文）。
+/// 全空白 / 清完是空 → `None`（**不寫罐頭假禱告**、絕不 panic）。
+pub fn parse_prayer_line(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // 模型若仍包成 JSON，盡力抽常見欄位；抽不到就把原文當純文字處理。
+    let candidate: String = extract_json_blob(trimmed)
+        .and_then(|blob| serde_json::from_str::<serde_json::Value>(blob).ok())
+        .and_then(|v| {
+            ["prayer", "text", "say", "wish"]
+                .iter()
+                .map(|k| str_field(&v, k))
+                .find(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| trimmed.to_string());
+
+    // 取第一段非空行（模型偶爾在心願後又補一句解釋）。
+    let first_line = candidate
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+
+    // 去掉外層引號／圍欄殘留與常見前綴，再濾控制字元。
+    let cleaned = strip_wrapping(first_line);
+    let cleaned: String = cleaned.chars().filter(|c| !c.is_control()).collect();
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+    // 防囉嗦：超長就保守截斷（以字元計，不切壞多位元組字）。
+    let out: String = cleaned.chars().take(PRAYER_MAX_CHARS).collect();
+    Some(out.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// 去掉一句心願外層的成對引號、markdown 圍欄殘字與常見前綴（純字串處理）。
+fn strip_wrapping(s: &str) -> &str {
+    let mut t = s.trim();
+    // 去掉 markdown 圍欄殘留的反引號。
+    t = t.trim_matches('`').trim();
+    // 去掉成對的中英文引號（最多剝一層，避免把正常內容剝壞）。
+    for (open, close) in [('「', '」'), ('“', '”'), ('"', '"'), ('\'', '\'')] {
+        if let Some(inner) = t.strip_prefix(open).and_then(|x| x.strip_suffix(close)) {
+            t = inner.trim();
+            break;
+        }
+    }
+    // 去掉常見前綴（模型偶爾不聽話加上）。
+    for prefix in ["我的心願是：", "我的心願是", "心願：", "心願是：", "禱告：", "願望："] {
+        if let Some(rest) = t.strip_prefix(prefix) {
+            t = rest.trim();
+            break;
+        }
+    }
+    t
+}
+
+/// 專門的「禱告生成」async glue：獨立簡短 prompt → 走同一條 LLM 腦池 → 清成一句心願。
+///
+/// 設計鐵律（比照 [`npc_think`]）：純資料進出、不持任何遊戲狀態鎖、不跨鎖 await——
+/// 呼叫端只在**無鎖 async task** 內呼叫（見 game.rs spawn）。
+/// **LLM 失敗 / 回空 → `None`（不寫罐頭假禱告）**；永遠不 panic。
+pub async fn npc_pray(sense: &SenseInput, persona: &str) -> Option<String> {
+    let system = build_prayer_prompt(sense, persona);
+    let raw = crate::npc_chat::agent_llm_chat(&system, "現在，說出你此刻心裡的那一句心願。").await;
+    match raw {
+        Some(text) => {
+            let prayer = parse_prayer_line(&text);
+            if agent_debug_enabled() {
+                match &prayer {
+                    Some(p) => tracing::info!("[agent_debug] pray 走 LLM，產出心願：{}", one_line(p)),
+                    None => tracing::info!(
+                        "[agent_debug] pray 走 LLM 但清不出有效心願（不寫）：{}",
+                        one_line(&text),
+                    ),
+                }
+            }
+            prayer
+        }
+        None => {
+            if agent_debug_enabled() {
+                tracing::info!("[agent_debug] pray 無 LLM 回應 → 這次不禱告（不寫罐頭）");
+            }
+            None
+        }
     }
 }
 
@@ -955,5 +1131,95 @@ mod tests {
         assert_ne!(one, two);
         // 越界序（>2）保守回 None（跨層只發生在 1/2 兩道門檻）。
         assert_eq!(bond_deepened_line(9), None);
+    }
+
+    // ── 居民禱告（獨立生成）：節流機率 should_pray ───────────────────
+    #[test]
+    fn should_pray_respects_threshold() {
+        // 邊界：剛好等於門檻不許（< 而非 <=），明顯低於才許、明顯高於不許。
+        assert!(should_pray(0.0));
+        assert!(should_pray(PRAYER_CHANCE - 0.001));
+        assert!(!should_pray(PRAYER_CHANCE));
+        assert!(!should_pray(PRAYER_CHANCE + 0.001));
+        assert!(!should_pray(0.99));
+        // 機率本身落在合理節流區間（不會 0、也不會頻到洗版）。
+        assert!(PRAYER_CHANCE > 0.0 && PRAYER_CHANCE < 0.5);
+    }
+
+    // ── build_prayer_prompt：獨立、簡短、不要 JSON ──────────────────
+    #[test]
+    fn prayer_prompt_is_dedicated_not_json() {
+        let p = build_prayer_prompt(&base_sense(), "你是務農的居民");
+        assert!(p.contains("你是務農的居民"), "應帶入人設");
+        assert!(p.contains("心願"), "應明確要求一句心願");
+        assert!(p.contains("一句"), "應限定一句話");
+        // 關鍵：不要求 JSON / action（與決策 prompt 分離，模型不會漏）。
+        assert!(!p.contains("JSON"));
+        assert!(!p.contains("action"));
+    }
+
+    #[test]
+    fn prayer_prompt_reflects_surroundings() {
+        let alone = build_prayer_prompt(&base_sense(), "人設");
+        assert!(alone.contains("身邊沒什麼人"));
+        let crowded = build_prayer_prompt(
+            &base_sense().with_players(vec![NearbyPlayer { name: "薇拉".into(), x: 1.0, y: 1.0 }]),
+            "人設",
+        );
+        assert!(crowded.contains("人來人往"));
+    }
+
+    // ── parse_prayer_line：清成一句乾淨心願 ────────────────────────
+    #[test]
+    fn parse_prayer_line_plain_sentence() {
+        assert_eq!(parse_prayer_line("願農田旁能有水源").as_deref(), Some("願農田旁能有水源"));
+        // 前後空白被修掉。
+        assert_eq!(parse_prayer_line("  願爐火不熄  ").as_deref(), Some("願爐火不熄"));
+    }
+
+    #[test]
+    fn parse_prayer_line_strips_quotes_and_prefix() {
+        assert_eq!(parse_prayer_line("「願這片土地豐饒」").as_deref(), Some("願這片土地豐饒"));
+        assert_eq!(parse_prayer_line("\"盼夜裡有人守望\"").as_deref(), Some("盼夜裡有人守望"));
+        assert_eq!(parse_prayer_line("我的心願是：好想有個慶典").as_deref(), Some("好想有個慶典"));
+    }
+
+    #[test]
+    fn parse_prayer_line_takes_first_nonempty_line() {
+        // 模型在心願後又補了一句解釋 → 只取第一段非空行。
+        let out = parse_prayer_line("\n願旅人都平安歸來\n（這是我此刻的心情）");
+        assert_eq!(out.as_deref(), Some("願旅人都平安歸來"));
+    }
+
+    #[test]
+    fn parse_prayer_line_handles_json_fallback() {
+        // 模型不聽話還是回了 JSON → 盡力抽 prayer 欄位。
+        assert_eq!(
+            parse_prayer_line(r#"{"prayer":"願城牆再高一些"}"#).as_deref(),
+            Some("願城牆再高一些"),
+        );
+        // markdown 圍欄包住的 JSON 也能抽。
+        assert_eq!(
+            parse_prayer_line("```json\n{\"text\":\"願風調雨順\"}\n```").as_deref(),
+            Some("願風調雨順"),
+        );
+    }
+
+    #[test]
+    fn parse_prayer_line_empty_is_none() {
+        // 空回應 → None（不寫罐頭假禱告）。
+        assert_eq!(parse_prayer_line(""), None);
+        assert_eq!(parse_prayer_line("   \n  "), None);
+        // 只有引號 / 前綴、剝完是空 → None，不 panic。
+        assert_eq!(parse_prayer_line("「」"), None);
+        assert_eq!(parse_prayer_line("我的心願是："), None);
+    }
+
+    #[test]
+    fn parse_prayer_line_truncates_overlong() {
+        // 模型囉嗦寫超長 → 保守截斷到上限，不 panic、不切壞字。
+        let long: String = "願".repeat(300);
+        let out = parse_prayer_line(&long).expect("非空應有心願");
+        assert_eq!(out.chars().count(), PRAYER_MAX_CHARS);
     }
 }
