@@ -604,6 +604,53 @@ if (/敵對/.test(T.factionHudLabel([{ bond: "alliance" }]))) fail("factionHudLa
 if (/結盟/.test(T.factionHudLabel([{ bond: "rivalry" }]))) fail("factionHudLabel 無結盟時不應顯示結盟段");
 console.log("✅ 派系關係連線 factionLinkVisual／factionArcPoints／factionHudLabel·確定性·壞值安全全綠");
 
+// ── ①g 寵物夥伴呈現純邏輯（ROADMAP 627）：petVisual 種類/配色/羈絆夾值·petStatusEmoji 優先序·
+//        petBondHearts 愛心條·petHudLabel 計數——確定性·壞值安全 ──
+if (typeof T.petVisual !== "function" || typeof T.petStatusEmoji !== "function" || typeof T.petBondHearts !== "function" || typeof T.petHudLabel !== "function") {
+  fail("__bf3dTest 未暴露 petVisual/petStatusEmoji/petBondHearts/petHudLabel");
+}
+const pv = T.petVisual;
+// 無 pet_kind／壞值 → null（這位玩家沒寵物、不畫）
+if (pv({ id: "me" }) !== null) fail("無 pet_kind 應回 null");
+if (pv(null) !== null || pv("x") !== null || pv({ pet_kind: "" }) !== null) fail("壞值/空種類 petVisual 應回 null");
+// 已知五種：型別/配色由對照表決定
+const pvSprite = pv({ pet_kind: "flutter_sprite", pet_bond: 3 });
+if (!pvSprite || pvSprite.type !== "sprite") fail("flutter_sprite 應為 sprite 身形");
+if (pv({ pet_kind: "crystal_golem" }).type !== "crystal") fail("crystal_golem 應為 crystal");
+if (pv({ pet_kind: "coral_crab" }).type !== "crab") fail("coral_crab 應為 crab");
+if (pv({ pet_kind: "jade_wraith" }).type !== "wraith") fail("jade_wraith 應為 wraith");
+if (pv({ pet_kind: "origin_guardian" }).type !== "guardian") fail("origin_guardian 應為 guardian");
+// 未知種類 → box 後備（向後相容、永不空殼）
+if (pv({ pet_kind: "mystery_pet" }).type !== "box") fail("未知種類應退回 box 後備");
+// 羈絆夾在 [0,5]、壞值歸 0
+if (pv({ pet_kind: "coral_crab", pet_bond: 9 }).bond !== 5) fail("羈絆應夾上限 5");
+if (pv({ pet_kind: "coral_crab", pet_bond: -3 }).bond !== 0) fail("羈絆應夾下限 0");
+if (pv({ pet_kind: "coral_crab", pet_bond: NaN }).bond !== 0) fail("壞羈絆應歸 0");
+// 旗標讀取
+if (!pv({ pet_kind: "coral_crab", pet_playing: true }).playing) fail("pet_playing 應讀成 playing");
+if (!pv({ pet_kind: "coral_crab", pet_fetching: true }).fetching) fail("pet_fetching 應讀成 fetching");
+// petStatusEmoji 優先序：玩耍 💞 ＞ 接物 🎾 ＞ 性格心情泡泡 ＞ 無
+if (T.petStatusEmoji({ pet_kind: "coral_crab", pet_playing: true, pet_fetching: true, pet_personality: "clingy" }) !== "💞") fail("玩耍應優先 💞");
+if (T.petStatusEmoji({ pet_kind: "coral_crab", pet_fetching: true, pet_personality: "clingy" }) !== "🎾") fail("接物應 🎾（蓋過性格）");
+if (T.petStatusEmoji({ pet_kind: "coral_crab", pet_personality: "playful" }) !== "🎵") fail("活潑性格應 🎵");
+if (T.petStatusEmoji({ pet_kind: "coral_crab", pet_personality: "lazy" }) !== "💤") fail("慵懶性格應 💤");
+if (T.petStatusEmoji({ pet_kind: "coral_crab", pet_personality: "curious" }) !== "❓") fail("好奇性格應 ❓");
+if (T.petStatusEmoji({ pet_kind: "coral_crab", pet_personality: "clingy" }) !== "💕") fail("黏人性格應 💕");
+if (T.petStatusEmoji({ pet_kind: "coral_crab" }) !== null) fail("無玩耍/接物/性格應無 emoji");
+if (T.petStatusEmoji(null) !== null) fail("壞值狀態 emoji 應為 null");
+// petBondHearts：實心♥＝已養階、空心♡＝未滿；0 → 空字串
+if (T.petBondHearts(0) !== "") fail("羈絆 0 應為空字串");
+if (T.petBondHearts(2) !== "♥♥♡♡♡") fail(`羈絆 2 應為 ♥♥♡♡♡，得「${T.petBondHearts(2)}」`);
+if (T.petBondHearts(5) !== "♥♥♥♥♥") fail("羈絆 5 應全滿");
+if (T.petBondHearts(99) !== "♥♥♥♥♥") fail("羈絆超上限應夾成全滿");
+// petHudLabel：數出視野內有寵物的玩家
+const phl = T.petHudLabel([{ id: "a", pet_kind: "coral_crab" }, { id: "b" }, { id: "c", pet_kind: "jade_wraith" }]);
+if (!/夥伴 2/.test(phl)) fail(`petHudLabel 應數出 2 隻夥伴，得「${phl}」`);
+if (T.petHudLabel([{ id: "b" }]) !== "" || T.petHudLabel(null) !== "") fail("無寵物 HUD 應為空字串");
+// 確定性
+if (JSON.stringify(pv({ pet_kind: "coral_crab", pet_bond: 3 })) !== JSON.stringify(pv({ pet_kind: "coral_crab", pet_bond: 3 }))) fail("petVisual 非確定性");
+console.log("✅ 寵物夥伴 petVisual 種類/配色/羈絆夾值／狀態 emoji 優先序／愛心條／HUD／壞值安全全綠");
+
 // ── ①f 敵人威脅呈現純邏輯（ROADMAP 626）：enemyVisual 身形/配色/血量/兇名·enemyStatusEmoji 優先序·
 //        enemyHpFill 比例與殘血·enemyHudLabel 計數——確定性·壞值安全 ──
 if (typeof T.enemyVisual !== "function" || typeof T.enemyStatusEmoji !== "function" || typeof T.enemyHpFill !== "function" || typeof T.enemyHudLabel !== "function") {
@@ -731,7 +778,18 @@ const enemiesA = [
   { eid: "e7", kind: "void_phantom", x: 2900, y: 3000, alive: true },                                                   // 缺 hp/max_hp/level → 視為滿、不畫血條、安全
   { eid: "e8", kind: "steam_construct", x: 9999, y: 9999, level: 7, hp: 5, max_hp: 120, alive: false },                 // alive=false → 過濾掉
 ];
-drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }, { id: "p2", name: "夥伴", x: 3050, y: 3000 }], npcs: npcsA, wildlife: wildlifeA, enemies: enemiesA, nodes: [],
+// 寵物夥伴（ROADMAP 627）：五種寵物各一隻＋玩耍／接物／性格／羈絆／未知種類後備／缺座標過濾——
+// 踩 makePet 五型身形建構＋attachPetStatus＋updatePetStatus（待機浮動/玩耍蹦跳/狀態 emoji/愛心條）全路徑。
+const playersA = [
+  { id: "me", name: "我", x: 3000, y: 3000, pet_kind: "flutter_sprite", pet_x: 3012, pet_y: 3000, pet_playing: true, pet_bond: 3, pet_personality: "clingy" }, // 精靈、玩耍中💞、羈絆3
+  { id: "p2", name: "夥伴", x: 3050, y: 3000, pet_kind: "coral_crab", pet_x: 3062, pet_y: 3000, pet_fetching: true, pet_toy_x: 3070, pet_toy_y: 3000, pet_bond: 0 }, // 蟹、接物中🎾、無羈絆（不畫愛心條）
+  { id: "p3", name: "晶友", x: 3100, y: 3000, pet_kind: "crystal_golem", pet_x: 3112, pet_y: 3000, pet_personality: "lazy", pet_bond: 5 }, // 晶石、慵懶💤、羈絆滿
+  { id: "p4", name: "幽客", x: 2950, y: 3000, pet_kind: "jade_wraith", pet_x: 2938, pet_y: 3000, pet_personality: "curious", pet_bond: 2 }, // 幽靈、好奇❓
+  { id: "p5", name: "守者", x: 2900, y: 3050, pet_kind: "origin_guardian", pet_x: 2912, pet_y: 3050, pet_bond: 4 }, // 守護星、無狀態 emoji、羈絆4
+  { id: "p6", name: "謎友", x: 3150, y: 3050, pet_kind: "mystery_pet", pet_x: 3162, pet_y: 3050, pet_bond: 1 }, // 未知種類 → box 後備
+  { id: "p7", name: "無座標", x: 3050, y: 3100, pet_kind: "coral_crab", pet_bond: 1 }, // 缺 pet_x/pet_y → 過濾、不畫寵物
+];
+drive({ type: "snapshot", players: playersA, npcs: npcsA, wildlife: wildlifeA, enemies: enemiesA, nodes: [],
   town_factions: townFactionsA,
   fields: fieldsA, campfires: campfiresA, watchtowers: watchtowersA, snowmen: snowmenA, world_groves: grovesA,
   daynight: { phase: "day", day_fraction: 0.33, light: 1.0, night_danger: false, next_phase: "dusk", secs_to_next: 180 },
@@ -817,7 +875,13 @@ const enemiesB = [
   { eid: "e3", kind: "crystal_golem", x: 2940, y: 3080, level: 9, hp: 120, max_hp: 200, alive: true, notorious: true },// 兇名受傷 → 畫血條
   { eid: "e9", kind: "jade_wraith", x: 3030, y: 2980, level: 11, hp: 1, max_hp: 90, alive: true },                     // 新生、瀕死深紅
 ];
-drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }], npcs: npcsB, wildlife: wildlifeB, enemies: enemiesB, nodes: [],
+// 寵物轉移（ROADMAP 627）：me 換了寵物種類（精靈→守護星：舊 key 淡出、新身形淡入）＋玩耍轉接物、
+// p2 收起玩具改歇腳（接物 emoji 熄滅）＋養出羈絆（愛心條從無到有）；p3~p7 從快照消失 → 寵物走 AOI 淡出。
+const playersB = [
+  { id: "me", name: "我", x: 3000, y: 3000, pet_kind: "origin_guardian", pet_x: 3012, pet_y: 3000, pet_fetching: true, pet_toy_x: 3020, pet_toy_y: 3000, pet_bond: 4 }, // 換成守護星、改接物
+  { id: "p2", name: "夥伴", x: 3050, y: 3000, pet_kind: "coral_crab", pet_x: 3056, pet_y: 3000, pet_personality: "playful", pet_bond: 2 }, // 收玩具歇腳→性格🎵、養出羈絆2
+];
+drive({ type: "snapshot", players: playersB, npcs: npcsB, wildlife: wildlifeB, enemies: enemiesB, nodes: [],
   town_factions: [], // 派系全數解除（ROADMAP 625）→ 踩 updateFactionLinks 的連線回收／dispose 全清路徑
   fields: fieldsB, campfires: campfiresB, watchtowers: watchtowersB, snowmen: snowmenB, world_groves: grovesB,
   daynight: { phase: "night", day_fraction: 0.82, light: 0.2, night_danger: true, next_phase: "dawn", secs_to_next: 60 },
@@ -836,5 +900,5 @@ if (caught.length) {
   for (const c of caught.slice(0, 10)) console.error("   · " + c);
   process.exit(1);
 }
-console.log("✅ NPC 內心生活（活動／思想／關懷／危機／歡慶＋狀態轉移＋AOI 淡出）＋野生動物（五種身形／幼獸縮放／馴養脈動／轉移）＋人造地標（篝火圍爐／將熄／塔施工→落成入夜亮燈／雪人讚賞＋AOI 淡出）＋世界樹群（嫩芽→幼苗→幼樹松→成樹遮蔭、長大重塑＋AOI 淡出）＋玩家表情泡泡（揮手／歡呼點亮→彈跳上浮→4 秒淡出自清＋未知 from_id 安全跳過）＋居民對話泡泡（說出口的話淡入停留→8 秒淡出自清＋對話蓋過思想＋缺欄位降級＋視野外說話者安全跳過）跑多幀零例外");
+console.log("✅ NPC 內心生活（活動／思想／關懷／危機／歡慶＋狀態轉移＋AOI 淡出）＋野生動物（五種身形／幼獸縮放／馴養脈動／轉移）＋人造地標（篝火圍爐／將熄／塔施工→落成入夜亮燈／雪人讚賞＋AOI 淡出）＋世界樹群（嫩芽→幼苗→幼樹松→成樹遮蔭、長大重塑＋AOI 淡出）＋玩家表情泡泡（揮手／歡呼點亮→彈跳上浮→4 秒淡出自清＋未知 from_id 安全跳過）＋居民對話泡泡（說出口的話淡入停留→8 秒淡出自清＋對話蓋過思想＋缺欄位降級＋視野外說話者安全跳過）＋寵物夥伴（五種低多邊形身形／玩耍蹦跳/接物/性格心情泡泡/羈絆愛心條／換寵物舊身形淡出新身形淡入／離開視野 AOI 淡出／未知種類 box 後備／缺座標安全過濾）跑多幀零例外");
 console.log("✅ render-smoke-3d 全綠");

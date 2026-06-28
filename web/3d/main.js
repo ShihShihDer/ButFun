@@ -552,6 +552,74 @@ function wildlifeHudLabel(list) {
 }
 
 // ============================================================
+// 玩家的寵物夥伴在 3D 裡現身（ROADMAP 627）：快照早就帶著每位玩家的權威寵物欄位
+// （種類 pet_kind／世界座標 pet_x/pet_y／正與別的寵物玩耍 pet_playing／正叼玩具 pet_fetching／
+// 性格 pet_personality／羈絆 pet_bond，見 protocol.rs；2D game.js 一直在主人腳邊畫出跟隨的小夥伴、
+// 玩耍愛心、性格心情泡泡、羈絆默契愛心條），3D 卻整個忽略——於是養了寵物的玩家站在 3D 世界裡，
+// 身邊空無一物。本切片把寵物接進 3D：每種寵物一具辨識得出的低多邊形小身形＋頭頂玩耍／性格狀態＋
+// 腳邊羈絆愛心條，自有世界座標跟著主人在世界裡跑（走與玩家同套快照內插）。
+// 純前端、純讀快照——零後端改動、零協議改動、零 migration、零 LLM、零經濟。
+// ============================================================
+
+// 寵物視覺規格：低多邊形身型／顏色，鏡像 2D game.js 的 PET_EMOJI 五種寵物。
+// 後端只送穩定的 snake_case 種類碼，身形／顏色由前端對照＝留 i18n／美術一致空間。
+const PET_SPEC = {
+  flutter_sprite:  { type: "sprite",   color: 0xe2a8f0 }, // 翩翩精靈（🧚）：粉紫，圓身雙翼
+  crystal_golem:   { type: "crystal",  color: 0x7ad0e8 }, // 晶石魔像（💠）：青藍，八面晶簇
+  coral_crab:      { type: "crab",     color: 0xf08a55 }, // 珊瑚蟹（🦀）：珊瑚橘，扁殼雙螯
+  jade_wraith:     { type: "wraith",   color: 0xa6e6c4 }, // 翡翠幽靈（👻）：淡碧，飄浮圓身
+  origin_guardian: { type: "guardian", color: 0xffd860 }, // 初源守護（🌟）：金，星核斜環
+};
+const PET_DEFAULT_SPEC = { type: "box", color: 0xc8b8e0 }; // 未知種類 → 退回小盒（向後相容）
+
+// 寵物性格心情泡泡（鏡像 2D PET_PERSONALITY mood）：活潑🎵／慵懶💤／好奇❓／黏人💕。
+const PET_PERSONALITY_MOOD = { playful: "🎵", lazy: "💤", curious: "❓", clingy: "💕" };
+const PET_BOND_MAX = 5; // 與 2D petBondHearts 同上限
+
+// 把一筆玩家快照的寵物欄位算成「這隻寵物該怎麼呈現」。純函式、確定性、壞值安全
+// （無 pet_kind／非物件 → 回 null＝這位玩家沒寵物、不畫）。只讀權威欄位、不嵌行為規則。
+function petVisual(p) {
+  if (!p || typeof p !== "object" || typeof p.pet_kind !== "string" || !p.pet_kind) return null;
+  const spec = PET_SPEC[p.pet_kind] || PET_DEFAULT_SPEC;
+  const bond = Number.isFinite(p.pet_bond) ? Math.max(0, Math.min(PET_BOND_MAX, p.pet_bond | 0)) : 0;
+  return {
+    kind: p.pet_kind,
+    type: spec.type,
+    color: spec.color,
+    playing: !!p.pet_playing,   // 正與別的寵物玩耍：蹦得最歡、頭頂飄愛心
+    fetching: !!p.pet_fetching, // 正叼玩具衝刺：蹦得最急、頭頂掛 🎾
+    personality: typeof p.pet_personality === "string" ? p.pet_personality : "",
+    bond,
+  };
+}
+
+// 寵物頭頂狀態 emoji（優先序：玩耍 💞 ＞ 接物 🎾 ＞ 性格心情泡泡 ＞ 無）。
+// 鏡像 2D「玩耍飄愛心、歇腳依性格飄心情泡泡」。壞值安全（回 null＝不顯示）。
+function petStatusEmoji(p) {
+  const v = petVisual(p);
+  if (!v) return null;
+  if (v.playing) return "💞";
+  if (v.fetching) return "🎾";
+  return PET_PERSONALITY_MOOD[v.personality] || null;
+}
+
+// 寵物羈絆默契愛心條（鏡像 2D petBondHearts）：實心♥＝已養階數、空心♡＝未滿。
+// bond<=0＝還沒養出默契→回空字串（不畫、零干擾）。純函式、好測。
+function petBondHearts(bond) {
+  const b = Math.max(0, Math.min(PET_BOND_MAX, bond | 0));
+  if (b <= 0) return "";
+  return "♥".repeat(b) + "♡".repeat(PET_BOND_MAX - b);
+}
+
+// 視野內寵物夥伴的 HUD 標籤：幾隻。純函式、壞值安全（無寵物回空字串）。
+function petHudLabel(players) {
+  if (!Array.isArray(players)) return "";
+  let n = 0;
+  for (const p of players) if (p && typeof p.pet_kind === "string" && p.pet_kind) n++;
+  return n > 0 ? `🐾 夥伴 ${n}` : "";
+}
+
+// ============================================================
 // 夜間的威脅在 3D 裡現形（ROADMAP 626）：把快照裡早就有、2D 一直畫得有血有肉、3D 卻全擠成
 // 同一個無差別紅盒子的 `enemies`（種類 kind／等級 level／血量 hp/max_hp／兇名 notorious／
 // 夜歇 resting／潰逃 routing／破綻 weak）在 3D 呈現出來——機械／靈體／巨像三型身形各異、
@@ -1301,6 +1369,101 @@ function makeCreature(kind) {
   return g;
 }
 
+// 寵物共用幾何（ROADMAP 627；全模組只建一次，幾十隻不重建頂點）。
+const PET_GEO = {
+  orb:      new THREE.SphereGeometry(0.9, 8, 6),          // 精靈／幽靈圓身
+  wing:     new THREE.ConeGeometry(0.45, 1.1, 4),         // 精靈翅膀（扁錐）
+  gem:      new THREE.OctahedronGeometry(0.8),            // 晶石（八面體）
+  gemSmall: new THREE.OctahedronGeometry(0.42),           // 小晶簇
+  shell:    new THREE.SphereGeometry(0.85, 8, 5),         // 蟹殼（壓扁的圓）
+  claw:     new THREE.ConeGeometry(0.3, 0.8, 4),          // 蟹螯
+  legSm:    new THREE.CylinderGeometry(0.1, 0.08, 0.7, 4),// 蟹腳
+  star:     new THREE.OctahedronGeometry(0.7),            // 守護星核
+  ring:     new THREE.TorusGeometry(0.95, 0.12, 6, 12),   // 守護光環
+};
+
+// 建一隻指定種類的低多邊形寵物：回傳一個 group（userData.isPet／petType／petBody＝身體子群，
+// 待機浮動／玩耍蹦跳套在 petBody 上，與 g.position.y 的移動 bob、g.scale 的 fade 互不干擾）。
+// 未知種類退回小盒，安全且向後相容。材質每隻一份（fade 可獨立淡入淡出）。
+function makePet(kind) {
+  const spec = PET_SPEC[kind] || PET_DEFAULT_SPEC;
+  const g = new THREE.Group();
+  const body = new THREE.Group();
+  g.add(body);
+  const mat = new THREE.MeshLambertMaterial({ color: spec.color });
+  const add = (geo, x, y, z, rx, ry, rz) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    if (rx || ry || rz) m.rotation.set(rx || 0, ry || 0, rz || 0);
+    body.add(m);
+    return m;
+  };
+  if (spec.type === "sprite") {
+    add(PET_GEO.orb, 0, 1.5, 0).scale.set(0.8, 0.9, 0.8);   // 小圓身
+    add(PET_GEO.wing, -0.7, 1.7, -0.1, 0, 0, 0.9);          // 左翼
+    add(PET_GEO.wing, 0.7, 1.7, -0.1, 0, 0, -0.9);          // 右翼
+  } else if (spec.type === "crystal") {
+    add(PET_GEO.gem, 0, 1.5, 0);                            // 主晶
+    add(PET_GEO.gemSmall, -0.6, 1.0, 0.2);                  // 小晶簇
+    add(PET_GEO.gemSmall, 0.55, 1.1, -0.2).scale.setScalar(0.8);
+  } else if (spec.type === "crab") {
+    add(PET_GEO.shell, 0, 1.0, 0).scale.set(1.1, 0.6, 1.0); // 壓扁的蟹殼
+    add(PET_GEO.claw, -0.9, 1.0, 0.5, 0, 0, -0.5);          // 左螯
+    add(PET_GEO.claw, 0.9, 1.0, 0.5, 0, 0, 0.5);            // 右螯
+    for (const sx2 of [-1, 1]) add(PET_GEO.legSm, sx2 * 0.7, 0.5, -0.4, 0, 0, sx2 * 0.6); // 後腳
+  } else if (spec.type === "wraith") {
+    add(PET_GEO.orb, 0, 1.6, 0).scale.set(0.9, 1.1, 0.9);   // 飄浮圓身
+    add(PET_GEO.orb, 0, 0.9, 0).scale.set(0.7, 0.5, 0.7);   // 下襬（幽靈尾）
+  } else if (spec.type === "guardian") {
+    add(PET_GEO.star, 0, 1.5, 0);                           // 星核
+    add(PET_GEO.ring, 0, 1.5, 0, Math.PI / 2.6, 0, 0);      // 斜環
+  } else {
+    // 未知種類：退回小盒（向後相容、永不空殼）
+    const box = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.2, 1.2), mat);
+    box.position.y = 1.0;
+    body.add(box);
+  }
+  g.userData.isPet = true;
+  g.userData.petType = spec.type;
+  g.userData.petBody = body;
+  return g;
+}
+
+// 給一隻寵物 group 掛上頭頂狀態 sprite（玩耍 💞／接物 🎾／性格心情泡泡）＋腳邊羈絆愛心條 sprite。
+// 比居民精簡：兩層 sprite、無思想泡泡；初始隱形，由 updatePetStatus 每幀依快照決定。
+function attachPetStatus(g) {
+  const status = makeEmojiSprite(2.6);
+  status.position.set(0, 3.6, 0); // 浮在寵物頭頂
+  g.add(status);
+  const hearts = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, depthTest: false, opacity: 0 }));
+  hearts.scale.set(3.4, 0.7, 1); // 橫向一排小愛心：寬扁
+  hearts.position.set(0, 0.2, 0); // 墊在寵物腳邊
+  hearts.visible = false;
+  g.add(hearts);
+  g.userData.petStatus = status;
+  g.userData.petHearts = hearts;
+}
+
+// 寵物羈絆愛心條貼圖（鏡像 2D 腳邊一排小愛心；♥/♡ 非單一 emoji，故另用寬畫布渲染，不走 emojiTexture）。
+// bond 只有 0..5＝至多 6 種字串，快取無上限之虞。空字串＝不畫。
+const petHeartsTexCache = new Map();
+function petHeartsTexture(hearts) {
+  const key = String(hearts || "");
+  let tex = petHeartsTexCache.get(key);
+  if (tex) return tex;
+  const canvas = document.createElement("canvas");
+  canvas.width = 160; canvas.height = 32;
+  const ctx = canvas.getContext("2d");
+  ctx.font = "26px system-ui, sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = "rgba(232,120,140,0.95)"; // 暖玫瑰紅，鏡像 2D 羈絆條
+  ctx.fillText(key, 80, 18);
+  tex = new THREE.CanvasTexture(canvas);
+  tex.anisotropy = 4;
+  petHeartsTexCache.set(key, tex);
+  return tex;
+}
+
 // 給一隻野生動物 group 掛上頭頂狀態 sprite（馴養 💛／親近 💗／幼獸 ✨／歇息 💤）。
 // 比居民的精簡：只一層 emoji、無思想泡泡；初始隱形，由 updateWildlifeStatus 每幀依快照決定。
 function attachWildlifeStatus(g) {
@@ -1337,6 +1500,59 @@ function updateWildlifeStatus(t) {
       status.material.opacity = fade * pulse;
     } else {
       status.visible = false;
+    }
+  }
+}
+
+// 每幀更新所有寵物的呈現（ROADMAP 627；在 updateRemoteEntities(pets) 之後呼叫：那裡 updateFade 已把
+// 子 sprite/mesh 的 opacity 設成 AOI 淡入淡出值，這裡再依快照覆寫頭頂狀態／腳邊羈絆條，並讓身體
+// 待機輕浮、玩耍／接物時蹦得更歡）。皆尊重 reduceMotion。
+function updatePetStatus(t) {
+  for (const [, g] of pets) {
+    const item = g.userData.item;
+    const v = petVisual(item);
+    const fade = g.userData.fade ?? 1;
+    // 身體待機浮動／玩耍蹦跳：套在 petBody 子群（與 g.position.y 的移動 bob、g.scale 的 fade 互不干擾）。
+    const body = g.userData.petBody;
+    if (body) {
+      if (reduceMotion) {
+        body.position.y = 0; // 偏好減少動態：身體不浮動（鏡像 2D reduceMotion 關閉彈跳）
+      } else {
+        const amp = v && v.fetching ? 0.5 : (v && v.playing ? 0.42 : 0.16);  // 接物蹦最高、玩耍次之、待機輕浮
+        const rate = v && v.fetching ? 9 : (v && v.playing ? 7.5 : 3.2);     // 接物蹦最急
+        if (g.userData.petPhase === undefined) g.userData.petPhase = (g.position.x + g.position.z) % 6.28; // 各自相位、不齊步
+        body.position.y = Math.abs(Math.sin(t * rate + g.userData.petPhase)) * amp;
+      }
+    }
+    // 頭頂狀態 emoji（玩耍 💞／接物 🎾／性格心情泡泡）
+    const status = g.userData.petStatus;
+    if (status) {
+      const emoji = petStatusEmoji(item);
+      if (setSpriteEmoji(status, emoji)) {
+        status.visible = true;
+        // 玩耍／黏人愛心輕輕脈動（呼應 2D 玩耍上飄愛心）；其餘穩定顯示。皆尊重 reduceMotion。
+        const pulsing = !reduceMotion && v && (v.playing || emoji === "💕");
+        const pulse = pulsing ? 0.72 + 0.28 * Math.abs(Math.sin(t * 3)) : 1;
+        status.material.opacity = fade * pulse;
+      } else {
+        status.visible = false;
+      }
+    }
+    // 腳邊羈絆默契愛心條（養出默契才畫；沒默契＝不畫，零干擾）
+    const hearts = g.userData.petHearts;
+    if (hearts) {
+      const str = v ? petBondHearts(v.bond) : "";
+      if (str) {
+        if (hearts.userData.hearts !== str) { // 只在愛心數變動時換貼圖，省每幀重建
+          hearts.userData.hearts = str;
+          hearts.material.map = petHeartsTexture(str);
+          hearts.material.needsUpdate = true;
+        }
+        hearts.visible = true;
+        hearts.material.opacity = fade * 0.85;
+      } else {
+        hearts.visible = false;
+      }
     }
   }
 }
@@ -2258,6 +2474,9 @@ const npcs = new Map();
 const wildlife = new Map();
 const enemies = new Map();
 const nodes = new Map(); // key 用座標字串（節點無穩定 id）
+// 寵物夥伴（ROADMAP 627）：key 用「主人 id:種類」——主人換了寵物時舊 key 自然淡出、新身形淡入。
+// 寵物有自己的世界座標（pet_x/pet_y，伺服器權威跟隨主人），走與玩家同套快照內插。
+const pets = new Map();
 // 玩家表情泡泡（ROADMAP 621）：from_id → { glyph, startMs, displaySecs }。收到 player_emote 即覆寫，
 // 每幀由 updatePlayerEmotes 依存活進度動畫＋過期自清，與玩家 group 鬆耦合（玩家離線/離開視野自然收掉）。
 const playerEmotes = new Map();
@@ -2366,6 +2585,29 @@ function handleServerMsg(msg) {
         },
         recvT
       );
+      // 寵物夥伴（ROADMAP 627）：從玩家快照派生「有養寵物且帶有效座標」的那些，接進 3D。
+      // 寵物自有世界座標（pet_x/pet_y）＝獨立實體，故另成一列走 reconcile 的內插＋AOI 淡入淡出，
+      // 而非掛成玩家子節點（座標不同步）。key 用「主人 id:種類」：換寵物 → 舊身形淡出、新身形淡入。
+      const petList = Array.isArray(msg.players)
+        ? msg.players.filter((p) => p && typeof p.pet_kind === "string" && p.pet_kind
+            && Number.isFinite(p.pet_x) && Number.isFinite(p.pet_y))
+            .map((p) => ({
+              owner: p.id, x: p.pet_x, y: p.pet_y, pet_kind: p.pet_kind,
+              pet_playing: p.pet_playing, pet_fetching: p.pet_fetching,
+              pet_personality: p.pet_personality, pet_bond: p.pet_bond,
+            }))
+        : [];
+      reconcile(
+        petList, pets,
+        (p) => p.owner + ":" + p.pet_kind,
+        (p) => {
+          const g = makePet(p.pet_kind);
+          attachPetStatus(g);
+          scene.add(g); // makePet 不經 makeEntity（寵物無名牌），故自行入景
+          return g;
+        },
+        recvT
+      );
       // NPC（含居民／商人）：暖棕火柴人，帶名字
       reconcile(
         msg.npcs, npcs,
@@ -2464,9 +2706,10 @@ function handleServerMsg(msg) {
       const builtLabel = structuresHudLabel(msg.campfires, msg.watchtowers, msg.snowmen); // 視野內人造地標（ROADMAP 616）
       const groveLabel = groveHudLabel(msg.world_groves); // 視野內世界樹群＋其中成樹數（ROADMAP 617）
       const factionLabel = factionHudLabel(latestTownFactions); // 此刻幾組結盟／敵對（ROADMAP 625）
+      const petLabel = petHudLabel(msg.players); // 視野內玩家身邊的寵物夥伴數（ROADMAP 627）
       hudEl.innerHTML =
         `<b>${myName}</b> · 線上 ${players.size} 人${phaseLabel ? " · " + phaseLabel : ""}${weatherLabel ? " · " + weatherLabel : ""}\n` +
-        `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · ${enemyLabel || "敵人 " + enemies.size}${farmLabel ? " · " + farmLabel : ""}${builtLabel ? " · " + builtLabel : ""}${groveLabel ? " · " + groveLabel : ""}${factionLabel ? " · " + factionLabel : ""}\n` +
+        `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · ${enemyLabel || "敵人 " + enemies.size}${farmLabel ? " · " + farmLabel : ""}${builtLabel ? " · " + builtLabel : ""}${groveLabel ? " · " + groveLabel : ""}${factionLabel ? " · " + factionLabel : ""}${petLabel ? " · " + petLabel : ""}\n` +
         `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳 · 🌱鈕種樹 · 😊鈕比表情" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳 · T 種樹 · E 表情"}`;
 
       setStatus(
@@ -3156,6 +3399,9 @@ function safeRender() {
     updateRemoteEntities(players, scene, renderTime, true, dt, t, myId, k);
     // 玩家頭頂表情泡泡：在 players 的 updateFade 之後覆寫表情 sprite 的顯示（ROADMAP 621）
     updatePlayerEmotes(performance.now());
+    // 寵物夥伴：正規實體內插（跟著主人跑）＋轉身起伏；之後覆寫頭頂狀態／腳邊羈絆條（ROADMAP 627）
+    updateRemoteEntities(pets, scene, renderTime, true, dt, t, undefined, k);
+    updatePetStatus(t);
     updateRemoteEntities(npcs, scene, renderTime, true, dt, t, undefined, k);
     // NPC 內心生活呈現：在 npcs 的 updateFade 之後覆寫狀態/關懷/思想 sprite 的顯示（ROADMAP 611）
     updateResidentStatus(t);
@@ -3227,7 +3473,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel };
 }
 
 // 啟動
