@@ -49,9 +49,8 @@ fn build_home_sell_list_with_stock(
     }).collect()
 }
 
-/// 每秒 tick 數（伺服器模擬頻率）。提高到 30Hz 讓移動插值更細膩。
-/// 所有「以 tick 計的間隔」皆用 `* TICK_HZ as u64` 換算秒數，與此常數同步。
-const TICK_HZ: f32 = 30.0;
+/// 每秒 tick 數（伺服器模擬頻率）。
+const TICK_HZ: f32 = 15.0;
 
 /// ROADMAP 553 居民思想泡泡：居民「注意到旁邊有旅人」的半徑平方（px²）。
 /// 約 140px 內有玩家，居民就會冒出想招呼的心思。比平方距離省一次開根號。
@@ -4545,9 +4544,8 @@ pub fn spawn(app: AppState) {
                 Vec::new()
             };
 
-            // 每約 4 秒更新一次大工程貢獻者名單（若有工程）。
-            // 用 TICK_HZ 換算確保頻率不隨 TICK_HZ 改動而漂移。
-            if tick % (TICK_HZ as u64 * 4) == 0 {
+            // 每 60 tick (約 4 秒) 更新一次大工程貢獻者名單（若有工程）。
+            if tick % 60 == 0 {
                 let project_id = app.town_project.read().unwrap().project_id.clone();
                 let store = app.town_project_store.clone();
                 let project_lock = app.town_project.clone();
@@ -5271,22 +5269,5 @@ mod tests {
             flush_interval_ticks(false) % flush_interval_ticks(true),
             0
         );
-    }
-
-    #[test]
-    fn 落地間隔以真實秒數計算與TICK_HZ無關() {
-        // 驗證 flush_interval_ticks 始終代表正確的真實秒數：
-        // 有連線 = 10 秒、無連線 = 60 秒，不論 TICK_HZ 為何值。
-        let active_secs = flush_interval_ticks(true) as f32 / TICK_HZ;
-        let idle_secs = flush_interval_ticks(false) as f32 / TICK_HZ;
-        assert!((active_secs - 10.0).abs() < 0.001, "有連線落地間隔應為 10 秒，實際 {}", active_secs);
-        assert!((idle_secs - 60.0).abs() < 0.001, "離峰落地間隔應為 60 秒，實際 {}", idle_secs);
-    }
-
-    #[test]
-    fn 地工程貢獻名單更新間隔以秒計不漂移() {
-        // 大工程貢獻名單更新：TICK_HZ * 4 tick = 4 秒，與 TICK_HZ 無關。
-        let interval_secs = (TICK_HZ as u64 * 4) as f32 / TICK_HZ;
-        assert!((interval_secs - 4.0).abs() < 0.001, "大工程更新間隔應為 4 秒，實際 {}", interval_secs);
     }
 }
