@@ -3073,13 +3073,24 @@ pub fn spawn(app: AppState) {
                             sem.acquire_owned(),
                         ).await.ok().and_then(|r| r.ok());
                         let decision = crate::npc_agent::npc_think(&sense, &persona_str).await;
-                        // 居民禱告第一塊：LLM 偶爾許下的心願（非空才有）就地 append 進 data/prayers.jsonl。
-                        // 此處在無鎖 async task 內、且 npc_think 已回傳——不碰 players/residents/nodes 任何遊戲鎖。
+                        // 向後相容：萬一模型仍主動在決策 JSON 給了心願就當 bonus 寫入（實測幾乎不會）。
                         if let Some(prayer) = &decision.prayer {
                             crate::npc_agent::append_prayer(&resident_name, prayer);
                         }
                         bus.push_decision(id.clone(), decision);
                         bus.end_thinking(&id);
+
+                        // 居民禱告（獨立生成）：根因是把「可選 prayer」塞決策 JSON 被模型漏掉 → 0 筆。
+                        // 改成獨立、簡短的專門呼叫，以機率節流（平均每位居民幾分鐘一次），不跟「選 action」搶欄位。
+                        // 仍在同一個無鎖 async task 內、不碰任何遊戲狀態鎖；LLM 失敗就這次不禱告（不寫罐頭假禱告）。
+                        let pray_roll: f64 = rand::random();
+                        if crate::npc_agent::should_pray(pray_roll) {
+                            if let Some(prayer) = crate::npc_agent::npc_pray(&sense, &persona_str).await {
+                                crate::npc_agent::append_prayer(&resident_name, &prayer);
+                            }
+                        } else if crate::npc_agent::agent_debug_enabled() {
+                            tracing::info!("[agent_debug] {resident_name} 這次未擲中禱告（roll={pray_roll:.3}）");
+                        }
                     });
                 }
                 for ev in resident_events {
