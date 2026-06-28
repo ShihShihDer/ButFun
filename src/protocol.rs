@@ -225,6 +225,12 @@ pub enum ClientMsg {
         right: bool,
         #[serde(default)]
         run: bool,
+        /// 輸入序號（netcode input-replay 基礎，切片1）。客戶端每次送輸入時遞增，
+        /// 伺服器把處理到的最新序號回傳給客戶端（PlayerView.last_input_seq），
+        /// 供未來切片做「未確認輸入重放」消除殘留抖動。
+        /// `#[serde(default)]` 確保舊客戶端不帶此欄時退回 0，向後相容、現有移動行為完全不變。
+        #[serde(default)]
+        seq: u32,
     },
     /// 聊天訊息。
     Chat { text: String },
@@ -2863,6 +2869,14 @@ pub struct PlayerView {
     /// 噴一團蒸汽爆發＋速度線。false 時略過序列化（衝刺只是短促爆發，絕大多數幀都不在衝）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub boosting: bool,
+
+    // ── netcode input-replay（切片1：後端 seq/ack 基礎）────────────────────────
+    /// 伺服器已確認處理的最新輸入序號。客戶端（未來切片）據此把「seq > last_input_seq 的
+    /// 未確認輸入」從權威座標重跑一遍，消除殘留抖動（FPS/LoL 等級的 input-replay reconciliation）。
+    /// 此切片只負責讓數值流通——尚無重放邏輯。0 時略過序列化（省頻寬）；
+    /// `#[serde(default)]` 確保舊前端忽略此欄位、向後相容。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub last_input_seq: u32,
 }
 
 /// 新手引導的快照視圖（ROADMAP 396）。前端據此逐格點亮「最初幾步」清單。
@@ -3601,6 +3615,7 @@ mod tests {
                 riding: false,
                 boosting: false,
                 guardian_blessing: None,
+                last_input_seq: 0,
             }],
             fields: vec![FieldView {
                 owner,
@@ -3930,6 +3945,7 @@ mod tests {
             riding: false,
             boosting: false,
             guardian_blessing: None,
+            last_input_seq: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -4056,6 +4072,93 @@ mod tests {
     fn comfort_resident_message_parses_correctly() {
         let msg: ClientMsg = serde_json::from_str(r#"{"type":"comfort_resident"}"#).unwrap();
         assert!(matches!(msg, ClientMsg::ComfortResident));
+    }
+
+    // ── netcode 切片1：後端 input seq/ack 基礎測試 ────────────────────────────
+
+    /// Input 帶 seq 欄位時能正確解析（往返序列化）。
+    #[test]
+    fn input_with_seq_parses_correctly() {
+        let json = r#"{"type":"input","up":true,"down":false,"left":false,"right":true,"run":false,"seq":42}"#;
+        let msg: ClientMsg = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMsg::Input { up, right, seq, .. } => {
+                assert!(up, "up 應為 true");
+                assert!(right, "right 應為 true");
+                assert_eq!(seq, 42, "seq 應為 42");
+            }
+            other => panic!("解析成非預期變體：{other:?}"),
+        }
+    }
+
+    /// 舊客戶端不送 seq 時，`#[serde(default)]` 確保 seq 退回 0，向後相容。
+    #[test]
+    fn input_without_seq_defaults_to_zero() {
+        let json = r#"{"type":"input","up":false,"down":false,"left":false,"right":false,"run":false}"#;
+        let msg: ClientMsg = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMsg::Input { seq, .. } => {
+                assert_eq!(seq, 0, "缺少 seq 時應退回 0（舊客戶端向後相容）");
+            }
+            other => panic!("解析成非預期變體：{other:?}"),
+        }
+    }
+
+    /// 只帶 type 的極簡 Input，所有欄位（含 seq）退回 default。
+    #[test]
+    fn input_all_fields_default() {
+        let json = r#"{"type":"input"}"#;
+        let msg: ClientMsg = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMsg::Input { up, down, left, right, run, seq } => {
+                assert!(!up && !down && !left && !right && !run, "方向鍵應全為 false");
+                assert_eq!(seq, 0, "seq 應退回 0");
+            }
+            other => panic!("解析成非預期變體：{other:?}"),
+        }
+    }
+
+    /// PlayerView.last_input_seq=0 時不出現在 JSON（省流量）；非零時出現。
+    #[test]
+    fn player_view_last_input_seq_zero_omitted_nonzero_present() {
+        let mut pv = make_base_player_view();
+
+        // 0 應省略
+        pv.last_input_seq = 0;
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
+        assert!(
+            v.get("last_input_seq").is_none(),
+            "last_input_seq=0 時不應出現在 JSON（省頻寬）"
+        );
+
+        // 非零應出現，且值正確
+        pv.last_input_seq = 99;
+        let v2: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
+        assert_eq!(
+            v2["last_input_seq"], 99,
+            "last_input_seq=99 時應正確序列化"
+        );
+    }
+
+    /// last_input_seq 反序列化時缺欄位能退回 0（舊伺服器送來的快照向後相容）。
+    #[test]
+    fn player_view_last_input_seq_deserialize_default() {
+        // 模擬不含 last_input_seq 的舊版快照 JSON 片段
+        let json = r#"{"last_input_seq":77}"#;
+        let v: serde_json::Value = serde_json::from_str(json).unwrap();
+        // 確認非零值被讀到
+        assert_eq!(v["last_input_seq"], 77);
+
+        // 模擬缺少欄位時 serde default
+        let json_missing = r#"{}"#;
+        let v2: serde_json::Value = serde_json::from_str(json_missing).unwrap();
+        let seq: u32 = v2.get("last_input_seq")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as u32)
+            .unwrap_or(0);
+        assert_eq!(seq, 0, "缺少 last_input_seq 時前端 JS 讀 || 0 應得 0");
     }
 
     #[test]
@@ -4242,6 +4345,7 @@ mod tests {
             riding: false,
             boosting: false,
             guardian_blessing: None,
+            last_input_seq: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -4323,6 +4427,7 @@ mod tests {
             riding: false,
             boosting: false,
             guardian_blessing: None,
+            last_input_seq: 0,
         }
     }
 

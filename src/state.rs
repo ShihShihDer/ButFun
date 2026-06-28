@@ -534,6 +534,13 @@ pub struct Player {
     /// 採集冷卻由「此時刻 + 牆上時鐘」確定性推導（見 `vehicle::mount_gather_ready`）。
     /// 只有駕駛巡採；記憶體前置、零持久化、零 migration——重啟回到可立即巡採。
     pub mount_gather_at: Option<std::time::Instant>,
+
+    // ── netcode input-replay（切片1：後端 seq/ack 基礎）────────────────────────
+    /// 伺服器收到的最新輸入序號（`ClientMsg::Input.seq`）。
+    /// ws.rs 在處理 Input 訊息時更新；snapshot 透過 `PlayerView.last_input_seq` 回傳給客戶端，
+    /// 供未來切片做「未確認輸入重放」消除殘留抖動。
+    /// 初始 0（舊客戶端不送 seq＝0，行為退回現況）；記憶體前置、不持久化、零 migration。
+    pub last_input_seq: u32,
 }
 
 impl Player {
@@ -1007,6 +1014,8 @@ impl Player {
             boosting: self.boosting,
             // ROADMAP 533：守護者元素祝福——由 game.rs 快照迴圈補填，view() 預設 None。
             guardian_blessing: None,
+            // netcode 切片1：回傳伺服器已確認處理的最新輸入序號，供客戶端未來做重放對帳。
+            last_input_seq: self.last_input_seq,
         }
     }
 
@@ -2067,6 +2076,7 @@ mod tests {
             boosting: false,
             bell_trigger: None,
             mount_gather_at: None,
+            last_input_seq: 0,
         }
     }
 
