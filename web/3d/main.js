@@ -3248,6 +3248,19 @@ function handleServerMsg(msg) {
       spawnDamageFloat(msg);
       break;
     }
+    case "loot_pickup": {
+      // 戰利品入袋飄字（ROADMAP 635／509）：擊殺怪物後伺服器私信 LootPickup{ex,ey,item,qty}——
+      // 在怪物原位飄出「🪵 木材 ×2」暖米色飄字＝你打贏了、戰利品入袋了。補上 632 戰鬥迴圈在 3D 缺的
+      // 「獎勵回饋」那一半。缺座標／壞欄位由 spawnRewardFloat／lootFloatSpec 安全降級（不 throw）。
+      spawnRewardFloat(lootFloatSpec(msg), msg && msg.ex, msg && msg.ey);
+      break;
+    }
+    case "kill_streak": {
+      // 連殺標語（ROADMAP 635／381）：8 秒內連殺達 2/4/8 隻時伺服器私信本人 KillStreak{player_id,streak,x,y}——
+      // 在自己頭頂飄出熱度標語（段位越高越橘紅）。旁觀者／非本人由 killStreakFloatSpec 回 null 自動忽略。
+      spawnRewardFloat(killStreakFloatSpec(msg, myId), msg && msg.x, msg && msg.y);
+      break;
+    }
     default:
       // 其他訊息類型（聊天、各種事件…）這頁不需要，忽略
       break;
@@ -3712,6 +3725,102 @@ function updateDamageFloats(nowMs) {
     }
     if (!reduceMotion) f.sprite.position.y = f.baseY + age * 8; // 緩緩上飄（reduceMotion 下定住）
     if (f.sprite.material) f.sprite.material.opacity = age < 0.6 ? 1 : (1 - (age - 0.6) / 0.4);
+  }
+}
+
+// ============================================================
+// 戰鬥的獎勵回饋（ROADMAP 635）：3D 世界第一次「看得見打贏了得到什麼」——632 把揮劍迎敵接進了 3D，
+// 玩家能揮砍、看傷害數字、看敵人倒下，但戰鬥迴圈的「獎勵」那一半至今在 3D 完全沒聲息：殺了怪掉的
+// 戰利品（後端擊殺即自動入袋＋私信 LootPickup）、短時間連殺的熱度（KillStreak 私信）——3D 都整個丟掉，
+// 玩家打贏了卻不知道得到了什麼、也感受不到連戰連捷的爽快。本切片把這兩個既有廣播接成醒目的飄字：
+//   · 戰利品入袋 → 在怪物原位飄出「🪵 木材 ×2」暖米色飄字（鏡像 2D ROADMAP 509）。
+//   · 連殺標語 → 在自己頭頂飄出「🔥×N 連殺！／殺意漸濃！／戰意爆發！」，段位越高越橘紅（鏡像 2D 381）。
+//   · 純前端、純讀既有私信廣播：零後端／協議／world-core 改動，舊客戶端／舊伺服器自然相容。
+//   · 伺服器才是權威：掉落表／連殺判定全由後端裁決，前端只把「已發生的獎勵」顯影成飄字、不嵌任何規則。
+// ============================================================
+
+// 戰利品飄字的文字與配色（純函式、確定性、壞值安全、可測）：emoji＋中文名＋×數量、暖米色。
+// 缺 item／壞 qty 安全降級（未知物品退 🎁／空名退「戰利品」／負數 clamp 0），永不拋。
+function lootFloatSpec(ev) {
+  const item = (ev && typeof ev.item === "string") ? ev.item : "";
+  const qty = (ev && Number.isFinite(ev.qty)) ? Math.max(0, Math.floor(ev.qty)) : 0;
+  const icon = ITEM_LOOK[item] || "🎁";
+  const name = ITEM_NAME[item] || item || "戰利品";
+  return { text: `${icon} ${name} ×${qty}`, css: "#dcd2b4" }; // 暖米色（鏡像 2D "220,210,180"）
+}
+
+// 連殺標語飄字的文字與配色（純函式、確定性、壞值安全、可測）：只給本人（旁觀者／非本人／streak<2 回 null
+// ＝不飄），段位 2/4/8 越高越橘紅、文案越熱（鏡像 2D ROADMAP 381 的配色與分級）。
+function killStreakFloatSpec(ev, selfId) {
+  if (!ev || !ev.player_id || !selfId || ev.player_id !== selfId) return null; // 只給本人（私信語意）
+  const s = (Number.isFinite(ev.streak)) ? Math.floor(ev.streak) : 0;
+  if (s < 2) return null;                                            // 未達連殺門檻：不飄
+  const css = s >= 8 ? "#ff7850" : s >= 4 ? "#ffbe3c" : "#dcff78";   // 8+橘紅／4+琥珀／2+黃綠
+  const text = s >= 8 ? `🔥×${s} 戰意爆發！` : s >= 4 ? `🔥×${s} 殺意漸濃！` : `🔥×${s} 連殺！`;
+  return { text, css };
+}
+
+// 獎勵飄字的文字貼圖（比傷害數字長、用較寬畫布＋較小字級容得下「emoji 名 ×N」整行）。FIFO 快取＋上限＝有界。
+const rewardTexCache = new Map();
+const REWARD_TEX_MAX = 32;
+function rewardTexture(text, css) {
+  const key = css + "|" + text;
+  let tex = rewardTexCache.get(key);
+  if (tex) return tex;
+  const canvas = document.createElement("canvas");
+  canvas.width = 512; canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  ctx.font = "bold 52px system-ui, sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.lineWidth = 7; ctx.strokeStyle = "rgba(20,12,0,0.85)"; // 深描邊，亮底/暗底都讀得到
+  ctx.strokeText(text, 256, 64);
+  ctx.fillStyle = css;
+  ctx.fillText(text, 256, 64);
+  tex = new THREE.CanvasTexture(canvas);
+  tex.anisotropy = 4;
+  if (rewardTexCache.size >= REWARD_TEX_MAX) { // FIFO 汰換、釋放 GPU 資源
+    const k = rewardTexCache.keys().next().value;
+    const o = rewardTexCache.get(k);
+    if (o && o.dispose) o.dispose();
+    rewardTexCache.delete(k);
+  }
+  rewardTexCache.set(key, tex);
+  return tex;
+}
+
+const rewardFloats = [];            // 暫態獎勵飄字（戰利品／連殺）sprite 清單
+const REWARD_FLOAT_MS = 1100;       // 飄字存活時間（比傷害數字久一點，讓玩家讀得到整行字）
+const REWARD_FLOAT_MAX = 16;        // 同時飄字上限（混戰不致無界累積）
+// 在世界座標 (wx,wy) 噴一則獎勵飄字。spec 為 null（連殺旁觀者）或缺世界座標一律安全跳過、不拋
+//（守 render-loop-resilience）；超量丟最舊、釋放材質。
+function spawnRewardFloat(spec, wx, wy) {
+  if (!spec || !spec.text || !Number.isFinite(wx) || !Number.isFinite(wy)) return;
+  const tex = rewardTexture(spec.text, spec.css);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, opacity: 1 }));
+  const h = 7;
+  sprite.scale.set(h * 4, h, 1); // 較寬（容得下整行「emoji 名 ×N」）
+  sprite.position.set(sx(wx), 12, sz(wy));
+  scene.add(sprite);
+  const nowMs = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+  rewardFloats.push({ sprite, startMs: nowMs, baseY: 12 });
+  while (rewardFloats.length > REWARD_FLOAT_MAX) {
+    const old = rewardFloats.shift();
+    scene.remove(old.sprite);
+    if (old.sprite.material && old.sprite.material.dispose) old.sprite.material.dispose();
+  }
+}
+function updateRewardFloats(nowMs) {
+  for (let i = rewardFloats.length - 1; i >= 0; i--) {
+    const f = rewardFloats[i];
+    const age = (nowMs - f.startMs) / REWARD_FLOAT_MS;
+    if (age >= 1) {
+      scene.remove(f.sprite);
+      if (f.sprite.material && f.sprite.material.dispose) f.sprite.material.dispose();
+      rewardFloats.splice(i, 1);
+      continue;
+    }
+    if (!reduceMotion) f.sprite.position.y = f.baseY + age * 10; // 緩緩上飄（reduceMotion 下定住）
+    if (f.sprite.material) f.sprite.material.opacity = age < 0.7 ? 1 : (1 - (age - 0.7) / 0.3);
   }
 }
 
@@ -4497,6 +4606,7 @@ function safeRender() {
     updateComfortBtn();
     updateMeleeSwing(performance.now());
     updateDamageFloats(performance.now());
+    updateRewardFloats(performance.now()); // 戰利品入袋／連殺標語飄字上飄淡出（ROADMAP 635）
 
     // 自己：客戶端預測（零延遲）+ 平滑對帳權威，再疊上視覺跳的高度
     if (meGroup) {
@@ -4545,7 +4655,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, attackWireMsg, attackTargetAt, attackButtonState, damageFloatSpec, spawnMeleeSwing, comfortWireMsg, comfortTargetAt, comfortButtonState, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel, radarBlips, radarHeading };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, attackWireMsg, attackTargetAt, attackButtonState, damageFloatSpec, spawnMeleeSwing, comfortWireMsg, comfortTargetAt, comfortButtonState, lootFloatSpec, killStreakFloatSpec, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel, radarBlips, radarHeading };
 }
 
 // 啟動
