@@ -95,6 +95,9 @@ function makeCtx() {
     closePath: noop, fill: noop, stroke: noop, fillRect: noop, clearRect: noop,
     save: noop, restore: noop, clip: noop, translate: noop, rotate: noop, scale: noop,
     measureText: (s) => ({ width: s == null ? 0 : String(s).length * 12 }),
+    // 漸層（給 townShareGiftTexture 的暖光暈用）：回傳帶 addColorStop 的 gradient stub
+    createRadialGradient: () => ({ addColorStop: () => {} }),
+    createLinearGradient: () => ({ addColorStop: () => {} }),
   };
 }
 const elCache = new Map();
@@ -981,6 +984,30 @@ if (/敵對/.test(T.factionHudLabel([{ bond: "alliance" }]))) fail("factionHudLa
 if (/結盟/.test(T.factionHudLabel([{ bond: "rivalry" }]))) fail("factionHudLabel 無結盟時不應顯示結盟段");
 console.log("✅ 派系關係連線 factionLinkVisual／factionArcPoints／factionHudLabel·確定性·壞值安全全綠");
 
+// ── ①f 居民互助送禮純邏輯（ROADMAP 369）：townShareGiftSpec 沿弧抬升＋頭尾淡入淡出·
+//        townShareHudLabel 提示·確定性·壞值安全 ──
+if (typeof T.townShareGiftSpec !== "function" || typeof T.townShareHudLabel !== "function") {
+  fail("__bf3dTest 未暴露 townShareGiftSpec/townShareHudLabel");
+}
+// townShareGiftSpec：端點 lift＝0、中點 lift 最高；alpha 始終落在 [0,1]；端點淡出、中段全亮
+const tsStart = T.townShareGiftSpec(0), tsMid = T.townShareGiftSpec(0.5), tsEnd = T.townShareGiftSpec(1);
+if (tsStart.frac !== 0 || tsEnd.frac !== 1) fail("townShareGiftSpec frac 應夾鉗到 [0,1] 端點");
+if (!(tsMid.lift > tsStart.lift && tsMid.lift > tsEnd.lift)) fail("townShareGiftSpec 中點 lift 應高於兩端（沿弧隆起）");
+if (!(Math.abs(tsStart.lift) < 1e-6 && Math.abs(tsEnd.lift) < 1e-6)) fail("townShareGiftSpec 端點 lift 應≈0");
+if (!(tsStart.alpha < 0.01 && tsEnd.alpha < 0.01)) fail("townShareGiftSpec 端點 alpha 應≈0（淡入淡出）");
+if (!(tsMid.alpha > 0.99)) fail("townShareGiftSpec 中段 alpha 應全亮");
+for (const tt of [-1, 0, 0.3, 0.88, 1, 2, NaN, "x"]) {
+  const v = T.townShareGiftSpec(tt);
+  if (!(v.alpha >= 0 && v.alpha <= 1)) fail(`townShareGiftSpec(${tt}) alpha 應落在 [0,1]，得 ${v.alpha}`);
+  if (!(v.frac >= 0 && v.frac <= 1)) fail(`townShareGiftSpec(${tt}) frac 應落在 [0,1]，得 ${v.frac}`);
+}
+if (JSON.stringify(T.townShareGiftSpec(0.42)) !== JSON.stringify(T.townShareGiftSpec(0.42))) fail("townShareGiftSpec 非確定性");
+// townShareHudLabel：有完整 giver/receiver 才提示；缺欄位／null 回空字串
+if (T.townShareHudLabel(null) !== "") fail("townShareHudLabel null 應回空字串");
+if (T.townShareHudLabel({ giver: "n1" }) !== "") fail("townShareHudLabel 缺 receiver 應回空字串");
+if (!/🎁/.test(T.townShareHudLabel({ giver: "n1", receiver: "n2", t: 0.5 }))) fail("townShareHudLabel 進行中應回 🎁 提示");
+console.log("✅ 居民互助送禮 townShareGiftSpec／townShareHudLabel·確定性·壞值安全全綠");
+
 // ── ①g 寵物夥伴呈現純邏輯（ROADMAP 627）：petVisual 種類/配色/羈絆夾值·petStatusEmoji 優先序·
 //        petBondHearts 愛心條·petHudLabel 計數——確定性·壞值安全 ──
 if (typeof T.petVisual !== "function" || typeof T.petStatusEmoji !== "function" || typeof T.petBondHearts !== "function" || typeof T.petHudLabel !== "function") {
@@ -1175,6 +1202,9 @@ drive({ type: "snapshot", players: playersA, npcs: npcsA, wildlife: wildlifeA, e
   // 居民互助（ROADMAP 125）：餵一筆「正在求助的居民 id」集合，踩 latestHelpRequests 建構＋updateHelpBtn 的
   // helpTargetAt 判距迴圈路徑（這位居民也在 npcsA 裡），確保逐幀真正走過幫忙鈕邏輯不拋例外。
   active_help_requests: ["n5"],
+  // 居民互助送禮（ROADMAP 369）：餵一筆「n1 正分享給 n2」（兩位都在 npcsA 裡），踩 updateTownShare 的
+  // 兩端吸位置內插＋沿弧抬升＋淡入淡出＋sprite 懶建路徑，確保逐幀真正走過光禮飄送邏輯不拋例外。
+  town_share: { giver: "n1", receiver: "n2", t: 0.5 },
   // 夜採星晶礦脈（ROADMAP 629）：餵兩道晶脈，踩 makeStarCrystal + reconcile + 靜態 AOI 淡入淡出路徑。
   star_crystals: [{ x: 1500, y: 1500 }, { x: 1560, y: 1520 }],
   fields: fieldsA, campfires: campfiresA, watchtowers: watchtowersA, snowmen: snowmenA, world_groves: grovesA,
@@ -1294,6 +1324,8 @@ const playersB = [
 ];
 drive({ type: "snapshot", players: playersB, npcs: npcsB, wildlife: wildlifeB, enemies: enemiesB, nodes: [],
   town_factions: [], // 派系全數解除（ROADMAP 625）→ 踩 updateFactionLinks 的連線回收／dispose 全清路徑
+  // 居民互助：受禮者 n_gone 不在 npcsB 視野 → 踩 updateTownShare「任一方不在視野安靜收起 sprite」路徑（ROADMAP 369）
+  town_share: { giver: "me", receiver: "n_gone", t: 0.3 },
   star_crystals: [], // 星晶全數消失（天亮／採光）→ 踩 starCrystals reconcile 的移除淡出全清路徑（ROADMAP 629）
   // 不帶 world_event／horde_event（ROADMAP 631）→ 裂縫關閉、獸潮退去：踩 updateWorldEvents 把既有地標隱藏（.visible=false）路徑
   fields: fieldsB, campfires: campfiresB, watchtowers: watchtowersB, snowmen: snowmenB, world_groves: grovesB,

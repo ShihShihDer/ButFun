@@ -1246,6 +1246,88 @@ function updateFactionLinks(t) {
   }
 }
 
+// ── 居民互助送禮（ROADMAP 369／town_share）：後端每幀已送 `town_share`＝「此刻一位寬裕的居民
+//    正把心意勻給一位拮据的居民」{giver, receiver, t}（手勢進度 0→1）。2D 把它畫成一枚 🎁 暖光
+//    沿弧飄越兩人之間；3D 一直空白。本切片把這份「居民彼此互助」的湧現畫進 3D：一枚暖金光禮
+//    從送禮者頭頂浮起、循一道上隆的拋物弧飄向受禮者、頭尾淡入淡出——AI 社會的「善意流動」第一次
+//    在 3D 世界裡看得見。純前端讀既有快照、零後端改動、零持久化、零新協議欄位。──
+const TOWN_SHARE_ARC = 3.6;    // 光禮在兩人之間隆起的拋物抬升上限（場景單位；中段最高）
+const TOWN_SHARE_BASE_Y = 12;  // 光禮飄送基準高度（略高於頭頂 9.3、與派系連線同層級，一眼看見「心意在飄送」）
+
+// 光禮此刻的視覺規格（純函式、決定性、好測）。給手勢進度 t∈[0,1]：
+// frac＝夾鉗後的行程比例；lift＝沿弧隆起的抬升（端點 0、中點最高，sin 峰在 t=0.5）；
+// alpha＝頭尾各 12% 行程漸顯/漸隱、中途全亮（鏡像 2D drawTownShare）。
+// 壞 t（NaN／越界）一律夾鉗到 [0,1]，render 不爆。
+function townShareGiftSpec(t) {
+  const f = Number.isFinite(+t) ? Math.max(0, Math.min(1, +t)) : 0;
+  const lift = Math.sin(Math.PI * f) * TOWN_SHARE_ARC;
+  const alpha = Math.max(0, Math.min(1, f / 0.12, (1 - f) / 0.12));
+  return { frac: f, lift, alpha };
+}
+
+// 居民互助 HUD 一行：此刻有人正在互相分享心意則回提示，否則空字串（鏡像 factionHudLabel 風格、好測）。
+function townShareHudLabel(share) {
+  if (!share || !share.giver || !share.receiver) return "";
+  return "🎁 互助分享";
+}
+
+// 光禮貼圖（單張快取）：暖金柔光暈＋🎁 本體烘在同一張透明畫布上（療癒暖調，鏡像 2D 的 radial halo）。
+let townShareGiftTex = null;
+function townShareGiftTexture() {
+  if (townShareGiftTex) return townShareGiftTex;
+  const canvas = document.createElement("canvas");
+  canvas.width = 128; canvas.height = 128;
+  const c = canvas.getContext("2d");
+  // 暖金柔光暈
+  const grad = c.createRadialGradient(64, 64, 0, 64, 64, 60);
+  grad.addColorStop(0, "rgba(255,226,150,0.6)");
+  grad.addColorStop(1, "rgba(255,226,150,0)");
+  c.fillStyle = grad;
+  c.beginPath(); c.arc(64, 64, 60, 0, Math.PI * 2); c.fill();
+  // 光禮本體
+  c.font = "64px system-ui, sans-serif";
+  c.textAlign = "center"; c.textBaseline = "middle";
+  c.fillText("🎁", 64, 70);
+  townShareGiftTex = new THREE.CanvasTexture(canvas);
+  townShareGiftTex.anisotropy = 4;
+  return townShareGiftTex;
+}
+
+// 最新一筆快照的居民互助（ROADMAP 369）；null＝此刻無人正在分享。
+let latestTownShare = null;
+const townShareGroup = new THREE.Group();
+scene.add(townShareGroup);
+let townShareSprite = null; // 單一可複用的光禮 billboard（懶建）
+
+// 每幀更新光禮飄送（在 npcs 位置/fade 更新後、與 updateFactionLinks 同段呼叫）：
+// 吸送禮者→受禮者當下位置內插＋沿弧抬升，透明度＝行程淡入淡出 × 兩端 AOI 淡出較小者。
+// 無互助／任一方不在視野／壞值一律安靜收起 sprite，不殘留、不拋（守 render-loop 韌性）。
+function updateTownShare(t) {
+  if (!latestTownShare || !latestTownShare.giver || !latestTownShare.receiver) {
+    if (townShareSprite) townShareSprite.visible = false;
+    return;
+  }
+  const g = npcs.get(latestTownShare.giver), r = npcs.get(latestTownShare.receiver);
+  if (!g || !r) { if (townShareSprite) townShareSprite.visible = false; return; } // 兩位都在視野內才畫得出心意流動
+  const spec = townShareGiftSpec(latestTownShare.t);
+  const fadeA = g.userData.fade ?? 1, fadeB = r.userData.fade ?? 1;
+  const alpha = spec.alpha * Math.min(fadeA, fadeB);
+  if (!townShareSprite) {
+    townShareSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: townShareGiftTexture(), transparent: true, depthTest: false, opacity: 0 }));
+    townShareGroup.add(townShareSprite);
+  }
+  const f = spec.frac;
+  townShareSprite.position.set(
+    g.position.x + (r.position.x - g.position.x) * f,
+    TOWN_SHARE_BASE_Y + spec.lift,
+    g.position.z + (r.position.z - g.position.z) * f,
+  );
+  const pulse = 1 + Math.sin(t * 5) * 0.1; // 輕脈動（與派系連線同調）
+  townShareSprite.scale.set(6 * pulse, 6 * pulse, 1);
+  townShareSprite.material.opacity = alpha;
+  townShareSprite.visible = alpha > 0.04; // 頭尾幾近淡出時整枚收掉，不殘影
+}
+
 // 每幀更新所有玩家頭頂的表情泡泡（ROADMAP 621；在 players 的 updateRemoteEntities 之後呼叫：
 // 那裡 updateFade 已把每個子 sprite 的 opacity 設成 AOI 淡入淡出值，這裡再乘上表情自己的存活淡出
 // 覆寫上去，故 AOI 淡入淡出仍生效、又不被它壓掉表情的顯示）。過期或玩家已離開即收掉。
@@ -3037,6 +3119,8 @@ function handleServerMsg(msg) {
       if (msg.rainbow && typeof msg.rainbow === "object") latestRainbow = msg.rainbow;
       // 鎮民派系（ROADMAP 625）：留存最新一筆結盟／敵對配對，render 每幀據此在居民之間畫關係連線。
       if (Array.isArray(msg.town_factions)) latestTownFactions = msg.town_factions;
+      // 居民互助送禮（ROADMAP 369）：留存最新一筆「誰正分享給誰」，render 每幀據此在兩人之間飄一枚光禮（非物件＝無人正在分享）。
+      latestTownShare = (msg.town_share && typeof msg.town_share === "object") ? msg.town_share : null;
       // 重大世界事件（ROADMAP 631）：留存最新一筆宇宙裂縫／獸潮攻城（非物件＝無事件），
       // render 每幀據此在事件座標立起／隱藏醒目地標（光柱／警示光束）。
       latestRift = (msg.world_event && typeof msg.world_event === "object") ? msg.world_event : null;
@@ -3209,12 +3293,13 @@ function handleServerMsg(msg) {
       const builtLabel = structuresHudLabel(msg.campfires, msg.watchtowers, msg.snowmen); // 視野內人造地標（ROADMAP 616）
       const groveLabel = groveHudLabel(msg.world_groves); // 視野內世界樹群＋其中成樹數（ROADMAP 617）
       const factionLabel = factionHudLabel(latestTownFactions); // 此刻幾組結盟／敵對（ROADMAP 625）
+      const shareLabel = townShareHudLabel(latestTownShare); // 此刻有人正在互助分享（ROADMAP 369）
       const petLabel = petHudLabel(msg.players); // 視野內玩家身邊的寵物夥伴數（ROADMAP 627）
       const riftLabel = riftHudLabel(latestRift);    // 宇宙裂縫已開啟＋倒數（ROADMAP 631）
       const hordeLabel = hordeHudLabel(latestHorde); // 獸潮逼近／攻城＋地名＋倒數（ROADMAP 631）
       hudEl.innerHTML =
         `<b>${myName}</b> · 線上 ${players.size} 人${phaseLabel ? " · " + phaseLabel : ""}${weatherLabel ? " · " + weatherLabel : ""}${riftLabel ? " · " + riftLabel : ""}${hordeLabel ? " · " + hordeLabel : ""}\n` +
-        `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · ${enemyLabel || "敵人 " + enemies.size}${farmLabel ? " · " + farmLabel : ""}${builtLabel ? " · " + builtLabel : ""}${groveLabel ? " · " + groveLabel : ""}${factionLabel ? " · " + factionLabel : ""}${petLabel ? " · " + petLabel : ""}\n` +
+        `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · ${enemyLabel || "敵人 " + enemies.size}${farmLabel ? " · " + farmLabel : ""}${builtLabel ? " · " + builtLabel : ""}${groveLabel ? " · " + groveLabel : ""}${factionLabel ? " · " + factionLabel : ""}${shareLabel ? " · " + shareLabel : ""}${petLabel ? " · " + petLabel : ""}\n` +
         `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳 · ⚔️鈕迎敵 · 🌱鈕種樹 · 😊鈕比表情" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳 · R 攻擊 · T 種樹 · E 表情"}`;
 
       setStatus(
@@ -4756,6 +4841,8 @@ function safeRender() {
     updateNpcSpeech(performance.now());
     // 居民派系關係連線：在 npcs 位置/fade 更新後，於結盟/敵對的兩位居民之間畫弧（ROADMAP 625）
     updateFactionLinks(t);
+    // 居民互助送禮：在 npcs 位置/fade 更新後，於送禮者→受禮者之間飄一枚暖金光禮（ROADMAP 369）
+    updateTownShare(t);
     updateRemoteEntities(wildlife, scene, renderTime, true, dt, t, undefined, k);
     // 野生動物呈現：在 wildlife 的 updateFade 之後覆寫頭頂狀態 sprite 與幼獸體型（ROADMAP 615）
     updateWildlifeStatus(t);
@@ -4841,7 +4928,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, attackWireMsg, attackTargetAt, attackButtonState, damageFloatSpec, spawnMeleeSwing, comfortWireMsg, comfortTargetAt, comfortButtonState, helpWireMsg, helpTargetAt, helpButtonState, talkKindOf, talkTargetAt, talkWireMsg, talkButtonState, lootFloatSpec, killStreakFloatSpec, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel, radarBlips, radarHeading };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, townShareGiftSpec, townShareHudLabel, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, attackWireMsg, attackTargetAt, attackButtonState, damageFloatSpec, spawnMeleeSwing, comfortWireMsg, comfortTargetAt, comfortButtonState, helpWireMsg, helpTargetAt, helpButtonState, talkKindOf, talkTargetAt, talkWireMsg, talkButtonState, lootFloatSpec, killStreakFloatSpec, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel, radarBlips, radarHeading };
 }
 
 // 啟動
