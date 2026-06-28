@@ -552,6 +552,92 @@ function wildlifeHudLabel(list) {
 }
 
 // ============================================================
+// 夜間的威脅在 3D 裡現形（ROADMAP 626）：把快照裡早就有、2D 一直畫得有血有肉、3D 卻全擠成
+// 同一個無差別紅盒子的 `enemies`（種類 kind／等級 level／血量 hp/max_hp／兇名 notorious／
+// 夜歇 resting／潰逃 routing／破綻 weak）在 3D 呈現出來——機械／靈體／巨像三型身形各異、
+// 受傷的頭頂浮血條（殘血轉深紅）、兇名精英體型微大頂著 💢、破綻時刻閃 ✨、夜歇 💤／潰逃 💨。
+// 回應 AI 居民反覆許願的「夜間缺乏目標／看不出危險」，也讓 623 篝火「逼退的是什麼」終於看得見。
+// 純讀快照、零後端改動、零協議改動——資料本來就在 EnemyView 裡（2D game.js 早在用）。
+// ============================================================
+// 各敵種的身形原型＋配色（後端只送穩定 snake_case kind，身形/顏色由前端對照＝留 i18n／美術一致）。
+// 三大身形原型，對應「機械／靈體／巨像」三類威脅感：drone（稜角硬殼＋頂上轉子）／
+// wisp（懸浮八面體幽靈）／golem（龐然晶體巨像）。各 kind 配色刻意拉開色相，一眼分得出種類。
+const ENEMY_SPEC = {
+  scrap_drone:      { type: "drone", color: 0xb86b3a }, // 廢鐵無人機：銹橘
+  rune_guardian:    { type: "drone", color: 0xd9b34a }, // 符文守衛：沙金（沙漠機械）
+  steam_construct:  { type: "drone", color: 0xff5a3c }, // 蒸汽構裝：熔岩橙紅
+  ether_wisp:       { type: "wisp",  color: 0xb060ff }, // 乙太鬼火：乙太紫
+  flutter_sprite:   { type: "wisp",  color: 0xf4a6d6 }, // 飄舞精靈：花粉粉
+  jade_wraith:      { type: "wisp",  color: 0x4fd99a }, // 翠幽魅影：翠綠
+  void_phantom:     { type: "wisp",  color: 0x7a52a8 }, // 虛空幽靈：紫黑
+  aether_specter:   { type: "wisp",  color: 0xbfe6e6 }, // 霧醚幻靈：青白
+  crystal_golem:    { type: "golem", color: 0x6fd6e0 }, // 晶石傀儡：晶青
+  mushroom_stalker: { type: "golem", color: 0xc0573c }, // 蕈菇潛行者：菇紅褐
+  coral_crab:       { type: "golem", color: 0xff7f6a }, // 珊瑚蟹：珊瑚橙
+  origin_guardian:  { type: "golem", color: 0xffd24a }, // 源晶守護者：黃金
+  rift_guardian:    { type: "golem", color: 0xc060ff }, // 裂縫守護者：次元紫
+  ether_overlord:   { type: "golem", color: 0xcc3030 }, // 乙太霸主：黑紅（入侵頭目）
+};
+const ENEMY_DEFAULT_SPEC = { type: "drone", color: ENEMY_COLOR }; // 未知種類 → 紅機械盒（向後相容）
+
+// 把一筆 EnemyView 算成「這隻該怎麼呈現」。純函式、確定性、壞值安全（null／非物件 → 安全後備、
+// 永不 throw）。只讀權威欄位、不嵌任何戰鬥規則（危險度／行為是伺服器的事，前端純呈現）。
+function enemyVisual(item) {
+  const spec = (item && typeof item === "object" && ENEMY_SPEC[item.kind]) || ENEMY_DEFAULT_SPEC;
+  const hp = item && Number.isFinite(item.hp) ? Math.max(0, item.hp) : 0;
+  const maxHp = item && Number.isFinite(item.max_hp) && item.max_hp > 0 ? item.max_hp : 0;
+  const ratio = maxHp > 0 ? Math.max(0, Math.min(1, hp / maxHp)) : 1; // 缺血量資訊 → 視為滿（不畫血條）
+  const notorious = !!(item && item.notorious);
+  return {
+    type: spec.type,
+    color: spec.color,
+    // 兇名精英體型微大（鏡像 2D：notorious 體型放大、全服通告過）；其餘 1.0。
+    scale: notorious ? 1.32 : 1.0,
+    hpRatio: ratio,
+    damaged: maxHp > 0 && ratio < 1, // 受過傷才畫血條（滿血不畫，減雜訊）
+    level: item && Number.isFinite(item.level) ? Math.max(0, Math.floor(item.level)) : 0,
+    notorious,
+    resting: !!(item && item.resting),
+    routing: !!(item && item.routing),
+    weak: !!(item && item.weak),
+  };
+}
+
+// 敵人頭頂狀態 emoji（優先序：破綻 ✨＞潰逃 💨＞夜歇 💤＞兇名 💢＞無）。
+// 鏡像 2D 的破綻光環／潰逃 💨／夜歇 💤／兇名標記。壞值安全（回 null＝不顯示）。
+function enemyStatusEmoji(item) {
+  const v = enemyVisual(item);
+  if (v.weak) return "✨";      // 兇名精英露出破綻：現在砍傷害最高
+  if (v.routing) return "💨";   // 潰逃中（強制逃離玩家）
+  if (v.resting) return "💤";   // 夜間回巢靜止
+  if (v.notorious) return "💢"; // 兇名精英（無上述狀態時的持續標記）
+  return null;
+}
+
+// 血條填充規格（ROADMAP 626，鏡像 2D 敵人血條）：純函式、確定性、壞值安全。
+// 回填充比例 ratio∈[0,1] 與是否殘血 critical（≤30%＝快倒了、轉深紅）。缺血量資訊 → 視為滿、不殘血。
+function enemyHpFill(hp, maxHp) {
+  const h = Number(hp), m = Number(maxHp);
+  if (!Number.isFinite(h) || !Number.isFinite(m) || m <= 0) return { ratio: 1, critical: false };
+  const ratio = Math.max(0, Math.min(1, h / m));
+  return { ratio, critical: ratio <= 0.3 };
+}
+
+// 視野內敵人的 HUD 標籤：幾隻威脅、其中幾隻兇名精英。只數活著的（alive!==false）。
+// 純函式、壞值安全。面向玩家字串集中前端、glyph 留 i18n 空間（後端只送穩定欄位，文案前端對照）。
+function enemyHudLabel(list) {
+  if (!Array.isArray(list)) return "";
+  let n = 0, noto = 0;
+  for (const e of list) {
+    if (!e || e.alive === false) continue;
+    n++;
+    if (e.notorious) noto++;
+  }
+  if (n === 0) return "";
+  return `⚔️ 威脅 ${n}${noto > 0 ? " · 兇名 " + noto : ""}`;
+}
+
+// ============================================================
 // AI 居民的內心生活（ROADMAP 611）：把快照裡早就有、2D 看得到、3D 卻一直忽略的
 // activity／thought／needs_care／alarmed／celebrating 在 3D 頭頂呈現出來，
 // 讓住在這個世界裡的 AI 居民「看得出在做什麼、在想什麼、心情如何」。
@@ -1108,6 +1194,8 @@ function makeEntity(body, label) {
   if (body && body.userData && body.userData.isStickman) g.userData.stick = body;
   // 野生動物：記住身體 group，幼獸體型縮放要套在它身上（與 fade 的 g.scale 相乘）
   if (body && body.userData && body.userData.isCreature) g.userData.creature = body;
+  // 敵人：記住身體 group，兇名精英體型放大要套在它身上（與 fade 的 g.scale 相乘，ROADMAP 626）
+  if (body && body.userData && body.userData.isEnemy) g.userData.enemyBody = body;
   if (label) g.add(makeLabel(label));
   // tx/tz：最新一筆快照的目標場景座標（內插資料不足時的 lerp 退路）
   g.userData.tx = g.position.x;
@@ -1246,6 +1334,142 @@ function updateWildlifeStatus(t) {
       // 馴養／親近的愛心輕輕脈動（呼應 2D 漸滿的愛心）；其餘穩定顯示。皆尊重 reduceMotion。
       const pulsing = !reduceMotion && (v.tamed || v.familiarity > 0.5);
       const pulse = pulsing ? 0.72 + 0.28 * Math.abs(Math.sin(t * 3)) : 1;
+      status.material.opacity = fade * pulse;
+    } else {
+      status.visible = false;
+    }
+  }
+}
+
+// ---- 程序化敵人身形（ROADMAP 626）----
+// 三型低多邊形威脅體：drone（機械稜角＋頂上轉子）／wisp（懸浮八面體幽靈）／golem（龐然晶體巨像）。
+// 共用幾何（全模組只建一次，幾十隻也不重建頂點）；材質「每隻一份」（單色）——AOI 淡入淡出能各自
+// 獨立調 opacity，不牽連同種類的別隻。
+const EN_GEO = {
+  droneBody:     new THREE.BoxGeometry(4, 3.4, 4),
+  droneCore:     new THREE.OctahedronGeometry(1.3),
+  droneRotor:    new THREE.BoxGeometry(6, 0.4, 0.8),
+  droneLeg:      new THREE.CylinderGeometry(0.22, 0.22, 2.2, 4),
+  wispBody:      new THREE.OctahedronGeometry(2.6),
+  wispSpike:     new THREE.ConeGeometry(0.7, 2.6, 4),
+  golemCore:     new THREE.DodecahedronGeometry(3.0),
+  golemShoulder: new THREE.BoxGeometry(2.2, 2.2, 2.2),
+};
+
+// 建一隻指定種類的低多邊形敵人：回傳 group（userData.isEnemy／bodyType）。未知種類退回紅機械盒，
+// 安全且向後相容。材質每隻一份（fade 可獨立）。
+function makeEnemy(kind) {
+  const spec = ENEMY_SPEC[kind] || ENEMY_DEFAULT_SPEC;
+  const g = new THREE.Group();
+  const mat = new THREE.MeshLambertMaterial({ color: spec.color });
+  const add = (geo, x, y, z, rx, ry, rz) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    if (rx || ry || rz) m.rotation.set(rx || 0, ry || 0, rz || 0);
+    g.add(m);
+    return m;
+  };
+  if (spec.type === "wisp") {
+    add(EN_GEO.wispBody, 0, 4.4, 0);                 // 懸浮的八面體靈體
+    add(EN_GEO.wispSpike, 0, 6.6, 0);                // 頂上尖刺
+    add(EN_GEO.wispSpike, 0, 2.2, 0, Math.PI, 0, 0); // 底下倒刺（幽靈尾）
+  } else if (spec.type === "golem") {
+    add(EN_GEO.golemCore, 0, 4.2, 0);                   // 龐然晶體核心
+    add(EN_GEO.golemShoulder, -2.4, 3.0, 0, 0, 0, 0.3); // 左肩塊
+    add(EN_GEO.golemShoulder, 2.4, 3.0, 0, 0, 0, -0.3); // 右肩塊
+  } else {
+    // drone（含未知後備）：機械稜角硬殼＋前方紅核＋頂上轉子＋短腿
+    add(EN_GEO.droneBody, 0, 4.0, 0);
+    add(EN_GEO.droneCore, 0, 4.0, 2.0).scale.set(0.9, 0.9, 0.9); // 前方核（像個眼）
+    add(EN_GEO.droneRotor, 0, 6.0, 0);                           // 頂上轉子
+    for (const sx2 of [-1, 1]) add(EN_GEO.droneLeg, sx2 * 1.2, 1.3, 0); // 短腿
+  }
+  g.userData.isEnemy = true;
+  g.userData.bodyType = spec.type;
+  return g;
+}
+
+// 血條／狀態的視覺常數（ROADMAP 626）。
+const _enemyBarGeo = new THREE.BoxGeometry(1, 0.5, 0.18); // 血條（單位寬，用 scale.x 調長）
+const ENEMY_BAR_BG_COLOR = 0x20242a;  // 血條底槽（深灰）
+const ENEMY_BAR_HP_COLOR = 0xff6a5a;  // 血條（紅）
+const ENEMY_BAR_LOW_COLOR = 0x8a1f1f; // 殘血（深紅，≤30%＝快倒了）
+const ENEMY_BAR_W = 6;   // 血條全長（場景單位）
+const ENEMY_BAR_Y = 8.6; // 血條浮在敵人頭頂之上
+
+// 給一隻敵人 group 掛上頭頂血條（底槽＋填充）＋狀態 emoji sprite。初始隱形，由 updateEnemyStatus
+// 每幀依快照決定。填充預建兩份材質（常態紅／殘血深紅），每幀換 `fill.material` 參照切色——
+// 不在每幀 mutate 材質顏色（既省、又對測試替身的 MeshBasicMaterial 安全）。
+function attachEnemyStatus(g) {
+  const bg = new THREE.Mesh(_enemyBarGeo, new THREE.MeshBasicMaterial({ color: ENEMY_BAR_BG_COLOR, transparent: true, opacity: 0 }));
+  bg.position.set(0, ENEMY_BAR_Y, 0);
+  bg.scale.set(ENEMY_BAR_W, 1, 1);
+  bg.visible = false;
+  const hpMat = new THREE.MeshBasicMaterial({ color: ENEMY_BAR_HP_COLOR, transparent: true, opacity: 0 });
+  const lowMat = new THREE.MeshBasicMaterial({ color: ENEMY_BAR_LOW_COLOR, transparent: true, opacity: 0 });
+  const fill = new THREE.Mesh(_enemyBarGeo, hpMat);
+  fill.position.set(0, ENEMY_BAR_Y + 0.04, 0);
+  fill.visible = false;
+  g.add(bg);
+  g.add(fill);
+  g.userData.enHpBg = bg;
+  g.userData.enHpFill = fill;
+  g.userData.enHpMat = hpMat;
+  g.userData.enHpLowMat = lowMat;
+  const status = makeEmojiSprite(3.4);
+  status.position.set(0, ENEMY_BAR_Y + 2.2, 0); // 浮在血條之上
+  g.add(status);
+  g.userData.enStatus = status;
+}
+
+// 每幀更新所有敵人的呈現（在 updateRemoteEntities(enemies) 之後呼叫：updateFade 已把子 mesh opacity
+// 設成 AOI 淡入淡出值＝fade，這裡再依快照覆寫兇名體型／血條／狀態 emoji）。
+// 守 [[render-loop-resilience]]：壞值全程安全、永不 throw。
+function updateEnemyStatus(t) {
+  for (const [, g] of enemies) {
+    const item = g.userData.item;
+    const v = enemyVisual(item);
+    const fade = g.userData.fade ?? 1;
+    // 兇名精英體型微大：套在身體 group（enemyBody）上，與 g.scale（fade）相乘，平滑趨近不突跳。
+    const body = g.userData.enemyBody;
+    if (body) {
+      const cur = body.userData.shownScale ?? 1;
+      const ns = cur + (v.scale - cur) * 0.2;
+      body.userData.shownScale = ns;
+      body.scale.setScalar(ns);
+    }
+    // 血條：只在受過傷（damaged）時顯示；填充寬隨剩餘血量、殘血(≤30%)換深紅材質。
+    const bg = g.userData.enHpBg, fill = g.userData.enHpFill;
+    if (bg && fill) {
+      if (v.damaged) {
+        const fillSpec = enemyHpFill(item && item.hp, item && item.max_hp);
+        bg.visible = true;
+        bg.material.opacity = fade * 0.55;
+        const fw = ENEMY_BAR_W * fillSpec.ratio;
+        if (fw > 0.001) {
+          fill.visible = true;
+          fill.material = fillSpec.critical ? g.userData.enHpLowMat : g.userData.enHpMat;
+          fill.material.opacity = fade;
+          // 左對齊：box 中心預設在原點，向左挪半條寬、再加回填充的一半。
+          fill.position.x = -ENEMY_BAR_W / 2 + fw / 2;
+          fill.scale.x = fw;
+        } else {
+          fill.visible = false; // 血量歸 0（即將消失）：不畫填充
+        }
+      } else {
+        bg.visible = false;
+        fill.visible = false;
+      }
+    }
+    // 頭頂狀態 emoji（破綻 ✨／潰逃 💨／夜歇 💤／兇名 💢）。
+    const status = g.userData.enStatus;
+    if (!status) continue;
+    const emoji = enemyStatusEmoji(item);
+    if (setSpriteEmoji(status, emoji)) {
+      status.visible = true;
+      // 破綻 ✨「現在砍！」輕輕脈動提示時機；其餘穩定顯示。尊重 reduceMotion。
+      const pulsing = !reduceMotion && v.weak;
+      const pulse = pulsing ? 0.7 + 0.3 * Math.abs(Math.sin(t * 6)) : 1;
       status.material.opacity = fade * pulse;
     } else {
       status.visible = false;
@@ -2165,12 +2389,17 @@ function handleServerMsg(msg) {
         },
         recvT
       );
-      // 敵人：紅色盒子；被打倒（alive=false）就當作消失移除
+      // 敵人：機械／靈體／巨像三型低多邊形身形，頭頂掛血條＋狀態 emoji（ROADMAP 626）；
+      // 被打倒（alive=false）就當作消失移除。
       reconcile(
         Array.isArray(msg.enemies) ? msg.enemies.filter((e) => e.alive !== false) : [],
         enemies,
         (e) => e.eid || (e.x + "_" + e.y),
-        () => makeEntity(makeBox(ENEMY_COLOR, 4, 6, 4)),
+        (e) => {
+          const g = makeEntity(makeEnemy(e.kind));
+          attachEnemyStatus(g);
+          return g;
+        },
         recvT
       );
       // 採集節點（樹／石／乙太礦）：以座標當 key（節點無穩定 id）
@@ -2231,12 +2460,13 @@ function handleServerMsg(msg) {
       const weatherLabel = weatherHudLabel(latestWeather, latestRainbow);
       const farmLabel = farmHudLabel(msg.fields); // 視野內農地數＋待收成作物株數（ROADMAP 614）
       const wildLabel = wildlifeHudLabel(msg.wildlife); // 野生動物數＋其中已馴養數（ROADMAP 615）
+      const enemyLabel = enemyHudLabel(msg.enemies); // 視野內活著的敵人數＋其中兇名精英數（ROADMAP 626）
       const builtLabel = structuresHudLabel(msg.campfires, msg.watchtowers, msg.snowmen); // 視野內人造地標（ROADMAP 616）
       const groveLabel = groveHudLabel(msg.world_groves); // 視野內世界樹群＋其中成樹數（ROADMAP 617）
       const factionLabel = factionHudLabel(latestTownFactions); // 此刻幾組結盟／敵對（ROADMAP 625）
       hudEl.innerHTML =
         `<b>${myName}</b> · 線上 ${players.size} 人${phaseLabel ? " · " + phaseLabel : ""}${weatherLabel ? " · " + weatherLabel : ""}\n` +
-        `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · 敵人 ${enemies.size}${farmLabel ? " · " + farmLabel : ""}${builtLabel ? " · " + builtLabel : ""}${groveLabel ? " · " + groveLabel : ""}${factionLabel ? " · " + factionLabel : ""}\n` +
+        `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · ${enemyLabel || "敵人 " + enemies.size}${farmLabel ? " · " + farmLabel : ""}${builtLabel ? " · " + builtLabel : ""}${groveLabel ? " · " + groveLabel : ""}${factionLabel ? " · " + factionLabel : ""}\n` +
         `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳 · 🌱鈕種樹 · 😊鈕比表情" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳 · T 種樹 · E 表情"}`;
 
       setStatus(
@@ -2937,6 +3167,8 @@ function safeRender() {
     // 野生動物呈現：在 wildlife 的 updateFade 之後覆寫頭頂狀態 sprite 與幼獸體型（ROADMAP 615）
     updateWildlifeStatus(t);
     updateRemoteEntities(enemies, scene, renderTime, true, dt, t, undefined, k);
+    // 敵人呈現：在 enemies 的 updateFade 之後覆寫頭頂血條／狀態 emoji 與兇名體型（ROADMAP 626）
+    updateEnemyStatus(t);
     // 節點靜態：不轉身/起伏；位置吸最新目標（內插對靜態無差），仍走 AOI 淡入淡出
     updateRemoteEntities(nodes, scene, renderTime, false, dt, t, undefined, 1);
     // 農地：作物隨風輕搖、成熟金果發光脈動、AOI 淡入淡出（ROADMAP 614）
@@ -2995,7 +3227,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE };
 }
 
 // 啟動
