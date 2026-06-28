@@ -539,6 +539,49 @@ const gbRock = T.gatherButtonState({ kind: "node", nodeKind: "rock" });
 if (!gbRock || gbRock.locked !== false || !/採石|⛏️/.test(gbRock.label)) fail("礦脈鈕態應點明採石");
 console.log("✅ 在 3D 採集 wire 固定（gather／gather_star_crystal）／目標判定·星晶優先·伸手範圍·壞值安全／鈕態種類字樣全綠");
 
+// ── 在 3D 揮劍迎敵（ROADMAP 632）：attack wire 固定／攻擊目標判定·伸手範圍·壞值安全／鈕態／傷害飄字配色 ──
+if (typeof T.attackWireMsg !== "function" || typeof T.attackTargetAt !== "function"
+    || typeof T.attackButtonState !== "function" || typeof T.damageFloatSpec !== "function") {
+  fail("__bf3dTest 未暴露 attackWireMsg/attackTargetAt/attackButtonState/damageFloatSpec");
+}
+const aMsg = T.attackWireMsg();
+if (!aMsg || aMsg.type !== "attack") fail("attackWireMsg 應送 {type:'attack'}，得 " + JSON.stringify(aMsg));
+const aSelf = { x: 1000, y: 1000 };
+// 範圍內（ATTACK_REACH=64）的敵人應被選；圈外不選；死掉的（alive:false）跳過；兇名旗標帶回。
+const atIn = T.attackTargetAt(aSelf, [{ kind: "scrap_drone", x: 1040, y: 1000, hp: 30, max_hp: 60 }]);
+if (!atIn || atIn.kind !== "scrap_drone") fail("ATTACK_REACH 內的敵人應被選為目標");
+if (T.attackTargetAt(aSelf, [{ kind: "scrap_drone", x: 1200, y: 1000 }]) !== null) fail("圈外敵人不應成為目標");
+const atNearest = T.attackTargetAt(aSelf, [{ kind: "far", x: 1050, y: 1000 }, { kind: "near", x: 1010, y: 1000 }]);
+if (!atNearest || atNearest.kind !== "near") fail("應選 ATTACK_REACH 內最近的敵人");
+if (T.attackTargetAt(aSelf, [{ kind: "dead", x: 1010, y: 1000, alive: false }]) !== null) fail("死掉的敵人（alive:false）不應成為目標");
+const atNoto = T.attackTargetAt(aSelf, [{ kind: "alpha", x: 1010, y: 1000, notorious: true }]);
+if (!atNoto || atNoto.notorious !== true) fail("兇名精英旗標應帶回目標");
+if (T.attackTargetAt(null, [{ kind: "x", x: 1000, y: 1000 }]) !== null) fail("無自己座標應回 null");
+if (T.attackTargetAt({ x: NaN, y: 1 }, [{ kind: "x", x: 1, y: 1 }]) !== null) fail("壞自己座標應回 null");
+if (T.attackTargetAt(aSelf, [{ kind: "x", x: NaN, y: 1000 }]) !== null) fail("壞敵人座標應安全跳過回 null");
+if (T.attackTargetAt(aSelf, null) !== null) fail("空敵人快照應安全回 null");
+// 鈕態：無目標 → 鎖定提示；一般敵 → ⚔️ 不鎖定；兇名 → 💢 迎戰兇敵不鎖定。
+const abNull = T.attackButtonState(null);
+if (!abNull || abNull.locked !== true || !abNull.hint) fail("無目標時攻擊鈕應鎖定且有提示");
+const abFoe = T.attackButtonState({ kind: "scrap_drone" });
+if (!abFoe || abFoe.locked !== false || !/攻擊|⚔️/.test(abFoe.label)) fail("一般敵鈕態應點明攻擊且不鎖定");
+const abNoto = T.attackButtonState({ kind: "alpha", notorious: true });
+if (!abNoto || abNoto.locked !== false || !/迎戰|💢/.test(abNoto.label)) fail("兇名敵鈕態應點明迎戰兇敵");
+// 傷害飄字配色／文字：普通暖黃、暴擊更大橘紅帶 !、破綻直擊金帶 ❉、擊殺加 💀、壞值安全降級 0。
+const dfNormal = T.damageFloatSpec({ dmg: 12 });
+if (dfNormal.text !== "12" || dfNormal.scale !== 1) fail("普通命中飄字應為原數字、scale 1");
+const dfCrit = T.damageFloatSpec({ dmg: 30, is_crit: true });
+if (!/30!/.test(dfCrit.text) || dfCrit.scale <= 1) fail("暴擊飄字應帶 ! 且放大");
+const dfWeak = T.damageFloatSpec({ dmg: 18, is_weak: true });
+if (!/❉/.test(dfWeak.text) || dfWeak.css !== "#ffd34d") fail("破綻直擊飄字應帶 ❉ 且金色");
+const dfKill = T.damageFloatSpec({ dmg: 9, is_kill: true });
+if (!/💀/.test(dfKill.text)) fail("擊殺飄字應帶 💀");
+const dfBad = T.damageFloatSpec({});
+if (dfBad.text !== "0" || dfBad.scale !== 1) fail("缺 dmg 應安全降級為 0 普通飄字");
+const dfBadder = T.damageFloatSpec(null);
+if (dfBadder.text !== "0") fail("null 事件應安全降級為 0");
+console.log("✅ 在 3D 揮劍迎敵 wire 固定（attack）／攻擊目標判定·最近·範圍·死敵剔除·壞值安全／鈕態·兇名字樣／傷害飄字配色·壞值安全全綠");
+
 // ── 城鎮交易純邏輯（ROADMAP 630）：商人挑選／走近判距／鈕態／面板簽章／物品標籤·壞值安全 ──
 if (typeof T.shopMerchantsFrom !== "function" || typeof T.shopTargetAt !== "function"
     || typeof T.shopButtonState !== "function" || typeof T.shopPanelSig !== "function" || typeof T.itemLabel !== "function") {
@@ -1080,6 +1123,20 @@ drive({ type: "snapshot", players: playersB, npcs: npcsB, wildlife: wildlifeB, e
   weather: { weather_type: "water_sea_mist", intensity: 0.7, wind: { dir_x: -0.5, dir_y: 0.3, strength: 0.4 }, fish_phase: 1 },
   rainbow: { active: false, remaining_secs: 0 } });
 frames(12);
+
+// 揮劍迎敵戰鬥特效（ROADMAP 632）：命中傷害飄字（普通／暴擊／破綻直擊／滿蓄／擊殺／缺座標壞值）
+// 透過 AttackHit 廣播驅動 spawnDamageFloat，揮砍弧光透過 spawnMeleeSwing——跑多幀踩飄字上飄淡出自清、
+// 弧光掃過淡出、貼圖快取與飄字數上限路徑，全程不該拋例外。
+drive({ type: "attack_hit", player_id: "u1", ex: 3060, ey: 3050, dmg: 12, is_kill: false, is_crit: false });
+drive({ type: "attack_hit", player_id: "u1", ex: 2940, ey: 3080, dmg: 45, is_kill: false, is_crit: true, charge_tier: 2 });
+drive({ type: "attack_hit", player_id: "u1", ex: 3030, ey: 2980, dmg: 30, is_kill: false, is_crit: false, is_weak: true });
+drive({ type: "attack_hit", player_id: "u1", ex: 3030, ey: 2980, dmg: 90, is_kill: true, is_crit: false });
+drive({ type: "attack_hit", player_id: "u1", dmg: 7 }); // 缺命中座標 → 應安全跳過、不拋
+if (typeof sandbox.__bf3dTest.spawnMeleeSwing === "function") {
+  sandbox.__bf3dTest.spawnMeleeSwing({ x: 3000, y: 3000 }, { x: 3060, y: 3050 }); // 揮出弧光
+}
+frames(6);    // 弧光掃過＋飄字上飄階段
+frames(60);   // 跑過飄字存活窗 → 踩飄字淡出與過期移除路徑（reduceMotion 與一般都不該 throw）
 
 // 照料回饋 chat 路徑（ROADMAP 619）：系統單播與一般聊天都不該讓 onmessage 拋例外（窗外/非系統靜默忽略）。
 drive({ type: "chat", from: "系統", text: "💧 一鍵澆水：替 3 株缺水作物補滿了水！" });
