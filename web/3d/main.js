@@ -5205,7 +5205,10 @@ function updateDebugHud(dt) {
   const el = ensureDebugEl();
   if (!el) return;
   if (el.style.display === "none") el.style.display = "";
-  const txt = `FPS ${_fpsEMA.toFixed(0)}\n預測誤差 ${selfPredErrPx.toFixed(0)}px\n線上 ${players.size} 人`;
+  // window.__BUILD__ 由後端 serve_3d_index 注入（main.js 內容雜湊前 12 hex）；
+  // 顯示在 debug HUD 讓維護者一眼確認瀏覽器拿到的是最新版前端。
+  const build = (typeof window !== "undefined" && window.__BUILD__) ? `\nbuild ${window.__BUILD__}` : "";
+  const txt = `FPS ${_fpsEMA.toFixed(0)}\n預測誤差 ${selfPredErrPx.toFixed(0)}px\n線上 ${players.size} 人${build}`;
   if (txt !== _dbgLastText) { el.textContent = txt; _dbgLastText = txt; }
 }
 
