@@ -63,6 +63,16 @@
       pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none;
     }
     #jump:active { background: rgba(255,213,74,0.4); }
+    /* 跑步切換鈕：tap 切換走/跑（手機難用類比推深控速，故改切換式）。on 時高亮。
+       擺在跳鈕左側、稍小，藍青調與黃色跳鈕一眼區分（「跑」非「跳」）。 */
+    #run {
+      position: absolute; right: 128px; bottom: 48px; width: 72px; height: 72px;
+      border-radius: 50%; background: rgba(120,200,255,0.18);
+      border: 2px solid rgba(120,200,255,0.5); color: #bfe6ff;
+      font: bold 16px/72px system-ui, sans-serif; text-align: center;
+      pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none;
+    }
+    #run.on { background: rgba(120,200,255,0.5); color: #fff; border-color: rgba(180,230,255,0.9); }
 
     /* ---- 照料世界·動作鈕（ROADMAP 618）：登入後可在 3D 裡親手種樹 ---- */
     #acts {
@@ -226,12 +236,13 @@
   <!-- 探索羅盤雷達 HUD（ROADMAP 633）：右上角圓形雷達；main.js 每幀讀快照座標標出目標方位 -->
   <canvas id="radar" width="240" height="240" aria-hidden="true"></canvas>
   <div id="status">連線中…</div>
-  <div id="hint">WASD／搖桿 移動 · 拖曳轉鏡頭 · 空白鍵／跳鈕 跳 · G 採集 · B 交易 · T 種樹 · F 澆水 · H 收成 · E 表情</div>
+  <div id="hint">WASD／搖桿 移動 · Shift／跑鈕 跑 · 拖曳轉鏡頭 · 空白鍵／跳鈕 跳 · G 採集 · B 交易 · T 種樹 · F 澆水 · H 收成 · E 表情</div>
   <div id="err"></div>
 
   <!-- 觸控控制層（main.js 偵測到觸控裝置才顯示） -->
   <div id="touch">
     <div id="joy"><div id="joyNub"></div></div>
+    <div id="run">跑</div>
     <div id="jump">跳</div>
   </div>
 
@@ -260,6 +271,6 @@
   <div id="toast"></div>
 
   <!-- 相對於 /3d/ 載入；?v 供 cache-bust -->
-  <script type="module" src="main.js?v=10"></script>
+  <script type="module" src="main.js?v=11"></script>
 </body>
 </html>
