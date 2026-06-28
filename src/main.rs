@@ -381,6 +381,13 @@ async fn main() {
         // 必須放在 fallback_service(ServeDir) 之前才會優先命中。
         .route("/", get(serve_index))
         .route("/index.html", get(serve_index))
+        // 3D 試驗場頁（/3d/、/play3d/）的 index 同樣回 no-cache，根治玩家被快取卡住舊
+        // 前端的問題（過去走 ServeDir，index 無 no-cache → 卡住舊 main.js?v=）。
+        // main.js 仍交給下方 ServeDir，維持 ?v= 版本快取。必須放在 fallback 之前才優先命中。
+        .route("/3d/", get(serve_3d_index))
+        .route("/3d/index.html", get(serve_3d_index))
+        .route("/play3d/", get(serve_play3d_index))
+        .route("/play3d/index.html", get(serve_play3d_index))
         // 其餘路徑（game.js、assets、wasm…）交給靜態前端（web/）。game.js 維持可
         // 快取——它的 URL 帶內容雜湊，內容一變 URL 就變，CF/瀏覽器自然抓新版。
         .fallback_service(ServeDir::new("web"))
@@ -519,6 +526,56 @@ async fn serve_index() -> impl IntoResponse {
             (header::CACHE_CONTROL, "no-cache, must-revalidate"),
         ],
         INDEX_HTML.as_str(),
+    )
+}
+
+/// 3D 試驗場頁面（`/3d/`）的 index.html，啟動時讀一次並快取。
+/// 與主遊戲不同：3D 頁的 main.js 帶手動 `?v=` 版本，**不**做雜湊注入；
+/// 這裡只負責「index 永遠新鮮（no-cache）」→ 一定引用到最新 `?v=` → 命中對的 main.js。
+/// 讀檔失敗回空白（不 panic、不擋服務）。
+static INDEX_3D_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    match std::fs::read_to_string("web/3d/index.html") {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("讀 web/3d/index.html 失敗，serve_3d_index 將回空白：{e}");
+            String::new()
+        }
+    }
+});
+
+/// 行動端 3D（`/play3d/`）的 index.html，同上：啟動時讀一次、永遠 no-cache。
+static INDEX_PLAY3D_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    match std::fs::read_to_string("web/play3d/index.html") {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("讀 web/play3d/index.html 失敗，serve_play3d_index 將回空白：{e}");
+            String::new()
+        }
+    }
+});
+
+/// `/3d/`、`/3d/index.html` 的 handler：回 no-cache 的 index。
+/// 過去這兩頁走 `ServeDir` 靜態服務、index 無 no-cache → 瀏覽器快取住舊 index、
+/// 繼續抓被快取的舊 `main.js?v=N`，前端改版送不到玩家。改由此 handler 服務 index，
+/// 比照 `serve_index` 帶 no-cache；main.js 仍交給 ServeDir 並維持 `?v=` 版本快取。
+async fn serve_3d_index() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache, must-revalidate"),
+        ],
+        INDEX_3D_HTML.as_str(),
+    )
+}
+
+/// `/play3d/`、`/play3d/index.html` 的 handler：同 `serve_3d_index`，回 no-cache 的 index。
+async fn serve_play3d_index() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache, must-revalidate"),
+        ],
+        INDEX_PLAY3D_HTML.as_str(),
     )
 }
 
