@@ -500,6 +500,33 @@ const rBadDur = T.emoteBubbleVisual(100, 0); // displaySecs 非正 → 退回預
 if (!rBadDur.visible) fail("emoteBubbleVisual displaySecs 非正應退回預設、仍可見");
 console.log("✅ 表情輪 emoteWireMsg 白名單意圖／emoteBubbleVisual 彈跳上浮淡出·確定性·壞值安全／EMOTE_CHOICES 對齊後端全綠");
 
+// ── ①d 居民對話泡泡純邏輯：npcSpeechVisual 淡入停留淡出·確定性·壞值安全／speechTexture 壞值不拋（ROADMAP 622）──
+if (typeof T.npcSpeechVisual !== "function" || typeof T.speechTexture !== "function") {
+  fail("__bf3dTest 未暴露 npcSpeechVisual/speechTexture");
+}
+const sv0 = T.npcSpeechVisual(0, 8);        // 剛開始（淡入起點）
+const svIn = T.npcSpeechVisual(600, 8);     // 淡入區間中（<12%＝960ms）
+const svMid = T.npcSpeechVisual(4000, 8);   // 中段全亮
+const svLate = T.npcSpeechVisual(7600, 8);  // 末段（>72% 淡出區）
+const svDone = T.npcSpeechVisual(8000, 8);  // 恰好到期
+const svOver = T.npcSpeechVisual(99999, 8); // 早已過期
+if (!sv0.visible || !svIn.visible || !svMid.visible || !svLate.visible) fail("npcSpeechVisual 存活期內應 visible");
+if (svDone.visible || svOver.visible) fail("npcSpeechVisual 到期/過期應不可見");
+if (!(svIn.opacity > sv0.opacity)) fail("npcSpeechVisual 起手應淡入（opacity 遞增）");
+if (Math.abs(svMid.opacity - 1) > 1e-9) fail(`npcSpeechVisual 中段應全亮，得 ${svMid.opacity}`);
+if (!(svLate.opacity < 1) || !(svLate.opacity >= 0)) fail(`npcSpeechVisual 末段應淡出於 [0,1)，得 ${svLate.opacity}`);
+// 確定性
+if (JSON.stringify(T.npcSpeechVisual(2345, 8)) !== JSON.stringify(T.npcSpeechVisual(2345, 8))) fail("npcSpeechVisual 非確定性");
+// 壞值安全（NaN elapsed／非法 displaySecs 皆不可見、不 throw）
+for (const bad of [NaN, -10, undefined, Infinity]) {
+  if (T.npcSpeechVisual(bad, 8).visible) fail(`npcSpeechVisual 壞 elapsed=${bad} 不應可見`);
+}
+if (!T.npcSpeechVisual(100, 0).visible) fail("npcSpeechVisual displaySecs 非正應退回預設、仍可見");
+// speechTexture 對壞值不拋（null／超長對白都該安全產出貼圖）
+try { T.speechTexture(null); T.speechTexture("這是一句非常非常長的對白用來測試截斷處理不會把泡泡撐爆也不會拋出例外喔喔喔"); }
+catch (e) { fail("speechTexture 壞值拋例外：" + e); }
+console.log("✅ 對話泡泡 npcSpeechVisual 淡入停留淡出·確定性·壞值安全／speechTexture 壞值不拋全綠");
+
 // ── ② 逐幀跑：先 welcome，再餵含各種內心生活的 NPC 快照，跑多幀抓例外 ──
 function drive(msg) { lastWS.onmessage({ data: JSON.stringify(msg) }); }
 function frames(n) { for (let i = 0; i < n; i++) { perfNow += 33; if (rafCb) { const cb = rafCb; rafCb = null; cb(); } } }
@@ -577,6 +604,16 @@ drive({ type: "player_emote", from_id: "ghost", from_name: "幽靈", glyph: "❤
 frames(6);   // 彈跳＋上浮階段
 frames(130); // 跑過 4 秒顯示窗 → 踩泡泡淡出與過期自清路徑（reduceMotion 與一般路徑都不該 throw）
 
+// 居民對話泡泡（ROADMAP 622）：在視野內居民（n1 鐵匠）、有內心話的居民（n2 里長，驗對話蓋過思想）、
+// 不在視野的說話者（ghostNpc）、缺欄位（n5 無 text）各送一筆——踩 npc_speech 事件處理＋attachResidentStatus
+// 的對話 sprite＋updateNpcSpeech 的淡入／停留／淡出／過期自清＋思想讓位路徑。
+drive({ type: "npc_speech", npc_id: "n1", npc_name: "鐵匠", text: "今天的鐵礦不錯！", display_secs: 8, wx: 3000, wy: 3000 });
+drive({ type: "npc_speech", npc_id: "n2", npc_name: "里長", text: "大家辛苦了", display_secs: 8, wx: 3100, wy: 3000 }); // 此居民有 thought → 對話期間思想應讓位
+drive({ type: "npc_speech", npc_id: "ghostNpc", npc_name: "幽靈居民", text: "在視野外說話", display_secs: 8, wx: 9999, wy: 9999 }); // 不在 npcs → 安全跳過
+drive({ type: "npc_speech", npc_id: "n5", npc_name: "農婦", display_secs: 8, wx: 3400, wy: 3000 }); // 缺 text → 安全降級空字串
+frames(4);   // 淡入＋停留階段
+frames(280); // 跑過 8 秒顯示窗 → 踩對話泡泡淡出與過期自清路徑
+
 // 狀態轉移：活動結束（→null）、思想消失、危機解除轉歡慶、需求被撫平——踩 setSpriteEmoji 換貼圖/熄滅路徑
 const npcsB = [
   { id: "n1", name: "鐵匠", x: 3000, y: 3000 }, // 活動結束
@@ -647,5 +684,5 @@ if (caught.length) {
   for (const c of caught.slice(0, 10)) console.error("   · " + c);
   process.exit(1);
 }
-console.log("✅ NPC 內心生活（活動／思想／關懷／危機／歡慶＋狀態轉移＋AOI 淡出）＋野生動物（五種身形／幼獸縮放／馴養脈動／轉移）＋人造地標（篝火圍爐／將熄／塔施工→落成入夜亮燈／雪人讚賞＋AOI 淡出）＋世界樹群（嫩芽→幼苗→幼樹松→成樹遮蔭、長大重塑＋AOI 淡出）＋玩家表情泡泡（揮手／歡呼點亮→彈跳上浮→4 秒淡出自清＋未知 from_id 安全跳過）跑多幀零例外");
+console.log("✅ NPC 內心生活（活動／思想／關懷／危機／歡慶＋狀態轉移＋AOI 淡出）＋野生動物（五種身形／幼獸縮放／馴養脈動／轉移）＋人造地標（篝火圍爐／將熄／塔施工→落成入夜亮燈／雪人讚賞＋AOI 淡出）＋世界樹群（嫩芽→幼苗→幼樹松→成樹遮蔭、長大重塑＋AOI 淡出）＋玩家表情泡泡（揮手／歡呼點亮→彈跳上浮→4 秒淡出自清＋未知 from_id 安全跳過）＋居民對話泡泡（說出口的話淡入停留→8 秒淡出自清＋對話蓋過思想＋缺欄位降級＋視野外說話者安全跳過）跑多幀零例外");
 console.log("✅ render-smoke-3d 全綠");
