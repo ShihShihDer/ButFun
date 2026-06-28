@@ -760,6 +760,13 @@ pub enum ClientMsg {
     /// 成功後：清除請求、玩家獲得 HELP_REWARD_ETHER 乙太、廣播居民感謝語。
     #[serde(rename = "help_resident")]
     HelpResident { resident_id: String },
+    /// 送一份心意（物品）給走到跟前的故鄉七大居民之一（ROADMAP 639）。
+    /// 不帶目標 id——伺服器一律用玩家自己的權威座標挑互動範圍內最近的居民（防隔空，與 `ComfortResident`
+    /// 同模式）。`item` 為要送出的物品（snake_case 由 serde 直接反序列化成 `ItemKind`；玩家須持有 ≥1，
+    /// 否則靜默作罷）。成功後：扣 1 件、加深你倆相熟度（與撫慰同一份 `lunch_regulars` 交情＝「居民記得
+    /// 你的照料」）、廣播居民就地道謝 `NpcSpeech`。零經濟產出（純把材料化作交情）。
+    #[serde(rename = "gift_resident")]
+    GiftResident { item: ItemKind },
     /// 公民投票（ROADMAP 156）：對當前活躍提案投下讚成（true）或反對（false）票。
     /// 每位玩家每次提案限投一票；無活躍投票或已投過則靜默忽略。
     #[serde(rename = "civic_vote")]

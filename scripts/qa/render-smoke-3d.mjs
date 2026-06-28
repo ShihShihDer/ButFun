@@ -10,6 +10,10 @@ let src = readFileSync(new URL("../../web/3d/main.js", import.meta.url), "utf8")
 // main.js 以 ESM `import * as THREE from "three"` 取得 THREE；vm 不解析 ESM，
 // 故把該行抽掉、改由 sandbox 注入全域 THREE（行為等價）。
 src = src.replace(/^import \* as THREE from "three";\s*$/m, "/* THREE 由 sandbox 注入 */");
+// main.js 用 `import.meta.url`（ESM-only，#795 起算 wasm 路徑）；vm 以非 module 載入會在「解析期」
+// 就拋 SyntaxError: Cannot use 'import.meta'，讓整支 3D smoke 閘門靜默失效。把它換成一個固定 stub
+// URL 文字——smoke 不實際載 wasm（下方 fetch 永不 resolve），等價且無害，藉此復活 3D 純邏輯回歸測試。
+src = src.replace(/import\.meta\.url/g, JSON.stringify("file:///web/3d/main.js"));
 
 // ── 假 THREE：所有用到的類別都給最小可用實作（位置/縮放/旋轉是真的可變物件，
 //    才能讓內插、轉身、淡入淡出等真的跑起來、踩到真實程式路徑）──────────────────
@@ -157,6 +161,11 @@ const windowStub = {
   matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }),
   setTimeout: () => 0, clearTimeout: () => {},
   WebSocket: FakeWS,
+  // 載入 wasm 的 async IIFE（#795）會 `new URL(...)` 再 `await fetch(...)`：給真 URL，
+  // fetch 回一個永不 resolve 的 promise——IIFE 卡在 await，同步 smoke 跑完前不會走到
+  // 失敗分支的 console.warn（否則會被 caught 當成繪製警告而誤判紅）。等價於「wasm 尚未載入」。
+  URL,
+  fetch: () => new Promise(() => {}),
 };
 
 const sandbox = { ...windowStub, document: documentStub, console: consoleProxy };
@@ -696,6 +705,49 @@ if (!tbNear || tbNear.locked !== false || !/搭話|💬/.test(tbNear.label) || !
 const tbNoName = T.talkButtonState({ id: "resident_2" });
 if (!tbNoName || tbNoName.locked !== false || !tbNoName.hint) fail("缺名字應安全降級仍給有效提示");
 console.log("✅ 在 3D 搭話純邏輯（種類判定·resident／major／他星剔除／wire 對應協議／走近最近·各自判距·壞值安全／鈕態·名字提示）全綠");
+
+// ── 送禮給故鄉居民純邏輯（ROADMAP 639）：挑物（庫存最多·確定性·壞值安全）／走近最近七大居民·判距·非居民剔除／wire 帶物品／鈕態 ──
+if (typeof T.giftPickItem !== "function" || typeof T.giftTargetAt !== "function"
+    || typeof T.giftWireMsg !== "function" || typeof T.giftButtonState !== "function") {
+  fail("__bf3dTest 未暴露 giftPickItem/giftTargetAt/giftWireMsg/giftButtonState");
+}
+// 挑物：優先送庫存最多的；同量以 item key 字典序定序（確定性）；空背包／無正數庫存／壞值安全回 null。
+if (T.giftPickItem([{ item: "wood", qty: 3 }, { item: "stone", qty: 9 }, { item: "dirt", qty: 1 }]) !== "stone") fail("giftPickItem 應送庫存最多的 stone");
+if (T.giftPickItem([{ item: "wood", qty: 5 }, { item: "stone", qty: 5 }]) !== "stone") fail("同量應以 item key 字典序定序（stone < wood）回 stone");
+if (T.giftPickItem([{ item: "wood", qty: 5 }, { item: "stone", qty: 5 }]) !== T.giftPickItem([{ item: "stone", qty: 5 }, { item: "wood", qty: 5 }])) fail("giftPickItem 應與輸入順序無關（確定性）");
+if (T.giftPickItem([]) !== null || T.giftPickItem(null) !== null) fail("空背包／非陣列應回 null");
+if (T.giftPickItem([{ item: "wood", qty: 0 }, { item: "stone", qty: -3 }]) !== null) fail("無正數庫存（0／負）應回 null");
+if (T.giftPickItem([{ item: "wood", qty: NaN }, { foo: 1 }, null]) !== null) fail("壞 qty／缺 item／壞列應安全跳過回 null");
+// 走近判距：GIFT_REACH=130 內最近的故鄉七大居民（merchant…village_chief）才是目標。
+const gSelf = { x: 1000, y: 1000 };
+const gIn = T.giftTargetAt(gSelf, [{ id: "village_chief", name: "里長", x: 1100, y: 1000 }]);
+if (!gIn || gIn.id !== "village_chief" || gIn.name !== "里長") fail("giftTargetAt 應回 130px 內的故鄉居民 village_chief，得 " + JSON.stringify(gIn));
+if (T.giftTargetAt(gSelf, [{ id: "merchant", name: "薇拉", x: 1140, y: 1000 }]) !== null) fail("超過 GIFT_REACH(130) 不應成為送禮目標");
+if (T.giftTargetAt(gSelf, [{ id: "resident_1", name: "路人居民", x: 1010, y: 1000 }]) !== null) fail("路人居民 resident_N（非七大）不應成為送禮目標");
+if (T.giftTargetAt(gSelf, [{ id: "verdant_merchant", name: "他星商", x: 1010, y: 1000 }]) !== null) fail("他星商人不應成為送禮目標");
+const gNearest = T.giftTargetAt(gSelf, [
+  { id: "merchant", name: "遠", x: 1090, y: 1000 },
+  { id: "bounty_npc", name: "近", x: 1020, y: 1000 },
+]);
+if (!gNearest || gNearest.id !== "bounty_npc") fail("giftTargetAt 應回最近的故鄉居民 bounty_npc，得 " + JSON.stringify(gNearest));
+if (T.giftTargetAt(gSelf, [{ id: "merchant", name: "壞", x: NaN, y: 1000 }]) !== null) fail("壞居民座標應安全跳過回 null");
+if (T.giftTargetAt(null, [{ id: "merchant", name: "x", x: 1000, y: 1000 }]) !== null) fail("無自己座標應回 null");
+if (T.giftTargetAt({ x: NaN, y: 1 }, [{ id: "merchant", name: "x", x: 1, y: 1 }]) !== null) fail("壞自己座標應回 null");
+if (T.giftTargetAt(gSelf, null) !== null) fail("空快照應安全回 null");
+// wire：不帶目標 id（伺服器挑最近），只帶物品；缺物品回 null。
+const gw = T.giftWireMsg("wood");
+if (!gw || gw.type !== "gift_resident" || gw.item !== "wood" || "resident_id" in gw) fail("giftWireMsg 應為 {type:'gift_resident', item}（不帶 id），得 " + JSON.stringify(gw));
+if (T.giftWireMsg("") !== null || T.giftWireMsg(null) !== null) fail("缺物品 wire 應回 null");
+// 鈕態：無對象→鎖定；有對象但空背包→鎖定且提示「先去採集」；有對象＋有物品→不鎖定且提示帶名字＋物品。
+const giftBtnNull = T.giftButtonState(null, "wood");
+if (!giftBtnNull || giftBtnNull.locked !== true || !giftBtnNull.hint) fail("無對象時送禮鈕應鎖定且有提示");
+const giftBtnNoItem = T.giftButtonState({ id: "merchant", name: "薇拉" }, null);
+if (!giftBtnNoItem || giftBtnNoItem.locked !== true || !/採集|背包/.test(giftBtnNoItem.hint)) fail("有對象但空背包應鎖定且提示先採集");
+const giftBtnReady = T.giftButtonState({ id: "merchant", name: "薇拉" }, "wood");
+if (!giftBtnReady || giftBtnReady.locked !== false || !/送禮|🎁/.test(giftBtnReady.label) || !/薇拉/.test(giftBtnReady.hint) || !/木材/.test(giftBtnReady.hint)) fail("走近居民＋有物品時鈕應不鎖定且提示帶名字＋物品");
+const giftBtnNoName = T.giftButtonState({ id: "bounty_npc" }, "stone");
+if (!giftBtnNoName || giftBtnNoName.locked !== false || !giftBtnNoName.hint) fail("缺名字應安全降級仍給有效提示");
+console.log("✅ 在 3D 送禮給故鄉居民純邏輯（挑物·庫存最多·同量字典序·確定性·壞值安全／走近最近七大居民·判距·路人/他星剔除／wire 帶物品不帶 id／鈕態·空背包鎖定·名字＋物品提示）全綠");
 
 // ── 戰鬥獎勵回饋純邏輯（ROADMAP 635）：戰利品飄字文字/配色·壞值安全／連殺標語段位·只給本人·壞值安全 ──
 if (typeof T.lootFloatSpec !== "function" || typeof T.killStreakFloatSpec !== "function") {

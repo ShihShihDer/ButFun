@@ -8972,6 +8972,85 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                 }
+                Ok(ClientMsg::GiftResident { item }) => {
+                    // 玩家從背包拿一樣東西，送給走到跟前的故鄉七大居民——把這份「實打實的心意」化作交情：
+                    // 複用撫慰同一份 lunch_regulars 相熟度帳本（ROADMAP 555／午休 330），你常帶禮來的居民
+                    // 日後在崗位上會認得你、點名招呼（331）＝「居民記得你的照料」。居民就地道謝 NpcSpeech 泡泡。
+                    // 零 LLM、零經濟產出（純扣 1 件＋記交情，不發任何乙太/物品回報）。
+                    // 鎖序與撫慰同調：players 讀→npc_schedule 讀→players 寫(扣物/取鍵)→lunch_regulars 寫→tx.send，
+                    // 全程循序不巢狀（守 prod-deadlock-watchdog）。
+                    use crate::npc_schedule::VILLAGE_NPCS;
+                    // 送禮搆得著的半徑（像素）：與撫慰同範圍（3D GIFT_REACH／2D COMFORT_REACH_PX）。
+                    const GIFT_REACH: f32 = 130.0;
+
+                    // 1. 取玩家權威位置（未倒地才能送禮）。
+                    let player_pos = {
+                        let players = app.players.read().unwrap();
+                        players.get(&id).and_then(|p| {
+                            if p.vitals.is_downed() { None } else { Some((p.x, p.y)) }
+                        })
+                    };
+                    if let Some((px, py)) = player_pos {
+                        // 2. 收集七大居民此刻座標，挑「搆得著範圍內、最近」的那位（送禮對誰都成立，
+                        //    不像撫慰只挑有心事者；npc_schedule 讀鎖取完即放）。
+                        let target = {
+                            let sch = app.npc_schedule.read().unwrap();
+                            let reach2 = GIFT_REACH * GIFT_REACH;
+                            let mut best: Option<(&'static str, f32, f32, f32)> = None;
+                            for s in VILLAGE_NPCS {
+                                if let Some((nx, ny)) = sch.get_pos(s.id) {
+                                    let d2 = (nx - px) * (nx - px) + (ny - py) * (ny - py);
+                                    if d2 <= reach2 && best.map_or(true, |b| d2 < b.3) {
+                                        best = Some((s.id, nx, ny, d2));
+                                    }
+                                }
+                            }
+                            best
+                        };
+                        if let Some((nid, nx, ny, _)) = target {
+                            // 3. 扣 1 件要送的物品；玩家其實沒有這件就靜默作罷（誠實、不假裝送到）。
+                            //    玩家鍵與撫慰一致：登入用帳號 uid（跨連線延續），訪客用連線 id。
+                            let gave = {
+                                let mut players = app.players.write().unwrap();
+                                players.get_mut(&id).map(|p| p.inventory.take(item, 1)).unwrap_or(false)
+                            };
+                            if gave {
+                                let player_key = authed_uid.unwrap_or(id).to_string();
+                                // 4. 記一筆進**既有**玩家↔居民相熟度帳本（與撫慰 555／午休 330 同一份交情，
+                                //    刻意不另立帳本，避免重複骨架）。
+                                let bond = app.lunch_regulars.write().unwrap().record(&player_key, nid);
+                                let tier_ord = |f: crate::lunch_regular::Familiarity| -> u8 {
+                                    match f {
+                                        crate::lunch_regular::Familiarity::Stranger => 0,
+                                        crate::lunch_regular::Familiarity::Acquaintance => 1,
+                                        crate::lunch_regular::Familiarity::Regular => 2,
+                                    }
+                                };
+                                // 5. 道謝泡泡。文字優先序：剛「跨進更深一層交情」的專屬里程碑暖語
+                                //    ＞尋常收禮道謝（隨 seed 輪替）。
+                                let seed = player_key.len() ^ nid.len();
+                                let text = bond
+                                    .crossed
+                                    .map(tier_ord)
+                                    .and_then(crate::npc_agent::bond_deepened_line)
+                                    .unwrap_or_else(|| crate::npc_agent::gift_thanks_line(seed))
+                                    .to_string();
+                                let _ = app.tx.send(std::sync::Arc::new(
+                                    crate::protocol::ServerMsg::NpcSpeech {
+                                        npc_id: nid.to_string(),
+                                        npc_name: crate::lunch_chatter::display_name(nid).to_string(),
+                                        text,
+                                        display_secs: 6,
+                                        wx: nx,
+                                        wy: ny,
+                                    },
+                                ));
+                                tracing::info!(player = %id, npc = nid, ?item, bond = bond.count, "園丁送禮給居民");
+                            }
+                        }
+                    }
+                }
+
                 // ── 居民互助請求 end ──────────────────────────────────────────
 
                 // ── 流星雨星塵採集（ROADMAP 133/134）───────────────────────────
