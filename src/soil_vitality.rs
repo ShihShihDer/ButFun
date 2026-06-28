@@ -82,33 +82,6 @@ mod tests {
     }
 
     #[test]
-    fn accrue_reaches_full_at_30hz_in_reasonable_time() {
-        // 30Hz 下地力最終仍能養滿——只是因 u16 整數捨入（40×1/30≈1.33→1），
-        // 實際速率約 30 細格點/秒，需≈200 秒而非 150 秒。
-        // 此精度損失是 u16 細格點設計的既有限制（非 dt 積分邏輯問題），可接受。
-        // 關鍵斷言：充分時間後仍能滿格，不會停在中途。
-        let dt = 1.0 / 30.0;
-        let mut s = 0u16;
-        for _ in 0..(30 * 210) { // 210 秒：比 200 秒上界留安全邊際
-            s = accrue(s, dt);
-        }
-        assert_eq!(s, SOIL_MAX_FINE, "30Hz 充分時間後地力應養滿");
-    }
-
-    #[test]
-    fn accrue_30hz_grows_monotonically() {
-        // 30Hz 下每 tick 地力只增不減（因為最小 increment round(1.33)=1）。
-        let dt = 1.0 / 30.0;
-        let mut s = 0u16;
-        let mut prev = 0u16;
-        for _ in 0..(30 * 60) {
-            s = accrue(s, dt);
-            assert!(s >= prev, "地力不得倒退");
-            prev = s;
-        }
-    }
-
-    #[test]
     fn accrue_ignores_bad_dt() {
         assert_eq!(accrue(100, f32::NAN), 100);
         assert_eq!(accrue(100, -1.0), 100);

@@ -17,19 +17,17 @@
 use std::collections::HashMap;
 use uuid::Uuid;
 
-/// 喝采意願維持的幀數（`game.rs` 每幀遞減）。約 2 秒（TICK_HZ=30）——承載 ws→game 的
+/// 喝采意願維持的幀數（`game.rs` 每幀遞減）。約 1.5 秒（TICK_HZ≈20）——承載 ws→game 的
 /// 喝采意圖，過了沒挑到對象就淡掉、不殘留。
-/// 隨 TICK_HZ 調整：30Hz × 2s = 60 幀；若再調 TICK_HZ，此常數需同步更新為 TICK_HZ * 2。
-pub const OFFER_TICKS: u16 = 60;
+pub const OFFER_TICKS: u16 = 30;
 
 /// 能喝采的最大距離（像素，世界座標）。要靠得夠近、像真的在替身邊的人鼓掌，
 /// 才算數——隔半個畫面互喊不是喝采。
 pub const CHEER_RANGE: f32 = 72.0;
 
-/// 對「同一個對象」再次喝采的冷卻幀數（≈80s，TICK_HZ=30）。你可以替全場每人各喝一次采，
-/// 但不能對同一人連按刷數——這是防洗榜的核心（連線層限流是第二道）。
-/// 隨 TICK_HZ 調整：30Hz × 80s = 2400 幀；若再調 TICK_HZ，此常數需同步更新。
-pub const CHEER_COOLDOWN: u16 = 2400;
+/// 對「同一個對象」再次喝采的冷卻幀數（≈60s）。你可以替全場每人各喝一次采，但不能對
+/// 同一人連按刷數——這是防洗榜的核心（連線層限流是第二道）。
+pub const CHEER_COOLDOWN: u16 = 1200;
 
 /// 喝采特效在前端顯示的秒數（「👏 啪！」＋掌聲上飄淡出的總時長）。短而俏皮。
 pub const CHEER_DISPLAY_SECS: u32 = 3;
