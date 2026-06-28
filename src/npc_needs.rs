@@ -43,6 +43,11 @@ pub fn comfort_amount(bond_tier_ord: u8) -> i32 {
     }
 }
 
+/// 故鄉茶棚每次「出爐熱茶」給全鎮 NPC 回暖的歸屬感幅度（ROADMAP 641，禱告驅動）。
+/// 刻意小——這是日常的一盞熱茶（露娜祈願的「街角熱茶暖身、市集找到新朋友」），不是整場村慶；
+/// 配合每 2 分鐘向基線回歸的衰減，長期讓全鎮歸屬感停在略高於平淡的「有點溫度」，而非一路衝頂。
+const TEA_WARMTH: i32 = 4;
+
 /// 三大需求之一，用來標出「此刻最該被撫平的那一件心事」（ROADMAP 554）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NeedKind {
@@ -291,6 +296,22 @@ impl NpcNeedsState {
         }
     }
 
+    /// 故鄉茶棚出爐熱茶（ROADMAP 641，禱告驅動）：給全鎮 NPC 一小份**歸屬暖意**（小幅回暖
+    /// 歸屬感，只動 belonging、不碰 safety/prosperity），夾在 0~100。應露娜「街角熱茶暖身、
+    /// 市集找到新朋友」之禱——一盞熱茶把疏離的人心稍稍拉近。比整場村慶輕得多（見 [`TEA_WARMTH`]）。
+    /// 回傳實際因此回暖（belonging 確有上升、非已封頂）的 NPC 數，供記錄／測試。純正向、確定性。
+    pub fn warm_community(&mut self) -> u32 {
+        let mut warmed = 0;
+        for n in self.map.values_mut() {
+            let before = n.belonging;
+            n.belonging = (n.belonging + TEA_WARMTH).clamp(0, 100);
+            if n.belonging > before {
+                warmed += 1;
+            }
+        }
+        warmed
+    }
+
     /// 鎮民互助分享（ROADMAP 369）：調整指定 NPC 的繁榮感（正=回升、負=勻出），夾在 0~100。
     /// 未知 NPC 不動（邊界安全）。
     pub fn adjust_prosperity(&mut self, npc_id: &str, delta: i32) {
@@ -363,6 +384,32 @@ mod tests {
         s.apply_world_event(NeedsEvent::VillageFestival);
         assert!(s.get("village_chief").belonging > prev_b, "節慶應升里長歸屬感");
         assert!(s.get("merchant").prosperity > prev_p, "節慶應升商人繁榮感");
+    }
+
+    #[test]
+    fn tea_stall_warms_belonging_only() {
+        // 茶棚出爐：全鎮歸屬感小幅回暖，但 safety/prosperity 不動（只給一份歸屬暖意）。
+        let mut s = NpcNeedsState::new();
+        let prev_b = s.get("merchant").belonging;
+        let prev_s = s.get("merchant").safety;
+        let prev_p = s.get("merchant").prosperity;
+        let warmed = s.warm_community();
+        assert!(warmed >= 1, "至少有 NPC 因熱茶回暖歸屬感");
+        assert_eq!(s.get("merchant").belonging, (prev_b + TEA_WARMTH).min(100), "歸屬感回暖 TEA_WARMTH");
+        assert_eq!(s.get("merchant").safety, prev_s, "茶棚不動安全感");
+        assert_eq!(s.get("merchant").prosperity, prev_p, "茶棚不動繁榮感");
+    }
+
+    #[test]
+    fn tea_stall_warmth_clamps_at_ceiling() {
+        // 已封頂的歸屬感不再上升，也不計入回暖數（邊界安全）。
+        let mut s = NpcNeedsState::new();
+        for _ in 0..40 {
+            s.warm_community(); // 反覆出爐把全鎮歸屬感推到 100
+        }
+        assert_eq!(s.get("village_chief").belonging, 100, "反覆回暖應封頂於 100");
+        let warmed = s.warm_community();
+        assert_eq!(warmed, 0, "全員已封頂時不再有人回暖");
     }
 
     #[test]

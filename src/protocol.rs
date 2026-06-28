@@ -1453,6 +1453,10 @@ pub enum ServerMsg {
         /// `None`＝舊伺服器無此設施；`#[serde(default)]` 向後相容舊客戶端（無此欄位時靜默略過）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         village_well: Option<VillageWellView>,
+        /// 故鄉茶棚（ROADMAP 641，禱告驅動）：應露娜之禱立在市集旁、定時出爐熱茶溫暖全鎮。
+        /// `None`＝舊伺服器無此設施；`#[serde(default)]` 向後相容舊客戶端（無此欄位時靜默略過）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        village_tea_stall: Option<VillageTeaStallView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -3223,6 +3227,17 @@ pub struct VillageWellView {
     pub watering: bool,
 }
 
+/// 故鄉茶棚的快照（ROADMAP 641，禱告驅動）。應 AI 居民露娜之禱立在市集旁，定時出爐熱茶溫暖全鎮。
+/// 前端在 `(x,y)` 畫一座低多邊形茶棚；`brewing` 為真時（剛出爐的視覺窗內）棚上嫋嫋蒸汽升騰。
+#[derive(Debug, Clone, Serialize)]
+pub struct VillageTeaStallView {
+    pub x: f32,
+    pub y: f32,
+    /// 本拍是否剛出過爐（位於蒸汽視覺窗內）——前端據此在茶棚上方畫嫋嫋蒸汽。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub brewing: bool,
+}
+
 /// 今日世界戰報（ROADMAP 495）：全伺服器自啟動起的今日行動累計，向後相容預設全零。
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct WorldTallyView {
@@ -3760,6 +3775,7 @@ mod tests {
             monument: vec![],
             vehicles: vec![],
             village_well: None,
+            village_tea_stall: None,
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

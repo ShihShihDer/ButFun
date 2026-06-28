@@ -1264,6 +1264,8 @@ drive({ type: "snapshot", players: playersA, npcs: npcsA, wildlife: wildlifeA, e
   fields: fieldsA, campfires: campfiresA, watchtowers: watchtowersA, snowmen: snowmenA, world_groves: grovesA,
   // 故鄉古井（ROADMAP 640）：汲水中——踩 makeVillageWell 懶建＋updateStructures 水波擴散路徑。
   village_well: { x: 2144, y: 2296, watering: true },
+  // 故鄉茶棚（ROADMAP 641）：出爐中——踩 makeVillageTeaStall 懶建＋updateStructures 蒸汽升起路徑。
+  village_tea_stall: { x: 2532, y: 2296, brewing: true },
   daynight: { phase: "day", day_fraction: 0.33, light: 1.0, night_danger: false, next_phase: "dusk", secs_to_next: 180 },
   // 細雨＋橫風＋彩虹：踩 applyWeather 的粒子推進／回收、霧染、彩虹淡入路徑（ROADMAP 613）
   weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
@@ -1281,6 +1283,8 @@ drive({ type: "snapshot", players: playersA, npcs: npcsA, wildlife: wildlifeA, e
   fields: fieldsA, campfires: campfiresA, watchtowers: watchtowersA, snowmen: snowmenA, world_groves: grovesA,
   // 故鄉古井（ROADMAP 640）：未汲水——踩水波隱藏分支（item.watering!==true）。
   village_well: { x: 2144, y: 2296, watering: false },
+  // 故鄉茶棚（ROADMAP 641）：未出爐——踩蒸汽隱藏分支（item.brewing!==true）。
+  village_tea_stall: { x: 2532, y: 2296, brewing: false },
   daynight: { phase: "day", day_fraction: 0.34, light: 1.0, night_danger: false, next_phase: "dusk", secs_to_next: 170 },
   weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
   rainbow: { active: true, remaining_secs: 28 },

@@ -228,6 +228,17 @@ pub fn spawn(app: AppState) {
                         None
                     }
                 };
+                // 故鄉茶棚（ROADMAP 641，禱告驅動）：應露娜之禱，定時「出爐熱茶」給全鎮 NPC
+                // 一份歸屬暖意。鎖序：先取 village_tea_stall 寫鎖推進計時（取完即放），出爐才再
+                // 取 npc_needs 寫鎖回暖——兩把鎖循序不巢狀（茶棚鎖只在此處與快照讀鎖被取用，
+                // 守 prod-deadlock）。
+                let tea_brewed = {
+                    let mut stall = app.village_tea_stall.write().unwrap();
+                    stall.tick(dt)
+                };
+                if tea_brewed {
+                    app.npc_needs.write().unwrap().warm_community();
+                }
                 if want_broadcast {
                     let mut views: Vec<FieldView> = fields
                         .iter()
@@ -5156,6 +5167,15 @@ pub fn spawn(app: AppState) {
                                 x: crate::village_well::WELL_X,
                                 y: crate::village_well::WELL_Y,
                                 watering: well.recently_watered(),
+                            })
+                        },
+                        // 故鄉茶棚（ROADMAP 641）：固定設施，整份快照恆帶（位置由常數決定）。
+                        village_tea_stall: {
+                            let stall = app.village_tea_stall.read().unwrap();
+                            Some(crate::protocol::VillageTeaStallView {
+                                x: crate::village_tea_stall::TEA_X,
+                                y: crate::village_tea_stall::TEA_Y,
+                                brewing: stall.recently_brewed(),
                             })
                         },
                     }
