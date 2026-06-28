@@ -3329,7 +3329,7 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyG" && !e.repeat) { tryGather(); e.preventDefault(); return; } // 採集（ROADMAP 629）
   if (e.code === "KeyR" && !e.repeat) { tryAttack(); e.preventDefault(); return; } // 揮劍迎敵（ROADMAP 632）
   if (e.code === "KeyV" && !e.repeat) { tryComfort(); e.preventDefault(); return; } // 園丁關心有心事的居民（ROADMAP 634）
-  if (e.code === "KeyF" && !e.repeat) { tryHelp(); e.preventDefault(); return; } // 幫忙正在求助的居民（ROADMAP 125）
+  if (e.code === "KeyX" && !e.repeat) { tryHelp(); e.preventDefault(); return; } // 幫忙正在求助的居民（ROADMAP 125）；F 已被一鍵澆水佔用，改 X（與 Z 搭話／V 撫慰同屬左下社交動作群）
   if (e.code === "KeyZ" && !e.repeat) { tryTalk(); e.preventDefault(); return; } // 跟居民／城鎮大人物搭話（ROADMAP 636）
   if (e.code === "KeyE" && !e.repeat) { if (globalThis.__bf3dToggleEmoteWheel) globalThis.__bf3dToggleEmoteWheel(); e.preventDefault(); return; } // 表情輪（ROADMAP 621）
   const dir = keyToDir(e);
@@ -4286,7 +4286,7 @@ function updateShopBtn() {
   bind("gatherBtn", tryGather);
   bind("attackBtn", tryAttack); // 揮劍迎敵（ROADMAP 632）；R 鍵在上方 keydown 處理
   bind("comfortBtn", tryComfort); // 園丁關心有心事的居民（ROADMAP 634）；V 鍵在上方 keydown 處理
-  bind("helpResidentBtn", tryHelp); // 幫忙正在求助的居民（ROADMAP 125）；F 鍵在上方 keydown 處理
+  bind("helpResidentBtn", tryHelp); // 幫忙正在求助的居民（ROADMAP 125）；X 鍵在上方 keydown 處理
   bind("talkBtn", tryTalk); // 跟居民／城鎮大人物搭話（ROADMAP 636）；Z 鍵在上方 keydown 處理
   updateActBtns();
 })();
