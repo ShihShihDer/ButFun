@@ -149,19 +149,70 @@ function wasmRunMult() {
   }
 })();
 
+// ============================================================
+// 手機 / 弱 GPU 渲染削減（perf/3d-mobile）
+// ============================================================
+// 病徵：桌機 Intel HD530 量到 60fps，但玩家 iPhone 實測走路只有 ~30fps —— 瓶頸是手機 GPU。
+// 場景已是 draw-call bound（#816 砍過田畦洩漏 884→245），但弱 GPU 的「每像素填充率」也是
+// 大殺手：DPR=3 的手機，每幀要算的像素數是 DPR=1 桌機的 9 倍。本區塊偵測手機／弱機，套用
+// 一組積極但「仍可玩、不太醜」的削減（桌機維持原樣或也受益）。
+//
+// 削減清單（挑對 FPS 影響大的）：
+//   1) 降 pixelRatio 上限（手機最大單一殺手）——手機 cap 1.5、桌機維持 2。
+//   2) 關抗鋸齒（antialias 對弱 GPU 偏貴；邊緣略糊可接受）。
+//   3) powerPreference:'high-performance'（請系統挑獨顯／高效能 GPU）。
+//   4) 明確關陰影（本場景本就沒開，明寫 false 防未來誤開、零成本）。
+//   5) 拉近霧 + 對遠端實體做距離剔除（遠到沒入霧就整個 visible=false，省 draw call＋省動畫 CPU）。
+//
+// 偵測：?lowfx=1 強制開／?lowfx=0 強制關（給 QA／桌機對照）；否則自動判斷——
+//   userAgent 含行動裝置關鍵字、或（觸控 且 高 DPR）、或（觸控 且 少核）視為弱機。
+function detectLowFx() {
+  try {
+    const q = new URLSearchParams(location.search).get("lowfx");
+    if (q === "1") return true;
+    if (q === "0") return false;
+  } catch (e) { /* 無 location（測試 DOM）→ 往下走自動偵測 */ }
+  try {
+    const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+    const mobileUA = /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle|Opera Mini|IEMobile/i.test(ua);
+    const touch = typeof navigator !== "undefined" &&
+      ((navigator.maxTouchPoints || 0) > 0 || (typeof window !== "undefined" && "ontouchstart" in window));
+    const hiDpr = (typeof window !== "undefined" ? (window.devicePixelRatio || 1) : 1) >= 2;
+    const fewCores = typeof navigator !== "undefined" &&
+      Number.isFinite(navigator.hardwareConcurrency) && navigator.hardwareConcurrency <= 4;
+    // 行動裝置一律算弱機；觸控筆電要「高 DPR」或「少核」才算（避免誤殺高階觸控桌機）。
+    return mobileUA || (touch && hiDpr) || (touch && fewCores);
+  } catch (e) { return false; }
+}
+const LOWFX = detectLowFx();
+const PIXEL_RATIO_CAP = LOWFX ? 1.5 : 2;     // 手機降到 1.5（像素數 ~4倍→~2.25倍），桌機維持 2
+// 距離常數量級參考：世界 6000px×WORLD_SCALE(0.05)=300 場景單位寬、第三人稱 camDist=48。
+// 故「遠」落在 ~120-250 這個量級（既有 STICK_FAR_DIST=90、CROP_LOD~70 也是這量級）。
+const FOG_NEAR = LOWFX ? 120 : 250;          // 霧起點（場景單位）：手機把視野拉近一截
+const FOG_FAR = LOWFX ? 230 : 600;           // 霧終點＝看得見距離；手機拉近，遠物提早沒入霧
+const ENTITY_CULL_DIST = LOWFX ? 250 : Infinity; // 遠端實體距鏡頭超過此距離（已沒入霧）就不畫；桌機不剔
+const ENTITY_CULL_DIST2 = ENTITY_CULL_DIST * ENTITY_CULL_DIST;
+try { console.log(`[3d] lowfx=${LOWFX} dpr=${typeof window !== "undefined" ? window.devicePixelRatio : "?"} cap=${PIXEL_RATIO_CAP} aa=${!LOWFX}`); } catch (e) { /* 無 console 無妨 */ }
+
 // ---- Three.js 基礎場景 ----
 const app = document.getElementById("app");
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0d1117);
-scene.fog = new THREE.Fog(0x0d1117, 250, 600);
+scene.fog = new THREE.Fog(0x0d1117, FOG_NEAR, FOG_FAR);
 
 const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.5, 2000);
 camera.position.set(0, 60, 80);
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({
+  antialias: !LOWFX,                    // 手機關抗鋸齒（弱 GPU 偏貴；邊緣略糊換 FPS）
+  powerPreference: "high-performance",  // 請系統挑高效能／獨顯 GPU
+});
 renderer.setSize(window.innerWidth, window.innerHeight);
-// 手機友善：pixelRatio 設上限，免得高 DPI 手機算爆 GPU
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+// 手機友善：pixelRatio 上限——手機 1.5、桌機 2（高 DPI 手機算爆 GPU 的最大單一殺手）
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, PIXEL_RATIO_CAP));
+// 明確關陰影：本場景燈本就不投影、mesh 也沒 castShadow，明寫 false 防未來誤開（零成本）。
+// guard：測試替身的 fake renderer 沒有 shadowMap；真 Three.js 一定有，故 if 不影響正式行為。
+if (renderer.shadowMap) renderer.shadowMap.enabled = false;
 app.appendChild(renderer.domElement);
 
 // 燈光：半球光給柔和環境色 + 一盞方向光（太陽／月亮）給立體感。
@@ -5083,6 +5134,18 @@ function updateRemoteEntities(map, scene_, renderTime, animate, dt, t, skipKey, 
       g.position.x += (g.userData.tx - g.position.x) * kFallback;
       g.position.z += (g.userData.tz - g.position.z) * kFallback;
     }
+    // 手機弱 GPU：距鏡頭過遠（已沒入霧）的實體整個不畫——省 draw call，並跳過走動動畫省 CPU。
+    // 仍跑 fade/移除邏輯（離場淡出要正確收掉）。桌機 ENTITY_CULL_DIST2=Infinity → 此分支不啟用、行為不變。
+    if (LOWFX) {
+      const dxc = g.position.x - camera.position.x;
+      const dzc = g.position.z - camera.position.z;
+      if (dxc * dxc + dzc * dzc > ENTITY_CULL_DIST2) {
+        if (g.visible) g.visible = false; // 跨界才寫
+        if (updateFade(g, dt)) { scene_.remove(g); map.delete(key); }
+        continue;
+      }
+      if (!g.visible) g.visible = true; // 回到範圍內：恢復可見
+    }
     if (animate) faceAndBob(g, g.position.x - ox, g.position.z - oz, dt, t);
     if (updateFade(g, dt)) { scene_.remove(g); map.delete(key); }
   }
@@ -5245,6 +5308,9 @@ function safeRender() {
     applyDayNight(dt);
     // 天氣流轉：依最新權威 weather／rainbow 平滑更新粒子場／霧染／遠空彩虹（ROADMAP 613，疊在日夜之後）
     applyWeather(dt);
+    // 手機弱 GPU：把霧的「看得見距離」夾在 FOG_FAR 內（晴天時 applyWeather 會把 fog.far 寫回 600，這裡夾回），
+    // 讓被距離剔除的遠端實體是「沒入霧中消失」而非「憑空消失」，pop-in 不明顯。桌機 FOG_FAR=600 → 不影響。
+    if (LOWFX && scene.fog && scene.fog.far > FOG_FAR) scene.fog.far = FOG_FAR;
     // 天上日月星辰：依最新權威 daynight 平滑更新太陽弧／月相對位／星空淡入斗轉（ROADMAP 628）
     applyCelestial(dt);
 
