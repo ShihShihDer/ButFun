@@ -90,9 +90,10 @@ const THREE = {
 function makeCtx() {
   const noop = () => {};
   return {
-    font: "", textAlign: "", textBaseline: "", fillStyle: "", strokeStyle: "", lineWidth: 0,
-    fillText: noop, strokeText: noop, beginPath: noop, moveTo: noop, lineTo: noop, arcTo: noop,
+    font: "", textAlign: "", textBaseline: "", fillStyle: "", strokeStyle: "", lineWidth: 0, globalAlpha: 1,
+    fillText: noop, strokeText: noop, beginPath: noop, moveTo: noop, lineTo: noop, arcTo: noop, arc: noop,
     closePath: noop, fill: noop, stroke: noop, fillRect: noop, clearRect: noop,
+    save: noop, restore: noop, clip: noop, translate: noop, rotate: noop, scale: noop,
     measureText: (s) => ({ width: s == null ? 0 : String(s).length * 12 }),
   };
 }
@@ -658,6 +659,44 @@ if (!/⚠️ 獸潮逼近·南城門外 · 30s/.test(T.hordeHudLabel({ phase: "a
 if (!/⚔️ 獸潮攻城·北城門外 · 12s/.test(T.hordeHudLabel({ phase: "sieging", site_x: 1, site_y: 1, site_label: "北城門外", secs_left: 12 }))) fail("hordeHudLabel 攻城字樣錯誤");
 if (!/城門/.test(T.hordeHudLabel({ phase: "sieging", site_x: 1, site_y: 1, secs_left: 5 }))) fail("hordeHudLabel 缺地名應退回城門");
 console.log("✅ 重大世界事件純邏輯（裂縫／獸潮顯影參數·HUD 文字·階段正規化·倒數進位·非物件/NaN/缺座標壞值安全）全綠");
+
+// ── 探索羅盤雷達純邏輯（ROADMAP 633）：方位換算／邊緣夾取／鏡頭朝向／壞值安全 ──
+if (typeof T.radarBlips !== "function" || typeof T.radarHeading !== "function") {
+  fail("__bf3dTest 未暴露 radarBlips/radarHeading");
+}
+const rb = T.radarBlips;
+// 範圍內目標：正規座標 = (相對位移)/range，不夾邊
+const inRange = rb({ x: 0, z: 0 }, [{ x: 35, z: 0, kind: "enemy" }], 70);
+if (inRange.length !== 1) fail("radarBlips 應回 1 筆");
+if (Math.abs(inRange[0].nx - 0.5) > 1e-9 || Math.abs(inRange[0].ny) > 1e-9) fail("radarBlips 範圍內方位換算錯誤，得 " + JSON.stringify(inRange[0]));
+if (inRange[0].edge !== false) fail("radarBlips 範圍內不應 edge");
+if (inRange[0].kind !== "enemy") fail("radarBlips 應保留 kind");
+// 超出範圍：夾到單位圓邊緣（半徑 1）、edge=true、方向不變
+const far = rb({ x: 0, z: 0 }, [{ x: 700, z: 0, kind: "rift" }], 70)[0];
+if (!far.edge) fail("radarBlips 超範圍應 edge=true");
+if (Math.abs(Math.hypot(far.nx, far.ny) - 1) > 1e-9) fail("radarBlips 邊緣目標應落在單位圓上");
+if (far.nx <= 0.99) fail("radarBlips 邊緣目標應保留正東方向");
+// north-up 慣例：+x=東/右、+z=南/下
+const south = rb({ x: 0, z: 0 }, [{ x: 0, z: 30, kind: "home" }], 70)[0];
+if (south.ny <= 0) fail("radarBlips +z 應映射到雷達下方（南）");
+// 壞值安全：缺 self／非有限座標／非陣列一律安全
+if (rb(null, [{ x: 1, z: 1, kind: "home" }], 70).length !== 0) fail("radarBlips 缺 self 應回空");
+if (rb({ x: NaN, z: 0 }, [{ x: 1, z: 1, kind: "home" }], 70).length !== 0) fail("radarBlips self 壞座標應回空");
+if (rb({ x: 0, z: 0 }, "x", 70).length !== 0) fail("radarBlips entities 非陣列應回空");
+if (rb({ x: 0, z: 0 }, [{ x: NaN, z: 1, kind: "home" }, { x: 10, z: 0, kind: "enemy" }], 70).length !== 1) fail("radarBlips 應略過壞座標筆、保留好的");
+// range<=0 安全退回（不除以 0／不噴 NaN）
+if (!Number.isFinite(rb({ x: 0, z: 0 }, [{ x: 1, z: 0, kind: "home" }], 0)[0].nx)) fail("radarBlips range<=0 應安全退回不噴 NaN");
+// 確定性：同輸入同輸出
+if (JSON.stringify(rb({ x: 1, z: 2 }, [{ x: 5, z: 9, kind: "enemy" }], 70)) !== JSON.stringify(rb({ x: 1, z: 2 }, [{ x: 5, z: 9, kind: "enemy" }], 70))) fail("radarBlips 應確定性");
+// radarHeading：camYaw=0 看向北（雷達上方 (0,-1)）；camYaw=PI/2 → (-1,~0)；壞值退回朝上
+const h0 = T.radarHeading(0);
+if (Math.abs(h0.x) > 1e-9 || Math.abs(h0.y + 1) > 1e-9) fail("radarHeading(0) 應朝上 (0,-1)，得 " + JSON.stringify(h0));
+const h90 = T.radarHeading(Math.PI / 2);
+if (Math.abs(h90.x + 1) > 1e-9 || Math.abs(h90.y) > 1e-9) fail("radarHeading(PI/2) 應 (-1,0)，得 " + JSON.stringify(h90));
+if (Math.abs(Math.hypot(h90.x, h90.y) - 1) > 1e-9) fail("radarHeading 應回單位向量");
+const hBad = T.radarHeading(NaN);
+if (hBad.x !== 0 || hBad.y !== -1) fail("radarHeading 壞值應退回 (0,-1)");
+console.log("✅ 探索羅盤雷達純邏輯（方位換算／超範圍夾邊保向／north-up 南北映射／鏡頭朝向／range<=0·壞 self·壞筆·非陣列壞值安全／確定性）全綠");
 
 // ── ①j 天時盤純邏輯（ROADMAP 620）：繞盤角度／倒數平滑遞減／時段·下一時段標籤／壞值安全 ──
 if (typeof T.dayClockReadout !== "function" || typeof T.fmtCountdown !== "function") fail("__bf3dTest 未暴露 dayClockReadout/fmtCountdown");
