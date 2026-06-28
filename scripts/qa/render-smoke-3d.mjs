@@ -615,6 +615,41 @@ const cbNoName = T.comfortButtonState({ id: "r2" });
 if (!cbNoName || cbNoName.locked !== false || !cbNoName.hint) fail("缺名字應安全降級仍給有效提示");
 console.log("✅ 園丁撫慰純邏輯（comfort wire 固定／走近最近有心事居民·範圍·沒心事剔除·壞值安全／鈕態·名字提示·缺名降級）全綠");
 
+// ── 居民互助純邏輯（ROADMAP 125）：help wire 帶居民 id／走近最近·在求助集合·範圍·非求助剔除·壞值安全／鈕態·名字＋乙太提示 ──
+if (typeof T.helpWireMsg !== "function" || typeof T.helpTargetAt !== "function"
+    || typeof T.helpButtonState !== "function") {
+  fail("__bf3dTest 未暴露 helpWireMsg/helpTargetAt/helpButtonState");
+}
+// 協助意圖 wire 與 2D／後端同協議（帶 resident_id；伺服器仍用玩家權威座標複驗距離）。
+const hwire = T.helpWireMsg("resident_3");
+if (!hwire || hwire.type !== "help_resident" || hwire.resident_id !== "resident_3") fail("helpWireMsg 應為 {type:'help_resident', resident_id}");
+// 走近判距：圈內最近、且 id 在「正在求助集合」裡者；不在求助集合的／圈外／壞座標一律剔除。
+const hSelf = { x: 1000, y: 1000 };
+const hReqs = new Set(["resident_1", "resident_2"]);
+const htIn = T.helpTargetAt(hSelf, [{ id: "resident_1", name: "阿土", x: 1040, y: 1000 }], hReqs);
+if (!htIn || htIn.id !== "resident_1" || htIn.name !== "阿土") fail("helpTargetAt 應回圈內正在求助的居民 resident_1，得 " + JSON.stringify(htIn));
+if (T.helpTargetAt(hSelf, [{ id: "resident_9", name: "沒求助", x: 1010, y: 1000 }], hReqs) !== null) fail("不在求助集合的居民不應成為協助目標");
+if (T.helpTargetAt(hSelf, [{ id: "resident_1", name: "遠人", x: 1200, y: 1000 }], hReqs) !== null) fail("圈外正在求助的居民不應成為目標");
+const htNearest = T.helpTargetAt(hSelf, [
+  { id: "resident_1", name: "遠", x: 1050, y: 1000 },
+  { id: "resident_2", name: "近", x: 1010, y: 1000 },
+], hReqs);
+if (!htNearest || htNearest.id !== "resident_2") fail("helpTargetAt 應回最近的求助居民 resident_2，得 " + JSON.stringify(htNearest));
+if (T.helpTargetAt(hSelf, [{ id: "resident_1", name: "壞座標", x: NaN, y: 1000 }], hReqs) !== null) fail("壞居民座標應安全跳過回 null");
+if (T.helpTargetAt(null, [{ id: "resident_1", name: "x", x: 1000, y: 1000 }], hReqs) !== null) fail("無自己座標應回 null");
+if (T.helpTargetAt({ x: NaN, y: 1 }, [{ id: "resident_1", name: "x", x: 1, y: 1 }], hReqs) !== null) fail("壞自己座標應回 null");
+if (T.helpTargetAt(hSelf, null, hReqs) !== null) fail("空居民快照應安全回 null");
+if (T.helpTargetAt(hSelf, [{ id: "resident_1", name: "x", x: 1010, y: 1000 }], new Set()) !== null) fail("空求助集合應回 null（無人求助時不點亮）");
+if (T.helpTargetAt(hSelf, [{ id: "resident_1", name: "x", x: 1010, y: 1000 }], ["resident_1"]) === null) fail("helpTargetAt 應接受陣列形式的求助清單");
+// 鈕態：無目標 → 鎖定提示；有目標 → 不鎖定且提示帶對方名字＋乙太報酬；缺名字安全降級。
+const hbNull = T.helpButtonState(null);
+if (!hbNull || hbNull.locked !== true || !hbNull.hint) fail("無目標時幫忙鈕應鎖定且有提示");
+const hbNear = T.helpButtonState({ id: "resident_1", name: "阿土" });
+if (!hbNear || hbNear.locked !== false || !/幫忙|🤝/.test(hbNear.label) || !/阿土/.test(hbNear.hint) || !/乙太/.test(hbNear.hint)) fail("走近求助居民時幫忙鈕應不鎖定且提示帶名字＋乙太報酬");
+const hbNoName = T.helpButtonState({ id: "resident_2" });
+if (!hbNoName || hbNoName.locked !== false || !hbNoName.hint) fail("缺名字應安全降級仍給有效提示");
+console.log("✅ 居民互助純邏輯（help wire 帶 id／走近最近求助居民·範圍·非求助剔除·空集合不點亮·陣列相容·壞值安全／鈕態·名字＋乙太提示·缺名降級）全綠");
+
 // ── 跟 AI 居民／城鎮大人物搭話純邏輯（ROADMAP 636）：種類判定／走近最近·各自判距·壞值安全／wire 對應協議／鈕態 ──
 if (typeof T.talkKindOf !== "function" || typeof T.talkTargetAt !== "function"
     || typeof T.talkWireMsg !== "function" || typeof T.talkButtonState !== "function") {
@@ -1137,6 +1172,9 @@ const playersA = [
 ];
 drive({ type: "snapshot", players: playersA, npcs: npcsA, wildlife: wildlifeA, enemies: enemiesA, nodes: [],
   town_factions: townFactionsA,
+  // 居民互助（ROADMAP 125）：餵一筆「正在求助的居民 id」集合，踩 latestHelpRequests 建構＋updateHelpBtn 的
+  // helpTargetAt 判距迴圈路徑（這位居民也在 npcsA 裡），確保逐幀真正走過幫忙鈕邏輯不拋例外。
+  active_help_requests: ["n5"],
   // 夜採星晶礦脈（ROADMAP 629）：餵兩道晶脈，踩 makeStarCrystal + reconcile + 靜態 AOI 淡入淡出路徑。
   star_crystals: [{ x: 1500, y: 1500 }, { x: 1560, y: 1520 }],
   fields: fieldsA, campfires: campfiresA, watchtowers: watchtowersA, snowmen: snowmenA, world_groves: grovesA,

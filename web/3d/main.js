@@ -2933,6 +2933,9 @@ let latestEnemies = [];     // 最新一筆活著的敵人（世界 px）
 // 園丁撫慰（ROADMAP 634）：留存最新一筆居民快照（世界 px，含 needs_care／name），render 每幀據此
 // 算「腳邊有沒有正有心事、需要被關心的故鄉居民」→ 點亮關心鈕、按鍵即送既有權威撫慰意圖。
 let latestNpcs = [];        // 最新一筆居民／NPC 快照（世界 px）
+// 居民互助（ROADMAP 125）：把既有「協助求助居民」接進 3D。每份快照留存「目前正在求助的居民 id 集合」
+// （active_help_requests），render 每幀據此算「腳邊有沒有正在求助的居民」→ 點亮幫忙鈕、按鍵即送既有權威協助意圖。
+let latestHelpRequests = new Set(); // 最新一筆「正在求助的居民 id」集合（resident_N）
 // 城鎮交易（ROADMAP 630）：把既有「商人商店」（#57）接進 3D。每份快照留存「帶買賣目錄的 NPC」
 // 與「自己這筆 PlayerView」（含乙太／背包），render 每幀據此點亮交易鈕、開著面板時即時刷新行情。
 let latestMerchants = [];   // 最新一筆商人清單（NpcView 中 buy_list／sell_list 非空者，世界 px）
@@ -3171,6 +3174,10 @@ function handleServerMsg(msg) {
       // 正有心事、需要被關心的故鄉居民」→ 點亮關心鈕（needs_care 由後端依需求偏低判定）。
       latestNpcs = Array.isArray(msg.npcs) ? msg.npcs : [];
 
+      // 居民互助判距（ROADMAP 125）：留存本份「正在求助的居民 id」集合，供 render 每幀算「腳邊有沒有
+      // 正在求助的居民」→ 點亮幫忙鈕。壞值（缺欄位／非陣列）→ 空集合，按鈕一律保守鎖定，永不誤點亮。
+      latestHelpRequests = new Set(Array.isArray(msg.active_help_requests) ? msg.active_help_requests : []);
+
       // 城鎮交易判距（ROADMAP 630）：留存「帶買賣目錄的 NPC」＋「自己這筆 PlayerView」（含乙太／背包），
       // 供 render 每幀算「腳邊有沒有商人」→ 點亮交易鈕；面板開著時據此即時刷新行情／庫存／餘額。
       latestMerchants = shopMerchantsFrom(msg.npcs);
@@ -3322,6 +3329,7 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyG" && !e.repeat) { tryGather(); e.preventDefault(); return; } // 採集（ROADMAP 629）
   if (e.code === "KeyR" && !e.repeat) { tryAttack(); e.preventDefault(); return; } // 揮劍迎敵（ROADMAP 632）
   if (e.code === "KeyV" && !e.repeat) { tryComfort(); e.preventDefault(); return; } // 園丁關心有心事的居民（ROADMAP 634）
+  if (e.code === "KeyX" && !e.repeat) { tryHelp(); e.preventDefault(); return; } // 幫忙正在求助的居民（ROADMAP 125）；F 已被一鍵澆水佔用，改 X（與 Z 搭話／V 撫慰同屬左下社交動作群）
   if (e.code === "KeyZ" && !e.repeat) { tryTalk(); e.preventDefault(); return; } // 跟居民／城鎮大人物搭話（ROADMAP 636）
   if (e.code === "KeyE" && !e.repeat) { if (globalThis.__bf3dToggleEmoteWheel) globalThis.__bf3dToggleEmoteWheel(); e.preventDefault(); return; } // 表情輪（ROADMAP 621）
   const dir = keyToDir(e);
@@ -3908,6 +3916,78 @@ function updateComfortBtn() {
 }
 
 // ============================================================
+// 居民互助（ROADMAP 125）：把既有「協助正在求助的居民」接進 3D——3D 世界第一次能「伸手幫一位
+// 開口求助的居民、領他一句道謝＋一點乙太」。撫慰（634）是回應「心事低落」的內在需求；互助則是
+// 回應居民「主動開口的具體請求」（active_help_requests），是 3D 弧裡又一個「對 AI 居民做事」的動詞。
+//   · 伺服器才是權威：協助送既有意圖 {type:"help_resident", resident_id}（與 2D web/game.js 同協議）；
+//     伺服器用玩家自己的權威座標判距（RESIDENT_REACH=80）＋確認該居民確在求助，原子完成（只有第一個
+//     點到的玩家成功），給 HELP_REWARD_ETHER 乙太、廣播居民道謝 NpcSpeech 泡泡（3D 既有對話泡泡會顯現）。
+//   · 純前端、零後端改動、零協議改動——active_help_requests／help_resident／NpcView 座標本來就在快照／協議裡。
+// ============================================================
+const HELP_REACH = 80;            // 協助判距半徑（px）——對齊後端 resident_npc::RESIDENT_REACH／2D RESIDENT_REACH_PX
+const HELP_REWARD_ETHER = 8;      // 協助報酬乙太（鏡像後端 resident_npc::HELP_REWARD_ETHER；僅供前端提示文案）
+const HELP_COOLDOWN_MS = 1200;    // 本地冷卻（防連點；真正成敗由後端原子完成裁決）
+let lastHelpAt = -1e9;            // 上次協助的本地時戳（手感防呆）
+
+// 協助意圖 wire（送哪位居民的 id；伺服器仍用玩家權威座標複驗距離防隔空）。抽純函式供 smoke 斷言。
+function helpWireMsg(residentId) { return { type: "help_resident", resident_id: residentId }; }
+
+// 協助目標判定（純函式、確定性、可測）：給自己的世界座標＋本份居民快照（世界 px）＋「正在求助的 id 集合」，
+// 回最近且落在 HELP_REACH 內、且 id 確在求助集合裡的居民。非求助中的／壞座標一律跳過；
+// 無自己座標／空快照／空集合安全回 null（不 throw、不誤點亮鈕；守 render-loop-resilience）。
+function helpTargetAt(self, npcList, helpSet) {
+  if (!self || !Number.isFinite(self.x) || !Number.isFinite(self.y)) return null;
+  // 鴨子型別判 Set（有 has() 即可）——比 instanceof 穩，跨 realm（如冒煙測試 vm 沙箱）也成立；
+  // 非 Set 則當陣列轉成 Set。空集合（無人求助）→ 安全回 null，不點亮鈕。
+  const reqs = (helpSet && typeof helpSet.has === "function") ? helpSet : new Set(Array.isArray(helpSet) ? helpSet : []);
+  if (reqs.size === 0) return null;
+  let best = null, bestD = HELP_REACH * HELP_REACH;
+  for (const n of (Array.isArray(npcList) ? npcList : [])) {
+    if (!n || !n.id || !reqs.has(n.id)) continue;
+    if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
+    const dx = n.x - self.x, dy = n.y - self.y, d = dx * dx + dy * dy;
+    if (d <= bestD) { bestD = d; best = n; }
+  }
+  if (!best) return null;
+  return { id: best.id, name: best.name, x: best.x, y: best.y };
+}
+
+// 幫忙鈕的顯示狀態（純函式、面向玩家字串集中可 i18n、供 smoke 真值表）。
+// 走近一位正在求助的居民才亮（提示帶上對方名字＋乙太報酬），否則鎖定提示「走近一位正在求助的居民」。
+function helpButtonState(target) {
+  if (!target) return { label: "🤝 幫忙", locked: true, hint: "走近一位正開口求助的居民，就能上前幫忙" };
+  const who = (target.name && typeof target.name === "string") ? target.name : "這位居民";
+  return { label: "🤝 幫忙", locked: false, hint: `幫助 ${who}（+${HELP_REWARD_ETHER} 乙太）` };
+}
+
+// 嘗試協助（ROADMAP 125）：依自己最新權威世界座標算腳邊有沒有正在求助的居民；有就送
+// {type:"help_resident", resident_id}＋本地冷卻，沒有就給一句溫和提示（誠實、不假裝幫到）。
+// 真正成敗（太遠／已被別人搶先完成）由伺服器裁決；居民領情的回應由後端廣播 NpcSpeech、3D 既有對話泡泡會顯現。
+function tryHelp() {
+  const target = helpTargetAt(latestSelfWorld, latestNpcs, latestHelpRequests);
+  if (!target) { flashToast("🤝 走近一位正開口求助的居民，才能上前幫忙"); return; }
+  const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+  if (now - lastHelpAt < HELP_COOLDOWN_MS) return; // 冷卻內忽略連點
+  if (safeSend(helpWireMsg(target.id))) {
+    lastHelpAt = now;
+    const who = (target.name && typeof target.name === "string") ? target.name : "居民";
+    flashToast(`🤝 你上前幫了 ${who} 一把`);
+  }
+}
+
+// 每幀依「腳邊有沒有正在求助的居民」刷新幫忙鈕外觀（純讀 latest* 算 helpTargetAt）。
+// 只在 label／鎖定態真的變動時才改寫 DOM；無 widget／壞值一律安全靜默（守 render-loop-resilience）。
+let helpBtnLastLabel = null, helpBtnLastLocked = null;
+function updateHelpBtn() {
+  const btn = document.getElementById("helpResidentBtn");
+  if (!btn) return; // 舊頁／測試 DOM 無此鈕 → 靜默跳過
+  const st = helpButtonState(helpTargetAt(latestSelfWorld, latestNpcs, latestHelpRequests));
+  if (st.label !== helpBtnLastLabel) { btn.textContent = st.label; helpBtnLastLabel = st.label; }
+  if (st.locked !== helpBtnLastLocked) { btn.classList.toggle("locked", st.locked); helpBtnLastLocked = st.locked; }
+  btn.title = st.hint;
+}
+
+// ============================================================
 // 跟 AI 居民／城鎮大人物搭話（ROADMAP 636）：3D 世界第一次能「主動開口、聽見 AI 居民回話」。
 // 這正是北極星「人類是訪客／園丁、走進一個由 AI 居住的世界」的核心動詞——你能上前攀談，居民會
 // 依此刻處境（季節／天氣／繁榮／生態警戒，後端 resident_chat／topic 層）回你一句。3D 至今只能
@@ -4206,6 +4286,7 @@ function updateShopBtn() {
   bind("gatherBtn", tryGather);
   bind("attackBtn", tryAttack); // 揮劍迎敵（ROADMAP 632）；R 鍵在上方 keydown 處理
   bind("comfortBtn", tryComfort); // 園丁關心有心事的居民（ROADMAP 634）；V 鍵在上方 keydown 處理
+  bind("helpResidentBtn", tryHelp); // 幫忙正在求助的居民（ROADMAP 125）；X 鍵在上方 keydown 處理
   bind("talkBtn", tryTalk); // 跟居民／城鎮大人物搭話（ROADMAP 636）；Z 鍵在上方 keydown 處理
   updateActBtns();
 })();
@@ -4705,6 +4786,8 @@ function safeRender() {
     updateAttackBtn();
     // 關心鈕：走近一位正有心事（needs_care）的故鄉居民才亮（ROADMAP 634：園丁撫慰）
     updateComfortBtn();
+    // 幫忙鈕：走近一位正開口求助（active_help_requests）的居民才亮（ROADMAP 125：居民互助）
+    updateHelpBtn();
     // 搭話鈕：走近一位居民／城鎮大人物才亮（ROADMAP 636：主動開口攀談、聽見回話）
     updateTalkBtn();
     updateMeleeSwing(performance.now());
@@ -4758,7 +4841,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, attackWireMsg, attackTargetAt, attackButtonState, damageFloatSpec, spawnMeleeSwing, comfortWireMsg, comfortTargetAt, comfortButtonState, talkKindOf, talkTargetAt, talkWireMsg, talkButtonState, lootFloatSpec, killStreakFloatSpec, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel, radarBlips, radarHeading };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, attackWireMsg, attackTargetAt, attackButtonState, damageFloatSpec, spawnMeleeSwing, comfortWireMsg, comfortTargetAt, comfortButtonState, helpWireMsg, helpTargetAt, helpButtonState, talkKindOf, talkTargetAt, talkWireMsg, talkButtonState, lootFloatSpec, killStreakFloatSpec, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel, radarBlips, radarHeading };
 }
 
 // 啟動
