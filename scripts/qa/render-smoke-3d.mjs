@@ -604,6 +604,50 @@ if (/敵對/.test(T.factionHudLabel([{ bond: "alliance" }]))) fail("factionHudLa
 if (/結盟/.test(T.factionHudLabel([{ bond: "rivalry" }]))) fail("factionHudLabel 無結盟時不應顯示結盟段");
 console.log("✅ 派系關係連線 factionLinkVisual／factionArcPoints／factionHudLabel·確定性·壞值安全全綠");
 
+// ── ①f 敵人威脅呈現純邏輯（ROADMAP 626）：enemyVisual 身形/配色/血量/兇名·enemyStatusEmoji 優先序·
+//        enemyHpFill 比例與殘血·enemyHudLabel 計數——確定性·壞值安全 ──
+if (typeof T.enemyVisual !== "function" || typeof T.enemyStatusEmoji !== "function" || typeof T.enemyHpFill !== "function" || typeof T.enemyHudLabel !== "function") {
+  fail("__bf3dTest 未暴露 enemyVisual/enemyStatusEmoji/enemyHpFill/enemyHudLabel");
+}
+const ev = T.enemyVisual;
+// 身形原型：機械 drone／靈體 wisp／巨像 golem；未知/壞值退回 drone 後備
+if (ev({ kind: "scrap_drone" }).type !== "drone") fail("scrap_drone 應 drone 身形");
+if (ev({ kind: "ether_wisp" }).type !== "wisp") fail("ether_wisp 應 wisp 身形");
+if (ev({ kind: "crystal_golem" }).type !== "golem") fail("crystal_golem 應 golem 身形");
+if (ev({ kind: "??" }).type !== "drone") fail("未知種類應退回 drone 後備");
+if (ev(null).type !== "drone" || ev(undefined).type !== "drone") fail("壞值應安全後備 drone");
+// 血量：受傷→damaged 畫血條；滿血/缺血量資訊→不畫；夾 [0,1]
+if (ev({ kind: "scrap_drone", hp: 30, max_hp: 60 }).damaged !== true) fail("受傷應 damaged");
+if (Math.abs(ev({ kind: "scrap_drone", hp: 30, max_hp: 60 }).hpRatio - 0.5) > 1e-9) fail("hpRatio 應＝hp/max");
+if (ev({ kind: "scrap_drone", hp: 60, max_hp: 60 }).damaged !== false) fail("滿血不畫血條");
+if (ev({ kind: "scrap_drone" }).damaged !== false || ev({ kind: "scrap_drone" }).hpRatio !== 1) fail("缺血量資訊應視為滿、不畫血條");
+if (ev({ kind: "scrap_drone", hp: -5, max_hp: 60 }).hpRatio !== 0 || ev({ kind: "scrap_drone", hp: 999, max_hp: 60 }).hpRatio !== 1) fail("hpRatio 越界應夾 [0,1]");
+// 兇名精英體型微大
+if (!(ev({ kind: "crystal_golem", notorious: true }).scale > 1)) fail("兇名精英 scale 應 >1");
+if (ev({ kind: "scrap_drone" }).scale !== 1) fail("非兇名 scale 應＝1");
+// 狀態 emoji 優先序：破綻 ✨＞潰逃 💨＞夜歇 💤＞兇名 💢＞無
+if (T.enemyStatusEmoji({ kind: "ether_wisp", weak: true, routing: true, resting: true, notorious: true }) !== "✨") fail("破綻應優先 ✨");
+if (T.enemyStatusEmoji({ kind: "coral_crab", routing: true, resting: true, notorious: true }) !== "💨") fail("潰逃應 💨");
+if (T.enemyStatusEmoji({ kind: "rune_guardian", resting: true, notorious: true }) !== "💤") fail("夜歇應 💤");
+if (T.enemyStatusEmoji({ kind: "crystal_golem", notorious: true }) !== "💢") fail("兇名應 💢");
+if (T.enemyStatusEmoji({ kind: "scrap_drone" }) !== null) fail("平凡敵人應無 emoji");
+if (T.enemyStatusEmoji(null) !== null) fail("壞值狀態 emoji 應為 null");
+// 血條填充：比例正比、≤30% critical、缺資訊視為滿、壞值安全、越界夾
+const ehf = T.enemyHpFill;
+if (ehf(30, 60).ratio !== 0.5 || ehf(30, 60).critical !== false) fail("enemyHpFill 50% 不殘血");
+if (ehf(20, 60).critical !== false || ehf(18, 60).critical !== true) fail("enemyHpFill ≤30% 才 critical");
+if (ehf(0, 60).ratio !== 0 || ehf(0, 60).critical !== true) fail("enemyHpFill 0 血應殘血");
+if (ehf(5, 0).ratio !== 1 || ehf("x", 60).ratio !== 1 || ehf(NaN, NaN).ratio !== 1) fail("enemyHpFill 缺/壞資訊應視為滿");
+if (ehf(120, 60).ratio !== 1) fail("enemyHpFill 越界應夾 1");
+// HUD：只數活著的、兇名分開計、空/全死/壞值回空字串
+const ehl = T.enemyHudLabel;
+if (ehl([{ alive: true }, { alive: true, notorious: true }, { alive: false }]) !== "⚔️ 威脅 2 · 兇名 1") fail("enemyHudLabel 應只數活著、兇名分開計");
+if (ehl([{ alive: true }, { alive: true }]) !== "⚔️ 威脅 2") fail("enemyHudLabel 無兇名不顯示兇名段");
+if (ehl([]) !== "" || ehl([{ alive: false }]) !== "" || ehl(null) !== "") fail("enemyHudLabel 空/全死/壞值應回空字串");
+// 確定性
+if (JSON.stringify(ev({ kind: "ether_wisp", hp: 8, max_hp: 40, weak: true })) !== JSON.stringify(ev({ kind: "ether_wisp", hp: 8, max_hp: 40, weak: true }))) fail("enemyVisual 非確定性");
+console.log("✅ enemyVisual 身形／配色／血量／兇名體型／狀態 emoji 優先序／血條／HUD／壞值安全全綠");
+
 // ── ② 逐幀跑：先 welcome，再餵含各種內心生活的 NPC 快照，跑多幀抓例外 ──
 function drive(msg) { lastWS.onmessage({ data: JSON.stringify(msg) }); }
 function frames(n) { for (let i = 0; i < n; i++) { perfNow += 33; if (rafCb) { const cb = rafCb; rafCb = null; cb(); } } }
@@ -674,7 +718,20 @@ const townFactionsA = [
   { npc_a: "n2", npc_b: "n9", npc_a_name: "里長", npc_b_name: "幽靈", bond: "alliance", affinity: 60 }, // n9 不在 npcs → 跳過
   { npc_a: "n5", npc_b: "n6", npc_a_name: "農婦", npc_b_name: "旅人", bond: "frenemy", affinity: 50 },   // 未知 bond → 略過
 ];
-drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }, { id: "p2", name: "夥伴", x: 3050, y: 3000 }], npcs: npcsA, wildlife: wildlifeA, enemies: [], nodes: [],
+// 一群各種敵人：機械／靈體／巨像三型＋受傷（畫血條）／殘血（深紅）／滿血（不畫）／兇名（體型大 💢）／
+// 夜歇 💤／潰逃 💨／破綻 ✨／未知種類後備／缺血量資訊／alive=false（應過濾）——踩 makeEnemy 三型身形
+// 建構＋attachEnemyStatus＋updateEnemyStatus 全路徑（ROADMAP 626）。
+const enemiesA = [
+  { eid: "e1", kind: "scrap_drone", x: 3060, y: 3050, level: 3, hp: 30, max_hp: 60, alive: true },                   // drone、受傷 50% → 紅血條
+  { eid: "e2", kind: "ether_wisp", x: 3080, y: 2960, level: 4, hp: 8, max_hp: 40, alive: true, weak: true },          // wisp、殘血<30% → 深紅＋破綻 ✨
+  { eid: "e3", kind: "crystal_golem", x: 2940, y: 3080, level: 9, hp: 200, max_hp: 200, alive: true, notorious: true },// golem、滿血(無血條)、兇名 💢、體型大
+  { eid: "e4", kind: "rune_guardian", x: 2960, y: 2940, level: 5, hp: 50, max_hp: 80, alive: true, resting: true },    // 夜歇 💤
+  { eid: "e5", kind: "coral_crab", x: 3120, y: 3000, level: 6, hp: 70, max_hp: 100, alive: true, routing: true },      // 潰逃 💨
+  { eid: "e6", kind: "mystery_kind", x: 3000, y: 3120, level: 2, hp: 10, max_hp: 20, alive: true },                    // 未知種類 → drone 紅盒後備
+  { eid: "e7", kind: "void_phantom", x: 2900, y: 3000, alive: true },                                                   // 缺 hp/max_hp/level → 視為滿、不畫血條、安全
+  { eid: "e8", kind: "steam_construct", x: 9999, y: 9999, level: 7, hp: 5, max_hp: 120, alive: false },                 // alive=false → 過濾掉
+];
+drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }, { id: "p2", name: "夥伴", x: 3050, y: 3000 }], npcs: npcsA, wildlife: wildlifeA, enemies: enemiesA, nodes: [],
   town_factions: townFactionsA,
   fields: fieldsA, campfires: campfiresA, watchtowers: watchtowersA, snowmen: snowmenA, world_groves: grovesA,
   daynight: { phase: "day", day_fraction: 0.33, light: 1.0, night_danger: false, next_phase: "dusk", secs_to_next: 180 },
@@ -753,7 +810,14 @@ const grovesB = [
   { x: 2920, y: 2980, stage: 3 }, // 不變
   // x3080,y2880 那棵從快照消失 → AOI 淡出移除
 ];
-drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }], npcs: npcsB, wildlife: wildlifeB, enemies: [], nodes: [],
+// 敵人第二份（ROADMAP 626）：e1 回滿血（血條應消失）、e3 兇名受傷（畫血條）、e9 新生瀕死（深紅）；
+// 其餘 e2/e4~e7 從快照消失 → 踩 AOI 淡出移除路徑。
+const enemiesB = [
+  { eid: "e1", kind: "scrap_drone", x: 3060, y: 3050, level: 3, hp: 60, max_hp: 60, alive: true },                     // 回滿 → 血條消失
+  { eid: "e3", kind: "crystal_golem", x: 2940, y: 3080, level: 9, hp: 120, max_hp: 200, alive: true, notorious: true },// 兇名受傷 → 畫血條
+  { eid: "e9", kind: "jade_wraith", x: 3030, y: 2980, level: 11, hp: 1, max_hp: 90, alive: true },                     // 新生、瀕死深紅
+];
+drive({ type: "snapshot", players: [{ id: "me", name: "我", x: 3000, y: 3000 }], npcs: npcsB, wildlife: wildlifeB, enemies: enemiesB, nodes: [],
   town_factions: [], // 派系全數解除（ROADMAP 625）→ 踩 updateFactionLinks 的連線回收／dispose 全清路徑
   fields: fieldsB, campfires: campfiresB, watchtowers: watchtowersB, snowmen: snowmenB, world_groves: grovesB,
   daynight: { phase: "night", day_fraction: 0.82, light: 0.2, night_danger: true, next_phase: "dawn", secs_to_next: 60 },
