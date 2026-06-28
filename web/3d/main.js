@@ -2783,6 +2783,9 @@ const starCrystals = new Map();
 let latestSelfWorld = null; // {x,y}＝自己最新權威世界座標；沒有就還沒收到含自己的快照
 let latestNodes = [];       // 最新一筆採集節點（樹／石／乙太礦，世界 px）
 let latestCrystals = [];    // 最新一筆星晶礦脈（夜間限定，世界 px）
+// 在 3D 裡揮劍迎敵（ROADMAP 632）：留存最新一筆「活著的敵人」快照（世界 px，含 hp／max_hp），
+// render 每幀據此算「腳邊有沒有可攻擊的敵人」→ 點亮攻擊鈕、按鍵即送既有權威攻擊意圖。
+let latestEnemies = [];     // 最新一筆活著的敵人（世界 px）
 // 城鎮交易（ROADMAP 630）：把既有「商人商店」（#57）接進 3D。每份快照留存「帶買賣目錄的 NPC」
 // 與「自己這筆 PlayerView」（含乙太／背包），render 每幀據此點亮交易鈕、開著面板時即時刷新行情。
 let latestMerchants = [];   // 最新一筆商人清單（NpcView 中 buy_list／sell_list 非空者，世界 px）
@@ -3013,6 +3016,10 @@ function handleServerMsg(msg) {
       latestSelfWorld = (meAuth && Number.isFinite(meAuth.x) && Number.isFinite(meAuth.y))
         ? { x: meAuth.x, y: meAuth.y } : null;
 
+      // 揮劍迎敵判距（ROADMAP 632）：留存本份「活著的敵人」快照（世界 px），供 render 每幀算
+      // 「腳邊有沒有可攻擊的敵人」→ 點亮攻擊鈕。死掉的（alive=false）排除＝不會誤點亮揮向屍體。
+      latestEnemies = Array.isArray(msg.enemies) ? msg.enemies.filter((e) => e && e.alive !== false) : [];
+
       // 城鎮交易判距（ROADMAP 630）：留存「帶買賣目錄的 NPC」＋「自己這筆 PlayerView」（含乙太／背包），
       // 供 render 每幀算「腳邊有沒有商人」→ 點亮交易鈕；面板開著時據此即時刷新行情／庫存／餘額。
       latestMerchants = shopMerchantsFrom(msg.npcs);
@@ -3050,7 +3057,7 @@ function handleServerMsg(msg) {
       hudEl.innerHTML =
         `<b>${myName}</b> · 線上 ${players.size} 人${phaseLabel ? " · " + phaseLabel : ""}${weatherLabel ? " · " + weatherLabel : ""}${riftLabel ? " · " + riftLabel : ""}${hordeLabel ? " · " + hordeLabel : ""}\n` +
         `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · ${enemyLabel || "敵人 " + enemies.size}${farmLabel ? " · " + farmLabel : ""}${builtLabel ? " · " + builtLabel : ""}${groveLabel ? " · " + groveLabel : ""}${factionLabel ? " · " + factionLabel : ""}${petLabel ? " · " + petLabel : ""}\n` +
-        `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳 · 🌱鈕種樹 · 😊鈕比表情" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳 · T 種樹 · E 表情"}`;
+        `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳 · ⚔️鈕迎敵 · 🌱鈕種樹 · 😊鈕比表情" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳 · R 攻擊 · T 種樹 · E 表情"}`;
 
       setStatus(
         `真實世界已連上 · 快照 #${snapshotCount}` +
@@ -3081,6 +3088,13 @@ function handleServerMsg(msg) {
           displaySecs: msg.display_secs || 8,
         });
       }
+      break;
+    }
+    case "attack_hit": {
+      // 命中傷害飄字（ROADMAP 387／632）：任何人打中敵人，伺服器即全服廣播命中——在命中處（ex,ey）
+      // 浮起傷害數字＋淡出上飄。3D 世界第一次「看得見」戰鬥的力道（暴擊更大更橘、破綻直擊金、擊殺加 💀）。
+      // 缺欄位安全降級、缺命中座標安全跳過（不 throw；守 render-loop-resilience）。
+      spawnDamageFloat(msg);
       break;
     }
     default:
@@ -3133,6 +3147,7 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyH" && !e.repeat) { tryTend("harvest"); e.preventDefault(); return; } // 一鍵收成（ROADMAP 619）
   if (e.code === "KeyC" && !e.repeat) { tryLightCampfire(); e.preventDefault(); return; } // 野營篝火（ROADMAP 623）
   if (e.code === "KeyG" && !e.repeat) { tryGather(); e.preventDefault(); return; } // 採集（ROADMAP 629）
+  if (e.code === "KeyR" && !e.repeat) { tryAttack(); e.preventDefault(); return; } // 揮劍迎敵（ROADMAP 632）
   if (e.code === "KeyE" && !e.repeat) { if (globalThis.__bf3dToggleEmoteWheel) globalThis.__bf3dToggleEmoteWheel(); e.preventDefault(); return; } // 表情輪（ROADMAP 621）
   const dir = keyToDir(e);
   if (dir) { heldKeys[dir] = true; e.preventDefault(); }
@@ -3359,6 +3374,196 @@ function updateGatherBtn() {
 }
 
 // ============================================================
+// 在 3D 裡揮劍迎敵（ROADMAP 632）：3D 世界第一次能「主動戰鬥」——走近敵人按鍵／點鈕揮出一擊。
+// 直接回應 3D 大弧裡早已存在卻打不到的張力：世界事件（631）把獸潮／裂縫守護者灌進世界、夜裡敵人
+// 加速逼近，敵人有血條（626）卻只能挨打逃跑——現在終於能反擊、能自保、能替家園迎戰。
+//   · 純前端、純送既有權威意圖：攻擊一律送 {type:"attack"}（與 2D web/game.js 同協議，無座標）；
+//     零後端／協議／world-core 改動。
+//   · 伺服器才是權威：攻擊不帶目標——伺服器一律用攻擊者自己的權威座標挑 ATTACK_REACH 內最近的
+//     存活敵人結算傷害＋掉落（防隔空攻擊）。前端只負責「走近了才點亮鈕、送出意圖、揮出弧光」，
+//     打不打得到、傷害多少由後端裁決，敵人血條／消失由下一份快照反映（626 已會畫）。
+//   · 命中飄字：伺服器命中即全服廣播 AttackHit（387），在命中處浮起傷害數字＝戰鬥力道第一次「看得見」。
+//   · 攻擊不需登入（連線玩家即可自保，鏡像 2D／生火的誠實態）。
+// ============================================================
+const ATTACK_REACH = 64;          // 近戰判定半徑（px）——對齊後端 enemy_field::ATTACK_REACH／2D web/game.js
+const ATTACK_COOLDOWN_MS = 600;   // 本地冷卻（連點上限；真正可否出手由後端 ATTACK_COOLDOWN_SECS 裁決）
+let lastAttackAt = -1e9;          // 上次攻擊的本地時戳（手感防呆；後端另有權威冷卻）
+
+// 攻擊意圖 wire（與 2D 同協議，無座標——伺服器用攻擊者權威座標挑最近敵人）。抽純函式供 smoke 斷言。
+function attackWireMsg() { return { type: "attack" }; }
+
+// 攻擊目標判定（純函式、確定性、可測）：給自己的世界座標＋本份活著的敵人快照（世界 px），
+// 回最近且落在 ATTACK_REACH 內的存活敵人。死掉的（alive=false）／壞座標一律跳過；無自己座標／
+// 空快照安全回 null（不 throw、不誤點亮鈕；守 render-loop-resilience）。
+function attackTargetAt(self, enemies) {
+  if (!self || !Number.isFinite(self.x) || !Number.isFinite(self.y)) return null;
+  let best = null, bestD = ATTACK_REACH * ATTACK_REACH;
+  for (const e of (Array.isArray(enemies) ? enemies : [])) {
+    if (!e || e.alive === false) continue;
+    if (!Number.isFinite(e.x) || !Number.isFinite(e.y)) continue;
+    const dx = e.x - self.x, dy = e.y - self.y, d = dx * dx + dy * dy;
+    if (d <= bestD) { bestD = d; best = e; }
+  }
+  if (!best) return null;
+  return { x: best.x, y: best.y, kind: best.kind, hp: best.hp, maxHp: best.max_hp, notorious: !!best.notorious };
+}
+
+// 攻擊鈕的顯示狀態（純函式、面向玩家字串集中可 i18n、供 smoke 真值表）。
+// 走近敵人才亮（兇名精英給更急迫的字樣），否則鎖定提示「走近敵人」。
+function attackButtonState(target) {
+  if (!target) return { label: "⚔️ 攻擊", locked: true, hint: "走近敵人，就能揮劍迎戰" };
+  if (target.notorious) return { label: "💢 迎戰兇敵", locked: false, hint: "向腳邊的兇名精英揮出一擊（武器在手傷害更高）" };
+  return { label: "⚔️ 攻擊", locked: false, hint: "向腳邊的敵人揮出一擊（武器在手傷害更高）" };
+}
+
+// 嘗試攻擊（ROADMAP 632）：依自己最新權威世界座標算腳邊有沒有可攻擊的敵人；有就送 {type:"attack"}
+// ＋本地冷卻＋揮出弧光（純表現），沒有就給一句「走近敵人」的溫和提示（誠實、不假裝揮到）。真正成敗
+// （太遠／冷卻中／敵人剛被打倒）由伺服器裁決，傷害與敵人血條／消失在下一份快照／AttackHit 廣播反映。
+function tryAttack() {
+  const target = attackTargetAt(latestSelfWorld, latestEnemies);
+  if (!target) { flashToast("⚔️ 走近敵人，才能揮劍迎戰"); return; }
+  const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+  if (now - lastAttackAt < ATTACK_COOLDOWN_MS) return; // 冷卻內忽略連點
+  if (safeSend(attackWireMsg())) {
+    lastAttackAt = now;
+    spawnMeleeSwing(latestSelfWorld, target); // 朝目標方向揮出一道弧光（純表現、樂觀；命中與否看後端）
+  }
+}
+
+// 每幀依「腳邊有沒有可攻擊的敵人」刷新攻擊鈕外觀（純讀 latest* 算 attackTargetAt）。
+// 只在 label／鎖定態真的變動時才改寫 DOM；無 widget／壞值一律安全靜默（守 render-loop-resilience）。
+let attackBtnLastLabel = null, attackBtnLastLocked = null;
+function updateAttackBtn() {
+  const btn = document.getElementById("attackBtn");
+  if (!btn) return; // 舊頁／測試 DOM 無此鈕 → 靜默跳過
+  const st = attackButtonState(attackTargetAt(latestSelfWorld, latestEnemies));
+  if (st.label !== attackBtnLastLabel) { btn.textContent = st.label; attackBtnLastLabel = st.label; }
+  if (st.locked !== attackBtnLastLocked) { btn.classList.toggle("locked", st.locked); attackBtnLastLocked = st.locked; }
+  btn.title = st.hint;
+}
+
+// ── 揮砍弧光（純表現）：單一可重用 Torus 弧 mesh，攻擊時定位在自己腳下、朝目標方向掃過一個弧並淡出。
+//    單一 mesh、零逐擊配置；reduceMotion 下不掃只給一道靜態淡出閃光（尊重偏好）。fake-THREE 安全。
+let meleeSwing = null;            // 弧光 mesh（首次攻擊時惰性建立，避免測試 DOM 無 scene 時報錯）
+let meleeSwingStartMs = -1e9;     // 本次揮砍起始本地時戳
+let meleeSwingAngle = 0;          // 朝目標方向（場景 XZ 平面）
+const MELEE_SWING_MS = 280;       // 弧光存活時間
+function spawnMeleeSwing(self, target) {
+  if (!self || !target) return;
+  if (!meleeSwing) {
+    meleeSwing = new THREE.Mesh(
+      new THREE.TorusGeometry(3.2, 0.5, 6, 24, Math.PI * 0.9), // 約 160° 的弧（不是整環）＝像一道揮砍
+      new THREE.MeshBasicMaterial({ color: 0xfff1a8, transparent: true, opacity: 0, depthWrite: false })
+    );
+    meleeSwing.visible = false;
+    scene.add(meleeSwing);
+  }
+  meleeSwing.position.set(sx(self.x), 6, sz(self.y));
+  meleeSwingAngle = Math.atan2(sx(target.x) - sx(self.x), sz(target.y) - sz(self.y));
+  meleeSwingStartMs = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+  meleeSwing.visible = true;
+}
+function updateMeleeSwing(nowMs) {
+  if (!meleeSwing || !meleeSwing.visible) return;
+  const age = (nowMs - meleeSwingStartMs) / MELEE_SWING_MS;
+  if (age >= 1) { meleeSwing.visible = false; if (meleeSwing.material) meleeSwing.material.opacity = 0; return; }
+  meleeSwing.rotation.x = -Math.PI / 2; // 躺平貼在地面平面上
+  if (reduceMotion) {
+    meleeSwing.rotation.z = meleeSwingAngle;     // 不掃過、固定朝向
+    meleeSwing.scale.set(1, 1, 1);
+  } else {
+    meleeSwing.rotation.z = meleeSwingAngle - 0.9 + age * 1.8; // 掃過一個弧
+    const s = 0.7 + age * 0.6;
+    meleeSwing.scale.set(s, s, 1);
+  }
+  if (meleeSwing.material) meleeSwing.material.opacity = (1 - age) * 0.85;
+}
+
+// ── 命中傷害飄字（ROADMAP 387／632）：AttackHit 全服廣播驅動，在命中處浮起傷害數字＋淡出上飄。
+//    任何人打中敵人都看得到＝3D 世界第一次「看得見」戰鬥的力道。貼圖 FIFO 快取＋飄字數上限＝有界。
+const dmgTexCache = new Map();
+const DMG_TEX_MAX = 48;
+function damageTexture(text, css) {
+  const key = css + "|" + text;
+  let tex = dmgTexCache.get(key);
+  if (tex) return tex;
+  const canvas = document.createElement("canvas");
+  canvas.width = 256; canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  ctx.font = "bold 72px system-ui, sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.lineWidth = 8; ctx.strokeStyle = "rgba(20,12,0,0.85)"; // 深描邊，亮底/暗底都讀得到
+  ctx.strokeText(text, 128, 64);
+  ctx.fillStyle = css;
+  ctx.fillText(text, 128, 64);
+  tex = new THREE.CanvasTexture(canvas);
+  tex.anisotropy = 4;
+  if (dmgTexCache.size >= DMG_TEX_MAX) { // FIFO 汰換、釋放 GPU 資源
+    const k = dmgTexCache.keys().next().value;
+    const o = dmgTexCache.get(k);
+    if (o && o.dispose) o.dispose();
+    dmgTexCache.delete(k);
+  }
+  dmgTexCache.set(key, tex);
+  return tex;
+}
+
+// 傷害飄字的文字與配色（純函式、確定性、壞值安全、可測）：暴擊／滿蓄更大更橘紅、破綻直擊金、
+// 半蓄橘、擊殺加 💀；缺欄位／壞 dmg 安全降級為「0」普通飄字（不 throw）。
+function damageFloatSpec(ev) {
+  const dmg = (ev && Number.isFinite(ev.dmg)) ? Math.max(0, Math.floor(ev.dmg)) : 0;
+  const crit = !!(ev && ev.is_crit);
+  const weak = !!(ev && ev.is_weak);
+  const kill = !!(ev && ev.is_kill);
+  const tier = (ev && Number.isFinite(ev.charge_tier)) ? ev.charge_tier : 0;
+  let text = String(dmg);
+  if (weak) text = "❉" + text;        // 破綻直擊：金色 ❉（鏡像 2D ROADMAP 489）
+  if (crit) text = text + "!";         // 暴擊：驚嘆
+  if (kill) text = text + " 💀";       // 擊殺
+  let css = "#ffe9a8";                 // 普通：暖黃
+  if (weak) css = "#ffd34d";           // 破綻直擊：金
+  else if (crit || tier >= 2) css = "#ff7a5a"; // 暴擊／滿蓄：橘紅
+  else if (tier >= 1) css = "#ffb070"; // 半蓄：橘
+  const scale = (crit || tier >= 2) ? 1.5 : (weak ? 1.3 : 1.0);
+  return { text, css, scale };
+}
+
+const damageFloats = [];            // 暫態傷害飄字 sprite 清單
+const DAMAGE_FLOAT_MS = 750;        // 飄字存活時間
+const DAMAGE_FLOAT_MAX = 24;        // 同時飄字上限（混戰不致無界累積）
+function spawnDamageFloat(ev) {
+  if (!ev || !Number.isFinite(ev.ex) || !Number.isFinite(ev.ey)) return; // 缺命中座標：安全跳過
+  const spec = damageFloatSpec(ev);
+  const tex = damageTexture(spec.text, spec.css);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, opacity: 1 }));
+  const h = 6 * spec.scale;
+  sprite.scale.set(h * 2, h, 1);
+  sprite.position.set(sx(ev.ex), 9, sz(ev.ey));
+  scene.add(sprite);
+  const nowMs = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+  damageFloats.push({ sprite, startMs: nowMs, baseY: 9 });
+  while (damageFloats.length > DAMAGE_FLOAT_MAX) { // 超量丟最舊
+    const old = damageFloats.shift();
+    scene.remove(old.sprite);
+    if (old.sprite.material && old.sprite.material.dispose) old.sprite.material.dispose();
+  }
+}
+function updateDamageFloats(nowMs) {
+  for (let i = damageFloats.length - 1; i >= 0; i--) {
+    const f = damageFloats[i];
+    const age = (nowMs - f.startMs) / DAMAGE_FLOAT_MS;
+    if (age >= 1) {
+      scene.remove(f.sprite);
+      if (f.sprite.material && f.sprite.material.dispose) f.sprite.material.dispose();
+      damageFloats.splice(i, 1);
+      continue;
+    }
+    if (!reduceMotion) f.sprite.position.y = f.baseY + age * 8; // 緩緩上飄（reduceMotion 下定住）
+    if (f.sprite.material) f.sprite.material.opacity = age < 0.6 ? 1 : (1 - (age - 0.6) / 0.4);
+  }
+}
+
+// ============================================================
 // 城鎮交易（ROADMAP 630）：把既有「新手村商人商店」（#57）接進 3D——3D 世界第一次能「以物易乙太」。
 //   · 伺服器才是權威：買賣一律送既有意圖 {type:"shop_buy"|"shop_sell", item, qty}（與 2D web/game.js 同協議），
 //     伺服器用玩家權威座標判距（SHOP_REACH=96）、扣乙太/背包、不合法回滾，下一份快照反映真實結果。
@@ -3565,6 +3770,7 @@ function updateShopBtn() {
   bind("harvestBtn", () => tryTend("harvest"));
   bind("campfireBtn", tryLightCampfire);
   bind("gatherBtn", tryGather);
+  bind("attackBtn", tryAttack); // 揮劍迎敵（ROADMAP 632）；R 鍵在上方 keydown 處理
   updateActBtns();
 })();
 
@@ -4057,6 +4263,10 @@ function safeRender() {
     updateGatherBtn();
     // 交易鈕：走近新手村商人才亮（ROADMAP 630）
     updateShopBtn();
+    // 攻擊鈕＋戰鬥特效：走近敵人才亮攻擊鈕，揮砍弧光掃過淡出、命中傷害飄字上飄淡出（ROADMAP 632）
+    updateAttackBtn();
+    updateMeleeSwing(performance.now());
+    updateDamageFloats(performance.now());
 
     // 自己：客戶端預測（零延遲）+ 平滑對帳權威，再疊上視覺跳的高度
     if (meGroup) {
@@ -4105,7 +4315,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, attackWireMsg, attackTargetAt, attackButtonState, damageFloatSpec, spawnMeleeSwing, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel };
 }
 
 // 啟動
