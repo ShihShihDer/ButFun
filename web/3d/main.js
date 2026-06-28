@@ -2769,6 +2769,150 @@ function updateWorldEvents(dt, t) {
   }
 }
 
+// ============================================================
+// 探索羅盤雷達（ROADMAP 633）
+// ============================================================
+// 3D 世界一直沒有任何導航：玩家不知道家在哪、附近有沒有居民／敵人、世界大事（裂縫／獸潮）
+// 在哪個方位該往哪奔。AI 居民反覆許願「探索沒方向感／找不到目標／不知世界大事在哪」——
+// 本切片補上一面「玩家為心、北朝上」的圓形雷達 HUD：純讀既有快照座標（其他玩家／居民／
+// 敵人／新手村家／重大世界事件），把每個目標換算成雷達上的方位點；超出範圍者夾到邊緣只指方向，
+// 讓「世界出大事了」第一次「看得出在哪、該往哪奔」。零後端改動、零協議改動、純前端呈現。
+
+// 新手村（家）中心，鏡像 world-core SAFE_ZONE_CX/CY（單一真相在 Rust，此處只讀不另算）。
+const RADAR_HOME_WX = 2344, RADAR_HOME_WY = 2296;
+// 雷達半徑（場景單位；1 場景單位 = 1/WORLD_SCALE = 20 世界像素）。約涵蓋自身周圍 ~1400px。
+const RADAR_RANGE = 70;
+// 各類目標的雷達配色與點半徑（畫得越晚越上層；ring=true 者加脈動外環更搶眼＝奔赴目標）。
+const RADAR_KIND = {
+  home:     { color: "#7fd6ff", r: 3.4, ring: false },
+  player:   { color: "#4aa3ff", r: 2.6, ring: false },
+  resident: { color: "#9be36b", r: 2.6, ring: false },
+  enemy:    { color: "#ff5a5a", r: 2.8, ring: false },
+  horde:    { color: "#ff8c1a", r: 4.2, ring: true },
+  rift:     { color: "#c060ff", r: 4.2, ring: true },
+};
+
+// 純函式：把場景座標的目標清單換算成雷達正規座標 [-1,1]（north-up：+x=東/右、+z=南/下）。
+// self={x,z}（場景座標）；entities=[{x,z,kind}]；range=雷達邊緣對應的場景半徑。
+// 回傳每筆 {nx,ny,kind,edge}：edge=true 表超出範圍、已夾到單位圓邊緣（只剩方向意義）。
+// 壞值（缺 self／非有限座標／非陣列）安全略過，永遠回得出陣列（守 render-loop-resilience）。
+function radarBlips(self, entities, range) {
+  const out = [];
+  if (!self || !Number.isFinite(self.x) || !Number.isFinite(self.z)) return out;
+  const R = Number.isFinite(range) && range > 0 ? range : 1;
+  if (!Array.isArray(entities)) return out;
+  for (const e of entities) {
+    if (!e || !Number.isFinite(e.x) || !Number.isFinite(e.z)) continue;
+    let nx = (e.x - self.x) / R;
+    let ny = (e.z - self.z) / R;
+    const d = Math.hypot(nx, ny);
+    let edge = false;
+    if (d > 1) { nx /= d; ny /= d; edge = true; } // 超出範圍 → 夾到單位圓邊緣只指方向
+    out.push({ nx, ny, kind: e.kind, edge });
+  }
+  return out;
+}
+
+// 純函式：鏡頭朝向在雷達上的單位向量（north-up：+x=右、+y=下）。鏡頭在玩家後方 (sin,cos)*dist
+// 看向玩家，故視線方向 = -(sin camYaw, cos camYaw)。確定性、壞值退回朝上 (0,-1)。
+function radarHeading(camYawArg) {
+  if (!Number.isFinite(camYawArg)) return { x: 0, y: -1 };
+  return { x: -Math.sin(camYawArg), y: -Math.cos(camYawArg) };
+}
+
+// 蒐集這一幀要上雷達的目標（場景座標）。只讀既有 live maps／快照衍生，零後端改動。
+function collectRadarEntities() {
+  const list = [];
+  // 其他玩家（排除自己）
+  for (const [id, g] of players) { if (id !== myId) list.push({ x: g.position.x, z: g.position.z, kind: "player" }); }
+  // 故鄉居民
+  for (const [, g] of npcs) list.push({ x: g.position.x, z: g.position.z, kind: "resident" });
+  // 敵人（已倒下的不標）
+  for (const [, g] of enemies) {
+    const it = g.userData && g.userData.item;
+    if (it && it.alive === false) continue;
+    list.push({ x: g.position.x, z: g.position.z, kind: "enemy" });
+  }
+  // 新手村家（恆在）
+  list.push({ x: sx(RADAR_HOME_WX), z: sz(RADAR_HOME_WY), kind: "home" });
+  // 重大世界事件（裂縫／獸潮）——召喚玩家奔赴的目標
+  const rv = riftVisual(latestRift);
+  if (rv.active) list.push({ x: sx(rv.x), z: sz(rv.y), kind: "rift" });
+  const hv = hordeVisual(latestHorde);
+  if (hv.active) list.push({ x: sx(hv.x), z: sz(hv.y), kind: "horde" });
+  return list;
+}
+
+const radarCanvas = document.getElementById("radar");
+const radarCtx = radarCanvas ? radarCanvas.getContext("2d") : null;
+
+// 每幀繪製雷達。內部全 try/catch 包覆（呼叫端 safeRender 也有護網，雙保險不凍畫面）。
+function drawRadar() {
+  if (!radarCtx) return;
+  const W = radarCanvas.width, H = radarCanvas.height;
+  const cx = W / 2, cy = H / 2, R = W / 2 - 6; // 邊緣留一點內距
+  radarCtx.clearRect(0, 0, W, H);
+  const me = myId ? players.get(myId) : null;
+  if (!me) return; // 還沒在快照裡找到自己 → 留空（不畫殘影）
+  const self = { x: me.position.x, z: me.position.z };
+  const blips = radarBlips(self, collectRadarEntities(), RADAR_RANGE);
+  const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+  const pulse = reduceMotion ? 1 : 0.7 + 0.3 * Math.sin(now / 320); // 事件外環脈動
+
+  radarCtx.save();
+  // 圓形裁切 + 底盤
+  radarCtx.beginPath(); radarCtx.arc(cx, cy, R, 0, Math.PI * 2); radarCtx.clip();
+  radarCtx.fillStyle = "rgba(10,14,22,0.35)"; radarCtx.fillRect(0, 0, W, H);
+  // 距離環（兩圈淡灰）＋十字方位線
+  radarCtx.strokeStyle = "rgba(255,255,255,0.12)"; radarCtx.lineWidth = 1;
+  for (const f of [0.5, 1]) { radarCtx.beginPath(); radarCtx.arc(cx, cy, R * f, 0, Math.PI * 2); radarCtx.stroke(); }
+  radarCtx.beginPath(); radarCtx.moveTo(cx - R, cy); radarCtx.lineTo(cx + R, cy);
+  radarCtx.moveTo(cx, cy - R); radarCtx.lineTo(cx, cy + R); radarCtx.stroke();
+
+  // 鏡頭視野扇形（半透明金）：讓玩家知道「自己正看著哪個方位」
+  const hd = radarHeading(camYaw);
+  const ang = Math.atan2(hd.y, hd.x);
+  const half = 0.42; // 視野扇半角（rad）
+  radarCtx.beginPath(); radarCtx.moveTo(cx, cy);
+  radarCtx.arc(cx, cy, R * 0.95, ang - half, ang + half);
+  radarCtx.closePath();
+  radarCtx.fillStyle = "rgba(255,213,74,0.10)"; radarCtx.fill();
+
+  // 目標點
+  for (const b of blips) {
+    const px = cx + b.nx * R, py = cy + b.ny * R;
+    const spec = RADAR_KIND[b.kind] || { color: "#cccccc", r: 2.4, ring: false };
+    if (spec.ring) { // 事件：脈動外環，最搶眼
+      radarCtx.beginPath(); radarCtx.arc(px, py, spec.r + 3 * pulse, 0, Math.PI * 2);
+      radarCtx.strokeStyle = spec.color; radarCtx.globalAlpha = 0.6 * pulse; radarCtx.lineWidth = 1.6; radarCtx.stroke();
+      radarCtx.globalAlpha = 1;
+    }
+    if (b.edge) {
+      // 邊緣目標：畫一個指向外的小三角（只剩方向意義）
+      const a = Math.atan2(b.ny, b.nx);
+      radarCtx.save(); radarCtx.translate(px, py); radarCtx.rotate(a);
+      radarCtx.beginPath(); radarCtx.moveTo(spec.r + 1, 0); radarCtx.lineTo(-spec.r, spec.r * 0.8); radarCtx.lineTo(-spec.r, -spec.r * 0.8); radarCtx.closePath();
+      radarCtx.fillStyle = spec.color; radarCtx.fill(); radarCtx.restore();
+    } else {
+      radarCtx.beginPath(); radarCtx.arc(px, py, spec.r, 0, Math.PI * 2);
+      radarCtx.fillStyle = spec.color; radarCtx.fill();
+    }
+  }
+
+  // 自己：中心金點 + 朝向短箭
+  radarCtx.fillStyle = "#ffd54a";
+  radarCtx.beginPath(); radarCtx.arc(cx, cy, 3.2, 0, Math.PI * 2); radarCtx.fill();
+  radarCtx.strokeStyle = "#ffd54a"; radarCtx.lineWidth = 2;
+  radarCtx.beginPath(); radarCtx.moveTo(cx, cy); radarCtx.lineTo(cx + hd.x * 11, cy + hd.y * 11); radarCtx.stroke();
+  radarCtx.restore();
+
+  // 北標記（north-up：頂端）
+  radarCtx.fillStyle = "rgba(255,255,255,0.6)";
+  radarCtx.font = "bold 13px system-ui, sans-serif";
+  radarCtx.textAlign = "center"; radarCtx.textBaseline = "top";
+  radarCtx.fillText("北", cx, 3);
+}
+
 // 各類實體用各自的 Map 追蹤（id → group），快照進來時 reconcile。
 const players = new Map();
 const npcs = new Map();
@@ -4259,6 +4403,8 @@ function safeRender() {
     updateWorldEvents(dt, t);
     // 天時盤 HUD：太陽/月亮繞盤、時段、下一時段倒數、夜間危機暈輪（ROADMAP 620）
     updateDayClock();
+    // 探索羅盤雷達 HUD：玩家為心標出家／居民／其他玩家／敵人／世界大事方位（ROADMAP 633）
+    drawRadar();
     // 採集鈕：依腳邊有沒有可採目標（樹／石／乙太礦／夜間星晶）即時點亮／鎖定（ROADMAP 629）
     updateGatherBtn();
     // 交易鈕：走近新手村商人才亮（ROADMAP 630）
@@ -4315,7 +4461,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, attackWireMsg, attackTargetAt, attackButtonState, damageFloatSpec, spawnMeleeSwing, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, attackWireMsg, attackTargetAt, attackButtonState, damageFloatSpec, spawnMeleeSwing, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel, radarBlips, radarHeading };
 }
 
 // 啟動

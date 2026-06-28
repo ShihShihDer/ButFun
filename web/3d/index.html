@@ -185,6 +185,22 @@
     #dcText { display: flex; flex-direction: column; min-width: 0; }
     #dcPhase { color: #ffd54a; font-weight: 600; white-space: nowrap; }
     #dcNext { color: #9aa4b2; font-size: 11px; white-space: nowrap; }
+
+    /* ---- 探索羅盤雷達 HUD（ROADMAP 633）：右上角圓形雷達，玩家為心、北朝上 ---- */
+    /* AI 居民反覆許願「探索沒方向感／找不到目標／不知世界大事在哪」，3D 此前完全沒有導航。 */
+    /* 純讀既有快照座標標出家／居民／其他玩家／敵人／世界大事方位；超出範圍夾到邊緣只指方向。 */
+    #radar {
+      position: fixed; right: 12px; top: 72px; z-index: 11;
+      width: 120px; height: 120px; border-radius: 50%;
+      pointer-events: none; user-select: none;
+      background: rgba(13,17,23,0.5);
+      border: 2px solid rgba(255,255,255,0.18);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.35), inset 0 0 18px rgba(0,0,0,0.3);
+    }
+    /* 窄螢幕（手機直握）縮小一點，避免擠到動作鈕／天時盤 */
+    @media (max-width: 480px) {
+      #radar { width: 94px; height: 94px; top: 66px; }
+    }
   </style>
   <!--
     Three.js 走 CDN importmap（比照原 /3d/ 與 /play3d/）。
@@ -207,6 +223,8 @@
     <div id="dcDial"><div id="dcOrbit"><div id="dcSun">☀️</div></div></div>
     <div id="dcText"><span id="dcPhase"></span><span id="dcNext"></span></div>
   </div>
+  <!-- 探索羅盤雷達 HUD（ROADMAP 633）：右上角圓形雷達；main.js 每幀讀快照座標標出目標方位 -->
+  <canvas id="radar" width="240" height="240" aria-hidden="true"></canvas>
   <div id="status">連線中…</div>
   <div id="hint">WASD／搖桿 移動 · 拖曳轉鏡頭 · 空白鍵／跳鈕 跳 · G 採集 · B 交易 · T 種樹 · F 澆水 · H 收成 · E 表情</div>
   <div id="err"></div>
