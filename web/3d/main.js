@@ -2596,6 +2596,179 @@ function groveHudLabel(groves) {
   return mature > 0 ? `🌳 樹 ${groves.length}（成樹 ${mature}）` : `🌱 樹 ${groves.length}`;
 }
 
+// ============================================================
+// 重大世界事件在 3D 裡現形（ROADMAP 631）：世界導演每隔幾分鐘就上演的兩樁大事——
+// 宇宙裂縫（world_event，ROADMAP 26：在城外某座標撕開裂縫、注入最強的裂縫守護者）與
+// 獸潮攻城（horde_event，ROADMAP 44：生態壓力到臨界，挑一座城門廣播倒數→攻城）——
+// 後端早就隨快照下傳權威座標／倒數／階段（2D 一直用小地圖標記＋橫幅演出），3D 卻把這
+// 兩個 optional 欄位整個丟掉：裂縫開了看不見、獸潮逼近毫無預警。本切片把它們接成「一眼
+// 望去就知道世界出大事了」的醒目地標：裂縫＝次元紫光柱＋旋轉能量環；獸潮＝城門警示光束
+// ＋浮空地名牌（逼近琥珀、攻城赤紅）。純讀既有欄位，缺欄／NaN／非物件一律保守、永不拋。
+// ============================================================
+const RIFT_COLOR = 0xb060ff;                                    // 裂縫光柱：次元紫
+const RIFT_CORE_COLOR = 0xe6c2ff;                               // 裂縫亮心：更亮的淡紫
+const HORDE_COLOR = { announcing: 0xffb030, sieging: 0xff3020 }; // 逼近琥珀／攻城赤紅
+
+// ── 純函式（供 render-smoke 斷言；確定性、壞值安全、永不拋）─────────────────
+// 宇宙裂縫顯影參數：缺有限座標一律 active:false（優雅無事件）。remainingSecs clamp ≥0。
+function riftVisual(ev) {
+  if (!ev || typeof ev !== "object" || !Number.isFinite(ev.x) || !Number.isFinite(ev.y)) {
+    return { active: false, remainingSecs: 0, x: 0, y: 0 };
+  }
+  const rem = Number.isFinite(ev.remaining_secs) && ev.remaining_secs > 0 ? ev.remaining_secs : 0;
+  return { active: true, remainingSecs: rem, x: ev.x, y: ev.y };
+}
+// 裂縫 HUD 文字行（無事件回空字串；倒數無條件進位整秒，缺倒數只報已開啟）。
+function riftHudLabel(ev) {
+  const v = riftVisual(ev);
+  if (!v.active) return "";
+  const s = Math.ceil(v.remainingSecs);
+  return s > 0 ? `🌀 宇宙裂縫已開啟 · 約 ${s}s` : "🌀 宇宙裂縫已開啟";
+}
+// 獸潮攻城顯影參數：phase 正規化（"sieging"→攻城、其餘→"announcing"逼近）；缺有限座標
+// 一律 active:false；secsLeft clamp ≥0；label 壞值回空字串。
+function hordeVisual(ev) {
+  if (!ev || typeof ev !== "object" || !Number.isFinite(ev.site_x) || !Number.isFinite(ev.site_y)) {
+    return { active: false, phase: "announcing", secsLeft: 0, x: 0, y: 0, label: "" };
+  }
+  const phase = ev.phase === "sieging" ? "sieging" : "announcing";
+  const secs = Number.isFinite(ev.secs_left) && ev.secs_left > 0 ? ev.secs_left : 0;
+  const label = typeof ev.site_label === "string" ? ev.site_label : "";
+  return { active: true, phase, secsLeft: secs, x: ev.site_x, y: ev.site_y, label };
+}
+// 獸潮 HUD 文字行（無事件回空字串；逼近／攻城兩階段不同字樣與圖示）。
+function hordeHudLabel(ev) {
+  const v = hordeVisual(ev);
+  if (!v.active) return "";
+  const name = v.label || "城門";
+  const s = Math.ceil(v.secsLeft);
+  const tail = s > 0 ? ` · ${s}s` : "";
+  return v.phase === "sieging" ? `⚔️ 獸潮攻城·${name}${tail}` : `⚠️ 獸潮逼近·${name}${tail}`;
+}
+
+// ── 程序化地標（零美術資產；單例，懶建一次、之後切 .visible）─────────────────
+// 宇宙裂縫光柱：一道次元紫發光能量柱＋亮心＋基座兩道反向旋轉的能量環。MeshBasicMaterial
+// 不受光＝永遠自發亮，夜裡也醒目；半透明疊出光霧感。userData 留引用供每幀脈動。
+function makeRiftPortal() {
+  const g = new THREE.Group();
+  const column = new THREE.Mesh(
+    new THREE.CylinderGeometry(3.2, 1.2, 64, 10),
+    new THREE.MeshBasicMaterial({ color: RIFT_COLOR, transparent: true, opacity: 0.3, depthWrite: false })
+  );
+  column.position.y = 32;
+  g.add(column);
+  const core = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.9, 0.4, 66, 8),
+    new THREE.MeshBasicMaterial({ color: RIFT_CORE_COLOR, transparent: true, opacity: 0.6, depthWrite: false })
+  );
+  core.position.y = 33;
+  g.add(core);
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(5, 0.5, 8, 24),
+    new THREE.MeshBasicMaterial({ color: RIFT_COLOR, transparent: true, opacity: 0.7, depthWrite: false })
+  );
+  ring.rotation.x = Math.PI / 2; ring.position.y = 1.5;
+  g.add(ring);
+  const ring2 = new THREE.Mesh(
+    new THREE.TorusGeometry(3, 0.35, 8, 20),
+    new THREE.MeshBasicMaterial({ color: RIFT_CORE_COLOR, transparent: true, opacity: 0.6, depthWrite: false })
+  );
+  ring2.rotation.x = Math.PI / 2; ring2.position.y = 13;
+  g.add(ring2);
+  g.userData.column = column; g.userData.core = core; g.userData.ring = ring; g.userData.ring2 = ring2;
+  scene.add(g);
+  g.visible = false;
+  return g;
+}
+
+// 獸潮警示光束：一道警示色光柱＋地面警示圈＋浮空地名牌。顏色隨階段（逼近琥珀／攻城赤紅）
+// 由 updateWorldEvents 每幀更新；地名牌變了才重建貼圖。色材質用 THREE.Color 包好（測試假
+// THREE 才有 setHex）。
+function makeHordeBeacon() {
+  const g = new THREE.Group();
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(2.6, 1.4, 48, 8),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(HORDE_COLOR.announcing), transparent: true, opacity: 0.32, depthWrite: false })
+  );
+  beam.position.y = 24;
+  g.add(beam);
+  const disc = new THREE.Mesh(
+    new THREE.CylinderGeometry(8, 8, 0.3, 28),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(HORDE_COLOR.announcing), transparent: true, opacity: 0.25, depthWrite: false })
+  );
+  disc.position.y = 0.15;
+  g.add(disc);
+  g.userData.beam = beam; g.userData.disc = disc;
+  g.userData.label = null; g.userData.labelText = null; // 地名牌懶建（首次有 label 才生）
+  scene.add(g);
+  g.visible = false;
+  return g;
+}
+
+// 重建獸潮地名牌（地名變了才呼叫，避免每幀重生貼圖）。沿用 makeLabel 的白字描邊牌，
+// 抬高到光束頂、放大成醒目橫牌。
+function rebuildHordeLabel(marker, text) {
+  const old = marker.userData.label;
+  if (old) {
+    marker.remove(old);
+    if (old.material && old.material.map && typeof old.material.map.dispose === "function") old.material.map.dispose();
+  }
+  const label = makeLabel(text || "獸潮");
+  label.position.y = 42;
+  label.scale.set(30, 7.5, 1);
+  marker.add(label);
+  marker.userData.label = label;
+  marker.userData.labelText = text;
+}
+
+// 最新一筆世界事件快照（非物件＝null＝無事件）。單例地標懶建，事件消失即隱藏。
+let latestRift = null;
+let latestHorde = null;
+let riftMarker = null;
+let hordeMarker = null;
+
+// 每幀更新世界事件地標：吸到事件權威座標（sx/sz）、脈動光效、地名變了才重建牌面、
+// 事件消失就隱藏。無事件時連 mesh 都不建（懶建），對壞值一律安全。
+function updateWorldEvents(dt, t) {
+  // 宇宙裂縫
+  const rv = riftVisual(latestRift);
+  if (rv.active) {
+    if (!riftMarker) riftMarker = makeRiftPortal();
+    riftMarker.visible = true;
+    riftMarker.position.x = sx(rv.x);
+    riftMarker.position.z = sz(rv.y);
+    const pulse = 0.5 + 0.5 * Math.sin(t * 2.2);
+    const ud = riftMarker.userData;
+    if (ud.column && ud.column.material) ud.column.material.opacity = 0.24 + 0.14 * pulse;
+    if (ud.core && ud.core.material) ud.core.material.opacity = 0.45 + 0.25 * pulse;
+    if (ud.ring) ud.ring.rotation.y = t * 0.8;
+    if (ud.ring2) ud.ring2.rotation.y = -t * 0.6;
+  } else if (riftMarker) {
+    riftMarker.visible = false;
+  }
+  // 獸潮攻城
+  const hv = hordeVisual(latestHorde);
+  if (hv.active) {
+    if (!hordeMarker) hordeMarker = makeHordeBeacon();
+    hordeMarker.visible = true;
+    hordeMarker.position.x = sx(hv.x);
+    hordeMarker.position.z = sz(hv.y);
+    const col = HORDE_COLOR[hv.phase] || HORDE_COLOR.announcing;
+    const ud = hordeMarker.userData;
+    if (ud.beam && ud.beam.material && ud.beam.material.color) ud.beam.material.color.setHex(col);
+    if (ud.disc && ud.disc.material && ud.disc.material.color) ud.disc.material.color.setHex(col);
+    // 攻城期脈動更急更亮，傳達迫近感
+    const rate = hv.phase === "sieging" ? 5.0 : 2.0;
+    const amp = hv.phase === "sieging" ? 0.3 : 0.16;
+    const pulse = 0.5 + 0.5 * Math.sin(t * rate);
+    if (ud.beam && ud.beam.material) ud.beam.material.opacity = 0.28 + amp * pulse;
+    if (ud.disc && ud.disc.material) ud.disc.material.opacity = 0.2 + 0.5 * amp * pulse;
+    if (ud.labelText !== hv.label) rebuildHordeLabel(hordeMarker, hv.label);
+  } else if (hordeMarker) {
+    hordeMarker.visible = false;
+  }
+}
+
 // 各類實體用各自的 Map 追蹤（id → group），快照進來時 reconcile。
 const players = new Map();
 const npcs = new Map();
@@ -2711,6 +2884,10 @@ function handleServerMsg(msg) {
       if (msg.rainbow && typeof msg.rainbow === "object") latestRainbow = msg.rainbow;
       // 鎮民派系（ROADMAP 625）：留存最新一筆結盟／敵對配對，render 每幀據此在居民之間畫關係連線。
       if (Array.isArray(msg.town_factions)) latestTownFactions = msg.town_factions;
+      // 重大世界事件（ROADMAP 631）：留存最新一筆宇宙裂縫／獸潮攻城（非物件＝無事件），
+      // render 每幀據此在事件座標立起／隱藏醒目地標（光柱／警示光束）。
+      latestRift = (msg.world_event && typeof msg.world_event === "object") ? msg.world_event : null;
+      latestHorde = (msg.horde_event && typeof msg.horde_event === "object") ? msg.horde_event : null;
       // 這份快照的到達時間：全類共用一個時間戳，內插時間軸才一致。
       const recvT = performance.now();
       // 玩家：火柴人（自己金色、別人藍色），帶名字標籤
@@ -2868,8 +3045,10 @@ function handleServerMsg(msg) {
       const groveLabel = groveHudLabel(msg.world_groves); // 視野內世界樹群＋其中成樹數（ROADMAP 617）
       const factionLabel = factionHudLabel(latestTownFactions); // 此刻幾組結盟／敵對（ROADMAP 625）
       const petLabel = petHudLabel(msg.players); // 視野內玩家身邊的寵物夥伴數（ROADMAP 627）
+      const riftLabel = riftHudLabel(latestRift);    // 宇宙裂縫已開啟＋倒數（ROADMAP 631）
+      const hordeLabel = hordeHudLabel(latestHorde); // 獸潮逼近／攻城＋地名＋倒數（ROADMAP 631）
       hudEl.innerHTML =
-        `<b>${myName}</b> · 線上 ${players.size} 人${phaseLabel ? " · " + phaseLabel : ""}${weatherLabel ? " · " + weatherLabel : ""}\n` +
+        `<b>${myName}</b> · 線上 ${players.size} 人${phaseLabel ? " · " + phaseLabel : ""}${weatherLabel ? " · " + weatherLabel : ""}${riftLabel ? " · " + riftLabel : ""}${hordeLabel ? " · " + hordeLabel : ""}\n` +
         `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · ${enemyLabel || "敵人 " + enemies.size}${farmLabel ? " · " + farmLabel : ""}${builtLabel ? " · " + builtLabel : ""}${groveLabel ? " · " + groveLabel : ""}${factionLabel ? " · " + factionLabel : ""}${petLabel ? " · " + petLabel : ""}\n` +
         `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳 · 🌱鈕種樹 · 😊鈕比表情" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳 · T 種樹 · E 表情"}`;
 
@@ -3870,6 +4049,8 @@ function safeRender() {
     updateStructures(dt, t);
     // 世界樹群：幼樹／成樹隨風輕擺、AOI 淡入淡出（ROADMAP 617）
     updateGroves(dt, t);
+    // 重大世界事件：宇宙裂縫光柱脈動旋轉、獸潮警示光束依階段變色脈動、事件消失即隱藏（ROADMAP 631）
+    updateWorldEvents(dt, t);
     // 天時盤 HUD：太陽/月亮繞盤、時段、下一時段倒數、夜間危機暈輪（ROADMAP 620）
     updateDayClock();
     // 採集鈕：依腳邊有沒有可採目標（樹／石／乙太礦／夜間星晶）即時點亮／鎖定（ROADMAP 629）
@@ -3924,7 +4105,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel };
 }
 
 // 啟動
