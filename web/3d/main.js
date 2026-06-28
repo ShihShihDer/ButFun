@@ -2930,6 +2930,9 @@ let latestCrystals = [];    // 最新一筆星晶礦脈（夜間限定，世界 
 // 在 3D 裡揮劍迎敵（ROADMAP 632）：留存最新一筆「活著的敵人」快照（世界 px，含 hp／max_hp），
 // render 每幀據此算「腳邊有沒有可攻擊的敵人」→ 點亮攻擊鈕、按鍵即送既有權威攻擊意圖。
 let latestEnemies = [];     // 最新一筆活著的敵人（世界 px）
+// 園丁撫慰（ROADMAP 634）：留存最新一筆居民快照（世界 px，含 needs_care／name），render 每幀據此
+// 算「腳邊有沒有正有心事、需要被關心的故鄉居民」→ 點亮關心鈕、按鍵即送既有權威撫慰意圖。
+let latestNpcs = [];        // 最新一筆居民／NPC 快照（世界 px）
 // 城鎮交易（ROADMAP 630）：把既有「商人商店」（#57）接進 3D。每份快照留存「帶買賣目錄的 NPC」
 // 與「自己這筆 PlayerView」（含乙太／背包），render 每幀據此點亮交易鈕、開著面板時即時刷新行情。
 let latestMerchants = [];   // 最新一筆商人清單（NpcView 中 buy_list／sell_list 非空者，世界 px）
@@ -3164,6 +3167,10 @@ function handleServerMsg(msg) {
       // 「腳邊有沒有可攻擊的敵人」→ 點亮攻擊鈕。死掉的（alive=false）排除＝不會誤點亮揮向屍體。
       latestEnemies = Array.isArray(msg.enemies) ? msg.enemies.filter((e) => e && e.alive !== false) : [];
 
+      // 園丁撫慰判距（ROADMAP 634）：留存本份居民快照（世界 px），供 render 每幀算「腳邊有沒有
+      // 正有心事、需要被關心的故鄉居民」→ 點亮關心鈕（needs_care 由後端依需求偏低判定）。
+      latestNpcs = Array.isArray(msg.npcs) ? msg.npcs : [];
+
       // 城鎮交易判距（ROADMAP 630）：留存「帶買賣目錄的 NPC」＋「自己這筆 PlayerView」（含乙太／背包），
       // 供 render 每幀算「腳邊有沒有商人」→ 點亮交易鈕；面板開著時據此即時刷新行情／庫存／餘額。
       latestMerchants = shopMerchantsFrom(msg.npcs);
@@ -3292,6 +3299,7 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyC" && !e.repeat) { tryLightCampfire(); e.preventDefault(); return; } // 野營篝火（ROADMAP 623）
   if (e.code === "KeyG" && !e.repeat) { tryGather(); e.preventDefault(); return; } // 採集（ROADMAP 629）
   if (e.code === "KeyR" && !e.repeat) { tryAttack(); e.preventDefault(); return; } // 揮劍迎敵（ROADMAP 632）
+  if (e.code === "KeyV" && !e.repeat) { tryComfort(); e.preventDefault(); return; } // 園丁關心有心事的居民（ROADMAP 634）
   if (e.code === "KeyE" && !e.repeat) { if (globalThis.__bf3dToggleEmoteWheel) globalThis.__bf3dToggleEmoteWheel(); e.preventDefault(); return; } // 表情輪（ROADMAP 621）
   const dir = keyToDir(e);
   if (dir) { heldKeys[dir] = true; e.preventDefault(); }
@@ -3708,6 +3716,79 @@ function updateDamageFloats(nowMs) {
 }
 
 // ============================================================
+// 園丁撫慰居民（ROADMAP 634）：3D 世界第一次能「照料 AI 居民的內在需求」——走近一位正有心事的
+// 故鄉居民按鍵／點鈕，上前關心、撫慰他低落的心事。這是北極星「人類是訪客／園丁」的核心動詞：
+// 居民早有完整的需求系統（npc_needs.rs：安全感／歸屬感／繁榮感，#554 已在 2D 接成「💚 關心」），
+// 3D 至今只把「這位需要被關心」的 💚 側標顯影出來（updateResidentStatus），卻沒有一把可以照料的鋤頭。
+// 本切片補上那個缺席的動詞——把園丁照料居民的雙向互動接進 3D。
+//   · 純前端、純送既有權威意圖：關心一律送 {type:"comfort_resident"}（與 2D web/game.js 同協議，無 payload）；
+//     零後端／協議／world-core 改動。
+//   · 伺服器才是權威：撫慰不帶目標——伺服器一律用玩家自己的權威座標挑 COMFORT_REACH 內最近、確有
+//     偏低心事者，把那項需求往上推一點（防隔空關心）。前端只負責「走近了才點亮鈕、送出意圖」，
+//     成不成、推多少由後端裁決；居民領情的回應由後端廣播 NpcSpeech，3D 既有對話泡泡會自動顯現（622）。
+//   · 撫慰不需登入（連線玩家即可當園丁照料居民，鏡像 2D web/game.js／生火的誠實態；後端只用
+//     玩家 id 取權威座標＋驗未倒地/冷卻到期，不另檢登入）。
+// ============================================================
+const COMFORT_REACH = 130;        // 撫慰判距半徑（px）——對齊後端 ws.rs COMFORT_REACH／2D web/game.js COMFORT_REACH_PX
+const COMFORT_COOLDOWN_MS = 5000; // 本地冷卻（防洗泡泡；真正可否撫慰由後端 COMFORT_COOLDOWN_SECS 裁決）
+let lastComfortAt = -1e9;         // 上次撫慰的本地時戳（手感防呆；後端另有權威冷卻）
+
+// 撫慰意圖 wire（與 2D 同協議，無 payload——伺服器用玩家權威座標挑最近的有心事居民）。抽純函式供 smoke 斷言。
+function comfortWireMsg() { return { type: "comfort_resident" }; }
+
+// 撫慰目標判定（純函式、確定性、可測）：給自己的世界座標＋本份居民快照（世界 px），
+// 回最近且落在 COMFORT_REACH 內、且正有心事（needs_care）的居民。沒心事的／壞座標一律跳過；
+// 無自己座標／空快照安全回 null（不 throw、不誤點亮鈕；守 render-loop-resilience）。
+function comfortTargetAt(self, npcList) {
+  if (!self || !Number.isFinite(self.x) || !Number.isFinite(self.y)) return null;
+  let best = null, bestD = COMFORT_REACH * COMFORT_REACH;
+  for (const n of (Array.isArray(npcList) ? npcList : [])) {
+    if (!n || !n.needs_care) continue;
+    if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
+    const dx = n.x - self.x, dy = n.y - self.y, d = dx * dx + dy * dy;
+    if (d <= bestD) { bestD = d; best = n; }
+  }
+  if (!best) return null;
+  return { id: best.id, name: best.name, x: best.x, y: best.y };
+}
+
+// 關心鈕的顯示狀態（純函式、面向玩家字串集中可 i18n、供 smoke 真值表）。
+// 走近一位有心事的居民才亮（提示帶上對方名字，園丁知道在關心誰），否則鎖定提示「走近有心事的居民」。
+function comfortButtonState(target) {
+  if (!target) return { label: "💚 關心", locked: true, hint: "走近一位正有心事的故鄉居民，就能上前關心" };
+  const who = (target.name && typeof target.name === "string") ? target.name : "這位居民";
+  return { label: "💚 關心", locked: false, hint: `上前撫慰 ${who} 低落的心事` };
+}
+
+// 嘗試撫慰（ROADMAP 634）：依自己最新權威世界座標算腳邊有沒有正有心事的居民；有就送
+// {type:"comfort_resident"}＋本地冷卻，沒有就給一句「走近有心事的居民」的溫和提示（誠實、不假裝關心到）。
+// 真正成敗（太遠／冷卻中／那位其實沒事了）由伺服器裁決；居民領情的回應由後端廣播 NpcSpeech、
+// 3D 既有對話泡泡（622）會自動顯現＝撫慰被聽見了。
+function tryComfort() {
+  const target = comfortTargetAt(latestSelfWorld, latestNpcs);
+  if (!target) { flashToast("💚 走近一位正有心事的居民，才能上前關心"); return; }
+  const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+  if (now - lastComfortAt < COMFORT_COOLDOWN_MS) return; // 冷卻內忽略連點
+  if (safeSend(comfortWireMsg())) {
+    lastComfortAt = now;
+    const who = (target.name && typeof target.name === "string") ? target.name : "居民";
+    flashToast(`💚 你上前關心了 ${who}`);
+  }
+}
+
+// 每幀依「腳邊有沒有有心事的居民」刷新關心鈕外觀（純讀 latest* 算 comfortTargetAt）。
+// 只在 label／鎖定態真的變動時才改寫 DOM；無 widget／壞值一律安全靜默（守 render-loop-resilience）。
+let comfortBtnLastLabel = null, comfortBtnLastLocked = null;
+function updateComfortBtn() {
+  const btn = document.getElementById("comfortBtn");
+  if (!btn) return; // 舊頁／測試 DOM 無此鈕 → 靜默跳過
+  const st = comfortButtonState(comfortTargetAt(latestSelfWorld, latestNpcs));
+  if (st.label !== comfortBtnLastLabel) { btn.textContent = st.label; comfortBtnLastLabel = st.label; }
+  if (st.locked !== comfortBtnLastLocked) { btn.classList.toggle("locked", st.locked); comfortBtnLastLocked = st.locked; }
+  btn.title = st.hint;
+}
+
+// ============================================================
 // 城鎮交易（ROADMAP 630）：把既有「新手村商人商店」（#57）接進 3D——3D 世界第一次能「以物易乙太」。
 //   · 伺服器才是權威：買賣一律送既有意圖 {type:"shop_buy"|"shop_sell", item, qty}（與 2D web/game.js 同協議），
 //     伺服器用玩家權威座標判距（SHOP_REACH=96）、扣乙太/背包、不合法回滾，下一份快照反映真實結果。
@@ -3915,6 +3996,7 @@ function updateShopBtn() {
   bind("campfireBtn", tryLightCampfire);
   bind("gatherBtn", tryGather);
   bind("attackBtn", tryAttack); // 揮劍迎敵（ROADMAP 632）；R 鍵在上方 keydown 處理
+  bind("comfortBtn", tryComfort); // 園丁關心有心事的居民（ROADMAP 634）；V 鍵在上方 keydown 處理
   updateActBtns();
 })();
 
@@ -4411,6 +4493,8 @@ function safeRender() {
     updateShopBtn();
     // 攻擊鈕＋戰鬥特效：走近敵人才亮攻擊鈕，揮砍弧光掃過淡出、命中傷害飄字上飄淡出（ROADMAP 632）
     updateAttackBtn();
+    // 關心鈕：走近一位正有心事（needs_care）的故鄉居民才亮（ROADMAP 634：園丁撫慰）
+    updateComfortBtn();
     updateMeleeSwing(performance.now());
     updateDamageFloats(performance.now());
 
@@ -4461,7 +4545,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, attackWireMsg, attackTargetAt, attackButtonState, damageFloatSpec, spawnMeleeSwing, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel, radarBlips, radarHeading };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, attackWireMsg, attackTargetAt, attackButtonState, damageFloatSpec, spawnMeleeSwing, comfortWireMsg, comfortTargetAt, comfortButtonState, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel, radarBlips, radarHeading };
 }
 
 // 啟動
