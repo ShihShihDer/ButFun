@@ -3228,6 +3228,15 @@ function handleServerMsg(msg) {
       }
       break;
     }
+    case "npc_reply": {
+      // 搭話回話（ROADMAP 636）：自己向居民／城鎮大人物攀談後，伺服器單播這句回應（純模板／話題層、零 LLM）。
+      // 浮成 toast 讓本人讀得到（同一句也會由 NpcSpeech 在對方頭頂顯成對話泡泡 622）。缺欄位安全降級、永不拋。
+      if (msg && typeof msg.text === "string" && msg.text) {
+        const who = (typeof msg.display === "string" && msg.display) ? msg.display : "💬";
+        flashToast(`${who}：${msg.text}`);
+      }
+      break;
+    }
     case "npc_speech": {
       // 居民對話泡泡（ROADMAP 92／622）：居民彼此互聊／向玩家打招呼／評論時，伺服器廣播這則事件——
       // 在說話者頭頂浮起一枚白底對話泡泡、幾秒後淡出。AI 社會的對話第一次在 3D 裡「看得見、看得懂」。
@@ -3313,6 +3322,7 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyG" && !e.repeat) { tryGather(); e.preventDefault(); return; } // 採集（ROADMAP 629）
   if (e.code === "KeyR" && !e.repeat) { tryAttack(); e.preventDefault(); return; } // 揮劍迎敵（ROADMAP 632）
   if (e.code === "KeyV" && !e.repeat) { tryComfort(); e.preventDefault(); return; } // 園丁關心有心事的居民（ROADMAP 634）
+  if (e.code === "KeyZ" && !e.repeat) { tryTalk(); e.preventDefault(); return; } // 跟居民／城鎮大人物搭話（ROADMAP 636）
   if (e.code === "KeyE" && !e.repeat) { if (globalThis.__bf3dToggleEmoteWheel) globalThis.__bf3dToggleEmoteWheel(); e.preventDefault(); return; } // 表情輪（ROADMAP 621）
   const dir = keyToDir(e);
   if (dir) { heldKeys[dir] = true; e.preventDefault(); }
@@ -3898,6 +3908,96 @@ function updateComfortBtn() {
 }
 
 // ============================================================
+// 跟 AI 居民／城鎮大人物搭話（ROADMAP 636）：3D 世界第一次能「主動開口、聽見 AI 居民回話」。
+// 這正是北極星「人類是訪客／園丁、走進一個由 AI 居住的世界」的核心動詞——你能上前攀談，居民會
+// 依此刻處境（季節／天氣／繁榮／生態警戒，後端 resident_chat／topic 層）回你一句。3D 至今只能
+// 被動看居民彼此互聊、向你打招呼（NpcSpeech 泡泡 622），卻沒有一張可以開口的嘴；本切片補上它。
+//   · 純前端、純送既有權威意圖：居民走 {type:"talk_to_resident", resident_id}、城鎮大人物走
+//     {type:"talk_to_major_npc", npc_id}（皆與 2D web/game.js 同協議）；零後端／協議／world-core 改動。
+//   · 伺服器才是權威：搭話帶對象 id，但成不成由後端用玩家權威座標判距（防隔空攀談）；回話由後端
+//     單播 NpcReply 給本人（下面浮成 toast），同句再廣播 NpcSpeech、既有對話泡泡（622）自動在對方頭頂顯現。
+//   · 成本紀律（鐵律）：零 LLM——talk_to_resident／talk_to_major_npc 都是純模板／話題層查表，不燒任何額度。
+//   · 搭話不需登入（連線玩家即可當訪客攀談；後端只用玩家 id 取權威座標＋判距，不檢登入）。
+// ============================================================
+const TALK_RESIDENT_REACH = 80;   // 居民搭話判距（px）——對齊後端 resident_npc::RESIDENT_REACH／2D RESIDENT_REACH_PX
+const TALK_MAJOR_REACH = 96;      // 城鎮大人物攀談判距（px）——對齊後端 npc::SHOP_REACH／2D SHOP_REACH_PX
+const TALK_COOLDOWN_MS = 1200;    // 本地冷卻（防連點洗泡泡；真正可否由後端裁決）
+let lastTalkAt = -1e9;            // 上次搭話的本地時戳（手感防呆）
+
+// 城鎮大人物穩定 id（鏡像 2D web/game.js MAJOR_NPC_IDS）——這些走 talk_to_major_npc 攀談。
+const MAJOR_NPC_IDS = new Set(["merchant", "workshop_npc", "bounty_npc", "expedition_npc", "procurement_npc", "farm_fair_npc", "village_chief", "traveler"]);
+
+// 純函式：判斷一位 NPC 屬於哪種可搭話對象——"resident"（resident_N，走 talk_to_resident）／
+// "major"（城鎮大人物，走 talk_to_major_npc）／null（他星商人／一般路人＝不可搭話，鏡像 2D）。
+function talkKindOf(npc) {
+  if (!npc || typeof npc.id !== "string") return null;
+  if (npc.id.startsWith("resident_")) return "resident";
+  if (MAJOR_NPC_IDS.has(npc.id)) return "major";
+  return null;
+}
+
+// 純函式、確定性、可測：給自己的世界座標＋本份 npcs 快照，回「伸手範圍內最近、可搭話的對象」。
+// 居民用 RESIDENT_REACH、大人物用 MAJOR_REACH（各自對齊後端判距）；先以「落在各自範圍內」為門檻，
+// 再比實際距離取最近。不可搭話者／壞座標一律跳過；無自己座標／空快照安全回 null（不誤點亮鈕、不 throw）。
+function talkTargetAt(self, npcList) {
+  if (!self || !Number.isFinite(self.x) || !Number.isFinite(self.y)) return null;
+  let best = null, bestD = Infinity;
+  for (const n of (Array.isArray(npcList) ? npcList : [])) {
+    const kind = talkKindOf(n);
+    if (!kind) continue;
+    if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
+    const reach = kind === "resident" ? TALK_RESIDENT_REACH : TALK_MAJOR_REACH;
+    const dx = n.x - self.x, dy = n.y - self.y, d = dx * dx + dy * dy;
+    if (d <= reach * reach && d < bestD) { bestD = d; best = { id: n.id, name: n.name, kind }; }
+  }
+  return best;
+}
+
+// 純函式：搭話意圖 wire——依對象種類送對應既有協議（居民 talk_to_resident、大人物 talk_to_major_npc）。
+// 非法／未知對象回 null（呼叫端不送）。供 smoke 斷言。
+function talkWireMsg(target) {
+  if (!target || typeof target.id !== "string") return null;
+  if (target.kind === "resident") return { type: "talk_to_resident", resident_id: target.id };
+  if (target.kind === "major") return { type: "talk_to_major_npc", npc_id: target.id };
+  return null;
+}
+
+// 純函式：搭話鈕顯示狀態（走近可搭話對象才亮、提示帶名字；否則鎖定提示）。字串集中可 i18n，供 smoke 真值表。
+function talkButtonState(target) {
+  if (!target) return { label: "💬 搭話", locked: true, hint: "走近一位居民或城鎮裡的人，就能上前攀談" };
+  const who = (target.name && typeof target.name === "string") ? target.name : "這位";
+  return { label: "💬 搭話", locked: false, hint: `上前和 ${who} 攀談，聽聽他此刻想說什麼` };
+}
+
+// 嘗試搭話（ROADMAP 636）：依自己最新權威世界座標算腳邊有沒有可搭話對象；有就送對應既有意圖＋本地冷卻
+// ＋一句「你開口了」的飄字，沒有就給溫和提示（誠實、不假裝攀談到）。對方的回話由伺服器送 NpcReply
+// （單播本人，下面 handleServerMsg 浮成 toast）＋廣播 NpcSpeech（既有對話泡泡 622 自動在他頭頂顯現）。
+function tryTalk() {
+  const target = talkTargetAt(latestSelfWorld, latestNpcs);
+  if (!target) { flashToast("💬 走近一位居民或城鎮裡的人，才能攀談"); return; }
+  const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+  if (now - lastTalkAt < TALK_COOLDOWN_MS) return; // 冷卻內忽略連點
+  const msg = talkWireMsg(target);
+  if (msg && safeSend(msg)) {
+    lastTalkAt = now;
+    const who = (target.name && typeof target.name === "string") ? target.name : "對方";
+    flashToast(`💬 你向 ${who} 開口攀談…`);
+  }
+}
+
+// 每幀依「腳邊有沒有可搭話對象」刷新搭話鈕外觀（純讀 latest* 算 talkTargetAt）。
+// 只在 label／鎖定態真的變動時才改寫 DOM；無 widget／壞值一律安全靜默（守 render-loop-resilience）。
+let talkBtnLastLabel = null, talkBtnLastLocked = null;
+function updateTalkBtn() {
+  const btn = document.getElementById("talkBtn");
+  if (!btn) return; // 舊頁／測試 DOM 無此鈕 → 靜默跳過
+  const st = talkButtonState(talkTargetAt(latestSelfWorld, latestNpcs));
+  if (st.label !== talkBtnLastLabel) { btn.textContent = st.label; talkBtnLastLabel = st.label; }
+  if (st.locked !== talkBtnLastLocked) { btn.classList.toggle("locked", st.locked); talkBtnLastLocked = st.locked; }
+  btn.title = st.hint;
+}
+
+// ============================================================
 // 城鎮交易（ROADMAP 630）：把既有「新手村商人商店」（#57）接進 3D——3D 世界第一次能「以物易乙太」。
 //   · 伺服器才是權威：買賣一律送既有意圖 {type:"shop_buy"|"shop_sell", item, qty}（與 2D web/game.js 同協議），
 //     伺服器用玩家權威座標判距（SHOP_REACH=96）、扣乙太/背包、不合法回滾，下一份快照反映真實結果。
@@ -4106,6 +4206,7 @@ function updateShopBtn() {
   bind("gatherBtn", tryGather);
   bind("attackBtn", tryAttack); // 揮劍迎敵（ROADMAP 632）；R 鍵在上方 keydown 處理
   bind("comfortBtn", tryComfort); // 園丁關心有心事的居民（ROADMAP 634）；V 鍵在上方 keydown 處理
+  bind("talkBtn", tryTalk); // 跟居民／城鎮大人物搭話（ROADMAP 636）；Z 鍵在上方 keydown 處理
   updateActBtns();
 })();
 
@@ -4604,6 +4705,8 @@ function safeRender() {
     updateAttackBtn();
     // 關心鈕：走近一位正有心事（needs_care）的故鄉居民才亮（ROADMAP 634：園丁撫慰）
     updateComfortBtn();
+    // 搭話鈕：走近一位居民／城鎮大人物才亮（ROADMAP 636：主動開口攀談、聽見回話）
+    updateTalkBtn();
     updateMeleeSwing(performance.now());
     updateDamageFloats(performance.now());
     updateRewardFloats(performance.now()); // 戰利品入袋／連殺標語飄字上飄淡出（ROADMAP 635）
@@ -4655,7 +4758,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, attackWireMsg, attackTargetAt, attackButtonState, damageFloatSpec, spawnMeleeSwing, comfortWireMsg, comfortTargetAt, comfortButtonState, lootFloatSpec, killStreakFloatSpec, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel, radarBlips, radarHeading };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, attackWireMsg, attackTargetAt, attackButtonState, damageFloatSpec, spawnMeleeSwing, comfortWireMsg, comfortTargetAt, comfortButtonState, talkKindOf, talkTargetAt, talkWireMsg, talkButtonState, lootFloatSpec, killStreakFloatSpec, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel, riftVisual, riftHudLabel, hordeVisual, hordeHudLabel, radarBlips, radarHeading };
 }
 
 // 啟動

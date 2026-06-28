@@ -615,6 +615,50 @@ const cbNoName = T.comfortButtonState({ id: "r2" });
 if (!cbNoName || cbNoName.locked !== false || !cbNoName.hint) fail("缺名字應安全降級仍給有效提示");
 console.log("✅ 園丁撫慰純邏輯（comfort wire 固定／走近最近有心事居民·範圍·沒心事剔除·壞值安全／鈕態·名字提示·缺名降級）全綠");
 
+// ── 跟 AI 居民／城鎮大人物搭話純邏輯（ROADMAP 636）：種類判定／走近最近·各自判距·壞值安全／wire 對應協議／鈕態 ──
+if (typeof T.talkKindOf !== "function" || typeof T.talkTargetAt !== "function"
+    || typeof T.talkWireMsg !== "function" || typeof T.talkButtonState !== "function") {
+  fail("__bf3dTest 未暴露 talkKindOf/talkTargetAt/talkWireMsg/talkButtonState");
+}
+// 種類判定：resident_N → "resident"；城鎮大人物 id → "major"；他星商人／一般路人／壞值 → null。
+if (T.talkKindOf({ id: "resident_3" }) !== "resident") fail("resident_3 應判為 resident");
+if (T.talkKindOf({ id: "merchant" }) !== "major") fail("merchant 應判為 major");
+if (T.talkKindOf({ id: "village_chief" }) !== "major") fail("village_chief 應判為 major");
+if (T.talkKindOf({ id: "verdant_merchant" }) !== null) fail("他星商人不應可搭話（回 null）");
+if (T.talkKindOf({}) !== null || T.talkKindOf(null) !== null) fail("缺 id／空值應安全回 null");
+// 走近判距：居民用 80、大人物用 96（各自對齊後端）；範圍內取最近，範圍外剔除。
+const tSelf = { x: 1000, y: 1000 };
+const tRes = T.talkTargetAt(tSelf, [{ id: "resident_1", name: "阿陶", x: 1060, y: 1000 }]);
+if (!tRes || tRes.id !== "resident_1" || tRes.kind !== "resident") fail("80px 內的居民應成為搭話目標，得 " + JSON.stringify(tRes));
+if (T.talkTargetAt(tSelf, [{ id: "resident_1", name: "阿陶", x: 1090, y: 1000 }]) !== null) fail("居民超過 RESIDENT_REACH(80) 不應成為目標");
+const tMajorFar = T.talkTargetAt(tSelf, [{ id: "merchant", name: "薇拉", x: 1090, y: 1000 }]);
+if (!tMajorFar || tMajorFar.kind !== "major") fail("大人物在 90px（≤96）應成為目標——大人物判距較寬，得 " + JSON.stringify(tMajorFar));
+if (T.talkTargetAt(tSelf, [{ id: "merchant", name: "薇拉", x: 1100, y: 1000 }]) !== null) fail("大人物超過 MAJOR_REACH(96) 不應成為目標");
+const tNearest = T.talkTargetAt(tSelf, [
+  { id: "resident_far", name: "遠", x: 1050, y: 1000 },
+  { id: "resident_near", name: "近", x: 1010, y: 1000 },
+]);
+if (!tNearest || tNearest.id !== "resident_near") fail("talkTargetAt 應回最近的可搭話對象，得 " + JSON.stringify(tNearest));
+if (T.talkTargetAt(tSelf, [{ id: "verdant_merchant", name: "外星商", x: 1010, y: 1000 }]) !== null) fail("不可搭話的他星商人不應成為目標");
+if (T.talkTargetAt(tSelf, [{ id: "resident_1", name: "壞", x: NaN, y: 1000 }]) !== null) fail("壞座標應安全跳過回 null");
+if (T.talkTargetAt(null, [{ id: "resident_1", name: "x", x: 1000, y: 1000 }]) !== null) fail("無自己座標應回 null");
+if (T.talkTargetAt({ x: NaN, y: 1 }, [{ id: "resident_1", name: "x", x: 1, y: 1 }]) !== null) fail("壞自己座標應回 null");
+if (T.talkTargetAt(tSelf, null) !== null) fail("空快照應安全回 null");
+// wire：居民送 talk_to_resident+resident_id；大人物送 talk_to_major_npc+npc_id；非法回 null。
+const twRes = T.talkWireMsg({ id: "resident_1", kind: "resident" });
+if (!twRes || twRes.type !== "talk_to_resident" || twRes.resident_id !== "resident_1") fail("居民 wire 應為 {type:'talk_to_resident', resident_id}，得 " + JSON.stringify(twRes));
+const twMaj = T.talkWireMsg({ id: "merchant", kind: "major" });
+if (!twMaj || twMaj.type !== "talk_to_major_npc" || twMaj.npc_id !== "merchant") fail("大人物 wire 應為 {type:'talk_to_major_npc', npc_id}，得 " + JSON.stringify(twMaj));
+if (T.talkWireMsg(null) !== null || T.talkWireMsg({ id: "x", kind: "weird" }) !== null) fail("非法搭話對象 wire 應回 null");
+// 鈕態：無目標 → 鎖定提示；有目標 → 不鎖定且提示帶名字；缺名字安全降級。
+const tbNull = T.talkButtonState(null);
+if (!tbNull || tbNull.locked !== true || !tbNull.hint) fail("無目標時搭話鈕應鎖定且有提示");
+const tbNear = T.talkButtonState({ id: "resident_1", name: "阿陶" });
+if (!tbNear || tbNear.locked !== false || !/搭話|💬/.test(tbNear.label) || !/阿陶/.test(tbNear.hint)) fail("走近可搭話對象時鈕應不鎖定且提示帶名字");
+const tbNoName = T.talkButtonState({ id: "resident_2" });
+if (!tbNoName || tbNoName.locked !== false || !tbNoName.hint) fail("缺名字應安全降級仍給有效提示");
+console.log("✅ 在 3D 搭話純邏輯（種類判定·resident／major／他星剔除／wire 對應協議／走近最近·各自判距·壞值安全／鈕態·名字提示）全綠");
+
 // ── 戰鬥獎勵回饋純邏輯（ROADMAP 635）：戰利品飄字文字/配色·壞值安全／連殺標語段位·只給本人·壞值安全 ──
 if (typeof T.lootFloatSpec !== "function" || typeof T.killStreakFloatSpec !== "function") {
   fail("__bf3dTest 未暴露 lootFloatSpec/killStreakFloatSpec");
