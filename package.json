@@ -4,5 +4,8 @@
   "type": "module",
   "dependencies": {
     "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.2.1"
   }
 }

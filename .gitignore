@@ -26,6 +26,9 @@ node_modules/
 package-lock.json
 /scripts/e2e/node_modules
 
+# 瀏覽器 QA 產出的截圖／報告（scripts/qa/browser-qa.mjs 執行期產生，不入 repo）
+/scripts/qa/out
+
 # 所有 env 變體都不入 repo
 .env*
 !.env.example
