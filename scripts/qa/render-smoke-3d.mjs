@@ -583,6 +583,38 @@ const dfBadder = T.damageFloatSpec(null);
 if (dfBadder.text !== "0") fail("null 事件應安全降級為 0");
 console.log("✅ 在 3D 揮劍迎敵 wire 固定（attack）／攻擊目標判定·最近·範圍·死敵剔除·壞值安全／鈕態·兇名字樣／傷害飄字配色·壞值安全全綠");
 
+// ── 園丁撫慰純邏輯（ROADMAP 634）：撫慰 wire 固定／走近有心事居民判距·最近·範圍·沒心事剔除·壞值安全／鈕態·名字提示 ──
+if (typeof T.comfortWireMsg !== "function" || typeof T.comfortTargetAt !== "function"
+    || typeof T.comfortButtonState !== "function") {
+  fail("__bf3dTest 未暴露 comfortWireMsg/comfortTargetAt/comfortButtonState");
+}
+// 撫慰意圖 wire 與 2D／後端同協議（無 payload）。
+const cwire = T.comfortWireMsg();
+if (!cwire || cwire.type !== "comfort_resident") fail("comfortWireMsg 應為 {type:'comfort_resident'}");
+// 走近判距：圈內最近、且 needs_care 為真者；沒心事的／圈外／壞座標一律剔除。
+const cSelf = { x: 1000, y: 1000 };
+const ctIn = T.comfortTargetAt(cSelf, [{ id: "r1", name: "阿陶", x: 1040, y: 1000, needs_care: true }]);
+if (!ctIn || ctIn.id !== "r1" || ctIn.name !== "阿陶") fail("comfortTargetAt 應回圈內有心事的居民 r1，得 " + JSON.stringify(ctIn));
+if (T.comfortTargetAt(cSelf, [{ id: "ok", name: "沒事", x: 1010, y: 1000, needs_care: false }]) !== null) fail("沒心事的居民（needs_care:false）不應成為撫慰目標");
+if (T.comfortTargetAt(cSelf, [{ id: "far", name: "遠人", x: 1200, y: 1000, needs_care: true }]) !== null) fail("圈外有心事的居民不應成為目標");
+const ctNearest = T.comfortTargetAt(cSelf, [
+  { id: "far", name: "遠", x: 1050, y: 1000, needs_care: true },
+  { id: "near", name: "近", x: 1010, y: 1000, needs_care: true },
+]);
+if (!ctNearest || ctNearest.id !== "near") fail("comfortTargetAt 應回最近的有心事居民 near，得 " + JSON.stringify(ctNearest));
+if (T.comfortTargetAt(cSelf, [{ id: "b", name: "壞座標", x: NaN, y: 1000, needs_care: true }]) !== null) fail("壞居民座標應安全跳過回 null");
+if (T.comfortTargetAt(null, [{ id: "x", name: "x", x: 1000, y: 1000, needs_care: true }]) !== null) fail("無自己座標應回 null");
+if (T.comfortTargetAt({ x: NaN, y: 1 }, [{ id: "x", name: "x", x: 1, y: 1, needs_care: true }]) !== null) fail("壞自己座標應回 null");
+if (T.comfortTargetAt(cSelf, null) !== null) fail("空居民快照應安全回 null");
+// 鈕態：無目標 → 鎖定提示；有目標 → 不鎖定且提示帶對方名字；缺名字安全降級。
+const cbNull = T.comfortButtonState(null);
+if (!cbNull || cbNull.locked !== true || !cbNull.hint) fail("無目標時關心鈕應鎖定且有提示");
+const cbNear = T.comfortButtonState({ id: "r1", name: "阿陶" });
+if (!cbNear || cbNear.locked !== false || !/關心|💚/.test(cbNear.label) || !/阿陶/.test(cbNear.hint)) fail("走近有心事居民時關心鈕應不鎖定且提示帶名字");
+const cbNoName = T.comfortButtonState({ id: "r2" });
+if (!cbNoName || cbNoName.locked !== false || !cbNoName.hint) fail("缺名字應安全降級仍給有效提示");
+console.log("✅ 園丁撫慰純邏輯（comfort wire 固定／走近最近有心事居民·範圍·沒心事剔除·壞值安全／鈕態·名字提示·缺名降級）全綠");
+
 // ── 城鎮交易純邏輯（ROADMAP 630）：商人挑選／走近判距／鈕態／面板簽章／物品標籤·壞值安全 ──
 if (typeof T.shopMerchantsFrom !== "function" || typeof T.shopTargetAt !== "function"
     || typeof T.shopButtonState !== "function" || typeof T.shopPanelSig !== "function" || typeof T.itemLabel !== "function") {
