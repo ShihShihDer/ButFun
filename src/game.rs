@@ -213,6 +213,13 @@ pub fn spawn(app: AppState) {
                         pf.water_all_planted();
                     }
                     pf.tick(dt * effective_growth, season_now);
+                    // 故鄉古井（ROADMAP 640，禱告驅動）：應諾娃之禱，定時滋潤公田缺水的作物，
+                    // 讓故鄉的田「不再乾旱」。鎖序：pub_field 寫鎖內順手取 village_well 寫鎖
+                    // （village_well 只在此處與快照讀鎖被取用，循序不巢狀、守 prod-deadlock）。
+                    {
+                        let mut well = app.village_well.write().unwrap();
+                        well.tick(dt, &mut pf);
+                    }
                     if want_broadcast {
                         let mut v = pf.view();
                         v.owner = uuid::Uuid::nil();
@@ -5142,6 +5149,15 @@ pub fn spawn(app: AppState) {
                         vehicles: app.vehicles.read().unwrap().cycles().iter().map(|c| {
                             crate::protocol::VehicleView { id: c.id, x: c.x, y: c.y, rider: c.rider, passenger: c.passenger, bell_ringing: c.bell_ringing, harvesting: c.harvesting }
                         }).collect(),
+                        // 故鄉古井（ROADMAP 640）：固定設施，整份快照恆帶（位置由常數決定）。
+                        village_well: {
+                            let well = app.village_well.read().unwrap();
+                            Some(crate::protocol::VillageWellView {
+                                x: crate::village_well::WELL_X,
+                                y: crate::village_well::WELL_Y,
+                                watering: well.recently_watered(),
+                            })
+                        },
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

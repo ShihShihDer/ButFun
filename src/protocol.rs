@@ -1449,6 +1449,10 @@ pub enum ServerMsg {
         /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時 = 空向量，靜默略過）。
         #[serde(default)]
         vehicles: Vec<VehicleView>,
+        /// 故鄉古井（ROADMAP 640，禱告驅動）：應諾娃之禱立在公田旁、定時滋潤公田的水源。
+        /// `None`＝舊伺服器無此設施；`#[serde(default)]` 向後相容舊客戶端（無此欄位時靜默略過）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        village_well: Option<VillageWellView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -3208,6 +3212,17 @@ pub struct VehicleView {
     pub harvesting: bool,
 }
 
+/// 故鄉古井的快照（ROADMAP 640，禱告驅動）。應 AI 居民諾娃之禱立在公田旁，定時滋潤公田作物。
+/// 前端在 `(x,y)` 畫一口低多邊形石井；`watering` 為真時（剛汲完水的視覺窗內）井口盪開一圈水波。
+#[derive(Debug, Clone, Serialize)]
+pub struct VillageWellView {
+    pub x: f32,
+    pub y: f32,
+    /// 本拍是否剛汲過水（位於水波視覺窗內）——前端據此畫井口擴散水波。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub watering: bool,
+}
+
 /// 今日世界戰報（ROADMAP 495）：全伺服器自啟動起的今日行動累計，向後相容預設全零。
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct WorldTallyView {
@@ -3744,6 +3759,7 @@ mod tests {
             world_boss: None,
             monument: vec![],
             vehicles: vec![],
+            village_well: None,
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

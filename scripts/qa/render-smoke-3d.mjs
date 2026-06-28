@@ -68,6 +68,8 @@ const THREE = {
   Mesh, Sprite, Group: class extends Obj3D {},
   PlaneGeometry: geo, BoxGeometry: geo, CapsuleGeometry: geo, ConeGeometry: geo,
   OctahedronGeometry: geo, DodecahedronGeometry: geo, SphereGeometry: geo, CylinderGeometry: geo,
+  // 故鄉古井（ROADMAP 640）：水面用 CircleGeometry、汲水水波環用 RingGeometry（真 THREE 皆有）。
+  CircleGeometry: geo, RingGeometry: geo,
   MeshLambertMaterial: class { constructor(o) { Object.assign(this, o || {}); } },
   MeshBasicMaterial: class { constructor(o) { Object.assign(this, o || {}); } },
   SpriteMaterial: class { constructor(o) { Object.assign(this, o || {}); this.needsUpdate = false; } },
@@ -1260,6 +1262,8 @@ drive({ type: "snapshot", players: playersA, npcs: npcsA, wildlife: wildlifeA, e
   // 夜採星晶礦脈（ROADMAP 629）：餵兩道晶脈，踩 makeStarCrystal + reconcile + 靜態 AOI 淡入淡出路徑。
   star_crystals: [{ x: 1500, y: 1500 }, { x: 1560, y: 1520 }],
   fields: fieldsA, campfires: campfiresA, watchtowers: watchtowersA, snowmen: snowmenA, world_groves: grovesA,
+  // 故鄉古井（ROADMAP 640）：汲水中——踩 makeVillageWell 懶建＋updateStructures 水波擴散路徑。
+  village_well: { x: 2144, y: 2296, watering: true },
   daynight: { phase: "day", day_fraction: 0.33, light: 1.0, night_danger: false, next_phase: "dusk", secs_to_next: 180 },
   // 細雨＋橫風＋彩虹：踩 applyWeather 的粒子推進／回收、霧染、彩虹淡入路徑（ROADMAP 613）
   weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
@@ -1275,6 +1279,8 @@ frames(8);
 drive({ type: "snapshot", players: playersA, npcs: npcsA, wildlife: wildlifeA, enemies: enemiesA, nodes: [],
   town_factions: townFactionsA, star_crystals: [{ x: 1500, y: 1500 }, { x: 1560, y: 1520 }],
   fields: fieldsA, campfires: campfiresA, watchtowers: watchtowersA, snowmen: snowmenA, world_groves: grovesA,
+  // 故鄉古井（ROADMAP 640）：未汲水——踩水波隱藏分支（item.watering!==true）。
+  village_well: { x: 2144, y: 2296, watering: false },
   daynight: { phase: "day", day_fraction: 0.34, light: 1.0, night_danger: false, next_phase: "dusk", secs_to_next: 170 },
   weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
   rainbow: { active: true, remaining_secs: 28 },

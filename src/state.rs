@@ -1536,6 +1536,9 @@ pub struct AppState {
     pub sprinklers: Arc<RwLock<crate::sprinkler::SprinklerStore>>,
     /// 灑水器持久化 store（ROADMAP 112）：INSERT 到 DB + 啟動 SELECT 全載。
     pub sprinkler_persist: crate::sprinkler::SprinklerPersist,
+    /// 故鄉古井（ROADMAP 640，禱告驅動）：應 AI 居民諾娃之禱，定時滋潤公共農田缺水的作物，
+    /// 讓故鄉的田「不再乾旱」。世界固定設施、記憶體模式（重啟由常數重新立起，零持久化）。
+    pub village_well: Arc<RwLock<crate::village_well::VillageWell>>,
     /// 商人有限金庫（ROADMAP 100）：收購從金庫付，商隊定期回補，終結無限印鈔。
     /// 記憶體模式，重啟從初始值開始（金庫代表「當前商隊現金」，重啟等同換班補貨）。
     pub npc_treasury: Arc<RwLock<crate::npc_treasury::NpcTreasuryState>>,
@@ -1835,6 +1838,7 @@ impl AppState {
                 store.load(sprinkler_preload);
                 Arc::new(RwLock::new(store))
             },
+            village_well: Arc::new(RwLock::new(crate::village_well::VillageWell::new())),
             sprinkler_persist,
             npc_treasury: Arc::new(RwLock::new(crate::npc_treasury::NpcTreasuryState::new())),
             npc_pending_deal: Arc::new(RwLock::new(HashMap::new())),

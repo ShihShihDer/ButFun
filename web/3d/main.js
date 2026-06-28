@@ -2277,6 +2277,12 @@ const CAMPFIRE_GLOW_COLOR = 0xffb060;  // 暖意圈：柔橙
 const TOWER_WOOD_COLOR = 0x8a6a44;     // 塔身：木黃褐
 const TOWER_BEACON_COLOR = 0xffe08a;   // 塔頂燈：暖黃（落成後入夜亮起）
 const SNOW_COLOR = 0xeef4ff;           // 雪：帶藍的白
+const WELL_STONE_COLOR = 0x8f8d86;     // 古井石身：暖灰石
+const WELL_RIM_COLOR = 0x6f6d66;       // 井緣石環：深一階
+const WELL_WOOD_COLOR = 0x8a6a44;      // 木頂柱：木黃褐（對齊瞭望塔木色）
+const WELL_ROOF_COLOR = 0x9a5a3a;      // 井頂小屋頂：磚紅褐
+const WELL_WATER_COLOR = 0x4aa3f5;     // 井水：清透藍（與作物缺水藍同色系——這水正是來治那片乾旱）
+const WELL_RIPPLE_COLOR = 0x9fd4ff;    // 汲水水波：淺亮藍
 
 // 篝火視覺（純函式）：圍爐人數→火旺（鏡像 2D campfireBlazeScale）、剩餘秒數→將熄漸弱、warmth_radius→暖意圈大小。
 // 只讀權威欄位、確定性、壞值安全；前端據此調火焰縮放／暖圈半徑／將熄透明度。
@@ -2344,6 +2350,13 @@ const ST_GEO = {
   snowBall:  new THREE.SphereGeometry(1, 10, 8),            // 雪球（三球疊起，半徑由 scale 撐）
   scarf:     new THREE.TorusGeometry(2.2, 0.5, 6, 12),      // 圍巾
   nose:      new THREE.ConeGeometry(0.35, 1.6, 5),          // 紅蘿蔔鼻
+  // 故鄉古井（ROADMAP 640）：石井身（中空圓筒，敞口）＋井緣環＋木頂柱＋小斜頂＋水面＋地面水波。
+  wellWall:  new THREE.CylinderGeometry(1.5, 1.7, 1.8, 10, 1, true), // 石井身（敞口圓筒）
+  wellRim:   new THREE.TorusGeometry(1.55, 0.22, 6, 12),    // 井緣石環
+  wellWater: new THREE.CircleGeometry(1.4, 12),             // 井裡的水面
+  wellPost:  new THREE.CylinderGeometry(0.13, 0.13, 2.6, 5),// 撐小屋頂的木柱
+  wellRoof:  new THREE.ConeGeometry(2.1, 1.3, 4),           // 井上小斜頂
+  wellRipple:new THREE.RingGeometry(0.85, 1.0, 18),         // 汲水時井口盪開的水波環
 };
 
 // 一座篝火：交叉柴堆＋雙層火焰（外焰/亮心，會跳動發光）＋地面暖意圈。火焰／暖圈引用留在 userData 供每幀調。
@@ -2375,6 +2388,45 @@ function makeCampfire(item) {
   g.userData.flame = flame;
   g.userData.ember = ember;
   g.userData.glow = glow;
+  return g;
+}
+
+// 一口故鄉古井（ROADMAP 640，禱告驅動）：石井身＋井緣＋井裡的水面＋兩根木柱撐一片小斜頂，
+// 汲水時井口盪開一圈擴散水波。應 AI 居民諾娃之禱立在公田旁——立在這裡本身就是「世界因居民的
+// 願望而長大」一眼看得見的證據。純讀快照、零後端耦合。水波引用留 userData 供每幀調。
+function makeVillageWell(_item) {
+  const g = new THREE.Group();
+  // 石井身（敞口圓筒，立在地面上）
+  const wall = new THREE.Mesh(ST_GEO.wellWall, new THREE.MeshLambertMaterial({ color: WELL_STONE_COLOR, side: THREE.DoubleSide }));
+  wall.position.y = 0.9;
+  g.add(wall);
+  // 井緣石環
+  const rim = new THREE.Mesh(ST_GEO.wellRim, new THREE.MeshLambertMaterial({ color: WELL_RIM_COLOR }));
+  rim.rotation.x = Math.PI / 2;
+  rim.position.y = 1.8;
+  g.add(rim);
+  // 井裡的水面（朝上平放，略低於井緣）
+  const water = new THREE.Mesh(ST_GEO.wellWater, new THREE.MeshBasicMaterial({ color: WELL_WATER_COLOR, transparent: true, opacity: 0.85 }));
+  water.rotation.x = -Math.PI / 2;
+  water.position.y = 1.5;
+  g.add(water);
+  // 兩根木柱＋小斜頂（像個井亭，讓它一眼是「井」不是「桶」）
+  for (const s of [-1, 1]) {
+    const post = new THREE.Mesh(ST_GEO.wellPost, new THREE.MeshLambertMaterial({ color: WELL_WOOD_COLOR }));
+    post.position.set(s * 1.4, 2.3, 0);
+    g.add(post);
+  }
+  const roof = new THREE.Mesh(ST_GEO.wellRoof, new THREE.MeshLambertMaterial({ color: WELL_ROOF_COLOR }));
+  roof.rotation.y = Math.PI / 4;
+  roof.position.y = 4.0;
+  g.add(roof);
+  // 地面水波環：汲水時才浮現、向外擴散（平放貼地，初始隱形）。
+  const ripple = new THREE.Mesh(ST_GEO.wellRipple, new THREE.MeshBasicMaterial({ color: WELL_RIPPLE_COLOR, transparent: true, opacity: 0, depthWrite: false }));
+  ripple.rotation.x = -Math.PI / 2;
+  ripple.position.y = 0.14;
+  g.add(ripple);
+  g.userData.water = water;
+  g.userData.ripple = ripple;
   return g;
 }
 
@@ -2488,6 +2540,7 @@ function reconcileStatic(list, map, prefix, create, update, recvT) {
 const campfires = new Map();
 const watchtowers = new Map();
 const snowmen = new Map();
+const villageWells = new Map(); // 故鄉古井（ROADMAP 640）：單一固定設施，仍走 reconcileStatic 的 AOI 淡入淡出
 
 // 每幀更新所有人造地標：篝火火焰跳動／暖圈脈動（入夜更亮、將熄漸弱）、塔頂燈入夜亮起、雪人愛心數。
 // 在各自 Map 的 updateFade 之後跑：updateFade 把所有材質 opacity 壓成 AOI 淡入淡出值，這裡再
@@ -2551,6 +2604,32 @@ function updateStructures(dt, t) {
         }
       } else {
         cheer.visible = false;
+      }
+    }
+  }
+  // ── 故鄉古井（ROADMAP 640）：水面微微盪漾、汲水時井口擴散水波 ──
+  for (const [key, g] of villageWells) {
+    const fade = g.userData.fade ?? 1;
+    if (updateFade(g, dt)) { scene.remove(g); villageWells.delete(key); continue; }
+    const item = g.userData.item || {};
+    const water = g.userData.water, ripple = g.userData.ripple;
+    // 水面：靜時穩定半透，不抖時也一直看得見（updateFade 已壓成 fade，這裡覆寫回呈現值）。
+    if (water) water.material.opacity = fade * (reduceMotion ? 0.85 : 0.78 + 0.12 * Math.abs(Math.sin(t * 1.5)));
+    // 汲水水波：watering 時環向外擴散＋淡出（循環），平時隱形。尊重 reduceMotion（靜止時只定格淡顯）。
+    if (ripple) {
+      if (item.watering === true) {
+        if (reduceMotion) {
+          ripple.scale.set(2.4, 2.4, 1);
+          ripple.material.opacity = fade * 0.5;
+        } else {
+          const phase = (t * 0.8) % 1;          // 0→1 循環
+          const scl = 1 + phase * 2.6;           // 由小擴大
+          ripple.scale.set(scl, scl, 1);
+          ripple.material.opacity = fade * 0.6 * (1 - phase); // 越擴越淡
+        }
+        ripple.visible = true;
+      } else {
+        ripple.visible = false;
       }
     }
   }
@@ -3318,6 +3397,13 @@ function handleServerMsg(msg) {
       reconcileStatic(msg.watchtowers, watchtowers, "wt", makeWatchtower,
         (g, item) => applyTowerProgress(g, watchtowerVisual(item)), recvT);
       reconcileStatic(msg.snowmen, snowmen, "sm", makeSnowman, null, recvT);
+      // 故鄉古井（ROADMAP 640，禱告驅動）：把單一固定設施包成單元素清單走同一套 reconcile；
+      // wx/wy 對齊 reconcileStatic 介面，watering 記進 userData.item 供每幀畫水波。
+      reconcileStatic(
+        msg.village_well && Number.isFinite(msg.village_well.x) && Number.isFinite(msg.village_well.y)
+          ? [{ id: "well", wx: msg.village_well.x, wy: msg.village_well.y, watering: msg.village_well.watering === true }]
+          : [],
+        villageWells, "vw", makeVillageWell, null, recvT);
 
       // 玩家親手種下、隨真實時間長大的世界樹群（ROADMAP 617）：以座標當 key、長大了才重塑樹身。
       reconcileGroves(msg.world_groves, recvT);
