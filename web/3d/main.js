@@ -871,6 +871,117 @@ function updateNpcSpeech(nowMs) {
   }
 }
 
+// ── 居民派系關係在 3D 裡看得見（ROADMAP 625）──────────────────────────────
+// 後端早已在快照送 town_factions：七大居民「此刻」自然湧現的結盟／敵對配對（355）。
+// 2D 把它畫成右下角面板；3D 更進一步——把這份「看不見的社會結構」**畫成兩人之間的關係連線**：
+// 結盟＝一道暖金弧舒展相連、敵對＝一道警紅弧低伏緊繃，AI 社會的政治第一次「在世界裡看得見」。
+// 後端只送 wire key（alliance/rivalry），配色/圖示/文案由前端鏡像（鏡像 2D 的 FACTION_BOND_STYLE，
+// 保留 i18n 空間）。純前端讀既有快照、零後端改動、零持久化。
+const FACTION_BOND_STYLE = {
+  alliance: { color: 0xffd966, icon: "🤝", label: "結盟", arc: 5.0 }, // 暖金、弧高舒展（和睦）
+  rivalry:  { color: 0xff6b6b, icon: "⚔️", label: "敵對", arc: 1.2 }, // 警紅、弧低緊繃（張力）
+};
+const FACTION_LINK_Y = 11;   // 連線端點高度（略高於頭頂 9.3、低於名牌），一眼看見「兩人之間有關係」
+const FACTION_ARC_SEG = 14;  // 弧線取樣分段數
+
+// 一條關係連線此刻的視覺（顏色固定、透明度隨關係類型輕脈動）：結盟徐徐呼吸（和睦），
+// 敵對較快閃動且更明（張力）。未知 bond 回 null（呼叫端略過）。決定性、好測。
+function factionLinkVisual(bond, t) {
+  const st = FACTION_BOND_STYLE[bond];
+  if (!st) return null;
+  const speed = bond === "rivalry" ? 3.2 : 1.4;
+  const base = bond === "rivalry" ? 0.6 : 0.66;
+  const amp = bond === "rivalry" ? 0.3 : 0.18;
+  const opacity = base + amp * (0.5 + 0.5 * Math.sin(t * speed));
+  return { color: st.color, opacity, arc: st.arc };
+}
+
+// 兩名居民之間關係連線的取樣點（場景座標）：一道在兩人頭頂之上隆起的拋物弧。
+// 端點落在兩人位置（高 FACTION_LINK_Y）、中點抬最高（arc 由 bond 決定：結盟高舒展、敵對低緊繃）。
+// 回傳扁平 [x,y,z, x,y,z, …]（segments+1 個點）。決定性、好測。
+function factionArcPoints(ax, az, bx, bz, arc, segments) {
+  const seg = Math.max(2, segments | 0);
+  const out = [];
+  for (let i = 0; i <= seg; i++) {
+    const f = i / seg;
+    const x = ax + (bx - ax) * f;
+    const z = az + (bz - az) * f;
+    // 拋物線抬升：端點 0、中點最高（4·f·(1−f) 在 f=0.5 時 =1）
+    const y = FACTION_LINK_Y + arc * 4 * f * (1 - f);
+    out.push(x, y, z);
+  }
+  return out;
+}
+
+// 鎮民派系 HUD 一行：數出此刻幾組結盟、幾組敵對；和平相處（無明顯派系）回空字串。
+// 未知 wire key 略過（與 2D 一致、不算進任何一類）。鏡像 farmHudLabel 風格、好測。
+function factionHudLabel(factions) {
+  if (!Array.isArray(factions) || !factions.length) return "";
+  let ally = 0, rival = 0;
+  for (const f of factions) {
+    if (!f || !FACTION_BOND_STYLE[f.bond]) continue;
+    if (f.bond === "alliance") ally++;
+    else if (f.bond === "rivalry") rival++;
+  }
+  if (!ally && !rival) return "";
+  const parts = [];
+  if (ally) parts.push(`🤝 ${ally} 結盟`);
+  if (rival) parts.push(`⚔️ ${rival} 敵對`);
+  return parts.join(" · ");
+}
+
+// 最新一筆快照的鎮民派系配對（ROADMAP 355）；空陣列＝目前相處平和、無明顯派系。
+let latestTownFactions = [];
+// 關係連線實體池：pairKey → { line, geom, posAttr, mat }；隨關係解除／一方離線自然回收。
+const factionLinks = new Map();
+const factionLinkGroup = new THREE.Group();
+scene.add(factionLinkGroup);
+function factionPairKey(a, b, bond) { return bond + "|" + a + "|" + b; }
+
+// 每幀更新所有居民之間的關係連線（在 npcs 的 updateRemoteEntities／updateResidentStatus 之後呼叫：
+// 那時 npc group 的位置已內插到本幀、fade 也已更新）。連線位置吸兩人當下位置、隨關係類型脈動，
+// 透明度再乘上兩端 AOI 淡入淡出的較小者（任一方淡出，連線一起淡掉，不殘留空中）。
+function updateFactionLinks(t) {
+  const seen = new Set();
+  for (const f of latestTownFactions) {
+    if (!f || !FACTION_BOND_STYLE[f.bond]) continue;
+    const ga = npcs.get(f.npc_a), gb = npcs.get(f.npc_b);
+    if (!ga || !gb) continue; // 兩位都在線且在視野內才畫得出關係
+    const fadeA = ga.userData.fade ?? 1, fadeB = gb.userData.fade ?? 1;
+    const fade = Math.min(fadeA, fadeB);
+    const key = factionPairKey(f.npc_a, f.npc_b, f.bond);
+    seen.add(key);
+    const vis = factionLinkVisual(f.bond, t);
+    const pts = factionArcPoints(ga.position.x, ga.position.z, gb.position.x, gb.position.z, vis.arc, FACTION_ARC_SEG);
+    let entry = factionLinks.get(key);
+    if (!entry) {
+      const geom = new THREE.BufferGeometry();
+      const posAttr = new THREE.Float32BufferAttribute(new Float32Array((FACTION_ARC_SEG + 1) * 3), 3);
+      geom.setAttribute("position", posAttr);
+      const mat = new THREE.LineBasicMaterial({ transparent: true, depthWrite: false });
+      const line = new THREE.Line(geom, mat);
+      factionLinkGroup.add(line);
+      entry = { line, geom, posAttr, mat };
+      factionLinks.set(key, entry);
+    }
+    const arr = entry.posAttr.array;
+    for (let i = 0; i < pts.length; i++) arr[i] = pts[i];
+    entry.posAttr.needsUpdate = true;
+    if (entry.geom.computeBoundingSphere) entry.geom.computeBoundingSphere();
+    entry.mat.color.setHex(vis.color);
+    entry.mat.opacity = vis.opacity * fade;
+    entry.line.visible = fade > 0.04; // 兩端幾近淡出時整條收掉，不殘影
+  }
+  // 清掉本幀不再存在的連線（關係解除、或有一方離線/離開視野）
+  for (const [key, entry] of factionLinks) {
+    if (seen.has(key)) continue;
+    factionLinkGroup.remove(entry.line);
+    if (entry.geom.dispose) entry.geom.dispose();
+    if (entry.mat.dispose) entry.mat.dispose();
+    factionLinks.delete(key);
+  }
+}
+
 // 每幀更新所有玩家頭頂的表情泡泡（ROADMAP 621；在 players 的 updateRemoteEntities 之後呼叫：
 // 那裡 updateFade 已把每個子 sprite 的 opacity 設成 AOI 淡入淡出值，這裡再乘上表情自己的存活淡出
 // 覆寫上去，故 AOI 淡入淡出仍生效、又不被它壓掉表情的顯示）。過期或玩家已離開即收掉。
@@ -2015,6 +2126,8 @@ function handleServerMsg(msg) {
       // 天氣／彩虹：留存最新一筆權威 weather／rainbow，render 每幀據此讓粒子場與遠空彩虹流轉（ROADMAP 613）。
       if (msg.weather && typeof msg.weather === "object") latestWeather = msg.weather;
       if (msg.rainbow && typeof msg.rainbow === "object") latestRainbow = msg.rainbow;
+      // 鎮民派系（ROADMAP 625）：留存最新一筆結盟／敵對配對，render 每幀據此在居民之間畫關係連線。
+      if (Array.isArray(msg.town_factions)) latestTownFactions = msg.town_factions;
       // 這份快照的到達時間：全類共用一個時間戳，內插時間軸才一致。
       const recvT = performance.now();
       // 玩家：火柴人（自己金色、別人藍色），帶名字標籤
@@ -2120,9 +2233,10 @@ function handleServerMsg(msg) {
       const wildLabel = wildlifeHudLabel(msg.wildlife); // 野生動物數＋其中已馴養數（ROADMAP 615）
       const builtLabel = structuresHudLabel(msg.campfires, msg.watchtowers, msg.snowmen); // 視野內人造地標（ROADMAP 616）
       const groveLabel = groveHudLabel(msg.world_groves); // 視野內世界樹群＋其中成樹數（ROADMAP 617）
+      const factionLabel = factionHudLabel(latestTownFactions); // 此刻幾組結盟／敵對（ROADMAP 625）
       hudEl.innerHTML =
         `<b>${myName}</b> · 線上 ${players.size} 人${phaseLabel ? " · " + phaseLabel : ""}${weatherLabel ? " · " + weatherLabel : ""}\n` +
-        `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · 敵人 ${enemies.size}${farmLabel ? " · " + farmLabel : ""}${builtLabel ? " · " + builtLabel : ""}${groveLabel ? " · " + groveLabel : ""}\n` +
+        `NPC ${npcs.size} · ${wildLabel || "野生 " + wildlife.size} · 敵人 ${enemies.size}${farmLabel ? " · " + farmLabel : ""}${builtLabel ? " · " + builtLabel : ""}${groveLabel ? " · " + groveLabel : ""}${factionLabel ? " · " + factionLabel : ""}\n` +
         `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳 · 🌱鈕種樹 · 😊鈕比表情" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳 · T 種樹 · E 表情"}`;
 
       setStatus(
@@ -2817,6 +2931,8 @@ function safeRender() {
     updateResidentStatus(t);
     // 居民對話泡泡：在 updateResidentStatus 之後覆寫對話 sprite 的顯示（ROADMAP 622）
     updateNpcSpeech(performance.now());
+    // 居民派系關係連線：在 npcs 位置/fade 更新後，於結盟/敵對的兩位居民之間畫弧（ROADMAP 625）
+    updateFactionLinks(t);
     updateRemoteEntities(wildlife, scene, renderTime, true, dt, t, undefined, k);
     // 野生動物呈現：在 wildlife 的 updateFade 之後覆寫頭頂狀態 sprite 與幼獸體型（ROADMAP 615）
     updateWildlifeStatus(t);
@@ -2879,7 +2995,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE };
 }
 
 // 啟動
