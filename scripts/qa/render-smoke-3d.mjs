@@ -583,6 +583,39 @@ if (!/木材/.test(T.itemLabel("wood"))) fail("itemLabel(wood) 應含中文名")
 if (!/📦/.test(T.itemLabel("unknown_item_xyz"))) fail("未知物品應有 📦 後備");
 console.log("✅ 城鎮交易純邏輯（商人挑選·壞值剔除／走近最近判距·圈外安全／鈕態·店名提示／面板簽章·必要才重建／物品標籤·i18n 後備）全綠");
 
+// ── 重大世界事件純邏輯（ROADMAP 631）：宇宙裂縫／獸潮攻城顯影參數·HUD 文字·階段正規化·倒數進位·壞值安全 ──
+if (typeof T.riftVisual !== "function" || typeof T.riftHudLabel !== "function"
+    || typeof T.hordeVisual !== "function" || typeof T.hordeHudLabel !== "function") {
+  fail("__bf3dTest 未暴露 riftVisual/riftHudLabel/hordeVisual/hordeHudLabel");
+}
+// 宇宙裂縫：有限座標 → active；缺座標／非物件 → 安全 inactive；remainingSecs clamp ≥0。
+const rvActive = T.riftVisual({ x: 700, y: 3900, remaining_secs: 42.3 });
+if (!rvActive.active || rvActive.x !== 700 || rvActive.y !== 3900) fail("riftVisual 有效事件應 active 且帶座標");
+if (rvActive.remainingSecs !== 42.3) fail("riftVisual 應留存 remaining_secs");
+if (T.riftVisual({ x: 700, y: 3900, remaining_secs: -5 }).remainingSecs !== 0) fail("riftVisual 負倒數應 clamp 0");
+if (T.riftVisual(null).active !== false) fail("riftVisual(null) 應 inactive");
+if (T.riftVisual({ x: NaN, y: 10 }).active !== false) fail("riftVisual 壞座標應 inactive");
+if (T.riftVisual("字串").active !== false) fail("riftVisual 非物件應 inactive");
+// 裂縫 HUD：無事件空字串；有倒數報「約 Ns」（無條件進位）；缺倒數只報已開啟。
+if (T.riftHudLabel(null) !== "") fail("riftHudLabel 無事件應回空字串");
+if (!/宇宙裂縫已開啟 · 約 43s/.test(T.riftHudLabel({ x: 1, y: 1, remaining_secs: 42.3 }))) fail("riftHudLabel 倒數應進位成 43s，得 " + T.riftHudLabel({ x: 1, y: 1, remaining_secs: 42.3 }));
+if (T.riftHudLabel({ x: 1, y: 1, remaining_secs: 0 }) !== "🌀 宇宙裂縫已開啟") fail("riftHudLabel 無倒數應只報已開啟");
+// 獸潮攻城：phase 正規化（sieging→攻城、其餘→逼近）；缺座標 inactive；secsLeft clamp；label 壞值空字串。
+const hvSiege = T.hordeVisual({ phase: "sieging", site_x: 700, site_y: 800, site_label: "北城門外", secs_left: 90 });
+if (!hvSiege.active || hvSiege.phase !== "sieging" || hvSiege.label !== "北城門外" || hvSiege.secsLeft !== 90) fail("hordeVisual 攻城事件解析錯誤，得 " + JSON.stringify(hvSiege));
+if (T.hordeVisual({ phase: "announcing", site_x: 1, site_y: 1 }).phase !== "announcing") fail("hordeVisual announcing 階段");
+if (T.hordeVisual({ phase: "weird", site_x: 1, site_y: 1 }).phase !== "announcing") fail("hordeVisual 未知階段應退回 announcing");
+if (T.hordeVisual({ phase: "sieging", site_x: 1, site_y: 1, secs_left: -3 }).secsLeft !== 0) fail("hordeVisual 負倒數應 clamp 0");
+if (T.hordeVisual({ phase: "sieging", site_x: 1, site_y: 1, site_label: 123 }).label !== "") fail("hordeVisual 壞 label 應回空字串");
+if (T.hordeVisual(null).active !== false) fail("hordeVisual(null) 應 inactive");
+if (T.hordeVisual({ site_x: NaN, site_y: 1 }).active !== false) fail("hordeVisual 壞座標應 inactive");
+// 獸潮 HUD：無事件空字串；逼近／攻城兩字樣；缺地名退回「城門」。
+if (T.hordeHudLabel(null) !== "") fail("hordeHudLabel 無事件應回空字串");
+if (!/⚠️ 獸潮逼近·南城門外 · 30s/.test(T.hordeHudLabel({ phase: "announcing", site_x: 1, site_y: 1, site_label: "南城門外", secs_left: 30 }))) fail("hordeHudLabel 逼近字樣錯誤");
+if (!/⚔️ 獸潮攻城·北城門外 · 12s/.test(T.hordeHudLabel({ phase: "sieging", site_x: 1, site_y: 1, site_label: "北城門外", secs_left: 12 }))) fail("hordeHudLabel 攻城字樣錯誤");
+if (!/城門/.test(T.hordeHudLabel({ phase: "sieging", site_x: 1, site_y: 1, secs_left: 5 }))) fail("hordeHudLabel 缺地名應退回城門");
+console.log("✅ 重大世界事件純邏輯（裂縫／獸潮顯影參數·HUD 文字·階段正規化·倒數進位·非物件/NaN/缺座標壞值安全）全綠");
+
 // ── ①j 天時盤純邏輯（ROADMAP 620）：繞盤角度／倒數平滑遞減／時段·下一時段標籤／壞值安全 ──
 if (typeof T.dayClockReadout !== "function" || typeof T.fmtCountdown !== "function") fail("__bf3dTest 未暴露 dayClockReadout/fmtCountdown");
 const dcr = T.dayClockReadout;
@@ -926,8 +959,24 @@ drive({ type: "snapshot", players: playersA, npcs: npcsA, wildlife: wildlifeA, e
   daynight: { phase: "day", day_fraction: 0.33, light: 1.0, night_danger: false, next_phase: "dusk", secs_to_next: 180 },
   // 細雨＋橫風＋彩虹：踩 applyWeather 的粒子推進／回收、霧染、彩虹淡入路徑（ROADMAP 613）
   weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
-  rainbow: { active: true, remaining_secs: 30 } });
+  rainbow: { active: true, remaining_secs: 30 },
+  // 重大世界事件（ROADMAP 631）：宇宙裂縫已開啟＋獸潮逼近期——踩 makeRiftPortal／makeHordeBeacon
+  // 建場（首次出現懶建）＋updateWorldEvents 的座標吸附／光柱脈動旋轉／逼近琥珀色光束／地名牌建構路徑。
+  world_event: { x: 700, y: 3900, remaining_secs: 50 },
+  horde_event: { phase: "announcing", site_x: 700, site_y: 800, site_label: "北城門外", secs_left: 90 } });
 frames(8);
+
+// 獸潮轉入攻城期＋裂縫移位（ROADMAP 631）：踩 updateWorldEvents 的階段變色（琥珀→赤紅）、攻城劇烈脈動、
+// 既有地標重定位（不重建）、地名相同不重建牌面路徑。沿用 A 的其餘陣列（仍在作用域）。
+drive({ type: "snapshot", players: playersA, npcs: npcsA, wildlife: wildlifeA, enemies: enemiesA, nodes: [],
+  town_factions: townFactionsA, star_crystals: [{ x: 1500, y: 1500 }, { x: 1560, y: 1520 }],
+  fields: fieldsA, campfires: campfiresA, watchtowers: watchtowersA, snowmen: snowmenA, world_groves: grovesA,
+  daynight: { phase: "day", day_fraction: 0.34, light: 1.0, night_danger: false, next_phase: "dusk", secs_to_next: 170 },
+  weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
+  rainbow: { active: true, remaining_secs: 28 },
+  world_event: { x: 4200, y: 3900, remaining_secs: 40 },
+  horde_event: { phase: "sieging", site_x: 700, site_y: 800, site_label: "北城門外", secs_left: 40 } });
+frames(4);
 
 // 城鎮交易面板（ROADMAP 630）：「我」就站在商人 n4 伸手範圍內 → 開面板，踩 renderShopPanel／refreshShopPanel
 // 的賣給商人（含 ↘供給過剩）／向商人買（含 🚫售罄）／訪客鎖定登入提示渲染全路徑（不該拋例外）。
@@ -1024,6 +1073,7 @@ const playersB = [
 drive({ type: "snapshot", players: playersB, npcs: npcsB, wildlife: wildlifeB, enemies: enemiesB, nodes: [],
   town_factions: [], // 派系全數解除（ROADMAP 625）→ 踩 updateFactionLinks 的連線回收／dispose 全清路徑
   star_crystals: [], // 星晶全數消失（天亮／採光）→ 踩 starCrystals reconcile 的移除淡出全清路徑（ROADMAP 629）
+  // 不帶 world_event／horde_event（ROADMAP 631）→ 裂縫關閉、獸潮退去：踩 updateWorldEvents 把既有地標隱藏（.visible=false）路徑
   fields: fieldsB, campfires: campfiresB, watchtowers: watchtowersB, snowmen: snowmenB, world_groves: grovesB,
   daynight: { phase: "night", day_fraction: 0.82, light: 0.2, night_danger: true, next_phase: "dawn", secs_to_next: 60 },
   // 天氣切到海霧（上飄粒子）＋彩虹消失：踩 fall<0 上飄回收、霧染轉色、彩虹淡出路徑
