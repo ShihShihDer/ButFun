@@ -239,6 +239,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             boosting: false,
             bell_trigger: None,
             mount_gather_at: None,
+            last_input_seq: 0,
         }
     } else {
         // 等 Join
@@ -392,6 +393,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             boosting: false,
             bell_trigger: None,
             mount_gather_at: None,
+            last_input_seq: 0,
         }
     };
     let id = player.id;
@@ -1008,6 +1010,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     left,
                     right,
                     run,
+                    seq,
                 }) => {
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         p.input = Input {
@@ -1017,6 +1020,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             right,
                             run,
                         };
+                        // netcode 切片1：記錄客戶端送來的最新輸入序號，隨快照回傳供未來重放對帳。
+                        // 守鎖紀律：只在 std RwLock 寫鎖內做純賦值，不 await、不二次上鎖。
+                        p.last_input_seq = seq;
                     }
                 }
                 Ok(ClientMsg::Chat { text }) => {
