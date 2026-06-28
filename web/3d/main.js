@@ -2610,6 +2610,10 @@ const starCrystals = new Map();
 let latestSelfWorld = null; // {x,y}＝自己最新權威世界座標；沒有就還沒收到含自己的快照
 let latestNodes = [];       // 最新一筆採集節點（樹／石／乙太礦，世界 px）
 let latestCrystals = [];    // 最新一筆星晶礦脈（夜間限定，世界 px）
+// 城鎮交易（ROADMAP 630）：把既有「商人商店」（#57）接進 3D。每份快照留存「帶買賣目錄的 NPC」
+// 與「自己這筆 PlayerView」（含乙太／背包），render 每幀據此點亮交易鈕、開著面板時即時刷新行情。
+let latestMerchants = [];   // 最新一筆商人清單（NpcView 中 buy_list／sell_list 非空者，世界 px）
+let latestSelfItem = null;  // 自己這筆 PlayerView（含 ether／inventory）；沒有就還沒收到含自己的快照
 // 寵物夥伴（ROADMAP 627）：key 用「主人 id:種類」——主人換了寵物時舊 key 自然淡出、新身形淡入。
 // 寵物有自己的世界座標（pet_x/pet_y，伺服器權威跟隨主人），走與玩家同套快照內插。
 const pets = new Map();
@@ -2832,6 +2836,12 @@ function handleServerMsg(msg) {
       latestSelfWorld = (meAuth && Number.isFinite(meAuth.x) && Number.isFinite(meAuth.y))
         ? { x: meAuth.x, y: meAuth.y } : null;
 
+      // 城鎮交易判距（ROADMAP 630）：留存「帶買賣目錄的 NPC」＋「自己這筆 PlayerView」（含乙太／背包），
+      // 供 render 每幀算「腳邊有沒有商人」→ 點亮交易鈕；面板開著時據此即時刷新行情／庫存／餘額。
+      latestMerchants = shopMerchantsFrom(msg.npcs);
+      latestSelfItem = (meAuth && typeof meAuth === "object") ? meAuth : null;
+      if (shopOpen) refreshShopPanel(); // 面板開著就跟著快照刷新（行情漲跌、庫存、我的乙太/背包）
+
       // 找出「自己」：快照裡 id === myId 的那個玩家。沒找到就提示（不白屏）。
       const meGroup = myId ? players.get(myId) : null;
       if (meGroup) {
@@ -2934,8 +2944,11 @@ function keyToDir(e) {
   return null;
 }
 window.addEventListener("keydown", (e) => {
+  // 在數量輸入框（交易面板）裡打字時，別讓 WASD／動作鍵被當成遊戲操作（ROADMAP 630）。
+  if (e.target && e.target.tagName === "INPUT") return;
   if (e.code === "Space") { wantJump = true; e.preventDefault(); return; }
   if (e.code === "ShiftLeft" || e.code === "ShiftRight") { runHeld = true; return; }
+  if (e.code === "KeyB" && !e.repeat) { if (globalThis.__bf3dToggleShop) globalThis.__bf3dToggleShop(); e.preventDefault(); return; } // 城鎮交易（ROADMAP 630）
   if (e.code === "KeyT" && !e.repeat) { tryPlantTree(); e.preventDefault(); return; } // 種樹（ROADMAP 618）
   if (e.code === "KeyF" && !e.repeat) { tryTend("water"); e.preventDefault(); return; }   // 一鍵澆水（ROADMAP 619）
   if (e.code === "KeyH" && !e.repeat) { tryTend("harvest"); e.preventDefault(); return; } // 一鍵收成（ROADMAP 619）
@@ -3165,6 +3178,200 @@ function updateGatherBtn() {
   if (st.locked !== gatherBtnLastLocked) { btn.classList.toggle("locked", st.locked); gatherBtnLastLocked = st.locked; }
   btn.title = st.hint;
 }
+
+// ============================================================
+// 城鎮交易（ROADMAP 630）：把既有「新手村商人商店」（#57）接進 3D——3D 世界第一次能「以物易乙太」。
+//   · 伺服器才是權威：買賣一律送既有意圖 {type:"shop_buy"|"shop_sell", item, qty}（與 2D web/game.js 同協議），
+//     伺服器用玩家權威座標判距（SHOP_REACH=96）、扣乙太/背包、不合法回滾，下一份快照反映真實結果。
+//   · 交易需登入（動到乙太/背包＝帳號資產）；訪客可逛目錄、按鈕誠實鎖定不假裝能買賣（鏡像 2D isGuest）。
+//   · 純前端、零後端改動、零協議改動——商人 buy_list/sell_list 與我的 ether/inventory 本來就在快照裡。
+// ============================================================
+
+// 物品中文名／emoji（鏡像 2D web/game.js 的 ITEM_NAME／ITEM_LOOK；面向玩家字串集中、留 i18n 空間）。
+const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", axe: "斧頭", fishing_rod: "釣竿", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧", ether_bow: "乙太弓", crystal_ballista: "晶石弩", void_cannon: "虛空炮", wild_flower: "野花", solar_shard: "太陽碎片", maple_leaf: "楓葉", ice_shard: "冰晶碎片", spring_sachet: "春日香囊", summer_elixir: "夏日精粹", autumn_tonic: "秋日補藥", winter_medicine: "冬日神藥", steam_bed: "蒸汽床", aether_chest: "乙太箱", ether_plant: "醚草盆栽", star_lantern: "星燈", ancient_deco: "古代裝飾", aquarium: "水族缸", ether_overlord_core: "霸主晶核", ether_overlord_blade: "守城戰刃", alpha_crystal: "Alpha晶石", alpha_force: "Alpha原力", legendary_core: "傳說晶核", legendary_blade: "傳說戰刃", fish_small: "小魚", fish_star: "星星魚", fish_deep: "深海魚", egg: "雞蛋", carrot: "胡蘿蔔", potato: "馬鈴薯", grilled_fish: "烤魚", star_sashimi: "星燦刺身", deep_broth: "深海濃湯", fried_egg: "煎蛋", honey: "蜂蜜", bread: "麵包", carrot_soup: "蔬菜湯", potato_gratin: "焗烤馬鈴薯", night_potion: "夜幻藥水", gold_ore: "黃金礦石" };
+const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", axe: "🪓", fishing_rod: "🎣", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨", ether_bow: "🏹", crystal_ballista: "🎯", void_cannon: "💥", wild_flower: "🌼", solar_shard: "🌞", maple_leaf: "🍁", ice_shard: "🧊", spring_sachet: "🌷", summer_elixir: "☀️", autumn_tonic: "🍂", winter_medicine: "❄️", steam_bed: "🛏️", aether_chest: "📦", ether_plant: "🪴", star_lantern: "🔮", ancient_deco: "🏺", aquarium: "🐠", ether_overlord_core: "💠", ether_overlord_blade: "⚔️", alpha_crystal: "💎", alpha_force: "⚡", legendary_core: "💫", legendary_blade: "🌟", fish_small: "🐟", fish_star: "⭐", fish_deep: "🦈", egg: "🥚", carrot: "🥕", potato: "🥔", grilled_fish: "🍢", star_sashimi: "🍣", deep_broth: "🍲", fried_egg: "🍳", honey: "🍯", bread: "🍞", carrot_soup: "🥣", potato_gratin: "🧀", night_potion: "🌙", gold_ore: "🪙" };
+// 物品顯示（emoji + 中文名；未知 key 退回原始字串，留 i18n 空間）。
+function itemLabel(key) { return `${ITEM_LOOK[key] || "📦"} ${ITEM_NAME[key] || key}`; }
+
+const SHOP_REACH = 96;                       // 對齊後端 SHOP_REACH／2D web/game.js（走這距離內才能交易）
+const SHOP_REACH_SQ = SHOP_REACH * SHOP_REACH;
+
+let shopOpen = false;        // 交易面板是否開著
+let lastShopSig = null;      // 面板內容簽章——只在行情/庫存/餘額/背包變動時才重建 DOM（守 panel-sig-stale）
+
+// 純函式：從一份 npcs 快照挑出「商人」（buy_list 或 sell_list 非空者），精簡成交易要用的欄位。
+// 確定性、壞值安全（非陣列回 []、缺座標者略過）。供 render 判距與 smoke 斷言。
+function shopMerchantsFrom(npcs) {
+  if (!Array.isArray(npcs)) return [];
+  const out = [];
+  for (const n of npcs) {
+    if (!n || typeof n !== "object") continue;
+    const buy = Array.isArray(n.buy_list) ? n.buy_list : [];
+    const sell = Array.isArray(n.sell_list) ? n.sell_list : [];
+    if (buy.length === 0 && sell.length === 0) continue;      // 非商人（一般居民／旅人）
+    if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue; // 壞座標略過
+    out.push({ id: n.id, name: n.name || "商人", x: n.x, y: n.y, buy_list: buy, sell_list: sell });
+  }
+  return out;
+}
+
+// 純函式：給自己的世界座標＋商人清單，回「伸手範圍內最近的商人」（無則 null）。
+// 確定性、壞值安全（無自己座標／空清單／壞座標一律安全回 null，不誤點亮鈕）。供 render 與 smoke。
+function shopTargetAt(self, merchants, reachSq) {
+  if (!self || !Number.isFinite(self.x) || !Number.isFinite(self.y)) return null;
+  if (!Array.isArray(merchants)) return null;
+  const rsq = Number.isFinite(reachSq) ? reachSq : SHOP_REACH_SQ;
+  let best = null, bestD = Infinity;
+  for (const m of merchants) {
+    if (!m || !Number.isFinite(m.x) || !Number.isFinite(m.y)) continue;
+    const dx = self.x - m.x, dy = self.y - m.y;
+    const d = dx * dx + dy * dy;
+    if (d <= rsq && d < bestD) { best = m; bestD = d; }
+  }
+  return best;
+}
+
+// 純函式：交易鈕的顯示狀態（走近商人→可開店；否則鎖定提示）。字串集中可 i18n，供 smoke 真值表。
+function shopButtonState(target) {
+  if (!target) return { label: "🛒 交易", locked: true, hint: "走近新手村的商人，就能買賣" };
+  return { label: "🛒 交易", locked: false, hint: `和 ${target.name} 買賣——賣材料換乙太、花乙太買工具` };
+}
+
+// 純函式：面板內容簽章（近哪個商人＋登入態＋我的乙太＋背包＋收購價/趨勢＋販售價/庫存）。
+// 只在這些真的變動時才重建 DOM（鏡像 2D lastShopSig，省排版、也避開「按了沒反應要重開」病）。
+function shopPanelSig(merchant, selfItem, loggedIn) {
+  if (!merchant) return "none";
+  const ether = selfItem && Number.isFinite(selfItem.ether) ? selfItem.ether : 0;
+  const inv = (selfItem && Array.isArray(selfItem.inventory) ? selfItem.inventory : [])
+    .map((s) => `${s.item}:${s.qty}`).join(",");
+  const buy = merchant.buy_list.map((e) => `${e.item}:${e.price_per}:${e.trend || ""}`).join(",");
+  const sell = merchant.sell_list.map((e) => `${e.item}:${e.price_per}:${e.stock ?? ""}:${e.max_stock ?? ""}`).join(",");
+  return `${merchant.id}|${loggedIn ? 1 : 0}|${ether}|${inv}|${buy}|${sell}`;
+}
+
+// 重建交易面板內容（賣給商人／向商人買兩區，逐項 emoji+名+價+數量+按鈕）。
+// 訪客：按鈕鎖定＋登入提示。送出後不假裝成功——下一份快照的乙太/背包/庫存即真實回饋。
+function renderShopPanel(merchant, selfItem, loggedIn) {
+  const head = document.getElementById("shopHead");
+  const body = document.getElementById("shopBody");
+  if (!body) return;
+  const ether = selfItem && Number.isFinite(selfItem.ether) ? selfItem.ether : 0;
+  const invMap = new Map((selfItem && Array.isArray(selfItem.inventory) ? selfItem.inventory : []).map((s) => [s.item, s.qty]));
+  if (head) head.textContent = `🛒 ${merchant.name}　餘額 ${ether}✨`;
+
+  let html = "";
+  // —— 賣給商人（換乙太）——
+  html += `<div class="shop-sec">📤 賣給商人（換乙太）</div>`;
+  if (merchant.buy_list.length === 0) html += `<div class="shop-empty">此商人暫不收購</div>`;
+  for (const e of merchant.buy_list) {
+    const have = invMap.get(e.item) || 0;
+    const can = loggedIn && have > 0;
+    const trend = e.trend === "down" ? ` <span class="shop-warn">↘供給過剩</span>` : "";
+    html += `<div class="shop-row">
+      <span class="shop-name">${itemLabel(e.item)} <span class="shop-have">持有 ${have}</span>${trend}</span>
+      <span class="shop-price up">+${e.price_per}✨</span>
+      <input class="shop-qty" id="shopSellQty_${e.item}" type="number" min="1" max="${Math.max(1, have)}" value="1" ${can ? "" : "disabled"}>
+      <button class="shop-act" id="shopSellBtn_${e.item}" ${can ? "" : "disabled"}>賣出</button>
+    </div>`;
+  }
+  // —— 向商人買（花乙太）——
+  html += `<div class="shop-sec">📥 向商人購買（花乙太）</div>`;
+  if (merchant.sell_list.length === 0) html += `<div class="shop-empty">此商人暫無販售</div>`;
+  const buyback = new Map(merchant.buy_list.map((e) => [e.item, e.price_per]));
+  for (const e of merchant.sell_list) {
+    const out = e.stock != null && e.stock === 0;
+    const can = loggedIn && ether >= e.price_per && !out;
+    let stock = "";
+    if (e.stock != null && e.max_stock != null) {
+      stock = out ? ` <span class="shop-warn">🚫售罄</span>` : ` <span class="shop-stock">庫存 ${e.stock}/${e.max_stock}</span>`;
+    }
+    const back = buyback.get(e.item);
+    const spread = back != null ? ` <span class="shop-dim">（賣回 ${back}✨）</span>` : "";
+    html += `<div class="shop-row">
+      <span class="shop-name">${itemLabel(e.item)}${stock}${spread}</span>
+      <span class="shop-price down">-${e.price_per}✨</span>
+      <input class="shop-qty" id="shopBuyQty_${e.item}" type="number" min="1" max="${Math.max(1, e.stock || 99)}" value="1" ${can ? "" : "disabled"}>
+      <button class="shop-act" id="shopBuyBtn_${e.item}" ${can ? "" : "disabled"}>${out ? "缺貨" : "購買"}</button>
+    </div>`;
+  }
+  if (!loggedIn) html += `<div class="shop-login">在 but-fun.com 登入後才能買賣（訪客可逛目錄）</div>`;
+  body.innerHTML = html;
+
+  // 綁定買賣按鈕（送既有權威意圖；伺服器裁決後下一份快照反映乙太/背包/庫存）。
+  for (const e of merchant.buy_list) {
+    const btn = document.getElementById(`shopSellBtn_${e.item}`);
+    if (btn && btn.addEventListener) btn.addEventListener("click", () => doTrade("shop_sell", e.item, `shopSellQty_${e.item}`));
+  }
+  for (const e of merchant.sell_list) {
+    const btn = document.getElementById(`shopBuyBtn_${e.item}`);
+    if (btn && btn.addEventListener) btn.addEventListener("click", () => doTrade("shop_buy", e.item, `shopBuyQty_${e.item}`));
+  }
+}
+
+// 送一筆買/賣意圖：讀數量框、夾正、送既有協議。未登入給登入提示（誠實鎖定）。
+function doTrade(type, item, qtyId) {
+  if (!isLoggedIn) { flashToast("🛒 在 but-fun.com 登入後才能買賣"); return; }
+  const el = document.getElementById(qtyId);
+  let qty = parseInt((el && el.value) || "1", 10);
+  if (!Number.isFinite(qty) || qty < 1) qty = 1;
+  if (safeSend({ type, item, qty })) {
+    flashToast(`🛒 送出${type === "shop_buy" ? "買單" : "賣單"}（${ITEM_NAME[item] || item} ×${qty}）`);
+  }
+}
+
+// 刷新面板（依簽章避免每幀重建；商人走遠/不見就自動收起，伺服器本就會擋遠距交易）。
+function refreshShopPanel() {
+  if (!shopOpen) return;
+  const target = shopTargetAt(latestSelfWorld, latestMerchants);
+  if (!target) { closeShop(); return; }
+  const sig = shopPanelSig(target, latestSelfItem, isLoggedIn);
+  if (sig === lastShopSig) return;
+  lastShopSig = sig;
+  renderShopPanel(target, latestSelfItem, isLoggedIn);
+}
+
+function openShop() {
+  const target = shopTargetAt(latestSelfWorld, latestMerchants);
+  if (!target) { flashToast("🛒 走近新手村的商人，就能買賣"); return; }
+  const panel = document.getElementById("shopPanel");
+  if (panel && panel.classList) panel.classList.remove("hidden");
+  shopOpen = true;
+  lastShopSig = null;  // 強制重建一次
+  refreshShopPanel();
+}
+function closeShop() {
+  const panel = document.getElementById("shopPanel");
+  if (panel && panel.classList) panel.classList.add("hidden");
+  shopOpen = false;
+}
+function toggleShop() { shopOpen ? closeShop() : openShop(); }
+
+// 每幀刷新交易鈕外觀（走近商人才亮）。只在 label/鎖定態變動時改 DOM（守 render-loop-resilience）。
+let shopBtnLastLabel = null, shopBtnLastLocked = null;
+function updateShopBtn() {
+  const btn = document.getElementById("shopBtn");
+  if (!btn) return;
+  const st = shopButtonState(shopTargetAt(latestSelfWorld, latestMerchants));
+  if (st.label !== shopBtnLastLabel) { btn.textContent = st.label; shopBtnLastLabel = st.label; }
+  if (st.locked !== shopBtnLastLocked) { btn.classList.toggle("locked", st.locked); shopBtnLastLocked = st.locked; }
+  btn.title = st.hint;
+}
+
+// 接線：點 🛒 鈕／按 B 鍵開關交易面板；面板上的 ✕／點面板外／Esc 收起（鏡像表情輪）。
+(function wireShop() {
+  const btn = document.getElementById("shopBtn");
+  if (btn && btn.addEventListener) btn.addEventListener("click", (e) => { if (e && e.preventDefault) e.preventDefault(); toggleShop(); });
+  const closeBtn = document.getElementById("shopClose");
+  if (closeBtn && closeBtn.addEventListener) closeBtn.addEventListener("click", (e) => { if (e && e.preventDefault) e.preventDefault(); closeShop(); });
+  const panel = document.getElementById("shopPanel");
+  window.addEventListener("pointerdown", (e) => {
+    if (!shopOpen || !panel) return;
+    if (e.target === btn || (panel.contains && panel.contains(e.target))) return;
+    closeShop();
+  });
+  window.addEventListener("keydown", (e) => { if (e.code === "Escape") closeShop(); });
+  globalThis.__bf3dToggleShop = toggleShop; // 給 B 鍵共用
+})();
 
 // 接線：點 🌱／💧／🌾 鈕（桌機 + 手機）；T／F／H 鍵在上方 keydown 處理。
 (function wireActButtons() {
@@ -3667,6 +3874,8 @@ function safeRender() {
     updateDayClock();
     // 採集鈕：依腳邊有沒有可採目標（樹／石／乙太礦／夜間星晶）即時點亮／鎖定（ROADMAP 629）
     updateGatherBtn();
+    // 交易鈕：走近新手村商人才亮（ROADMAP 630）
+    updateShopBtn();
 
     // 自己：客戶端預測（零延遲）+ 平滑對帳權威，再疊上視覺跳的高度
     if (meGroup) {
@@ -3715,7 +3924,7 @@ window.addEventListener("resize", () => {
 
 // 測試掛鉤（scripts/qa/render-smoke-3d.mjs 用；瀏覽器中無副作用、只暴露純邏輯供斷言）。
 if (typeof globalThis !== "undefined") {
-  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState };
+  globalThis.__bf3dTest = { residentStatusEmoji, NPC_ACTIVITY_ICON, thoughtTexture, dayNightVisual, dayNightPhaseLabel, celestialSky, weatherVisual, weatherHudLabel, cropCellVisual, cropBarFill, fieldDigest, farmHudLabel, wildlifeVisual, wildlifeStatusEmoji, wildlifeHudLabel, enemyVisual, enemyStatusEmoji, enemyHpFill, enemyHudLabel, campfireVisual, watchtowerVisual, snowmanVisual, structuresHudLabel, groveVisual, groveHudLabel, plantTreeWireMsg, plantButtonState, waterAllWireMsg, harvestAllWireMsg, tendButtonState, campfireWireMsg, campfireButtonState, dayClockReadout, fmtCountdown, emoteWireMsg, emoteBubbleVisual, EMOTE_CHOICES, npcSpeechVisual, speechTexture, factionLinkVisual, factionArcPoints, factionHudLabel, FACTION_BOND_STYLE, petVisual, petStatusEmoji, petBondHearts, petHudLabel, gatherWireMsg, gatherStarCrystalWireMsg, gatherTargetAt, gatherButtonState, shopMerchantsFrom, shopTargetAt, shopButtonState, shopPanelSig, itemLabel };
 }
 
 // 啟動

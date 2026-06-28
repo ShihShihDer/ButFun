@@ -98,6 +98,55 @@
       transition: transform 0.08s ease, background 0.12s ease;
     }
     .emote-choice:active { transform: scale(0.9); background: #2d3645; }
+
+    /* ---- 城鎮交易（ROADMAP 630）：🛒 鈕用黃銅金調，與綠色照料／橘色表情一眼區分（「買賣」） ---- */
+    #shopBtn { color: #3a2e10; background: rgba(230, 200, 110, 0.94); }
+    #shopBtn.locked { background: rgba(120,130,140,0.55); color: #cdd6e0; }
+    /* 交易面板：置中半透明卡片，行情/庫存/數量一目了然；手機上限高度可捲動 */
+    #shopPanel {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 40;
+      width: min(420px, 92vw); max-height: 78vh; display: flex; flex-direction: column;
+      background: rgba(16,21,28,0.96); border: 1px solid rgba(230,200,110,0.5);
+      border-radius: 16px; box-shadow: 0 8px 28px rgba(0,0,0,0.55);
+      font: 13px/1.5 system-ui, -apple-system, "Noto Sans CJK TC", sans-serif; color: #e6edf3;
+    }
+    #shopPanel.hidden { display: none; }
+    #shopTop {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+    #shopHead { font-weight: 600; color: #ffd54a; }
+    #shopClose {
+      pointer-events: auto; cursor: pointer; background: none; border: none;
+      color: #9aa4b2; font-size: 18px; line-height: 1; padding: 2px 6px;
+    }
+    #shopClose:active { color: #fff; }
+    #shopBody { padding: 8px 14px 14px; overflow-y: auto; }
+    .shop-sec { color: #e6c86e; font-weight: 600; margin: 10px 0 5px; }
+    .shop-sec:first-child { margin-top: 2px; }
+    .shop-row {
+      display: flex; align-items: center; gap: 7px; margin: 4px 0;
+      padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .shop-name { flex: 1; min-width: 0; }
+    .shop-have, .shop-stock, .shop-dim { opacity: 0.62; font-size: 0.8em; }
+    .shop-warn { color: #ff9966; font-size: 0.8em; }
+    .shop-price { font-weight: 600; white-space: nowrap; }
+    .shop-price.up { color: #88cc77; }
+    .shop-price.down { color: #e0795f; }
+    .shop-qty {
+      width: 42px; background: #1a1f26; color: #e6edf3;
+      border: 1px solid #3a4250; border-radius: 5px; padding: 2px 4px; text-align: center;
+    }
+    .shop-act {
+      pointer-events: auto; cursor: pointer; font: 600 12px/1 system-ui, sans-serif;
+      color: #3a2e10; background: rgba(230,200,110,0.92);
+      border: none; border-radius: 8px; padding: 5px 10px;
+    }
+    .shop-act:active { transform: scale(0.94); }
+    .shop-act:disabled { background: rgba(120,130,140,0.45); color: #aeb6c2; cursor: default; }
+    .shop-empty, .shop-login { opacity: 0.6; font-size: 0.85em; margin: 4px 0; }
+    .shop-login { color: #e6c86e; margin-top: 10px; }
     /* ---- 動作回饋飄字（ROADMAP 618）：種樹後短暫浮現一句確認 ---- */
     #toast {
       position: fixed; left: 50%; top: 64px; transform: translateX(-50%);
@@ -159,7 +208,7 @@
     <div id="dcText"><span id="dcPhase"></span><span id="dcNext"></span></div>
   </div>
   <div id="status">連線中…</div>
-  <div id="hint">WASD／搖桿 移動 · 拖曳轉鏡頭 · 空白鍵／跳鈕 跳 · G 採集 · T 種樹 · F 澆水 · H 收成 · E 表情</div>
+  <div id="hint">WASD／搖桿 移動 · 拖曳轉鏡頭 · 空白鍵／跳鈕 跳 · G 採集 · B 交易 · T 種樹 · F 澆水 · H 收成 · E 表情</div>
   <div id="err"></div>
 
   <!-- 觸控控制層（main.js 偵測到觸控裝置才顯示） -->
@@ -171,6 +220,7 @@
   <!-- 照料世界·動作鈕（ROADMAP 618 種樹 → 619 澆水／收成 → 623 生火）：登入後可在 3D 親手照料農地；訪客顯示鎖定提示。生火不需登入 -->
   <div id="acts">
     <button id="emoteBtn" class="act-btn" type="button" aria-haspopup="true" aria-expanded="false">😊 表情</button>
+    <button id="shopBtn" class="act-btn locked" type="button">🛒 交易</button>
     <button id="campfireBtn" class="act-btn" type="button">🔥 生火</button>
     <button id="gatherBtn" class="act-btn locked" type="button">⛏️ 採集</button>
     <button id="harvestBtn" class="act-btn locked" type="button">🌾 收成</button>
@@ -179,10 +229,15 @@
   </div>
   <!-- 表情輪彈出層（ROADMAP 621）：main.js 動態填入 8 顆表情鈕；初始隱藏 -->
   <div id="emotePopup" class="hidden" role="menu" aria-label="表情"></div>
+  <!-- 城鎮交易面板（ROADMAP 630）：走近新手村商人開店，賣材料換乙太、花乙太買工具；初始隱藏 -->
+  <div id="shopPanel" class="hidden" role="dialog" aria-label="商人交易">
+    <div id="shopTop"><span id="shopHead">🛒 商人</span><button id="shopClose" type="button" aria-label="關閉">✕</button></div>
+    <div id="shopBody"></div>
+  </div>
   <!-- 動作回饋飄字（種樹確認／訪客提示） -->
   <div id="toast"></div>
 
   <!-- 相對於 /3d/ 載入；?v 供 cache-bust -->
-  <script type="module" src="main.js?v=8"></script>
+  <script type="module" src="main.js?v=9"></script>
 </body>
 </html>

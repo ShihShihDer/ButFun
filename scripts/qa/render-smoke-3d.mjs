@@ -539,6 +539,50 @@ const gbRock = T.gatherButtonState({ kind: "node", nodeKind: "rock" });
 if (!gbRock || gbRock.locked !== false || !/採石|⛏️/.test(gbRock.label)) fail("礦脈鈕態應點明採石");
 console.log("✅ 在 3D 採集 wire 固定（gather／gather_star_crystal）／目標判定·星晶優先·伸手範圍·壞值安全／鈕態種類字樣全綠");
 
+// ── 城鎮交易純邏輯（ROADMAP 630）：商人挑選／走近判距／鈕態／面板簽章／物品標籤·壞值安全 ──
+if (typeof T.shopMerchantsFrom !== "function" || typeof T.shopTargetAt !== "function"
+    || typeof T.shopButtonState !== "function" || typeof T.shopPanelSig !== "function" || typeof T.itemLabel !== "function") {
+  fail("__bf3dTest 未暴露 shopMerchantsFrom/shopTargetAt/shopButtonState/shopPanelSig/itemLabel");
+}
+// 商人挑選：只收「buy_list 或 sell_list 非空」者，缺座標／非物件／一般居民一律剔除。
+const npcsForShop = [
+  { id: "m1", name: "商人甲", x: 100, y: 100, sell_list: [{ item: "pickaxe", price_per: 15 }] }, // 只賣
+  { id: "m2", name: "商人乙", x: 200, y: 100, buy_list: [{ item: "wood", price_per: 1 }] },       // 只收購
+  { id: "r1", name: "居民", x: 150, y: 100 },                                                      // 非商人（無目錄）→ 剔除
+  { id: "bad", name: "壞座標商人", x: NaN, y: 100, sell_list: [{ item: "axe", price_per: 8 }] },   // 壞座標 → 剔除
+  null, "字串",                                                                                   // 非物件 → 安全跳過
+];
+const merchants = T.shopMerchantsFrom(npcsForShop);
+if (merchants.length !== 2) fail("shopMerchantsFrom 應只收 2 名商人，得 " + JSON.stringify(merchants));
+if (T.shopMerchantsFrom(null).length !== 0) fail("shopMerchantsFrom(null) 應回 []");
+if (T.shopMerchantsFrom([{ id: "x", name: "空目錄", x: 0, y: 0, buy_list: [], sell_list: [] }]).length !== 0) fail("空目錄不算商人");
+// 走近判距：圈內最近的商人；圈外回 null；壞值安全。
+const nearShop = T.shopTargetAt({ x: 110, y: 100 }, merchants); // 距 m1=10、m2=90 → 最近 m1
+if (!nearShop || nearShop.id !== "m1") fail("shopTargetAt 應回最近的商人 m1，得 " + JSON.stringify(nearShop));
+if (T.shopTargetAt({ x: 1000, y: 1000 }, merchants) !== null) fail("圈外應回 null");
+if (T.shopTargetAt(null, merchants) !== null) fail("無自己座標應回 null");
+if (T.shopTargetAt({ x: NaN, y: 0 }, merchants) !== null) fail("壞自己座標應回 null");
+if (T.shopTargetAt({ x: 0, y: 0 }, null) !== null) fail("空商人清單應回 null");
+// 鈕態：無商人 → 鎖定提示；有商人 → 不鎖定且帶店名提示。
+const sbNull = T.shopButtonState(null);
+if (!sbNull || sbNull.locked !== true || !sbNull.hint) fail("無商人時交易鈕應鎖定且有提示");
+const sbNear = T.shopButtonState({ name: "商人甲" });
+if (!sbNear || sbNear.locked !== false || !/交易|🛒/.test(sbNear.label) || !/商人甲/.test(sbNear.hint)) fail("走近商人時交易鈕應不鎖定且提示帶店名");
+// 面板簽章：行情／庫存／餘額／背包變動 → 簽章變；無變化 → 不變（驅動 DOM 只在必要時重建）。
+const mSig = merchants[0];
+const sigA = T.shopPanelSig(mSig, { ether: 50, inventory: [{ item: "wood", qty: 3 }] }, true);
+const sigSame = T.shopPanelSig(mSig, { ether: 50, inventory: [{ item: "wood", qty: 3 }] }, true);
+if (sigA !== sigSame) fail("同狀態 shopPanelSig 應一致");
+const sigEther = T.shopPanelSig(mSig, { ether: 49, inventory: [{ item: "wood", qty: 3 }] }, true);
+if (sigA === sigEther) fail("乙太變動 shopPanelSig 應改變");
+const sigGuest = T.shopPanelSig(mSig, { ether: 50, inventory: [{ item: "wood", qty: 3 }] }, false);
+if (sigA === sigGuest) fail("登入態變動 shopPanelSig 應改變");
+if (T.shopPanelSig(null, null, false) !== "none") fail("無商人時簽章應為 none");
+// 物品標籤：已知物品帶 emoji+中文名；未知物品退回原始字串＋📦 後備（留 i18n）。
+if (!/木材/.test(T.itemLabel("wood"))) fail("itemLabel(wood) 應含中文名");
+if (!/📦/.test(T.itemLabel("unknown_item_xyz"))) fail("未知物品應有 📦 後備");
+console.log("✅ 城鎮交易純邏輯（商人挑選·壞值剔除／走近最近判距·圈外安全／鈕態·店名提示／面板簽章·必要才重建／物品標籤·i18n 後備）全綠");
+
 // ── ①j 天時盤純邏輯（ROADMAP 620）：繞盤角度／倒數平滑遞減／時段·下一時段標籤／壞值安全 ──
 if (typeof T.dayClockReadout !== "function" || typeof T.fmtCountdown !== "function") fail("__bf3dTest 未暴露 dayClockReadout/fmtCountdown");
 const dcr = T.dayClockReadout;
@@ -787,7 +831,11 @@ const npcsA = [
   { id: "n1", name: "鐵匠", x: 3000, y: 3000, activity: "hammering" },
   { id: "n2", name: "里長", x: 3100, y: 3000, activity: "patrolling", thought: "今晚別出事就好" },
   { id: "n3", name: "獵手", x: 3200, y: 3000, alarmed: true },
-  { id: "n4", name: "商人", x: 3300, y: 3000, celebrating: true },
+  // 商人（ROADMAP 630）：帶 buy_list／sell_list（玩家走近可開店），且擺在「我」(3000,3000) 伸手範圍內
+  // → 踩 shopMerchantsFrom 收錄＋走近點亮交易鈕＋（下方）開面板渲染賣/買兩區全路徑。
+  { id: "n4", name: "商人", x: 3030, y: 3000, celebrating: true,
+    buy_list: [{ item: "wood", price_per: 1, trend: "stable" }, { item: "stone", price_per: 2, trend: "down" }],
+    sell_list: [{ item: "pickaxe", price_per: 15, trend: "stable", stock: 8, max_stock: 8 }, { item: "weapon", price_per: 40, trend: "stable", stock: 0, max_stock: 5 }] },
   { id: "n5", name: "農婦", x: 3400, y: 3000, needs_care: true, thought: "有點累了" },
   { id: "n6", name: "旅人", x: 3500, y: 3000 }, // 無任何內心生活欄位（其他 NPC）
 ];
@@ -880,6 +928,15 @@ drive({ type: "snapshot", players: playersA, npcs: npcsA, wildlife: wildlifeA, e
   weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
   rainbow: { active: true, remaining_secs: 30 } });
 frames(8);
+
+// 城鎮交易面板（ROADMAP 630）：「我」就站在商人 n4 伸手範圍內 → 開面板，踩 renderShopPanel／refreshShopPanel
+// 的賣給商人（含 ↘供給過剩）／向商人買（含 🚫售罄）／訪客鎖定登入提示渲染全路徑（不該拋例外）。
+if (typeof sandbox.__bf3dToggleShop === "function") {
+  sandbox.__bf3dToggleShop();   // 走近商人 → 開店
+  frames(2);
+  sandbox.__bf3dToggleShop();   // 再按一次 → 收起
+  frames(1);
+}
 
 // 玩家表情（ROADMAP 621）：自己與夥伴各比一個表情＋一筆未知 from_id（已離開的玩家）——
 // 踩 player_emote 事件處理＋attachEmoteBubble＋updatePlayerEmotes 的點亮／上浮／淡出／自清路徑。
