@@ -615,6 +615,32 @@ const cbNoName = T.comfortButtonState({ id: "r2" });
 if (!cbNoName || cbNoName.locked !== false || !cbNoName.hint) fail("缺名字應安全降級仍給有效提示");
 console.log("✅ 園丁撫慰純邏輯（comfort wire 固定／走近最近有心事居民·範圍·沒心事剔除·壞值安全／鈕態·名字提示·缺名降級）全綠");
 
+// ── 戰鬥獎勵回饋純邏輯（ROADMAP 635）：戰利品飄字文字/配色·壞值安全／連殺標語段位·只給本人·壞值安全 ──
+if (typeof T.lootFloatSpec !== "function" || typeof T.killStreakFloatSpec !== "function") {
+  fail("__bf3dTest 未暴露 lootFloatSpec/killStreakFloatSpec");
+}
+// 戰利品飄字：已知物品帶 emoji＋中文名＋×數量、暖米色；未知物品退 🎁；缺 item 退「戰利品」；壞 qty clamp 0。
+const lfWood = T.lootFloatSpec({ item: "wood", qty: 2 });
+if (!/🪵/.test(lfWood.text) || !/木材/.test(lfWood.text) || !/×2/.test(lfWood.text)) fail("lootFloatSpec(wood,2) 應為「🪵 木材 ×2」，得 " + JSON.stringify(lfWood));
+if (lfWood.css !== "#dcd2b4") fail("戰利品飄字應為暖米色");
+if (!/🎁/.test(T.lootFloatSpec({ item: "unknown_xyz", qty: 1 }).text)) fail("未知物品應退 🎁 後備");
+if (!/戰利品/.test(T.lootFloatSpec({ qty: 1 }).text)) fail("缺 item 名應退「戰利品」");
+if (!/×0/.test(T.lootFloatSpec({ item: "wood", qty: -5 }).text)) fail("負數量應 clamp 0");
+if (!/×0/.test(T.lootFloatSpec(null).text)) fail("null 事件應安全降級");
+// 連殺標語：只給本人（player_id 須等於 selfId）；旁觀者／非本人／streak<2 回 null；段位 2/4/8 配色與文案。
+const ksMe2 = T.killStreakFloatSpec({ player_id: "me", streak: 2, x: 1, y: 1 }, "me");
+if (!ksMe2 || !/×2/.test(ksMe2.text) || ksMe2.css !== "#dcff78") fail("連殺 2 應黃綠「×2」，得 " + JSON.stringify(ksMe2));
+const ksMe4 = T.killStreakFloatSpec({ player_id: "me", streak: 4 }, "me");
+if (!ksMe4 || !/殺意漸濃/.test(ksMe4.text) || ksMe4.css !== "#ffbe3c") fail("連殺 4 應琥珀「殺意漸濃」");
+const ksMe8 = T.killStreakFloatSpec({ player_id: "me", streak: 8 }, "me");
+if (!ksMe8 || !/戰意爆發/.test(ksMe8.text) || ksMe8.css !== "#ff7850") fail("連殺 8 應橘紅「戰意爆發」");
+if (T.killStreakFloatSpec({ player_id: "other", streak: 4 }, "me") !== null) fail("旁觀者（非本人）連殺不應飄字");
+if (T.killStreakFloatSpec({ player_id: "me", streak: 1 }, "me") !== null) fail("streak<2 不應飄字");
+if (T.killStreakFloatSpec({ streak: 4 }, "me") !== null) fail("缺 player_id 應回 null");
+if (T.killStreakFloatSpec(null, "me") !== null) fail("null 事件應回 null");
+if (T.killStreakFloatSpec({ player_id: "me", streak: 4 }, null) !== null) fail("無 selfId 應回 null");
+console.log("✅ 戰鬥獎勵回饋純邏輯（戰利品飄字·emoji中文名·數量·壞值降級／連殺標語·段位配色文案·只給本人·壞值安全）全綠");
+
 // ── 城鎮交易純邏輯（ROADMAP 630）：商人挑選／走近判距／鈕態／面板簽章／物品標籤·壞值安全 ──
 if (typeof T.shopMerchantsFrom !== "function" || typeof T.shopTargetAt !== "function"
     || typeof T.shopButtonState !== "function" || typeof T.shopPanelSig !== "function" || typeof T.itemLabel !== "function") {
@@ -1208,6 +1234,18 @@ if (typeof sandbox.__bf3dTest.spawnMeleeSwing === "function") {
 }
 frames(6);    // 弧光掃過＋飄字上飄階段
 frames(60);   // 跑過飄字存活窗 → 踩飄字淡出與過期移除路徑（reduceMotion 與一般都不該 throw）
+
+// 戰鬥獎勵回饋飄字（ROADMAP 635）：戰利品入袋（LootPickup）／連殺標語（KillStreak）透過廣播驅動
+// spawnRewardFloat——跑多幀踩獎勵飄字上飄淡出自清、貼圖快取與飄字數上限、旁觀者/壞值安全跳過全路徑。
+drive({ type: "loot_pickup", ex: 3060, ey: 3050, item: "wood", qty: 2 });   // 戰利品入袋
+drive({ type: "loot_pickup", ex: 2960, ey: 3010, item: "ether", qty: 1 });
+drive({ type: "loot_pickup", ex: 2960, ey: 3010, item: "unknown_xyz", qty: 3 }); // 未知物品 → 🎁 後備
+drive({ type: "loot_pickup", item: "wood", qty: 1 });                        // 缺座標 → 安全跳過、不拋
+drive({ type: "kill_streak", player_id: "me", streak: 2, x: 3000, y: 3000 }); // 本人連殺（"me"=welcome id）
+drive({ type: "kill_streak", player_id: "me", streak: 8, x: 3000, y: 3000 });
+drive({ type: "kill_streak", player_id: "someone-else", streak: 4, x: 3000, y: 3000 }); // 旁觀者 → 不飄、不拋
+frames(6);    // 獎勵飄字上飄階段
+frames(70);   // 跑過獎勵飄字存活窗（1100ms）→ 踩淡出與過期移除路徑
 
 // 照料回饋 chat 路徑（ROADMAP 619）：系統單播與一般聊天都不該讓 onmessage 拋例外（窗外/非系統靜默忽略）。
 drive({ type: "chat", from: "系統", text: "💧 一鍵澆水：替 3 株缺水作物補滿了水！" });
