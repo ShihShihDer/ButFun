@@ -529,53 +529,110 @@ async fn serve_index() -> impl IntoResponse {
     )
 }
 
-/// 3D 試驗場頁面（`/3d/`）的 index.html，啟動時讀一次並快取。
-/// 與主遊戲不同：3D 頁的 main.js 帶手動 `?v=` 版本，**不**做雜湊注入；
-/// 這裡只負責「index 永遠新鮮（no-cache）」→ 一定引用到最新 `?v=` → 命中對的 main.js。
-/// 讀檔失敗回空白（不 panic、不擋服務）。
-static INDEX_3D_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    match std::fs::read_to_string("web/3d/index.html") {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("讀 web/3d/index.html 失敗，serve_3d_index 將回空白：{e}");
-            String::new()
+/// 把 3D 頁 HTML 裡的 `main.js?v=...` 版本字串換成 main.js 內容的 sha256 前 12 hex，
+/// 並在 `</head>` 前插入 `<script>window.__BUILD__="<hash>";</script>`，
+/// 讓前端 JS 可在 `?debug=1` 的偵錯 HUD 裡顯示版本號，一眼確認是最新版。
+///
+/// 邏輯與 `inject_gamejs_version` 完全對稱：同樣算 sha256、同樣只換 `?v=` 後到 `"` 之間；
+/// 差別僅在 needle 是 `main.js?v=`，並額外注入 `window.__BUILD__`。
+/// 抽成純函式便於測試（不碰磁碟）。
+fn inject_mainjs_version(html: &str, mainjs: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(mainjs);
+    // 前 12 hex（6 bytes）——與 game.js 雜湊長度一致，夠長不碰撞、夠短 URL 乾淨。
+    let version: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+
+    // 第一步：替換所有 main.js?v=<舊版> 為 main.js?v=<hash>（邏輯同 inject_gamejs_version）。
+    let needle = "main.js?v=";
+    let mut out = String::with_capacity(html.len() + 80);
+    let mut rest = html;
+    while let Some(pos) = rest.find(needle) {
+        let after = pos + needle.len();
+        out.push_str(&rest[..after]);
+        let tail = &rest[after..];
+        match tail.find('"') {
+            Some(q) => {
+                out.push_str(&version);
+                rest = &tail[q..]; // 保留 `"` 繼續掃（避免漏掉多處）
+            }
+            None => {
+                out.push_str(tail);
+                rest = "";
+                break;
+            }
         }
     }
-});
+    out.push_str(rest);
 
-/// 行動端 3D（`/play3d/`）的 index.html，同上：啟動時讀一次、永遠 no-cache。
-static INDEX_PLAY3D_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    match std::fs::read_to_string("web/play3d/index.html") {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("讀 web/play3d/index.html 失敗，serve_play3d_index 將回空白：{e}");
-            String::new()
-        }
+    // 第二步：在 </head> 前插入 window.__BUILD__，供前端偵錯 HUD 讀版本號。
+    let build_tag = format!("<script>window.__BUILD__=\"{version}\";</script>");
+    if let Some(pos) = out.find("</head>") {
+        out.insert_str(pos, &build_tag);
     }
-});
+    out
+}
 
-/// `/3d/`、`/3d/index.html` 的 handler：回 no-cache 的 index。
-/// 過去這兩頁走 `ServeDir` 靜態服務、index 無 no-cache → 瀏覽器快取住舊 index、
-/// 繼續抓被快取的舊 `main.js?v=N`，前端改版送不到玩家。改由此 handler 服務 index，
-/// 比照 `serve_index` 帶 no-cache；main.js 仍交給 ServeDir 並維持 `?v=` 版本快取。
+/// `/3d/`、`/3d/index.html` 的 handler：每次請求即時讀檔並注入 main.js 內容雜湊版本。
+///
+/// 根治「前端改動後玩家看到舊版」的問題：
+/// - 舊做法：啟動時讀 index.html 一次（LazyLock）+ 手動 `?v=N`
+///   → 改前端不重啟看不到新版；手動版本號忘記改就永久卡舊版。
+/// - 新做法：每次請求讀 index.html + 算 web/3d/main.js 的 sha256，
+///   把 `main.js?v=<任何舊值>` 換成 `main.js?v=<雜湊>`，並注入 `window.__BUILD__`；
+///   前端改了、雜湊就變、URL 就變、CF/瀏覽器就抓新版——無需重啟伺服器。
+/// index.html 帶 no-cache，main.js 本體仍走 ServeDir 可被快取。
 async fn serve_3d_index() -> impl IntoResponse {
+    let html = match std::fs::read_to_string("web/3d/index.html") {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("讀 web/3d/index.html 失敗：{e}");
+            String::new()
+        }
+    };
+    let body = match std::fs::read("web/3d/main.js") {
+        Ok(mainjs) => {
+            tracing::debug!("serve_3d_index：已把 index.html 的 main.js 版本注入為內容雜湊");
+            inject_mainjs_version(&html, &mainjs)
+        }
+        Err(e) => {
+            tracing::warn!("讀 web/3d/main.js 失敗，index.html 沿用原版本字串：{e}");
+            html
+        }
+    };
     (
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (header::CACHE_CONTROL, "no-cache, must-revalidate"),
         ],
-        INDEX_3D_HTML.as_str(),
+        body,
     )
 }
 
-/// `/play3d/`、`/play3d/index.html` 的 handler：同 `serve_3d_index`，回 no-cache 的 index。
+/// `/play3d/`、`/play3d/index.html` 的 handler：同 `serve_3d_index`，對 web/play3d/main.js 算雜湊。
 async fn serve_play3d_index() -> impl IntoResponse {
+    let html = match std::fs::read_to_string("web/play3d/index.html") {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("讀 web/play3d/index.html 失敗：{e}");
+            String::new()
+        }
+    };
+    let body = match std::fs::read("web/play3d/main.js") {
+        Ok(mainjs) => {
+            tracing::debug!("serve_play3d_index：已把 index.html 的 main.js 版本注入為內容雜湊");
+            inject_mainjs_version(&html, &mainjs)
+        }
+        Err(e) => {
+            tracing::warn!("讀 web/play3d/main.js 失敗，index.html 沿用原版本字串：{e}");
+            html
+        }
+    };
     (
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (header::CACHE_CONTROL, "no-cache, must-revalidate"),
         ],
-        INDEX_PLAY3D_HTML.as_str(),
+        body,
     )
 }
 
@@ -732,7 +789,7 @@ async fn post_suggestion(
 
 #[cfg(test)]
 mod tests {
-    use super::inject_gamejs_version;
+    use super::{inject_gamejs_version, inject_mainjs_version};
 
     /// sha256(content) 前 12 hex 字元——測試用的期望版本算法（與函式一致）。
     fn expected_version(gamejs: &[u8]) -> String {
@@ -788,5 +845,44 @@ mod tests {
         let html = "<html>no script here</html>";
         let out = inject_gamejs_version(html, b"whatever");
         assert_eq!(out, html, "沒有 game.js?v= 應原樣返回");
+    }
+
+    // ---- inject_mainjs_version 測試 ----
+
+    #[test]
+    fn mainjs_替換舊版本字串為內容雜湊() {
+        let html = r#"<html><head></head><body><script type="module" src="main.js?v=17"></script></body></html>"#;
+        let mainjs = b"console.log('butfun 3d');";
+        let out = inject_mainjs_version(html, mainjs);
+        let ver = expected_version(mainjs);
+        // main.js?v= 應被換成內容雜湊。
+        assert!(out.contains(&format!("main.js?v={ver}")), "應注入內容雜湊版本: {out}");
+        assert!(!out.contains("?v=17"), "舊版本字串應被換掉: {out}");
+        // window.__BUILD__ 應被注入。
+        assert!(out.contains(&format!("window.__BUILD__=\"{ver}\"")), "應注入 window.__BUILD__: {out}");
+        // 注入點在 </head> 之前。
+        let build_pos = out.find("window.__BUILD__").expect("找不到 __BUILD__");
+        let head_pos = out.find("</head>").expect("找不到 </head>");
+        assert!(build_pos < head_pos, "__BUILD__ 應在 </head> 之前: {out}");
+    }
+
+    #[test]
+    fn mainjs_雜湊隨內容變而變() {
+        let html = r#"<html><head></head><body><script type="module" src="main.js?v=1"></script></body></html>"#;
+        let a = inject_mainjs_version(html, b"version A");
+        let b = inject_mainjs_version(html, b"version B");
+        assert_ne!(a, b, "不同 main.js 內容應產生不同版本字串");
+    }
+
+    #[test]
+    fn mainjs_沒有版本字串時仍注入build標籤() {
+        // 沒有 main.js?v= 的 HTML：版本替換跳過，但 __BUILD__ 仍應注入（有 </head>）。
+        let html = "<html><head></head><body>no script</body></html>";
+        let out = inject_mainjs_version(html, b"js content");
+        let ver = expected_version(b"js content");
+        // 沒有 main.js?v= 可替換，原樣通過。
+        assert!(!out.contains("main.js?v="), "沒有 main.js?v= 不應憑空插入: {out}");
+        // __BUILD__ 仍應注入。
+        assert!(out.contains(&format!("window.__BUILD__=\"{ver}\"")), "即使無 main.js?v= 也應注入 __BUILD__: {out}");
     }
 }
