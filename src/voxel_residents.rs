@@ -145,6 +145,32 @@ pub fn wander_target(cx: f32, cz: f32, angle: f32, radius: f32) -> (f32, f32) {
     (cx + angle.cos() * radius, cz + angle.sin() * radius)
 }
 
+/// 居民家域半徑（方塊）：超出此距離時歸巢（以家為閒晃中心），在內時自由閒晃。
+pub const HOME_RADIUS: f32 = 20.0;
+
+/// 取閒晃中心：若居民超出家域半徑，以家 (hx,hz) 為中心（引導歸巢），
+/// 否則以當前位置 (cx,cz) 為中心（在家域內自由閒晃）。純函式、可測。
+pub fn wander_center(cx: f32, cz: f32, hx: f32, hz: f32, home_radius: f32) -> (f32, f32) {
+    let dx = cx - hx;
+    let dz = cz - hz;
+    if dx * dx + dz * dz > home_radius * home_radius {
+        (hx, hz)
+    } else {
+        (cx, cz)
+    }
+}
+
+/// 各居民家域中心的世界座標基準（i % 4）：4 位居民分散四方，玩家需探索才能遇到。
+/// 露娜在原點（玩家出生附近），其餘三位分別在南/西/東方 75 格。純函式、可測。
+pub fn resident_home_base(i: usize) -> (i32, i32) {
+    match i % 4 {
+        0 => (0, 0),    // 露娜：世界中心，出生就能遇
+        1 => (0, 75),   // 諾娃：南方（農田、田園感）
+        2 => (-75, 0),  // 賽勒：西方（海灣、探索感）
+        _ => (75, 0),   // 奧瑞：東方（山林、遠足感）
+    }
+}
+
 /// 居民出生點：自 (ox,oz) 向外螺旋找第一塊「高於海平面的陸地」，站到地表上方
 /// （確保不卡水/土裡；對齊 `voxel_ws::spawn_pos` 的找地策略）。找不到就退回 (ox,oz)。
 pub fn dry_ground_spawn(ox: i32, oz: i32) -> Body {
@@ -286,5 +312,63 @@ mod tests {
         // 在身體所在格放石頭 → 重疊。
         voxel::set_block(&mut world, x, h + 1, z, Block::Stone);
         assert!(overlaps(&world, fx, (h + 1) as f32, fz));
+    }
+
+    #[test]
+    fn wander_center_within_home_uses_current() {
+        // 居民在家域半徑內 → 以當前位置為中心（自由閒晃）。
+        let (cx, cz) = (5.0_f32, 5.0_f32);
+        let (hx, hz) = (0.0_f32, 0.0_f32);
+        let r = 20.0_f32;
+        // 距家 ~7 格 < 20 → 回當前位置。
+        let (wx, wz) = wander_center(cx, cz, hx, hz, r);
+        assert!((wx - cx).abs() < 1e-4, "在家域內應回當前 x");
+        assert!((wz - cz).abs() < 1e-4, "在家域內應回當前 z");
+    }
+
+    #[test]
+    fn wander_center_outside_home_uses_home() {
+        // 居民超出家域半徑 → 以家為中心（引導歸巢）。
+        let (cx, cz) = (30.0_f32, 0.0_f32);
+        let (hx, hz) = (0.0_f32, 0.0_f32);
+        let r = 20.0_f32;
+        // 距家 30 > 20 → 回家座標。
+        let (wx, wz) = wander_center(cx, cz, hx, hz, r);
+        assert!((wx - hx).abs() < 1e-4, "超出家域應回家 x");
+        assert!((wz - hz).abs() < 1e-4, "超出家域應回家 z");
+    }
+
+    #[test]
+    fn wander_center_at_exact_boundary_uses_current() {
+        // 恰好在邊界上（距離 == home_radius）→ 不超出，用當前位置。
+        let r = 20.0_f32;
+        let (cx, cz) = (r, 0.0_f32); // 距家剛好 r
+        let (hx, hz) = (0.0_f32, 0.0_f32);
+        let (wx, wz) = wander_center(cx, cz, hx, hz, r);
+        // 距離 == r，不 > r，故回當前。
+        assert!((wx - cx).abs() < 1e-4, "邊界上應回當前 x");
+        assert!((wz - cz).abs() < 1e-4, "邊界上應回當前 z");
+    }
+
+    #[test]
+    fn resident_home_base_four_directions() {
+        // 4 位居民的家基準各不相同、且至少 3 位不在原點。
+        let homes: Vec<(i32, i32)> = (0..4).map(resident_home_base).collect();
+        // 全部 4 個不全相同（有分散）。
+        let unique: std::collections::HashSet<_> = homes.iter().collect();
+        assert_eq!(unique.len(), 4, "4 位居民家基準應各不相同");
+        // 除 i=0 外，其他 3 位應距原點至少 50 格。
+        for (i, (hx, hz)) in homes.iter().enumerate().skip(1) {
+            let d = ((hx * hx + hz * hz) as f32).sqrt();
+            assert!(d >= 50.0, "居民 {i} 家基準距原點應 ≥ 50 格：d={d}");
+        }
+    }
+
+    #[test]
+    fn resident_home_base_wraps_modulo() {
+        // i % 4 讓超過 4 的 index 循環，與 i<4 結果一致。
+        for i in 0..4_usize {
+            assert_eq!(resident_home_base(i), resident_home_base(i + 4));
+        }
     }
 }

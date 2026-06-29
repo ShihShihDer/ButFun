@@ -96,6 +96,9 @@ struct VoxelResident {
     persona: ResidentPersona,
     body: Body,
     yaw: f32,
+    /// 此居民的家域中心（世界座標）：閒晃時若超出 HOME_RADIUS 就歸巢。
+    home_x: f32,
+    home_z: f32,
     /// 當前水平閒晃目標。
     target_x: f32,
     target_z: f32,
@@ -214,18 +217,21 @@ fn nearest_player_dist_sq(rx: f32, rz: f32, players: &[(f32, f32)]) -> Option<f3
 }
 
 /// 初始化 N 位居民：環狀散在出生點周邊的乾地上，各自站穩。
+/// 初始化 N 位居民：各自散佈到家域中心，各自站穩在陸地上。
 fn init_residents() -> Vec<VoxelResident> {
     let mut out = Vec::with_capacity(RESIDENT_COUNT);
     for i in 0..RESIDENT_COUNT {
-        // 環狀散開：每位一個方位 + 固定半徑，dry_ground_spawn 會就近找乾地站穩。
-        let angle = (i as f32) / (RESIDENT_COUNT as f32) * std::f32::consts::TAU;
-        let ox = (angle.cos() * 8.0).round() as i32;
-        let oz = (angle.sin() * 8.0).round() as i32;
-        let body = vr::dry_ground_spawn(ox, oz);
+        // 各居民有自己的家域基準點，分散世界四方（見 vr::resident_home_base）。
+        let (hox, hoz) = vr::resident_home_base(i);
+        let body = vr::dry_ground_spawn(hox, hoz);
+        let home_x = body.x;
+        let home_z = body.z;
         out.push(VoxelResident {
             id: format!("vox_res_{i}"),
             name: RESIDENT_NAMES[i],
             persona: persona_for(i),
+            home_x,
+            home_z,
             target_x: body.x,
             target_z: body.z,
             yaw: 0.0,
@@ -923,9 +929,15 @@ fn tick_residents(dt: f32) {
                 }
                 if reached {
                     // 挑下一個閒晃目標 + 小歇片刻。
+                    // 以「家域感知中心」為基準：超出家域則歸巢，否則原地自由閒晃。
                     let angle = rand::random::<f32>() * std::f32::consts::TAU;
                     let radius = WANDER_MIN_R + rand::random::<f32>() * (WANDER_MAX_R - WANDER_MIN_R);
-                    let (tx, tz) = vr::wander_target(r.body.x, r.body.z, angle, radius);
+                    let (wcx, wcz) = vr::wander_center(
+                        r.body.x, r.body.z,
+                        r.home_x, r.home_z,
+                        vr::HOME_RADIUS,
+                    );
+                    let (tx, tz) = vr::wander_target(wcx, wcz, angle, radius);
                     r.target_x = tx;
                     r.target_z = tz;
                     r.wait_timer = 1.0 + rand::random::<f32>() * 3.0;
