@@ -74,6 +74,11 @@
     }
     .slot.sel { border-color: #ffd86b; box-shadow: 0 0 8px rgba(255,216,107,0.6); }
     .slot .sw { width: 22px; height: 22px; border-radius: 4px; margin-bottom: 2px; }
+    /* 採集 v1：材料數量標籤（暖黃小字） */
+    .slot .cnt { font-size: 9px; color: #ffd86b; line-height: 1; min-height: 1em; }
+    /* 無材料：格子整體半透明暗示「需要先採集」 */
+    .slot.empty { opacity: 0.55; }
+    .slot.empty.sel { opacity: 1; border-color: #ff8f5a; box-shadow: 0 0 8px rgba(255,143,90,0.5); }
 
     /* ═══════════════════════════════════════════════════════════
        響應式排版：直式（portrait）優先、橫式（landscape）相容

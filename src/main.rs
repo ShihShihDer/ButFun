@@ -126,6 +126,8 @@ mod voxel_building;
 mod voxel_overhear;
 // 乙太方界·城鎮動態 Feed v1：居民活動事件日誌，讓玩家回來時讀到「缺席時世界發生了什麼」（ROADMAP 655）。
 mod voxel_feed;
+// 乙太方界·採集背包 v1：挖方塊得材料、放置消耗存量，療癒「採集→蓋造」循環第一刀（ROADMAP 657）。
+mod voxel_inventory;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環

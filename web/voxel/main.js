@@ -732,24 +732,42 @@ scene.add(highlight);
 // 目前準心對準的方塊：{ bx,by,bz（命中方塊）, nx,ny,nz（命中面法線，放置往這方向偏一格）}
 let target = null;
 
-// ── 快捷欄（選要放的方塊型別）────────────────────────────────────────────────
+// ── 快捷欄（選要放的方塊型別）+ 背包存量（採集 v1）───────────────────────────
 const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES];
 const BLOCK_NAME = { [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉" };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
+// 本地材料存量（block_id → count）；由 inv_sync / inv_update 伺服器訊息維護。
+const myInv = new Map();
+
+/** 更新熱鍵欄的材料數量顯示（只改 .cnt 文字，不重建整個 DOM）。 */
+function updateInvHud() {
+  if (!hotbarEl) return;
+  HOTBAR.forEach((b, i) => {
+    const slot = hotbarEl.children[i];
+    if (!slot) return;
+    const cnt = slot.querySelector(".cnt");
+    const n = myInv.get(b) || 0;
+    if (cnt) cnt.textContent = n > 0 ? "×" + n : "";
+    slot.classList.toggle("empty", n === 0);
+  });
+}
+
 function buildHotbar() {
   if (!hotbarEl) return;
   hotbarEl.innerHTML = "";
   HOTBAR.forEach((b, i) => {
     const slot = document.createElement("div");
-    slot.className = "slot" + (i === selectedSlot ? " sel" : "");
+    slot.className = "slot" + (i === selectedSlot ? " sel" : "") + " empty";
     const sw = document.createElement("div");
     sw.className = "sw";
     const c = COLOR[b] || COLOR[STONE];
     sw.style.background = `rgb(${(c[0] * 255) | 0},${(c[1] * 255) | 0},${(c[2] * 255) | 0})`;
     const lbl = document.createElement("div");
     lbl.textContent = (i + 1) + " " + (BLOCK_NAME[b] || "?");
-    slot.appendChild(sw); slot.appendChild(lbl);
+    const cnt = document.createElement("div");
+    cnt.className = "cnt";
+    slot.appendChild(sw); slot.appendChild(lbl); slot.appendChild(cnt);
     slot.addEventListener("pointerdown", (e) => { selectSlot(i); e.stopPropagation(); });
     hotbarEl.appendChild(slot);
   });
@@ -1041,6 +1059,23 @@ function connect() {
         // 好感度 v1：對話後更新好感度（後端可能已累積新記憶），讓指示燈即時升燈。
         refreshAffinity();
       }
+    } else if (m.t === "inv_sync") {
+      // 採集 v1：連線後收到背包全量快照，重置本地存量。
+      myInv.clear();
+      for (const [bid, cnt] of (m.items || [])) {
+        if (cnt > 0) myInv.set(bid, cnt);
+      }
+      updateInvHud();
+    } else if (m.t === "inv_update") {
+      // 採集 v1：單一材料增減後的新存量（伺服器回傳 total，非 delta）。
+      if (m.count > 0) myInv.set(m.block_id, m.count);
+      else myInv.delete(m.block_id);
+      updateInvHud();
+    } else if (m.t === "inv_denied") {
+      // 採集 v1：放置材料不足，短暫提示。
+      const bname = BLOCK_NAME[m.block_id] || "方塊";
+      showErr("材料不足：" + bname + "（先去挖一些吧）");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     }
   };
   ws.onclose = () => { wsReady = false; showErr("連線中斷，重新連線中…"); setTimeout(connect, 1500); };
@@ -1252,6 +1287,10 @@ window.__voxel = {
   affinityEmoji(count) { return affinityEmoji(count); },
   get myAffinity() { return Object.fromEntries(myAffinity); },
   refreshAffinity() { return refreshAffinity(); },
+  // ── 採集背包 QA 用（ROADMAP 657）──
+  get myInv() { return Object.fromEntries(myInv); },
+  setInvForTest(bid, cnt) { if (cnt > 0) myInv.set(bid, cnt); else myInv.delete(bid); updateInvHud(); },
+  updateInvHud() { updateInvHud(); },
   // ── 真瀏覽器 QA 用：讀準心目標、讀方塊、觸發破壞/放置、選方塊 ──
   get target() { return target; },
   getBlock(x, y, z) { return getRaw(x, y, z); },
