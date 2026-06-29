@@ -217,6 +217,105 @@ scene.add(bodyMesh);
 const others = new Map(); // id -> Mesh
 const otherMat = new THREE.MeshLambertMaterial({ color: 0x8fd0ff });
 
+// ── 乙太方界 AI 居民（切片③）────────────────────────────────────────────────
+// 後端權威：居民的位置/名字/說的話都由 /voxel/ws 的 players 快照帶來，前端只渲染。
+// FPS 鐵律（記取 #614/#820）：居民少（~4 位）、共用幾何/材質、頭頂名牌與泡泡用快取貼圖，
+// 文字沒變就不重建貼圖；遠處（超過霧距）整個 group 隱藏，零渲染負擔。
+const residents = new Map(); // id -> { group, label, bubble, lastName, lastSay }
+// 居民配色（暖棕，與自己金色/別的玩家藍色一眼區分）。共用材質/幾何省記憶體。
+const RES_BODY_MAT = new THREE.MeshLambertMaterial({ color: 0xd8b070 });
+const RES_HEAD_MAT = new THREE.MeshLambertMaterial({ color: 0xe8c89a });
+const RES_TORSO_GEO = new THREE.BoxGeometry(0.5, 1.0, 0.32);
+const RES_HEAD_GEO = new THREE.BoxGeometry(0.42, 0.42, 0.42);
+const RES_VISIBLE_DIST = 110; // 超過此距離（接近霧盡頭）隱藏，省繪製
+
+// 文字貼圖 sprite（名牌/泡泡共用工廠）。bubble=true 用柔色圓底（像在說話），否則白描邊名牌。
+function makeTextSprite(text, bubble) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256; canvas.height = 64;
+  const ctx = canvas.getContext("2d");
+  ctx.font = "bold 26px system-ui, sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  let label = text;
+  if (label.length > 16) label = label.slice(0, 15) + "…";
+  if (bubble) {
+    const tw = Math.min(248, ctx.measureText(label).width + 28);
+    ctx.fillStyle = "rgba(245,248,255,0.92)";
+    const bx = 128 - tw / 2, bw = tw, by = 14, bh = 38, rr = 10;
+    ctx.beginPath();
+    ctx.moveTo(bx + rr, by);
+    ctx.arcTo(bx + bw, by, bx + bw, by + bh, rr);
+    ctx.arcTo(bx + bw, by + bh, bx, by + bh, rr);
+    ctx.arcTo(bx, by + bh, bx, by, rr);
+    ctx.arcTo(bx, by, bx + bw, by, rr);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#243044";
+    ctx.fillText(label, 128, by + bh / 2 + 1);
+  } else {
+    ctx.lineWidth = 5; ctx.strokeStyle = "rgba(0,0,0,0.8)";
+    ctx.strokeText(label, 128, 32);
+    ctx.fillStyle = "#fff7e6";
+    ctx.fillText(label, 128, 32);
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.anisotropy = 4;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+  // 世界單位：方塊尺度，名牌約 2 寬 0.5 高，浮在頭頂。
+  sprite.scale.set(2.4, 0.6, 1);
+  return sprite;
+}
+function setSpriteText(sprite, text, bubble) {
+  const fresh = makeTextSprite(text, bubble);
+  if (sprite.material.map) sprite.material.map.dispose();
+  sprite.material.map = fresh.material.map;
+  sprite.material.needsUpdate = true;
+}
+
+// 建一位居民的可見實體（簡單 voxel 人形：軀幹 + 頭 + 名牌 + 泡泡）。
+function buildResident(name) {
+  const group = new THREE.Group();
+  const torso = new THREE.Mesh(RES_TORSO_GEO, RES_BODY_MAT);
+  torso.position.y = 0.5; // 腳底在 group 原點，軀幹中心 0.5
+  group.add(torso);
+  const head = new THREE.Mesh(RES_HEAD_GEO, RES_HEAD_MAT);
+  head.position.y = 1.25;
+  group.add(head);
+  const label = makeTextSprite(name, false);
+  label.position.y = 2.0;
+  group.add(label);
+  const bubble = makeTextSprite("", true);
+  bubble.position.y = 2.55;
+  bubble.visible = false;
+  group.add(bubble);
+  scene.add(group);
+  return { group, label, bubble, lastName: name, lastSay: "" };
+}
+
+// 依伺服器快照更新所有居民（位置/朝向/名字/說的話）。新出現的就建、消失的就移除。
+function updateResidents(list) {
+  const seen = new Set();
+  for (const r of list) {
+    seen.add(r.id);
+    let ent = residents.get(r.id);
+    if (!ent) { ent = buildResident(r.name); residents.set(r.id, ent); }
+    ent.group.position.set(r.x, r.y, r.z);
+    ent.group.rotation.y = r.yaw || 0;
+    if (r.name !== ent.lastName) { setSpriteText(ent.label, r.name, false); ent.lastName = r.name; }
+    const say = r.say || "";
+    if (say !== ent.lastSay) {
+      ent.lastSay = say;
+      if (say) { setSpriteText(ent.bubble, say, true); ent.bubble.visible = true; }
+      else { ent.bubble.visible = false; }
+    }
+    // 距離 LOD：遠到接近霧盡頭就整個隱藏（省繪製，不崩 FPS）。
+    const dx = r.x - player.x, dz = r.z - player.z;
+    ent.group.visible = (dx * dx + dz * dz) < (RES_VISIBLE_DIST * RES_VISIBLE_DIST);
+  }
+  for (const [id, ent] of residents) {
+    if (!seen.has(id)) { scene.remove(ent.group); residents.delete(id); }
+  }
+}
+
 // ── 準心選取 + 高亮外框（MCPE 風）──────────────────────────────────────────────
 // 選中方塊的線框外框（略大一點點避免 z-fighting）。對準時顯示、沒對到時隱藏。
 const highlight = new THREE.LineSegments(
@@ -505,6 +604,8 @@ function connect() {
         mesh.rotation.y = p.yaw || 0;
       }
       for (const [id, mesh] of others) if (!seen.has(id)) { scene.remove(mesh); others.delete(id); }
+      // 乙太方界 AI 居民（與玩家分開的陣列）：位置/名字/說的話。
+      if (m.residents) updateResidents(m.residents);
     }
   };
   ws.onclose = () => { wsReady = false; showErr("連線中斷，重新連線中…"); setTimeout(connect, 1500); };
@@ -653,8 +754,8 @@ function loop() {
     dbgT = 0;
     // 觸控裝置顯示精簡文字，避免直式螢幕頂部 HUD 溢出
     hudEl.textContent = isTouch
-      ? `ButFun · ${myName}\n輕點挖・放置鈕放\nchunk:${chunks.size} 線上:${others.size + 1}`
-      : `ButFun Voxel · ${myName}\nWASD移動·拖曳轉視角·空白跳\n左鍵/輕點挖·右鍵/放置鈕放·1-6選方塊\nchunk: ${chunks.size}　線上: ${others.size + 1}`;
+      ? `乙太方界 · ${myName}\n輕點挖・放置鈕放\nchunk:${chunks.size} 線上:${others.size + 1} 居民:${residents.size}`
+      : `乙太方界 · ${myName}\nWASD移動·拖曳轉視角·空白跳\n左鍵/輕點挖·右鍵/放置鈕放·1-6選方塊\nchunk: ${chunks.size}　線上: ${others.size + 1}　居民: ${residents.size}`;
     if (DEBUG) {
       dbgEl.style.display = "block";
       dbgEl.textContent =
@@ -684,6 +785,15 @@ window.__voxel = {
   // ── 踏階平滑 QA 用：讀視覺 Y（平滑後）與補間偏移 ──
   get stepSmooth() { return stepSmooth; },
   get visualY() { return player.y - stepSmooth; },
+  // 乙太方界 AI 居民（QA 用）：數量 + 位置/名字/說的話快照。
+  get residentCount() { return residents.size; },
+  residentInfo() {
+    return [...residents.values()].map((e) => ({
+      name: e.lastName, say: e.lastSay,
+      x: e.group.position.x, y: e.group.position.y, z: e.group.position.z,
+      visible: e.group.visible,
+    }));
+  },
   // ── 真瀏覽器 QA 用：讀準心目標、讀方塊、觸發破壞/放置、選方塊 ──
   get target() { return target; },
   getBlock(x, y, z) { return getRaw(x, y, z); },
