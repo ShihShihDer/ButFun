@@ -112,6 +112,8 @@ mod voxel;
 mod voxel_ws;
 // 乙太方界 AI 居民（切片③）：讓 AI 居民也活在 voxel 世界（純物理/閒晃邏輯）。
 mod voxel_residents;
+// 乙太方界 AI 居民記憶系統 v1：對話歷史 + 持久記憶 + 回想（記得你、記得聊過什麼）。
+mod voxel_memory;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
