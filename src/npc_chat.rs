@@ -272,9 +272,16 @@ pub async fn raw_llm_call(system: &str, user: &str) -> Option<String> {
 }
 
 /// 對話用縮短逾時的 LLM 路由（Talk 路徑用）：每個 tier 上限 5 秒，最差 ~20 秒完成，
-/// 讓玩家不用等完整鏈 15+15+15+20=65 秒。降級鏈同 `llm_chat`（Cerebras→Gemini→Groq→ollama）。
+/// 讓玩家不用等完整鏈 15+15+15+20=65 秒。降級鏈同 `llm_chat`（Groq→Cerebras→Gemini→ollama）。
+/// Groq 實測最穩、給略多時間；Cerebras/Gemini 降為後備（額度爆/掛掉時才輪到）。
 async fn llm_chat_fast(system: &str, user: &str) -> Option<String> {
     const FAST: Duration = Duration::from_secs(5);
+    if groq_enabled() {
+        // Groq 實測最穩定，排第一；給略多時間確保真的有機會拿到回覆。
+        if let Ok(Some(t)) = tokio::time::timeout(Duration::from_secs(8), groq_chat(system, user)).await {
+            return Some(t);
+        }
+    }
     if cerebras_enabled() {
         if let Ok(Some(t)) = tokio::time::timeout(FAST, cerebras_chat(system, user)).await {
             return Some(t);
@@ -282,12 +289,6 @@ async fn llm_chat_fast(system: &str, user: &str) -> Option<String> {
     }
     if gemini_enabled() {
         if let Ok(Some(t)) = tokio::time::timeout(FAST, gemini_chat(system, user)).await {
-            return Some(t);
-        }
-    }
-    if groq_enabled() {
-        // Groq 較穩定，給略多時間確保真的有機會拿到回覆。
-        if let Ok(Some(t)) = tokio::time::timeout(Duration::from_secs(8), groq_chat(system, user)).await {
             return Some(t);
         }
     }
@@ -740,6 +741,12 @@ async fn gemini_chat(system: &str, user: &str) -> Option<String> {
 /// 註：ollama tier 的位址由 `BUTFUN_OLLAMA_URL` 決定——指向本機 CPU、或指向一台
 /// 有顯卡的機器（例如透過 Tailscale 的私網 IP）皆可，無需改碼即可換成 GPU 推論。
 async fn llm_chat(system: &str, user: &str) -> Option<String> {
+    // Groq 實測最穩定，排第一省掉 Cerebras/Gemini 掛住的等待。
+    if groq_enabled() {
+        if let Some(t) = groq_chat(system, user).await {
+            return Some(t);
+        }
+    }
     if cerebras_enabled() {
         if let Some(t) = cerebras_chat(system, user).await {
             return Some(t);
@@ -750,17 +757,12 @@ async fn llm_chat(system: &str, user: &str) -> Option<String> {
             return Some(t);
         }
     }
-    if groq_enabled() {
-        if let Some(t) = groq_chat(system, user).await {
-            return Some(t);
-        }
-    }
     ollama_chat(system, user).await
 }
 
 /// 給「自主 agent 決策」（npc_agent）共用同一條 LLM 路由 + 降級鏈。
 /// 只是把私有的 `llm_chat` 開一個 crate 內可見的窗口，行為完全一致：
-/// Cerebras → Groq → ollama → None（呼叫端退罐頭）。永遠不卡迴圈、永遠回得出東西。
+/// Groq → Cerebras → Gemini → ollama → None（呼叫端退罐頭）。永遠不卡迴圈、永遠回得出東西。
 pub(crate) async fn agent_llm_chat(system: &str, user: &str) -> Option<String> {
     llm_chat(system, user).await
 }
