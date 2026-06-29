@@ -2800,54 +2800,73 @@ function makeVillageTeaStall(_item) {
   return g;
 }
 
-// 居民木屋顏色（ROADMAP 642）：溫暖木質感——仿「放在桌上被暖燈照著的微縮模型」黏土北極星基調。
-const HOME_BODY_COLOR    = 0xc4956a; // 木板牆（暖棕）
-const HOME_ROOF_COLOR    = 0x9a4a2a; // 屋頂瓦（磚紅陶土，呼應茶棚棚頂）
-const HOME_DOOR_COLOR    = 0x6b3d2a; // 木門（深棕，比牆深一階）
-const HOME_WINDOW_COLOR  = 0x8b6914; // 窗框（蜂蜜棕）
-const HOME_CHIMNEY_COLOR = 0x7a6a5a; // 煙囪（灰石，自然老化感）
-const HOME_GLOW_COLOR    = 0xffd080; // 窗光（暖琥珀黃，室內有人的感覺）
+// 居民住宅色盤（ROADMAP 642–643）：依居民風格分兩套，純物件方便按名字查取。
+// 露娜（木屋）：暖棕木板牆＋磚紅瓦頂——靠市集、溫暖療癒感。
+// 諾娃（農舍）：石灰牆＋草綠茅草頂——靠農田、樸實農家感。
+const HOME_PALETTES = {
+  露娜: {
+    body:    0xc4956a, // 木板牆（暖棕）
+    roof:    0x9a4a2a, // 瓦頂（磚紅陶土）
+    door:    0x6b3d2a, // 木門（深棕）
+    window:  0x8b6914, // 窗框（蜂蜜棕）
+    chimney: 0x7a6a5a, // 煙囪（灰石）
+    glow:    0xffd080, // 窗光（暖琥珀黃）
+    label:   "的家",
+  },
+  諾娃: {
+    body:    0xb0a898, // 石灰牆（田邊撿來的灰石塊，比露娜牆冷一階）
+    roof:    0x5a7a3a, // 草綠茅草頂（農田風）
+    door:    0x5a3a22, // 木門（與露娜同色系，皆是深棕舊木）
+    window:  0x6a7a4a, // 窗框（橄欖綠，呼應茅草頂）
+    chimney: 0x8a8070, // 煙囪（粗糙石灰，比露娜更樸素）
+    glow:    0xffc060, // 窗光（稍冷琥珀，農舍燈少燻黃）
+    label:   "的農舍",
+  },
+};
+// 未知居民用露娜的木屋色盤作為預設，保持與既有系統相容。
+const HOME_DEFAULT_PALETTE = HOME_PALETTES["露娜"];
 
-// 一座居民木屋（ROADMAP 642，禱告驅動）：低多邊形小木屋——木板牆＋四角錐磚紅屋頂＋
+// 一座居民住宅（ROADMAP 642–643，禱告驅動）：低多邊形小屋——牆身＋四角錐屋頂＋
 // 正門＋兩扇窗格＋後側煙囪＋窗光球（夜晚窗裡透出暖光，像有人在家）。
-// 應 AI 居民之禱而生：露娜盼了很久的「更舒適的家」在這裡成真了。
+// 以居民姓名查取色盤：露娜→暖棕木屋；諾娃→石灰農舍；未知→木屋預設。
 function makeResidentHome(item) {
+  const name = (item && item.name) ? item.name : "居民";
+  const p = HOME_PALETTES[name] || HOME_DEFAULT_PALETTE;
   const g = new THREE.Group();
-  // 木板牆主體（y=1.5＝半高，讓底面落地）
-  const body = new THREE.Mesh(ST_GEO.homeBody, new THREE.MeshLambertMaterial({ color: HOME_BODY_COLOR }));
+  // 牆身主體（y=1.5＝半高，讓底面落地）
+  const body = new THREE.Mesh(ST_GEO.homeBody, new THREE.MeshLambertMaterial({ color: p.body }));
   body.position.y = 1.5;
   g.add(body);
-  // 四角錐磚紅屋頂（疊在牆頂，旋轉 45° 讓角朝前後，不是稜朝前後）
-  const roof = new THREE.Mesh(ST_GEO.homeRoof, new THREE.MeshLambertMaterial({ color: HOME_ROOF_COLOR }));
+  // 四角錐屋頂（旋轉 45° 讓角朝前後）
+  const roof = new THREE.Mesh(ST_GEO.homeRoof, new THREE.MeshLambertMaterial({ color: p.roof }));
   roof.rotation.y = Math.PI / 4;
-  roof.position.y = 4.0; // 牆高 3.0 + 屋頂半高 1.0
+  roof.position.y = 4.0;
   g.add(roof);
-  // 煙囪（疊在屋頂後側，磚灰質感）
-  const chimney = new THREE.Mesh(ST_GEO.homeChimney, new THREE.MeshLambertMaterial({ color: HOME_CHIMNEY_COLOR }));
-  chimney.position.set(1.0, 4.8, -1.0); // 屋頂後半段
+  // 煙囪（屋頂後側）
+  const chimney = new THREE.Mesh(ST_GEO.homeChimney, new THREE.MeshLambertMaterial({ color: p.chimney }));
+  chimney.position.set(1.0, 4.8, -1.0);
   g.add(chimney);
-  // 正面木門（正中貼前牆，y=0.75＝門高一半）
-  const door = new THREE.Mesh(ST_GEO.homeDoor, new THREE.MeshLambertMaterial({ color: HOME_DOOR_COLOR }));
+  // 正面木門
+  const door = new THREE.Mesh(ST_GEO.homeDoor, new THREE.MeshLambertMaterial({ color: p.door }));
   door.position.set(0, 0.75, 1.76);
   g.add(door);
   // 正面左側窗格
-  const winFront = new THREE.Mesh(ST_GEO.homeWindow, new THREE.MeshLambertMaterial({ color: HOME_WINDOW_COLOR }));
+  const winFront = new THREE.Mesh(ST_GEO.homeWindow, new THREE.MeshLambertMaterial({ color: p.window }));
   winFront.position.set(-1.4, 1.8, 1.76);
   g.add(winFront);
   // 側面右側窗格（轉 90°）
-  const winSide = new THREE.Mesh(ST_GEO.homeWindow, new THREE.MeshLambertMaterial({ color: HOME_WINDOW_COLOR }));
+  const winSide = new THREE.Mesh(ST_GEO.homeWindow, new THREE.MeshLambertMaterial({ color: p.window }));
   winSide.rotation.y = Math.PI / 2;
   winSide.position.set(2.26, 1.8, 0);
   g.add(winSide);
-  // 窗光球（正面窗內，自發光暖黃；夜晚更亮——由 updateStructures 每幀調整透明度）
+  // 窗光球（自發光；夜晚更亮——由 updateStructures 每幀調整透明度）
   const winGlow = new THREE.Mesh(ST_GEO.homeGlow, new THREE.MeshBasicMaterial({
-    color: HOME_GLOW_COLOR, transparent: true, opacity: 0.0, depthWrite: false,
+    color: p.glow, transparent: true, opacity: 0.0, depthWrite: false,
   }));
-  winGlow.position.set(-1.4, 1.8, 1.6); // 微縮進正面窗內側
+  winGlow.position.set(-1.4, 1.8, 1.6);
   g.add(winGlow);
-  // 居民姓名標籤（「露娜的家」漂在屋頂上方）
-  const name = (item && item.name) ? item.name : "居民";
-  g.add(makeLabel(name + "的家"));
+  // 居民姓名標籤（「露娜的家」/「諾娃的農舍」漂在屋頂上方）
+  g.add(makeLabel(name + p.label));
   g.userData.winGlow = winGlow;
   return g;
 }
