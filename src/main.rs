@@ -124,6 +124,8 @@ mod voxel_diary;
 mod voxel_building;
 // 乙太方界·念頭播種閉環 v1：玩家說話讓附近居民「聽到」，零 LLM 空間廣播（ROADMAP 654）。
 mod voxel_overhear;
+// 乙太方界·城鎮動態 Feed v1：居民活動事件日誌，讓玩家回來時讀到「缺席時世界發生了什麼」（ROADMAP 655）。
+mod voxel_feed;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
@@ -420,6 +422,8 @@ async fn main() {
         .route("/voxel/ws", get(voxel_ws::voxel_ws_handler))
         // 乙太方界·居民日記（ROADMAP 650）：讀取記憶 + 心願格式化成日記頁 JSON。
         .route("/voxel/diary", get(voxel_ws::voxel_diary_handler))
+        // 乙太方界·城鎮動態 Feed（ROADMAP 655）：最新 30 筆居民活動事件 JSON。
+        .route("/voxel/feed", get(voxel_ws::voxel_feed_handler))
         // 其餘路徑（game.js、assets、wasm…）交給靜態前端（web/）。game.js 維持可
         // 快取——它的 URL 帶內容雜湊，內容一變 URL 就變，CF/瀏覽器自然抓新版。
         .fallback_service(ServeDir::new("web"))
