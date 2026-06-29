@@ -5185,6 +5185,7 @@ pub fn spawn(app: AppState) {
                                 name: h.name.to_string(),
                                 x: h.x,
                                 y: h.y,
+                                dwelling_type: h.dwelling_type.as_str().to_string(),
                             }
                         }).collect(),
                     }

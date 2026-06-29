@@ -2682,6 +2682,17 @@ const ST_GEO = {
   homeWindow:  new THREE.BoxGeometry(0.9, 0.8, 0.15),       // 窗格（兩扇，正面及側面各一）
   homeChimney: new THREE.BoxGeometry(0.5, 1.6, 0.5),        // 煙囪（磚石，斜屋頂後側）
   homeGlow:    new THREE.SphereGeometry(0.55, 6, 4),        // 窗光球（自發光暖黃，夜晚更亮）
+  // 林野小屋（ROADMAP 644 cabin）：比木屋更矮小，單坡屋頂（不同角度錐），無煙囪，一扇小窗。
+  cabinBody:   new THREE.BoxGeometry(3.5, 2.2, 2.8),        // 小屋主體（較矮小）
+  cabinRoof:   new THREE.ConeGeometry(2.6, 2.8, 4),         // 單坡式高錐頂（比 house 更陡峭）
+  cabinDoor:   new THREE.BoxGeometry(0.7, 1.2, 0.15),       // 較矮木門
+  cabinWindow: new THREE.BoxGeometry(0.7, 0.6, 0.15),       // 一扇小窗
+  cabinGlow:   new THREE.SphereGeometry(0.42, 6, 4),        // 窗光球（小屋光源更暗）
+  // 遊牧帳篷（ROADMAP 644 tent）：圓錐形布面＋支撐木桿＋帳門暗口。
+  tentCone:    new THREE.ConeGeometry(3.0, 6.0, 8),         // 帳篷主體（八邊形圓錐）
+  tentPole:    new THREE.CylinderGeometry(0.07, 0.07, 7.5, 4), // 中央支撐木桿（略高出頂端）
+  tentFlag:    new THREE.BoxGeometry(0.5, 0.3, 0.05),       // 頂端小旗幟
+  tentDoor:    new THREE.BoxGeometry(1.0, 1.6, 0.1),        // 帳門暗口（正面黑色長方形）
 };
 
 // 一座篝火：交叉柴堆＋雙層火焰（外焰/亮心，會跳動發光）＋地面暖意圈。火焰／暖圈引用留在 userData 供每幀調。
@@ -2822,52 +2833,159 @@ const HOME_PALETTES = {
     glow:    0xffc060, // 窗光（稍冷琥珀，農舍燈少燻黃）
     label:   "的農舍",
   },
+  // ROADMAP 644 散居三棲所色盤 ───────────────────────────────────────────
+  賽勒: {
+    // 漁人小屋：海岸木料＋藍灰屋頂＋漁網褐窗框＋冷白窗光（海邊燈色）
+    body:    0x7a9aaa, // 藍灰舊木板牆（海風侵蝕）
+    roof:    0x4a6a7a, // 深灰藍石板頂
+    door:    0x4a3820, // 深棕木門（海水染深）
+    window:  0x5a7a80, // 漁網藍窗框
+    chimney: 0x505870, // 無用（cabin 無煙囪，傳入後不渲染，預設中性灰）
+    glow:    0xd0f0ff, // 冷白藍窗光（海邊燈色，像漁燈）
+    label:   "的小屋",
+  },
+  奧瑞: {
+    // 隱士石寮：岩地深棕石牆＋深石板頂＋厚重石門＋冷琥珀窗光（隱士燈火）
+    body:    0x6a5a4a, // 深灰棕石牆（岩石地帶）
+    roof:    0x3a3028, // 近黑石板屋頂（沉重古老）
+    door:    0x3a2a1a, // 極深棕木門
+    window:  0x5a4a3a, // 石框窗（暗棕）
+    chimney: 0x4a4040, // 同上（cabin 無煙囪，中性備用）
+    glow:    0xffb840, // 冷琥珀窗光（隱士燈火，比露娜更孤寂）
+    label:   "的石寮",
+  },
+  薇朵: {
+    // 遊牧帳篷：溫暖草原土黃＋赭紅頂布＋深橄欖木桿＋溫白窗光（帳篷火光）
+    body:    0xd4b870, // 暖土黃帳篷布（草原沙土色）
+    roof:    0xb05a28, // 赭紅頂布（遊牧風染色）
+    door:    0x2a2010, // 黑褐帳門
+    window:  0x8a6a30, // 深金棕（旗幟色）
+    chimney: 0x6a5020, // 同上（tent 無煙囪，備用中性色）
+    glow:    0xffe8a0, // 溫白窗光（帳篷內火光，溫暖但模糊）
+    label:   "的帳篷",
+  },
 };
 // 未知居民用露娜的木屋色盤作為預設，保持與既有系統相容。
 const HOME_DEFAULT_PALETTE = HOME_PALETTES["露娜"];
 
-// 一座居民住宅（ROADMAP 642–643，禱告驅動）：低多邊形小屋——牆身＋四角錐屋頂＋
-// 正門＋兩扇窗格＋後側煙囪＋窗光球（夜晚窗裡透出暖光，像有人在家）。
-// 以居民姓名查取色盤：露娜→暖棕木屋；諾娃→石灰農舍；未知→木屋預設。
+// 居民棲所工廠（ROADMAP 642–644，禱告驅動·散居擴展）。
+// 依 item.dwelling_type 派發到對應形狀函式；未知類型退回 house（向後相容）。
 function makeResidentHome(item) {
+  const dtype = (item && item.dwelling_type) ? item.dwelling_type : "house";
+  if (dtype === "cabin")  return _makeResidentCabin(item);
+  if (dtype === "tent")   return _makeResidentTent(item);
+  return _makeResidentHouse(item); // "house" 或未知類型
+}
+
+// 一般木屋（ROADMAP 642–643）：牆身＋四角錐屋頂＋煙囪＋兩窗＋窗光球。
+function _makeResidentHouse(item) {
   const name = (item && item.name) ? item.name : "居民";
   const p = HOME_PALETTES[name] || HOME_DEFAULT_PALETTE;
   const g = new THREE.Group();
-  // 牆身主體（y=1.5＝半高，讓底面落地）
   const body = new THREE.Mesh(ST_GEO.homeBody, new THREE.MeshLambertMaterial({ color: p.body }));
   body.position.y = 1.5;
   g.add(body);
-  // 四角錐屋頂（旋轉 45° 讓角朝前後）
   const roof = new THREE.Mesh(ST_GEO.homeRoof, new THREE.MeshLambertMaterial({ color: p.roof }));
   roof.rotation.y = Math.PI / 4;
   roof.position.y = 4.0;
   g.add(roof);
-  // 煙囪（屋頂後側）
   const chimney = new THREE.Mesh(ST_GEO.homeChimney, new THREE.MeshLambertMaterial({ color: p.chimney }));
   chimney.position.set(1.0, 4.8, -1.0);
   g.add(chimney);
-  // 正面木門
   const door = new THREE.Mesh(ST_GEO.homeDoor, new THREE.MeshLambertMaterial({ color: p.door }));
   door.position.set(0, 0.75, 1.76);
   g.add(door);
-  // 正面左側窗格
   const winFront = new THREE.Mesh(ST_GEO.homeWindow, new THREE.MeshLambertMaterial({ color: p.window }));
   winFront.position.set(-1.4, 1.8, 1.76);
   g.add(winFront);
-  // 側面右側窗格（轉 90°）
   const winSide = new THREE.Mesh(ST_GEO.homeWindow, new THREE.MeshLambertMaterial({ color: p.window }));
   winSide.rotation.y = Math.PI / 2;
   winSide.position.set(2.26, 1.8, 0);
   g.add(winSide);
-  // 窗光球（自發光；夜晚更亮——由 updateStructures 每幀調整透明度）
   const winGlow = new THREE.Mesh(ST_GEO.homeGlow, new THREE.MeshBasicMaterial({
     color: p.glow, transparent: true, opacity: 0.0, depthWrite: false,
   }));
   winGlow.position.set(-1.4, 1.8, 1.6);
   g.add(winGlow);
-  // 居民姓名標籤（「露娜的家」/「諾娃的農舍」漂在屋頂上方）
   g.add(makeLabel(name + p.label));
   g.userData.winGlow = winGlow;
+  return g;
+}
+
+// 林野小屋（ROADMAP 644 cabin）：矮小屋身＋陡峭錐頂＋單窗＋窗光球（無煙囪，更樸素）。
+// 用於散居遠方的探索棲所（賽勒漁人小屋 / 奧瑞隱士石寮）。
+function _makeResidentCabin(item) {
+  const name = (item && item.name) ? item.name : "居民";
+  const p = HOME_PALETTES[name] || HOME_DEFAULT_PALETTE;
+  const g = new THREE.Group();
+  // 矮小屋身（y=1.1 = 半高）
+  const body = new THREE.Mesh(ST_GEO.cabinBody, new THREE.MeshLambertMaterial({ color: p.body }));
+  body.position.y = 1.1;
+  g.add(body);
+  // 陡峭錐頂（比 house 更高/更尖，呼應林野風格）
+  const roof = new THREE.Mesh(ST_GEO.cabinRoof, new THREE.MeshLambertMaterial({ color: p.roof }));
+  roof.rotation.y = Math.PI / 4;
+  roof.position.y = 3.5;
+  g.add(roof);
+  // 正面木門（比 house 矮）
+  const door = new THREE.Mesh(ST_GEO.cabinDoor, new THREE.MeshLambertMaterial({ color: p.door }));
+  door.position.set(0, 0.6, 1.51);
+  g.add(door);
+  // 正面單窗
+  const win = new THREE.Mesh(ST_GEO.cabinWindow, new THREE.MeshLambertMaterial({ color: p.window }));
+  win.position.set(-1.1, 1.4, 1.51);
+  g.add(win);
+  // 窗光球（比 house 更小更暗）
+  const winGlow = new THREE.Mesh(ST_GEO.cabinGlow, new THREE.MeshBasicMaterial({
+    color: p.glow, transparent: true, opacity: 0.0, depthWrite: false,
+  }));
+  winGlow.position.set(-1.1, 1.4, 1.4);
+  g.add(winGlow);
+  g.add(makeLabel(name + p.label));
+  g.userData.winGlow = winGlow;
+  return g;
+}
+
+// 遊牧帳篷（ROADMAP 644 tent）：八邊形圓錐＋中央木桿＋頂旗＋帳門暗口（無窗、無煙囪）。
+// 用於薇朵的草原遊牧棲所。
+function _makeResidentTent(item) {
+  const name = (item && item.name) ? item.name : "居民";
+  const p = HOME_PALETTES[name] || HOME_DEFAULT_PALETTE;
+  const g = new THREE.Group();
+  // 帳篷主體（八邊形圓錐，底面朝下，y=3 = 半高落地）
+  const cone = new THREE.Mesh(ST_GEO.tentCone, new THREE.MeshLambertMaterial({ color: p.body }));
+  cone.position.y = 3.0;
+  g.add(cone);
+  // 裝飾橫帶（用兩圈扁平圓環模擬布料花紋，圍在帳身腰部）
+  for (const fy of [1.6, 3.0]) {
+    const band = new THREE.Mesh(
+      new THREE.CylinderGeometry(3.0 - fy * 0.3, 3.0 - fy * 0.3 + 0.1, 0.2, 8),
+      new THREE.MeshLambertMaterial({ color: p.roof }),
+    );
+    band.position.y = fy;
+    g.add(band);
+  }
+  // 中央支撐木桿（略高出錐頂，帶野外感）
+  const pole = new THREE.Mesh(ST_GEO.tentPole, new THREE.MeshLambertMaterial({ color: 0x5a3a18 }));
+  pole.position.y = 3.75; // 桿子中心在此高度
+  g.add(pole);
+  // 頂端小旗幟（帶顏色，隨風旗標感）
+  const flag = new THREE.Mesh(ST_GEO.tentFlag, new THREE.MeshLambertMaterial({ color: p.roof }));
+  flag.position.set(0.25, 7.6, 0);
+  g.add(flag);
+  // 帳門暗口（正面底部）
+  const door = new THREE.Mesh(ST_GEO.tentDoor, new THREE.MeshLambertMaterial({ color: 0x1a1208 }));
+  door.position.set(0, 0.8, 2.8);
+  g.add(door);
+  // 帳篷無窗，winGlow 用帳內火光（半透明暖色，入夜隱約透出布面）
+  const glow = new THREE.Mesh(
+    new THREE.SphereGeometry(1.8, 6, 4),
+    new THREE.MeshBasicMaterial({ color: p.glow, transparent: true, opacity: 0.0, depthWrite: false }),
+  );
+  glow.position.y = 2.0;
+  g.add(glow);
+  g.add(makeLabel(name + p.label));
+  g.userData.winGlow = glow; // 複用 winGlow 鍵讓 updateStructures 夜晚亮起
   return g;
 }
 
