@@ -27,6 +27,7 @@ use crate::voxel::{self, Block, ChunkCoord, WorldDelta, BASE_HEIGHT, CHUNK, SEA_
 use crate::voxel_building::{self as vbuild, BuildStore};
 use crate::voxel_desires::{self as vdes, DesireStore};
 use crate::voxel_diary;
+use crate::voxel_feed as vfeed;
 use crate::voxel_memory::{self as vmem, VoxelMemory};
 use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
@@ -764,6 +765,8 @@ async fn handle_socket(socket: WebSocket) {
                         }; // 心願寫鎖在此釋放
                         // append-only 小檔寫（同步、不持鎖）：重啟後仍記得心願。
                         vdes::append_desire(&new_desire);
+                        // 動態 Feed：居民透過對話種下新心願。
+                        vfeed::append_feed("新心願", &new_desire.resident, &new_desire.desire);
                     }
                     // 冒泡（下一 tick 由 tick_residents 套用 say，自動截到 40 字、計時消失）。
                     hub().agent_bus.push_decision(
@@ -798,6 +801,8 @@ async fn handle_socket(socket: WebSocket) {
                             des.set_desire(&rid, &desire_text, &overhear_player)
                         }; // desires 寫鎖釋放
                         vdes::append_desire(&entry);
+                        // 動態 Feed：玩家說的話戳中居民，念頭種下。
+                        vfeed::append_feed("念頭種下", &entry.resident, &entry.desire);
                     }
                     // ③ 廣播：讓附近玩家看到居民的反應泡泡
                     broadcast_players();
@@ -879,6 +884,20 @@ pub async fn voxel_diary_handler() -> axum::response::Response {
         .collect();
 
     let body = serde_json::to_string(&pages).unwrap_or_else(|_| "[]".into());
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
+/// `GET /voxel/feed` — 回傳最新 30 筆世界動態事件（最新在前）。
+///
+/// 純讀 jsonl 檔案、無鎖、零 LLM、向後相容（檔案不存在回空陣列）。
+pub async fn voxel_feed_handler() -> axum::response::Response {
+    use axum::http::header;
+    let events = vfeed::load_recent_feed(vfeed::FEED_LIMIT);
+    let body = serde_json::to_string(&events).unwrap_or_else(|_| "[]".into());
     axum::response::Response::builder()
         .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-cache")
@@ -1096,13 +1115,18 @@ fn tick_residents(dt: f32) {
 
     // 4) 落地社交記憶（鎖已釋放；一律 append-only，不破壞既有）。
     // 說話者：speaker；聽到的那方：listener（發起時=目標；回應時=原發起者）。
-    for (speaker_id, speaker_name, listener_id, _listener_name, line, _is_response) in &social_events {
+    for (speaker_id, speaker_name, listener_id, listener_name, line, is_response) in &social_events {
         if let Some(summary) = vrel::overhear_summary(speaker_name, line) {
             let entry = {
                 let mut soc = hub().social.write().unwrap();
                 soc.record_overheard(listener_id, speaker_id, &summary)
             }; // social 寫鎖在此釋放
             vrel::append_social(&entry);
+        }
+        // 動態 Feed：只記發起對話那筆（避免對話重複），後端在鎖外呼叫。
+        if !is_response {
+            let detail = format!("對{}說：「{}」", listener_name, line.chars().take(30).collect::<String>());
+            vfeed::append_feed("鄰里閒聊", speaker_name, &detail);
         }
     }
 
@@ -1152,6 +1176,8 @@ fn tick_residents(dt: f32) {
                         vbuild::append_build(&p);
                         let say = vbuild::build_say_line(&p.kind_name, 0);
                         say_updates.push((rid.clone(), say));
+                        // 動態 Feed：居民開始建造。
+                        vfeed::append_feed("蓋家動工", &rname, &p.kind_name);
                     }
                 }
             }
@@ -1197,6 +1223,10 @@ fn tick_residents(dt: f32) {
                 if progress_pct == 50 || progress_pct >= 95 {
                     let say = vbuild::build_say_line(&kind_name, progress_pct);
                     say_updates.push((rid.clone(), say));
+                    // 動態 Feed：完工里程碑。
+                    if progress_pct >= 95 {
+                        vfeed::append_feed("蓋家完工", &rname, &kind_name);
+                    }
                 }
             }
         }

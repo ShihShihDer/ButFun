@@ -564,6 +564,100 @@ export const __diaryTest = {
   renderDiaryPage: (page, name) => { renderDiaryPage(page, name); return diaryBodyEl && diaryBodyEl.innerHTML; },
 };
 
+// ── 城鎮動態 Feed（ROADMAP 655）────────────────────────────────────────────────
+const feedEl = document.getElementById("feed");
+const feedBodyEl = document.getElementById("feedBody");
+const feedBtnEl = document.getElementById("feedBtn");
+
+/** 把 Unix 秒換算成「X 分鐘前」繁中字串。
+ * @param {number} tsSecs 事件的 Unix 秒時戳。
+ * @returns {string}
+ */
+export function formatRelativeTime(tsSecs) {
+  const diff = Math.max(0, Math.floor(Date.now() / 1000) - tsSecs);
+  if (diff < 60)     return "剛才";
+  if (diff < 3600)   return `${Math.floor(diff / 60)} 分鐘前`;
+  if (diff < 86400)  return `${Math.floor(diff / 3600)} 小時前`;
+  return `${Math.floor(diff / 86400)} 天前`;
+}
+
+/** 各事件類型對應的 emoji 提示。 */
+const KIND_EMOJI = {
+  "新心願":  "💭",
+  "念頭種下": "✨",
+  "鄰里閒聊": "💬",
+  "蓋家動工": "🏗️",
+  "蓋家完工": "🏠",
+};
+
+/** 把後端回傳的 FeedEvent 陣列渲染到 #feedBody。
+ * @param {Array<{ts_secs:number, kind:string, resident:string, detail:string}>} events
+ */
+export function renderFeed(events) {
+  if (!feedBodyEl) return;
+  if (!events || events.length === 0) {
+    feedBodyEl.innerHTML = '<div class="feed-empty">還沒有動態……等居民開始活動後這裡就會熱鬧起來。</div>';
+    return;
+  }
+  feedBodyEl.innerHTML = "";
+  for (const ev of events) {
+    const item = document.createElement("div");
+    const kindSlug = (ev.kind || "").replace(/[^a-zA-Z一-鿿]/g, "");
+    item.className = "feed-item kind-" + escHtml(ev.kind || "");
+    const emoji = KIND_EMOJI[ev.kind] || "📌";
+    item.innerHTML =
+      '<div class="feed-who">' +
+        '<span class="feed-who-kind">' + emoji + " " + escHtml(ev.kind || "") + "・" + escHtml(ev.resident || "") + '</span>' +
+        '<span class="feed-who-time">' + formatRelativeTime(ev.ts_secs || 0) + '</span>' +
+      '</div>' +
+      '<div class="feed-detail">' + escHtml(ev.detail || "") + '</div>';
+    feedBodyEl.appendChild(item);
+  }
+}
+
+let feedVisible = false;
+let feedRefreshTimer = null;
+
+/** 開啟動態 Feed 面板並立刻抓取最新動態。 */
+async function openFeed() {
+  if (!feedEl) return;
+  feedVisible = true;
+  feedEl.style.display = "flex";
+  await refreshFeed();
+  // 每 30 秒自動刷新一次（面板開著時）。
+  if (feedRefreshTimer) clearInterval(feedRefreshTimer);
+  feedRefreshTimer = setInterval(() => { if (feedVisible) refreshFeed(); }, 30_000);
+}
+
+/** 關閉動態 Feed 面板。 */
+function closeFeed() {
+  feedVisible = false;
+  if (feedEl) feedEl.style.display = "none";
+  if (feedRefreshTimer) { clearInterval(feedRefreshTimer); feedRefreshTimer = null; }
+}
+
+/** 向後端抓最新 Feed 並重新渲染。 */
+async function refreshFeed() {
+  if (!feedBodyEl) return;
+  try {
+    const resp = await fetch("/voxel/feed");
+    if (!resp.ok) throw new Error("feed fetch failed: " + resp.status);
+    const events = await resp.json();
+    renderFeed(events);
+  } catch (err) {
+    if (feedBodyEl) feedBodyEl.innerHTML = '<div class="feed-empty">無法讀取動態。</div>';
+  }
+}
+
+// 綁定按鈕與關閉事件。
+if (feedBtnEl) feedBtnEl.addEventListener("click", () => {
+  feedVisible ? closeFeed() : openFeed();
+});
+if (feedEl) {
+  const closeBtn = document.getElementById("feedClose");
+  if (closeBtn) closeBtn.addEventListener("click", closeFeed);
+}
+
 // ── 準心選取 + 高亮外框（MCPE 風）──────────────────────────────────────────────
 // 選中方塊的線框外框（略大一點點避免 z-fighting）。對準時顯示、沒對到時隱藏。
 const highlight = new THREE.LineSegments(
@@ -1082,6 +1176,11 @@ window.__voxel = {
   openDiary(rid) { return openDiary(rid); },
   closeDiary() { closeDiary(); },
   get diaryVisible() { return diaryEl ? diaryEl.style.display !== "none" : false; },
+  // ── 動態 Feed QA 用（ROADMAP 655）──
+  openFeed() { return openFeed(); },
+  closeFeed() { closeFeed(); },
+  get feedVisible() { return feedVisible; },
+  renderFeed(ev) { renderFeed(ev); return feedBodyEl && feedBodyEl.innerHTML; },
   // ── 真瀏覽器 QA 用：讀準心目標、讀方塊、觸發破壞/放置、選方塊 ──
   get target() { return target; },
   getBlock(x, y, z) { return getRaw(x, y, z); },
