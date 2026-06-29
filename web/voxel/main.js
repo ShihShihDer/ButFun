@@ -197,6 +197,13 @@ function markDirty(cx, cy, cz) {
 // ── 玩家狀態（前端權威預測；位置同步回伺服器給別人看）──────────────────────
 const player = { x: 0.5, y: 30, z: 0.5, vy: 0, grounded: false, yaw: 0 };
 const PW = 0.3, PH = 1.7; // 半寬 / 身高
+
+// 踏階視覺補間：物理 Y 瞬到位（碰撞正確、避免穿模），視覺 Y 平滑跟上（消除閃爍/瞬跳）。
+// stepSmooth 是「視覺比物理落後多少格」，踏階時累積、每幀指數衰減歸零。
+// 往下/重力完全不受影響（stepSmooth 只在踏階成功時累積，永遠 >= 0）。
+let stepSmooth = 0;
+// 衰減速率（格/秒）；可調：10 ≈ 0.3 秒內視覺追上物理，夠快看得出「走上去」、不拖泥帶水。
+const STEP_SMOOTH_K = 10;
 let myId = null;
 let myName = "旅人";
 
@@ -270,6 +277,8 @@ function overlaps() {
 }
 
 // 水平移動一軸：撞牆就回退；若站在地上，試著踏上 1 格高台階（讓走斜坡/小丘順暢）。
+// 踏上台階時：物理 Y 瞬間到位（碰撞/重力繼續正確運作），同時累積 stepSmooth 讓視覺 Y
+// 從原地平滑抬升（update() 每幀指數衰減），消除以往「瞬間彈跳一格」的閃爍感。
 function moveAxis(axis, delta) {
   if (delta === 0) return;
   const prev = player[axis];
@@ -278,7 +287,11 @@ function moveAxis(axis, delta) {
   if (player.grounded) {
     const py = player.y;
     player.y += 1.05;
-    if (!overlaps()) return; // 踏上台階成功（抬高 y，之後重力會落穩）
+    if (!overlaps()) {
+      // 踏上台階成功：物理 Y 已到位；累積視覺補間偏移（visualY 由 update() 平滑追上）
+      stepSmooth += player.y - py;
+      return;
+    }
     player.y = py;
   }
   player[axis] = prev; // 完全擋住 → 回退
@@ -574,14 +587,24 @@ function update(dt) {
     if (player.vy < 0) player.grounded = false;
   }
   // 掉出世界保險：低於 -10 拉回出生高度
-  if (player.y < -10) { player.y = 40; player.vy = 0; }
+  if (player.y < -10) { player.y = 40; player.vy = 0; stepSmooth = 0; }
 
-  // 玩家身體 + 朝向
-  bodyMesh.position.set(player.x, player.y + PH / 2, player.z);
+  // 踏階視覺補間衰減（frame-rate 無關的指數平滑）
+  // stepSmooth > 0 → 視覺 Y 低於物理 Y；每幀靠近直到 < 0.005 格就吸附歸零。
+  // 重力下落時 stepSmooth 保持 0，不影響往下的動態。
+  if (stepSmooth > 0) {
+    stepSmooth *= Math.exp(-STEP_SMOOTH_K * dt);
+    if (stepSmooth < 0.005) stepSmooth = 0;
+  }
+  // visualY：bodyMesh 與鏡頭看向點用此值——踏階時從原地平滑升上去，消除瞬跳閃爍。
+  const visualY = player.y - stepSmooth;
+
+  // 玩家身體 + 朝向（用 visualY 避免角色瞬跳一格）
+  bodyMesh.position.set(player.x, visualY + PH / 2, player.z);
   if (dir.lengthSq() > 1e-4) bodyMesh.rotation.y = Math.atan2(dir.x, dir.z);
 
-  // 第三人稱鏡頭跟隨
-  const lookTarget = new THREE.Vector3(player.x, player.y + 1.3, player.z);
+  // 第三人稱鏡頭跟隨（用 visualY 讓鏡頭也跟著平滑升，不突然跳）
+  const lookTarget = new THREE.Vector3(player.x, visualY + 1.3, player.z);
   const dist = 6.0, cp = Math.cos(camPitch), sp = Math.sin(camPitch);
   camera.position.set(
     lookTarget.x + Math.sin(player.yaw) * dist * cp,
@@ -658,6 +681,9 @@ window.__voxel = {
   get meshes() { return meshes.size; },
   get fps() { return fps; },
   get player() { return player; },
+  // ── 踏階平滑 QA 用：讀視覺 Y（平滑後）與補間偏移 ──
+  get stepSmooth() { return stepSmooth; },
+  get visualY() { return player.y - stepSmooth; },
   // ── 真瀏覽器 QA 用：讀準心目標、讀方塊、觸發破壞/放置、選方塊 ──
   get target() { return target; },
   getBlock(x, y, z) { return getRaw(x, y, z); },
