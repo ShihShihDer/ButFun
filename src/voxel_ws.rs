@@ -27,6 +27,7 @@ use crate::voxel::{self, Block, ChunkCoord, WorldDelta, BASE_HEIGHT, CHUNK, SEA_
 use crate::voxel_desires::{self as vdes, DesireStore};
 use crate::voxel_diary;
 use crate::voxel_memory::{self as vmem, VoxelMemory};
+use crate::voxel_relations::{self as vrel, SocialStore};
 use crate::voxel_residents::{self as vr, Body};
 
 /// 入場時串給玩家的 chunk 半徑（以 chunk 為單位，水平）。3 → 7×7 column。
@@ -105,6 +106,10 @@ struct VoxelResident {
     say_timer: f32,
     /// 主動招呼冷卻倒數（秒）：> 0 表示最近招呼過、暫不再冒，避免洗版。
     greet_timer: f32,
+    /// 居民↔居民社交冷卻倒數（秒）：> 0 表示最近主動搭話過另一位居民，尚不可再發起。
+    social_cooldown: f32,
+    /// 另一位居民剛搭話，等這秒數到期後回應（id, 名字, 剩餘秒）。
+    pending_response: Option<(String, String, f32)>,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -226,6 +231,9 @@ fn init_residents() -> Vec<VoxelResident> {
             say: String::new(),
             say_timer: 0.0,
             greet_timer: 0.0,
+            // 錯開初始社交冷卻，避免啟動瞬間全員一起嘗試搭話。
+            social_cooldown: i as f32 * 20.0,
+            pending_response: None,
         });
     }
     out
@@ -248,6 +256,9 @@ struct VoxelHub {
     /// 居民渴望（每居民一個「當前心願」）。短鎖讀寫、持久化到 data/voxel_desires.jsonl。
     /// 玩家對話讓居民萌生心願 → 驅動後續思考與對話（記憶驅動行為 v1）。
     desires: RwLock<DesireStore>,
+    /// 居民社交記憶（誰聽到誰說了什麼）。持久化到 data/voxel_social.jsonl。
+    /// 居民↔居民偶爾對話 → 雙方存入社交記憶 → think 時帶入 world_news → 自然提及彼此。
+    social: RwLock<SocialStore>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -266,6 +277,8 @@ fn hub() -> &'static VoxelHub {
             memory: RwLock::new(VoxelMemory::from_entries(vmem::load_memories())),
             // 啟動時從 data/voxel_desires.jsonl 載回居民心願（重啟後仍記得心願）。
             desires: RwLock::new(DesireStore::from_entries(vdes::load_desires())),
+            // 啟動時從 data/voxel_social.jsonl 載回居民社交記憶（重啟後仍記得聽到過什麼）。
+            social: RwLock::new(SocialStore::from_entries(vrel::load_social())),
             tx,
         }
     })
@@ -774,7 +787,7 @@ pub async fn voxel_diary_handler() -> axum::response::Response {
         .unwrap()
 }
 
-/// 一次居民世界推進：套用上輪思考的決策 → 物理/閒晃 → 廣播 → 排程新一輪思考（無鎖 spawn）。
+/// 一次居民世界推進：套用上輪思考的決策 → 物理/閒晃 → 社交互動 → 廣播 → 排程新一輪思考。
 fn tick_residents(dt: f32) {
     // 1) 先取走上輪 async 思考投回的決策（短鎖、不 await）。
     let decisions = hub().agent_bus.drain();
@@ -788,6 +801,23 @@ fn tick_residents(dt: f32) {
         let players = hub().players.read().unwrap();
         players.values().map(|p| (p.x, p.z)).collect()
     }; // 玩家讀鎖在此釋放
+
+    // 社交對話生成用：快照所有居民心願（先 drop desires 鎖，再取居民寫鎖，守循序不巢狀鐵律）。
+    // 居民 id 格式固定為 "vox_res_{i}"，直接枚舉取（不需先讀居民清單）。
+    let desire_snaps: HashMap<String, String> = {
+        let des = hub().desires.read().unwrap();
+        (0..RESIDENT_COUNT)
+            .filter_map(|i| {
+                let id = format!("vox_res_{i}");
+                des.get_desire(&id).map(|d| (id, d.desire.clone()))
+            })
+            .collect()
+    }; // desires 讀鎖在此釋放
+
+    // 社交事件（鎖內收集，鎖外落地記憶）。
+    // 格式：(initiator_id, initiator_name, target_id, target_name, line, is_response)
+    // is_response=false → 發起對話；is_response=true → 回應對話。
+    let mut social_events: Vec<(String, String, String, String, String, bool)> = Vec::new();
 
     {
         let world = hub().deltas.read().unwrap();
@@ -813,13 +843,40 @@ fn tick_residents(dt: f32) {
             }
         }
 
-        // 2b) 物理 + 閒晃 + 思考排程。
+        // 2b) 物理 + 閒晃 + 社交冷卻 + 思考排程。
         for r in residents.iter_mut() {
             // 冒泡倒數。
             if r.say_timer > 0.0 {
                 r.say_timer -= dt;
                 if r.say_timer <= 0.0 {
                     r.say.clear();
+                }
+            }
+
+            // 社交冷卻倒數。
+            if r.social_cooldown > 0.0 {
+                r.social_cooldown -= dt;
+            }
+
+            // 待回應倒數：另一位居民搭話後，延遲幾秒再自然回應（零 LLM、程式化台詞）。
+            let resp_ready = match &mut r.pending_response {
+                Some((_, _, cd)) => {
+                    *cd -= dt;
+                    *cd <= 0.0
+                }
+                None => false,
+            };
+            if resp_ready && r.say.is_empty() {
+                if let Some((init_id, init_name, _)) = r.pending_response.take() {
+                    let resp = vrel::resident_social_response(r.name, &init_name);
+                    let safe: String = resp.chars().take(vrel::SOCIAL_SAY_CHARS).collect();
+                    social_events.push((
+                        r.id.clone(), r.name.to_string(),
+                        init_id, init_name,
+                        safe.clone(), true, // is_response
+                    ));
+                    r.say = safe;
+                    r.say_timer = SAY_SECS;
                 }
             }
 
@@ -866,12 +923,66 @@ fn tick_residents(dt: f32) {
                 think_jobs.push((r.id.clone(), r.name, r.persona, r.body.x, r.body.z));
             }
         }
+
+        // 2c) 社交發起掃描：每 tick 最多一對居民發起對話（低頻、有冷卻、不干擾物理主迴圈）。
+        // 先收集快照（idx, id, name, x, z, social_cooldown, is_saying）避免借用衝突。
+        let snaps: Vec<(usize, String, &'static str, f32, f32, f32, bool)> =
+            residents.iter().enumerate().map(|(i, r)| {
+                (i, r.id.clone(), r.name, r.body.x, r.body.z, r.social_cooldown, !r.say.is_empty())
+            }).collect();
+
+        let mut init_pair: Option<(usize, usize)> = None;
+        'scan: for i in 0..snaps.len() {
+            // 發起者：冷卻到期、目前沒在說話。
+            if snaps[i].6 || snaps[i].5 > 0.0 {
+                continue;
+            }
+            for j in 0..snaps.len() {
+                if i == j { continue; }
+                // 目標：沒在說話（避免打斷對方）、且在範圍內。
+                if snaps[j].6 { continue; }
+                if !vrel::pair_within_range(snaps[i].3, snaps[i].4, snaps[j].3, snaps[j].4, vrel::SOCIAL_RANGE) {
+                    continue;
+                }
+                if vrel::should_initiate_social(rand::random::<f32>()) {
+                    init_pair = Some((i, j));
+                    break 'scan;
+                }
+            }
+        }
+        if let Some((i, j)) = init_pair {
+            let ini_id = snaps[i].1.clone();
+            let ini_name = snaps[i].2;
+            let tar_id = snaps[j].1.clone();
+            let tar_name = snaps[j].2;
+            let desire_opt = desire_snaps.get(&ini_id).map(|s| s.as_str());
+            let line = vrel::resident_social_initiation(ini_name, tar_name, desire_opt);
+            let safe_line: String = line.chars().take(vrel::SOCIAL_SAY_CHARS).collect();
+            residents[i].say = safe_line.clone();
+            residents[i].say_timer = SAY_SECS;
+            residents[i].social_cooldown = vrel::SOCIAL_COOLDOWN_SECS;
+            // 目標居民幾秒後回應（pending_response 存 initiator id + name + 倒數）。
+            residents[j].pending_response = Some((ini_id.clone(), ini_name.to_string(), vrel::RESPONSE_DELAY_SECS));
+            social_events.push((ini_id, ini_name.to_string(), tar_id, tar_name.to_string(), safe_line, false));
+        }
     } // deltas/residents 鎖在此一併釋放
 
     // 3) 廣播最新快照（含居民位置/名字/說的話）。
     broadcast_players();
 
-    // 4) 無鎖 spawn 思考（LLM）。整個 agent 思考可由 BUTFUN_NPC_AGENT=0 關掉，
+    // 4) 落地社交記憶（鎖已釋放；一律 append-only，不破壞既有）。
+    // 說話者：speaker；聽到的那方：listener（發起時=目標；回應時=原發起者）。
+    for (speaker_id, speaker_name, listener_id, _listener_name, line, _is_response) in &social_events {
+        if let Some(summary) = vrel::overhear_summary(speaker_name, line) {
+            let entry = {
+                let mut soc = hub().social.write().unwrap();
+                soc.record_overheard(listener_id, speaker_id, &summary)
+            }; // social 寫鎖在此釋放
+            vrel::append_social(&entry);
+        }
+    }
+
+    // 5) 無鎖 spawn 思考（LLM）。整個 agent 思考可由 BUTFUN_NPC_AGENT=0 關掉，
     //    關掉後居民仍照常閒晃移動，只是不冒 LLM 心裡話/心願（零額外成本）。
     if npc_agent_wire::agents_enabled() {
         for (id, name, persona, x, z) in think_jobs {
@@ -918,6 +1029,17 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
             )
         })
     }; // 心願讀鎖在此釋放
+    // 短鎖讀社交記憶（最近聽到其他居民說了什麼）→ 帶入 world_news 讓居民思考時知道彼此近況。
+    let social_note: String = {
+        let soc = hub().social.read().unwrap();
+        let snaps = soc.recall_for(&id, vrel::SOCIAL_RECALL_LIMIT);
+        if snaps.is_empty() {
+            String::new()
+        } else {
+            let notes: Vec<String> = snaps.iter().map(|s| s.summary.clone()).collect();
+            format!("你最近聽到的鄰居近況：{}", notes.join("；"))
+        }
+    }; // social 讀鎖在此釋放
     let world_news = {
         let mut parts =
             vec!["你生活在新生的『乙太方界』——一片由方塊構成的清淨天地。".to_string()];
@@ -926,6 +1048,9 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
         }
         if let Some(note) = resident_desire_note {
             parts.push(note);
+        }
+        if !social_note.is_empty() {
+            parts.push(social_note);
         }
         parts.concat()
     };
