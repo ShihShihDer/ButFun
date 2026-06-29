@@ -146,6 +146,23 @@
     .msg.me  { align-self: flex-end; background: rgba(255,216,107,0.22); }
     .msg.npc { align-self: flex-start; background: rgba(143,208,255,0.18); }
     .msg.sys { align-self: center; color: #9fb0c8; font-size: 12px; background: none; padding: 2px; }
+    /* 思考中指示器：灰色、斜體、樣式明顯不同於真回覆氣泡 */
+    .msg.thinking {
+      align-self: flex-start; display: flex; align-items: center; gap: 6px;
+      background: rgba(255,255,255,0.06); border: 1px dashed rgba(255,255,255,0.15);
+      color: #8aaccc; font-style: italic; font-size: 12px;
+    }
+    .thinking-label { opacity: 0.85; }
+    /* 跳動點點：三顆依序縮放，純 CSS 不需 JS timer */
+    .thinking-dots::before { content: "●●●"; letter-spacing: 2px; }
+    .thinking-dots {
+      display: inline-block; letter-spacing: 2px;
+      animation: thinkDots 1.2s ease-in-out infinite;
+    }
+    @keyframes thinkDots {
+      0%,100% { opacity: 0.2; transform: scale(0.8); }
+      50%      { opacity: 1;   transform: scale(1.1); }
+    }
     #chatQuick { display: flex; gap: 6px; padding: 0 12px 6px; flex-wrap: wrap; }
     .qbtn {
       padding: 5px 10px; border-radius: 14px; background: rgba(255,255,255,0.12);

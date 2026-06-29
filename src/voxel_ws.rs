@@ -566,14 +566,15 @@ async fn handle_socket(socket: WebSocket) {
                     continue; // 沒這位居民 → 忽略
                 };
                 last_talk = Some(now);
-                // 4a) 立即送「思考中（…）」讓玩家知道訊息已收到、居民在想：
-                //     解決「沉默 35 秒」造成的「以為功能壞掉」誤解。
+                // 4a) 立即送「思考中」佔位 → 前端用 `thinking:true` 顯示動畫指示器，
+                //     不當成一般回覆氣泡顯示，避免「居民只回 …」的誤解。
                 //     此訊息為私聊（只送這位玩家），不走 AgentBus 冒泡。
                 let ack = serde_json::json!({
                     "t": "talk",
                     "resident_id": &resident_id,
                     "name": rname,
                     "reply": "…",
+                    "thinking": true,  // 前端判斷旗標：顯示動畫指示器而非一般氣泡
                 })
                 .to_string();
                 let _ = out_tx.send(Message::Text(ack)).await;
