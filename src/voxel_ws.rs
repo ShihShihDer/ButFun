@@ -24,6 +24,7 @@ use crate::npc_agent::{AgentAction, AgentDecision, NearbyPlayer, SenseInput};
 use crate::npc_agent_wire::{self, AgentBus};
 use crate::resident_npc::ResidentPersona;
 use crate::voxel::{self, Block, ChunkCoord, WorldDelta, BASE_HEIGHT, CHUNK, SEA_LEVEL};
+use crate::voxel_memory::{self as vmem, VoxelMemory};
 use crate::voxel_residents::{self as vr, Body};
 
 /// 入場時串給玩家的 chunk 半徑（以 chunk 為單位，水平）。3 → 7×7 column。
@@ -227,6 +228,9 @@ struct VoxelHub {
     residents: RwLock<Vec<VoxelResident>>,
     /// 居民決策匯流排（async 思考投入、tick 取走套用；嚴守無鎖 await 鐵律）。
     agent_bus: AgentBus,
+    /// 居民記憶（短期對話歷史 + 長期累積記憶）。短鎖讀寫、絕不持鎖 await，
+    /// 摘要/LLM 一律在無鎖 async task；長期記憶持久化到 data/voxel_memory.jsonl。
+    memory: RwLock<VoxelMemory>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -240,6 +244,9 @@ fn hub() -> &'static VoxelHub {
             deltas: RwLock::new(WorldDelta::new()),
             residents: RwLock::new(init_residents()),
             agent_bus: AgentBus::new(),
+            // 啟動時從 data/voxel_memory.jsonl 載回長期記憶（檔缺 = 首次啟動，回空），
+            // 重啟後居民仍記得跟誰聊過、聊到什麼。
+            memory: RwLock::new(VoxelMemory::from_entries(vmem::load_memories())),
             tx,
         }
     })
@@ -566,6 +573,16 @@ async fn handle_socket(socket: WebSocket) {
                     continue; // 沒這位居民 → 忽略
                 };
                 last_talk = Some(now);
+                // 3b) 玩家身份鍵：用顯示名辨識（登入帳號未接前，訪客以顯示名跨 session 記憶）。
+                let player_key = name.clone();
+                // 3c) 短鎖讀記憶 → 組「脈絡區塊」（近期對話 + 關於這位玩家的長期記憶），
+                //     立刻 drop 鎖、產出 owned String 帶進無鎖 async task → 居民「記得你」。
+                let context = {
+                    let mem = hub().memory.read().unwrap();
+                    let history = mem.recent_dialogue(&player_key, &resident_id);
+                    let memories = mem.recall(&resident_id, &player_key, vmem::RECALL_LIMIT);
+                    vmem::build_context_block(&history, &memories, &player_key)
+                }; // 記憶讀鎖在此釋放（絕不持鎖 await）
                 // 4a) 立即送「思考中」佔位 → 前端用 `thinking:true` 顯示動畫指示器，
                 //     不當成一般回覆氣泡顯示，避免「居民只回 …」的誤解。
                 //     此訊息為私聊（只送這位玩家），不走 AgentBus 冒泡。
@@ -584,7 +601,13 @@ async fn handle_socket(socket: WebSocket) {
                 //     取得回覆後單播給這位玩家，並投 AgentBus 讓居民冒泡（附近人看得到）。
                 let reply_tx = out_tx.clone();
                 tokio::spawn(async move {
-                    let sys = resident_talk_system_prompt(rname, rpersona);
+                    // 把「脈絡區塊」附到人設後 → 居民帶著記憶/對話歷史回話（記得你剛說什麼、上次聊過什麼）。
+                    let base_sys = resident_talk_system_prompt(rname, rpersona);
+                    let sys = if context.is_empty() {
+                        base_sys
+                    } else {
+                        format!("{base_sys}\n\n{context}")
+                    };
                     // raw_llm_call_fast：每 tier 縮短逾時；外層再加 TALK_LLM_TIMEOUT_SECS 安全網。
                     let reply: String = match tokio::time::timeout(
                         Duration::from_secs(TALK_LLM_TIMEOUT_SECS),
@@ -603,6 +626,20 @@ async fn handle_socket(socket: WebSocket) {
                     })
                     .to_string();
                     let _ = reply_tx.send(Message::Text(msg)).await;
+
+                    // 記憶寫入（短鎖、不 await）：
+                    // 1) 短期對話歷史記一輪 → 下一句對話帶得上脈絡（同段對話連貫）。
+                    // 2) 規則摘要這次互動 → 存進該居民的長期記憶 + 落地 jsonl（重啟後仍記得）。
+                    let new_memory = {
+                        let mut mem = hub().memory.write().unwrap();
+                        mem.record_turn(&player_key, &resident_id, &clean, &reply);
+                        vmem::summarize_exchange(&player_key, &clean)
+                            .map(|summary| mem.add_memory(&resident_id, &player_key, &summary))
+                    }; // 記憶寫鎖在此釋放
+                    if let Some(entry) = new_memory {
+                        // append-only 小檔寫（同步、不持鎖）：絕不覆寫/刪除既有記憶。
+                        vmem::append_memory(&entry);
+                    }
                     // 冒泡（下一 tick 由 tick_residents 套用 say，自動截到 40 字、計時消失）。
                     hub().agent_bus.push_decision(
                         resident_id,
@@ -769,6 +806,25 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
             .map(|p| NearbyPlayer { name: p.name.clone(), x: p.x, y: p.z })
             .collect()
     }; // 讀鎖在此釋放
+    // 回想（思考用）：短鎖撈這位居民對「附近每位玩家」的長期記憶 → 拼成一句脈絡，
+    // 讓居民思考時也記得在場的人是誰、之前聊過什麼（drop 鎖後才 spawn，絕不持鎖 await）。
+    let recall_note: String = {
+        let mem = hub().memory.read().unwrap();
+        let mut lines: Vec<String> = Vec::new();
+        for p in &nearby_players {
+            for e in mem.recall(&id, &p.name, vmem::RECALL_LIMIT) {
+                lines.push(format!("（關於 {}）{}", p.name, e.summary));
+            }
+        }
+        lines.join("；")
+    }; // 記憶讀鎖在此釋放
+    let world_news = if recall_note.is_empty() {
+        "你生活在新生的『乙太方界』——一片由方塊構成的清淨天地。".to_string()
+    } else {
+        format!(
+            "你生活在新生的『乙太方界』——一片由方塊構成的清淨天地。你記得：{recall_note}。"
+        )
+    };
     let sense = SenseInput {
         x,
         y: z,
@@ -779,7 +835,7 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
         needs_summary: String::new(),
         nearby_players,
         nearby_nodes: Vec::new(),
-        world_news: "你生活在新生的『乙太方界』——一片由方塊構成的清淨天地。".to_string(),
+        world_news,
     };
     let persona_str = npc_agent_wire::resident_agent_persona(name, persona);
     let resident_name = name.to_string();

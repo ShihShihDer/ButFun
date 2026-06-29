@@ -244,7 +244,7 @@ mod tests {
     fn wander_target_geometry() {
         // 角度 0、半徑 5 → 純 +x 方向。
         let (tx, tz) = wander_target(10.0, 20.0, 0.0, 5.0);
-        assert!((tx - 45.0).abs() < 1e-4);
+        assert!((tx - 15.0).abs() < 1e-4);
         assert!((tz - 20.0).abs() < 1e-4);
         // 角度 π/2 → 純 +z 方向。
         let (tx2, tz2) = wander_target(0.0, 0.0, std::f32::consts::FRAC_PI_2, 4.0);
