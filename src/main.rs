@@ -116,6 +116,8 @@ mod voxel_residents;
 mod voxel_memory;
 // 乙太方界 AI 居民渴望系統：玩家的話種下居民的夢想，記憶驅動行為 v1。
 mod voxel_desires;
+// 乙太方界·居民日記：把記憶格式化成人類可讀的生命故事（ROADMAP 650）。
+mod voxel_diary;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
@@ -410,6 +412,8 @@ async fn main() {
         .route("/voxel/", get(serve_voxel_index))
         .route("/voxel/index.html", get(serve_voxel_index))
         .route("/voxel/ws", get(voxel_ws::voxel_ws_handler))
+        // 乙太方界·居民日記（ROADMAP 650）：讀取記憶 + 心願格式化成日記頁 JSON。
+        .route("/voxel/diary", get(voxel_ws::voxel_diary_handler))
         // 其餘路徑（game.js、assets、wasm…）交給靜態前端（web/）。game.js 維持可
         // 快取——它的 URL 帶內容雜湊，內容一變 URL 就變，CF/瀏覽器自然抓新版。
         .fallback_service(ServeDir::new("web"))
