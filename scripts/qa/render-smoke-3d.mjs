@@ -1280,6 +1280,8 @@ drive({ type: "snapshot", players: playersA, npcs: npcsA, wildlife: wildlifeA, e
   village_well: { x: 2144, y: 2296, watering: true },
   // 故鄉茶棚（ROADMAP 641）：出爐中——踩 makeVillageTeaStall 懶建＋updateStructures 蒸汽升起路徑。
   village_tea_stall: { x: 2532, y: 2296, brewing: true },
+  // 居民木屋（ROADMAP 642）：露娜的家——踩 makeResidentHome 懶建＋updateStructures 窗光路徑。
+  resident_homes: [{ name: "露娜", x: 2560, y: 2080 }],
   daynight: { phase: "day", day_fraction: 0.33, light: 1.0, night_danger: false, next_phase: "dusk", secs_to_next: 180 },
   // 細雨＋橫風＋彩虹：踩 applyWeather 的粒子推進／回收、霧染、彩虹淡入路徑（ROADMAP 613）
   weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
@@ -1299,6 +1301,8 @@ drive({ type: "snapshot", players: playersA, npcs: npcsA, wildlife: wildlifeA, e
   village_well: { x: 2144, y: 2296, watering: false },
   // 故鄉茶棚（ROADMAP 641）：未出爐——踩蒸汽隱藏分支（item.brewing!==true）。
   village_tea_stall: { x: 2532, y: 2296, brewing: false },
+  // 居民木屋（ROADMAP 642）：空列表——踩 resident_homes 邊界（無木屋不拋）。
+  resident_homes: [],
   daynight: { phase: "day", day_fraction: 0.34, light: 1.0, night_danger: false, next_phase: "dusk", secs_to_next: 170 },
   weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
   rainbow: { active: true, remaining_secs: 28 },
