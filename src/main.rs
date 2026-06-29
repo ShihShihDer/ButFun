@@ -110,6 +110,8 @@ mod ws;
 // AI 生態世界 voxel 基底（切片①）：全隔離的方塊世界，並行於現有世界、互不干涉。
 mod voxel;
 mod voxel_ws;
+// 乙太方界 AI 居民（切片③）：讓 AI 居民也活在 voxel 世界（純物理/閒晃邏輯）。
+mod voxel_residents;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
@@ -357,6 +359,10 @@ async fn main() {
 
     // 啟動權威遊戲迴圈。
     game::spawn(app_state.clone());
+
+    // 乙太方界（voxel）AI 居民 tick 迴圈：讓居民活在新世界、會走動、偶爾冒話。
+    // 全隔離（自己的 hub/協定），不碰 AppState；嚴守鎖紀律見 voxel_ws.rs。
+    voxel_ws::spawn_residents();
 
     let app = Router::new()
         .route("/healthz", get(health))

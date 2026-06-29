@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
+use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
@@ -19,7 +20,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
+use crate::npc_agent::{AgentAction, NearbyPlayer, SenseInput};
+use crate::npc_agent_wire::{self, AgentBus};
+use crate::resident_npc::ResidentPersona;
 use crate::voxel::{self, Block, ChunkCoord, WorldDelta, BASE_HEIGHT, CHUNK, SEA_LEVEL};
+use crate::voxel_residents::{self as vr, Body};
 
 /// 入場時串給玩家的 chunk 半徑（以 chunk 為單位，水平）。3 → 7×7 column。
 const SPAWN_CHUNK_RADIUS: i32 = 3;
@@ -40,12 +45,110 @@ struct VoxelPlayer {
     yaw: f32,
 }
 
-/// voxel 世界的多人 hub：玩家表 + 方塊改動 overlay + 廣播頻道。模組內全域單例（不污染 AppState）。
+// ── 乙太方界 AI 居民（切片③）────────────────────────────────────────────────
+//
+// 讓「靈魂」也活在 voxel 新世界：幾位 AI 居民站在地形上（重力＋逐軸碰撞＋踏階，純物理
+// 在 voxel_residents.rs）、會閒晃、被既有 npc_agent「腦袋」低頻驅動偶爾冒一句心裡話/心願。
+// 採集/蓋家留切片④（禱告蓋家）。
+
+/// 乙太方界居民人數（刻意少：成本鐵律 + FPS 鐵律，渲染負擔可忽略）。
+const RESIDENT_COUNT: usize = 4;
+/// 居民閒晃半徑下/上限（方塊）：挑下一個目標時離當前位置的距離區間。
+const WANDER_MIN_R: f32 = 4.0;
+const WANDER_MAX_R: f32 = 12.0;
+/// 「腦袋」決策 MoveTo 的本地夾制半徑：LLM 可能回很遠（甚至 2D 世界尺度）的座標，
+/// 只取其「方向」當閒晃指引、把落點夾在本地，避免居民瞬間跑到天邊。
+const BRAIN_MOVE_CAP: f32 = 12.0;
+/// 一句話/心願冒泡的顯示秒數。
+const SAY_SECS: f32 = 6.0;
+/// 居民 tick 頻率（秒）。10Hz：移動平滑、頻寬/CPU 都極小。
+const RESIDENT_DT: f32 = 0.1;
+
+/// 一位乙太方界居民的權威運行狀態（位置/朝向 + 閒晃目標 + 思考排程 + 當前冒的話）。
+struct VoxelResident {
+    /// 系統 id（"vox_res_0"…），voxel 模組內專用，與 2D 居民 id 體系無交集。
+    id: String,
+    name: &'static str,
+    persona: ResidentPersona,
+    body: Body,
+    yaw: f32,
+    /// 當前水平閒晃目標。
+    target_x: f32,
+    target_z: f32,
+    /// 抵達目標後的小歇秒數（> 0 = 在歇、原地落重力）。
+    wait_timer: f32,
+    /// 下次思考倒數（秒）。
+    think_timer: f32,
+    /// 此刻冒泡的話（空 = 不冒泡）。
+    say: String,
+    /// 冒泡剩餘秒數。
+    say_timer: f32,
+}
+
+/// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話）。
+#[derive(Serialize)]
+struct ResidentView {
+    id: String,
+    name: &'static str,
+    x: f32,
+    y: f32,
+    z: f32,
+    yaw: f32,
+    /// 當前冒泡的話（空字串 = 不顯示泡泡）。
+    say: String,
+}
+
+/// 居民名字池（取自 resident_npc 的近城居民風格名，柔和轉寫式、與主要 NPC 一致）。
+const RESIDENT_NAMES: [&str; RESIDENT_COUNT] = ["露娜", "諾娃", "賽勒", "奧瑞"];
+
+/// 依 index 配 persona（讓「人設」字串有變化，純供 LLM 口吻；voxel 不沿用 2D 的閒晃邊界）。
+fn persona_for(i: usize) -> ResidentPersona {
+    match i % 4 {
+        0 => ResidentPersona::MarketBrowser,
+        1 => ResidentPersona::FarmWorker,
+        2 => ResidentPersona::TownSquare,
+        _ => ResidentPersona::Wanderer,
+    }
+}
+
+/// 初始化 N 位居民：環狀散在出生點周邊的乾地上，各自站穩。
+fn init_residents() -> Vec<VoxelResident> {
+    let mut out = Vec::with_capacity(RESIDENT_COUNT);
+    for i in 0..RESIDENT_COUNT {
+        // 環狀散開：每位一個方位 + 固定半徑，dry_ground_spawn 會就近找乾地站穩。
+        let angle = (i as f32) / (RESIDENT_COUNT as f32) * std::f32::consts::TAU;
+        let ox = (angle.cos() * 8.0).round() as i32;
+        let oz = (angle.sin() * 8.0).round() as i32;
+        let body = vr::dry_ground_spawn(ox, oz);
+        out.push(VoxelResident {
+            id: format!("vox_res_{i}"),
+            name: RESIDENT_NAMES[i],
+            persona: persona_for(i),
+            target_x: body.x,
+            target_z: body.z,
+            yaw: 0.0,
+            body,
+            // 入場錯開首次思考，避免 N 位同一 tick 一起打 LLM。
+            wait_timer: 0.5 + i as f32 * 0.5,
+            think_timer: 3.0 + i as f32 * 2.0,
+            say: String::new(),
+            say_timer: 0.0,
+        });
+    }
+    out
+}
+
+/// voxel 世界的多人 hub：玩家表 + 方塊改動 overlay + 廣播頻道 + AI 居民 + 決策匯流排。
+/// 模組內全域單例（不污染 AppState）。
 struct VoxelHub {
     players: RwLock<HashMap<Uuid, VoxelPlayer>>,
     /// 方塊改動 delta 層（疊在程序生成地形之上）。切片②先記憶體存，session 內正確套用+廣播。
     /// 之後切片可把它接 DB 持久化；AI 蓋家也會共用這層。
     deltas: RwLock<WorldDelta>,
+    /// 乙太方界 AI 居民。
+    residents: RwLock<Vec<VoxelResident>>,
+    /// 居民決策匯流排（async 思考投入、tick 取走套用；嚴守無鎖 await 鐵律）。
+    agent_bus: AgentBus,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -57,18 +160,35 @@ fn hub() -> &'static VoxelHub {
         VoxelHub {
             players: RwLock::new(HashMap::new()),
             deltas: RwLock::new(WorldDelta::new()),
+            residents: RwLock::new(init_residents()),
+            agent_bus: AgentBus::new(),
             tx,
         }
     })
 }
 
-/// 目前所有玩家序列化成 `players` 訊息字串（廣播用）。鎖只在這裡短暫持有。
+/// 目前所有玩家 + 居民序列化成 `players` 訊息字串（廣播用）。
+/// 兩把鎖**循序**取放（讀完玩家 drop 再讀居民），不巢狀、不跨 await，守鎖紀律。
 fn players_snapshot_json() -> String {
-    let list: Vec<VoxelPlayer> = {
-        let players = hub().players.read().unwrap();
-        players.values().cloned().collect()
-    };
-    serde_json::json!({ "t": "players", "players": list }).to_string()
+    let players: Vec<VoxelPlayer> = {
+        let p = hub().players.read().unwrap();
+        p.values().cloned().collect()
+    }; // 玩家讀鎖在此釋放
+    let residents: Vec<ResidentView> = {
+        let rs = hub().residents.read().unwrap();
+        rs.iter()
+            .map(|r| ResidentView {
+                id: r.id.clone(),
+                name: r.name,
+                x: r.body.x,
+                y: r.body.y,
+                z: r.body.z,
+                yaw: r.yaw,
+                say: r.say.clone(),
+            })
+            .collect()
+    }; // 居民讀鎖在此釋放
+    serde_json::json!({ "t": "players", "players": players, "residents": residents }).to_string()
 }
 
 /// 廣播一次最新玩家快照給所有連線。
@@ -355,6 +475,166 @@ fn cleanup(id: Uuid, writer: &tokio::task::JoinHandle<()>) {
         players.remove(&id);
     }
     writer.abort();
+}
+
+// ── 居民 tick 迴圈（切片③）──────────────────────────────────────────────────
+//
+// 嚴守 prod 死鎖鐵律：物理/套用決策全在**同步、短鎖、不 await**的段落；思考一律
+// 「短鎖快照 → drop → spawn async → 下一 tick 用 AgentBus 套用」，絕不持鎖 await。
+
+/// 啟動乙太方界居民 tick 迴圈（main.rs 啟動時呼叫一次）。10Hz。
+pub fn spawn_residents() {
+    tokio::spawn(async move {
+        // 觸發 hub 初始化（建出居民），並開一個 10Hz 節拍。
+        let _ = hub();
+        let mut ticker = tokio::time::interval(Duration::from_secs_f32(RESIDENT_DT));
+        loop {
+            ticker.tick().await;
+            tick_residents(RESIDENT_DT);
+        }
+    });
+}
+
+/// 一次居民世界推進：套用上輪思考的決策 → 物理/閒晃 → 廣播 → 排程新一輪思考（無鎖 spawn）。
+fn tick_residents(dt: f32) {
+    // 1) 先取走上輪 async 思考投回的決策（短鎖、不 await）。
+    let decisions = hub().agent_bus.drain();
+
+    // 2) 同步推進：套決策 + 物理/閒晃。deltas(read) + residents(write) 都只在這段持有、不 await。
+    //    需要思考的居民這裡只蒐集「快照」，spawn 留到鎖釋放後。
+    let mut think_jobs: Vec<(String, &'static str, ResidentPersona, f32, f32)> = Vec::new();
+    {
+        let world = hub().deltas.read().unwrap();
+        let mut residents = hub().residents.write().unwrap();
+
+        // 2a) 套用決策：MoveTo 夾成本地閒晃目標；say 非空 → 冒泡（其餘 action 不打斷閒晃）。
+        for (rid, dec) in &decisions {
+            if let Some(r) = residents.iter_mut().find(|r| &r.id == rid) {
+                if let AgentAction::MoveTo { x, y } = dec.action {
+                    let dx = x - r.body.x;
+                    let dz = y - r.body.z;
+                    let d = (dx * dx + dz * dz).sqrt().max(0.001);
+                    let cap = BRAIN_MOVE_CAP.min(d);
+                    r.target_x = r.body.x + dx / d * cap;
+                    r.target_z = r.body.z + dz / d * cap;
+                    r.wait_timer = 0.0;
+                }
+                let say = dec.say.trim();
+                if !say.is_empty() {
+                    r.say = say.chars().take(40).collect();
+                    r.say_timer = SAY_SECS;
+                }
+            }
+        }
+
+        // 2b) 物理 + 閒晃 + 思考排程。
+        for r in residents.iter_mut() {
+            // 冒泡倒數。
+            if r.say_timer > 0.0 {
+                r.say_timer -= dt;
+                if r.say_timer <= 0.0 {
+                    r.say.clear();
+                }
+            }
+
+            if r.wait_timer > 0.0 {
+                // 小歇：原地落重力（站穩、不亂飄）。
+                r.wait_timer -= dt;
+                vr::gravity_step(&world, &mut r.body, dt);
+            } else {
+                let (bx, bz) = (r.body.x, r.body.z);
+                let reached = vr::step_toward(&world, &mut r.body, r.target_x, r.target_z, dt);
+                if let Some(yaw) = vr::yaw_from_move(r.body.x - bx, r.body.z - bz) {
+                    r.yaw = yaw;
+                }
+                if reached {
+                    // 挑下一個閒晃目標 + 小歇片刻。
+                    let angle = rand::random::<f32>() * std::f32::consts::TAU;
+                    let radius = WANDER_MIN_R + rand::random::<f32>() * (WANDER_MAX_R - WANDER_MIN_R);
+                    let (tx, tz) = vr::wander_target(r.body.x, r.body.z, angle, radius);
+                    r.target_x = tx;
+                    r.target_z = tz;
+                    r.wait_timer = 1.0 + rand::random::<f32>() * 3.0;
+                }
+            }
+
+            // 思考排程（蒐集快照，spawn 留到鎖外）。
+            r.think_timer -= dt;
+            if r.think_timer <= 0.0 {
+                r.think_timer = npc_agent_wire::THINK_INTERVAL_SECS;
+                think_jobs.push((r.id.clone(), r.name, r.persona, r.body.x, r.body.z));
+            }
+        }
+    } // deltas/residents 鎖在此一併釋放
+
+    // 3) 廣播最新快照（含居民位置/名字/說的話）。
+    broadcast_players();
+
+    // 4) 無鎖 spawn 思考（LLM）。整個 agent 思考可由 BUTFUN_NPC_AGENT=0 關掉，
+    //    關掉後居民仍照常閒晃移動，只是不冒 LLM 心裡話/心願（零額外成本）。
+    if npc_agent_wire::agents_enabled() {
+        for (id, name, persona, x, z) in think_jobs {
+            spawn_resident_think(id, name, persona, x, z);
+        }
+    }
+}
+
+/// 為一位居民發起一次無鎖 async 思考：短鎖讀附近玩家 → drop → spawn → npc_think/npc_pray
+/// → 把決策投進 AgentBus（下一 tick 套用）。比照 game.rs npc_agent_wire 的做法，全程不持遊戲狀態鎖。
+fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona, x: f32, z: f32) {
+    // 防重入：上一輪思考還沒回來就先不發新的（LLM 逾時可能 > 思考間隔）。
+    if !hub().agent_bus.try_begin_thinking(&id) {
+        return;
+    }
+    // 短鎖讀附近玩家快照（把 voxel 的 z 當成 SenseInput 的 y——prompt 只用座標當情境）。
+    let nearby_players: Vec<NearbyPlayer> = {
+        let players = hub().players.read().unwrap();
+        players
+            .values()
+            .map(|p| NearbyPlayer { name: p.name.clone(), x: p.x, y: p.z })
+            .collect()
+    }; // 讀鎖在此釋放
+    let sense = SenseInput {
+        x,
+        y: z,
+        hp: 100,
+        max_hp: 100,
+        energy: 80,
+        mood: 70,
+        needs_summary: String::new(),
+        nearby_players,
+        nearby_nodes: Vec::new(),
+        world_news: "你生活在新生的『乙太方界』——一片由方塊構成的清淨天地。".to_string(),
+    };
+    let persona_str = npc_agent_wire::resident_agent_persona(name, persona);
+    let resident_name = name.to_string();
+    tokio::spawn(async move {
+        // npc_think 內部：有 LLM 走 LLM、沒有就走罐頭規則，永遠回得出決策、不 panic。
+        let decision = crate::npc_agent::npc_think(&sense, &persona_str).await;
+        // 向後相容：模型偶爾在決策 JSON 主動給心願就當 bonus 落地。
+        if let Some(prayer) = &decision.prayer {
+            crate::npc_agent::append_prayer(&resident_name, prayer);
+        }
+        hub().agent_bus.push_decision(id.clone(), decision);
+        hub().agent_bus.end_thinking(&id);
+
+        // 居民禱告（獨立生成、機率節流）：成功就落地 data/prayers.jsonl，並冒一句心願泡泡。
+        let pray_roll: f64 = rand::random();
+        if crate::npc_agent::should_pray(pray_roll) {
+            if let Some(prayer) = crate::npc_agent::npc_pray(&sense, &persona_str).await {
+                crate::npc_agent::append_prayer(&resident_name, &prayer);
+                // 把心願當「說的話」冒泡（💭 前綴與一般對白區隔）。Idle action 不會打斷閒晃。
+                hub().agent_bus.push_decision(
+                    id.clone(),
+                    crate::npc_agent::AgentDecision::new(
+                        AgentAction::Idle,
+                        format!("💭 {prayer}"),
+                        "心願",
+                    ),
+                );
+            }
+        }
+    });
 }
 
 #[cfg(test)]
