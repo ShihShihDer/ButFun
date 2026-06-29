@@ -71,6 +71,9 @@ const TALK_MAX_CHARS: usize = 200;
 const TALK_REPLY_MAX_CHARS: usize = 300;
 /// 每條連線的對話冷卻（毫秒）：防單人狂送吃爆 LLM 額度（比照 npc_chat 的 per-player 冷卻）。
 const TALK_COOLDOWN_MS: u64 = 4000;
+/// Talk 路徑的 LLM 整體逾時（秒）：`llm_chat_fast` 每 tier 5-8 秒，四 tier 最差 ~23 秒；
+/// 此值作為最後安全網，確保玩家不會永遠等不到回覆。
+const TALK_LLM_TIMEOUT_SECS: u64 = 25;
 /// 居民「主動招呼」觸發距離（方塊）：玩家靠到這麼近，居民偶爾冒一句招呼。
 const GREET_DIST: f32 = 4.0;
 /// 招呼冷卻（秒）：冒過一次招呼後要等這麼久才會再冒，避免洗版。
@@ -563,14 +566,33 @@ async fn handle_socket(socket: WebSocket) {
                     continue; // 沒這位居民 → 忽略
                 };
                 last_talk = Some(now);
-                // 4) 無鎖 async task：呼叫既有 LLM 對話路徑（Cerebras→Gemini→Groq→ollama→罐頭），
-                //    單播回覆給這位玩家，並把回覆投進 AgentBus 讓居民下一 tick 冒泡（附近人看得到）。
+                // 4a) 立即送「思考中（…）」讓玩家知道訊息已收到、居民在想：
+                //     解決「沉默 35 秒」造成的「以為功能壞掉」誤解。
+                //     此訊息為私聊（只送這位玩家），不走 AgentBus 冒泡。
+                let ack = serde_json::json!({
+                    "t": "talk",
+                    "resident_id": &resident_id,
+                    "name": rname,
+                    "reply": "…",
+                })
+                .to_string();
+                let _ = out_tx.send(Message::Text(ack)).await;
+
+                // 4b) 無鎖 async task：呼叫快速 LLM 路徑（每 tier 5-8 秒逾時，最差 ~23 秒）
+                //     取代舊的 raw_llm_call（每 tier 最多 15-20 秒，Cerebras+Gemini 掛著時合計 35 秒）。
+                //     取得回覆後單播給這位玩家，並投 AgentBus 讓居民冒泡（附近人看得到）。
                 let reply_tx = out_tx.clone();
                 tokio::spawn(async move {
                     let sys = resident_talk_system_prompt(rname, rpersona);
-                    let reply: String = match crate::npc_chat::raw_llm_call(&sys, &clean).await {
-                        Some(t) => t.chars().take(TALK_REPLY_MAX_CHARS).collect(),
-                        None => resident_canned_reply(rname), // LLM 未啟用 / 失敗 → 罐頭後備
+                    // raw_llm_call_fast：每 tier 縮短逾時；外層再加 TALK_LLM_TIMEOUT_SECS 安全網。
+                    let reply: String = match tokio::time::timeout(
+                        Duration::from_secs(TALK_LLM_TIMEOUT_SECS),
+                        crate::npc_chat::raw_llm_call_fast(&sys, &clean),
+                    )
+                    .await
+                    {
+                        Ok(Some(t)) => t.chars().take(TALK_REPLY_MAX_CHARS).collect(),
+                        _ => resident_canned_reply(rname), // 逾時 / LLM 未啟用 / 全失敗 → 罐頭後備
                     };
                     let msg = serde_json::json!({
                         "t": "talk",
