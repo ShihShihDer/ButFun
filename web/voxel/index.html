@@ -43,6 +43,37 @@
       color: #fff; font-size: 15px; display: flex; align-items: center; justify-content: center;
       pointer-events: auto; user-select: none;
     }
+    /* 放置鈕（手機右側，跳鈕上方）。破壞＝點準心，放置＝這顆。 */
+    #place {
+      position: absolute; right: 124px; bottom: 60px; width: 76px; height: 76px;
+      border-radius: 50%; background: rgba(120,200,120,0.30); border: 2px solid rgba(255,255,255,0.4);
+      color: #fff; font-size: 14px; display: flex; align-items: center; justify-content: center;
+      pointer-events: auto; user-select: none;
+    }
+    /* 中央準心（對準你正在看的方塊）。永遠顯示。 */
+    #crosshair {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 7;
+      width: 22px; height: 22px; pointer-events: none; opacity: 0.85;
+    }
+    #crosshair::before, #crosshair::after {
+      content: ""; position: absolute; background: rgba(255,255,255,0.9);
+      box-shadow: 0 0 2px rgba(0,0,0,0.8);
+    }
+    #crosshair::before { left: 50%; top: 0; width: 2px; height: 100%; transform: translateX(-50%); }
+    #crosshair::after  { top: 50%; left: 0; height: 2px; width: 100%; transform: translateY(-50%); }
+    /* 底部快捷欄：選要放的方塊型別。桌機/手機都顯示。 */
+    #hotbar {
+      position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 8;
+      display: flex; gap: 6px; padding: 6px; border-radius: 12px;
+      background: rgba(20,28,40,0.55); pointer-events: auto;
+    }
+    .slot {
+      width: 46px; height: 46px; border-radius: 8px; border: 2px solid rgba(255,255,255,0.25);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      color: #fff; font-size: 10px; line-height: 1.1; user-select: none; cursor: pointer;
+    }
+    .slot.sel { border-color: #ffd86b; box-shadow: 0 0 8px rgba(255,216,107,0.6); }
+    .slot .sw { width: 22px; height: 22px; border-radius: 4px; margin-bottom: 2px; }
   </style>
   <!-- Three.js 走 CDN importmap（比照 /3d/ 與 /play3d/）。 -->
   <script type="importmap">
@@ -58,8 +89,12 @@
   <div id="hud">載入中…</div>
   <div id="dbg"></div>
   <div id="err"></div>
+  <div id="crosshair"></div>
+  <!-- 快捷欄槽位由 main.js 依方塊型別動態生成 -->
+  <div id="hotbar"></div>
   <div id="touch">
     <div id="joy"><div id="joyNub"></div></div>
+    <div id="place">放置</div>
     <div id="jump">跳</div>
   </div>
   <!-- 相對於 /voxel/ 載入；?v 由後端 serve_voxel_index 注入內容雜湊 -->

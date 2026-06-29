@@ -14,6 +14,7 @@
 //! 一切函式皆確定性純函式，好測也讓多人之間天然一致（同座標永遠同方塊）。
 
 use base64::Engine;
+use std::collections::HashMap;
 
 /// 一個 chunk 的邊長（方塊數）。16³ = 4096 方塊／chunk。
 pub const CHUNK: i32 = 16;
@@ -46,6 +47,26 @@ impl Block {
     pub fn is_solid(self) -> bool {
         !matches!(self, Block::Air | Block::Water)
     }
+
+    /// 由 u8 還原方塊型別（解析客戶端 place 的方塊 id）；越界回 None。
+    pub fn from_u8(v: u8) -> Option<Block> {
+        match v {
+            0 => Some(Block::Air),
+            1 => Some(Block::Grass),
+            2 => Some(Block::Dirt),
+            3 => Some(Block::Stone),
+            4 => Some(Block::Sand),
+            5 => Some(Block::Wood),
+            6 => Some(Block::Leaves),
+            7 => Some(Block::Water),
+            _ => None,
+        }
+    }
+
+    /// 玩家是否可「放置」此方塊（切片②只准放實心方塊；空氣＝挖掉、水不給手放）。
+    pub fn is_placeable(self) -> bool {
+        self.is_solid()
+    }
 }
 
 /// chunk 在世界中的座標（以 chunk 為單位，每軸 ×CHUNK 才是世界方塊座標）。
@@ -77,6 +98,110 @@ pub fn chunk_of(wx: i32, wy: i32, wz: i32) -> ChunkCoord {
         cy: wy.div_euclid(CHUNK),
         cz: wz.div_euclid(CHUNK),
     }
+}
+
+/// 世界方塊座標 → 其所屬 chunk 內的一維局部索引（對負數做 euclid，與 chunk_of 對齊）。
+#[inline]
+pub fn world_local_index(wx: i32, wy: i32, wz: i32) -> usize {
+    local_index(wx.rem_euclid(CHUNK), wy.rem_euclid(CHUNK), wz.rem_euclid(CHUNK))
+}
+
+// ── 方塊改動 overlay（delta 持久化層·切片②）──────────────────────────────────
+//
+// 地形本身是「無狀態程序生成」（block_at）。玩家／AI 改動的方塊不重寫地形，而是疊一層
+// **delta 覆蓋**：per-chunk 的「被改方塊」表（局部索引 → 覆蓋方塊）。生成 chunk＝程序生成
+// 後套用 delta。這層之後 AI 蓋家也會共用。本輪先記憶體存（session 內），純邏輯可測。
+
+/// 單一 chunk 的方塊改動表：局部索引 → 覆蓋方塊。
+pub type ChunkDelta = HashMap<usize, Block>;
+/// 全世界的方塊改動表：chunk 座標 → 該 chunk 的改動。
+pub type WorldDelta = HashMap<ChunkCoord, ChunkDelta>;
+
+/// 觸及範圍（世界方塊單位）：玩家眼睛到方塊中心的最遠可破壞／放置距離。對齊 MCPE 手感。
+pub const REACH: f32 = 6.0;
+/// 玩家眼睛相對腳底（move 回報的 y）的高度，估算 reach 用。
+pub const EYE_HEIGHT: f32 = 1.5;
+
+/// 套用一個 chunk 的 delta 到已生成的方塊陣列（就地覆寫；越界索引略過保險）。
+pub fn apply_delta(blocks: &mut [u8], delta: &ChunkDelta) {
+    for (&li, &b) in delta {
+        if li < blocks.len() {
+            blocks[li] = b as u8;
+        }
+    }
+}
+
+/// 生成 chunk 並套用 delta（程序生成 + overlay）。
+pub fn generate_chunk_with_delta(coord: ChunkCoord, delta: Option<&ChunkDelta>) -> Chunk {
+    let mut chunk = generate_chunk(coord);
+    if let Some(d) = delta {
+        apply_delta(&mut chunk.blocks, d);
+    }
+    chunk
+}
+
+/// 任一世界座標的「有效方塊」：先看 delta 覆蓋層，沒有才回程序生成值。
+pub fn effective_block_at(world: &WorldDelta, wx: i32, wy: i32, wz: i32) -> Block {
+    let coord = chunk_of(wx, wy, wz);
+    if let Some(d) = world.get(&coord) {
+        if let Some(&b) = d.get(&world_local_index(wx, wy, wz)) {
+            return b;
+        }
+    }
+    block_at(wx, wy, wz)
+}
+
+/// 在世界 delta 寫入一個方塊改動（取代既有覆蓋；地心 y<0 不給動，避免破基岩掉出世界）。
+pub fn set_block(world: &mut WorldDelta, wx: i32, wy: i32, wz: i32, b: Block) {
+    let coord = chunk_of(wx, wy, wz);
+    let li = world_local_index(wx, wy, wz);
+    world.entry(coord).or_default().insert(li, b);
+}
+
+/// 觸及範圍檢查：玩家眼睛（腳底 + EYE_HEIGHT）到方塊中心的距離是否在 REACH 內（留少量餘裕）。
+pub fn in_reach(px: f32, py: f32, pz: f32, bx: i32, by: i32, bz: i32) -> bool {
+    let dx = (bx as f32 + 0.5) - px;
+    let dy = (by as f32 + 0.5) - (py + EYE_HEIGHT);
+    let dz = (bz as f32 + 0.5) - pz;
+    let max = REACH + 1.0; // 餘裕：客戶端準心 raycast 與伺服器估算眼高的小誤差。
+    dx * dx + dy * dy + dz * dz <= max * max
+}
+
+/// 破壞驗證：目標必須在觸及範圍內、且目前是實心方塊（空氣/水不給挖）。回傳是否允許。
+pub fn can_break(world: &WorldDelta, px: f32, py: f32, pz: f32, bx: i32, by: i32, bz: i32) -> bool {
+    if by < 0 {
+        return false; // 地心基岩不給挖。
+    }
+    if !in_reach(px, py, pz, bx, by, bz) {
+        return false;
+    }
+    effective_block_at(world, bx, by, bz).is_solid()
+}
+
+/// 放置驗證：方塊型別可放、在觸及範圍內、且目標目前是空氣或水（不覆蓋既有實心方塊）。
+pub fn can_place(
+    world: &WorldDelta,
+    px: f32,
+    py: f32,
+    pz: f32,
+    bx: i32,
+    by: i32,
+    bz: i32,
+    b: Block,
+) -> bool {
+    if !b.is_placeable() {
+        return false;
+    }
+    if by < 0 {
+        return false;
+    }
+    if !in_reach(px, py, pz, bx, by, bz) {
+        return false;
+    }
+    matches!(
+        effective_block_at(world, bx, by, bz),
+        Block::Air | Block::Water
+    )
 }
 
 // ── 自寫 hash value noise（零外部相依、確定性、可測；不抄外部碼）─────────────────
@@ -176,7 +301,13 @@ pub fn generate_chunk(coord: ChunkCoord) -> Chunk {
 /// 把一個 chunk 壓成精簡 base64（4096 bytes → ~5.5KB 字串）供 WS 串流。
 /// 全空氣的 chunk 回 `None`——呼叫端據此不傳（高空 chunk 幾乎都被略過，省大量頻寬）。
 pub fn pack_chunk(coord: ChunkCoord) -> Option<String> {
-    let chunk = generate_chunk(coord);
+    pack_chunk_with_delta(coord, None)
+}
+
+/// 同 `pack_chunk`，但先套用 delta overlay（玩家/AI 改過的方塊）再打包。
+/// 全空氣（含 delta 後）仍回 `None`。late-join 的玩家靠這個拿到別人改過的世界。
+pub fn pack_chunk_with_delta(coord: ChunkCoord, delta: Option<&ChunkDelta>) -> Option<String> {
+    let chunk = generate_chunk_with_delta(coord, delta);
     if chunk.blocks.iter().all(|&b| b == Block::Air as u8) {
         return None;
     }
@@ -288,6 +419,103 @@ mod tests {
             .decode(s)
             .expect("應為合法 base64");
         assert_eq!(bytes.len(), CHUNK_VOL);
+    }
+
+    #[test]
+    fn world_local_index_handles_negatives() {
+        // 正座標：等同直接 local_index。
+        assert_eq!(world_local_index(0, 0, 0), local_index(0, 0, 0));
+        assert_eq!(world_local_index(15, 15, 15), local_index(15, 15, 15));
+        // chunk 邊界：wx=16 落到下一 chunk 的 lx=0。
+        assert_eq!(world_local_index(16, 0, 0), local_index(0, 0, 0));
+        // 負座標：-1 應在 chunk -1 的 lx=15（euclid 取餘）。
+        assert_eq!(world_local_index(-1, -1, -1), local_index(15, 15, 15));
+    }
+
+    #[test]
+    fn delta_overlay_overrides_terrain() {
+        // 找一個地表草點。
+        let (mut x, mut z) = (0, 0);
+        for cand in 0..2000 {
+            if height_at(cand, 0) > SEA_LEVEL + 2 {
+                x = cand;
+                z = 0;
+                break;
+            }
+        }
+        let h = height_at(x, z);
+        assert_eq!(block_at(x, h, z), Block::Grass);
+
+        let mut world: WorldDelta = WorldDelta::new();
+        // 挖掉地表（覆蓋成空氣）。
+        set_block(&mut world, x, h, z, Block::Air);
+        assert_eq!(effective_block_at(&world, x, h, z), Block::Air);
+        // 放一塊石頭在地表上方原本是空氣的格。
+        set_block(&mut world, x, h + 1, z, Block::Stone);
+        assert_eq!(effective_block_at(&world, x, h + 1, z), Block::Stone);
+        // 沒被改的鄰格仍是程序生成值。
+        assert_eq!(effective_block_at(&world, x + 1, h, z), block_at(x + 1, h, z));
+
+        // pack 出來的 chunk 必須含 delta（解碼後該局部索引是被改的值）。
+        let coord = chunk_of(x, h, z);
+        let cd = world.get(&coord).unwrap();
+        let s = pack_chunk_with_delta(coord, Some(cd)).expect("有方塊");
+        let bytes = base64::engine::general_purpose::STANDARD.decode(s).unwrap();
+        assert_eq!(bytes[world_local_index(x, h, z)], Block::Air as u8);
+    }
+
+    #[test]
+    fn break_and_place_validation() {
+        // 站在地表草點上方一點。
+        let (mut x, mut z) = (0, 0);
+        for cand in 0..2000 {
+            if height_at(cand, 0) > SEA_LEVEL + 3 {
+                x = cand;
+                z = 0;
+                break;
+            }
+        }
+        let h = height_at(x, z);
+        let world: WorldDelta = WorldDelta::new();
+        // 玩家腳底站在 h+1（地表方塊頂面），眼睛 h+1+EYE。
+        let (px, py, pz) = (x as f32 + 0.5, (h + 1) as f32, z as f32 + 0.5);
+
+        // 可破壞腳下的地表草方塊（近、實心）。
+        assert!(can_break(&world, px, py, pz, x, h, z));
+        // 不能破壞空氣（地表上方第三格）。
+        assert!(!can_break(&world, px, py, pz, x, h + 3, z));
+        // 太遠不能破壞。
+        assert!(!can_break(&world, px, py, pz, x + 50, h, z));
+        // 地心不給挖。
+        assert!(!can_break(&world, px, py, pz, x, -1, z));
+
+        // 可在腳邊空氣格放石頭。
+        assert!(can_place(&world, px, py, pz, x, h + 1, z, Block::Stone));
+        // 不能放在既有實心方塊上（會覆蓋）。
+        assert!(!can_place(&world, px, py, pz, x, h, z, Block::Stone));
+        // 不能放空氣（那是挖、不是放）。
+        assert!(!can_place(&world, px, py, pz, x, h + 1, z, Block::Air));
+        // 不能放水。
+        assert!(!can_place(&world, px, py, pz, x, h + 1, z, Block::Water));
+        // 太遠不能放。
+        assert!(!can_place(&world, px, py, pz, x, h + 50, z, Block::Stone));
+    }
+
+    #[test]
+    fn block_from_u8_roundtrips() {
+        for b in [
+            Block::Air,
+            Block::Grass,
+            Block::Dirt,
+            Block::Stone,
+            Block::Sand,
+            Block::Wood,
+            Block::Leaves,
+            Block::Water,
+        ] {
+            assert_eq!(Block::from_u8(b as u8), Some(b));
+        }
+        assert_eq!(Block::from_u8(99), None);
     }
 
     #[test]
