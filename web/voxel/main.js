@@ -352,6 +352,7 @@ const chatInputEl = document.getElementById("chatInput");
 const chatSendEl = document.getElementById("chatSend");
 let chatRid = null;          // 目前對話的居民 id
 let lastTalkReply = null;    // 最近一次居民回覆（QA 用）
+let thinkingEl = null;       // 目前正在顯示的「思考中」動畫元素（null 代表沒有）
 
 function appendMsg(kind, text) {
   if (!chatLogEl) return;
@@ -362,10 +363,44 @@ function appendMsg(kind, text) {
   chatLogEl.scrollTop = chatLogEl.scrollHeight;
 }
 
+// 顯示「思考中」動畫指示器（居民收到訊息後立即顯示，等真回覆取代）。
+// 若已有一個思考中元素（連發），先移除舊的再建新的。
+function showThinking(name) {
+  if (!chatLogEl) return;
+  removeThinking(); // 清掉上一輪殘留
+  const d = document.createElement("div");
+  d.className = "msg thinking";
+  // 顯示「居民名 思考中」並帶跳動點點（純 CSS animation，不用 JS timer）。
+  const label = document.createElement("span");
+  label.className = "thinking-label";
+  label.textContent = (name || "居民") + " 思考中";
+  const dots = document.createElement("span");
+  dots.className = "thinking-dots";
+  dots.setAttribute("aria-hidden", "true");
+  d.appendChild(label);
+  d.appendChild(dots);
+  chatLogEl.appendChild(d);
+  chatLogEl.scrollTop = chatLogEl.scrollHeight;
+  thinkingEl = d;
+}
+
+// 移除「思考中」動畫元素（真回覆到了後呼叫）。
+function removeThinking() {
+  if (thinkingEl && thinkingEl.parentNode) {
+    thinkingEl.parentNode.removeChild(thinkingEl);
+  }
+  thinkingEl = null;
+}
+
 // 開對話框（換對象就清空對話紀錄）。
 function openChat(rid, name) {
   if (!chatEl) return;
-  if (chatRid !== rid) { chatLogEl.innerHTML = ""; appendMsg("sys", "你走近了 " + (name || "居民")); }
+  if (chatRid !== rid) {
+    // 換居民：清空對話、移除思考中指示器、顯示「你走近了…」
+    thinkingEl = null; // 舊元素連同 innerHTML 一起清掉，不用再 removeChild
+    chatLogEl.innerHTML = "";
+    appendMsg("sys", "你走近了 " + (name || "居民"));
+  }
   chatRid = rid;
   chatTitleEl.textContent = name || "居民";
   chatEl.style.display = "flex";
@@ -701,9 +736,16 @@ function connect() {
       // 乙太方界 AI 居民（與玩家分開的陣列）：位置/名字/說的話。
       if (m.residents) updateResidents(m.residents);
     } else if (m.t === "talk") {
-      // 居民對話回覆（單播）：填進對話框（泡泡由 players 快照另外帶）。
-      lastTalkReply = m.reply || "";
-      appendMsg("npc", (m.name || "居民") + "：" + lastTalkReply);
+      // 居民對話回覆（單播）：
+      //   thinking:true → 立即佔位（後端一收到就送），顯示動畫「思考中」指示器，不當一般氣泡。
+      //   thinking 不存在（預設 false）→ LLM 真回覆，移除思考中指示器，顯示正常回覆氣泡。
+      if (m.thinking) {
+        showThinking(m.name); // 顯示「露娜 思考中 ●●●」動畫
+      } else {
+        removeThinking();     // 真回覆到了，先移除「思考中」
+        lastTalkReply = m.reply || "";
+        appendMsg("npc", (m.name || "居民") + "：" + lastTalkReply);
+      }
     }
   };
   ws.onclose = () => { wsReady = false; showErr("連線中斷，重新連線中…"); setTimeout(connect, 1500); };
