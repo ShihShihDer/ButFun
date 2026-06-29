@@ -143,6 +143,17 @@ impl VoxelMemory {
         hits.truncate(limit);
         hits
     }
+
+    /// 日記用：取某居民**所有**長期記憶，最新在前（seq 大→小）。
+    /// 不過濾玩家、不限筆數——日記要讓人類看到居民完整的記憶足跡。
+    pub fn all_memories_for(&self, resident: &str) -> Vec<MemoryEntry> {
+        let Some(q) = self.long.get(resident) else {
+            return Vec::new();
+        };
+        let mut entries: Vec<MemoryEntry> = q.iter().cloned().collect();
+        entries.sort_by(|a, b| b.seq.cmp(&a.seq));
+        entries
+    }
 }
 
 /// 由「玩家這次說的話」規則化擷取一句長期記憶摘要（不另呼 LLM，省成本、確定性、可測）。

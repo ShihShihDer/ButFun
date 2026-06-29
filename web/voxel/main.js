@@ -468,7 +468,101 @@ if (chatEl) {
     b.addEventListener("click", () => sendTalk(q));
     chatQuickEl.appendChild(b);
   }
+  // 日記鈕：開啟當前對話居民的日記。
+  const diaryBtnEl = document.getElementById("chatDiary");
+  if (diaryBtnEl) diaryBtnEl.addEventListener("click", () => { if (chatRid) openDiary(chatRid); });
 }
+
+// ── 居民日記面板（ROADMAP 650）────────────────────────────────────────────────
+// 玩家可在聊天框點「📖 日記」看居民的記憶足跡與當前心願——把 AI 的內在生活變成可讀的故事。
+
+const diaryEl = document.getElementById("diary");
+const diaryTitleEl = document.getElementById("diaryTitle");
+const diaryBodyEl = document.getElementById("diaryBody");
+
+/** 開啟指定居民的日記面板（fetch /voxel/diary → 過濾 resident_id → 渲染）。 */
+async function openDiary(rid) {
+  if (!diaryEl || !diaryBodyEl) return;
+  // 取居民顯示名（從 residents Map 讀）。
+  const ent = residents.get(rid);
+  const name = (ent && ent.lastName) || rid;
+  if (diaryTitleEl) diaryTitleEl.textContent = name + " 的日記";
+  diaryBodyEl.innerHTML = '<div class="diary-empty">載入中…</div>';
+  diaryEl.style.display = "flex";
+  try {
+    const resp = await fetch("/voxel/diary");
+    if (!resp.ok) throw new Error("diary fetch failed: " + resp.status);
+    const pages = await resp.json();
+    const page = Array.isArray(pages) ? pages.find(p => p.resident_id === rid) : null;
+    renderDiaryPage(page, name);
+  } catch (e) {
+    diaryBodyEl.innerHTML = '<div class="diary-empty">無法讀取日記。</div>';
+  }
+}
+
+/** 把 DiaryPage 資料渲染進日記面板。 */
+function renderDiaryPage(page, name) {
+  if (!diaryBodyEl) return;
+  diaryBodyEl.innerHTML = "";
+
+  // 心願區塊。
+  const desireSection = document.createElement("div");
+  if (page && page.desire) {
+    desireSection.innerHTML =
+      '<div class="diary-desire-label">💭 當前心願</div>' +
+      '<div class="diary-desire">「' + escHtml(page.desire) + '」</div>';
+  } else {
+    desireSection.innerHTML =
+      '<div class="diary-no-desire">還沒有心願……等待旅人的話語種下第一顆夢想。</div>';
+  }
+  diaryBodyEl.appendChild(desireSection);
+
+  // 記憶條目。
+  const entries = (page && Array.isArray(page.entries)) ? page.entries : [];
+  const memSection = document.createElement("div");
+  const secTitle = document.createElement("div");
+  secTitle.className = "diary-section-title";
+  secTitle.textContent = entries.length ? "📝 記憶片段（最新在前）" : "📝 記憶片段";
+  memSection.appendChild(secTitle);
+  if (entries.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "diary-empty";
+    empty.textContent = name + " 還沒有任何記憶……來跟她說說話吧。";
+    memSection.appendChild(empty);
+  } else {
+    for (const e of entries) {
+      const row = document.createElement("div");
+      row.className = "diary-entry";
+      row.innerHTML =
+        '<span class="diary-entry-player">👤 ' + escHtml(e.player) + '</span>' +
+        '<span class="diary-entry-text">' + escHtml(e.text) + '</span>';
+      memSection.appendChild(row);
+    }
+  }
+  diaryBodyEl.appendChild(memSection);
+}
+
+/** 純函式：轉義 HTML 特殊字元，避免記憶摘要插入 XSS（防護邊界）。 */
+function escHtml(str) {
+  if (typeof str !== "string") return "";
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function closeDiary() { if (diaryEl) diaryEl.style.display = "none"; }
+
+if (diaryEl) {
+  const closeBtn = document.getElementById("diaryClose");
+  if (closeBtn) closeBtn.addEventListener("click", closeDiary);
+  // 點面板外（背景）也關閉。
+  diaryEl.addEventListener("click", (e) => { if (e.target === diaryEl) closeDiary(); });
+}
+
+// 對外暴露日記相關方法給 QA 使用。
+export const __diaryTest = {
+  escHtml,
+  renderDiaryPage: (page, name) => { renderDiaryPage(page, name); return diaryBodyEl && diaryBodyEl.innerHTML; },
+};
 
 // ── 準心選取 + 高亮外框（MCPE 風）──────────────────────────────────────────────
 // 選中方塊的線框外框（略大一點點避免 z-fighting）。對準時顯示、沒對到時隱藏。
@@ -984,6 +1078,10 @@ window.__voxel = {
   },
   get lastTalkReply() { return lastTalkReply; },
   closeChat() { closeChat(); },
+  // ── 日記 QA 用（ROADMAP 650）──
+  openDiary(rid) { return openDiary(rid); },
+  closeDiary() { closeDiary(); },
+  get diaryVisible() { return diaryEl ? diaryEl.style.display !== "none" : false; },
   // ── 真瀏覽器 QA 用：讀準心目標、讀方塊、觸發破壞/放置、選方塊 ──
   get target() { return target; },
   getBlock(x, y, z) { return getRaw(x, y, z); },

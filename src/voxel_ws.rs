@@ -25,6 +25,7 @@ use crate::npc_agent_wire::{self, AgentBus};
 use crate::resident_npc::ResidentPersona;
 use crate::voxel::{self, Block, ChunkCoord, WorldDelta, BASE_HEIGHT, CHUNK, SEA_LEVEL};
 use crate::voxel_desires::{self as vdes, DesireStore};
+use crate::voxel_diary;
 use crate::voxel_memory::{self as vmem, VoxelMemory};
 use crate::voxel_residents::{self as vr, Body};
 
@@ -726,6 +727,51 @@ pub fn spawn_residents() {
             tick_residents(RESIDENT_DT);
         }
     });
+}
+
+/// `GET /voxel/diary` — 回傳所有居民的日記頁（記憶摘要 + 當前心願）。
+/// 短鎖讀取快照 → drop 鎖 → 格式化 → 回 JSON；零 LLM、零持久化、零 migration。
+/// 呼叫端（瀏覽器）直接 `fetch("/voxel/diary")` 即可，無需任何認證。
+pub async fn voxel_diary_handler() -> axum::response::Response {
+    use axum::http::header;
+
+    // 1) 短鎖快照居民 id/name → drop（循序取鎖、不巢狀、守鎖紀律）。
+    let resident_ids: Vec<(String, &'static str)> = {
+        let rs = hub().residents.read().unwrap();
+        rs.iter().map(|r| (r.id.clone(), r.name)).collect()
+    };
+
+    // 2) 短鎖快照全部長期記憶（每位）→ drop。
+    let all_memories: Vec<(String, Vec<crate::voxel_memory::MemoryEntry>)> = {
+        let mem = hub().memory.read().unwrap();
+        resident_ids
+            .iter()
+            .map(|(id, _)| (id.clone(), mem.all_memories_for(id)))
+            .collect()
+    };
+
+    // 3) 短鎖快照心願 → drop。
+    let desires: Vec<Option<String>> = {
+        let des = hub().desires.read().unwrap();
+        resident_ids.iter().map(|(id, _)| des.get_desire(id).map(|d| d.desire.clone())).collect()
+    };
+
+    // 4) 純函式格式化（無鎖、確定性）。
+    let pages: Vec<voxel_diary::DiaryPage> = resident_ids
+        .iter()
+        .zip(all_memories.iter())
+        .zip(desires.iter())
+        .map(|(((id, name), (_, mems)), desire)| {
+            voxel_diary::format_diary_page(id, name, desire.as_deref(), mems)
+        })
+        .collect();
+
+    let body = serde_json::to_string(&pages).unwrap_or_else(|_| "[]".into());
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
 }
 
 /// 一次居民世界推進：套用上輪思考的決策 → 物理/閒晃 → 廣播 → 排程新一輪思考（無鎖 spawn）。
