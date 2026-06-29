@@ -114,6 +114,8 @@ mod voxel_ws;
 mod voxel_residents;
 // 乙太方界 AI 居民記憶系統 v1：對話歷史 + 持久記憶 + 回想（記得你、記得聊過什麼）。
 mod voxel_memory;
+// 乙太方界 AI 居民渴望系統：玩家的話種下居民的夢想，記憶驅動行為 v1。
+mod voxel_desires;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環

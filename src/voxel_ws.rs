@@ -24,6 +24,7 @@ use crate::npc_agent::{AgentAction, AgentDecision, NearbyPlayer, SenseInput};
 use crate::npc_agent_wire::{self, AgentBus};
 use crate::resident_npc::ResidentPersona;
 use crate::voxel::{self, Block, ChunkCoord, WorldDelta, BASE_HEIGHT, CHUNK, SEA_LEVEL};
+use crate::voxel_desires::{self as vdes, DesireStore};
 use crate::voxel_memory::{self as vmem, VoxelMemory};
 use crate::voxel_residents::{self as vr, Body};
 
@@ -105,7 +106,7 @@ struct VoxelResident {
     greet_timer: f32,
 }
 
-/// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話）。
+/// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
 #[derive(Serialize)]
 struct ResidentView {
     id: String,
@@ -116,6 +117,9 @@ struct ResidentView {
     yaw: f32,
     /// 當前冒泡的話（空字串 = 不顯示泡泡）。
     say: String,
+    /// 居民當前的心願（None / 省略 = 尚未有心願）。前端據此顯示夢想副標籤。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    desire: Option<String>,
 }
 
 /// 居民名字池（取自 resident_npc 的近城居民風格名，柔和轉寫式、與主要 NPC 一致）。
@@ -149,11 +153,20 @@ fn talk_cooldown_ok(elapsed_ms: u64) -> bool {
 }
 
 /// 組對話用 system prompt：複用居民 agent 人設字串（`resident_agent_persona`），
-/// 再補上「身處乙太方界、有旅人來搭話、請自然回應」的語境與口吻約束。不重寫腦池。
-fn resident_talk_system_prompt(name: &str, persona: ResidentPersona) -> String {
+/// 再補上「身處乙太方界、有旅人來搭話、請自然回應」的語境與口吻約束。
+/// `desire` 非空時把心願注入——居民帶著夢想和玩家對話，玩家能感受到「你的話種下了什麼」。
+fn resident_talk_system_prompt(name: &str, persona: ResidentPersona, desire: Option<&str>) -> String {
     let base = npc_agent_wire::resident_agent_persona(name, persona);
+    let desire_note = desire
+        .map(|d| {
+            format!(
+                "\n你目前有個心願：「{d}」——這是旅人的話在你心裡種下的夢想，對話中可以自然地提到它、\
+                流露你對它的期待，但不要刻意強調，自然融入即可。"
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "{base}\n\n你現在身處『乙太方界』——一片由方塊構成、寧靜清新的新生天地，你是這裡的居民。\
+        "{base}\n\n你現在身處『乙太方界』——一片由方塊構成、寧靜清新的新生天地，你是這裡的居民。{desire_note}\
         此刻有一位來訪的旅人向你搭話。請以你的身份、用繁體中文自然回應，1 到 2 句、口吻溫暖親切，\
         可以聊聊你在這片方塊天地裡的生活或當下的心情；絕不跳出角色，也不要提到你是 AI 或語言模型。"
     )
@@ -231,6 +244,9 @@ struct VoxelHub {
     /// 居民記憶（短期對話歷史 + 長期累積記憶）。短鎖讀寫、絕不持鎖 await，
     /// 摘要/LLM 一律在無鎖 async task；長期記憶持久化到 data/voxel_memory.jsonl。
     memory: RwLock<VoxelMemory>,
+    /// 居民渴望（每居民一個「當前心願」）。短鎖讀寫、持久化到 data/voxel_desires.jsonl。
+    /// 玩家對話讓居民萌生心願 → 驅動後續思考與對話（記憶驅動行為 v1）。
+    desires: RwLock<DesireStore>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -247,6 +263,8 @@ fn hub() -> &'static VoxelHub {
             // 啟動時從 data/voxel_memory.jsonl 載回長期記憶（檔缺 = 首次啟動，回空），
             // 重啟後居民仍記得跟誰聊過、聊到什麼。
             memory: RwLock::new(VoxelMemory::from_entries(vmem::load_memories())),
+            // 啟動時從 data/voxel_desires.jsonl 載回居民心願（重啟後仍記得心願）。
+            desires: RwLock::new(DesireStore::from_entries(vdes::load_desires())),
             tx,
         }
     })
@@ -259,20 +277,29 @@ fn players_snapshot_json() -> String {
         let p = hub().players.read().unwrap();
         p.values().cloned().collect()
     }; // 玩家讀鎖在此釋放
-    let residents: Vec<ResidentView> = {
+    // 先讀居民快照（drop）→ 再讀心願（drop）→ 組合成 ResidentView，嚴守循序取鎖、不巢狀。
+    let resident_snaps: Vec<(String, &'static str, f32, f32, f32, f32, String)> = {
         let rs = hub().residents.read().unwrap();
         rs.iter()
-            .map(|r| ResidentView {
-                id: r.id.clone(),
-                name: r.name,
-                x: r.body.x,
-                y: r.body.y,
-                z: r.body.z,
-                yaw: r.yaw,
-                say: r.say.clone(),
-            })
+            .map(|r| (r.id.clone(), r.name, r.body.x, r.body.y, r.body.z, r.yaw, r.say.clone()))
             .collect()
     }; // 居民讀鎖在此釋放
+    let residents: Vec<ResidentView> = {
+        let des = hub().desires.read().unwrap();
+        resident_snaps
+            .into_iter()
+            .map(|(id, name, x, y, z, yaw, say)| ResidentView {
+                desire: des.get_desire(&id).map(|d| d.desire.clone()),
+                id,
+                name,
+                x,
+                y,
+                z,
+                yaw,
+                say,
+            })
+            .collect()
+    }; // 心願讀鎖在此釋放
     serde_json::json!({ "t": "players", "players": players, "residents": residents }).to_string()
 }
 
@@ -583,6 +610,11 @@ async fn handle_socket(socket: WebSocket) {
                     let memories = mem.recall(&resident_id, &player_key, vmem::RECALL_LIMIT);
                     vmem::build_context_block(&history, &memories, &player_key)
                 }; // 記憶讀鎖在此釋放（絕不持鎖 await）
+                // 3d) 短鎖讀居民當前心願 → drop（帶進 prompt 讓居民「帶著夢想說話」）。
+                let current_desire: Option<String> = {
+                    let des = hub().desires.read().unwrap();
+                    des.get_desire(&resident_id).map(|d| d.desire.clone())
+                }; // 心願讀鎖在此釋放
                 // 4a) 立即送「思考中」佔位 → 前端用 `thinking:true` 顯示動畫指示器，
                 //     不當成一般回覆氣泡顯示，避免「居民只回 …」的誤解。
                 //     此訊息為私聊（只送這位玩家），不走 AgentBus 冒泡。
@@ -601,8 +633,8 @@ async fn handle_socket(socket: WebSocket) {
                 //     取得回覆後單播給這位玩家，並投 AgentBus 讓居民冒泡（附近人看得到）。
                 let reply_tx = out_tx.clone();
                 tokio::spawn(async move {
-                    // 把「脈絡區塊」附到人設後 → 居民帶著記憶/對話歷史回話（記得你剛說什麼、上次聊過什麼）。
-                    let base_sys = resident_talk_system_prompt(rname, rpersona);
+                    // 把「脈絡區塊」附到人設後 → 居民帶著記憶/對話歷史/心願回話。
+                    let base_sys = resident_talk_system_prompt(rname, rpersona, current_desire.as_deref());
                     let sys = if context.is_empty() {
                         base_sys
                     } else {
@@ -639,6 +671,17 @@ async fn handle_socket(socket: WebSocket) {
                     if let Some(entry) = new_memory {
                         // append-only 小檔寫（同步、不持鎖）：絕不覆寫/刪除既有記憶。
                         vmem::append_memory(&entry);
+                    }
+                    // 心願萃取（記憶驅動行為 v1）：若居民的 LLM 回覆中浮現「我想…」等心願模式，
+                    // 更新居民的當前心願 → 後續思考與對話都帶著這個夢想（記憶驅動行為）。
+                    // 規則擷取：零 LLM 成本、確定性、可測。
+                    if let Some(desire_text) = vdes::extract_desire(&reply) {
+                        let new_desire = {
+                            let mut des = hub().desires.write().unwrap();
+                            des.set_desire(&resident_id, &desire_text, &player_key)
+                        }; // 心願寫鎖在此釋放
+                        // append-only 小檔寫（同步、不持鎖）：重啟後仍記得心願。
+                        vdes::append_desire(&new_desire);
                     }
                     // 冒泡（下一 tick 由 tick_residents 套用 say，自動截到 40 字、計時消失）。
                     hub().agent_bus.push_decision(
@@ -818,12 +861,27 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
         }
         lines.join("；")
     }; // 記憶讀鎖在此釋放
-    let world_news = if recall_note.is_empty() {
-        "你生活在新生的『乙太方界』——一片由方塊構成的清淨天地。".to_string()
-    } else {
-        format!(
-            "你生活在新生的『乙太方界』——一片由方塊構成的清淨天地。你記得：{recall_note}。"
-        )
+    // 短鎖讀居民的當前心願（落在 recall_note 快照之後、drop 後 spawn，不持鎖 await）。
+    let resident_desire_note: Option<String> = {
+        let des = hub().desires.read().unwrap();
+        des.get_desire(&id).map(|d| {
+            format!(
+                "你有個從旅人的話裡種下的心願：「{}」（由「{}」帶給你的啟發）——\
+                這個夢想是你生活的動力，偶爾在心裡默默惦記著它。",
+                d.desire, d.sparked_by
+            )
+        })
+    }; // 心願讀鎖在此釋放
+    let world_news = {
+        let mut parts =
+            vec!["你生活在新生的『乙太方界』——一片由方塊構成的清淨天地。".to_string()];
+        if !recall_note.is_empty() {
+            parts.push(format!("你記得：{recall_note}。"));
+        }
+        if let Some(note) = resident_desire_note {
+            parts.push(note);
+        }
+        parts.concat()
     };
     let sense = SenseInput {
         x,
@@ -973,7 +1031,7 @@ mod tests {
     #[test]
     fn talk_prompt_and_canned_non_empty() {
         // 對話 system prompt 含居民名字、且非空。
-        let sys = resident_talk_system_prompt("露娜", ResidentPersona::Wanderer);
+        let sys = resident_talk_system_prompt("露娜", ResidentPersona::Wanderer, None);
         assert!(sys.contains("露娜"));
         assert!(sys.contains("乙太方界"));
         // 罐頭回覆永遠非空（降級時也回得出一句）。
