@@ -821,6 +821,20 @@ if (!/木材/.test(T.itemLabel("wood"))) fail("itemLabel(wood) 應含中文名")
 if (!/📦/.test(T.itemLabel("unknown_item_xyz"))) fail("未知物品應有 📦 後備");
 console.log("✅ 城鎮交易純邏輯（商人挑選·壞值剔除／走近最近判距·圈外安全／鈕態·店名提示／面板簽章·必要才重建／物品標籤·i18n 後備）全綠");
 
+// ── 情境感知澆水／收成（手機優先 HUD 重做）：nearOwnField 判定自己有沒有站在自家田旁 ──
+if (typeof T.nearOwnField !== "function") fail("__bf3dTest 未暴露 nearOwnField");
+const myUid = "u-me";
+const myField = { owner: myUid, origin_x: 1000, origin_y: 1000, cols: 4, rows: 4, tile_size: 48 }; // bbox 1000..1192，pad=48
+if (!T.nearOwnField({ x: 1100, y: 1100 }, [myField], myUid)) fail("站在自家田中應 true");
+if (!T.nearOwnField({ x: 960, y: 1100 }, [myField], myUid)) fail("田邊一格內（放寬 pad）應 true");
+if (T.nearOwnField({ x: 5000, y: 5000 }, [myField], myUid)) fail("遠離自家田應 false");
+if (T.nearOwnField({ x: 1100, y: 1100 }, [{ ...myField, owner: "other" }], myUid)) fail("別人的田不算自家田");
+if (T.nearOwnField(null, [myField], myUid)) fail("無自己座標應 false");
+if (T.nearOwnField({ x: NaN, y: 1 }, [myField], myUid)) fail("壞自己座標應 false");
+if (T.nearOwnField({ x: 1100, y: 1100 }, null, myUid)) fail("空農地清單應 false");
+if (T.nearOwnField({ x: 1100, y: 1100 }, [myField], null)) fail("無 myId 應 false");
+console.log("✅ 情境感知澆水／收成 nearOwnField（站自家田·田邊放寬·別人的田剔除·無 id／壞值安全）全綠");
+
 // ── 重大世界事件純邏輯（ROADMAP 631）：宇宙裂縫／獸潮攻城顯影參數·HUD 文字·階段正規化·倒數進位·壞值安全 ──
 if (typeof T.riftVisual !== "function" || typeof T.riftHudLabel !== "function"
     || typeof T.hordeVisual !== "function" || typeof T.hordeHudLabel !== "function") {

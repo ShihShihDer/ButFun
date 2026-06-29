@@ -10,15 +10,45 @@
     html, body { margin: 0; height: 100%; overflow: hidden; background: #0d1117; touch-action: none; }
     #app { position: fixed; inset: 0; }
 
-    /* HUD：線上人數 + 自己名字 + 操作提示，半透明不擋視線 */
+    /* HUD：極簡頂部狀態（只留名字＋線上人數＋關鍵警示），半透明不擋視線。
+       手機優先重做：移除了過去那行會與畫面重疊的長操作提示與一整排次要數字。 */
     #hud {
-      position: fixed; left: 12px; top: 12px; z-index: 10;
+      position: fixed; left: 12px; top: 54px; z-index: 10;
       font: 13px/1.5 system-ui, -apple-system, "Noto Sans CJK TC", sans-serif;
       color: #e6edf3; background: rgba(13,17,23,0.62);
-      padding: 8px 12px; border-radius: 10px; max-width: 72vw;
+      padding: 6px 12px; border-radius: 10px; max-width: 72vw;
       pointer-events: none; white-space: pre-line;
     }
     #hud b { color: #ffd54a; }
+
+    /* ---- 左上角工具列：帳號入口（登入／登出）＋ 說明鈕（手機優先重做） ----
+       過去 3D 一律訪客進場、沒有登入入口；現在右上角…改置左上角（右上角已有天時盤／雷達），
+       點「登入」走既有 Google OAuth，登入後顯示帳號名＋登出，拿回收成等登入限定功能。 */
+    #topbar {
+      position: fixed; left: 12px; top: 12px; z-index: 13;
+      display: flex; gap: 6px; align-items: center;
+    }
+    .tb-btn {
+      pointer-events: auto; cursor: pointer; touch-action: manipulation;
+      user-select: none; -webkit-user-select: none;
+      font: 600 13px/1 system-ui, -apple-system, "Noto Sans CJK TC", sans-serif;
+      color: #e6edf3; background: rgba(13,17,23,0.66);
+      border: 1px solid rgba(255,255,255,0.2); border-radius: 18px;
+      padding: 9px 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      transition: transform 0.08s ease;
+    }
+    .tb-btn:active { transform: scale(0.95); }
+    /* 登入鈕用暖綠，與其他半透明 chip 區分出「主要行動」 */
+    #loginBtn { color: #173a1e; background: rgba(150, 220, 150, 0.94); border-color: rgba(255,255,255,0.5); }
+    /* 已登入：帳號名（不可點）＋ 登出鈕 */
+    .tb-name {
+      pointer-events: none; max-width: 38vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font: 600 13px/1 system-ui, "Noto Sans CJK TC", sans-serif; color: #ffd54a;
+      background: rgba(13,17,23,0.66); border: 1px solid rgba(255,213,74,0.35);
+      border-radius: 18px; padding: 9px 13px;
+    }
+    /* 說明鈕：「?」一鍵叫回操作提示（首次進場也會自動浮一次） */
+    #helpBtn { width: 36px; height: 36px; padding: 0; border-radius: 50%; font-size: 16px; }
     /* 狀態浮層——連不上 WS / 找不到自己時要看得到字，不白屏 */
     #status {
       position: fixed; left: 12px; bottom: 12px; z-index: 10;
@@ -227,6 +257,10 @@
 </head>
 <body>
   <div id="app"></div>
+  <!-- 左上角工具列：帳號入口（登入／登出）＋說明鈕；內容由 main.js 依登入態動態填入 -->
+  <div id="topbar">
+    <button id="helpBtn" class="tb-btn" type="button" aria-label="操作說明">?</button>
+  </div>
   <div id="hud">載入中…</div>
   <!-- 天時盤 HUD（ROADMAP 620）：右上角醒目日晷；main.js 每幀讀權威 daynight 驅動繞盤與倒數 -->
   <div id="dayclock" aria-hidden="true">
@@ -236,7 +270,6 @@
   <!-- 探索羅盤雷達 HUD（ROADMAP 633）：右上角圓形雷達；main.js 每幀讀快照座標標出目標方位 -->
   <canvas id="radar" width="240" height="240" aria-hidden="true"></canvas>
   <div id="status">連線中…</div>
-  <div id="hint">WASD／搖桿 移動 · Shift／跑鈕 跑 · 拖曳轉鏡頭 · 空白鍵／跳鈕 跳 · G 採集 · B 交易 · T 種樹 · F 澆水 · H 收成 · E 表情</div>
   <div id="err"></div>
 
   <!-- 觸控控制層（main.js 偵測到觸控裝置才顯示） -->
@@ -247,19 +280,22 @@
   </div>
 
   <!-- 照料世界·動作鈕（ROADMAP 618 種樹 → 619 澆水／收成 → 623 生火 → 632 揮劍迎敵）：登入後可在 3D 親手照料農地；訪客顯示鎖定提示。生火／攻擊不需登入 -->
+  <!-- 手機優先重做：情境感知動作鈕。多數鈕預設隱藏（display:none），由 main.js 每幀依「腳邊有沒有
+       可做的事」即時顯示／隱藏——走近居民才冒出搭話／送禮／關心／幫忙、走近資源才冒出採集、走近商人
+       才冒出交易、走近自家田才冒出澆水／收成…不再一長排全攤著。生火／表情人人可用＝常駐在最下方（拇指好按）。 -->
   <div id="acts">
-    <button id="attackBtn" class="act-btn locked" type="button">⚔️ 攻擊</button>
-    <button id="comfortBtn" class="act-btn locked" type="button">💚 關心</button>
-    <button id="helpResidentBtn" class="act-btn locked" type="button">🤝 幫忙</button>
-    <button id="talkBtn" class="act-btn locked" type="button">💬 搭話</button>
-    <button id="giftBtn" class="act-btn locked" type="button">🎁 送禮</button>
-    <button id="emoteBtn" class="act-btn" type="button" aria-haspopup="true" aria-expanded="false">😊 表情</button>
-    <button id="shopBtn" class="act-btn locked" type="button">🛒 交易</button>
+    <button id="attackBtn" class="act-btn" type="button" style="display:none">⚔️ 攻擊</button>
+    <button id="gatherBtn" class="act-btn" type="button" style="display:none">⛏️ 採集</button>
+    <button id="shopBtn" class="act-btn" type="button" style="display:none">🛒 交易</button>
+    <button id="talkBtn" class="act-btn" type="button" style="display:none">💬 搭話</button>
+    <button id="giftBtn" class="act-btn" type="button" style="display:none">🎁 送禮</button>
+    <button id="comfortBtn" class="act-btn" type="button" style="display:none">💚 關心</button>
+    <button id="helpResidentBtn" class="act-btn" type="button" style="display:none">🤝 幫忙</button>
+    <button id="plantBtn" class="act-btn" type="button" style="display:none">🌱 種樹</button>
+    <button id="waterBtn" class="act-btn" type="button" style="display:none">💧 澆水</button>
+    <button id="harvestBtn" class="act-btn" type="button" style="display:none">🌾 收成</button>
     <button id="campfireBtn" class="act-btn" type="button">🔥 生火</button>
-    <button id="gatherBtn" class="act-btn locked" type="button">⛏️ 採集</button>
-    <button id="harvestBtn" class="act-btn locked" type="button">🌾 收成</button>
-    <button id="waterBtn" class="act-btn locked" type="button">💧 澆水</button>
-    <button id="plantBtn" class="act-btn locked" type="button">🌱 種樹</button>
+    <button id="emoteBtn" class="act-btn" type="button" aria-haspopup="true" aria-expanded="false">😊 表情</button>
   </div>
   <!-- 表情輪彈出層（ROADMAP 621）：main.js 動態填入 8 顆表情鈕；初始隱藏 -->
   <div id="emotePopup" class="hidden" role="menu" aria-label="表情"></div>
