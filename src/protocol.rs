@@ -3256,14 +3256,22 @@ pub struct VillageTeaStallView {
     pub brewing: bool,
 }
 
-/// 居民木屋的快照（ROADMAP 642，禱告驅動）。應 AI 居民之禱在世界中立起的溫暖木屋，
-/// 讓居民的「家」在 3D 世界中真實存在。前端在 `(x, y)` 畫一座低多邊形小木屋。
+/// 居民棲所的快照（ROADMAP 642–644，禱告驅動·散居擴展）。應 AI 居民之禱在世界中立起的棲所，
+/// 讓居民的「家」在 3D 世界中真實存在。前端依 `dwelling_type` 決定渲染哪種 3D 幾何體。
 #[derive(Debug, Clone, Serialize)]
 pub struct ResidentHomeView {
-    /// 居住的 AI 居民名字——前端據此標示「誰住在這裡」。
+    /// 居住的 AI 居民名字——前端據此標示「誰住在這裡」並查取色盤。
     pub name: String,
     pub x: f32,
     pub y: f32,
+    /// 棲所形狀："house"（木屋）/ "cabin"（林野小屋）/ "tent"（遊牧帳篷）。
+    /// 舊前端收到未知字串時退回 house 形狀；向後相容。
+    #[serde(default = "default_house_type")]
+    pub dwelling_type: String,
+}
+
+fn default_house_type() -> String {
+    "house".to_string()
 }
 
 /// 今日世界戰報（ROADMAP 495）：全伺服器自啟動起的今日行動累計，向後相容預設全零。

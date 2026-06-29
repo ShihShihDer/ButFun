@@ -1,19 +1,45 @@
-//! 居民住宅系統（ROADMAP 642–643，禱告驅動）。
+//! 居民住宅系統（ROADMAP 642–644，禱告驅動·散居擴展）。
 //!
 //! **緣起**：
 //! - 露娜（642）：反覆禱告「盼望有足夠的木材可以建造更舒適的家」→ 茶棚東北側木屋。
 //! - 諾娃（643）：反覆禱告「願能找到更多方法提升自己勞動的效率，讓生活更舒適一些」
 //!   → 農田西北側農舍，讓她有個靠近農田的棲身之所。
+//! - 賽勒（644）：散居擴展·漁人小屋→南方水域邊；奧瑞→西方岩地隱士石寮；
+//!   薇朵→東北草原遊牧帳篷。首次讓世界在主城之外也有人居住的痕跡。
 //!
 //! **設計**：住宅是純靜態設施（位置由常數決定、無執行期狀態、無計時器）；
 //! 新增居民的家只需在 `all_homes()` 加一筆常數，無需動任何骨架。
+//! ROADMAP 644 引入 `DwellingType`（形狀），讓棲所不再只有同一種 3D 幾何體。
 //!
 //! **成本紀律**：零持久化、零 migration、零 LLM、零 Arc<RwLock>（無狀態）、
 //! 零經濟（不產出任何物品），只在 3D 世界中讓居民的「家」真實存在。
 
 use crate::state::{PUB_FIELD_ORIGIN_X, PUB_FIELD_ORIGIN_Y};
 
-/// 一座居民木屋（純靜態資料，位置由常數決定，無執行期狀態、無持久化）。
+/// 棲所形狀類型——決定前端 3D 幾何體的派發。
+/// 新增類型後只需在前端 `makeResidentHome` 加對應 branch，後端零改動。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DwellingType {
+    /// 一般木屋：暖木板牆＋四角錐尖頂＋煙囪＋兩窗（ROADMAP 642–643）。
+    House,
+    /// 林野小屋：較矮小樸素、單坡屋頂、無煙囪、一扇窗（散居·遠方探索）。
+    Cabin,
+    /// 遊牧帳篷：布面圓錐形、木桿支撐、無窗、帶旗幟（草原漫遊者）。
+    Tent,
+}
+
+impl DwellingType {
+    /// 回傳對應的協議字串（向前端傳遞）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DwellingType::House => "house",
+            DwellingType::Cabin => "cabin",
+            DwellingType::Tent  => "tent",
+        }
+    }
+}
+
+/// 一座居民棲所（純靜態資料，位置由常數決定，無執行期狀態、無持久化）。
 pub struct ResidentHome {
     /// 居住的 AI 居民名字——向前端傳遞，用於標示「誰住在這裡」。
     pub name: &'static str,
@@ -21,12 +47,16 @@ pub struct ResidentHome {
     pub x: f32,
     /// 世界座標 Y（像素）。
     pub y: f32,
+    /// 棲所形狀——決定前端渲染哪種 3D 幾何體。
+    pub dwelling_type: DwellingType,
 }
 
+// ────────────────────────────────────────────────────────────────
+// 主城附近（ROADMAP 642–643）
+// ────────────────────────────────────────────────────────────────
+
 /// 露娜木屋的世界座標（像素）。
-/// 坐落在茶棚（641，x≈2532, y≈2296）東北側，比茶棚偏北一些、偏右一點，
-/// 與古井（田左側）、茶棚（田右側）、木屋（田右上側）三點形成村落小聚落感，
-/// 讓玩家走過來時有「市集角落、茶棚旁，再往前是居民住的地方」的方位感。
+/// 坐落在茶棚（641）東北側，與古井、茶棚三點形成村落小聚落感。
 pub const LUNA_HOME_X: f32 = PUB_FIELD_ORIGIN_X + 360.0; // 田右緣再出去 72px
 pub const LUNA_HOME_Y: f32 = PUB_FIELD_ORIGIN_Y - 120.0; // 田上緣再往北 120px
 
@@ -35,12 +65,11 @@ pub const LUNA_HOME: ResidentHome = ResidentHome {
     name: "露娜",
     x: LUNA_HOME_X,
     y: LUNA_HOME_Y,
+    dwelling_type: DwellingType::House,
 };
 
 /// 諾娃農舍的世界座標（像素）。
-/// 坐落在農田（PUB_FIELD_ORIGIN: 2200, 2200）西北側，比古井（田左側, x≈2144）更偏西、
-/// 比田上緣再往北 140px——像她長年種田時在田邊搭起的一間農舍，
-/// 與露娜木屋（田東北側）一西一東，為故鄉形成散居感：露娜靠市集、諾娃靠農田。
+/// 坐落在農田西北側，與露娜木屋（田東北側）一西一東，形成散居感：露娜靠市集、諾娃靠農田。
 pub const NOVA_HOME_X: f32 = PUB_FIELD_ORIGIN_X - 160.0; // 田左緣再往西 160px
 pub const NOVA_HOME_Y: f32 = PUB_FIELD_ORIGIN_Y - 140.0; // 田上緣再往北 140px
 
@@ -49,11 +78,52 @@ pub const NOVA_HOME: ResidentHome = ResidentHome {
     name: "諾娃",
     x: NOVA_HOME_X,
     y: NOVA_HOME_Y,
+    dwelling_type: DwellingType::House,
 };
 
-/// 所有已在世界中立起的居民住宅（靜態列表，無鎖；新增居民的家只需在此加常數）。
+// ────────────────────────────────────────────────────────────────
+// 遠方散居（ROADMAP 644）——首次讓世界在主城之外也有人住的痕跡
+// ────────────────────────────────────────────────────────────────
+
+/// 賽勒漁人小屋的世界座標：南方水域邊，距主城約 1600px，探索時才能發現。
+pub const SAILER_HOME_X: f32 = 2700.0;
+pub const SAILER_HOME_Y: f32 = 3800.0;
+
+/// 賽勒的漁人小屋（ROADMAP 644）：南方水域邊的捕魚小棧，用粗木板拼起的海岸小屋。
+pub const SAILER_HOME: ResidentHome = ResidentHome {
+    name: "賽勒",
+    x: SAILER_HOME_X,
+    y: SAILER_HOME_Y,
+    dwelling_type: DwellingType::Cabin,
+};
+
+/// 奧瑞隱士石寮的世界座標：遠西岩石地帶，距主城約 1400px，僻靜幽深。
+pub const AURIE_HOME_X: f32 = 800.0;
+pub const AURIE_HOME_Y: f32 = 2200.0;
+
+/// 奧瑞的隱士石寮（ROADMAP 644）：西方岩地深處的一間石頭小屋，為世界增添「有人遠離喧囂獨居」的痕跡。
+pub const AURIE_HOME: ResidentHome = ResidentHome {
+    name: "奧瑞",
+    x: AURIE_HOME_X,
+    y: AURIE_HOME_Y,
+    dwelling_type: DwellingType::Cabin,
+};
+
+/// 薇朵遊牧帳篷的世界座標：東北草原，距主城約 1900px，草原漫遊者的臨時棲所。
+pub const WIDO_HOME_X: f32 = 3700.0;
+pub const WIDO_HOME_Y: f32 = 1400.0;
+
+/// 薇朵的遊牧帳篷（ROADMAP 644）：東北草原上的布面圓錐帳篷，世界上第一頂帳篷，呼應「薇朵」漫遊者性格。
+pub const WIDO_HOME: ResidentHome = ResidentHome {
+    name: "薇朵",
+    x: WIDO_HOME_X,
+    y: WIDO_HOME_Y,
+    dwelling_type: DwellingType::Tent,
+};
+
+/// 所有已在世界中立起的居民棲所（靜態列表，無鎖；新增居民的家只需在此加常數）。
 pub fn all_homes() -> Vec<&'static ResidentHome> {
-    vec![&LUNA_HOME, &NOVA_HOME]
+    vec![&LUNA_HOME, &NOVA_HOME, &SAILER_HOME, &AURIE_HOME, &WIDO_HOME]
 }
 
 #[cfg(test)]
@@ -110,7 +180,6 @@ mod tests {
 
     #[test]
     fn 諾娃農舍與露娜木屋相距足夠形成散居感() {
-        // 一西（農田側）一東（市集側），至少 400px 以上方位距離
         let dx = (NOVA_HOME_X - LUNA_HOME_X).abs();
         let dy = (NOVA_HOME_Y - LUNA_HOME_Y).abs();
         assert!(
@@ -143,19 +212,75 @@ mod tests {
     }
 
     #[test]
-    fn 全部住宅列表包含露娜與諾娃() {
+    fn 全部住宅列表包含五座棲所() {
         let homes = all_homes();
-        assert_eq!(homes.len(), 2, "住宅列表應有露娜與諾娃各一座");
+        assert_eq!(homes.len(), 5, "住宅列表應有五座：露娜、諾娃、賽勒、奧瑞、薇朵");
         assert!(homes.iter().any(|h| h.name == "露娜"), "應包含露娜的家");
         assert!(homes.iter().any(|h| h.name == "諾娃"), "應包含諾娃的農舍");
+        assert!(homes.iter().any(|h| h.name == "賽勒"), "應包含賽勒的漁人小屋");
+        assert!(homes.iter().any(|h| h.name == "奧瑞"), "應包含奧瑞的隱士石寮");
+        assert!(homes.iter().any(|h| h.name == "薇朵"), "應包含薇朵的遊牧帳篷");
     }
 
     #[test]
     fn 諾娃農舍在農田西側呼應她的耕耘位置() {
-        // 諾娃農舍應在公田左緣 (x=2200) 的西側，讓她靠近農田
         assert!(
             NOVA_HOME_X < PUB_FIELD_ORIGIN_X,
             "諾娃農舍應在農田西側（x={NOVA_HOME_X} < {PUB_FIELD_ORIGIN_X}）"
         );
+    }
+
+    // ── ROADMAP 644：散居遠方三棲所 ──────────────────────────────────────────
+
+    #[test]
+    fn 遠方棲所距主城超過一千像素() {
+        let village_x = PUB_FIELD_ORIGIN_X;
+        let village_y = PUB_FIELD_ORIGIN_Y;
+        for home in [&SAILER_HOME, &AURIE_HOME, &WIDO_HOME] {
+            let dx = (home.x - village_x).abs();
+            let dy = (home.y - village_y).abs();
+            let dist = (dx * dx + dy * dy).sqrt();
+            assert!(
+                dist > 1000.0,
+                "遠方棲所 {} 應距主城超過 1000px（實際 {dist:.0}px）",
+                home.name
+            );
+        }
+    }
+
+    #[test]
+    fn 遠方棲所互相不重疊() {
+        let far = [&SAILER_HOME, &AURIE_HOME, &WIDO_HOME];
+        for i in 0..far.len() {
+            for j in (i + 1)..far.len() {
+                let dx = (far[i].x - far[j].x).abs();
+                let dy = (far[i].y - far[j].y).abs();
+                assert!(
+                    dx > 100.0 || dy > 100.0,
+                    "遠方棲所 {} 與 {} 不應重疊",
+                    far[i].name, far[j].name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dwelling_type_字串化正確() {
+        assert_eq!(DwellingType::House.as_str(), "house");
+        assert_eq!(DwellingType::Cabin.as_str(), "cabin");
+        assert_eq!(DwellingType::Tent.as_str(),  "tent");
+    }
+
+    #[test]
+    fn 露娜諾娃為House型態() {
+        assert_eq!(LUNA_HOME.dwelling_type, DwellingType::House);
+        assert_eq!(NOVA_HOME.dwelling_type, DwellingType::House);
+    }
+
+    #[test]
+    fn 賽勒奧瑞為Cabin型態_薇朵為Tent型態() {
+        assert_eq!(SAILER_HOME.dwelling_type, DwellingType::Cabin);
+        assert_eq!(AURIE_HOME.dwelling_type,  DwellingType::Cabin);
+        assert_eq!(WIDO_HOME.dwelling_type,   DwellingType::Tent);
     }
 }
