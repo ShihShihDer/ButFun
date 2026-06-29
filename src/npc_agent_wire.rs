@@ -22,7 +22,7 @@ use crate::resident_npc::ResidentPersona;
 pub const AGENT_ENABLED_COUNT: usize = 2;
 
 /// 兩次思考的間隔（秒）。低頻：避免燒 LLM、也避免跟既有居民 tick 行為頻繁打架。
-pub const THINK_INTERVAL_SECS: f32 = 15.0;
+pub const THINK_INTERVAL_SECS: f32 = 45.0;
 
 /// 感知半徑（像素）：蒐集這個範圍內的玩家 / 可採節點餵給 agent 當情境。
 pub const SENSE_RADIUS: f32 = 360.0;
