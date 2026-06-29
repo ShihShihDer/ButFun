@@ -128,6 +128,8 @@ mod voxel_overhear;
 mod voxel_feed;
 // 乙太方界·採集背包 v1：挖方塊得材料、放置消耗存量，療癒「採集→蓋造」循環第一刀（ROADMAP 657）。
 mod voxel_inventory;
+// 乙太方界·合成台 v1：採集材料→合成木板/石磚/玻璃，「採集→合成→建造」循環（ROADMAP 658）。
+mod voxel_craft;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環

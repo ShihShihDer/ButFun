@@ -29,6 +29,7 @@ pub const SEA_LEVEL: i32 = 5;
 pub const SEED: u32 = 0x_B0_07_Fu32; // "BOOTF"un · voxel
 
 /// 方塊型別。`#[repr(u8)]` → 直接當 1 byte 串流（pack_chunk 用）。
+/// ID 0–7：自然生成方塊；8–10：合成台 v1（ROADMAP 658）玩家合成方塊。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Block {
@@ -40,6 +41,12 @@ pub enum Block {
     Wood = 5,
     Leaves = 6,
     Water = 7,
+    /// 木板（2 木 → 4 木板）。比原木更工整，可當牆面/地板建材。
+    Plank = 8,
+    /// 石磚（2 石 → 2 石磚）。精緻石材，適合蓋正式建築。
+    StoneBrick = 9,
+    /// 玻璃（2 沙 → 1 玻璃）。半透明質感，窗戶或裝飾用。
+    Glass = 10,
 }
 
 impl Block {
@@ -59,11 +66,14 @@ impl Block {
             5 => Some(Block::Wood),
             6 => Some(Block::Leaves),
             7 => Some(Block::Water),
+            8 => Some(Block::Plank),
+            9 => Some(Block::StoneBrick),
+            10 => Some(Block::Glass),
             _ => None,
         }
     }
 
-    /// 玩家是否可「放置」此方塊（切片②只准放實心方塊；空氣＝挖掉、水不給手放）。
+    /// 玩家是否可「放置」此方塊（只准放實心方塊；空氣＝挖掉、水不給手放）。
     pub fn is_placeable(self) -> bool {
         self.is_solid()
     }

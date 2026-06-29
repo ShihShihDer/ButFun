@@ -16,15 +16,21 @@ import * as THREE from "three";
 const CHUNK = 16; // 一 chunk 邊長（方塊數），與 voxel::CHUNK 一致
 // 方塊型別（對齊 Block enum）
 const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, WOOD = 5, LEAVES = 6, WATER = 7;
+// 合成台 v1（ROADMAP 658）——玩家合成而得，不自然生成
+const PLANK = 8, STONE_BRICK = 9, GLASS = 10;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
-  [GRASS]:  [0.36, 0.66, 0.27],
-  [DIRT]:   [0.55, 0.40, 0.26],
-  [STONE]:  [0.50, 0.50, 0.52],
-  [SAND]:   [0.85, 0.78, 0.55],
-  [WOOD]:   [0.45, 0.31, 0.18],
-  [LEAVES]: [0.27, 0.55, 0.27],
-  [WATER]:  [0.20, 0.45, 0.85],
+  [GRASS]:      [0.36, 0.66, 0.27],
+  [DIRT]:       [0.55, 0.40, 0.26],
+  [STONE]:      [0.50, 0.50, 0.52],
+  [SAND]:       [0.85, 0.78, 0.55],
+  [WOOD]:       [0.45, 0.31, 0.18],
+  [LEAVES]:     [0.27, 0.55, 0.27],
+  [WATER]:      [0.20, 0.45, 0.85],
+  // 合成方塊：比自然原料更精緻（淺色調）
+  [PLANK]:      [0.78, 0.62, 0.42], // 木板——淺棕，比原木明亮
+  [STONE_BRICK]:[0.62, 0.59, 0.56], // 石磚——均勻灰，比原石精緻
+  [GLASS]:      [0.82, 0.93, 0.98], // 玻璃——淡藍，像磨砂玻璃
 };
 
 const DEBUG = location.search.includes("debug");
@@ -733,8 +739,12 @@ scene.add(highlight);
 let target = null;
 
 // ── 快捷欄（選要放的方塊型別）+ 背包存量（採集 v1）───────────────────────────
-const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES];
-const BLOCK_NAME = { [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉" };
+// 合成台 v1（ROADMAP 658）：加入三個合成方塊（9 格熱鍵欄，keys 1–9）
+const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS];
+const BLOCK_NAME = {
+  [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉",
+  [PLANK]: "木板", [STONE_BRICK]: "石磚", [GLASS]: "玻璃",
+};
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
 // 本地材料存量（block_id → count）；由 inv_sync / inv_update 伺服器訊息維護。
@@ -1076,6 +1086,17 @@ function connect() {
       const bname = BLOCK_NAME[m.block_id] || "方塊";
       showErr("材料不足：" + bname + "（先去挖一些吧）");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "craft_ok") {
+      // 合成台 v1：合成成功，短暫提示並刷新合成面板。
+      const oname = BLOCK_NAME[m.out_count > 0 ? RECIPES_JS.find(r => r.id === m.recipe_id)?.output_block : 0] || m.name_zh;
+      showMsg("合成成功：" + m.name_zh + " ×" + m.out_count + "！");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2200);
+      renderCraftPanel();
+    } else if (m.t === "craft_fail") {
+      // 合成台 v1：材料不足，短暫提示。
+      showErr("材料不足，無法合成（先多採集一些）");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+      renderCraftPanel();
     }
   };
   ws.onclose = () => { wsReady = false; showErr("連線中斷，重新連線中…"); setTimeout(connect, 1500); };
@@ -1246,6 +1267,102 @@ addEventListener("resize", () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
+// ── 合成台 v1（ROADMAP 658）──────────────────────────────────────────────────
+// 前端配方表（對齊後端 voxel_craft::RECIPES，id/inputs/output 穩定契約）。
+const RECIPES_JS = [
+  { id: "plank",        name: "木板", inputs: [[WOOD, 2]],  output_block: PLANK,       out_count: 4 },
+  { id: "stone_brick",  name: "石磚", inputs: [[STONE, 2]], output_block: STONE_BRICK, out_count: 2 },
+  { id: "glass",        name: "玻璃", inputs: [[SAND, 2]],  output_block: GLASS,       out_count: 1 },
+];
+
+const craftPanelEl = document.getElementById("craft");
+const craftBodyEl  = document.getElementById("craftBody");
+
+function openCraftPanel() {
+  if (!craftPanelEl) return;
+  craftPanelEl.style.display = "flex";
+  renderCraftPanel();
+}
+function closeCraftPanel() {
+  if (craftPanelEl) craftPanelEl.style.display = "none";
+}
+
+/** 渲染合成面板——列出每條配方、即時顯示材料是否充足，純函式組 DOM。 */
+function renderCraftPanel() {
+  if (!craftBodyEl) return;
+  craftBodyEl.innerHTML = "";
+  RECIPES_JS.forEach(r => {
+    const canCraft = r.inputs.every(([bid, cnt]) => (myInv.get(bid) || 0) >= cnt);
+    const row = document.createElement("div");
+    row.className = "craft-row" + (canCraft ? "" : " craft-disabled");
+    // 配料欄
+    const inp = document.createElement("div");
+    inp.className = "craft-inp";
+    r.inputs.forEach(([bid, cnt]) => {
+      const have = myInv.get(bid) || 0;
+      const s = document.createElement("span");
+      s.className = "craft-mat" + (have >= cnt ? " ok" : " short");
+      s.textContent = (BLOCK_NAME[bid] || "?") + " ×" + cnt + " (" + have + ")";
+      inp.appendChild(s);
+    });
+    // 箭頭
+    const arr = document.createElement("span");
+    arr.className = "craft-arr";
+    arr.textContent = "→";
+    // 產出欄
+    const out = document.createElement("span");
+    out.className = "craft-out";
+    const oc = COLOR[r.output_block] || COLOR[STONE];
+    out.innerHTML =
+      '<span class="craft-swatch" style="background:rgb(' +
+      ((oc[0] * 255) | 0) + "," + ((oc[1] * 255) | 0) + "," + ((oc[2] * 255) | 0) +
+      ')"></span>' + r.name + " ×" + r.out_count;
+    // 合成鈕
+    const btn = document.createElement("button");
+    btn.className = "craft-btn";
+    btn.textContent = "合成";
+    btn.disabled = !canCraft;
+    btn.addEventListener("click", () => {
+      if (!wsReady) return;
+      ws.send(JSON.stringify({ t: "craft", recipe_id: r.id }));
+    });
+    row.appendChild(inp); row.appendChild(arr); row.appendChild(out); row.appendChild(btn);
+    craftBodyEl.appendChild(row);
+  });
+}
+
+// 合成鈕（🔨）開關合成面板。
+const craftBtnEl = document.getElementById("craftBtn");
+if (craftBtnEl) craftBtnEl.addEventListener("click", (e) => {
+  if (!craftPanelEl) return;
+  if (craftPanelEl.style.display === "none" || !craftPanelEl.style.display) {
+    openCraftPanel();
+  } else {
+    closeCraftPanel();
+  }
+  e.stopPropagation();
+});
+// 點面板外關閉（與日記、Feed 面板保持一致）。
+document.addEventListener("pointerdown", (e) => {
+  if (craftPanelEl && craftPanelEl.style.display === "flex") {
+    if (!craftPanelEl.contains(e.target) && e.target !== craftBtnEl) closeCraftPanel();
+  }
+});
+
+// 合成台面板關閉鈕（✕）。
+const craftCloseEl = document.getElementById("craftClose");
+if (craftCloseEl) craftCloseEl.addEventListener("click", closeCraftPanel);
+
+/** 簡短綠色提示（合成成功用；區別於 showErr 紅色錯誤）。 */
+function showMsg(text) {
+  const el = document.getElementById("msg");
+  if (!el) return;
+  el.textContent = text;
+  el.style.display = "block";
+  clearTimeout(el._hideTimer);
+  el._hideTimer = setTimeout(() => { el.style.display = "none"; }, 3000);
+}
+
 // 對外暴露一點狀態，方便真瀏覽器 QA 讀數驗證。
 window.__voxel = {
   get chunks() { return chunks.size; },
@@ -1291,6 +1408,13 @@ window.__voxel = {
   get myInv() { return Object.fromEntries(myInv); },
   setInvForTest(bid, cnt) { if (cnt > 0) myInv.set(bid, cnt); else myInv.delete(bid); updateInvHud(); },
   updateInvHud() { updateInvHud(); },
+  // ── 合成台 QA 用（ROADMAP 658）──
+  get craftPanelVisible() { return craftPanelEl ? craftPanelEl.style.display === "flex" : false; },
+  openCraftPanel() { openCraftPanel(); },
+  closeCraftPanel() { closeCraftPanel(); },
+  renderCraftPanel() { renderCraftPanel(); return craftBodyEl ? craftBodyEl.innerHTML : ""; },
+  get RECIPES_JS() { return RECIPES_JS; },
+  PLANK, STONE_BRICK, GLASS,
   // ── 真瀏覽器 QA 用：讀準心目標、讀方塊、觸發破壞/放置、選方塊 ──
   get target() { return target; },
   getBlock(x, y, z) { return getRaw(x, y, z); },

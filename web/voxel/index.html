@@ -101,11 +101,11 @@
       }
       #dbg { font-size: 11px; padding: 5px 8px; }
 
-      /* 快捷欄：縮小格子，確保 6 格在 320px+ 寬螢幕都排得下
-         計算：6×38 + 5×4(gap) + 2×5(padding) = 258px ≤ 320px ✓ */
-      #hotbar { bottom: 8px; gap: 4px; padding: 5px; border-radius: 10px; }
-      .slot   { width: 38px; height: 38px; font-size: 9px; border-radius: 7px; }
-      .slot .sw { width: 16px; height: 16px; margin-bottom: 1px; }
+      /* 快捷欄：縮小格子，確保 9 格在 320px 螢幕排得下
+         計算：9×32 + 8×3(gap) + 2×4(padding) = 288+24+8 = 320px ✓ */
+      #hotbar { bottom: 8px; gap: 3px; padding: 4px; border-radius: 10px; }
+      .slot   { width: 32px; height: 32px; font-size: 8px; border-radius: 6px; }
+      .slot .sw { width: 14px; height: 14px; margin-bottom: 1px; }
       /* 快捷欄總高：38+5×2=48px；頂邊距底：8+48=56px from bottom */
 
       /* 搖桿：左下角，快捷欄上方（76 > 56，留 20px 間距）*/
@@ -119,10 +119,10 @@
       #place { right: 108px; bottom: 76px; width: 72px; height: 72px; font-size: 13px; }
     }
 
-    /* 超窄裝置備援（< 360px 寬）：快捷欄格子再縮小確保塞下 */
+    /* 超窄裝置備援（< 360px 寬）：9×28 + 8×2 + 2×3 = 274px ≤ 320px ✓ */
     @media (orientation: portrait) and (max-width: 359px) {
-      .slot   { width: 34px; height: 34px; }
-      #hotbar { gap: 3px; padding: 4px; }
+      .slot   { width: 28px; height: 28px; font-size: 7px; }
+      #hotbar { gap: 2px; padding: 3px; }
       #place  { right: 100px; }
     }
 
@@ -288,6 +288,71 @@
       #feedBtn { top: auto; bottom: 64px; right: 10px; }
       #feed { top: auto; bottom: 108px; right: 10px; max-height: 55vh; }
     }
+
+    /* ── 成功提示（綠色小吐司）──────────────────────────────────────────── */
+    #msg {
+      position: fixed; left: 50%; top: 58px; transform: translateX(-50%);
+      z-index: 15; background: rgba(60,180,90,0.92); color: #fff;
+      padding: 6px 14px; border-radius: 8px; font-size: 13px;
+      display: none; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      pointer-events: none;
+    }
+
+    /* ── 合成台按鈕（右側頂部，類 feedBtn）───────────────────────────────── */
+    #craftBtn {
+      position: fixed; right: 10px; top: 52px; z-index: 6;
+      background: rgba(20,28,40,0.65); color: #f0d080;
+      border: 1px solid rgba(240,208,128,0.3);
+      padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      user-select: none; pointer-events: auto;
+    }
+    #craftBtn:hover { background: rgba(60,50,20,0.75); }
+
+    /* ── 合成台面板（ROADMAP 658）────────────────────────────────────────── */
+    #craft {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      z-index: 20; width: min(400px, 94vw); max-height: 80vh;
+      display: none; flex-direction: column;
+      background: rgba(16,22,34,0.95); color: #eaf2ff; border-radius: 16px;
+      border: 1px solid rgba(240,208,128,0.25); box-shadow: 0 8px 32px rgba(0,0,0,0.55);
+      overflow: hidden;
+    }
+    #craftHead {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px; background: rgba(240,208,128,0.08); font-weight: bold; font-size: 15px;
+    }
+    #craftTitle { color: #f0d080; }
+    #craftClose {
+      cursor: pointer; user-select: none; font-size: 18px; line-height: 1;
+      padding: 2px 9px; border-radius: 8px; background: rgba(255,255,255,0.10);
+    }
+    #craftBody {
+      flex: 1; overflow-y: auto; padding: 12px 14px;
+      display: flex; flex-direction: column; gap: 8px; font-size: 13px;
+    }
+    .craft-row {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,0.05);
+    }
+    .craft-row.craft-disabled { opacity: 0.55; }
+    .craft-inp { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+    .craft-mat { padding: 2px 7px; border-radius: 6px; font-size: 12px; }
+    .craft-mat.ok    { background: rgba(80,200,100,0.20); color: #80e898; border: 1px solid rgba(80,200,100,0.3); }
+    .craft-mat.short { background: rgba(255,120,60,0.18); color: #ff9060; border: 1px solid rgba(255,120,60,0.3); }
+    .craft-arr { color: #8090a8; font-size: 14px; flex-shrink: 0; }
+    .craft-out { display: flex; align-items: center; gap: 5px; font-size: 13px; color: #d8ecfc; flex: 1; min-width: 80px; }
+    .craft-swatch { width: 16px; height: 16px; border-radius: 3px; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.2); }
+    .craft-btn {
+      margin-left: auto; padding: 5px 12px; border-radius: 8px; border: none;
+      background: rgba(255,216,107,0.85); color: #2a2410; font-weight: bold;
+      font-size: 13px; cursor: pointer; flex-shrink: 0;
+    }
+    .craft-btn:disabled { background: rgba(120,110,80,0.45); color: #888; cursor: not-allowed; }
+    .craft-btn:not(:disabled):hover { background: #ffd86b; }
+    @media (orientation: portrait) {
+      #craftBtn { top: auto; bottom: 104px; right: 10px; }
+      #craft { top: auto; transform: translateX(-50%); bottom: 10px; max-height: 65vh; }
+    }
   </style>
   <!-- Three.js 走 CDN importmap（比照 /3d/ 與 /play3d/）。 -->
   <script type="importmap">
@@ -303,6 +368,7 @@
   <div id="hud">載入中…</div>
   <div id="dbg"></div>
   <div id="err"></div>
+  <div id="msg"></div>
   <div id="crosshair"></div>
   <!-- 快捷欄槽位由 main.js 依方塊型別動態生成 -->
   <div id="hotbar"></div>
@@ -335,6 +401,8 @@
     </div>
     <div id="diaryBody"></div>
   </div>
+  <!-- 合成台按鈕（ROADMAP 658）-->
+  <button id="craftBtn">🔨 合成</button>
   <!-- 城鎮動態 Feed（ROADMAP 655）-->
   <div id="feedBtn">🌐 動態</div>
   <div id="feed">
@@ -343,6 +411,14 @@
       <span id="feedClose">✕</span>
     </div>
     <div id="feedBody"></div>
+  </div>
+  <!-- 合成台面板（ROADMAP 658）-->
+  <div id="craft">
+    <div id="craftHead">
+      <span id="craftTitle">🔨 合成台</span>
+      <span id="craftClose">✕</span>
+    </div>
+    <div id="craftBody"></div>
   </div>
   <!-- 相對於 /voxel/ 載入；?v 由後端 serve_voxel_index 注入內容雜湊 -->
   <script type="module" src="main.js?v=1"></script>
