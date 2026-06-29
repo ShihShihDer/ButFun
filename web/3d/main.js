@@ -2239,7 +2239,7 @@ function makeFieldPlot(field) {
 // 田的 reconcile：以 owner 當 key（per-player 一塊地）。位置不動（固定地塊），故不進
 // updateRemoteEntities（那是給會走動的實體內插用）；只在 digest 變更時重建作物層。
 const fields = new Map();
-function reconcileFields(list, recvT) {
+function reconcileFieldsLegacy(list, recvT) {
   const seen = new Set();
   if (Array.isArray(list)) {
     for (const field of list) {
@@ -2290,7 +2290,8 @@ const CROP_LOD_IN = 66, CROP_LOD_OUT = 74;        // 作物細節：距鏡頭 <I
 const CROP_LOD_IN2 = CROP_LOD_IN * CROP_LOD_IN, CROP_LOD_OUT2 = CROP_LOD_OUT * CROP_LOD_OUT;
 
 // 每幀更新所有田：作物細節距離 LOD＋作物隨風輕搖、成熟金果發光脈動、AOI 淡入淡出。皆尊重 reduceMotion。
-function updateFields(dt, t) {
+// （legacy：每格一 mesh 路徑，僅在不支援 InstancedMesh 的環境＝render-smoke 假 THREE 走到。）
+function updateFieldsLegacy(dt, t) {
   for (const [key, g] of fields) {
     const layer = g.userData.cropLayer;
     if (layer) {
@@ -2322,6 +2323,235 @@ function updateFields(dt, t) {
     if (updateFade(g, dt)) { scene.remove(g); fields.delete(key); }
   }
 }
+
+// ============================================================
+// 作物實例化（perf/3d-crop-instancing，修 #614 走路 FPS 懸崖）
+// ============================================================
+// 病灶——#614 把「每一格作物」做成獨立 THREE.Mesh＋獨立 MeshLambertMaterial，再加 #624 進度條
+// （每株成長中作物 +2 mesh）、枯萎藍針、稻草人……一塊地幾十顆、滿世界幾百顆獨立場景物件。
+// Three.js 每幀都要遍歷所有物件做視錐剔除＋送出幾百個 draw call → 既 draw-call-bound 又
+// CPU-bound（即使作物沒變、每幀 JS 照漲）。節流真 QA 量到：走路 ~350 draw call、JS/幀 ~34ms、
+// throttle 3x 下走路 FPS 卡在 ~15。
+//
+// 對策——把所有田、所有格的同類東西，合進「每類一個 THREE.InstancedMesh」：種子/發芽/成熟/
+// 枯萎針/進度條底槽/進度條填充/稻草人桿/稻草人臂/土底，共 9 個 InstancedMesh。draw call 從幾百
+// 崩成 9、場景圖物件剩個位數、每幀遍歷成本近乎歸零。顏色固定的階段共用一份材質；需要逐顆變色的
+// （土底「自己的地」暖色、進度條 grow/soon）用 per-instance setColorAt；變換用 setMatrixAt。
+//
+// 「資料變才更新 buffer」：作物每快照才會變（生長/收成/種植/澆水）。維護 cropsDirty 旗標——只有
+// 田增減、digest 變（fieldDigest 量化過、跨檔才算變）、距離 LOD 翻轉、或 AOI 淡入淡出進行中時，
+// 才在該幀重建一次 instance buffer；其餘幀完全不碰 buffer（零增量開銷）。絕不每幀重建整批。
+//
+// 取捨——作物隨風輕搖（sway）原是「每幀逐顆改 rotation」＝在實例化下等於每幀重寫整批矩陣 buffer，
+// 正是要消滅的 CPU 成本，故捨去（reduceMotion 本來就關它）。成熟金果發光改為「整批共用材質的
+// emissiveIntensity 每幀脈動一次」（單一 uniform 更新，極省），視覺保留。階段生長、顏色、枯萎針、
+// 進度條、收成/種植即時更新全數保留。距離 LOD（遠田只留土底）與 AOI 淡入淡出（以縮放烘進矩陣）亦保留。
+//
+// 相容——render-smoke-3d 的假 THREE 無 InstancedMesh/Object3D → FIELD_INSTANCING=false，自動退回
+// 上方 *Legacy 路徑（邏輯原封不動），閘門測試照綠；真瀏覽器走實例化路徑拿效能。
+// ============================================================
+const FIELD_INSTANCING = typeof THREE.InstancedMesh === "function" && typeof THREE.Object3D === "function";
+
+let _fieldSoilGeo = null;    // 土底單位平面（攤平到 XZ），延後到 init 建（假 THREE 的 geo stub 無 .rotateX）
+let cropBatches = null;      // { seed, sprout, mature, dry, barbg, barfill, soil, pole, arm } 九個 InstancedMesh
+let _instDummy = null;       // 組合 per-instance 矩陣用的暫存 Object3D（重複使用，不每顆 new）
+let _instColor = null;       // setColorAt 用的暫存 Color
+let _matureMat = null;       // 成熟金果共用材質（每幀脈動 emissiveIntensity）
+let cropsDirty = false;      // 只有資料/可見性變了才在該幀重建 instance buffer
+
+// 各 instance 批次初始容量（不夠會在重建前自動倍增）；土/稻草人少、作物與進度條較多。
+const INST_CAP0 = { seed: 128, sprout: 256, mature: 128, dry: 64, barbg: 256, barfill: 256, soil: 32, pole: 16, arm: 16 };
+
+// 建一個 InstancedMesh 批次：實例散佈全世界→整批 bounding sphere 失準（Three 預設用單一幾何體
+// 的 bound 算剔除，會誤剔），故關視錐剔除——反正只 9 批，永遠提交也便宜。
+function makeInstBatch(geo, mat, cap, withColor) {
+  const m = new THREE.InstancedMesh(geo, mat, cap);
+  m.frustumCulled = false;
+  m.count = 0;
+  try { if (THREE.DynamicDrawUsage && m.instanceMatrix && m.instanceMatrix.setUsage) m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); } catch (e) { /* 無此 API 無妨 */ }
+  m.userData.cap = cap;
+  m.userData.withColor = !!withColor;
+  scene.add(m);
+  return m;
+}
+
+// 首次需要時建好 9 個批次與共用材質/幾何（只在支援 InstancedMesh 的真瀏覽器走到）。
+function initCropInstances() {
+  if (cropBatches) return;
+  _instDummy = new THREE.Object3D();
+  _instColor = new THREE.Color();
+  _fieldSoilGeo = new THREE.PlaneGeometry(1, 1);
+  _fieldSoilGeo.rotateX(-Math.PI / 2); // 攤平到地面（XZ），per-instance 矩陣縮放成各田尺寸
+
+  _matureMat = new THREE.MeshLambertMaterial({ color: CROP_STAGE[4].color });
+  _matureMat.emissive = new THREE.Color(0xffe9a0); _matureMat.emissiveIntensity = 0.5; // 成熟金果發光（鏡像 legacy）
+  const seedMat = new THREE.MeshLambertMaterial({ color: CROP_STAGE[2].color });
+  const sproutMat = new THREE.MeshLambertMaterial({ color: CROP_STAGE[3].color });
+  const dryMat = new THREE.MeshBasicMaterial({ color: CROP_DRY_COLOR, transparent: true, opacity: 0.75 });
+  const barBgMat = new THREE.MeshBasicMaterial({ color: CROP_BAR_BG_COLOR, transparent: true, opacity: 0.55 });
+  const barFillMat = new THREE.MeshBasicMaterial({ color: 0xffffff }); // 底色白，grow/soon 由 per-instance 色相乘
+  const soilMat = new THREE.MeshLambertMaterial({ color: 0xffffff });  // 「自己的地」暖色差由 per-instance 色帶
+  const scareMat = new THREE.MeshLambertMaterial({ color: SCARECROW_COLOR }); // 稻草人桿/臂共用一份材質
+
+  cropBatches = {
+    seed: makeInstBatch(_cropSeedGeo, seedMat, INST_CAP0.seed, false),
+    sprout: makeInstBatch(_cropSproutGeo, sproutMat, INST_CAP0.sprout, false),
+    mature: makeInstBatch(_cropMatureGeo, _matureMat, INST_CAP0.mature, false),
+    dry: makeInstBatch(_cropSproutGeo, dryMat, INST_CAP0.dry, false),
+    barbg: makeInstBatch(_cropBarGeo, barBgMat, INST_CAP0.barbg, false),
+    barfill: makeInstBatch(_cropBarGeo, barFillMat, INST_CAP0.barfill, true),
+    soil: makeInstBatch(_fieldSoilGeo, soilMat, INST_CAP0.soil, true),
+    pole: makeInstBatch(_scarePoleGeo, scareMat, INST_CAP0.pole, false),
+    arm: makeInstBatch(_scareArmGeo, scareMat, INST_CAP0.arm, false),
+  };
+}
+
+// 容量不夠就倍增重建該批次（保留 geo/material，只換更大的 instance buffer）；很罕見（容量是上限）。
+function ensureCropCap(kind, need) {
+  const b = cropBatches[kind];
+  if (need <= b.userData.cap) return;
+  let cap = b.userData.cap;
+  while (cap < need) cap *= 2;
+  scene.remove(b);
+  try { b.dispose && b.dispose(); } catch (e) { /* 無妨 */ }
+  cropBatches[kind] = makeInstBatch(b.geometry, b.material, cap, b.userData.withColor);
+}
+
+// 走訪一塊田該長出的所有 instance（土底＋各格作物/枯萎針/進度條＋稻草人），對每顆呼叫 cb(kind,x,y,z,sx,sy,sz,color?)。
+// 計數與填充兩階段共用同一支走訪，杜絕兩邊邏輯漂移。fade 以縮放烘進矩陣（鏡像 legacy updateFade 的
+// g.scale.setScalar(0.55+0.45*fade)＝淡入長大、淡出縮回）；不做 per-instance 透明（實例共用材質，改縮放等價且省）。
+function forEachFieldInstance(r, cb) {
+  const sc = 0.55 + 0.45 * (r.fade != null ? r.fade : 1);
+  cb("soil", r.cx, -0.4 * sc, r.cz, r.cols * r.tileS * sc, sc, r.rows * r.tileS * sc, r.own ? FIELD_SOIL_OWN_COLOR : FIELD_SOIL_COLOR);
+  if (r.lodHidden) return; // 距離 LOD：遠到看不清單株，只留土底（鏡像 legacy 作物層 visible=false）
+  const cols = r.cols, rows = r.rows, tileS = r.tileS, cells = r.cells;
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const vis = cropCellVisual(cells[row * cols + col]);
+      if (!vis) continue;
+      const lx = (col + 0.5 - cols / 2) * tileS, lz = (row + 0.5 - rows / 2) * tileS;
+      const wx = r.cx + lx * sc, wz = r.cz + lz * sc;
+      if (vis.state === 2) cb("seed", wx, vis.h * sc, wz, sc, sc, sc);                  // 種子：小球
+      else if (vis.state === 4) cb("mature", wx, vis.h * sc, wz, sc, vis.h * sc, sc);   // 成熟：飽滿金錐（高隨階段）
+      else cb("sprout", wx, vis.h * sc, wz, sc, vis.h * sc, sc);                        // 發芽：細綠錐（高隨階段）
+      if (vis.dry) cb("dry", wx, (vis.h + 0.9) * sc, wz, 0.4 * sc, 0.6 * sc, 0.4 * sc); // 缺水藍針
+      if (vis.state === 2 || vis.state === 3) {                                          // 熟成進度條（ROADMAP 624）
+        const barW = tileS * 0.66, barY = vis.h + (vis.state === 2 ? 0.55 : 0.9);
+        cb("barbg", wx, barY * sc, wz, barW * sc, sc, sc);
+        const fill = cropBarFill(vis.grow);
+        if (fill.ratio > 0) {
+          const fw = barW * fill.ratio; // 左對齊：box 中心向左挪半條寬、再加回填充半寬
+          cb("barfill", r.cx + (lx - barW / 2 + fw / 2) * sc, (barY + 0.04) * sc, wz, fw * sc, sc, sc, fill.soon ? CROP_BAR_SOON_COLOR : CROP_BAR_GROW_COLOR);
+        }
+      }
+    }
+  }
+  const s = r.scarecrow; // 稻草人守望（ROADMAP 476）：十字＝桿＋臂
+  if (Array.isArray(s) && s.length === 2 && Number.isFinite(s[0]) && Number.isFinite(s[1])) {
+    const lx = (s[0] + 0.5 - cols / 2) * tileS, lz = (s[1] + 0.5 - rows / 2) * tileS;
+    cb("pole", r.cx + lx * sc, 1.1 * sc, r.cz + lz * sc, sc, sc, sc);
+    cb("arm", r.cx + lx * sc, 1.5 * sc, r.cz + lz * sc, sc, sc, sc);
+  }
+}
+
+// 重建所有 instance buffer（只在 cropsDirty 那幀呼叫）：(1) 計數定容量 (2) 填矩陣/顏色 (3) 設 count＋needsUpdate。
+function rebuildCropInstances() {
+  if (!cropBatches) initCropInstances();
+  const need = { seed: 0, sprout: 0, mature: 0, dry: 0, barbg: 0, barfill: 0, soil: 0, pole: 0, arm: 0 };
+  for (const [, r] of fields) {
+    if (r.fade <= 0.005) continue; // 幾近全透明（剛生/將滅）不畫
+    forEachFieldInstance(r, (kind) => { need[kind]++; });
+  }
+  for (const k in need) ensureCropCap(k, need[k]);
+  const idx = { seed: 0, sprout: 0, mature: 0, dry: 0, barbg: 0, barfill: 0, soil: 0, pole: 0, arm: 0 };
+  const dummy = _instDummy;
+  for (const [, r] of fields) {
+    if (r.fade <= 0.005) continue;
+    forEachFieldInstance(r, (kind, x, y, z, sxx, syy, szz, color) => {
+      const b = cropBatches[kind], i = idx[kind]++;
+      dummy.position.set(x, y, z);
+      dummy.scale.set(sxx, syy, szz);
+      dummy.updateMatrix();
+      b.setMatrixAt(i, dummy.matrix);
+      if (color !== undefined) { _instColor.setHex(color); b.setColorAt(i, _instColor); }
+    });
+  }
+  for (const k in cropBatches) {
+    const b = cropBatches[k];
+    b.count = idx[k]; // count 之外的舊矩陣自動不畫（收成/淡出即時生效）
+    if (b.instanceMatrix) b.instanceMatrix.needsUpdate = true;
+    if (b.instanceColor) b.instanceColor.needsUpdate = true;
+  }
+}
+
+// 田的 reconcile（instancing 版）：以 owner 為 key（per-player 一塊地）。把每塊田存成輕量 record（資料＋
+// 中心座標＋fade/lod/digest），只在「田增減／digest 變／中心移動／自他切換」時標 cropsDirty。
+function reconcileFieldsInst(list, recvT) {
+  const seen = new Set();
+  if (Array.isArray(list)) {
+    for (const field of list) {
+      try {
+        if (!field || typeof field !== "object") continue;
+        if (!Number.isFinite(field.origin_x) || !Number.isFinite(field.origin_y)) continue;
+        const key = String(field.owner || (field.origin_x + "_" + field.origin_y));
+        seen.add(key);
+        const cols = Number.isFinite(field.cols) && field.cols > 0 ? Math.min(field.cols, 64) : 1;
+        const rows = Number.isFinite(field.rows) && field.rows > 0 ? Math.min(field.rows, 64) : 1;
+        const tileS = fieldTileScene(field);
+        const tsPx = Number.isFinite(field.tile_size) && field.tile_size > 0 ? field.tile_size : 48;
+        const cx = sx(field.origin_x + (cols * tsPx) / 2); // 田中心場景座標（record 原點＝田中心）
+        const cz = sz(field.origin_y + (rows * tsPx) / 2);
+        const own = !!(field.owner && myId && field.owner === myId);
+        let r = fields.get(key);
+        if (!r) {
+          r = { fade: 0, fadeTarget: 1, removing: false, lodHidden: false, digest: "", cx, cz, own };
+          fields.set(key, r);
+          cropsDirty = true;
+        }
+        r.cells = Array.isArray(field.cells) ? field.cells : [];
+        r.scarecrow = field.scarecrow;
+        r.cols = cols; r.rows = rows; r.tileS = tileS;
+        if (cx !== r.cx || cz !== r.cz) { r.cx = cx; r.cz = cz; cropsDirty = true; }
+        if (own !== r.own) { r.own = own; cropsDirty = true; }
+        if (r.removing) { r.removing = false; r.fadeTarget = 1; cropsDirty = true; }
+        const dg = fieldDigest(field);
+        if (dg !== r.digest) { r.digest = dg; cropsDirty = true; }
+      } catch (e) {
+        console.warn("reconcileFields 單筆失敗，已略過", e);
+      }
+    }
+  }
+  // 沒在這份快照出現的田 → 淡出移除（AOI 邊緣不啪一下消失）。
+  for (const [key, r] of fields) {
+    if (!seen.has(key) && !r.removing) { r.removing = true; r.fadeTarget = 0; cropsDirty = true; }
+  }
+}
+
+// 田的每幀更新（instancing 版）：手動推進 AOI 淡入淡出＋距離 LOD（皆鏡像 legacy 收斂率/遲滯帶），
+// 任一改變即標 cropsDirty；成熟金果發光整批脈動一次；最後若 dirty 才重建一次 instance buffer。
+function updateFieldsInst(dt, t) {
+  for (const [key, r] of fields) {
+    const tgt = r.fadeTarget != null ? r.fadeTarget : 1;
+    const nf = r.fade + (tgt - r.fade) * Math.min(1, dt * FADE_RATE);
+    if (Math.abs(nf - r.fade) > 0.0008) cropsDirty = true; // 仍在淡入淡出 → 縮放在動 → 該幀重建
+    r.fade = nf;
+    if (r.removing && nf < 0.02) { fields.delete(key); cropsDirty = true; continue; }
+    if (camera) { // 距離 LOD（遲滯帶；鏡像 legacy）：遠到看不清就只留土底
+      const dx = r.cx - camera.position.x, dz = r.cz - camera.position.z;
+      const d2 = dx * dx + dz * dz;
+      let hide = r.lodHidden;
+      if (d2 > CROP_LOD_OUT2) hide = true; else if (d2 < CROP_LOD_IN2) hide = false;
+      if (hide !== r.lodHidden) { r.lodHidden = hide; cropsDirty = true; }
+    }
+  }
+  // 成熟金果發光脈動：整批共用材質一次更新（極省；取代 legacy 的每顆脈動，視覺保留）。尊重 reduceMotion。
+  if (_matureMat) _matureMat.emissiveIntensity = reduceMotion ? 0.5 : (0.4 + 0.2 * (0.5 + 0.5 * Math.sin(t * 2.2)));
+  if (cropsDirty) { rebuildCropInstances(); cropsDirty = false; }
+}
+
+// 派發：真瀏覽器走實例化、假 THREE（render-smoke）退回 legacy 每格一 mesh 路徑。
+function reconcileFields(list, recvT) { return FIELD_INSTANCING ? reconcileFieldsInst(list, recvT) : reconcileFieldsLegacy(list, recvT); }
+function updateFields(dt, t) { return FIELD_INSTANCING ? updateFieldsInst(dt, t) : updateFieldsLegacy(dt, t); }
 
 // ============================================================
 // 人造地標在 3D 裡立起來（ROADMAP 616）：把快照裡早就有、2D 一直看得到、3D 卻整個忽略的
