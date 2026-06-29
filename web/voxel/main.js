@@ -271,7 +271,35 @@ function setSpriteText(sprite, text, bubble) {
   sprite.material.needsUpdate = true;
 }
 
-// 建一位居民的可見實體（簡單 voxel 人形：軀幹 + 頭 + 名牌 + 泡泡）。
+// 居民「夢想副標籤」sprite 工廠——名牌之下、小字 dim 暖色，顯示玩家種下的心願。
+function makeDesireSprite(text) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256; canvas.height = 44;
+  const ctx = canvas.getContext("2d");
+  ctx.font = "italic 18px system-ui, sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  let label = text;
+  if (label.length > 18) label = label.slice(0, 17) + "…";
+  ctx.lineWidth = 4; ctx.strokeStyle = "rgba(0,0,0,0.55)";
+  ctx.strokeText(label, 128, 22);
+  ctx.fillStyle = "rgba(255,220,140,0.88)";
+  ctx.fillText(label, 128, 22);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.anisotropy = 4;
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false })
+  );
+  sprite.scale.set(2.2, 0.48, 1);
+  return sprite;
+}
+function setDesireText(sprite, text) {
+  const fresh = makeDesireSprite(text);
+  if (sprite.material.map) sprite.material.map.dispose();
+  sprite.material.map = fresh.material.map;
+  sprite.material.needsUpdate = true;
+}
+
+// 建一位居民的可見實體（簡單 voxel 人形：軀幹 + 頭 + 名牌 + 夢想副標籤 + 泡泡）。
 // group.userData.rid 記居民 id，供點選 raycast 反查「點到的是哪位居民」。
 function buildResident(id, name) {
   const group = new THREE.Group();
@@ -285,12 +313,17 @@ function buildResident(id, name) {
   const label = makeTextSprite(name, false);
   label.position.y = 2.0;
   group.add(label);
+  // 夢想副標籤：名牌下方，有心願時才顯示（玩家看到「我說的話種下了什麼」）。
+  const desireLabel = makeDesireSprite("");
+  desireLabel.position.y = 1.6;
+  desireLabel.visible = false;
+  group.add(desireLabel);
   const bubble = makeTextSprite("", true);
   bubble.position.y = 2.55;
   bubble.visible = false;
   group.add(bubble);
   scene.add(group);
-  return { group, label, bubble, lastName: name, lastSay: "" };
+  return { group, label, desireLabel, bubble, lastName: name, lastSay: "", lastDesire: "" };
 }
 
 // 依伺服器快照更新所有居民（位置/朝向/名字/說的話）。新出現的就建、消失的就移除。
@@ -303,6 +336,13 @@ function updateResidents(list) {
     ent.group.position.set(r.x, r.y, r.z);
     ent.group.rotation.y = r.yaw || 0;
     if (r.name !== ent.lastName) { setSpriteText(ent.label, r.name, false); ent.lastName = r.name; }
+    // 夢想副標籤：有 desire 就顯示「💭 心願文字」，沒有就隱藏。
+    const desire = r.desire || "";
+    if (desire !== ent.lastDesire) {
+      ent.lastDesire = desire;
+      if (desire) { setDesireText(ent.desireLabel, "💭 " + desire); ent.desireLabel.visible = true; }
+      else { ent.desireLabel.visible = false; }
+    }
     const say = r.say || "";
     if (say !== ent.lastSay) {
       ent.lastSay = say;
