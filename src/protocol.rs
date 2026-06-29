@@ -1471,6 +1471,10 @@ pub enum ServerMsg {
         /// `None`＝舊伺服器無此功能；`#[serde(default)]` 向後相容舊客戶端（無此欄位時靜默略過）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         harvest_festival: Option<HarvestFestivalView>,
+        /// 田邊清泉（ROADMAP 647，禱告驅動）：應諾娃之禱，農田北坡的天然清泉常流不息。
+        /// `None`＝舊伺服器無此設施；`#[serde(default)]` 向後相容舊客戶端（無此欄位時靜默略過）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        field_spring: Option<FieldSpringView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -3290,6 +3294,14 @@ fn default_house_type() -> String {
     "house".to_string()
 }
 
+/// 田邊清泉的快照（ROADMAP 647，禱告驅動）。應 AI 居民諾娃反覆禱告「願農田旁能有清泉常流」
+/// 而立在農田北坡的天然清泉。前端在 `(x,y)` 繪製圍泉石塊＋水池；漣漪環動畫由前端基於本機時間驅動。
+#[derive(Debug, Clone, Serialize)]
+pub struct FieldSpringView {
+    pub x: f32,
+    pub y: f32,
+}
+
 /// 今日世界戰報（ROADMAP 495）：全伺服器自啟動起的今日行動累計，向後相容預設全零。
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct WorldTallyView {
@@ -3831,6 +3843,7 @@ mod tests {
             village_tea_stall: None,
             resident_homes: vec![],
             harvest_festival: None,
+            field_spring: None,
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

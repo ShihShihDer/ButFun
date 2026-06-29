@@ -5202,6 +5202,9 @@ pub fn spawn(app: AppState) {
                                 active: festival.is_active(),
                             })
                         },
+                        // 田邊清泉（ROADMAP 647）：純靜態設施，整份快照恆帶（位置由常數決定，無執行期狀態）。
+                        // 零鎖、零 tick——直接呼叫 field_spring::view() 即可。
+                        field_spring: Some(crate::field_spring::view()),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));
