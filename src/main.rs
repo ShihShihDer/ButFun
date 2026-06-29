@@ -107,6 +107,9 @@ mod tools;
 mod users;
 mod world_event;
 mod ws;
+// AI 生態世界 voxel 基底（切片①）：全隔離的方塊世界，並行於現有世界、互不干涉。
+mod voxel;
+mod voxel_ws;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
@@ -389,6 +392,11 @@ async fn main() {
         .route("/3d/index.html", get(serve_3d_index))
         .route("/play3d/", get(serve_play3d_index))
         .route("/play3d/index.html", get(serve_play3d_index))
+        // AI 生態世界 voxel 基底（切片①）：新頁 /voxel/ + 獨立 WS /voxel/ws，全隔離、
+        // additive，與現有 2D/3D 協定零交集（見 voxel.rs / voxel_ws.rs）。
+        .route("/voxel/", get(serve_voxel_index))
+        .route("/voxel/index.html", get(serve_voxel_index))
+        .route("/voxel/ws", get(voxel_ws::voxel_ws_handler))
         // 其餘路徑（game.js、assets、wasm…）交給靜態前端（web/）。game.js 維持可
         // 快取——它的 URL 帶內容雜湊，內容一變 URL 就變，CF/瀏覽器自然抓新版。
         .fallback_service(ServeDir::new("web"))
@@ -625,6 +633,35 @@ async fn serve_play3d_index() -> impl IntoResponse {
         }
         Err(e) => {
             tracing::warn!("讀 web/play3d/main.js 失敗，index.html 沿用原版本字串：{e}");
+            html
+        }
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache, must-revalidate"),
+        ],
+        body,
+    )
+}
+
+/// `/voxel/`、`/voxel/index.html` 的 handler：同 `serve_3d_index`，對 web/voxel/main.js 算雜湊。
+/// AI 生態世界 voxel 基底的新前端頁，與現有頁完全並行、互不影響。
+async fn serve_voxel_index() -> impl IntoResponse {
+    let html = match std::fs::read_to_string("web/voxel/index.html") {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("讀 web/voxel/index.html 失敗：{e}");
+            String::new()
+        }
+    };
+    let body = match std::fs::read("web/voxel/main.js") {
+        Ok(mainjs) => {
+            tracing::debug!("serve_voxel_index：已把 index.html 的 main.js 版本注入為內容雜湊");
+            inject_mainjs_version(&html, &mainjs)
+        }
+        Err(e) => {
+            tracing::warn!("讀 web/voxel/main.js 失敗，index.html 沿用原版本字串：{e}");
             html
         }
     };

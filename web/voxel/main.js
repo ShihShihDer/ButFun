@@ -1,0 +1,491 @@
+// ============================================================
+// ButFun Voxel 前端（AI 生態世界 voxel 基底·切片①）
+// ============================================================
+// 後端權威、前端只渲染：收伺服器串來的 chunk（方塊資料）→ 合併 mesh（面剔除）→
+// 玩家能走在地形上（重力 + voxel 逐軸 AABB 碰撞）→ 第三人稱鏡頭跟隨 + 鍵盤/觸控。
+//
+// 效能鐵律：**一個 chunk 一個合併 BufferGeometry**（面剔除去掉看不見的內面），
+// 絕不每方塊一個 mesh（記取 #614 教訓）。
+//
+// 全隔離：只連 /voxel/ws、用 voxel 自己的 JSON 協定，不碰現有 2D/3D 任何東西。
+// 不抄外部碼；全繁中註解；node --check 過。
+
+import * as THREE from "three";
+
+// ── 常數（與後端 voxel.rs 對齊）──────────────────────────────────────────────
+const CHUNK = 16; // 一 chunk 邊長（方塊數），與 voxel::CHUNK 一致
+// 方塊型別（對齊 Block enum）
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, WOOD = 5, LEAVES = 6, WATER = 7;
+// 方塊顏色（程序生成、純色；不用任何外部美術資產）
+const COLOR = {
+  [GRASS]:  [0.36, 0.66, 0.27],
+  [DIRT]:   [0.55, 0.40, 0.26],
+  [STONE]:  [0.50, 0.50, 0.52],
+  [SAND]:   [0.85, 0.78, 0.55],
+  [WOOD]:   [0.45, 0.31, 0.18],
+  [LEAVES]: [0.27, 0.55, 0.27],
+  [WATER]:  [0.20, 0.45, 0.85],
+};
+
+const DEBUG = location.search.includes("debug");
+const hudEl = document.getElementById("hud");
+const dbgEl = document.getElementById("dbg");
+const errEl = document.getElementById("err");
+function showErr(msg) { if (errEl) { errEl.textContent = msg; errEl.style.display = "block"; } }
+
+// ── Three.js 場景 ──────────────────────────────────────────────────────────
+const app = document.getElementById("app");
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87b7e0);
+scene.fog = new THREE.Fog(0x87b7e0, 40, 120);
+
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+app.appendChild(renderer.domElement);
+
+// 半球光（天空/地面）給全向環境光（保證永不全黑），加一盞方向光做陰影感。
+scene.add(new THREE.HemisphereLight(0xcfe8ff, 0x6b7a55, 1.15));
+const sun = new THREE.DirectionalLight(0xfff3da, 0.65);
+sun.position.set(40, 80, 25);
+scene.add(sun);
+
+// 方塊用 Lambert + 頂點色（每方塊上色），對光反應但靠半球光保底不黑。
+// DoubleSide：切片① 求穩，避免任一面纏繞方向算錯被背面剔除成破洞/黑屏（perf 微讓步，之後可收回 FrontSide）。
+const opaqueMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+const waterMat = new THREE.MeshLambertMaterial({ color: 0x2f6fd0, transparent: true, opacity: 0.55, side: THREE.DoubleSide });
+
+// ── 世界資料：chunk 方塊 + mesh ─────────────────────────────────────────────
+const chunks = new Map();      // "cx,cy,cz" -> Uint8Array(4096)
+const meshes = new Map();      // "cx,cy,cz" -> { solid: Mesh|null, water: Mesh|null }
+const dirty = new Set();       // 待重建 mesh 的 chunk key
+const requested = new Set();   // 已向伺服器要過的 column "cx,cz"
+
+function ckey(cx, cy, cz) { return cx + "," + cy + "," + cz; }
+
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr;
+}
+
+// 任一世界座標的方塊原值：未載入回 -1，地心（y<0）回石頭（對齊後端基岩）。
+function getRaw(wx, wy, wz) {
+  if (wy < 0) return STONE;
+  const cx = Math.floor(wx / CHUNK), cy = Math.floor(wy / CHUNK), cz = Math.floor(wz / CHUNK);
+  const ch = chunks.get(ckey(cx, cy, cz));
+  if (!ch) return -1;
+  const lx = wx - cx * CHUNK, ly = wy - cy * CHUNK, lz = wz - cz * CHUNK;
+  return ch[lx + lz * CHUNK + ly * CHUNK * CHUNK];
+}
+
+// 碰撞用：未載入(-1)視為空（不擋路、不卡人）；水與空氣不實心。
+function solidCollide(wx, wy, wz) {
+  const r = getRaw(wx, wy, wz);
+  return r > 0 && r !== WATER; // -1/AIR/WATER → false
+}
+
+// ── 六面定義（外向法線；用 DoubleSide 材質保險，避免纏繞方向把面剔成黑屏）──────
+const FACES = [
+  { n: [1, 0, 0],  v: [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]], d: [1, 0, 0] },
+  { n: [-1, 0, 0], v: [[0, 0, 1], [0, 1, 1], [0, 1, 0], [0, 0, 0]], d: [-1, 0, 0] },
+  { n: [0, 1, 0],  v: [[0, 1, 1], [1, 1, 1], [1, 1, 0], [0, 1, 0]], d: [0, 1, 0] },
+  { n: [0, -1, 0], v: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]], d: [0, -1, 0] },
+  { n: [0, 0, 1],  v: [[1, 0, 1], [1, 1, 1], [0, 1, 1], [0, 0, 1]], d: [0, 0, 1] },
+  { n: [0, 0, -1], v: [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]], d: [0, 0, -1] },
+];
+
+// 不透明面是否該畫：相鄰是空氣或水（看得到）才畫；未載入(-1)當作實心 → 不畫（避免世界邊緣冒出一面牆，等鄰塊串到再補）。
+function faceVisibleOpaque(nx, ny, nz) {
+  const r = getRaw(nx, ny, nz);
+  if (r === -1) return false;
+  return r === AIR || r === WATER;
+}
+// 水面只朝空氣畫（露出水面那一片），鄰格未載入時不畫。
+function faceVisibleWater(nx, ny, nz) {
+  const r = getRaw(nx, ny, nz);
+  return r === AIR;
+}
+
+// 重建一個 chunk 的合併 mesh（不透明 + 水各一個 geometry）。
+function rebuildChunk(key) {
+  const [cx, cy, cz] = key.split(",").map(Number);
+  const ch = chunks.get(key);
+  const old = meshes.get(key);
+  if (old) {
+    if (old.solid) { scene.remove(old.solid); old.solid.geometry.dispose(); }
+    if (old.water) { scene.remove(old.water); old.water.geometry.dispose(); }
+    meshes.delete(key);
+  }
+  if (!ch) return;
+
+  const pos = [], norm = [], col = [], idx = [];
+  const wpos = [], wnorm = [], widx = [];
+  const baseX = cx * CHUNK, baseY = cy * CHUNK, baseZ = cz * CHUNK;
+
+  for (let ly = 0; ly < CHUNK; ly++) {
+    for (let lz = 0; lz < CHUNK; lz++) {
+      for (let lx = 0; lx < CHUNK; lx++) {
+        const b = ch[lx + lz * CHUNK + ly * CHUNK * CHUNK];
+        if (b === AIR) continue;
+        const wx = baseX + lx, wy = baseY + ly, wz = baseZ + lz;
+        if (b === WATER) {
+          for (const f of FACES) {
+            if (!faceVisibleWater(wx + f.d[0], wy + f.d[1], wz + f.d[2])) continue;
+            emitFace(wpos, wnorm, null, widx, lx, ly, lz, f, null);
+          }
+        } else {
+          const c = COLOR[b] || COLOR[STONE];
+          for (const f of FACES) {
+            if (!faceVisibleOpaque(wx + f.d[0], wy + f.d[1], wz + f.d[2])) continue;
+            emitFace(pos, norm, col, idx, lx, ly, lz, f, c);
+          }
+        }
+      }
+    }
+  }
+
+  const entry = { solid: null, water: null };
+  if (idx.length) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute("normal", new THREE.Float32BufferAttribute(norm, 3));
+    g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+    g.setIndex(idx);
+    const m = new THREE.Mesh(g, opaqueMat);
+    m.position.set(baseX, baseY, baseZ);
+    scene.add(m);
+    entry.solid = m;
+  }
+  if (widx.length) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(wpos, 3));
+    g.setAttribute("normal", new THREE.Float32BufferAttribute(wnorm, 3));
+    g.setIndex(widx);
+    const m = new THREE.Mesh(g, waterMat);
+    m.position.set(baseX, baseY, baseZ);
+    scene.add(m);
+    entry.water = m;
+  }
+  meshes.set(key, entry);
+}
+
+// 把一個面（4 頂點、2 三角）推進陣列。座標用 chunk 局部（mesh 自身有 position 偏移）。
+function emitFace(pos, norm, col, idx, lx, ly, lz, f, c) {
+  const start = pos.length / 3;
+  for (const v of f.v) {
+    pos.push(lx + v[0], ly + v[1], lz + v[2]);
+    norm.push(f.n[0], f.n[1], f.n[2]);
+    if (col && c) col.push(c[0], c[1], c[2]);
+  }
+  idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
+}
+
+// 把一個 chunk 連同鄰塊標記為待重建（鄰塊也要重算面剔除）。
+function markDirty(cx, cy, cz) {
+  dirty.add(ckey(cx, cy, cz));
+  dirty.add(ckey(cx + 1, cy, cz)); dirty.add(ckey(cx - 1, cy, cz));
+  dirty.add(ckey(cx, cy + 1, cz)); dirty.add(ckey(cx, cy - 1, cz));
+  dirty.add(ckey(cx, cy, cz + 1)); dirty.add(ckey(cx, cy, cz - 1));
+}
+
+// ── 玩家狀態（前端權威預測；位置同步回伺服器給別人看）──────────────────────
+const player = { x: 0.5, y: 30, z: 0.5, vy: 0, grounded: false, yaw: 0 };
+const PW = 0.3, PH = 1.7; // 半寬 / 身高
+let myId = null;
+let myName = "旅人";
+
+// 玩家身體（第三人稱可見的小方塊角色）
+const bodyGeo = new THREE.BoxGeometry(0.6, PH, 0.6);
+const bodyMat = new THREE.MeshLambertMaterial({ color: 0xffcf6b });
+const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
+scene.add(bodyMesh);
+
+// 其他玩家
+const others = new Map(); // id -> Mesh
+const otherMat = new THREE.MeshLambertMaterial({ color: 0x8fd0ff });
+
+// AABB 是否與任一實心方塊重疊（碰撞核心）。
+function overlaps() {
+  const x0 = Math.floor(player.x - PW), x1 = Math.floor(player.x + PW);
+  const y0 = Math.floor(player.y), y1 = Math.floor(player.y + PH - 0.01);
+  const z0 = Math.floor(player.z - PW), z1 = Math.floor(player.z + PW);
+  for (let bx = x0; bx <= x1; bx++)
+    for (let by = y0; by <= y1; by++)
+      for (let bz = z0; bz <= z1; bz++)
+        if (solidCollide(bx, by, bz)) return true;
+  return false;
+}
+
+// 水平移動一軸：撞牆就回退；若站在地上，試著踏上 1 格高台階（讓走斜坡/小丘順暢）。
+function moveAxis(axis, delta) {
+  if (delta === 0) return;
+  const prev = player[axis];
+  player[axis] += delta;
+  if (!overlaps()) return;
+  if (player.grounded) {
+    const py = player.y;
+    player.y += 1.05;
+    if (!overlaps()) return; // 踏上台階成功（抬高 y，之後重力會落穩）
+    player.y = py;
+  }
+  player[axis] = prev; // 完全擋住 → 回退
+}
+
+// ── 輸入 ───────────────────────────────────────────────────────────────────
+const keys = {};
+addEventListener("keydown", (e) => { keys[e.code] = true; if (e.code === "Space") e.preventDefault(); });
+addEventListener("keyup", (e) => { keys[e.code] = false; });
+
+// 滑鼠拖曳轉鏡頭
+let camPitch = 0.35;
+let dragging = false, lastX = 0, lastY = 0;
+renderer.domElement.addEventListener("pointerdown", (e) => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
+addEventListener("pointerup", () => { dragging = false; });
+addEventListener("pointermove", (e) => {
+  if (!dragging) return;
+  player.yaw -= (e.clientX - lastX) * 0.005;
+  camPitch = Math.max(-0.2, Math.min(1.3, camPitch + (e.clientY - lastY) * 0.005));
+  lastX = e.clientX; lastY = e.clientY;
+});
+
+// 觸控搖桿
+const touchEl = document.getElementById("touch");
+let joyVec = { x: 0, y: 0 };
+if ("ontouchstart" in window || navigator.maxTouchPoints > 0) {
+  if (touchEl) touchEl.style.display = "block";
+  const joy = document.getElementById("joy"), nub = document.getElementById("joyNub");
+  let joyId = null, jcx = 0, jcy = 0;
+  joy.addEventListener("touchstart", (e) => {
+    const t = e.changedTouches[0]; joyId = t.identifier;
+    const r = joy.getBoundingClientRect(); jcx = r.left + r.width / 2; jcy = r.top + r.height / 2;
+    e.preventDefault();
+  }, { passive: false });
+  addEventListener("touchmove", (e) => {
+    for (const t of e.changedTouches) {
+      if (t.identifier !== joyId) continue;
+      let dx = (t.clientX - jcx) / 50, dy = (t.clientY - jcy) / 50;
+      dx = Math.max(-1, Math.min(1, dx)); dy = Math.max(-1, Math.min(1, dy));
+      joyVec.x = dx; joyVec.y = dy;
+      nub.style.left = (35 + dx * 30) + "px"; nub.style.top = (35 + dy * 30) + "px";
+    }
+  }, { passive: false });
+  addEventListener("touchend", (e) => {
+    for (const t of e.changedTouches) if (t.identifier === joyId) { joyId = null; joyVec = { x: 0, y: 0 }; nub.style.left = "35px"; nub.style.top = "35px"; }
+  });
+  // 視角轉動：在非搖桿區拖曳
+  let camId = null, cx0 = 0, cy0 = 0;
+  renderer.domElement.addEventListener("touchstart", (e) => {
+    const t = e.changedTouches[0]; camId = t.identifier; cx0 = t.clientX; cy0 = t.clientY;
+  });
+  renderer.domElement.addEventListener("touchmove", (e) => {
+    for (const t of e.changedTouches) {
+      if (t.identifier !== camId) continue;
+      player.yaw -= (t.clientX - cx0) * 0.006;
+      camPitch = Math.max(-0.2, Math.min(1.3, camPitch + (t.clientY - cy0) * 0.006));
+      cx0 = t.clientX; cy0 = t.clientY;
+    }
+  }, { passive: false });
+  const jumpBtn = document.getElementById("jump");
+  jumpBtn.addEventListener("touchstart", (e) => { tryJump(); e.preventDefault(); }, { passive: false });
+}
+
+function tryJump() { if (player.grounded) { player.vy = 8.2; player.grounded = false; } }
+
+// ── WebSocket（/voxel/ws）─────────────────────────────────────────────────
+let ws = null, wsReady = false;
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/voxel/ws`);
+  ws.onopen = () => {
+    wsReady = true;
+    let nm = "旅人";
+    try { nm = localStorage.getItem("butfun_name") || "旅人"; } catch (e) { /* ignore */ }
+    ws.send(JSON.stringify({ t: "join", name: nm }));
+  };
+  ws.onmessage = (ev) => {
+    let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.t === "welcome") {
+      myId = m.id; myName = m.name || "旅人";
+      player.x = m.spawn.x; player.y = m.spawn.y; player.z = m.spawn.z;
+    } else if (m.t === "chunks") {
+      for (const c of m.chunks) {
+        const key = ckey(c.cx, c.cy, c.cz);
+        chunks.set(key, b64ToBytes(c.data));
+        markDirty(c.cx, c.cy, c.cz);
+      }
+    } else if (m.t === "players") {
+      const seen = new Set();
+      for (const p of m.players) {
+        if (p.id === myId) continue;
+        seen.add(p.id);
+        let mesh = others.get(p.id);
+        if (!mesh) { mesh = new THREE.Mesh(bodyGeo, otherMat); scene.add(mesh); others.set(p.id, mesh); }
+        mesh.position.set(p.x, p.y + PH / 2, p.z);
+        mesh.rotation.y = p.yaw || 0;
+      }
+      for (const [id, mesh] of others) if (!seen.has(id)) { scene.remove(mesh); others.delete(id); }
+    }
+  };
+  ws.onclose = () => { wsReady = false; showErr("連線中斷，重新連線中…"); setTimeout(connect, 1500); };
+  ws.onerror = () => { showErr("連線錯誤"); };
+}
+connect();
+
+// 走到哪、補要哪：請求玩家周邊半徑內、尚未載入也沒要過的 column。
+let reqTimer = 0;
+function streamChunks(dt) {
+  reqTimer -= dt;
+  if (!wsReady || reqTimer > 0) return;
+  reqTimer = 0.25;
+  const pcx = Math.floor(player.x / CHUNK), pcz = Math.floor(player.z / CHUNK);
+  const R = 3;
+  let sent = 0;
+  for (let r = 0; r <= R && sent < 3; r++) {
+    for (let dx = -r; dx <= r && sent < 3; dx++) {
+      for (let dz = -r; dz <= r && sent < 3; dz++) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue; // 由近到遠的環
+        const cx = pcx + dx, cz = pcz + dz, k = cx + "," + cz;
+        if (requested.has(k)) continue;
+        // 該 column 任一 cy 已載入就算有了
+        if (chunks.has(ckey(cx, 0, cz)) || chunks.has(ckey(cx, 1, cz))) { requested.add(k); continue; }
+        requested.add(k);
+        ws.send(JSON.stringify({ t: "req", cx, cz }));
+        sent++;
+      }
+    }
+  }
+}
+
+// 位置上報（節流）
+let sendTimer = 0;
+function sendMove(dt) {
+  sendTimer -= dt;
+  if (!wsReady || sendTimer > 0) return;
+  sendTimer = 0.1;
+  ws.send(JSON.stringify({ t: "move", x: player.x, y: player.y, z: player.z, yaw: player.yaw }));
+}
+
+// ── 主迴圈 ─────────────────────────────────────────────────────────────────
+const SPEED = 5.0, GRAVITY = 24.0;
+let last = performance.now();
+let frames = 0, fpsT = 0, fps = 0;
+let dbgT = 0;
+
+function update(dt) {
+  // 方向（相對鏡頭 yaw）
+  const fwd = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+  const right = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
+  let mx = 0, mz = 0;
+  if (keys["KeyW"] || keys["ArrowUp"]) mz += 1;
+  if (keys["KeyS"] || keys["ArrowDown"]) mz -= 1;
+  if (keys["KeyD"] || keys["ArrowRight"]) mx += 1;
+  if (keys["KeyA"] || keys["ArrowLeft"]) mx -= 1;
+  // 觸控搖桿（y 往上＝前進）
+  mz += -joyVec.y; mx += joyVec.x;
+  if ((keys["Space"]) && player.grounded) tryJump();
+
+  const dir = new THREE.Vector3();
+  dir.addScaledVector(fwd, mz).addScaledVector(right, mx);
+  if (dir.lengthSq() > 1e-4) {
+    dir.normalize();
+    moveAxis("x", dir.x * SPEED * dt);
+    moveAxis("z", dir.z * SPEED * dt);
+  }
+
+  // 重力 + 垂直碰撞
+  player.vy -= GRAVITY * dt;
+  // 限制單幀垂直位移避免穿牆
+  let dy = Math.max(-1.5, Math.min(1.5, player.vy * dt));
+  const prevY = player.y;
+  player.y += dy;
+  if (overlaps()) {
+    player.y = prevY;
+    if (player.vy < 0) player.grounded = true;
+    player.vy = 0;
+  } else {
+    if (player.vy < 0) player.grounded = false;
+  }
+  // 掉出世界保險：低於 -10 拉回出生高度
+  if (player.y < -10) { player.y = 40; player.vy = 0; }
+
+  // 玩家身體 + 朝向
+  bodyMesh.position.set(player.x, player.y + PH / 2, player.z);
+  if (dir.lengthSq() > 1e-4) bodyMesh.rotation.y = Math.atan2(dir.x, dir.z);
+
+  // 第三人稱鏡頭跟隨
+  const target = new THREE.Vector3(player.x, player.y + 1.3, player.z);
+  const dist = 6.0, cp = Math.cos(camPitch), sp = Math.sin(camPitch);
+  camera.position.set(
+    target.x + Math.sin(player.yaw) * dist * cp,
+    target.y + dist * sp,
+    target.z + Math.cos(player.yaw) * dist * cp
+  );
+  camera.lookAt(target);
+
+  streamChunks(dt);
+  sendMove(dt);
+
+  // 每幀重建少量 dirty chunk（分攤成本）
+  let built = 0;
+  for (const key of dirty) {
+    rebuildChunk(key);
+    dirty.delete(key);
+    if (++built >= 4) break;
+  }
+}
+
+function safeRender() {
+  renderer.render(scene, camera);
+}
+
+function loop() {
+  const now = performance.now();
+  let dt = (now - last) / 1000; last = now;
+  if (dt > 0.1) dt = 0.1; // 分頁切回來別跳一大步
+  try {
+    update(dt);
+    safeRender();
+  } catch (e) {
+    // render 一拋會永久停 rAF（畫面凍結）——抓住、印出、自我恢復（比照 3D safeRender 護網）。
+    console.error("[voxel] 迴圈例外：", e);
+    showErr("渲染例外（已自我恢復，見 console）：" + (e && e.message ? e.message : e));
+  }
+
+  // FPS / HUD
+  frames++; fpsT += dt;
+  if (fpsT >= 0.5) { fps = frames / fpsT; frames = 0; fpsT = 0; }
+  dbgT += dt;
+  if (dbgT >= 0.25) {
+    dbgT = 0;
+    hudEl.textContent = `ButFun Voxel · ${myName}\nWASD/拖曳轉視角/空白跳\nchunk: ${chunks.size}　線上: ${others.size + 1}`;
+    if (DEBUG) {
+      dbgEl.style.display = "block";
+      dbgEl.textContent =
+        `FPS ${fps.toFixed(0)}\n` +
+        `chunks ${chunks.size}  meshes ${meshes.size}\n` +
+        `pos ${player.x.toFixed(1)},${player.y.toFixed(1)},${player.z.toFixed(1)}\n` +
+        `grounded ${player.grounded}\n` +
+        `build ${window.__BUILD__ || "?"}`;
+    }
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// 對外暴露一點狀態，方便真瀏覽器 QA 讀數驗證。
+window.__voxel = {
+  get chunks() { return chunks.size; },
+  get meshes() { return meshes.size; },
+  get fps() { return fps; },
+  get player() { return player; },
+};
