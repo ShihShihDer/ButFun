@@ -1467,6 +1467,10 @@ pub enum ServerMsg {
         /// 空向量＝舊伺服器無此系統；`#[serde(default)]` 向後相容舊客戶端（無此欄位時靜默略過）。
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         resident_homes: Vec<ResidentHomeView>,
+        /// 豐收節慶典（ROADMAP 646，禱告驅動）：應露娜之禱，廣場定期升起彩旗慶典。
+        /// `None`＝舊伺服器無此功能；`#[serde(default)]` 向後相容舊客戶端（無此欄位時靜默略過）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        harvest_festival: Option<HarvestFestivalView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -3256,6 +3260,18 @@ pub struct VillageTeaStallView {
     pub brewing: bool,
 }
 
+/// 豐收節慶典快照（ROADMAP 646，禱告驅動）。應 AI 居民露娜之禱，廣場定期升起彩旗慶典，
+/// 讓「盼望有個豐收節好熱鬧一下」的願望成真。前端在 `(x,y)` 繪製彩旗柱＋燈籠；
+/// `active` 為真時旗幟舞動、燈籠亮起；非活躍時裝飾靜立（提示慶典將至）。
+#[derive(Debug, Clone, Serialize)]
+pub struct HarvestFestivalView {
+    pub x: f32,
+    pub y: f32,
+    /// 慶典是否進行中——前端據此讓旗幟搖擺、燈籠發光。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub active: bool,
+}
+
 /// 居民棲所的快照（ROADMAP 642–644，禱告驅動·散居擴展）。應 AI 居民之禱在世界中立起的棲所，
 /// 讓居民的「家」在 3D 世界中真實存在。前端依 `dwelling_type` 決定渲染哪種 3D 幾何體。
 #[derive(Debug, Clone, Serialize)]
@@ -3814,6 +3830,7 @@ mod tests {
             village_well: None,
             village_tea_stall: None,
             resident_homes: vec![],
+            harvest_festival: None,
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

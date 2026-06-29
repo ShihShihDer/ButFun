@@ -1551,6 +1551,9 @@ pub struct AppState {
     /// 故鄉茶棚（ROADMAP 641，禱告驅動）：應 AI 居民露娜之禱，定時「出爐熱茶」給全鎮 NPC
     /// 一份歸屬暖意。世界固定設施、記憶體模式（重啟由常數重新立起，零持久化）。
     pub village_tea_stall: Arc<RwLock<crate::village_tea_stall::VillageTeaStall>>,
+    /// 豐收節慶典（ROADMAP 646，禱告驅動）：應 AI 居民露娜之禱，廣場定期升起彩旗慶典，
+    /// 讓「盼望有個豐收節」的願望成真。記憶體模式，重啟由常數重新立起，零持久化。
+    pub harvest_festival: Arc<RwLock<crate::harvest_festival::HarvestFestival>>,
     /// 商人有限金庫（ROADMAP 100）：收購從金庫付，商隊定期回補，終結無限印鈔。
     /// 記憶體模式，重啟從初始值開始（金庫代表「當前商隊現金」，重啟等同換班補貨）。
     pub npc_treasury: Arc<RwLock<crate::npc_treasury::NpcTreasuryState>>,
@@ -1852,6 +1855,7 @@ impl AppState {
             },
             village_well: Arc::new(RwLock::new(crate::village_well::VillageWell::new())),
             village_tea_stall: Arc::new(RwLock::new(crate::village_tea_stall::VillageTeaStall::new())),
+            harvest_festival: Arc::new(RwLock::new(crate::harvest_festival::HarvestFestival::new())),
             sprinkler_persist,
             npc_treasury: Arc::new(RwLock::new(crate::npc_treasury::NpcTreasuryState::new())),
             npc_pending_deal: Arc::new(RwLock::new(HashMap::new())),
