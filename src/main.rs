@@ -122,6 +122,8 @@ mod voxel_desires;
 mod voxel_diary;
 // 乙太方界·居民蓋家系統：渴望化為方塊 v1——居民依心願自動蓋小屋/水井/塔/花圃（ROADMAP 652）。
 mod voxel_building;
+// 乙太方界·念頭播種閉環 v1：玩家說話讓附近居民「聽到」，零 LLM 空間廣播（ROADMAP 654）。
+mod voxel_overhear;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
