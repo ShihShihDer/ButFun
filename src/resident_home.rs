@@ -126,6 +126,14 @@ pub fn all_homes() -> Vec<&'static ResidentHome> {
     vec![&LUNA_HOME, &NOVA_HOME, &SAILER_HOME, &AURIE_HOME, &WIDO_HOME]
 }
 
+/// 按居民名字找到棲所座標（若名字對應多座取第一筆）。
+/// 讓居民行為系統判斷「自己的家在哪裡」，不必把座標常數跨模組外漏。
+pub fn home_for_name(name: &str) -> Option<(f32, f32)> {
+    all_homes().into_iter()
+        .find(|h| h.name == name)
+        .map(|h| (h.x, h.y))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,5 +290,22 @@ mod tests {
         assert_eq!(SAILER_HOME.dwelling_type, DwellingType::Cabin);
         assert_eq!(AURIE_HOME.dwelling_type,  DwellingType::Cabin);
         assert_eq!(WIDO_HOME.dwelling_type,   DwellingType::Tent);
+    }
+
+    #[test]
+    fn home_for_name_已知居民回傳正確座標() {
+        let (lx, ly) = home_for_name("露娜").expect("露娜應有棲所");
+        assert!((lx - LUNA_HOME_X).abs() < 1.0);
+        assert!((ly - LUNA_HOME_Y).abs() < 1.0);
+
+        let (sx, sy) = home_for_name("賽勒").expect("賽勒應有棲所");
+        assert!((sx - SAILER_HOME_X).abs() < 1.0);
+        assert!((sy - SAILER_HOME_Y).abs() < 1.0);
+    }
+
+    #[test]
+    fn home_for_name_未知名字回傳None() {
+        assert!(home_for_name("不存在的人").is_none());
+        assert!(home_for_name("").is_none());
     }
 }
