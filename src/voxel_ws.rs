@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
-use crate::npc_agent::{AgentAction, NearbyPlayer, SenseInput};
+use crate::npc_agent::{AgentAction, AgentDecision, NearbyPlayer, SenseInput};
 use crate::npc_agent_wire::{self, AgentBus};
 use crate::resident_npc::ResidentPersona;
 use crate::voxel::{self, Block, ChunkCoord, WorldDelta, BASE_HEIGHT, CHUNK, SEA_LEVEL};
@@ -64,6 +64,20 @@ const SAY_SECS: f32 = 6.0;
 /// 居民 tick 頻率（秒）。10Hz：移動平滑、頻寬/CPU 都極小。
 const RESIDENT_DT: f32 = 0.1;
 
+// ── 玩家↔居民對話（切片：點居民聊天）──────────────────────────────────────────
+/// 玩家送來的單句對話長度上限（字元）。超過就截斷，擋惡意灌爆 prompt。
+const TALK_MAX_CHARS: usize = 200;
+/// 居民回覆長度上限（字元）：避免 LLM 偶爾長篇大論塞爆前端對話框。
+const TALK_REPLY_MAX_CHARS: usize = 300;
+/// 每條連線的對話冷卻（毫秒）：防單人狂送吃爆 LLM 額度（比照 npc_chat 的 per-player 冷卻）。
+const TALK_COOLDOWN_MS: u64 = 4000;
+/// 居民「主動招呼」觸發距離（方塊）：玩家靠到這麼近，居民偶爾冒一句招呼。
+const GREET_DIST: f32 = 4.0;
+/// 招呼冷卻（秒）：冒過一次招呼後要等這麼久才會再冒，避免洗版。
+const GREET_COOLDOWN: f32 = 25.0;
+/// 每個合格 tick 觸發招呼的機率（10Hz 下 0.04 ≈ 靠近後約 2.5 秒內冒一句）。
+const GREET_CHANCE_PER_TICK: f32 = 0.04;
+
 /// 一位乙太方界居民的權威運行狀態（位置/朝向 + 閒晃目標 + 思考排程 + 當前冒的話）。
 struct VoxelResident {
     /// 系統 id（"vox_res_0"…），voxel 模組內專用，與 2D 居民 id 體系無交集。
@@ -83,6 +97,8 @@ struct VoxelResident {
     say: String,
     /// 冒泡剩餘秒數。
     say_timer: f32,
+    /// 主動招呼冷卻倒數（秒）：> 0 表示最近招呼過、暫不再冒，避免洗版。
+    greet_timer: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話）。
@@ -111,6 +127,64 @@ fn persona_for(i: usize) -> ResidentPersona {
     }
 }
 
+// ── 對話 / 招呼純邏輯（抽成可測函式，碰不到 hub / 鎖 / LLM）─────────────────────
+
+/// 清洗玩家送來的對話文字：trim、空字串拒絕（回 None）、超長截斷到 `TALK_MAX_CHARS`。
+/// 純函式：路由前的驗證，方便單元測試釘住。
+fn sanitize_talk_text(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.chars().take(TALK_MAX_CHARS).collect())
+}
+
+/// 對話冷卻判定：距離上次說話已過 `elapsed_ms` 毫秒，是否允許這次（≥ `TALK_COOLDOWN_MS`）。
+fn talk_cooldown_ok(elapsed_ms: u64) -> bool {
+    elapsed_ms >= TALK_COOLDOWN_MS
+}
+
+/// 組對話用 system prompt：複用居民 agent 人設字串（`resident_agent_persona`），
+/// 再補上「身處乙太方界、有旅人來搭話、請自然回應」的語境與口吻約束。不重寫腦池。
+fn resident_talk_system_prompt(name: &str, persona: ResidentPersona) -> String {
+    let base = npc_agent_wire::resident_agent_persona(name, persona);
+    format!(
+        "{base}\n\n你現在身處『乙太方界』——一片由方塊構成、寧靜清新的新生天地，你是這裡的居民。\
+        此刻有一位來訪的旅人向你搭話。請以你的身份、用繁體中文自然回應，1 到 2 句、口吻溫暖親切，\
+        可以聊聊你在這片方塊天地裡的生活或當下的心情；絕不跳出角色，也不要提到你是 AI 或語言模型。"
+    )
+}
+
+/// 居民對話罐頭回覆（LLM 未啟用 / 連不到時的降級，永遠回得出一句）。依名字雜湊選句、增加變化。
+fn resident_canned_reply(name: &str) -> String {
+    const POOL: [&str; 4] = [
+        "你好呀，旅人！在這片方塊天地裡走走，感覺很不一樣吧？",
+        "嗨，歡迎來到乙太方界。我正四處晃晃，你也是來看看的嗎？",
+        "見到你真好。這裡很安靜，但住久了會慢慢喜歡上的。",
+        "你好！要不要一起在這片新生的天地裡逛逛？",
+    ];
+    let idx = name.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize)) % POOL.len();
+    POOL[idx].to_string()
+}
+
+/// 居民主動招呼句池：靠近時冒一句（用既有泡泡，低頻、簡短）。依索引選句。
+fn greeting_line(n: usize) -> &'static str {
+    const GREETINGS: [&str; 4] = ["你來啦！", "嗨，旅人～", "哦，有客人。", "你好呀！"];
+    GREETINGS[n % GREETINGS.len()]
+}
+
+/// 一組玩家水平座標中，離 (rx,rz) 最近者的平方距離。沒有玩家回 None。純函式、可測。
+fn nearest_player_dist_sq(rx: f32, rz: f32, players: &[(f32, f32)]) -> Option<f32> {
+    players
+        .iter()
+        .map(|&(px, pz)| {
+            let dx = px - rx;
+            let dz = pz - rz;
+            dx * dx + dz * dz
+        })
+        .fold(None, |acc, d| Some(acc.map_or(d, |a: f32| a.min(d))))
+}
+
 /// 初始化 N 位居民：環狀散在出生點周邊的乾地上，各自站穩。
 fn init_residents() -> Vec<VoxelResident> {
     let mut out = Vec::with_capacity(RESIDENT_COUNT);
@@ -133,6 +207,7 @@ fn init_residents() -> Vec<VoxelResident> {
             think_timer: 3.0 + i as f32 * 2.0,
             say: String::new(),
             say_timer: 0.0,
+            greet_timer: 0.0,
         });
     }
     out
@@ -213,6 +288,9 @@ enum ClientMsg {
     Break { x: i32, y: i32, z: i32 },
     /// 放置方塊：放置世界座標 + 方塊型別 id（對齊 Block enum）。伺服器驗證後套用並廣播。
     Place { x: i32, y: i32, z: i32, b: u8 },
+    /// 跟居民對話：指定居民 id + 玩家說的話。伺服器以該居民人設呼叫 LLM 對話路徑，
+    /// 回 `talk`（單播）給玩家、並冒泡讓附近人看到。
+    Talk { resident_id: String, text: String },
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -379,7 +457,10 @@ async fn handle_socket(socket: WebSocket) {
         }
     });
 
-    // 讀取迴圈：處理 move / req。
+    // 對話冷卻：記這條連線上次跟居民說話的時刻（per-connection 節流，防灌爆 LLM）。
+    let mut last_talk: Option<std::time::Instant> = None;
+
+    // 讀取迴圈：處理 move / req / break / place / talk。
     while let Some(Ok(msg)) = receiver.next().await {
         let txt = match msg {
             Message::Text(t) => t,
@@ -457,6 +538,55 @@ async fn handle_socket(socket: WebSocket) {
                     broadcast_block(x, y, z, block);
                 }
             }
+            Ok(ClientMsg::Talk { resident_id, text }) => {
+                // 1) 驗證 + 清洗文字（空 / 純空白 → 忽略；超長截斷）。
+                let Some(clean) = sanitize_talk_text(&text) else {
+                    continue;
+                };
+                // 2) per-connection 冷卻：太頻繁就忽略（保護免費 LLM 額度）。
+                let now = std::time::Instant::now();
+                if let Some(prev) = last_talk {
+                    if !talk_cooldown_ok(now.duration_since(prev).as_millis() as u64) {
+                        continue;
+                    }
+                }
+                // 3) 短鎖取居民人設快照 → drop（ResidentPersona 是 Copy，name 是 'static）。
+                //    絕不持鎖 await，比照 spawn_resident_think / TalkToNpc 的鎖紀律。
+                let snap: Option<(&'static str, ResidentPersona)> = {
+                    let residents = hub().residents.read().unwrap();
+                    residents
+                        .iter()
+                        .find(|r| r.id == resident_id)
+                        .map(|r| (r.name, r.persona))
+                }; // 讀鎖在此釋放
+                let Some((rname, rpersona)) = snap else {
+                    continue; // 沒這位居民 → 忽略
+                };
+                last_talk = Some(now);
+                // 4) 無鎖 async task：呼叫既有 LLM 對話路徑（Cerebras→Gemini→Groq→ollama→罐頭），
+                //    單播回覆給這位玩家，並把回覆投進 AgentBus 讓居民下一 tick 冒泡（附近人看得到）。
+                let reply_tx = out_tx.clone();
+                tokio::spawn(async move {
+                    let sys = resident_talk_system_prompt(rname, rpersona);
+                    let reply: String = match crate::npc_chat::raw_llm_call(&sys, &clean).await {
+                        Some(t) => t.chars().take(TALK_REPLY_MAX_CHARS).collect(),
+                        None => resident_canned_reply(rname), // LLM 未啟用 / 失敗 → 罐頭後備
+                    };
+                    let msg = serde_json::json!({
+                        "t": "talk",
+                        "resident_id": resident_id,
+                        "name": rname,
+                        "reply": reply,
+                    })
+                    .to_string();
+                    let _ = reply_tx.send(Message::Text(msg)).await;
+                    // 冒泡（下一 tick 由 tick_residents 套用 say，自動截到 40 字、計時消失）。
+                    hub().agent_bus.push_decision(
+                        resident_id,
+                        AgentDecision::new(AgentAction::Idle, reply, "對話"),
+                    );
+                });
+            }
             // 重複 Join 或壞訊息：忽略。
             _ => {}
         }
@@ -503,6 +633,13 @@ fn tick_residents(dt: f32) {
     // 2) 同步推進：套決策 + 物理/閒晃。deltas(read) + residents(write) 都只在這段持有、不 await。
     //    需要思考的居民這裡只蒐集「快照」，spawn 留到鎖釋放後。
     let mut think_jobs: Vec<(String, &'static str, ResidentPersona, f32, f32)> = Vec::new();
+
+    // 主動招呼用：先短鎖快照所有玩家水平座標 → drop（循序取放、不與居民鎖巢狀，守鎖紀律）。
+    let player_pts: Vec<(f32, f32)> = {
+        let players = hub().players.read().unwrap();
+        players.values().map(|p| (p.x, p.z)).collect()
+    }; // 玩家讀鎖在此釋放
+
     {
         let world = hub().deltas.read().unwrap();
         let mut residents = hub().residents.write().unwrap();
@@ -534,6 +671,21 @@ fn tick_residents(dt: f32) {
                 r.say_timer -= dt;
                 if r.say_timer <= 0.0 {
                     r.say.clear();
+                }
+            }
+
+            // 主動招呼：招呼冷卻倒數；冷卻完、目前沒在說話、且有玩家靠很近時，
+            // 偶爾（低機率）冒一句招呼，讓世界更有人氣（用既有泡泡、低頻不洗版）。
+            if r.greet_timer > 0.0 {
+                r.greet_timer -= dt;
+            } else if r.say.is_empty() {
+                if let Some(d2) = nearest_player_dist_sq(r.body.x, r.body.z, &player_pts) {
+                    if d2 < GREET_DIST * GREET_DIST && rand::random::<f32>() < GREET_CHANCE_PER_TICK {
+                        let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                        r.say = greeting_line(pick).to_string();
+                        r.say_timer = SAY_SECS;
+                        r.greet_timer = GREET_COOLDOWN;
+                    }
                 }
             }
 
@@ -702,6 +854,71 @@ mod tests {
             ClientMsg::Place { x, y, z, b } => assert_eq!((x, y, z, b), (1, 10, 2, 3)),
             _ => panic!("應解析成 Place"),
         }
+    }
+
+    #[test]
+    fn talk_parses() {
+        let m: ClientMsg =
+            serde_json::from_str(r#"{"t":"talk","resident_id":"vox_res_0","text":"你好"}"#).unwrap();
+        match m {
+            ClientMsg::Talk { resident_id, text } => {
+                assert_eq!(resident_id, "vox_res_0");
+                assert_eq!(text, "你好");
+            }
+            _ => panic!("應解析成 Talk"),
+        }
+    }
+
+    #[test]
+    fn sanitize_talk_text_rules() {
+        // 空 / 純空白 → None（忽略）。
+        assert!(sanitize_talk_text("").is_none());
+        assert!(sanitize_talk_text("   ").is_none());
+        // 正常 → trim 後保留。
+        assert_eq!(sanitize_talk_text("  哈囉  ").as_deref(), Some("哈囉"));
+        // 超長 → 截斷到上限字元數（用多位元組中文字驗證是按「字元」非位元組截）。
+        let long: String = "字".repeat(TALK_MAX_CHARS + 50);
+        let out = sanitize_talk_text(&long).unwrap();
+        assert_eq!(out.chars().count(), TALK_MAX_CHARS);
+    }
+
+    #[test]
+    fn talk_cooldown_boundary() {
+        assert!(!talk_cooldown_ok(0));
+        assert!(!talk_cooldown_ok(TALK_COOLDOWN_MS - 1));
+        // 剛好到門檻就放行。
+        assert!(talk_cooldown_ok(TALK_COOLDOWN_MS));
+        assert!(talk_cooldown_ok(TALK_COOLDOWN_MS + 1000));
+    }
+
+    #[test]
+    fn talk_prompt_and_canned_non_empty() {
+        // 對話 system prompt 含居民名字、且非空。
+        let sys = resident_talk_system_prompt("露娜", ResidentPersona::Wanderer);
+        assert!(sys.contains("露娜"));
+        assert!(sys.contains("乙太方界"));
+        // 罐頭回覆永遠非空（降級時也回得出一句）。
+        for n in RESIDENT_NAMES {
+            assert!(!resident_canned_reply(n).is_empty());
+        }
+    }
+
+    #[test]
+    fn greeting_line_wraps_and_non_empty() {
+        // 索引取模、永遠回得出非空招呼句。
+        for i in 0..20 {
+            assert!(!greeting_line(i).is_empty());
+        }
+    }
+
+    #[test]
+    fn nearest_player_dist_sq_works() {
+        // 沒有玩家 → None。
+        assert!(nearest_player_dist_sq(0.0, 0.0, &[]).is_none());
+        // 多名玩家取最近者的平方距離。
+        let pts = [(3.0, 4.0), (1.0, 0.0), (10.0, 10.0)];
+        let d = nearest_player_dist_sq(0.0, 0.0, &pts).unwrap();
+        assert!((d - 1.0).abs() < 1e-4, "最近者 (1,0) 平方距離應為 1：{d}");
     }
 
     #[test]

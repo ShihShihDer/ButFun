@@ -272,8 +272,10 @@ function setSpriteText(sprite, text, bubble) {
 }
 
 // 建一位居民的可見實體（簡單 voxel 人形：軀幹 + 頭 + 名牌 + 泡泡）。
-function buildResident(name) {
+// group.userData.rid 記居民 id，供點選 raycast 反查「點到的是哪位居民」。
+function buildResident(id, name) {
   const group = new THREE.Group();
+  group.userData.rid = id;
   const torso = new THREE.Mesh(RES_TORSO_GEO, RES_BODY_MAT);
   torso.position.y = 0.5; // 腳底在 group 原點，軀幹中心 0.5
   group.add(torso);
@@ -297,7 +299,7 @@ function updateResidents(list) {
   for (const r of list) {
     seen.add(r.id);
     let ent = residents.get(r.id);
-    if (!ent) { ent = buildResident(r.name); residents.set(r.id, ent); }
+    if (!ent) { ent = buildResident(r.id, r.name); residents.set(r.id, ent); }
     ent.group.position.set(r.x, r.y, r.z);
     ent.group.rotation.y = r.yaw || 0;
     if (r.name !== ent.lastName) { setSpriteText(ent.label, r.name, false); ent.lastName = r.name; }
@@ -313,6 +315,83 @@ function updateResidents(list) {
   }
   for (const [id, ent] of residents) {
     if (!seen.has(id)) { scene.remove(ent.group); residents.delete(id); }
+  }
+}
+
+// ── 點居民 → 對話（raycast 點選 + 直式對話框）────────────────────────────────
+// 點到居民（在互動距離內）就開對話框；送出 → 後端以該居民人設呼 LLM → 回 talk 訊息。
+const raycaster = new THREE.Raycaster();
+const TALK_REACH = 16; // 可對話的最遠距離（方塊）：太遠的居民點不到，貼近「在你附近的人」
+// 從螢幕座標 raycast 找命中的居民 id（命中且在 TALK_REACH 內才回 id，否則 null）。
+function pickResident(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((clientX - rect.left) / rect.width) * 2 - 1,
+    -((clientY - rect.top) / rect.height) * 2 + 1
+  );
+  raycaster.setFromCamera(ndc, camera);
+  const pickables = [];
+  for (const ent of residents.values()) {
+    if (ent.group.visible) ent.group.traverse((o) => { if (o.isMesh) pickables.push(o); });
+  }
+  if (!pickables.length) return null;
+  const hits = raycaster.intersectObjects(pickables, false);
+  if (!hits.length || hits[0].distance > TALK_REACH) return null;
+  // 沿父鏈往上找帶 rid 的 group。
+  let obj = hits[0].object;
+  while (obj && !(obj.userData && obj.userData.rid)) obj = obj.parent;
+  return obj && obj.userData ? obj.userData.rid : null;
+}
+
+// 對話框 DOM + 狀態。
+const chatEl = document.getElementById("chat");
+const chatTitleEl = document.getElementById("chatTitle");
+const chatLogEl = document.getElementById("chatLog");
+const chatQuickEl = document.getElementById("chatQuick");
+const chatInputEl = document.getElementById("chatInput");
+const chatSendEl = document.getElementById("chatSend");
+let chatRid = null;          // 目前對話的居民 id
+let lastTalkReply = null;    // 最近一次居民回覆（QA 用）
+
+function appendMsg(kind, text) {
+  if (!chatLogEl) return;
+  const d = document.createElement("div");
+  d.className = "msg " + kind;
+  d.textContent = text;
+  chatLogEl.appendChild(d);
+  chatLogEl.scrollTop = chatLogEl.scrollHeight;
+}
+
+// 開對話框（換對象就清空對話紀錄）。
+function openChat(rid, name) {
+  if (!chatEl) return;
+  if (chatRid !== rid) { chatLogEl.innerHTML = ""; appendMsg("sys", "你走近了 " + (name || "居民")); }
+  chatRid = rid;
+  chatTitleEl.textContent = name || "居民";
+  chatEl.style.display = "flex";
+}
+function closeChat() { if (chatEl) chatEl.style.display = "none"; }
+
+// 送一句話給目前對話的居民。
+function sendTalk(text) {
+  const t = (text || "").trim();
+  if (!t || !chatRid || !wsReady) return;
+  ws.send(JSON.stringify({ t: "talk", resident_id: chatRid, text: t.slice(0, 200) }));
+  appendMsg("me", "你：" + t);
+}
+
+if (chatEl) {
+  document.getElementById("chatClose").addEventListener("click", closeChat);
+  chatSendEl.addEventListener("click", () => { sendTalk(chatInputEl.value); chatInputEl.value = ""; });
+  chatInputEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { sendTalk(chatInputEl.value); chatInputEl.value = ""; e.preventDefault(); }
+  });
+  // 快捷句：不用打字也能互動（手機友善）。
+  for (const q of ["你好！", "你在做什麼？", "這裡是哪裡？"]) {
+    const b = document.createElement("div");
+    b.className = "qbtn"; b.textContent = q;
+    b.addEventListener("click", () => sendTalk(q));
+    chatQuickEl.appendChild(b);
   }
 }
 
@@ -359,6 +438,7 @@ function selectedBlock() { return HOTBAR[selectedSlot]; }
 buildHotbar();
 // 數字鍵 1..6 切快捷欄
 addEventListener("keydown", (e) => {
+  if (e.target && e.target.tagName === "INPUT") return; // 對話輸入中不搶鍵
   const n = parseInt(e.key, 10);
   if (n >= 1 && n <= HOTBAR.length) selectSlot(n - 1);
 });
@@ -486,7 +566,10 @@ function placeAtTarget() {
 
 // ── 輸入 ───────────────────────────────────────────────────────────────────
 const keys = {};
-addEventListener("keydown", (e) => { keys[e.code] = true; if (e.code === "Space") e.preventDefault(); });
+addEventListener("keydown", (e) => {
+  if (e.target && e.target.tagName === "INPUT") return; // 對話輸入中不觸發移動
+  keys[e.code] = true; if (e.code === "Space") e.preventDefault();
+});
 addEventListener("keyup", (e) => { keys[e.code] = false; });
 
 // 滑鼠：拖曳轉鏡頭；「點一下」（位移很小）＝對準心動作。左鍵破壞、右鍵放置（MCPE 範式）。
@@ -500,8 +583,14 @@ renderer.domElement.addEventListener("pointerdown", (e) => {
 });
 addEventListener("pointerup", (e) => {
   if (dragging && moved < TAP_PX) {
-    // 點擊：左鍵挖、右鍵放。
-    if (downBtn === 2) placeAtTarget(); else breakAtTarget();
+    // 點擊：右鍵放；左鍵先看是否點到居民（開對話），否則挖。
+    if (downBtn === 2) {
+      placeAtTarget();
+    } else {
+      const rid = pickResident(e.clientX, e.clientY);
+      if (rid) { const ent = residents.get(rid); openChat(rid, ent && ent.lastName); }
+      else breakAtTarget();
+    }
   }
   dragging = false;
 });
@@ -556,7 +645,12 @@ if (isTouch) {
   renderer.domElement.addEventListener("touchend", (e) => {
     for (const t of e.changedTouches) {
       if (t.identifier !== camId) continue;
-      if (camMoved < 8) breakAtTarget(); // 輕點 = 挖
+      if (camMoved < 8) {
+        // 輕點：先看是否點到居民（開對話），否則挖。
+        const rid = pickResident(t.clientX, t.clientY);
+        if (rid) { const ent = residents.get(rid); openChat(rid, ent && ent.lastName); }
+        else breakAtTarget();
+      }
       camId = null;
     }
   });
@@ -606,6 +700,10 @@ function connect() {
       for (const [id, mesh] of others) if (!seen.has(id)) { scene.remove(mesh); others.delete(id); }
       // 乙太方界 AI 居民（與玩家分開的陣列）：位置/名字/說的話。
       if (m.residents) updateResidents(m.residents);
+    } else if (m.t === "talk") {
+      // 居民對話回覆（單播）：填進對話框（泡泡由 players 快照另外帶）。
+      lastTalkReply = m.reply || "";
+      appendMsg("npc", (m.name || "居民") + "：" + lastTalkReply);
     }
   };
   ws.onclose = () => { wsReady = false; showErr("連線中斷，重新連線中…"); setTimeout(connect, 1500); };
@@ -788,12 +886,22 @@ window.__voxel = {
   // 乙太方界 AI 居民（QA 用）：數量 + 位置/名字/說的話快照。
   get residentCount() { return residents.size; },
   residentInfo() {
-    return [...residents.values()].map((e) => ({
-      name: e.lastName, say: e.lastSay,
+    return [...residents.entries()].map(([id, e]) => ({
+      id, name: e.lastName, say: e.lastSay,
       x: e.group.position.x, y: e.group.position.y, z: e.group.position.z,
       visible: e.group.visible,
     }));
   },
+  // ── 對話 QA 用：列居民 id、直接對某居民送一句、讀最近回覆 ──
+  residentIds() { return [...residents.keys()]; },
+  talkTo(rid, text) {
+    const ent = residents.get(rid);
+    openChat(rid, ent && ent.lastName);
+    sendTalk(text);
+    return chatRid;
+  },
+  get lastTalkReply() { return lastTalkReply; },
+  closeChat() { closeChat(); },
   // ── 真瀏覽器 QA 用：讀準心目標、讀方塊、觸發破壞/放置、選方塊 ──
   get target() { return target; },
   getBlock(x, y, z) { return getRaw(x, y, z); },
