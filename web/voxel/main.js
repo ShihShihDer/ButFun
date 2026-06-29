@@ -208,6 +208,53 @@ scene.add(bodyMesh);
 const others = new Map(); // id -> Mesh
 const otherMat = new THREE.MeshLambertMaterial({ color: 0x8fd0ff });
 
+// ── 準心選取 + 高亮外框（MCPE 風）──────────────────────────────────────────────
+// 選中方塊的線框外框（略大一點點避免 z-fighting）。對準時顯示、沒對到時隱藏。
+const highlight = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(1.002, 1.002, 1.002)),
+  new THREE.LineBasicMaterial({ color: 0x101014, transparent: true, opacity: 0.9 })
+);
+highlight.visible = false;
+scene.add(highlight);
+// 目前準心對準的方塊：{ bx,by,bz（命中方塊）, nx,ny,nz（命中面法線，放置往這方向偏一格）}
+let target = null;
+
+// ── 快捷欄（選要放的方塊型別）────────────────────────────────────────────────
+const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES];
+const BLOCK_NAME = { [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉" };
+let selectedSlot = 0; // HOTBAR 索引
+const hotbarEl = document.getElementById("hotbar");
+function buildHotbar() {
+  if (!hotbarEl) return;
+  hotbarEl.innerHTML = "";
+  HOTBAR.forEach((b, i) => {
+    const slot = document.createElement("div");
+    slot.className = "slot" + (i === selectedSlot ? " sel" : "");
+    const sw = document.createElement("div");
+    sw.className = "sw";
+    const c = COLOR[b] || COLOR[STONE];
+    sw.style.background = `rgb(${(c[0] * 255) | 0},${(c[1] * 255) | 0},${(c[2] * 255) | 0})`;
+    const lbl = document.createElement("div");
+    lbl.textContent = (i + 1) + " " + (BLOCK_NAME[b] || "?");
+    slot.appendChild(sw); slot.appendChild(lbl);
+    slot.addEventListener("pointerdown", (e) => { selectSlot(i); e.stopPropagation(); });
+    hotbarEl.appendChild(slot);
+  });
+}
+function selectSlot(i) {
+  selectedSlot = ((i % HOTBAR.length) + HOTBAR.length) % HOTBAR.length;
+  for (let k = 0; k < hotbarEl.children.length; k++) {
+    hotbarEl.children[k].classList.toggle("sel", k === selectedSlot);
+  }
+}
+function selectedBlock() { return HOTBAR[selectedSlot]; }
+buildHotbar();
+// 數字鍵 1..6 切快捷欄
+addEventListener("keydown", (e) => {
+  const n = parseInt(e.key, 10);
+  if (n >= 1 && n <= HOTBAR.length) selectSlot(n - 1);
+});
+
 // AABB 是否與任一實心方塊重疊（碰撞核心）。
 function overlaps() {
   const x0 = Math.floor(player.x - PW), x1 = Math.floor(player.x + PW);
@@ -235,22 +282,124 @@ function moveAxis(axis, delta) {
   player[axis] = prev; // 完全擋住 → 回退
 }
 
+// ── Voxel raycast（自寫 DDA 體素行進；不抄外部碼）──────────────────────────────
+// 從原點 (ox,oy,oz) 沿單位方向 (dx,dy,dz) 一格一格走，回傳第一個非空氣/非水的實心方塊，
+// 連同「進入該方塊時跨過的面法線」(nx,ny,nz)——放置時往這方向偏一格即面外側。
+const RAY_MAX = 6.0; // 觸及距離（與後端 REACH 對齊）
+function raycastVoxel(ox, oy, oz, dx, dy, dz) {
+  let bx = Math.floor(ox), by = Math.floor(oy), bz = Math.floor(oz);
+  const stepX = dx > 0 ? 1 : -1, stepY = dy > 0 ? 1 : -1, stepZ = dz > 0 ? 1 : -1;
+  const tDeltaX = dx !== 0 ? Math.abs(1 / dx) : Infinity;
+  const tDeltaY = dy !== 0 ? Math.abs(1 / dy) : Infinity;
+  const tDeltaZ = dz !== 0 ? Math.abs(1 / dz) : Infinity;
+  // 到下一個格界的參數距離。
+  const fx = dx > 0 ? (bx + 1 - ox) : (ox - bx);
+  const fy = dy > 0 ? (by + 1 - oy) : (oy - by);
+  const fz = dz > 0 ? (bz + 1 - oz) : (oz - bz);
+  let tMaxX = dx !== 0 ? fx * tDeltaX : Infinity;
+  let tMaxY = dy !== 0 ? fy * tDeltaY : Infinity;
+  let tMaxZ = dz !== 0 ? fz * tDeltaZ : Infinity;
+  let nx = 0, ny = 0, nz = 0, t = 0;
+  for (let guard = 0; guard < 64; guard++) {
+    const r = getRaw(bx, by, bz);
+    if (r > 0 && r !== WATER) return { bx, by, bz, nx, ny, nz };
+    if (tMaxX < tMaxY && tMaxX < tMaxZ) {
+      bx += stepX; t = tMaxX; tMaxX += tDeltaX; nx = -stepX; ny = 0; nz = 0;
+    } else if (tMaxY < tMaxZ) {
+      by += stepY; t = tMaxY; tMaxY += tDeltaY; nx = 0; ny = -stepY; nz = 0;
+    } else {
+      bz += stepZ; t = tMaxZ; tMaxZ += tDeltaZ; nx = 0; ny = 0; nz = -stepZ;
+    }
+    if (t > RAY_MAX) break;
+  }
+  return null;
+}
+
+// 視線方向（含俯仰）：從鏡頭中心穿過準心的方向 = 鏡頭看向 target 的方向。
+function viewDir() {
+  // 與 update() 的鏡頭擺位一致：鏡頭在玩家後上方、看向玩家頭頂。
+  const tx = player.x, ty = player.y + 1.3, tz = player.z;
+  const dist = 6.0, cp = Math.cos(camPitch), sp = Math.sin(camPitch);
+  const camx = tx + Math.sin(player.yaw) * dist * cp;
+  const camy = ty + dist * sp;
+  const camz = tz + Math.cos(player.yaw) * dist * cp;
+  const d = new THREE.Vector3(tx - camx, ty - camy, tz - camz);
+  d.normalize();
+  return d;
+}
+
+// 更新準心對準的方塊（每幀算）：從玩家眼睛沿視線 raycast。
+function updateTarget() {
+  const dir = viewDir();
+  const eye = { x: player.x, y: player.y + 1.5, z: player.z };
+  target = raycastVoxel(eye.x, eye.y, eye.z, dir.x, dir.y, dir.z);
+  if (target) {
+    highlight.visible = true;
+    highlight.position.set(target.bx + 0.5, target.by + 0.5, target.bz + 0.5);
+  } else {
+    highlight.visible = false;
+  }
+}
+
+// 本地套用一個方塊更新（伺服器廣播 / 樂觀預測共用）：改 chunk 資料 + 標記受影響 chunk 重建。
+// 只重建該 chunk（及鄰塊，邊界面剔除用），絕不整個世界重建（延續切片① FPS 鐵律）。
+function setLocalBlock(wx, wy, wz, b) {
+  const cx = Math.floor(wx / CHUNK), cy = Math.floor(wy / CHUNK), cz = Math.floor(wz / CHUNK);
+  const ch = chunks.get(ckey(cx, cy, cz));
+  if (!ch) return; // 該 chunk 還沒載入——之後串流會帶正確（含 delta）的版本。
+  const lx = wx - cx * CHUNK, ly = wy - cy * CHUNK, lz = wz - cz * CHUNK;
+  ch[lx + lz * CHUNK + ly * CHUNK * CHUNK] = b;
+  markDirty(cx, cy, cz); // markDirty 只標該 chunk + 6 鄰塊
+}
+
+// 破壞準心對準的方塊：送 break（伺服器驗證後廣播 → setLocalBlock 套用）。回傳被挖座標或 null。
+function breakAtTarget() {
+  if (!target || !wsReady) return null;
+  const c = { x: target.bx, y: target.by, z: target.bz };
+  ws.send(JSON.stringify({ t: "break", x: c.x, y: c.y, z: c.z }));
+  return c;
+}
+// 在準心方塊的「面外側」放一個方塊：座標 = 命中方塊 + 命中面法線。回傳放置座標或 null。
+function placeAtTarget() {
+  if (!target || !wsReady) return null;
+  const px = target.bx + target.nx, py = target.by + target.ny, pz = target.bz + target.nz;
+  // 別把方塊放進自己身體（避免卡死）。
+  if (px === Math.floor(player.x) && pz === Math.floor(player.z) &&
+      (py === Math.floor(player.y) || py === Math.floor(player.y + 1))) return null;
+  ws.send(JSON.stringify({ t: "place", x: px, y: py, z: pz, b: selectedBlock() }));
+  return { x: px, y: py, z: pz };
+}
+
 // ── 輸入 ───────────────────────────────────────────────────────────────────
 const keys = {};
 addEventListener("keydown", (e) => { keys[e.code] = true; if (e.code === "Space") e.preventDefault(); });
 addEventListener("keyup", (e) => { keys[e.code] = false; });
 
-// 滑鼠拖曳轉鏡頭
+// 滑鼠：拖曳轉鏡頭；「點一下」（位移很小）＝對準心動作。左鍵破壞、右鍵放置（MCPE 範式）。
 let camPitch = 0.35;
 let dragging = false, lastX = 0, lastY = 0;
-renderer.domElement.addEventListener("pointerdown", (e) => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
-addEventListener("pointerup", () => { dragging = false; });
+let downX = 0, downY = 0, downBtn = 0, moved = 0;
+const TAP_PX = 6; // 位移小於此視為「點擊」而非拖曳
+renderer.domElement.addEventListener("pointerdown", (e) => {
+  dragging = true; lastX = e.clientX; lastY = e.clientY;
+  downX = e.clientX; downY = e.clientY; downBtn = e.button; moved = 0;
+});
+addEventListener("pointerup", (e) => {
+  if (dragging && moved < TAP_PX) {
+    // 點擊：左鍵挖、右鍵放。
+    if (downBtn === 2) placeAtTarget(); else breakAtTarget();
+  }
+  dragging = false;
+});
 addEventListener("pointermove", (e) => {
   if (!dragging) return;
+  moved += Math.abs(e.clientX - lastX) + Math.abs(e.clientY - lastY);
   player.yaw -= (e.clientX - lastX) * 0.005;
   camPitch = Math.max(-0.2, Math.min(1.3, camPitch + (e.clientY - lastY) * 0.005));
   lastX = e.clientX; lastY = e.clientY;
 });
+// 右鍵放置：擋掉瀏覽器選單。
+renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // 觸控搖桿
 const touchEl = document.getElementById("touch");
@@ -276,21 +425,31 @@ if ("ontouchstart" in window || navigator.maxTouchPoints > 0) {
   addEventListener("touchend", (e) => {
     for (const t of e.changedTouches) if (t.identifier === joyId) { joyId = null; joyVec = { x: 0, y: 0 }; nub.style.left = "35px"; nub.style.top = "35px"; }
   });
-  // 視角轉動：在非搖桿區拖曳
-  let camId = null, cx0 = 0, cy0 = 0;
+  // 視角轉動：在非搖桿區拖曳。「點一下」（位移小）＝對準心破壞（MCPE 點破壞範式）。
+  let camId = null, cx0 = 0, cy0 = 0, camMoved = 0;
   renderer.domElement.addEventListener("touchstart", (e) => {
-    const t = e.changedTouches[0]; camId = t.identifier; cx0 = t.clientX; cy0 = t.clientY;
+    const t = e.changedTouches[0]; camId = t.identifier; cx0 = t.clientX; cy0 = t.clientY; camMoved = 0;
   });
   renderer.domElement.addEventListener("touchmove", (e) => {
     for (const t of e.changedTouches) {
       if (t.identifier !== camId) continue;
+      camMoved += Math.abs(t.clientX - cx0) + Math.abs(t.clientY - cy0);
       player.yaw -= (t.clientX - cx0) * 0.006;
       camPitch = Math.max(-0.2, Math.min(1.3, camPitch + (t.clientY - cy0) * 0.006));
       cx0 = t.clientX; cy0 = t.clientY;
     }
   }, { passive: false });
+  renderer.domElement.addEventListener("touchend", (e) => {
+    for (const t of e.changedTouches) {
+      if (t.identifier !== camId) continue;
+      if (camMoved < 8) breakAtTarget(); // 輕點 = 挖
+      camId = null;
+    }
+  });
   const jumpBtn = document.getElementById("jump");
   jumpBtn.addEventListener("touchstart", (e) => { tryJump(); e.preventDefault(); }, { passive: false });
+  const placeBtn = document.getElementById("place");
+  placeBtn.addEventListener("touchstart", (e) => { placeAtTarget(); e.preventDefault(); }, { passive: false });
 }
 
 function tryJump() { if (player.grounded) { player.vy = 8.2; player.grounded = false; } }
@@ -317,6 +476,9 @@ function connect() {
         chunks.set(key, b64ToBytes(c.data));
         markDirty(c.cx, c.cy, c.cz);
       }
+    } else if (m.t === "block") {
+      // 伺服器權威方塊更新（破壞/放置）：本地套用 + 只重建受影響 chunk。
+      setLocalBlock(m.x, m.y, m.z, m.b);
     } else if (m.t === "players") {
       const seen = new Set();
       for (const p of m.players) {
@@ -417,14 +579,17 @@ function update(dt) {
   if (dir.lengthSq() > 1e-4) bodyMesh.rotation.y = Math.atan2(dir.x, dir.z);
 
   // 第三人稱鏡頭跟隨
-  const target = new THREE.Vector3(player.x, player.y + 1.3, player.z);
+  const lookTarget = new THREE.Vector3(player.x, player.y + 1.3, player.z);
   const dist = 6.0, cp = Math.cos(camPitch), sp = Math.sin(camPitch);
   camera.position.set(
-    target.x + Math.sin(player.yaw) * dist * cp,
-    target.y + dist * sp,
-    target.z + Math.cos(player.yaw) * dist * cp
+    lookTarget.x + Math.sin(player.yaw) * dist * cp,
+    lookTarget.y + dist * sp,
+    lookTarget.z + Math.cos(player.yaw) * dist * cp
   );
-  camera.lookAt(target);
+  camera.lookAt(lookTarget);
+
+  // 準心對準的方塊（破壞/放置目標）+ 高亮外框。
+  updateTarget();
 
   streamChunks(dt);
   sendMove(dt);
@@ -461,7 +626,7 @@ function loop() {
   dbgT += dt;
   if (dbgT >= 0.25) {
     dbgT = 0;
-    hudEl.textContent = `ButFun Voxel · ${myName}\nWASD/拖曳轉視角/空白跳\nchunk: ${chunks.size}　線上: ${others.size + 1}`;
+    hudEl.textContent = `ButFun Voxel · ${myName}\nWASD移動·拖曳轉視角·空白跳\n左鍵/輕點挖·右鍵/放置鈕放·1-6選方塊\nchunk: ${chunks.size}　線上: ${others.size + 1}`;
     if (DEBUG) {
       dbgEl.style.display = "block";
       dbgEl.textContent =
@@ -488,4 +653,10 @@ window.__voxel = {
   get meshes() { return meshes.size; },
   get fps() { return fps; },
   get player() { return player; },
+  // ── 真瀏覽器 QA 用：讀準心目標、讀方塊、觸發破壞/放置、選方塊 ──
+  get target() { return target; },
+  getBlock(x, y, z) { return getRaw(x, y, z); },
+  doBreak() { return breakAtTarget(); },
+  doPlace() { return placeAtTarget(); },
+  selectSlotByBlock(b) { const i = HOTBAR.indexOf(b); if (i >= 0) selectSlot(i); return selectedBlock(); },
 };

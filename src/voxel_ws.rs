@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
-use crate::voxel::{self, ChunkCoord, BASE_HEIGHT, CHUNK, SEA_LEVEL};
+use crate::voxel::{self, Block, ChunkCoord, WorldDelta, BASE_HEIGHT, CHUNK, SEA_LEVEL};
 
 /// 入場時串給玩家的 chunk 半徑（以 chunk 為單位，水平）。3 → 7×7 column。
 const SPAWN_CHUNK_RADIUS: i32 = 3;
@@ -40,9 +40,12 @@ struct VoxelPlayer {
     yaw: f32,
 }
 
-/// voxel 世界的多人 hub：玩家表 + 廣播頻道。模組內全域單例（不污染 AppState）。
+/// voxel 世界的多人 hub：玩家表 + 方塊改動 overlay + 廣播頻道。模組內全域單例（不污染 AppState）。
 struct VoxelHub {
     players: RwLock<HashMap<Uuid, VoxelPlayer>>,
+    /// 方塊改動 delta 層（疊在程序生成地形之上）。切片②先記憶體存，session 內正確套用+廣播。
+    /// 之後切片可把它接 DB 持久化；AI 蓋家也會共用這層。
+    deltas: RwLock<WorldDelta>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -53,6 +56,7 @@ fn hub() -> &'static VoxelHub {
         let (tx, _rx) = broadcast::channel(256);
         VoxelHub {
             players: RwLock::new(HashMap::new()),
+            deltas: RwLock::new(WorldDelta::new()),
             tx,
         }
     })
@@ -85,6 +89,10 @@ enum ClientMsg {
     Move { x: f32, y: f32, z: f32, yaw: f32 },
     /// 走到新區塊時補要 chunk（cx,cz 為 chunk 座標，伺服器補該 column 的 cy 範圍）。
     Req { cx: i32, cz: i32 },
+    /// 破壞方塊：目標方塊世界座標。伺服器驗證觸及範圍/實心後挖掉並廣播。
+    Break { x: i32, y: i32, z: i32 },
+    /// 放置方塊：放置世界座標 + 方塊型別 id（對齊 Block enum）。伺服器驗證後套用並廣播。
+    Place { x: i32, y: i32, z: i32, b: u8 },
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -110,7 +118,8 @@ fn spawn_pos() -> (f32, f32, f32) {
     (bx as f32 + 0.5, (bh + 2) as f32, bz as f32 + 0.5)
 }
 
-/// 收集一批 chunk（指定 column 清單 × cy 範圍），略過全空氣的，打包成 `chunks` 訊息。
+/// 收集一批 chunk（指定 column 清單 × cy 範圍），套用 delta overlay、略過全空氣的，打包成
+/// `chunks` 訊息。套 delta → late-join 玩家也看得到別人改過的世界。
 fn pack_chunks_msg(columns: &[(i32, i32)]) -> String {
     #[derive(Serialize)]
     struct PackedChunk {
@@ -120,14 +129,31 @@ fn pack_chunks_msg(columns: &[(i32, i32)]) -> String {
         data: String,
     }
     let mut out: Vec<PackedChunk> = Vec::new();
+    // 鎖只在這段短暫持有（讀 delta）；打包是純計算。
+    let deltas = hub().deltas.read().unwrap();
     for &(cx, cz) in columns {
         for cy in CY_MIN..=CY_MAX {
-            if let Some(data) = voxel::pack_chunk(ChunkCoord { cx, cy, cz }) {
+            let coord = ChunkCoord { cx, cy, cz };
+            if let Some(data) = voxel::pack_chunk_with_delta(coord, deltas.get(&coord)) {
                 out.push(PackedChunk { cx, cy, cz, data });
             }
         }
     }
     serde_json::json!({ "t": "chunks", "chunks": out }).to_string()
+}
+
+/// 廣播一則方塊更新（破壞/放置後）給所有連線。前端據此只重建受影響的 chunk mesh。
+fn broadcast_block(x: i32, y: i32, z: i32, b: Block) {
+    let msg = Arc::new(
+        serde_json::json!({ "t": "block", "x": x, "y": y, "z": z, "b": b as u8 }).to_string(),
+    );
+    let _ = hub().tx.send(msg);
+}
+
+/// 讀目前玩家位置（reach 驗證用）。找不到回 None。
+fn player_pos(id: Uuid) -> Option<(f32, f32, f32)> {
+    let players = hub().players.read().unwrap();
+    players.get(&id).map(|p| (p.x, p.y, p.z))
 }
 
 pub async fn voxel_ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
@@ -272,6 +298,45 @@ async fn handle_socket(socket: WebSocket) {
                 }
                 let _ = out_tx.send(Message::Text(pack_chunks_msg(&cols))).await;
             }
+            Ok(ClientMsg::Break { x, y, z }) => {
+                // 取玩家位置驗 reach，驗目標實心，套 delta（覆蓋成空氣），廣播。
+                let Some((px, py, pz)) = player_pos(my_id) else {
+                    continue;
+                };
+                let applied = {
+                    let mut world = hub().deltas.write().unwrap();
+                    if voxel::can_break(&world, px, py, pz, x, y, z) {
+                        voxel::set_block(&mut world, x, y, z, Block::Air);
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if applied {
+                    broadcast_block(x, y, z, Block::Air);
+                }
+            }
+            Ok(ClientMsg::Place { x, y, z, b }) => {
+                // 解析方塊型別 → 驗 reach/可放/目標為空 → 套 delta，廣播。
+                let Some(block) = Block::from_u8(b) else {
+                    continue;
+                };
+                let Some((px, py, pz)) = player_pos(my_id) else {
+                    continue;
+                };
+                let applied = {
+                    let mut world = hub().deltas.write().unwrap();
+                    if voxel::can_place(&world, px, py, pz, x, y, z, block) {
+                        voxel::set_block(&mut world, x, y, z, block);
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if applied {
+                    broadcast_block(x, y, z, block);
+                }
+            }
             // 重複 Join 或壞訊息：忽略。
             _ => {}
         }
@@ -342,5 +407,27 @@ mod tests {
             }
             _ => panic!("應解析成 Req"),
         }
+    }
+
+    #[test]
+    fn break_and_place_parse() {
+        let b: ClientMsg = serde_json::from_str(r#"{"t":"break","x":3,"y":9,"z":-4}"#).unwrap();
+        match b {
+            ClientMsg::Break { x, y, z } => assert_eq!((x, y, z), (3, 9, -4)),
+            _ => panic!("應解析成 Break"),
+        }
+        let p: ClientMsg =
+            serde_json::from_str(r#"{"t":"place","x":1,"y":10,"z":2,"b":3}"#).unwrap();
+        match p {
+            ClientMsg::Place { x, y, z, b } => assert_eq!((x, y, z, b), (1, 10, 2, 3)),
+            _ => panic!("應解析成 Place"),
+        }
+    }
+
+    #[test]
+    fn place_block_id_validates() {
+        // 合法 id → Some；越界 → None（伺服器據此忽略 place）。
+        assert_eq!(Block::from_u8(3), Some(Block::Stone));
+        assert!(Block::from_u8(200).is_none());
     }
 }
