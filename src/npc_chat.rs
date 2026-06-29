@@ -271,6 +271,38 @@ pub async fn raw_llm_call(system: &str, user: &str) -> Option<String> {
     llm_chat(system, user).await
 }
 
+/// 對話用縮短逾時的 LLM 路由（Talk 路徑用）：每個 tier 上限 5 秒，最差 ~20 秒完成，
+/// 讓玩家不用等完整鏈 15+15+15+20=65 秒。降級鏈同 `llm_chat`（Cerebras→Gemini→Groq→ollama）。
+async fn llm_chat_fast(system: &str, user: &str) -> Option<String> {
+    const FAST: Duration = Duration::from_secs(5);
+    if cerebras_enabled() {
+        if let Ok(Some(t)) = tokio::time::timeout(FAST, cerebras_chat(system, user)).await {
+            return Some(t);
+        }
+    }
+    if gemini_enabled() {
+        if let Ok(Some(t)) = tokio::time::timeout(FAST, gemini_chat(system, user)).await {
+            return Some(t);
+        }
+    }
+    if groq_enabled() {
+        // Groq 較穩定，給略多時間確保真的有機會拿到回覆。
+        if let Ok(Some(t)) = tokio::time::timeout(Duration::from_secs(8), groq_chat(system, user)).await {
+            return Some(t);
+        }
+    }
+    tokio::time::timeout(FAST, ollama_chat(system, user)).await.ok().flatten()
+}
+
+/// 快速 raw LLM 呼叫（voxel Talk 路徑專用）：每個 tier 縮短逾時，確保玩家在 ~20 秒內看到回覆。
+/// LLM 未啟用時回 None；呼叫方負責在 None 時退回罐頭降級。
+pub async fn raw_llm_call_fast(system: &str, user: &str) -> Option<String> {
+    if !llm_enabled() {
+        return None;
+    }
+    llm_chat_fast(system, user).await
+}
+
 /// 呼叫 ollama 生成回話。失敗（連不到 / 逾時 / 解析錯）一律回 None，由呼叫端退罐頭。
 async fn ollama_chat(system: &str, user: &str) -> Option<String> {
     let client = reqwest::Client::builder()
@@ -1275,5 +1307,15 @@ mod tests {
         let n = find_npc("merchant").unwrap();
         let s = system_prompt(n, &NpcRel::default(), false, 0, "", "", "", "", "", "");
         assert!(!s.contains("近期世界大事"), "無近況時 prompt 不應出現世界大事段落：{s}");
+    }
+
+    // ── raw_llm_call_fast：Talk 路徑快速呼叫 ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn raw_llm_call_fast_returns_none_when_llm_disabled() {
+        // LLM 未啟用（BUTFUN_NPC_LLM != 1）時，fast 路徑應立即回 None（與 raw_llm_call 一致）。
+        std::env::remove_var("BUTFUN_NPC_LLM");
+        let result = raw_llm_call_fast("system", "user").await;
+        assert!(result.is_none(), "LLM 未啟用時 raw_llm_call_fast 應回 None");
     }
 }
