@@ -5178,6 +5178,15 @@ pub fn spawn(app: AppState) {
                                 brewing: stall.recently_brewed(),
                             })
                         },
+                        // 居民木屋（ROADMAP 642）：靜態設施列表，直接由 resident_home::all_homes() 產生。
+                        // 無執行期狀態，零鎖，整份快照恆帶（有木屋即帶）。
+                        resident_homes: crate::resident_home::all_homes().into_iter().map(|h| {
+                            crate::protocol::ResidentHomeView {
+                                name: h.name.to_string(),
+                                x: h.x,
+                                y: h.y,
+                            }
+                        }).collect(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

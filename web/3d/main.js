@@ -2675,6 +2675,13 @@ const ST_GEO = {
   teaSpout:   new THREE.CylinderGeometry(0.07, 0.1, 0.6, 4),// 茶壺嘴
   teaLantern: new THREE.SphereGeometry(0.26, 8, 6),         // 棚角暖燈
   teaSteam:   new THREE.SphereGeometry(0.3, 6, 5),          // 出爐蒸汽團（嫋嫋上升）
+  // 居民木屋（ROADMAP 642）：木屋主體＋四角錐屋頂＋門＋窗格＋煙囪＋窗光球。
+  homeBody:    new THREE.BoxGeometry(4.5, 3.0, 3.5),        // 木屋主體（木板牆，寬×高×深）
+  homeRoof:    new THREE.ConeGeometry(3.2, 2.0, 4),         // 屋頂（四角錐尖頂）
+  homeDoor:    new THREE.BoxGeometry(0.9, 1.5, 0.15),       // 木門（前面正中）
+  homeWindow:  new THREE.BoxGeometry(0.9, 0.8, 0.15),       // 窗格（兩扇，正面及側面各一）
+  homeChimney: new THREE.BoxGeometry(0.5, 1.6, 0.5),        // 煙囪（磚石，斜屋頂後側）
+  homeGlow:    new THREE.SphereGeometry(0.55, 6, 4),        // 窗光球（自發光暖黃，夜晚更亮）
 };
 
 // 一座篝火：交叉柴堆＋雙層火焰（外焰/亮心，會跳動發光）＋地面暖意圈。火焰／暖圈引用留在 userData 供每幀調。
@@ -2793,6 +2800,58 @@ function makeVillageTeaStall(_item) {
   return g;
 }
 
+// 居民木屋顏色（ROADMAP 642）：溫暖木質感——仿「放在桌上被暖燈照著的微縮模型」黏土北極星基調。
+const HOME_BODY_COLOR    = 0xc4956a; // 木板牆（暖棕）
+const HOME_ROOF_COLOR    = 0x9a4a2a; // 屋頂瓦（磚紅陶土，呼應茶棚棚頂）
+const HOME_DOOR_COLOR    = 0x6b3d2a; // 木門（深棕，比牆深一階）
+const HOME_WINDOW_COLOR  = 0x8b6914; // 窗框（蜂蜜棕）
+const HOME_CHIMNEY_COLOR = 0x7a6a5a; // 煙囪（灰石，自然老化感）
+const HOME_GLOW_COLOR    = 0xffd080; // 窗光（暖琥珀黃，室內有人的感覺）
+
+// 一座居民木屋（ROADMAP 642，禱告驅動）：低多邊形小木屋——木板牆＋四角錐磚紅屋頂＋
+// 正門＋兩扇窗格＋後側煙囪＋窗光球（夜晚窗裡透出暖光，像有人在家）。
+// 應 AI 居民之禱而生：露娜盼了很久的「更舒適的家」在這裡成真了。
+function makeResidentHome(item) {
+  const g = new THREE.Group();
+  // 木板牆主體（y=1.5＝半高，讓底面落地）
+  const body = new THREE.Mesh(ST_GEO.homeBody, new THREE.MeshLambertMaterial({ color: HOME_BODY_COLOR }));
+  body.position.y = 1.5;
+  g.add(body);
+  // 四角錐磚紅屋頂（疊在牆頂，旋轉 45° 讓角朝前後，不是稜朝前後）
+  const roof = new THREE.Mesh(ST_GEO.homeRoof, new THREE.MeshLambertMaterial({ color: HOME_ROOF_COLOR }));
+  roof.rotation.y = Math.PI / 4;
+  roof.position.y = 4.0; // 牆高 3.0 + 屋頂半高 1.0
+  g.add(roof);
+  // 煙囪（疊在屋頂後側，磚灰質感）
+  const chimney = new THREE.Mesh(ST_GEO.homeChimney, new THREE.MeshLambertMaterial({ color: HOME_CHIMNEY_COLOR }));
+  chimney.position.set(1.0, 4.8, -1.0); // 屋頂後半段
+  g.add(chimney);
+  // 正面木門（正中貼前牆，y=0.75＝門高一半）
+  const door = new THREE.Mesh(ST_GEO.homeDoor, new THREE.MeshLambertMaterial({ color: HOME_DOOR_COLOR }));
+  door.position.set(0, 0.75, 1.76);
+  g.add(door);
+  // 正面左側窗格
+  const winFront = new THREE.Mesh(ST_GEO.homeWindow, new THREE.MeshLambertMaterial({ color: HOME_WINDOW_COLOR }));
+  winFront.position.set(-1.4, 1.8, 1.76);
+  g.add(winFront);
+  // 側面右側窗格（轉 90°）
+  const winSide = new THREE.Mesh(ST_GEO.homeWindow, new THREE.MeshLambertMaterial({ color: HOME_WINDOW_COLOR }));
+  winSide.rotation.y = Math.PI / 2;
+  winSide.position.set(2.26, 1.8, 0);
+  g.add(winSide);
+  // 窗光球（正面窗內，自發光暖黃；夜晚更亮——由 updateStructures 每幀調整透明度）
+  const winGlow = new THREE.Mesh(ST_GEO.homeGlow, new THREE.MeshBasicMaterial({
+    color: HOME_GLOW_COLOR, transparent: true, opacity: 0.0, depthWrite: false,
+  }));
+  winGlow.position.set(-1.4, 1.8, 1.6); // 微縮進正面窗內側
+  g.add(winGlow);
+  // 居民姓名標籤（「露娜的家」漂在屋頂上方）
+  const name = (item && item.name) ? item.name : "居民";
+  g.add(makeLabel(name + "的家"));
+  g.userData.winGlow = winGlow;
+  return g;
+}
+
 // 一座瞭望塔：四根升起的塔柱＋平台＋尖頂＋塔頂燈。塔身高度由進度撐（工地→落成）；燈在落成入夜時亮。
 function makeWatchtower(item) {
   const v = watchtowerVisual(item);
@@ -2905,6 +2964,7 @@ const watchtowers = new Map();
 const snowmen = new Map();
 const villageWells = new Map(); // 故鄉古井（ROADMAP 640）：單一固定設施，仍走 reconcileStatic 的 AOI 淡入淡出
 const villageTeaStalls = new Map(); // 故鄉茶棚（ROADMAP 641）：單一固定設施，仍走 reconcileStatic 的 AOI 淡入淡出
+const residentHomes = new Map();    // 居民木屋（ROADMAP 642）：居民之禱而生的溫暖木屋列表
 
 // 每幀更新所有人造地標：篝火火焰跳動／暖圈脈動（入夜更亮、將熄漸弱）、塔頂燈入夜亮起、雪人愛心數。
 // 在各自 Map 的 updateFade 之後跑：updateFade 把所有材質 opacity 壓成 AOI 淡入淡出值，這裡再
@@ -2995,6 +3055,19 @@ function updateStructures(dt, t) {
       } else {
         ripple.visible = false;
       }
+    }
+  }
+  // ── 居民木屋（ROADMAP 642）：夜晚窗光緩緩亮起——「有人在家」的溫暖感 ──
+  for (const [key, g] of residentHomes) {
+    if (updateFade(g, dt)) { scene.remove(g); residentHomes.delete(key); continue; }
+    const fade = g.userData.fade ?? 1;
+    const winGlow = g.userData.winGlow;
+    if (winGlow) {
+      // 白天窗光很淡（0.1），入夜漸亮到 0.7；reduceMotion 時直接取夜晚值不呼吸
+      const baseGlow = 0.1 + night * 0.6;
+      winGlow.material.opacity = fade * (reduceMotion
+        ? baseGlow
+        : baseGlow * (0.9 + 0.1 * Math.abs(Math.sin(t * 0.7)))); // 極輕微的呼吸感
     }
   }
   // ── 故鄉茶棚（ROADMAP 641）：暖燈微亮、出爐時棚上嫋嫋蒸汽升起＋淡出 ──
@@ -3808,6 +3881,15 @@ function handleServerMsg(msg) {
           ? [{ id: "tea", wx: msg.village_tea_stall.x, wy: msg.village_tea_stall.y, brewing: msg.village_tea_stall.brewing === true }]
           : [],
         villageTeaStalls, "vts", makeVillageTeaStall, null, recvT);
+      // 居民木屋（ROADMAP 642，禱告驅動）：列表形式，每座木屋以 name 為 id 區分。
+      // wx/wy 對齊 reconcileStatic 介面；name 記進 item 供 makeResidentHome 顯示標籤。
+      reconcileStatic(
+        Array.isArray(msg.resident_homes)
+          ? msg.resident_homes
+              .filter(h => h && Number.isFinite(h.x) && Number.isFinite(h.y) && typeof h.name === "string")
+              .map(h => ({ id: "home_" + h.name, wx: h.x, wy: h.y, name: h.name }))
+          : [],
+        residentHomes, "rh", makeResidentHome, null, recvT);
 
       // 玩家親手種下、隨真實時間長大的世界樹群（ROADMAP 617）：以座標當 key、長大了才重塑樹身。
       reconcileGroves(msg.world_groves, recvT);

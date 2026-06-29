@@ -1463,6 +1463,10 @@ pub enum ServerMsg {
         /// `None`＝舊伺服器無此設施；`#[serde(default)]` 向後相容舊客戶端（無此欄位時靜默略過）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         village_tea_stall: Option<VillageTeaStallView>,
+        /// 居民木屋列表（ROADMAP 642，禱告驅動）：世界中已立起的居民木屋，由居民之禱而生。
+        /// 空向量＝舊伺服器無此系統；`#[serde(default)]` 向後相容舊客戶端（無此欄位時靜默略過）。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        resident_homes: Vec<ResidentHomeView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -3252,6 +3256,16 @@ pub struct VillageTeaStallView {
     pub brewing: bool,
 }
 
+/// 居民木屋的快照（ROADMAP 642，禱告驅動）。應 AI 居民之禱在世界中立起的溫暖木屋，
+/// 讓居民的「家」在 3D 世界中真實存在。前端在 `(x, y)` 畫一座低多邊形小木屋。
+#[derive(Debug, Clone, Serialize)]
+pub struct ResidentHomeView {
+    /// 居住的 AI 居民名字——前端據此標示「誰住在這裡」。
+    pub name: String,
+    pub x: f32,
+    pub y: f32,
+}
+
 /// 今日世界戰報（ROADMAP 495）：全伺服器自啟動起的今日行動累計，向後相容預設全零。
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct WorldTallyView {
@@ -3791,6 +3805,7 @@ mod tests {
             vehicles: vec![],
             village_well: None,
             village_tea_stall: None,
+            resident_homes: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

@@ -199,6 +199,7 @@ mod party;
 mod sprinkler;
 mod village_well; // ROADMAP 640 禱告驅動·故鄉古井（應諾娃之禱，定時滋潤公田）
 mod village_tea_stall; // ROADMAP 641 禱告驅動·故鄉茶棚（應露娜之禱，定時出爐熱茶溫暖全鎮）
+mod resident_home; // ROADMAP 642 禱告驅動·居民木屋（應居民之禱，為他們蓋起溫暖的家）
 mod warehouse;
 mod perishable;
 mod home_interior;
