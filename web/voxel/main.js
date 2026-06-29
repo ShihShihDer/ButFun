@@ -28,6 +28,8 @@ const COLOR = {
 };
 
 const DEBUG = location.search.includes("debug");
+// 觸控裝置偵測（用於顯示精簡 HUD 文字 + 啟用搖桿/跳鈕/放置鈕）
+const isTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
 const hudEl = document.getElementById("hud");
 const dbgEl = document.getElementById("dbg");
 const errEl = document.getElementById("err");
@@ -401,10 +403,10 @@ addEventListener("pointermove", (e) => {
 // 右鍵放置：擋掉瀏覽器選單。
 renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
 
-// 觸控搖桿
+// 觸控搖桿（isTouch 常數已在頁首定義）
 const touchEl = document.getElementById("touch");
 let joyVec = { x: 0, y: 0 };
-if ("ontouchstart" in window || navigator.maxTouchPoints > 0) {
+if (isTouch) {
   if (touchEl) touchEl.style.display = "block";
   const joy = document.getElementById("joy"), nub = document.getElementById("joyNub");
   let joyId = null, jcx = 0, jcy = 0;
@@ -626,7 +628,10 @@ function loop() {
   dbgT += dt;
   if (dbgT >= 0.25) {
     dbgT = 0;
-    hudEl.textContent = `ButFun Voxel · ${myName}\nWASD移動·拖曳轉視角·空白跳\n左鍵/輕點挖·右鍵/放置鈕放·1-6選方塊\nchunk: ${chunks.size}　線上: ${others.size + 1}`;
+    // 觸控裝置顯示精簡文字，避免直式螢幕頂部 HUD 溢出
+    hudEl.textContent = isTouch
+      ? `ButFun · ${myName}\n輕點挖・放置鈕放\nchunk:${chunks.size} 線上:${others.size + 1}`
+      : `ButFun Voxel · ${myName}\nWASD移動·拖曳轉視角·空白跳\n左鍵/輕點挖·右鍵/放置鈕放·1-6選方塊\nchunk: ${chunks.size}　線上: ${others.size + 1}`;
     if (DEBUG) {
       dbgEl.style.display = "block";
       dbgEl.textContent =

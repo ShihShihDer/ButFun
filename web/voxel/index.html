@@ -74,6 +74,52 @@
     }
     .slot.sel { border-color: #ffd86b; box-shadow: 0 0 8px rgba(255,216,107,0.6); }
     .slot .sw { width: 22px; height: 22px; border-radius: 4px; margin-bottom: 2px; }
+
+    /* ═══════════════════════════════════════════════════════════
+       響應式排版：直式（portrait）優先、橫式（landscape）相容
+       ═══════════════════════════════════════════════════════════
+       直式佈局原則（MCPE 直式手機擺位邏輯，自行實作）：
+         搖桿   → 左下角拇指區，在快捷欄上方
+         跳鈕   → 右下角拇指區，在快捷欄上方，大觸控目標
+         放置鈕 → 跳鈕左側，兩顆水平排列，皆在拇指可搆範圍
+         快捷欄 → 底部置中，縮小格子確保 6 格在 320px+ 螢幕排得下
+         頂部   → 精簡字型 + 窄 max-width，不換行亂掉
+       ─────────────────────────────────────────────────────────── */
+
+    @media (orientation: portrait) {
+      /* 頂部狀態列：精簡，窄寬度不換行亂掉 */
+      #hud {
+        font-size: 11px;
+        padding: 5px 9px;
+        max-width: 48vw;
+        line-height: 1.35;
+      }
+      #dbg { font-size: 11px; padding: 5px 8px; }
+
+      /* 快捷欄：縮小格子，確保 6 格在 320px+ 寬螢幕都排得下
+         計算：6×38 + 5×4(gap) + 2×5(padding) = 258px ≤ 320px ✓ */
+      #hotbar { bottom: 8px; gap: 4px; padding: 5px; border-radius: 10px; }
+      .slot   { width: 38px; height: 38px; font-size: 9px; border-radius: 7px; }
+      .slot .sw { width: 16px; height: 16px; margin-bottom: 1px; }
+      /* 快捷欄總高：38+5×2=48px；頂邊距底：8+48=56px from bottom */
+
+      /* 搖桿：左下角，快捷欄上方（76 > 56，留 20px 間距）*/
+      #joy { left: 16px; bottom: 76px; }
+
+      /* 跳鈕：右下角，快捷欄上方，大觸控目標（80×80px）*/
+      #jump { right: 16px; bottom: 76px; width: 80px; height: 80px; font-size: 14px; }
+
+      /* 放置鈕：跳鈕左側，兩顆水平排列、不重疊
+         在 390px 螢幕：place 右邊=282px，jump 左邊=294px，間距 12px ✓ */
+      #place { right: 108px; bottom: 76px; width: 72px; height: 72px; font-size: 13px; }
+    }
+
+    /* 超窄裝置備援（< 360px 寬）：快捷欄格子再縮小確保塞下 */
+    @media (orientation: portrait) and (max-width: 359px) {
+      .slot   { width: 34px; height: 34px; }
+      #hotbar { gap: 3px; padding: 4px; }
+      #place  { right: 100px; }
+    }
   </style>
   <!-- Three.js 走 CDN importmap（比照 /3d/ 與 /play3d/）。 -->
   <script type="importmap">
