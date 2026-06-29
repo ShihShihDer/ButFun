@@ -28,6 +28,7 @@ use crate::voxel_building::{self as vbuild, BuildStore};
 use crate::voxel_desires::{self as vdes, DesireStore};
 use crate::voxel_diary;
 use crate::voxel_memory::{self as vmem, VoxelMemory};
+use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
 use crate::voxel_residents::{self as vr, Body};
 
@@ -647,6 +648,55 @@ async fn handle_socket(socket: WebSocket) {
                     let des = hub().desires.read().unwrap();
                     des.get_desire(&resident_id).map(|d| d.desire.clone())
                 }; // 心願讀鎖在此釋放
+
+                // 念頭播種 v1：在 spawn 前預計算（clean/resident_id 即將被 move）。
+                // 玩家對居民 A 說話時，附近居民 B/C/D 若戳中個性 → 冒反應泡泡 + 接收念頭。
+                // 全程零 LLM；三把鎖各自短取即釋，絕不巢狀、絕不持鎖 await。
+                let overhear_text = clean.clone();
+                let overhear_player = player_key.clone();
+                let addressed_rid_clone = resident_id.clone();
+                // 短鎖①：玩家位置
+                let player_pos_opt: Option<(f32, f32)> = {
+                    let players = hub().players.read().unwrap();
+                    players.get(&my_id).map(|p| (p.x, p.z))
+                }; // players 讀鎖釋放
+                // 短鎖②：居民快照（排除正在對話的那位）
+                let res_snaps: Vec<(String, &'static str, ResidentPersona, f32, f32)> = {
+                    let res = hub().residents.read().unwrap();
+                    res.iter()
+                        .filter(|r| r.id != addressed_rid_clone)
+                        .map(|r| (r.id.clone(), r.name, r.persona, r.body.x, r.body.z))
+                        .collect()
+                }; // residents 讀鎖釋放
+                // 短鎖③：哪些居民已有心願（不重複播種）
+                let has_desire_ids: Vec<String> = {
+                    let des = hub().desires.read().unwrap();
+                    res_snaps
+                        .iter()
+                        .filter(|(rid, ..)| des.get_desire(rid).is_some())
+                        .map(|(rid, ..)| rid.clone())
+                        .collect()
+                }; // desires 讀鎖釋放
+                // 純函式：按距離 + 個性篩選（零 LLM）
+                let overhear_targets: Vec<(String, &'static str, ResidentPersona, bool)> =
+                    match player_pos_opt {
+                        None => Vec::new(),
+                        Some((px, pz)) => res_snaps
+                            .into_iter()
+                            .filter(|(_, _, persona, rx, rz)| {
+                                let dx = rx - px;
+                                let dz = rz - pz;
+                                dx * dx + dz * dz
+                                    <= vh::OVERHEAR_RADIUS * vh::OVERHEAR_RADIUS
+                                    && vh::speech_fits_persona(&overhear_text, *persona)
+                            })
+                            .map(|(rid, rname, persona, _, _)| {
+                                let has_des = has_desire_ids.contains(&rid);
+                                (rid, rname, persona, has_des)
+                            })
+                            .collect(),
+                    };
+
                 // 4a) 立即送「思考中」佔位 → 前端用 `thinking:true` 顯示動畫指示器，
                 //     不當成一般回覆氣泡顯示，避免「居民只回 …」的誤解。
                 //     此訊息為私聊（只送這位玩家），不走 AgentBus 冒泡。
@@ -721,6 +771,37 @@ async fn handle_socket(socket: WebSocket) {
                         AgentDecision::new(AgentAction::Idle, reply, "對話"),
                     );
                 });
+
+                // 念頭播種：套用對附近居民的效果（spawn 後，短鎖分批，不巢狀，不持鎖 await）。
+                if !overhear_targets.is_empty() {
+                    // ① 反應泡泡（residents 寫鎖，短取即釋）
+                    {
+                        let mut res = hub().residents.write().unwrap();
+                        for (rid, rname, persona, _) in &overhear_targets {
+                            if let Some(r) = res.iter_mut().find(|r| &r.id == rid) {
+                                r.say = vh::canned_overhear_reaction(*persona, rname);
+                                r.say_timer = vh::REACTION_SAY_SECS;
+                            }
+                        }
+                    } // residents 寫鎖釋放
+                    // ② 心願播種：只給尚無心願的居民（desires 寫鎖，每筆分開）
+                    let desire_seeds: Vec<(String, String)> = overhear_targets
+                        .iter()
+                        .filter(|(_, _, _, has_des)| !has_des)
+                        .filter_map(|(rid, ..)| {
+                            vdes::extract_desire(&overhear_text).map(|d| (rid.clone(), d))
+                        })
+                        .collect();
+                    for (rid, desire_text) in desire_seeds {
+                        let entry = {
+                            let mut des = hub().desires.write().unwrap();
+                            des.set_desire(&rid, &desire_text, &overhear_player)
+                        }; // desires 寫鎖釋放
+                        vdes::append_desire(&entry);
+                    }
+                    // ③ 廣播：讓附近玩家看到居民的反應泡泡
+                    broadcast_players();
+                }
             }
             // 重複 Join 或壞訊息：忽略。
             _ => {}
