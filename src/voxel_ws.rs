@@ -24,6 +24,7 @@ use crate::npc_agent::{AgentAction, AgentDecision, NearbyPlayer, SenseInput};
 use crate::npc_agent_wire::{self, AgentBus};
 use crate::resident_npc::ResidentPersona;
 use crate::voxel::{self, Block, ChunkCoord, WorldDelta, BASE_HEIGHT, CHUNK, SEA_LEVEL};
+use crate::voxel_building::{self as vbuild, BuildStore};
 use crate::voxel_desires::{self as vdes, DesireStore};
 use crate::voxel_diary;
 use crate::voxel_memory::{self as vmem, VoxelMemory};
@@ -84,6 +85,8 @@ const GREET_DIST: f32 = 4.0;
 const GREET_COOLDOWN: f32 = 25.0;
 /// 每個合格 tick 觸發招呼的機率（10Hz 下 0.04 ≈ 靠近後約 2.5 秒內冒一句）。
 const GREET_CHANCE_PER_TICK: f32 = 0.04;
+/// 居民建造頻率：每隔這麼多秒放一塊方塊（慢節奏，讓玩家能目睹過程）。
+const BUILD_INTERVAL_SECS: f32 = 8.0;
 
 /// 一位乙太方界居民的權威運行狀態（位置/朝向 + 閒晃目標 + 思考排程 + 當前冒的話）。
 struct VoxelResident {
@@ -110,6 +113,8 @@ struct VoxelResident {
     social_cooldown: f32,
     /// 另一位居民剛搭話，等這秒數到期後回應（id, 名字, 剩餘秒）。
     pending_response: Option<(String, String, f32)>,
+    /// 建造 tick 倒數（秒）：降到 0 時嘗試放一塊或啟動新計畫；錯開避免同 tick 全員觸發。
+    build_tick: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -234,6 +239,8 @@ fn init_residents() -> Vec<VoxelResident> {
             // 錯開初始社交冷卻，避免啟動瞬間全員一起嘗試搭話。
             social_cooldown: i as f32 * 20.0,
             pending_response: None,
+            // 錯開建造 tick，讓 4 位居民不同 tick 檢查（BUILD_INTERVAL_SECS / 4 * i 間距）。
+            build_tick: BUILD_INTERVAL_SECS * 0.5 + i as f32 * (BUILD_INTERVAL_SECS / 4.0),
         });
     }
     out
@@ -259,6 +266,9 @@ struct VoxelHub {
     /// 居民社交記憶（誰聽到誰說了什麼）。持久化到 data/voxel_social.jsonl。
     /// 居民↔居民偶爾對話 → 雙方存入社交記憶 → think 時帶入 world_news → 自然提及彼此。
     social: RwLock<SocialStore>,
+    /// 居民建造計畫（每人至多一份 active plan）。持久化到 data/voxel_builds.jsonl。
+    /// 居民有心願後 → 分類 → 生成方塊清單 → 每 8 秒放一塊（渴望化為方塊 v1）。
+    builds: RwLock<BuildStore>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -279,6 +289,8 @@ fn hub() -> &'static VoxelHub {
             desires: RwLock::new(DesireStore::from_entries(vdes::load_desires())),
             // 啟動時從 data/voxel_social.jsonl 載回居民社交記憶（重啟後仍記得聽到過什麼）。
             social: RwLock::new(SocialStore::from_entries(vrel::load_social())),
+            // 啟動時從 data/voxel_builds.jsonl 載回未完成的建造計畫（重啟後繼續蓋）。
+            builds: RwLock::new(BuildStore::from_entries(vbuild::load_builds())),
             tx,
         }
     })
@@ -819,6 +831,10 @@ fn tick_residents(dt: f32) {
     // is_response=false → 發起對話；is_response=true → 回應對話。
     let mut social_events: Vec<(String, String, String, String, String, bool)> = Vec::new();
 
+    // 建造候選（鎖內收集位置快照，鎖外執行放塊 / 啟動計畫）。
+    // 格式：(resident_id, resident_name, wx, wy, wz, resident_idx)
+    let mut build_candidates: Vec<(String, &'static str, i32, i32, i32, usize)> = Vec::new();
+
     {
         let world = hub().deltas.read().unwrap();
         let mut residents = hub().residents.write().unwrap();
@@ -922,6 +938,21 @@ fn tick_residents(dt: f32) {
                 r.think_timer = npc_agent_wire::THINK_INTERVAL_SECS;
                 think_jobs.push((r.id.clone(), r.name, r.persona, r.body.x, r.body.z));
             }
+
+            // 建造 tick 倒數；到期則加入候選（只收快照，實際放塊在鎖外執行）。
+            r.build_tick -= dt;
+            if r.build_tick <= 0.0 {
+                // 居民 id 格式固定 "vox_res_{i}"，取末位數字當 index。
+                let idx = r.id.trim_start_matches("vox_res_").parse::<usize>().unwrap_or(0);
+                build_candidates.push((
+                    r.id.clone(),
+                    r.name,
+                    r.body.x.floor() as i32,
+                    r.body.y.floor() as i32,
+                    r.body.z.floor() as i32,
+                    idx,
+                ));
+            }
         }
 
         // 2c) 社交發起掃描：每 tick 最多一對居民發起對話（低頻、有冷卻、不干擾物理主迴圈）。
@@ -989,6 +1020,122 @@ fn tick_residents(dt: f32) {
             spawn_resident_think(id, name, persona, x, z);
         }
     }
+
+    // 6) 居民建造（builds/desires/deltas/residents 的鎖全在上面釋放後才取，守循序不巢狀鐵律）。
+    //    流程：① 若無計畫 → 讀心願 → 分類 → 啟動計畫 → 冒「開始蓋」台詞
+    //           ② 若有計畫 → 彈下一塊 → set_block → broadcast → 持久化 → 重設 build_tick
+    //    所有說話更新收集到 say_updates，最後一次性套用（只一把 residents 寫鎖）。
+    let mut say_updates: Vec<(String, String)> = Vec::new(); // (resident_id, say_text)
+
+    for (rid, rname, rx, _ry, rz, ridx) in build_candidates {
+        let has_plan = hub().builds.read().unwrap().has_plan(&rid); // drop
+
+        if !has_plan {
+            // 無計畫：讀心願 → 分類 → 啟動
+            let desire_opt: Option<String> = {
+                let des = hub().desires.read().unwrap();
+                des.get_desire(&rid).map(|d| d.desire.clone())
+            }; // desires 讀鎖釋放
+
+            if let Some(desire_text) = desire_opt {
+                if let Some(kind) = vbuild::classify_desire(&desire_text) {
+                    // 找建造位置：居民當前 x/z + 固定方位偏移
+                    let (ox, oz) = vbuild::build_anchor_offset(ridx);
+                    let bx = rx + ox;
+                    let bz = rz + oz;
+                    let by = vbuild::surface_y(bx, bz);
+
+                    let plan = {
+                        let mut builds = hub().builds.write().unwrap();
+                        if builds.has_plan(&rid) {
+                            // double-check（並發安全）
+                            None
+                        } else {
+                            Some(builds.new_plan(&rid, kind, bx, by, bz))
+                        }
+                    }; // builds 寫鎖釋放
+
+                    if let Some(p) = plan {
+                        vbuild::append_build(&p);
+                        let say = vbuild::build_say_line(&p.kind_name, 0);
+                        say_updates.push((rid.clone(), say));
+                    }
+                }
+            }
+            // 本 tick 不放塊，重設 build_tick 等下次
+            {
+                let mut residents = hub().residents.write().unwrap();
+                if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                    r.build_tick = BUILD_INTERVAL_SECS;
+                }
+            } // residents 寫鎖釋放
+            continue;
+        }
+
+        // 有計畫：彈下一塊
+        let (next_block, kind_name, progress_pct, plan_done) = {
+            let mut builds = hub().builds.write().unwrap();
+            if let Some(plan) = builds.get_plan_mut(&rid) {
+                let bb = plan.pop_next();
+                let kn = plan.kind_name.clone();
+                let pct = plan.progress_pct();
+                let done = plan.is_done();
+                (bb, kn, pct, done)
+            } else {
+                (None, String::new(), 100, true)
+            }
+        }; // builds 寫鎖釋放
+
+        if let Some(bb) = next_block {
+            if let Some(block) = Block::from_u8(bb.b) {
+                // 寫入 delta layer
+                {
+                    let mut world = hub().deltas.write().unwrap();
+                    voxel::set_block(&mut world, bb.x, bb.y, bb.z, block);
+                } // deltas 寫鎖釋放
+                broadcast_block(bb.x, bb.y, bb.z, block);
+
+                // 持久化更新後的計畫（remaining 已縮短）
+                if let Some(plan) = hub().builds.read().unwrap().plans.get(&rid) {
+                    vbuild::append_build(plan);
+                } // builds 讀鎖釋放
+
+                // 關鍵進度冒泡（開始蓋時已冒過；之後在 50%、95%、完成時各冒一次）
+                if progress_pct == 50 || progress_pct >= 95 {
+                    let say = vbuild::build_say_line(&kind_name, progress_pct);
+                    say_updates.push((rid.clone(), say));
+                }
+            }
+        }
+
+        if plan_done {
+            let mut builds = hub().builds.write().unwrap();
+            builds.remove_if_done(&rid);
+        } // builds 寫鎖釋放（若未取則無鎖）
+
+        // 重設 build_tick
+        {
+            let mut residents = hub().residents.write().unwrap();
+            if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                r.build_tick = BUILD_INTERVAL_SECS;
+            }
+        } // residents 寫鎖釋放
+    }
+
+    // 一次性套用說話更新（單獨一把 residents 寫鎖；say_updates 可能為空）。
+    if !say_updates.is_empty() {
+        let mut residents = hub().residents.write().unwrap();
+        for (rid, say_text) in say_updates {
+            if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                if r.say.is_empty() {
+                    // 只在居民沒有其他話時冒建造台詞，不打斷社交對話
+                    let safe: String = say_text.chars().take(40).collect();
+                    r.say = safe;
+                    r.say_timer = SAY_SECS;
+                }
+            }
+        }
+    } // residents 寫鎖釋放
 }
 
 /// 為一位居民發起一次無鎖 async 思考：短鎖讀附近玩家 → drop → spawn → npc_think/npc_pray

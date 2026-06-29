@@ -120,6 +120,8 @@ mod voxel_relations;
 mod voxel_desires;
 // 乙太方界·居民日記：把記憶格式化成人類可讀的生命故事（ROADMAP 650）。
 mod voxel_diary;
+// 乙太方界·居民蓋家系統：渴望化為方塊 v1——居民依心願自動蓋小屋/水井/塔/花圃（ROADMAP 652）。
+mod voxel_building;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
