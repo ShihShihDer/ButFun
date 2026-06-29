@@ -28,6 +28,7 @@ use crate::voxel_building::{self as vbuild, BuildStore};
 use crate::voxel_desires::{self as vdes, DesireStore};
 use crate::voxel_diary;
 use crate::voxel_feed as vfeed;
+use crate::voxel_inventory::{self as vinv, InvStore};
 use crate::voxel_memory::{self as vmem, VoxelMemory};
 use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
@@ -312,6 +313,8 @@ struct VoxelHub {
     /// 居民建造計畫（每人至多一份 active plan）。持久化到 data/voxel_builds.jsonl。
     /// 居民有心願後 → 分類 → 生成方塊清單 → 每 8 秒放一塊（渴望化為方塊 v1）。
     builds: RwLock<BuildStore>,
+    /// 玩家背包（採集 v1）：挖方塊得材料、放置消耗存量。持久化到 data/voxel_inventory.jsonl。
+    inventory: RwLock<InvStore>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -334,6 +337,8 @@ fn hub() -> &'static VoxelHub {
             social: RwLock::new(SocialStore::from_entries(vrel::load_social())),
             // 啟動時從 data/voxel_builds.jsonl 載回未完成的建造計畫（重啟後繼續蓋）。
             builds: RwLock::new(BuildStore::from_entries(vbuild::load_builds())),
+            // 啟動時從 data/voxel_inventory.jsonl 載回玩家背包（重啟後存量還在）。
+            inventory: RwLock::new(InvStore::from_entries(vinv::load_inventory())),
             tx,
         }
     })
@@ -533,6 +538,17 @@ async fn handle_socket(socket: WebSocket) {
         return;
     }
 
+    // 送目前背包存量（讓前端熱鍵欄立即顯示正確數量）。
+    {
+        let pairs = hub().inventory.read().unwrap().pairs(&name);
+        let inv_sync =
+            serde_json::json!({ "t": "inv_sync", "items": pairs }).to_string();
+        if out_tx.send(Message::Text(inv_sync)).await.is_err() {
+            cleanup(my_id, &writer);
+            return;
+        }
+    }
+
     // 送出生點周邊 chunk。
     let mut columns = Vec::new();
     for cx in -SPAWN_CHUNK_RADIUS..=SPAWN_CHUNK_RADIUS {
@@ -607,10 +623,15 @@ async fn handle_socket(socket: WebSocket) {
             }
             Ok(ClientMsg::Break { x, y, z }) => {
                 // 取玩家位置驗 reach，驗目標實心，套 delta（覆蓋成空氣），廣播。
+                // 採集 v1：先讀目標方塊型別（讀鎖即釋），破壞後給予對應材料。
                 let Some((px, py, pz)) = player_pos(my_id) else {
                     continue;
                 };
-                let applied = {
+                // 讀鎖快照目標方塊型別（delta 讀鎖，馬上釋放）。
+                let target_block =
+                    voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
+                // delta 寫鎖：驗證 + 設為空氣（循序取放，不嵌套）。
+                let broken = {
                     let mut world = hub().deltas.write().unwrap();
                     if voxel::can_break(&world, px, py, pz, x, y, z) {
                         voxel::set_block(&mut world, x, y, z, Block::Air);
@@ -618,20 +639,53 @@ async fn handle_socket(socket: WebSocket) {
                     } else {
                         false
                     }
-                };
-                if applied {
+                }; // delta 寫鎖在此釋放
+                if broken {
                     broadcast_block(x, y, z, Block::Air);
+                    // 只有實心方塊才給材料（Air/Water 已被 can_break 濾掉，雙保險）。
+                    if target_block.is_solid() {
+                        let bid = target_block as u8;
+                        // inventory 寫鎖（delta 已釋放，循序不巢狀，守死鎖鐵律）。
+                        let entry = hub().inventory.write().unwrap().give(&name, bid, 1);
+                        vinv::append_inv(&entry);
+                        let new_count =
+                            hub().inventory.read().unwrap().count(&name, bid);
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({
+                                "t": "inv_update",
+                                "block_id": bid,
+                                "count": new_count
+                            })
+                            .to_string(),
+                        ));
+                    }
                 }
             }
             Ok(ClientMsg::Place { x, y, z, b }) => {
-                // 解析方塊型別 → 驗 reach/可放/目標為空 → 套 delta，廣播。
+                // 採集 v1：先消耗庫存材料，再套 delta 放置；若放置失敗則退還材料。
+                // 鎖序：inventory 先取再釋 → delta 後取再釋（循序不巢狀，守死鎖鐵律）。
                 let Some(block) = Block::from_u8(b) else {
                     continue;
                 };
+                if !block.is_placeable() {
+                    continue;
+                }
                 let Some((px, py, pz)) = player_pos(my_id) else {
                     continue;
                 };
-                let applied = {
+                // 步驟1：嘗試消耗材料（inventory 寫鎖，立即釋放）。
+                let inv_entry = {
+                    hub().inventory.write().unwrap().take(&name, b, 1)
+                }; // inventory 寫鎖在此釋放
+                let Some(inv_e) = inv_entry else {
+                    // 材料不足 → 通知客戶端，不更動世界。
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "inv_denied", "block_id": b }).to_string(),
+                    ));
+                    continue;
+                };
+                // 步驟2：套 delta（delta 寫鎖，在 inventory 鎖已釋放後取，循序不巢狀）。
+                let placed = {
                     let mut world = hub().deltas.write().unwrap();
                     if voxel::can_place(&world, px, py, pz, x, y, z, block) {
                         voxel::set_block(&mut world, x, y, z, block);
@@ -639,9 +693,23 @@ async fn handle_socket(socket: WebSocket) {
                     } else {
                         false
                     }
-                };
-                if applied {
+                }; // delta 寫鎖在此釋放
+                if placed {
+                    vinv::append_inv(&inv_e); // 放置成功才持久化消耗記錄
                     broadcast_block(x, y, z, block);
+                    let new_count = hub().inventory.read().unwrap().count(&name, b);
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({
+                            "t": "inv_update",
+                            "block_id": b,
+                            "count": new_count
+                        })
+                        .to_string(),
+                    ));
+                } else {
+                    // 放置位置不合法（被搶佔等），退還材料。
+                    hub().inventory.write().unwrap().give(&name, b, 1);
+                    // 不持久化（退還等於沒發生）
                 }
             }
             Ok(ClientMsg::Talk { resident_id, text }) => {
