@@ -28,6 +28,7 @@ use crate::voxel_building::{self as vbuild, BuildStore};
 use crate::voxel_desires::{self as vdes, DesireStore};
 use crate::voxel_diary;
 use crate::voxel_feed as vfeed;
+use crate::voxel_craft as vcraft;
 use crate::voxel_inventory::{self as vinv, InvStore};
 use crate::voxel_memory::{self as vmem, VoxelMemory};
 use crate::voxel_overhear as vh;
@@ -402,6 +403,8 @@ enum ClientMsg {
     /// 跟居民對話：指定居民 id + 玩家說的話。伺服器以該居民人設呼叫 LLM 對話路徑，
     /// 回 `talk`（單播）給玩家、並冒泡讓附近人看到。
     Talk { resident_id: String, text: String },
+    /// 合成台 v1：用配料合成新型方塊（ROADMAP 658）。`recipe_id` 對齊 voxel_craft::Recipe.id。
+    Craft { recipe_id: String },
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -909,6 +912,71 @@ async fn handle_socket(socket: WebSocket) {
                     }
                     // ③ 廣播：讓附近玩家看到居民的反應泡泡
                     broadcast_players();
+                }
+            }
+            Ok(ClientMsg::Craft { recipe_id }) => {
+                // 合成台 v1（ROADMAP 658）：消耗配料 → 給產出方塊 → 送 inv_update + craft_ok/fail。
+                // 鎖紀律：一次 inventory 寫鎖內完成「確認 + 消耗」再釋放；give 在第二把寫鎖；
+                //         兩把皆短鎖即釋、循序不巢狀，守 prod 死鎖鐵律。
+                if let Some(recipe) = vcraft::find_recipe(&recipe_id) {
+                    // 步驟 1：單把寫鎖內完成「確認足夠材料 + 消耗所有配料」（原子，防 TOCTOU）。
+                    let (ok, consumed) = {
+                        let mut inv = hub().inventory.write().unwrap();
+                        if vcraft::can_craft(recipe, &inv, &name) {
+                            let mut entries = Vec::new();
+                            for &(block_id, count) in recipe.inputs {
+                                // can_craft 已確認足夠，take 必成功；失敗不影響已改的（逐項消耗）。
+                                if let Some(e) = inv.take(&name, block_id, count) {
+                                    entries.push(e);
+                                }
+                            }
+                            (true, entries)
+                        } else {
+                            (false, Vec::new())
+                        }
+                    }; // inventory 寫鎖釋放
+                    if ok {
+                        // 步驟 2：給產出方塊（第二把寫鎖，在第一把釋放後取）。
+                        let out_e = hub().inventory.write().unwrap().give(
+                            &name, recipe.output_block, recipe.output_count,
+                        ); // inventory 寫鎖釋放
+                        // 步驟 3：持久化（全在鎖外，比照 voxel_memory 做法）。
+                        for e in &consumed { vinv::append_inv(e); }
+                        vinv::append_inv(&out_e);
+                        // 步驟 4：送 inv_update（各消耗方塊 + 產出方塊的新計數）。
+                        let inv_r = hub().inventory.read().unwrap();
+                        for &(block_id, _) in recipe.inputs {
+                            let cnt = inv_r.count(&name, block_id);
+                            let _ = out_tx.try_send(Message::Text(
+                                serde_json::json!({ "t": "inv_update", "block_id": block_id, "count": cnt }).to_string(),
+                            ));
+                        }
+                        let out_cnt = inv_r.count(&name, recipe.output_block);
+                        drop(inv_r); // 讀鎖釋放後再送 craft_ok（守循序取放）
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({
+                                "t": "inv_update",
+                                "block_id": recipe.output_block,
+                                "count": out_cnt
+                            }).to_string(),
+                        ));
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({
+                                "t": "craft_ok",
+                                "recipe_id": &recipe_id,
+                                "name_zh": recipe.name_zh,
+                                "out_count": recipe.output_count
+                            }).to_string(),
+                        ));
+                    } else {
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({
+                                "t": "craft_fail",
+                                "recipe_id": &recipe_id,
+                                "reason": "材料不足"
+                            }).to_string(),
+                        ));
+                    }
                 }
             }
             // 重複 Join 或壞訊息：忽略。
