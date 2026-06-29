@@ -718,7 +718,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, watchtowers, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally, combat_marks, session_champions, ether_surge_secs, ether_surge_x, ether_surge_y, gold_rush, auction, fishing_contest, wonder_discoveries, world_boss, monument, vehicles, village_well } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, watchtowers, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally, combat_marks, session_champions, ether_surge_secs, ether_surge_x, ether_surge_y, gold_rush, auction, fishing_contest, wonder_discoveries, world_boss, monument, vehicles, village_well, village_tea_stall } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -905,6 +905,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         vehicles: vehicles.clone(),
                                         // 故鄉古井（ROADMAP 640）：單一固定設施、無 AOI 剔除，原樣帶過。
                                         village_well: village_well.clone(),
+                                        // 故鄉茶棚（ROADMAP 641）：單一固定設施、無 AOI 剔除，原樣帶過。
+                                        village_tea_stall: village_tea_stall.clone(),
                                     }
                                 }
                                 other => other.clone(),
