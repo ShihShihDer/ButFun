@@ -207,6 +207,10 @@ const STEP_SMOOTH_K = 10;
 let myId = null;
 let myName = "旅人";
 
+// 好感度 v1（ROADMAP 656）：我與各居民的互動記憶筆數（連線後從 /voxel/affinity 拉取）。
+// key = resident_id, value = count (0=陌生人, 1-2=相識, 3+=友人)
+const myAffinity = new Map();
+
 // 玩家身體（第三人稱可見的小方塊角色）
 const bodyGeo = new THREE.BoxGeometry(0.6, PH, 0.6);
 const bodyMat = new THREE.MeshLambertMaterial({ color: 0xffcf6b });
@@ -299,6 +303,52 @@ function setDesireText(sprite, text) {
   sprite.material.needsUpdate = true;
 }
 
+// ── 好感度指示燈（ROADMAP 656）──────────────────────────────────────────────
+
+/** 依好感度計數回傳指示燈 emoji。0=無, 1-2=淡藍心(相識), 3+=金心(友人)。純函式、可測。 */
+function affinityEmoji(count) {
+  if (count <= 0) return "";
+  if (count <= 2) return "💙";
+  return "💛";
+}
+
+/** 製作好感度指示燈 sprite（小字 emoji，居名牌正上方）。 */
+function makeAffinitySprite(emoji) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64; canvas.height = 40;
+  const ctx = canvas.getContext("2d");
+  ctx.font = "24px system-ui, sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  if (emoji) ctx.fillText(emoji, 32, 20);
+  const tex = new THREE.CanvasTexture(canvas);
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false })
+  );
+  sprite.scale.set(0.7, 0.44, 1);
+  return sprite;
+}
+
+function setAffinityEmoji(sprite, emoji) {
+  const fresh = makeAffinitySprite(emoji);
+  if (sprite.material.map) sprite.material.map.dispose();
+  sprite.material.map = fresh.material.map;
+  sprite.material.needsUpdate = true;
+}
+
+/** 從後端拉取玩家與各居民的好感度計數 → 更新 myAffinity Map。
+ *  連線後取一次；每次對話後再更新，讓指示燈即時反映互動。零 LLM。 */
+async function refreshAffinity() {
+  if (!myName || myName === "旅人") return;
+  try {
+    const resp = await fetch(`/voxel/affinity?player=${encodeURIComponent(myName)}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    for (const [rid, count] of Object.entries(data)) {
+      myAffinity.set(rid, typeof count === "number" ? count : 0);
+    }
+  } catch (_) { /* 網路問題忽略 */ }
+}
+
 // 建一位居民的可見實體（簡單 voxel 人形：軀幹 + 頭 + 名牌 + 夢想副標籤 + 泡泡）。
 // group.userData.rid 記居民 id，供點選 raycast 反查「點到的是哪位居民」。
 function buildResident(id, name) {
@@ -322,8 +372,13 @@ function buildResident(id, name) {
   bubble.position.y = 2.55;
   bubble.visible = false;
   group.add(bubble);
+  // 好感度指示燈（ROADMAP 656）：有好感才顯示，偏置在名牌右側不覆蓋名字。
+  const affinityIndicator = makeAffinitySprite("");
+  affinityIndicator.position.set(0.85, 2.05, 0);
+  affinityIndicator.visible = false;
+  group.add(affinityIndicator);
   scene.add(group);
-  return { group, label, desireLabel, bubble, lastName: name, lastSay: "", lastDesire: "" };
+  return { group, label, desireLabel, bubble, affinityIndicator, lastName: name, lastSay: "", lastDesire: "", lastAffinity: "" };
 }
 
 // 依伺服器快照更新所有居民（位置/朝向/名字/說的話）。新出現的就建、消失的就移除。
@@ -348,6 +403,14 @@ function updateResidents(list) {
       ent.lastSay = say;
       if (say) { setSpriteText(ent.bubble, say, true); ent.bubble.visible = true; }
       else { ent.bubble.visible = false; }
+    }
+    // 好感度指示燈（ROADMAP 656）：依 myAffinity 決定顯示哪種心型（sig 保護不重建貼圖）。
+    const affCount = myAffinity.get(r.id) || 0;
+    const emoji = affinityEmoji(affCount);
+    if (emoji !== ent.lastAffinity) {
+      ent.lastAffinity = emoji;
+      if (emoji) { setAffinityEmoji(ent.affinityIndicator, emoji); ent.affinityIndicator.visible = true; }
+      else { ent.affinityIndicator.visible = false; }
     }
     // 距離 LOD：遠到接近霧盡頭就整個隱藏（省繪製，不崩 FPS）。
     const dx = r.x - player.x, dz = r.z - player.z;
@@ -941,6 +1004,8 @@ function connect() {
     if (m.t === "welcome") {
       myId = m.id; myName = m.name || "旅人";
       player.x = m.spawn.x; player.y = m.spawn.y; player.z = m.spawn.z;
+      // 好感度 v1：連線後立即拉取與各居民的好感度，讓指示燈盡快亮起。
+      refreshAffinity();
     } else if (m.t === "chunks") {
       for (const c of m.chunks) {
         const key = ckey(c.cx, c.cy, c.cz);
@@ -973,6 +1038,8 @@ function connect() {
         removeThinking();     // 真回覆到了，先移除「思考中」
         lastTalkReply = m.reply || "";
         appendMsg("npc", (m.name || "居民") + "：" + lastTalkReply);
+        // 好感度 v1：對話後更新好感度（後端可能已累積新記憶），讓指示燈即時升燈。
+        refreshAffinity();
       }
     }
   };
@@ -1181,6 +1248,10 @@ window.__voxel = {
   closeFeed() { closeFeed(); },
   get feedVisible() { return feedVisible; },
   renderFeed(ev) { renderFeed(ev); return feedBodyEl && feedBodyEl.innerHTML; },
+  // ── 好感度 QA 用（ROADMAP 656）──
+  affinityEmoji(count) { return affinityEmoji(count); },
+  get myAffinity() { return Object.fromEntries(myAffinity); },
+  refreshAffinity() { return refreshAffinity(); },
   // ── 真瀏覽器 QA 用：讀準心目標、讀方塊、觸發破壞/放置、選方塊 ──
   get target() { return target; },
   getBlock(x, y, z) { return getRaw(x, y, z); },

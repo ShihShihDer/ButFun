@@ -424,6 +424,8 @@ async fn main() {
         .route("/voxel/diary", get(voxel_ws::voxel_diary_handler))
         // 乙太方界·城鎮動態 Feed（ROADMAP 655）：最新 30 筆居民活動事件 JSON。
         .route("/voxel/feed", get(voxel_ws::voxel_feed_handler))
+        // 乙太方界·好感度（ROADMAP 656）：玩家與各居民的互動記憶筆數（好感度計數）JSON。
+        .route("/voxel/affinity", get(voxel_ws::voxel_affinity_handler))
         // 其餘路徑（game.js、assets、wasm…）交給靜態前端（web/）。game.js 維持可
         // 快取——它的 URL 帶內容雜湊，內容一變 URL 就變，CF/瀏覽器自然抓新版。
         .fallback_service(ServeDir::new("web"))

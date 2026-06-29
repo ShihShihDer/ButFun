@@ -154,6 +154,18 @@ impl VoxelMemory {
         entries.sort_by(|a, b| b.seq.cmp(&a.seq));
         entries
     }
+
+    /// 好感度：某位玩家與某位居民之間積累的長期記憶筆數（越多 = 越熟識）。
+    /// 純計數、確定性、無副作用——前端可以用這個數字決定顯示哪種指示燈。
+    /// - 0     → 陌生人（未曾留下記憶）
+    /// - 1–2  → 相識（聊過一兩次）
+    /// - 3+   → 友人（多次深入互動）
+    pub fn affinity_count(&self, player: &str, resident: &str) -> usize {
+        self.long
+            .get(resident)
+            .map(|q| q.iter().filter(|e| e.player == player).count())
+            .unwrap_or(0)
+    }
 }
 
 /// 由「玩家這次說的話」規則化擷取一句長期記憶摘要（不另呼 LLM，省成本、確定性、可測）。
@@ -433,5 +445,38 @@ mod tests {
     fn load_missing_file_is_empty() {
         let missing = "data/__definitely_not_here_voxmem__.jsonl";
         assert!(read_memory_lines(missing).is_empty());
+    }
+
+    // ── affinity_count 測試 ───────────────────────────────────────────────────
+
+    #[test]
+    fn affinity_zero_for_stranger() {
+        let store = VoxelMemory::new();
+        assert_eq!(store.affinity_count("小明", "vox_res_0"), 0);
+    }
+
+    #[test]
+    fn affinity_counts_only_matching_player_and_resident() {
+        let mut store = VoxelMemory::new();
+        store.add_memory("vox_res_0", "小明", "小明說想蓋房子");
+        store.add_memory("vox_res_0", "小明", "小明聊到星星");
+        // 同居民但不同玩家
+        store.add_memory("vox_res_0", "小美", "小美說愛農耕");
+        // 不同居民但同玩家
+        store.add_memory("vox_res_1", "小明", "小明在居民1處說話");
+
+        assert_eq!(store.affinity_count("小明", "vox_res_0"), 2, "小明與 res_0 有兩筆");
+        assert_eq!(store.affinity_count("小美", "vox_res_0"), 1, "小美與 res_0 有一筆");
+        assert_eq!(store.affinity_count("小明", "vox_res_1"), 1, "小明與 res_1 有一筆");
+        assert_eq!(store.affinity_count("小美", "vox_res_1"), 0, "小美與 res_1 無互動");
+    }
+
+    #[test]
+    fn affinity_three_or_more_is_friend_tier() {
+        let mut store = VoxelMemory::new();
+        store.add_memory("vox_res_0", "小明", "a");
+        store.add_memory("vox_res_0", "小明", "b");
+        store.add_memory("vox_res_0", "小明", "c");
+        assert!(store.affinity_count("小明", "vox_res_0") >= 3, "三筆以上應達友人等級");
     }
 }
