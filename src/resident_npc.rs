@@ -205,6 +205,14 @@ const ARRIVE_DIST: f32 = 8.0;
 const TOWN_CENTER_X: f32 = 2500.0;
 const TOWN_CENTER_Y: f32 = 2500.0;
 
+/// 遠方居民判定閾值（像素）：棲所距城鎮中心超過此距離，居民才被視為「遠方棲居者」。
+/// 主城附近的露娜（~425px）、諾娃（~637px）不會被誤判；最近的遠方棲所（奧瑞，~1724px）遠超此值。
+const REMOTE_THRESHOLD: f32 = 1000.0;
+
+/// 遠方居民在自己棲所附近閒晃的半徑（像素）。
+/// 刻意小於城鎮閒晃範圍，讓遠方居民「固守家門」而非大範圍遊蕩，給探索者一種「這裡真的有人住」的感受。
+const HOME_WANDER_RADIUS: f32 = 280.0;
+
 // ── 生態守望（ROADMAP 180）──────────────────────────────────────────────────
 /// 生態壓力 ≥ 此值 → 城鎮進入避難警戒（居民奔回城中心廣場聚集）。
 const ECO_ALARM_PRESSURE: f32 = 75.0;
@@ -534,6 +542,11 @@ pub struct ResidentNpc {
     companion_id: Option<String>,
     /// 結伴同行剩餘秒數（> 0 = 正跟著老鄰居溜達；到 0 自然散夥）。
     companion_remaining: f32,
+    // ── 遠方居民歸居（ROADMAP 645）──────────────────────────
+    /// 若此居民的棲所距城鎮中心超過 REMOTE_THRESHOLD，記錄棲所座標；
+    /// tick 移動時改用以棲所為中心的閒晃邊界，讓遠方居民真正住在自己的家附近而非全擠主城。
+    /// None = 主城附近居民（露娜/諾娃等），維持原有 persona 閒晃邊界不變。
+    remote_home: Option<(f32, f32)>,
 }
 
 /// 居民野外採集隊狀態（ROADMAP 177）。
@@ -560,12 +573,24 @@ impl ResidentNpc {
     /// 用確定性 seed（依 index）初始化，保證每次重啟位置稍有不同但可預期。
     fn new(index: usize, rng: &mut impl Rng) -> Self {
         let persona = ResidentPersona::for_index(index);
-        let (x0, x1, y0, y1) = persona.wander_bounds();
+        let name = NAME_POOL[index % NAME_POOL.len()];
+        // 遠方居民歸居（ROADMAP 645）：若此名字對應一座遠方棲所（距城鎮中心 > REMOTE_THRESHOLD），
+        // 初始位置改散落在棲所附近，且 tick 移動時也改用棲所中心的閒晃邊界。
+        let remote_home = crate::resident_home::home_for_name(name).filter(|&(hx, hy)| {
+            let dx = hx - TOWN_CENTER_X;
+            let dy = hy - TOWN_CENTER_Y;
+            (dx * dx + dy * dy).sqrt() >= REMOTE_THRESHOLD
+        });
+        let (x0, x1, y0, y1) = if let Some((hx, hy)) = remote_home {
+            let r = HOME_WANDER_RADIUS;
+            (hx - r, hx + r, hy - r, hy + r)
+        } else {
+            persona.wander_bounds()
+        };
         let x = rng.gen_range(x0..=x1);
         let y = rng.gen_range(y0..=y1);
         let tx = rng.gen_range(x0..=x1);
         let ty = rng.gen_range(y0..=y1);
-        let name = NAME_POOL[index % NAME_POOL.len()];
         // 錯開初始計時器，避免所有居民同時噴泡泡或廣播。
         let thought_offset = rng.gen_range(0.0..THOUGHT_TIMER_MAX);
         let work_offset = rng.gen_range(0.0..WORK_TIMER_MAX);
@@ -622,6 +647,7 @@ impl ResidentNpc {
                 + (index % 2) as f32 * (crate::npc_agent_wire::THINK_INTERVAL_SECS / 2.0),
             companion_id: None,
             companion_remaining: 0.0,
+            remote_home,
         }
     }
 
@@ -659,6 +685,18 @@ impl ResidentNpc {
         self.target_x = x.clamp(WANDER_X_MIN, WANDER_X_MAX);
         self.target_y = y.clamp(WANDER_Y_MIN, WANDER_Y_MAX);
         self.wait_timer = 0.0;
+    }
+
+    /// 依時段與棲所位置回傳有效閒晃邊界。
+    /// 遠方居民（remote_home.is_some()）全天候以棲所為中心閒晃，不隨作息進城聚集——
+    /// 她們住在遠方、保持那種「各有歸屬」的散居感；近城居民維持原有的時段閒晃邏輯。
+    fn effective_wander_bounds(&self, phase: Phase) -> (f32, f32, f32, f32) {
+        if let Some((hx, hy)) = self.remote_home {
+            let r = HOME_WANDER_RADIUS;
+            (hx - r, hx + r, hy - r, hy + r)
+        } else {
+            self.persona.wander_bounds_for_phase(phase)
+        }
     }
 
     /// 每幀推進：移動 + 等待計時。若時段切換則立即換新目標（ROADMAP 119）。
@@ -754,7 +792,7 @@ impl ResidentNpc {
         // 時段切換：馬上給新目標、清除等待，居民立刻朝新區域走
         if self.current_phase != Some(phase) {
             self.current_phase = Some(phase);
-            let (x0, x1, y0, y1) = self.persona.wander_bounds_for_phase(phase);
+            let (x0, x1, y0, y1) = self.effective_wander_bounds(phase);
             self.target_x = rng.gen_range(x0..=x1);
             self.target_y = rng.gen_range(y0..=y1);
             self.wait_timer = 0.0;
@@ -769,7 +807,7 @@ impl ResidentNpc {
         if dist < ARRIVE_DIST {
             // 到了，等一下再換同時段內的下一個目標
             self.wait_timer = rng.gen_range(WAIT_SECS_MIN..=WAIT_SECS_MAX);
-            let (x0, x1, y0, y1) = self.persona.wander_bounds_for_phase(phase);
+            let (x0, x1, y0, y1) = self.effective_wander_bounds(phase);
             self.target_x = rng.gen_range(x0..=x1);
             self.target_y = rng.gen_range(y0..=y1);
         } else {
@@ -1644,11 +1682,21 @@ mod tests {
             mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         }
         for r in &mgr.residents {
-            // 居民不該衝出全城大邊界
-            assert!(r.x >= WANDER_X_MIN - 1.0 && r.x <= WANDER_X_MAX + 1.0,
-                "x out of bounds: {}", r.x);
-            assert!(r.y >= WANDER_Y_MIN - 1.0 && r.y <= WANDER_Y_MAX + 1.0,
-                "y out of bounds: {}", r.y);
+            if let Some((hx, hy)) = r.remote_home {
+                // ROADMAP 645：遠方居民以棲所為中心閒晃，座標合法超出主城邊界。
+                // 檢查確實在棲所半徑內（留 +1 容錯，同 ARRIVE_DIST 邏輯）。
+                let r_max = HOME_WANDER_RADIUS + 1.0;
+                assert!((r.x - hx).abs() <= r_max,
+                    "遠方居民 {} 的 x 應在棲所半徑內，x={} home_x={}", r.name, r.x, hx);
+                assert!((r.y - hy).abs() <= r_max,
+                    "遠方居民 {} 的 y 應在棲所半徑內，y={} home_y={}", r.name, r.y, hy);
+            } else {
+                // 主城居民不應衝出全城大邊界
+                assert!(r.x >= WANDER_X_MIN - 1.0 && r.x <= WANDER_X_MAX + 1.0,
+                    "{} x out of bounds: {}", r.name, r.x);
+                assert!(r.y >= WANDER_Y_MIN - 1.0 && r.y <= WANDER_Y_MAX + 1.0,
+                    "{} y out of bounds: {}", r.name, r.y);
+            }
         }
     }
 
@@ -2941,5 +2989,77 @@ mod tests {
             assert!(invite.contains("梅子"), "邀約應叫得出對方名字");
             assert!(!crate::resident_chat::get_neighbor_stroll_accept(seed).is_empty());
         }
+    }
+
+    // ── ROADMAP 645：遠方居民歸居·棲所有主人 ─────────────────────────────
+
+    #[test]
+    fn 遠方居民_賽勒奧瑞薇朵_有遠方棲所欄位() {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0);
+        // 名字池：index 0=露娜 1=諾娃 2=賽勒 3=奧瑞 4=薇朵
+        let sailer = ResidentNpc::new(2, &mut rng);
+        let aurie  = ResidentNpc::new(3, &mut rng);
+        let wido   = ResidentNpc::new(4, &mut rng);
+        assert!(sailer.remote_home.is_some(), "賽勒應有遠方棲所");
+        assert!(aurie.remote_home.is_some(),  "奧瑞應有遠方棲所");
+        assert!(wido.remote_home.is_some(),   "薇朵應有遠方棲所");
+        // 棲所座標應與 resident_home 常數一致
+        let (sx, sy) = sailer.remote_home.unwrap();
+        assert!((sx - crate::resident_home::SAILER_HOME_X).abs() < 1.0, "賽勒 X 應對齊常數");
+        assert!((sy - crate::resident_home::SAILER_HOME_Y).abs() < 1.0, "賽勒 Y 應對齊常數");
+    }
+
+    #[test]
+    fn 近城居民_露娜諾娃_沒有遠方棲所欄位() {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0);
+        let luna = ResidentNpc::new(0, &mut rng);
+        let nova = ResidentNpc::new(1, &mut rng);
+        assert!(luna.remote_home.is_none(), "露娜住在主城附近，不應有遠方棲所欄位");
+        assert!(nova.remote_home.is_none(), "諾娃住在農田附近，不應有遠方棲所欄位");
+    }
+
+    #[test]
+    fn 遠方居民初始位置在棲所附近() {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let sailer = ResidentNpc::new(2, &mut rng);
+        let (hx, hy) = sailer.remote_home.unwrap();
+        let dx = sailer.x - hx;
+        let dy = sailer.y - hy;
+        let dist = (dx * dx + dy * dy).sqrt();
+        assert!(dist <= HOME_WANDER_RADIUS + 1.0,
+            "賽勒初始位置應在棲所半徑內，dist={dist:.1}");
+    }
+
+    #[test]
+    fn 遠方居民閒晃邊界以棲所為中心() {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0);
+        let aurie = ResidentNpc::new(3, &mut rng);
+        let (hx, hy) = aurie.remote_home.unwrap();
+        let r = HOME_WANDER_RADIUS;
+        for phase in [Phase::Dawn, Phase::Day, Phase::Dusk, Phase::Night] {
+            let (x0, x1, y0, y1) = aurie.effective_wander_bounds(phase);
+            assert!((x0 - (hx - r)).abs() < 1.0, "奧瑞閒晃左邊界應以棲所為中心");
+            assert!((x1 - (hx + r)).abs() < 1.0, "奧瑞閒晃右邊界應以棲所為中心");
+            assert!((y0 - (hy - r)).abs() < 1.0, "奧瑞閒晃上邊界應以棲所為中心");
+            assert!((y1 - (hy + r)).abs() < 1.0, "奧瑞閒晃下邊界應以棲所為中心");
+        }
+    }
+
+    #[test]
+    fn 近城居民閒晃邊界仍用persona時段() {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0);
+        let luna = ResidentNpc::new(0, &mut rng); // MarketBrowser
+        // 白天應走 MarketBrowser 的市場範圍，而非棲所中心
+        let (x0, x1, y0, y1) = luna.effective_wander_bounds(Phase::Day);
+        let (px0, px1, py0, py1) = luna.persona.wander_bounds_for_phase(Phase::Day);
+        assert!((x0 - px0).abs() < 1.0, "露娜白天 X0 應與 persona 一致");
+        assert!((x1 - px1).abs() < 1.0, "露娜白天 X1 應與 persona 一致");
+        assert!((y0 - py0).abs() < 1.0, "露娜白天 Y0 應與 persona 一致");
+        assert!((y1 - py1).abs() < 1.0, "露娜白天 Y1 應與 persona 一致");
     }
 }
