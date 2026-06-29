@@ -200,10 +200,45 @@ fn resident_canned_reply(name: &str) -> String {
     POOL[idx].to_string()
 }
 
-/// 居民主動招呼句池：靠近時冒一句（用既有泡泡，低頻、簡短）。依索引選句。
-fn greeting_line(n: usize) -> &'static str {
-    const GREETINGS: [&str; 4] = ["你來啦！", "嗨，旅人～", "哦，有客人。", "你好呀！"];
-    GREETINGS[n % GREETINGS.len()]
+/// 居民主動招呼——依好感等級選不同句池（好感等級由 `affinity_count` 派生）。
+/// - affinity 0   → 陌生人：通用招呼
+/// - affinity 1–2 → 相識：帶玩家名字的親切招呼
+/// - affinity 3+  → 友人：帶名字、更溫暖、暗示記得對方
+/// `pick` 用居民位置雜湊決定（確定性，避免每幀不同）；`player_name` 空字串安全退回通用句。
+/// 純函式、可測、零 LLM 成本。
+fn greeting_line_affinity(affinity: usize, player_name: &str, pick: usize) -> String {
+    if affinity == 0 || player_name.is_empty() {
+        // 陌生人：沿用原來4句罐頭
+        const STRANGER: [&str; 4] = ["你來啦！", "嗨，旅人～", "哦，有客人。", "你好呀！"];
+        return STRANGER[pick % STRANGER.len()].to_string();
+    }
+    // 截斷名字：避免超長名字撐爆泡泡（最多 6 字）
+    let name: String = player_name.chars().take(6).collect();
+    if affinity <= 2 {
+        // 相識：用名字打招呼
+        const ACQUAINT: [&str; 3] = ["又見面啦，{name}～", "嗨，{name}！", "{name}，歡迎來玩！"];
+        ACQUAINT[pick % ACQUAINT.len()].replace("{name}", &name)
+    } else {
+        // 友人：更溫暖，暗示記得你
+        const FRIEND: [&str; 3] = ["{name}！你回來了！", "哇，{name}，好久不見。", "嗨{name}，我有想你呢！"];
+        FRIEND[pick % FRIEND.len()].replace("{name}", &name)
+    }
+}
+
+/// 一組玩家（水平座標 + 顯示名）中，離 (rx,rz) 最近者的 (平方距離, 玩家名)。
+/// 沒有玩家回 None。純函式、可測。
+fn nearest_player_info(rx: f32, rz: f32, players: &[(f32, f32, String)]) -> Option<(f32, &str)> {
+    players
+        .iter()
+        .map(|(px, pz, name)| {
+            let dx = px - rx;
+            let dz = pz - rz;
+            (dx * dx + dz * dz, name.as_str())
+        })
+        .fold(None, |acc, (d, name)| match acc {
+            None => Some((d, name)),
+            Some((bd, bn)) => if d < bd { Some((d, name)) } else { Some((bd, bn)) },
+        })
 }
 
 /// 一組玩家水平座標中，離 (rx,rz) 最近者的平方距離。沒有玩家回 None。純函式、可測。
@@ -905,6 +940,34 @@ pub async fn voxel_feed_handler() -> axum::response::Response {
         .unwrap()
 }
 
+/// `GET /voxel/affinity?player=<顯示名>` — 回傳此玩家與各居民的好感度計數。
+///
+/// JSON 格式：`{ "vox_res_0": 2, "vox_res_1": 0, ... }`
+/// 純讀 memory store、無 LLM、無 migration、向後相容（新路由 additive）。
+pub async fn voxel_affinity_handler(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    use axum::http::header;
+    let player_name = params.get("player").map(|s| s.as_str()).unwrap_or("").trim().to_string();
+    // 短鎖快照各居民的好感度計數 → 立即釋放。
+    let counts: std::collections::HashMap<String, usize> = {
+        let mem = hub().memory.read().unwrap();
+        (0..RESIDENT_COUNT)
+            .map(|i| {
+                let rid = format!("vox_res_{i}");
+                let count = if player_name.is_empty() { 0 } else { mem.affinity_count(&player_name, &rid) };
+                (rid, count)
+            })
+            .collect()
+    };
+    let body = serde_json::to_string(&counts).unwrap_or_else(|_| "{}".into());
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
 /// 一次居民世界推進：套用上輪思考的決策 → 物理/閒晃 → 社交互動 → 廣播 → 排程新一輪思考。
 fn tick_residents(dt: f32) {
     // 1) 先取走上輪 async 思考投回的決策（短鎖、不 await）。
@@ -914,10 +977,11 @@ fn tick_residents(dt: f32) {
     //    需要思考的居民這裡只蒐集「快照」，spawn 留到鎖釋放後。
     let mut think_jobs: Vec<(String, &'static str, ResidentPersona, f32, f32)> = Vec::new();
 
-    // 主動招呼用：先短鎖快照所有玩家水平座標 → drop（循序取放、不與居民鎖巢狀，守鎖紀律）。
-    let player_pts: Vec<(f32, f32)> = {
+    // 主動招呼用：先短鎖快照所有玩家水平座標＋顯示名 → drop（循序取放、不與居民鎖巢狀，守鎖紀律）。
+    // 好感度招呼需要知道「最近的是誰」，故多快照一份 name。
+    let player_pts: Vec<(f32, f32, String)> = {
         let players = hub().players.read().unwrap();
-        players.values().map(|p| (p.x, p.z)).collect()
+        players.values().map(|p| (p.x, p.z, p.name.clone())).collect()
     }; // 玩家讀鎖在此釋放
 
     // 社交對話生成用：快照所有居民心願（先 drop desires 鎖，再取居民寫鎖，守循序不巢狀鐵律）。
@@ -1004,13 +1068,20 @@ fn tick_residents(dt: f32) {
 
             // 主動招呼：招呼冷卻倒數；冷卻完、目前沒在說話、且有玩家靠很近時，
             // 偶爾（低機率）冒一句招呼，讓世界更有人氣（用既有泡泡、低頻不洗版）。
+            // 好感度 v1：查玩家記憶筆數 → 決定招呼溫度（陌生人/相識/友人，零 LLM）。
             if r.greet_timer > 0.0 {
                 r.greet_timer -= dt;
             } else if r.say.is_empty() {
-                if let Some(d2) = nearest_player_dist_sq(r.body.x, r.body.z, &player_pts) {
+                if let Some((d2, nearest_name)) = nearest_player_info(r.body.x, r.body.z, &player_pts) {
                     if d2 < GREET_DIST * GREET_DIST && rand::random::<f32>() < GREET_CHANCE_PER_TICK {
                         let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                        r.say = greeting_line(pick).to_string();
+                        // 短鎖讀好感度（僅計數，不 await）→ 立即釋放記憶鎖。
+                        let affinity = {
+                            let mem = hub().memory.read().unwrap();
+                            mem.affinity_count(nearest_name, &r.id)
+                        };
+                        let line = greeting_line_affinity(affinity, nearest_name, pick);
+                        r.say = line.chars().take(40).collect();
                         r.say_timer = SAY_SECS;
                         r.greet_timer = GREET_COOLDOWN;
                     }
@@ -1482,10 +1553,10 @@ mod tests {
     }
 
     #[test]
-    fn greeting_line_wraps_and_non_empty() {
-        // 索引取模、永遠回得出非空招呼句。
+    fn greeting_line_affinity_wraps_and_non_empty() {
+        // affinity=0（陌生人），索引取模、永遠回得出非空招呼句。
         for i in 0..20 {
-            assert!(!greeting_line(i).is_empty());
+            assert!(!greeting_line_affinity(0, "", i).is_empty());
         }
     }
 
@@ -1497,6 +1568,60 @@ mod tests {
         let pts = [(3.0, 4.0), (1.0, 0.0), (10.0, 10.0)];
         let d = nearest_player_dist_sq(0.0, 0.0, &pts).unwrap();
         assert!((d - 1.0).abs() < 1e-4, "最近者 (1,0) 平方距離應為 1：{d}");
+    }
+
+    #[test]
+    fn nearest_player_info_works() {
+        // 沒有玩家 → None。
+        let empty: Vec<(f32, f32, String)> = vec![];
+        assert!(nearest_player_info(0.0, 0.0, &empty).is_none());
+        // 多名玩家：取最近者（距離 + 名字）。
+        let pts = vec![
+            (3.0, 4.0, "遠人".to_string()),
+            (1.0, 0.0, "近人".to_string()),
+            (10.0, 10.0, "最遠".to_string()),
+        ];
+        let (d2, name) = nearest_player_info(0.0, 0.0, &pts).unwrap();
+        assert!((d2 - 1.0).abs() < 1e-4, "最近者平方距離應為 1：{d2}");
+        assert_eq!(name, "近人", "最近者名字應為 '近人'");
+    }
+
+    #[test]
+    fn greeting_line_affinity_stranger_is_generic() {
+        // affinity=0 → 陌生人招呼，不帶名字。
+        let g = greeting_line_affinity(0, "小明", 0);
+        assert!(!g.contains("小明"), "陌生人招呼不應含玩家名：{g}");
+    }
+
+    #[test]
+    fn greeting_line_affinity_acquaintance_contains_name() {
+        // affinity=1–2 → 相識招呼，應帶名字。
+        for aff in [1usize, 2] {
+            let g = greeting_line_affinity(aff, "小明", 0);
+            assert!(g.contains("小明"), "相識招呼應含玩家名 (aff={aff})：{g}");
+        }
+    }
+
+    #[test]
+    fn greeting_line_affinity_friend_contains_name() {
+        // affinity>=3 → 友人招呼，應帶名字且更親密。
+        let g = greeting_line_affinity(3, "小明", 0);
+        assert!(g.contains("小明"), "友人招呼應含玩家名：{g}");
+    }
+
+    #[test]
+    fn greeting_line_affinity_empty_name_is_safe() {
+        // 名字空字串時 → 安全退回通用招呼，不 panic。
+        let g = greeting_line_affinity(5, "", 0);
+        assert!(!g.is_empty(), "空名字時應仍有招呼句");
+    }
+
+    #[test]
+    fn greeting_line_affinity_long_name_truncated() {
+        // 超長名字：招呼長度不應超過一定範圍（不塞爆泡泡）。
+        let long_name = "超級無敵長名字玩家甲乙丙丁戊";
+        let g = greeting_line_affinity(2, long_name, 0);
+        assert!(g.chars().count() <= 30, "招呼不應超長：{g}");
     }
 
     #[test]
