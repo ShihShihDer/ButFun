@@ -239,6 +239,11 @@ pub fn spawn(app: AppState) {
                 if tea_brewed {
                     app.npc_needs.write().unwrap().warm_community();
                 }
+                // 豐收節慶典（ROADMAP 646，禱告驅動）：推進計時，純計時器不影響其他鎖。
+                {
+                    let mut festival = app.harvest_festival.write().unwrap();
+                    festival.tick(dt);
+                }
                 if want_broadcast {
                     let mut views: Vec<FieldView> = fields
                         .iter()
@@ -5188,6 +5193,15 @@ pub fn spawn(app: AppState) {
                                 dwelling_type: h.dwelling_type.as_str().to_string(),
                             }
                         }).collect(),
+                        // 豐收節慶典（ROADMAP 646）：固定設施，整份快照恆帶；active 決定前端顯示彩旗動畫。
+                        harvest_festival: {
+                            let festival = app.harvest_festival.read().unwrap();
+                            Some(crate::protocol::HarvestFestivalView {
+                                x: crate::harvest_festival::FESTIVAL_X,
+                                y: crate::harvest_festival::FESTIVAL_Y,
+                                active: festival.is_active(),
+                            })
+                        },
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

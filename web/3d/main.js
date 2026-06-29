@@ -2811,6 +2811,60 @@ function makeVillageTeaStall(_item) {
   return g;
 }
 
+// ── 豐收節慶典裝飾（ROADMAP 646，禱告驅動·應露娜之禱） ─────────────────────────
+// 露娜反覆禱告「盼望有個豐收節好熱鬧一下」——廣場升起彩旗柱＋彩燈籠。
+// active=true 時旗幟舞動、燈籠搖曳發光；非活躍時裝飾靜立（提示慶典將至）。
+const FEST_POLE_COLOR    = 0x7a5a3a; // 旗竿（深木棕）
+const FEST_FLAG_COLORS   = [0xe06030, 0xd4a820, 0x48a860, 0x3878c0]; // 彩旗（橙/金/翠/藍）
+const FEST_LANTERN_COLOR = 0xff8830; // 燈籠（暖橙）
+const FEST_BANNER_COLOR  = 0xfae080; // 橫幅（米黃）
+
+function makeHarvestFestival(_item) {
+  const g = new THREE.Group();
+  // 兩根旗竿（左右對稱，間距 4 個世界單位）
+  const poleGeo = new THREE.CylinderGeometry(0.12, 0.15, 7.0, 6);
+  for (let s = -1; s <= 1; s += 2) {
+    const pole = new THREE.Mesh(poleGeo, new THREE.MeshLambertMaterial({ color: FEST_POLE_COLOR }));
+    pole.position.set(s * 2.0, 3.5, 0);
+    g.add(pole);
+    // 竿頂尖球（裝飾用）
+    const tip = new THREE.Mesh(new THREE.SphereGeometry(0.22, 6, 6),
+      new THREE.MeshLambertMaterial({ color: FEST_FLAG_COLORS[1] }));
+    tip.position.set(s * 2.0, 7.2, 0);
+    g.add(tip);
+    // 三角彩旗（上中下各一面，交錯顏色）
+    for (let fi = 0; fi < 3; fi++) {
+      const flagGeo = new THREE.ConeGeometry(0.5, 1.2, 3);
+      const flag = new THREE.Mesh(flagGeo,
+        new THREE.MeshLambertMaterial({ color: FEST_FLAG_COLORS[(fi + (s > 0 ? 2 : 0)) % 4], side: THREE.DoubleSide }));
+      flag.rotation.z = s > 0 ? -Math.PI / 2 : Math.PI / 2;
+      flag.position.set(s > 0 ? s * 2.5 + 0.3 : s * 2.5 - 0.3, 5.8 - fi * 1.6, 0);
+      g.add(flag);
+      // 旗子節點留在 userData.flags 供動畫搖擺
+      if (!g.userData.flags) g.userData.flags = [];
+      g.userData.flags.push({ mesh: flag, baseY: 5.8 - fi * 1.6, side: s });
+    }
+  }
+  // 兩竿間橫幅（薄平板，暖米黃色，掛在兩竿中間偏上）
+  const bannerGeo = new THREE.BoxGeometry(3.6, 0.85, 0.08);
+  const banner = new THREE.Mesh(bannerGeo, new THREE.MeshLambertMaterial({ color: FEST_BANNER_COLOR }));
+  banner.position.set(0, 6.0, 0);
+  g.add(banner);
+  // 三顆彩燈籠（掛在橫幅下方，間距均勻；初始半透）
+  const lanternGeo = new THREE.SphereGeometry(0.38, 7, 5);
+  const lanterns = [];
+  for (let i = 0; i < 3; i++) {
+    const lan = new THREE.Mesh(lanternGeo,
+      new THREE.MeshBasicMaterial({ color: FEST_LANTERN_COLOR, transparent: true, opacity: 0.25, depthWrite: false }));
+    lan.position.set((i - 1) * 1.4, 5.0, 0);
+    g.add(lan);
+    lanterns.push(lan);
+  }
+  g.userData.lanterns = lanterns;
+  g.userData.banner = banner;
+  return g;
+}
+
 // 居民住宅色盤（ROADMAP 642–643）：依居民風格分兩套，純物件方便按名字查取。
 // 露娜（木屋）：暖棕木板牆＋磚紅瓦頂——靠市集、溫暖療癒感。
 // 諾娃（農舍）：石灰牆＋草綠茅草頂——靠農田、樸實農家感。
@@ -3102,6 +3156,7 @@ const snowmen = new Map();
 const villageWells = new Map(); // 故鄉古井（ROADMAP 640）：單一固定設施，仍走 reconcileStatic 的 AOI 淡入淡出
 const villageTeaStalls = new Map(); // 故鄉茶棚（ROADMAP 641）：單一固定設施，仍走 reconcileStatic 的 AOI 淡入淡出
 const residentHomes = new Map();    // 居民木屋（ROADMAP 642）：居民之禱而生的溫暖木屋列表
+const harvestFestivals = new Map(); // 豐收節慶典（ROADMAP 646）：廣場彩旗慶典裝飾
 
 // 每幀更新所有人造地標：篝火火焰跳動／暖圈脈動（入夜更亮、將熄漸弱）、塔頂燈入夜亮起、雪人愛心數。
 // 在各自 Map 的 updateFade 之後跑：updateFade 把所有材質 opacity 壓成 AOI 淡入淡出值，這裡再
@@ -3233,6 +3288,42 @@ function updateStructures(dt, t) {
       } else {
         steam.visible = false;
       }
+    }
+  }
+  // ── 豐收節慶典（ROADMAP 646）：active 時旗幟搖擺、燈籠發光搖曳 ──
+  for (const [key, g] of harvestFestivals) {
+    const fade = g.userData.fade ?? 1;
+    if (updateFade(g, dt)) { scene.remove(g); harvestFestivals.delete(key); continue; }
+    const item = g.userData.item || {};
+    const active = item.active === true;
+    const lanterns = g.userData.lanterns || [];
+    // 燈籠：慶典中發光搖曳；平時暗淡靜止（提示有慶典裝置，但未啟動）。
+    for (let i = 0; i < lanterns.length; i++) {
+      const lan = lanterns[i];
+      if (active) {
+        const swing = reduceMotion ? 1 : 0.85 + 0.15 * Math.sin(t * 1.8 + i * 1.3);
+        lan.material.opacity = fade * 0.82 * swing;
+        if (!reduceMotion) {
+          lan.position.y = 5.0 + 0.12 * Math.sin(t * 1.5 + i * 0.9); // 輕微搖曳
+        }
+      } else {
+        lan.material.opacity = fade * 0.18; // 平時只有一點暖光，告訴玩家「這裡偶爾有慶典」
+        lan.position.y = 5.0;
+      }
+    }
+    // 旗幟：慶典中依時間位移製造迎風飄揚感；尊重 reduceMotion。
+    const flags = g.userData.flags || [];
+    for (const { mesh, baseY, side } of flags) {
+      if (active && !reduceMotion) {
+        mesh.rotation.z = (side > 0 ? -1 : 1) * (Math.PI / 2 + 0.18 * Math.sin(t * 2.2 + baseY));
+      }
+      // 旗子本身不透明，不需要 opacity 控制
+    }
+    // 橫幅：慶典中略微閃亮（輕微材質 emissive 感，但 Lambert 無 emissive，改做透明層閃動）
+    const banner = g.userData.banner;
+    if (banner) {
+      // 橫幅顏色不透明，只讓 fade 帶入（入場/退場的淡入淡出）
+      banner.material.opacity = fade; // 實際 Lambert 不需 opacity，保持不透明
     }
   }
 }
@@ -4027,6 +4118,12 @@ function handleServerMsg(msg) {
               .map(h => ({ id: "home_" + h.name, wx: h.x, wy: h.y, name: h.name }))
           : [],
         residentHomes, "rh", makeResidentHome, null, recvT);
+      // 豐收節慶典（ROADMAP 646，禱告驅動）：單一固定設施；active 記進 userData.item 供每幀動畫。
+      reconcileStatic(
+        msg.harvest_festival && Number.isFinite(msg.harvest_festival.x) && Number.isFinite(msg.harvest_festival.y)
+          ? [{ id: "hf", wx: msg.harvest_festival.x, wy: msg.harvest_festival.y, active: msg.harvest_festival.active === true }]
+          : [],
+        harvestFestivals, "hfst", makeHarvestFestival, null, recvT);
 
       // 玩家親手種下、隨真實時間長大的世界樹群（ROADMAP 617）：以座標當 key、長大了才重塑樹身。
       reconcileGroves(msg.world_groves, recvT);

@@ -1288,6 +1288,8 @@ drive({ type: "snapshot", players: playersA, npcs: npcsA, wildlife: wildlifeA, e
     { name: "賽勒", x: 2700, y: 3800, dwelling_type: "cabin" },
     { name: "薇朵", x: 3700, y: 1400, dwelling_type: "tent"  },
   ],
+  // 豐收節慶典（ROADMAP 646）：慶典進行中——踩 makeHarvestFestival 懶建＋updateStructures 旗幟搖擺＋燈籠發光路徑。
+  harvest_festival: { x: 2500, y: 2340, active: true },
   daynight: { phase: "day", day_fraction: 0.33, light: 1.0, night_danger: false, next_phase: "dusk", secs_to_next: 180 },
   // 細雨＋橫風＋彩虹：踩 applyWeather 的粒子推進／回收、霧染、彩虹淡入路徑（ROADMAP 613）
   weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
@@ -1312,6 +1314,8 @@ drive({ type: "snapshot", players: playersA, npcs: npcsA, wildlife: wildlifeA, e
     { name: "未知居民", x: 2300, y: 2100, dwelling_type: "未知類型" }, // 未知 type → house 回退
     { name: "奧瑞",    x: 800,  y: 2200, dwelling_type: "cabin"   }, // 隱士石寮 cabin 路徑
   ],
+  // 豐收節慶典（ROADMAP 646）：非活躍——踩燈籠暗淡分支（active!==true）＋旗幟靜止分支。
+  harvest_festival: { x: 2500, y: 2340, active: false },
   daynight: { phase: "day", day_fraction: 0.34, light: 1.0, night_danger: false, next_phase: "dusk", secs_to_next: 170 },
   weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
   rainbow: { active: true, remaining_secs: 28 },
