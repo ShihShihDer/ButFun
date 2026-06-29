@@ -1290,6 +1290,11 @@ drive({ type: "snapshot", players: playersA, npcs: npcsA, wildlife: wildlifeA, e
   ],
   // 豐收節慶典（ROADMAP 646）：慶典進行中——踩 makeHarvestFestival 懶建＋updateStructures 旗幟搖擺＋燈籠發光路徑。
   harvest_festival: { x: 2500, y: 2340, active: true },
+  // 故鄉街燈（ROADMAP 648）：白天燈球半透（globe.opacity≈0.3）、地面光暈隱形（glow.opacity=0）路徑。
+  street_lamps: [
+    { x: 2220, y: 2460 }, { x: 2400, y: 2460 }, { x: 2110, y: 2340 },
+    { x: 2130, y: 2165 }, { x: 2400, y: 2155 }, { x: 2540, y: 2165 }, { x: 2520, y: 2370 },
+  ],
   daynight: { phase: "day", day_fraction: 0.33, light: 1.0, night_danger: false, next_phase: "dusk", secs_to_next: 180 },
   // 細雨＋橫風＋彩虹：踩 applyWeather 的粒子推進／回收、霧染、彩虹淡入路徑（ROADMAP 613）
   weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
@@ -1316,6 +1321,11 @@ drive({ type: "snapshot", players: playersA, npcs: npcsA, wildlife: wildlifeA, e
   ],
   // 豐收節慶典（ROADMAP 646）：非活躍——踩燈籠暗淡分支（active!==true）＋旗幟靜止分支。
   harvest_festival: { x: 2500, y: 2340, active: false },
+  // 故鄉街燈（ROADMAP 648）：白天——燈球半透、光暈隱形（測「日間不亮」路徑）。
+  street_lamps: [
+    { x: 2220, y: 2460 }, { x: 2400, y: 2460 }, { x: 2110, y: 2340 },
+    { x: 2130, y: 2165 }, { x: 2400, y: 2155 }, { x: 2540, y: 2165 }, { x: 2520, y: 2370 },
+  ],
   daynight: { phase: "day", day_fraction: 0.34, light: 1.0, night_danger: false, next_phase: "dusk", secs_to_next: 170 },
   weather: { weather_type: "grassland_rain", intensity: 0.9, wind: { dir_x: 0.8, dir_y: 0.6, strength: 0.7 }, fish_phase: 0 },
   rainbow: { active: true, remaining_secs: 28 },
@@ -1422,6 +1432,11 @@ drive({ type: "snapshot", players: playersB, npcs: npcsB, wildlife: wildlifeB, e
   star_crystals: [], // 星晶全數消失（天亮／採光）→ 踩 starCrystals reconcile 的移除淡出全清路徑（ROADMAP 629）
   // 不帶 world_event／horde_event（ROADMAP 631）→ 裂縫關閉、獸潮退去：踩 updateWorldEvents 把既有地標隱藏（.visible=false）路徑
   fields: fieldsB, campfires: campfiresB, watchtowers: watchtowersB, snowmen: snowmenB, world_groves: grovesB,
+  // 故鄉街燈（ROADMAP 648）：夜間——入夜後燈球亮起（globe.opacity→0.95）、地面光暈亮起（glow.opacity→0.45）路徑。
+  street_lamps: [
+    { x: 2220, y: 2460 }, { x: 2400, y: 2460 }, { x: 2110, y: 2340 },
+    { x: 2130, y: 2165 }, { x: 2400, y: 2155 }, { x: 2540, y: 2165 }, { x: 2520, y: 2370 },
+  ],
   daynight: { phase: "night", day_fraction: 0.82, light: 0.2, night_danger: true, next_phase: "dawn", secs_to_next: 60 },
   // 天氣切到海霧（上飄粒子）＋彩虹消失：踩 fall<0 上飄回收、霧染轉色、彩虹淡出路徑
   weather: { weather_type: "water_sea_mist", intensity: 0.7, wind: { dir_x: -0.5, dir_y: 0.3, strength: 0.4 }, fish_phase: 1 },
@@ -1464,5 +1479,5 @@ if (caught.length) {
   for (const c of caught.slice(0, 10)) console.error("   · " + c);
   process.exit(1);
 }
-console.log("✅ NPC 內心生活（活動／思想／關懷／危機／歡慶＋狀態轉移＋AOI 淡出）＋野生動物（五種身形／幼獸縮放／馴養脈動／轉移）＋人造地標（篝火圍爐／將熄／塔施工→落成入夜亮燈／雪人讚賞＋AOI 淡出）＋世界樹群（嫩芽→幼苗→幼樹松→成樹遮蔭、長大重塑＋AOI 淡出）＋玩家表情泡泡（揮手／歡呼點亮→彈跳上浮→4 秒淡出自清＋未知 from_id 安全跳過）＋居民對話泡泡（說出口的話淡入停留→8 秒淡出自清＋對話蓋過思想＋缺欄位降級＋視野外說話者安全跳過）＋寵物夥伴（五種低多邊形身形／玩耍蹦跳/接物/性格心情泡泡/羈絆愛心條／換寵物舊身形淡出新身形淡入／離開視野 AOI 淡出／未知種類 box 後備／缺座標安全過濾）跑多幀零例外");
+console.log("✅ NPC 內心生活（活動／思想／關懷／危機／歡慶＋狀態轉移＋AOI 淡出）＋野生動物（五種身形／幼獸縮放／馴養脈動／轉移）＋人造地標（篝火圍爐／將熄／塔施工→落成入夜亮燈／雪人讚賞＋AOI 淡出）＋世界樹群（嫩芽→幼苗→幼樹松→成樹遮蔭、長大重塑＋AOI 淡出）＋玩家表情泡泡（揮手／歡呼點亮→彈跳上浮→4 秒淡出自清＋未知 from_id 安全跳過）＋居民對話泡泡（說出口的話淡入停留→8 秒淡出自清＋對話蓋過思想＋缺欄位降級＋視野外說話者安全跳過）＋寵物夥伴（五種低多邊形身形／玩耍蹦跳/接物/性格心情泡泡/羈絆愛心條／換寵物舊身形淡出新身形淡入／離開視野 AOI 淡出／未知種類 box 後備／缺座標安全過濾）＋故鄉街燈（ROADMAP 648·七盞夜燈·白天半透日間不亮＋夜間亮起琥珀光暈兩條路徑）跑多幀零例外");
 console.log("✅ render-smoke-3d 全綠");

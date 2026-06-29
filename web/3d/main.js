@@ -2601,6 +2601,13 @@ const SPRING_MOSS_COLOR   = 0x4a8060; // 苔蘚：沉鬱綠（濕潤石頭上特
 const SPRING_BUBBLE_COLOR = 0xc0eef8; // 湧泉水泡：近白青（清澈見底、若隱若現）
 const SPRING_RIPPLE_COLOR = 0x8cd8f0; // 漣漪環：清水藍（比水面稍亮，讓玩家一眼看出「水在動」）
 
+// 故鄉街燈（ROADMAP 648，禱告驅動·應露娜之禱）：入夜自動亮起，照亮露娜回家的路。色系暖琥珀。
+const LAMP_POST_COLOR  = 0x3d3a36; // 燈柱：深鐵灰（低調沉穩的金屬色）
+const LAMP_ARM_COLOR   = 0x4a4640; // 弧臂：略淡鐵灰
+const LAMP_GLOBE_COLOR = 0xfff0c0; // 燈球：暖乳白（類蠟燭暖光，日間淡顯、夜間發亮）
+const LAMP_GLOW_COLOR  = 0xffdd80; // 光暈：琥珀黃（尊重露娜「街角熱茶暖身」暖意，與茶棚燈籠同色系）
+const LAMP_BASE_COLOR  = 0x7a6e62; // 燈座：暖灰棕（底座磚石感，與古井石色相近）
+
 // 篝火視覺（純函式）：圍爐人數→火旺（鏡像 2D campfireBlazeScale）、剩餘秒數→將熄漸弱、warmth_radius→暖意圈大小。
 // 只讀權威欄位、確定性、壞值安全；前端據此調火焰縮放／暖圈半徑／將熄透明度。
 function campfireVisual(item) {
@@ -2939,6 +2946,55 @@ function makeFieldSpring(_item) {
   return g;
 }
 
+// ── 故鄉街燈（ROADMAP 648，禱告驅動·應露娜之禱） ─────────────────────────────────
+// 露娜反覆禱告「願今晚的街燈亮起，照亮我回家的路」——城鎮沿途立起七盞街燈，
+// 入夜後自動亮起暖琥珀光暈，白天低調靜立，不搶佔視線；僅夜間才搶眼。
+// 燈柱：細挺鐵竿＋弧臂＋頂端燈球（暖乳白）＋地面光暈圓盤（入夜才亮）。
+// 與古井、茶棚、木屋一樣走 reconcileStatic，純靜態座標不隨時間移動。
+function makeStreetLamp(_item) {
+  const g = new THREE.Group();
+  // 底座磚塊（微小正方體，讓燈柱「插入地面」有點根基感）
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(0.65, 0.35, 0.65),
+    new THREE.MeshLambertMaterial({ color: LAMP_BASE_COLOR })
+  );
+  base.position.y = 0.175;
+  g.add(base);
+  // 燈柱（細長圓柱，深鐵灰）
+  const post = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.1, 0.13, 5.5, 6),
+    new THREE.MeshLambertMaterial({ color: LAMP_POST_COLOR })
+  );
+  post.position.y = 3.1;
+  g.add(post);
+  // 弧臂（短橫桿，往前伸出——低多邊形簡化為薄圓柱橫置）
+  const arm = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.07, 0.07, 1.4, 5),
+    new THREE.MeshLambertMaterial({ color: LAMP_ARM_COLOR })
+  );
+  arm.rotation.z = Math.PI / 2;     // 橫置
+  arm.position.set(0.55, 5.65, 0);  // 柱頂偏前
+  g.add(arm);
+  // 燈球（小圓球，暖乳白；日間半透，夜間幾乎不透——讓白天也看得到輪廓）
+  const globe = new THREE.Mesh(
+    new THREE.SphereGeometry(0.38, 7, 5),
+    new THREE.MeshBasicMaterial({ color: LAMP_GLOBE_COLOR, transparent: true, opacity: 0.3, depthWrite: false })
+  );
+  globe.position.set(1.25, 5.65, 0); // 弧臂末端
+  g.add(globe);
+  // 地面光暈圓盤（入夜才亮；白天 opacity=0；圓盤鋪地，半徑 1.8 世界單位）
+  const glow = new THREE.Mesh(
+    new THREE.CircleGeometry(1.8, 16),
+    new THREE.MeshBasicMaterial({ color: LAMP_GLOW_COLOR, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide })
+  );
+  glow.rotation.x = -Math.PI / 2;   // 平鋪地面
+  glow.position.set(1.25, 0.05, 0);  // 燈球正下方
+  g.add(glow);
+  g.userData.globe = globe;
+  g.userData.glow  = glow;
+  return g;
+}
+
 // 居民住宅色盤（ROADMAP 642–643）：依居民風格分兩套，純物件方便按名字查取。
 // 露娜（木屋）：暖棕木板牆＋磚紅瓦頂——靠市集、溫暖療癒感。
 // 諾娃（農舍）：石灰牆＋草綠茅草頂——靠農田、樸實農家感。
@@ -3232,6 +3288,7 @@ const villageTeaStalls = new Map(); // 故鄉茶棚（ROADMAP 641）：單一固
 const residentHomes = new Map();    // 居民木屋（ROADMAP 642）：居民之禱而生的溫暖木屋列表
 const harvestFestivals = new Map(); // 豐收節慶典（ROADMAP 646）：廣場彩旗慶典裝飾
 const fieldSprings = new Map();     // 田邊清泉（ROADMAP 647）：應諾娃之禱，農田北坡天然湧泉
+const streetLamps  = new Map();     // 故鄉街燈（ROADMAP 648）：應露娜之禱，城鎮街道七盞夜燈
 
 // 每幀更新所有人造地標：篝火火焰跳動／暖圈脈動（入夜更亮、將熄漸弱）、塔頂燈入夜亮起、雪人愛心數。
 // 在各自 Map 的 updateFade 之後跑：updateFade 把所有材質 opacity 壓成 AOI 淡入淡出值，這裡再
@@ -3432,6 +3489,26 @@ function updateStructures(dt, t) {
         bubble.position.y = 0.68;
         bubble.material.opacity = fade * 0.28;
       }
+    }
+  }
+  // ── 故鄉街燈（ROADMAP 648）：入夜亮起——燈球從半透變亮、地面琥珀光暈從無到顯 ──
+  for (const [key, g] of streetLamps) {
+    const fade = g.userData.fade ?? 1;
+    if (updateFade(g, dt)) { scene.remove(g); streetLamps.delete(key); continue; }
+    const globe = g.userData.globe, glow = g.userData.glow;
+    if (globe) {
+      // 燈球：白天淡顯（0.3），入夜漸亮到 0.95；夜間加極輕微脈動，如蠟燭微顫。
+      const baseOpacity = 0.3 + night * 0.65;
+      globe.material.opacity = fade * (reduceMotion
+        ? baseOpacity
+        : baseOpacity * (0.92 + 0.08 * Math.abs(Math.sin(t * 1.6 + g.position.x * 0.3))));
+    }
+    if (glow) {
+      // 地面光暈：白天不顯（0），入夜漸亮（最亮 0.45）；夜間輕緩脈動——入夜最溫暖。
+      const baseGlow = night * 0.45;
+      glow.material.opacity = fade * (reduceMotion
+        ? baseGlow
+        : baseGlow * (0.85 + 0.15 * Math.abs(Math.sin(t * 1.1 + g.position.z * 0.2))));
     }
   }
 }
@@ -4238,6 +4315,14 @@ function handleServerMsg(msg) {
           ? [{ id: "fs", wx: msg.field_spring.x, wy: msg.field_spring.y }]
           : [],
         fieldSprings, "fsp", makeFieldSpring, null, recvT);
+      // 故鄉街燈（ROADMAP 648，禱告驅動·應露娜之禱）：城鎮街道七盞夜燈；入夜自動亮起光暈（讀 daynight.phase），純靜態座標。
+      reconcileStatic(
+        Array.isArray(msg.street_lamps)
+          ? msg.street_lamps
+              .filter(l => Number.isFinite(l.x) && Number.isFinite(l.y))
+              .map((l, i) => ({ id: `sl${i}`, wx: l.x, wy: l.y }))
+          : [],
+        streetLamps, "sl", makeStreetLamp, null, recvT);
 
       // 玩家親手種下、隨真實時間長大的世界樹群（ROADMAP 617）：以座標當 key、長大了才重塑樹身。
       reconcileGroves(msg.world_groves, recvT);

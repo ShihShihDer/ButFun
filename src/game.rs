@@ -5205,6 +5205,9 @@ pub fn spawn(app: AppState) {
                         // 田邊清泉（ROADMAP 647）：純靜態設施，整份快照恆帶（位置由常數決定，無執行期狀態）。
                         // 零鎖、零 tick——直接呼叫 field_spring::view() 即可。
                         field_spring: Some(crate::field_spring::view()),
+                        // 故鄉街燈（ROADMAP 648）：純靜態陣列，整份快照恆帶（座標由常數決定，無執行期狀態）。
+                        // 夜亮日暗完全由前端讀既有 daynight.phase 判斷——後端只送座標、零鎖、零 tick。
+                        street_lamps: crate::street_lamp::views(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

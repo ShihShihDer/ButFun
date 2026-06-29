@@ -1475,6 +1475,10 @@ pub enum ServerMsg {
         /// `None`＝舊伺服器無此設施；`#[serde(default)]` 向後相容舊客戶端（無此欄位時靜默略過）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         field_spring: Option<FieldSpringView>,
+        /// 故鄉街燈（ROADMAP 648，禱告驅動）：應露娜之禱，城鎮街道沿途七盞街燈夜間亮起。
+        /// 空陣列＝舊伺服器無此設施；`#[serde(default, skip_serializing_if)]` 向後相容。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        street_lamps: Vec<StreetLampView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -3302,6 +3306,15 @@ pub struct FieldSpringView {
     pub y: f32,
 }
 
+/// 單盞街燈的快照（ROADMAP 648，禱告驅動）。應 AI 居民露娜反覆禱告「願今晚的街燈亮起，照亮我回家的路」
+/// 而在城鎮主要街道立起的街燈。前端在 `(x,y)` 繪製燈柱＋燈球；夜亮日暗由前端讀既有 daynight.phase 判斷，
+/// 後端不傳 lit 欄位（純座標，零執行期狀態）。
+#[derive(Debug, Clone, Serialize)]
+pub struct StreetLampView {
+    pub x: f32,
+    pub y: f32,
+}
+
 /// 今日世界戰報（ROADMAP 495）：全伺服器自啟動起的今日行動累計，向後相容預設全零。
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct WorldTallyView {
@@ -3844,6 +3857,7 @@ mod tests {
             resident_homes: vec![],
             harvest_festival: None,
             field_spring: None,
+            street_lamps: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
