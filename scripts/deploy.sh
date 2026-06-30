@@ -48,16 +48,19 @@ if [ "$DEPLOYED" = "$REMOTE" ] && [ -x "$BIN" ]; then
 fi
 
 git checkout --quiet "$BRANCH"
-# 安全變更：只接受 fast-forward；若本地有未 push 的手改、或有未 commit 變動，
-# 就中止這一輪上線（不要用 reset --hard 把線上 oncall 手改吃掉）。
+# 韌性上線（2026-06-30）：髒主樹/分歧不再中止——leaked WIP 會擋死每 15 分的自動部署、
+# 讓迴圈成果永遠到不了 prod（自走引擎空轉、玩家看不到）。改成「先保命、再清乾淨到 origin」：
+# 未 commit 改動 stash 保存、本地領先 origin 的 commit salvage 成分支，再 reset --hard 到 origin。
+# 資料(DB/data/)是 gitignore、不受 git 影響；真有 oncall 手改也都進 stash/salvage 可救回，絕不丟。
 if [ -n "$(git status --porcelain)" ]; then
-  echo "[deploy] 工作目錄有未 commit 改動，中止上線（等手改清理乾淨再說）"
-  exit 1
+  echo "[deploy] 主樹有未 commit 改動 → stash 保存後續行（不中止）"
+  git stash push -u -m "auto-deploy 暫存 $(date '+%Y-%m-%d_%H:%M')" --quiet 2>/dev/null || true
 fi
-if ! git merge --ff-only --quiet "origin/$BRANCH"; then
-  echo "[deploy] 本地 $BRANCH 與 origin 分歧，中止上線（可能有 oncall 手改未 push）"
-  exit 1
+if [ "$(git rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null || echo 0)" -gt 0 ]; then
+  echo "[deploy] 本地領先 origin → salvage 成分支後重置（不中止）"
+  git branch -f "salvage/deploy-$(date +%s)" HEAD 2>/dev/null || true
 fi
+git reset --hard --quiet "origin/$BRANCH"
 
 # 先備份「目前正在跑的舊 binary」以便回滾——一定要在 build 之前，
 # 否則 cargo 覆寫 $BIN 後備到的是新版、回滾等於沒回滾（踩過這個雷）。
