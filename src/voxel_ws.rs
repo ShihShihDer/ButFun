@@ -36,7 +36,7 @@ use crate::voxel_gift as vgift;
 use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
 use crate::voxel_residents::{self as vr, Body};
-use crate::voxel_time::WorldTime;
+use crate::voxel_time::{self as vt, WorldTime, TimePhase};
 
 /// 入場時串給玩家的 chunk 半徑（以 chunk 為單位，水平）。3 → 7×7 column。
 const SPAWN_CHUNK_RADIUS: i32 = 3;
@@ -324,6 +324,8 @@ struct VoxelHub {
     farm: RwLock<FarmStore>,
     /// 世界時鐘（晝夜循環 v1）：一遊戲日 = 600 秒；廣播給前端以更新天空/光照。
     world_time: RwLock<WorldTime>,
+    /// 上一 tick 的時段（日夜作息 v1）：偵測時段轉換、觸發居民過渡台詞。
+    last_phase: std::sync::Mutex<TimePhase>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -352,6 +354,8 @@ fn hub() -> &'static VoxelHub {
             farm: RwLock::new(FarmStore::new()),
             // 世界時鐘：從白天（time_of_day ≈ 0.42）開始，讓玩家一進遊戲就是白天。
             world_time: RwLock::new(WorldTime::new()),
+            // 日夜作息 v1：初始時段 Day（對應 WorldTime::new() 的 time_of_day ≈ 0.42）。
+            last_phase: std::sync::Mutex::new(TimePhase::Day),
             tx,
         }
     })
@@ -1352,6 +1356,35 @@ fn tick_residents(dt: f32) {
     // 0) 推進世界時鐘（短鎖即釋，不巢狀）。晝夜循環 v1。
     { hub().world_time.write().unwrap().tick(dt); }
 
+    // 0b) 讀取目前時段 + 偵測時段轉換（日夜作息 v1）。
+    //     短鎖讀 time → drop；短鎖寫 last_phase → drop，不與其他鎖巢狀。
+    let phase = { hub().world_time.read().unwrap().phase() };
+    let speed_mult = vt::wander_mult(phase);
+    let extra_wait = vt::rest_wait_extra(phase);
+    // say_updates 提前宣告，過渡台詞與建造台詞共用同一張 Vec，在末尾一次套用。
+    let mut say_updates: Vec<(String, String)> = Vec::new();
+    {
+        let mut last = hub().last_phase.lock().unwrap();
+        if *last != phase {
+            // 時段切換：挑一句過渡台詞（seed 用 phase 值合一個確定性數，可測）。
+            let seed = rand::random::<u32>();
+            if let Some(text) = vt::transition_phrase(phase, seed) {
+                // 讓距玩家最近的居民冒台詞（露娜 vox_res_0 在原點，最常被看到）。
+                say_updates.push(("vox_res_0".to_string(), text.to_string()));
+                // 動態 Feed：記錄時段切換事件（夜間/黎明各一筆，讓離線玩家也知道）。
+                let feed_kind = match phase {
+                    TimePhase::Night | TimePhase::Evening => "入夜",
+                    TimePhase::Dawn => "黎明",
+                    _ => "",
+                };
+                if !feed_kind.is_empty() {
+                    vfeed::append_feed(feed_kind, "露娜", text);
+                }
+            }
+            *last = phase;
+        }
+    } // last_phase mutex 在此釋放
+
     // 1) 先取走上輪 async 思考投回的決策（短鎖、不 await）。
     let decisions = hub().agent_bus.drain();
 
@@ -1476,7 +1509,8 @@ fn tick_residents(dt: f32) {
                 vr::gravity_step(&world, &mut r.body, dt);
             } else {
                 let (bx, bz) = (r.body.x, r.body.z);
-                let reached = vr::step_toward(&world, &mut r.body, r.target_x, r.target_z, dt);
+                // 日夜作息 v1：夜間/入夜以 speed_mult 降速（重力不受影響）。
+                let reached = vr::step_toward(&world, &mut r.body, r.target_x, r.target_z, dt, vr::RES_SPEED * speed_mult);
                 if let Some(yaw) = vr::yaw_from_move(r.body.x - bx, r.body.z - bz) {
                     r.yaw = yaw;
                 }
@@ -1484,7 +1518,8 @@ fn tick_residents(dt: f32) {
                     // 挑下一個閒晃目標 + 小歇片刻。
                     // 以「家域感知中心」為基準：超出家域則歸巢，否則原地自由閒晃。
                     let angle = rand::random::<f32>() * std::f32::consts::TAU;
-                    let radius = WANDER_MIN_R + rand::random::<f32>() * (WANDER_MAX_R - WANDER_MIN_R);
+                    // 日夜作息 v1：夜間閒晃半徑隨速度乘數縮小（居民不往遠處跑）。
+                    let radius = (WANDER_MIN_R + rand::random::<f32>() * (WANDER_MAX_R - WANDER_MIN_R)) * speed_mult.max(0.4);
                     let (wcx, wcz) = vr::wander_center(
                         r.body.x, r.body.z,
                         r.home_x, r.home_z,
@@ -1493,7 +1528,8 @@ fn tick_residents(dt: f32) {
                     let (tx, tz) = vr::wander_target(wcx, wcz, angle, radius);
                     r.target_x = tx;
                     r.target_z = tz;
-                    r.wait_timer = 1.0 + rand::random::<f32>() * 3.0;
+                    // 日夜作息 v1：夜間額外多停一段（extra_wait），讓居民在原地駐足更久。
+                    r.wait_timer = 1.0 + rand::random::<f32>() * 3.0 + extra_wait;
                 }
             }
 
@@ -1594,8 +1630,7 @@ fn tick_residents(dt: f32) {
     // 6) 居民建造（builds/desires/deltas/residents 的鎖全在上面釋放後才取，守循序不巢狀鐵律）。
     //    流程：① 若無計畫 → 讀心願 → 分類 → 啟動計畫 → 冒「開始蓋」台詞
     //           ② 若有計畫 → 彈下一塊 → set_block → broadcast → 持久化 → 重設 build_tick
-    //    所有說話更新收集到 say_updates，最後一次性套用（只一把 residents 寫鎖）。
-    let mut say_updates: Vec<(String, String)> = Vec::new(); // (resident_id, say_text)
+    //    say_updates 在 tick_residents 頂層宣告（含過渡台詞 + 建造台詞），最後一次性套用。
 
     for (rid, rname, rx, _ry, rz, ridx) in build_candidates {
         let has_plan = hub().builds.read().unwrap().has_plan(&rid); // drop

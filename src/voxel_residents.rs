@@ -114,13 +114,14 @@ pub fn gravity_step(world: &WorldDelta, body: &mut Body, dt: f32) {
 
 /// 朝水平目標 (tx,tz) 走一步並套重力。回傳是否已抵達（水平距離 < `ARRIVE_DIST`）。
 /// 已抵達就不再水平移動（只落重力），交回呼叫端挑下一個目標。
-pub fn step_toward(world: &WorldDelta, body: &mut Body, tx: f32, tz: f32, dt: f32) -> bool {
+/// `speed` 由呼叫端傳入（一般為 `RES_SPEED`，夜間可乘以日夜作息乘數縮減）。
+pub fn step_toward(world: &WorldDelta, body: &mut Body, tx: f32, tz: f32, dt: f32, speed: f32) -> bool {
     let dx = tx - body.x;
     let dz = tz - body.z;
     let dist = (dx * dx + dz * dz).sqrt();
     let reached = dist < ARRIVE_DIST;
     if !reached && dist > 1e-4 {
-        let scale = (RES_SPEED * dt) / dist;
+        let scale = (speed * dt) / dist;
         // 逐軸移動（沿牆滑行、台階自動踏上）。
         move_axis(world, body, dx * scale, 0.0);
         move_axis(world, body, 0.0, dz * scale);
@@ -257,7 +258,7 @@ mod tests {
         let (tx, tz) = (body.x + 0.4, body.z);
         let mut reached = false;
         for _ in 0..300 {
-            if step_toward(&world, &mut body, tx, tz, 1.0 / 30.0) {
+            if step_toward(&world, &mut body, tx, tz, 1.0 / 30.0, RES_SPEED) {
                 reached = true;
                 break;
             }

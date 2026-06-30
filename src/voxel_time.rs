@@ -79,6 +79,55 @@ impl Default for WorldTime {
     }
 }
 
+// ── 日夜作息——純邏輯（居民行為乘數）──────────────────────────────────────────
+
+/// 依時段回傳居民閒晃速度/半徑乘數：深夜緩行縮圈，讓世界夜間安靜下來。純函式、可測。
+pub fn wander_mult(phase: TimePhase) -> f32 {
+    match phase {
+        TimePhase::Night | TimePhase::Evening => 0.4,
+        TimePhase::Dawn | TimePhase::Dusk => 0.7,
+        TimePhase::Day => 1.0,
+    }
+}
+
+/// 依時段回傳居民每次換目標後「停在原地」的額外秒數：深夜居民多停久一點，更有安靜感。
+/// 純函式、可測。
+pub fn rest_wait_extra(phase: TimePhase) -> f32 {
+    match phase {
+        TimePhase::Night | TimePhase::Evening => 2.5,
+        TimePhase::Dawn | TimePhase::Dusk => 0.5,
+        TimePhase::Day => 0.0,
+    }
+}
+
+/// 時段轉換時的台詞池——夜間（深夜/入夜）。
+const NIGHT_PHRASES: &[&str] = &[
+    "夜深了，星星好多……",
+    "天黑了，小心點喔。",
+    "安靜的夜晚……世界真美。",
+    "夜裡的風好涼，你也感受到了嗎？",
+];
+
+/// 時段轉換時的台詞池——黎明。
+const DAWN_PHRASES: &[&str] = &[
+    "天亮了！新的一天開始了。",
+    "清晨的空氣好清新！",
+    "睡了一覺，感覺活力滿滿！",
+    "好久不見，早安！",
+];
+
+/// 時段切換時挑一句過渡台詞（Night/Evening 或 Dawn 才有台詞，其餘回 None）。
+/// `seed` 由呼叫端提供（不走亂數，保確定性、方便測試）。
+pub fn transition_phrase(new_phase: TimePhase, seed: u32) -> Option<&'static str> {
+    match new_phase {
+        TimePhase::Night | TimePhase::Evening => {
+            Some(NIGHT_PHRASES[seed as usize % NIGHT_PHRASES.len()])
+        }
+        TimePhase::Dawn => Some(DAWN_PHRASES[seed as usize % DAWN_PHRASES.len()]),
+        _ => None,
+    }
+}
+
 // ── 單元測試 ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -149,5 +198,73 @@ mod tests {
         t.tick(DAY_DURATION_SECS * 3.0);
         let tod = t.time_of_day();
         assert!((0.0..1.0).contains(&tod));
+    }
+
+    // ── 日夜作息純邏輯測試 ─────────────────────────────────────────────────
+
+    #[test]
+    fn wander_mult_range() {
+        // 夜間最低、白天最高、黎明/黃昏居中。
+        assert!((wander_mult(TimePhase::Night) - 0.4).abs() < 0.001);
+        assert!((wander_mult(TimePhase::Evening) - 0.4).abs() < 0.001);
+        assert!((wander_mult(TimePhase::Dawn) - 0.7).abs() < 0.001);
+        assert!((wander_mult(TimePhase::Dusk) - 0.7).abs() < 0.001);
+        assert!((wander_mult(TimePhase::Day) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn wander_mult_monotone() {
+        // 夜 ≤ 黎明 ≤ 白天。
+        assert!(wander_mult(TimePhase::Night) <= wander_mult(TimePhase::Dawn));
+        assert!(wander_mult(TimePhase::Dawn) <= wander_mult(TimePhase::Day));
+        // 所有乘數在合理範圍（0 < x ≤ 1）。
+        for phase in [
+            TimePhase::Night, TimePhase::Dawn, TimePhase::Day,
+            TimePhase::Dusk, TimePhase::Evening,
+        ] {
+            let m = wander_mult(phase);
+            assert!(m > 0.0 && m <= 1.0, "wander_mult 超出 (0,1]：{m}");
+        }
+    }
+
+    #[test]
+    fn rest_wait_extra_ordering() {
+        // 夜間等待最長、白天為零、黎明/黃昏居中。
+        assert!(rest_wait_extra(TimePhase::Night) > rest_wait_extra(TimePhase::Day));
+        assert!((rest_wait_extra(TimePhase::Day) - 0.0).abs() < 0.001);
+        assert!(rest_wait_extra(TimePhase::Dawn) > 0.0);
+    }
+
+    #[test]
+    fn transition_phrase_coverage() {
+        // Night/Evening/Dawn 應有台詞；Day/Dusk 應回 None。
+        assert!(transition_phrase(TimePhase::Night, 0).is_some());
+        assert!(transition_phrase(TimePhase::Evening, 1).is_some());
+        assert!(transition_phrase(TimePhase::Dawn, 2).is_some());
+        assert!(transition_phrase(TimePhase::Day, 3).is_none());
+        assert!(transition_phrase(TimePhase::Dusk, 4).is_none());
+    }
+
+    #[test]
+    fn transition_phrase_deterministic() {
+        // 同 seed 每次得到同一句。
+        assert_eq!(
+            transition_phrase(TimePhase::Night, 0),
+            transition_phrase(TimePhase::Night, 0)
+        );
+        // 台詞不為空。
+        let p = transition_phrase(TimePhase::Night, 7).unwrap();
+        assert!(!p.is_empty());
+        let p2 = transition_phrase(TimePhase::Dawn, 7).unwrap();
+        assert!(!p2.is_empty());
+    }
+
+    #[test]
+    fn transition_phrase_pool_exhaustive() {
+        // seed 0..N 不 panic，pool 有 4 句確保覆蓋。
+        for seed in 0u32..8 {
+            let _ = transition_phrase(TimePhase::Night, seed);
+            let _ = transition_phrase(TimePhase::Dawn, seed);
+        }
     }
 }
