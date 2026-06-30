@@ -27,6 +27,9 @@ pub const MAX_MEMORIES_PER_RESIDENT: usize = 40;
 pub const RECALL_LIMIT: usize = 4;
 /// 一筆長期記憶摘要的字元上限：規則擷取後截斷，避免單筆塞爆。
 pub const SUMMARY_MAX_CHARS: usize = 80;
+/// 餵進對話 system prompt 的「脈絡區塊」總字元上限。超過就只留**最近**那一段
+/// （近期對話比舊記憶重要）。每次對話少燒 token、免費額度更耐用（成本鐵律）。
+pub const MAX_CONTEXT_CHARS: usize = 700;
 
 /// 一輪對話（短期記憶用）：玩家說的 + 居民回的。
 #[derive(Clone, Debug, PartialEq)]
@@ -231,7 +234,24 @@ pub fn build_context_block(
             out.push_str(&format!("你：{}\n", t.reply));
         }
     }
-    out.trim_end().to_string()
+    cap_context_chars(out.trim_end().to_string())
+}
+
+/// 把脈絡區塊截到 [`MAX_CONTEXT_CHARS`] 以內（純函式、可測）。
+/// 超長時保留**尾端**（dialogue 在底部、記憶在頂部；近期對話比舊記憶重要），
+/// 並切到下一個換行起點避免切碎一行，前面加一句省略標記。
+fn cap_context_chars(block: String) -> String {
+    if block.chars().count() <= MAX_CONTEXT_CHARS {
+        return block;
+    }
+    let chars: Vec<char> = block.chars().collect();
+    let tail: String = chars[chars.len() - MAX_CONTEXT_CHARS..].iter().collect();
+    // 從第一個換行之後起，避免開頭是半行殘字。
+    let kept = match tail.find('\n') {
+        Some(idx) => tail[idx + 1..].trim().to_string(),
+        None => tail.trim().to_string(),
+    };
+    format!("（脈絡較長，僅保留最近的部分）\n{kept}")
 }
 
 // ── jsonl 持久化（比照 npc_agent::append_prayer：輕量同步小檔寫，失敗只記 log 不 panic）──────
@@ -403,6 +423,29 @@ mod tests {
         assert!(block.contains("阿星"));
         // 兩段皆空 → 空字串。
         assert!(build_context_block(&[], &[], "阿星").is_empty());
+    }
+
+    #[test]
+    fn context_block_capped_keeps_recent_dialogue() {
+        // 灌一大堆記憶 + 多輪對話 → 應截到上限內，且保留「最近」的對話（在尾端）。
+        let memories: Vec<MemoryEntry> = (0..40)
+            .map(|i| MemoryEntry {
+                resident: "vox_res_0".to_string(),
+                player: "阿星".to_string(),
+                summary: format!("很久以前的舊記憶第 {i} 條，填充填充填充填充填充"),
+                seq: i as u64,
+            })
+            .collect();
+        let history = vec![DialogueTurn {
+            user: "我剛剛說的最新一句話".to_string(),
+            reply: "這是居民最新的回覆".to_string(),
+        }];
+        let block = build_context_block(&history, &memories, "阿星");
+        // 截到上限內（加上省略標記那一行的少量字數，仍應遠小於未截前）。
+        assert!(block.chars().count() <= MAX_CONTEXT_CHARS + 40, "脈絡應截到上限內：{}", block.chars().count());
+        // 最近的對話一定要留著（近期對話比舊記憶重要）。
+        assert!(block.contains("我剛剛說的最新一句話"), "截斷後仍須保留最近對話");
+        assert!(block.contains("脈絡較長"), "超長時應加省略標記");
     }
 
     #[test]

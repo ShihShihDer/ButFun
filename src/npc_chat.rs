@@ -333,6 +333,117 @@ async fn ollama_chat(system: &str, user: &str) -> Option<String> {
     }
 }
 
+// ── 共用：OpenAI 相容端點呼叫 + 多 key 輪替重試 ───────────────────────────────
+// 三家雲端腦池（Groq / Cerebras / Gemini）都走 OpenAI 相容 `/chat/completions`，
+// 差別只在端點 URL、模型名、key 清單。把「單次請求」與「多 key 輪替」抽成共用純骨架，
+// 讓每家只需提供 keys/model/endpoint。**429 換下一把 key**：把 N 個免費帳號的額度真的用滿，
+// 不再一把 key 撞上限就整家放棄（這正是「4 帳號額度沒用滿就投降」的修正）。
+
+/// 三家雲端腦池的 OpenAI 相容端點 URL（集中於此，避免散落字串）。
+const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
+const CEREBRAS_ENDPOINT: &str = "https://api.cerebras.ai/v1/chat/completions";
+const GEMINI_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+
+/// 一次「OpenAI 相容對話呼叫」的結果（供多 key 輪替判斷要不要換下一把）。
+enum LlmOutcome {
+    /// 成功拿到非空回覆。
+    Ok(String),
+    /// 該把 key 撞到額度上限（HTTP 429）——換下一把（別的帳號）可能就成功。
+    RateLimited,
+    /// 其它失敗（連不到 / 逾時 / 解析錯 / 其它 HTTP 錯）——也換下一把試。
+    Failed,
+}
+
+/// 給定起始偏移與清單長度，產生「從 start 開始繞一圈」的索引順序（純函式、可測）。
+/// 例：`rotation_order(2, 4) == [2,3,0,1]`。讓多 key 輪替「從這次輪到的那把起、依序試完整圈」。
+fn rotation_order(start: usize, len: usize) -> Vec<usize> {
+    if len == 0 {
+        return Vec::new();
+    }
+    (0..len).map(|i| (start + i) % len).collect()
+}
+
+/// 從 OpenAI 相容回應 JSON 抽出 `choices[0].message.content`（trim、空→None）。
+fn extract_chat_content(v: &serde_json::Value) -> Option<String> {
+    let text = v
+        .get("choices")?
+        .get(0)?
+        .get("message")?
+        .get("content")?
+        .as_str()?
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// 對「OpenAI 相容 `/chat/completions` 端點」發一次請求（**單一 key**）。逾時 15 秒。
+/// 回 `LlmOutcome`：429 → `RateLimited`（呼叫端換下一把 key）；其它錯 → `Failed`；成功非空 → `Ok`。
+/// 機敏 key 只用於 bearer auth、**絕不寫進 log**。無鎖 async，遵守 prod 死鎖鐵律。
+async fn openai_compat_call(
+    endpoint: &str,
+    model: &str,
+    key: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+) -> LlmOutcome {
+    let client = match reqwest::Client::builder().timeout(Duration::from_secs(15)).build() {
+        Ok(c) => c,
+        Err(_) => return LlmOutcome::Failed,
+    };
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0.8,
+        "max_tokens": max_tokens,
+    });
+    let resp = match client.post(endpoint).bearer_auth(key).json(&body).send().await {
+        Ok(r) => r,
+        Err(_) => return LlmOutcome::Failed,
+    };
+    let status = resp.status();
+    if status.as_u16() == 429 {
+        return LlmOutcome::RateLimited; // 該帳號額度滿 → 換下一把
+    }
+    if !status.is_success() {
+        return LlmOutcome::Failed;
+    }
+    match resp.json::<serde_json::Value>().await {
+        Ok(v) => match extract_chat_content(&v) {
+            Some(t) => LlmOutcome::Ok(t),
+            None => LlmOutcome::Failed,
+        },
+        Err(_) => LlmOutcome::Failed,
+    }
+}
+
+/// 多 key 輪替：依 `keys`（已排好輪替起點順序）逐把試，撞 429／失敗就換下一把，
+/// 任一把成功即回 `Some`；全部試完仍失敗回 `None`。
+/// 刻意**不睡 `Retry-After`、不在同一把上重打**——直接試別的帳號，最省時又把 4 帳號額度用滿。
+async fn try_keys(
+    endpoint: &str,
+    model: &str,
+    keys: &[String],
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+) -> Option<String> {
+    for key in keys {
+        match openai_compat_call(endpoint, model, key, system, user, max_tokens).await {
+            LlmOutcome::Ok(t) => return Some(t),
+            LlmOutcome::RateLimited | LlmOutcome::Failed => continue,
+        }
+    }
+    None
+}
+
 /// Groq API key 清單（雲端推論，OpenAI 相容）。
 /// `GROQ_API_KEY` 支援**逗號分隔多把 key**：維護者每註冊一個免費 Groq 帳號就多放一把
 /// key、免費思考額度線性疊加。各把 trim、濾掉空字串；單一把即向後相容。
@@ -352,17 +463,25 @@ fn groq_enabled() -> bool {
     !groq_keys().is_empty()
 }
 
-/// 用全域 round-robin 計數器，從多把 key 中挑「這次輪到的那把」，把負載平均分攤到各帳號。
-/// 對 keys 長度取模、保證不越界。沒有任何 key → None（呼叫端跳過 Groq）。
-fn groq_next_key() -> Option<String> {
+/// 用全域 round-robin 計數器，把多把 key **依「這次輪到的那把」起點排成完整一圈**回傳。
+/// 呼叫端可依序試完整圈（撞 429／失敗就換下一把），把 N 個免費帳號的額度真的用滿。
+/// 對 keys 長度取模、保證不越界。沒有任何 key → 空 Vec（＝跳過 Groq）。
+fn groq_keys_rotated() -> Vec<String> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static RR: AtomicUsize = AtomicUsize::new(0);
     let keys = groq_keys();
     if keys.is_empty() {
-        return None;
+        return keys;
     }
-    let idx = RR.fetch_add(1, Ordering::Relaxed) % keys.len();
-    Some(keys[idx].clone())
+    let start = RR.fetch_add(1, Ordering::Relaxed) % keys.len();
+    rotation_order(start, keys.len()).into_iter().map(|i| keys[i].clone()).collect()
+}
+
+/// 取「這次輪到的那把」key（＝輪替序的第一把）。沒有任何 key → None（呼叫端跳過 Groq）。
+/// 實際呼叫走 `groq_keys_rotated` 試完整圈；此單把窗口僅供輪替行為的單元測試釘住。
+#[cfg(test)]
+fn groq_next_key() -> Option<String> {
+    groq_keys_rotated().into_iter().next()
 }
 
 /// Groq 對話模型（可用 `BUTFUN_GROQ_MODEL` 覆寫）。預設挑免費層裡夠聰明、中文也行的。
@@ -423,49 +542,17 @@ fn groq_rate_ok() -> bool {
 }
 
 async fn groq_chat(system: &str, user: &str) -> Option<String> {
-    // 從多把 key 中 round-robin 挑這次輪到的那把（單把＝固定那把，沒設＝None 跳過）。
-    let key = groq_next_key()?;
+    // 把 12 把 key 依輪替起點排成一圈（沒設＝空 → 跳過 Groq）。
+    let keys = groq_keys_rotated();
+    if keys.is_empty() {
+        return None;
+    }
     // H1：全域額度上限——超過就降級（不再呼叫 Groq），保護免費額度 / 不燒錢。
     if !groq_rate_ok() {
         return None;
     }
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .ok()?;
-    let body = serde_json::json!({
-        "model": groq_model(),
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "temperature": 0.8,
-        "max_tokens": 400,
-    });
-    let resp = client
-        .post("https://api.groq.com/openai/v1/chat/completions")
-        .bearer_auth(key)
-        .json(&body)
-        .send()
-        .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let v: serde_json::Value = resp.json().await.ok()?;
-    let text = v
-        .get("choices")?
-        .get(0)?
-        .get("message")?
-        .get("content")?
-        .as_str()?
-        .trim()
-        .to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    // 依序試每一把：撞 429（該帳號額度滿）就換下一把，直到成功或全爆。
+    try_keys(GROQ_ENDPOINT, &groq_model(), &keys, system, user, 400).await
 }
 
 /// Cerebras API key 清單（雲端推論，OpenAI 相容、免費、超快）。
@@ -487,17 +574,23 @@ fn cerebras_enabled() -> bool {
     !cerebras_keys().is_empty()
 }
 
-/// 用全域 round-robin 計數器，從多把 key 中挑「這次輪到的那把」，把負載平均分攤到各帳號。
-/// 對 keys 長度取模、保證不越界。沒有任何 key → None（呼叫端跳過 Cerebras）。
-fn cerebras_next_key() -> Option<String> {
+/// 用全域 round-robin 計數器，把多把 key 依「這次輪到的那把」起點排成完整一圈回傳。
+/// 沒有任何 key → 空 Vec（呼叫端跳過 Cerebras）。
+fn cerebras_keys_rotated() -> Vec<String> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static RR: AtomicUsize = AtomicUsize::new(0);
     let keys = cerebras_keys();
     if keys.is_empty() {
-        return None;
+        return keys;
     }
-    let idx = RR.fetch_add(1, Ordering::Relaxed) % keys.len();
-    Some(keys[idx].clone())
+    let start = RR.fetch_add(1, Ordering::Relaxed) % keys.len();
+    rotation_order(start, keys.len()).into_iter().map(|i| keys[i].clone()).collect()
+}
+
+/// 取「這次輪到的那把」Cerebras key（＝輪替序的第一把）。沒有任何 key → None。僅供單元測試。
+#[cfg(test)]
+fn cerebras_next_key() -> Option<String> {
+    cerebras_keys_rotated().into_iter().next()
 }
 
 /// Cerebras 對話模型（可用 `BUTFUN_CEREBRAS_MODEL` 覆寫）。
@@ -555,49 +648,17 @@ fn cerebras_rate_ok() -> bool {
 /// 呼叫 Cerebras（OpenAI 相容 `/chat/completions`）。失敗（無 key / HTTP 錯 / 逾時 / 解析錯）
 /// 一律回 None，由上層降級。鏡像 `groq_chat`：免費、超快、雲端並發，當降級鏈的主力。
 async fn cerebras_chat(system: &str, user: &str) -> Option<String> {
-    // 從多把 key 中 round-robin 挑這次輪到的那把（單把＝固定那把，沒設＝None 跳過）。
-    let key = cerebras_next_key()?;
+    // 把多把 key 依輪替起點排成一圈（沒設＝空 → 跳過 Cerebras）。
+    let keys = cerebras_keys_rotated();
+    if keys.is_empty() {
+        return None;
+    }
     // 全域額度上限——超過就降級（不再呼叫 Cerebras），保護免費額度。
     if !cerebras_rate_ok() {
         return None;
     }
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .ok()?;
-    let body = serde_json::json!({
-        "model": cerebras_model(),
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "temperature": 0.8,
-        "max_tokens": 400,
-    });
-    let resp = client
-        .post("https://api.cerebras.ai/v1/chat/completions")
-        .bearer_auth(key)
-        .json(&body)
-        .send()
-        .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let v: serde_json::Value = resp.json().await.ok()?;
-    let text = v
-        .get("choices")?
-        .get(0)?
-        .get("message")?
-        .get("content")?
-        .as_str()?
-        .trim()
-        .to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    // 依序試每一把：撞 429 就換下一把，直到成功或全爆。
+    try_keys(CEREBRAS_ENDPOINT, &cerebras_model(), &keys, system, user, 400).await
 }
 
 /// Google Gemini API key 清單（雲端推論，OpenAI 相容端點、免費 tier）。
@@ -619,17 +680,23 @@ fn gemini_enabled() -> bool {
     !gemini_keys().is_empty()
 }
 
-/// 用全域 round-robin 計數器，從多把 key 中挑「這次輪到的那把」，把負載平均分攤到各帳號。
-/// 對 keys 長度取模、保證不越界。沒有任何 key → None（呼叫端跳過 Gemini）。
-fn gemini_next_key() -> Option<String> {
+/// 用全域 round-robin 計數器，把多把 key 依「這次輪到的那把」起點排成完整一圈回傳。
+/// 沒有任何 key → 空 Vec（呼叫端跳過 Gemini）。
+fn gemini_keys_rotated() -> Vec<String> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static RR: AtomicUsize = AtomicUsize::new(0);
     let keys = gemini_keys();
     if keys.is_empty() {
-        return None;
+        return keys;
     }
-    let idx = RR.fetch_add(1, Ordering::Relaxed) % keys.len();
-    Some(keys[idx].clone())
+    let start = RR.fetch_add(1, Ordering::Relaxed) % keys.len();
+    rotation_order(start, keys.len()).into_iter().map(|i| keys[i].clone()).collect()
+}
+
+/// 取「這次輪到的那把」Gemini key（＝輪替序的第一把）。沒有任何 key → None。僅供單元測試。
+#[cfg(test)]
+fn gemini_next_key() -> Option<String> {
+    gemini_keys_rotated().into_iter().next()
 }
 
 /// Gemini 對話模型（可用 `BUTFUN_GEMINI_MODEL` 覆寫）。
@@ -688,49 +755,17 @@ fn gemini_rate_ok() -> bool {
 /// 呼叫 Gemini（OpenAI 相容端點 `/v1beta/openai/chat/completions`）。失敗（無 key / HTTP 錯 /
 /// 逾時 / 解析錯）一律回 None，由上層降級。鏡像 `cerebras_chat`：免費、雲端並發，當降級鏈的一環。
 async fn gemini_chat(system: &str, user: &str) -> Option<String> {
-    // 從多把 key 中 round-robin 挑這次輪到的那把（單把＝固定那把，沒設＝None 跳過）。
-    let key = gemini_next_key()?;
+    // 把多把 key 依輪替起點排成一圈（沒設＝空 → 跳過 Gemini）。
+    let keys = gemini_keys_rotated();
+    if keys.is_empty() {
+        return None;
+    }
     // 全域額度上限——超過就降級（不再呼叫 Gemini），保護免費額度。
     if !gemini_rate_ok() {
         return None;
     }
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .ok()?;
-    let body = serde_json::json!({
-        "model": gemini_model(),
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "temperature": 0.8,
-        "max_tokens": 400,
-    });
-    let resp = client
-        .post("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
-        .bearer_auth(key)
-        .json(&body)
-        .send()
-        .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let v: serde_json::Value = resp.json().await.ok()?;
-    let text = v
-        .get("choices")?
-        .get(0)?
-        .get("message")?
-        .get("content")?
-        .as_str()?
-        .trim()
-        .to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    // 依序試每一把：撞 429（Gemini 免費 tier 每分鐘上限緊，常單把 429）就換下一把，直到成功或全爆。
+    try_keys(GEMINI_ENDPOINT, &gemini_model(), &keys, system, user, 400).await
 }
 
 /// LLM 對話路由 + 降級鏈：**Cerebras（雲端，免費/超快/主力）→ Gemini（雲端，免費）→
@@ -760,11 +795,42 @@ async fn llm_chat(system: &str, user: &str) -> Option<String> {
     ollama_chat(system, user).await
 }
 
-/// 給「自主 agent 決策」（npc_agent）共用同一條 LLM 路由 + 降級鏈。
-/// 只是把私有的 `llm_chat` 開一個 crate 內可見的窗口，行為完全一致：
-/// Groq → Cerebras → Gemini → ollama → None（呼叫端退罐頭）。永遠不卡迴圈、永遠回得出東西。
+/// ollama 是否「明確設定了」位址（`BUTFUN_OLLAMA_URL` 有非空值）。
+/// 沒設時思考路由就跳過 ollama（prod 無本地腦），避免每次背景思考都白白連 localhost 逾時。
+fn ollama_configured() -> bool {
+    std::env::var("BUTFUN_OLLAMA_URL").map(|v| !v.trim().is_empty()).unwrap_or(false)
+}
+
+/// **思考專用** LLM 路由（居民背景思考／禱告用）：刻意**不碰 Groq**。
+///
+/// 成本鐵律：Groq 那種「有限又快」的免費額度，**只留給「玩家即時對話」**。
+/// 12 位居民每隔數十秒就思考一次、量極大（一天可達數百萬 token），絕不該燒玩家對話用的 Groq。
+/// 思考改走便宜／獨立額度：本地 ollama（若設了 `BUTFUN_OLLAMA_URL`）→ Cerebras（獨立額度）→
+/// Gemini（獨立額度）→ None（呼叫端退罐頭規則，agent 仍會動）。永遠不卡迴圈、永遠回得出（或乾淨地 None）。
+async fn think_llm_chat(system: &str, user: &str) -> Option<String> {
+    if ollama_configured() {
+        if let Some(t) = ollama_chat(system, user).await {
+            return Some(t);
+        }
+    }
+    if cerebras_enabled() {
+        if let Some(t) = cerebras_chat(system, user).await {
+            return Some(t);
+        }
+    }
+    if gemini_enabled() {
+        if let Some(t) = gemini_chat(system, user).await {
+            return Some(t);
+        }
+    }
+    None
+}
+
+/// 給「自主 agent 決策／禱告」（npc_agent）用的 LLM 窗口。
+/// **走思考專用路由 [`think_llm_chat`]（不碰 Groq）**——把有限的 Groq 額度留給玩家即時對話。
+/// ollama（若設）→ Cerebras → Gemini → None（呼叫端退罐頭規則）。永遠不卡迴圈。
 pub(crate) async fn agent_llm_chat(system: &str, user: &str) -> Option<String> {
-    llm_chat(system, user).await
+    think_llm_chat(system, user).await
 }
 
 /// 生成 NPC 對玩家這句話的回應。LLM 沒啟用或失敗 → 罐頭句（永遠回得出東西）。
@@ -914,6 +980,19 @@ mod tests {
         }
         // 連取 30 次（>3）應把三把都輪到（round-robin 平均分攤）。
         assert_eq!(seen.len(), 3, "round-robin 應輪到每一把 key");
+
+        // 多 key 輪替序：每次 groq_keys_rotated() 都是「全部 key 的一個排列」（試完整圈），
+        // 且起點 round-robin 輪到每一把（429 換下一把時才能把所有帳號都用滿）。
+        std::env::set_var("GROQ_API_KEY", "k0,k1,k2,k3");
+        let mut first_keys = std::collections::HashSet::new();
+        for _ in 0..40 {
+            let rot = groq_keys_rotated();
+            assert_eq!(rot.len(), 4, "輪替序應含全部 4 把（試完整圈）");
+            let uniq: std::collections::HashSet<_> = rot.iter().cloned().collect();
+            assert_eq!(uniq.len(), 4, "輪替序內不重複");
+            first_keys.insert(rot[0].clone());
+        }
+        assert_eq!(first_keys.len(), 4, "round-robin 起點應輪到每一把 key");
         std::env::remove_var("GROQ_API_KEY");
     }
 
@@ -1319,5 +1398,56 @@ mod tests {
         std::env::remove_var("BUTFUN_NPC_LLM");
         let result = raw_llm_call_fast("system", "user").await;
         assert!(result.is_none(), "LLM 未啟用時 raw_llm_call_fast 應回 None");
+    }
+
+    // ── 多 key 輪替重試：rotation_order ────────────────────────────────────────
+
+    #[test]
+    fn rotation_order_wraps_full_circle() {
+        // 從 start 起繞一圈，剛好涵蓋每個索引一次、保序、不越界。
+        assert_eq!(rotation_order(0, 4), vec![0, 1, 2, 3]);
+        assert_eq!(rotation_order(2, 4), vec![2, 3, 0, 1]);
+        assert_eq!(rotation_order(3, 4), vec![3, 0, 1, 2]);
+        // start 超過長度也取模回繞（不 panic、不越界）。
+        assert_eq!(rotation_order(5, 3), vec![2, 0, 1]);
+        // 單把 → 只有自己。
+        assert_eq!(rotation_order(0, 1), vec![0]);
+        // 零把 → 空（呼叫端據此跳過該家）。
+        assert!(rotation_order(0, 0).is_empty());
+        assert!(rotation_order(7, 0).is_empty());
+    }
+
+    #[test]
+    fn rotation_order_visits_every_index_once() {
+        // 任意 start／len：產生的順序是 0..len 的一個排列（每個索引恰一次）。
+        for len in 1..=12usize {
+            for start in 0..len {
+                let order = rotation_order(start, len);
+                assert_eq!(order.len(), len);
+                let mut seen: std::collections::HashSet<usize> = order.iter().copied().collect();
+                assert_eq!(seen.len(), len, "應每個索引恰出現一次：start={start} len={len}");
+                for i in 0..len {
+                    assert!(seen.remove(&i), "索引 {i} 應在輪替序內");
+                }
+                // 第一個必為 start（從這次輪到的那把起）。
+                assert_eq!(order[0], start);
+            }
+        }
+    }
+
+    // ── 思考路由：ollama 是否設定 ─────────────────────────────────────────────
+
+    #[test]
+    fn ollama_configured_reflects_env() {
+        // 沒設 → false（思考路由跳過 ollama，不白連 localhost）。
+        std::env::remove_var("BUTFUN_OLLAMA_URL");
+        assert!(!ollama_configured());
+        // 空字串／純空白 → 視為沒設。
+        std::env::set_var("BUTFUN_OLLAMA_URL", "   ");
+        assert!(!ollama_configured());
+        // 有非空值 → true。
+        std::env::set_var("BUTFUN_OLLAMA_URL", "http://localhost:11434");
+        assert!(ollama_configured());
+        std::env::remove_var("BUTFUN_OLLAMA_URL");
     }
 }
