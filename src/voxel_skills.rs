@@ -63,14 +63,17 @@ pub fn build_offset(seq: usize) -> (i32, i32) {
 // ── 採集技能：資源型別 ─────────────────────────────────────────────────────────
 
 /// 居民可採集的自然資源。
-/// **註**：本世界程序地形不長樹，木頭只在有人放置時才有；故 v1 採集鎖定**地表**真實存在的
-/// 草皮／沙／泥，居民走到最近的地表方塊挖一塊放進小背包——「她真的在做事」最有感的一刀。
+/// **註**：程序地形現在會長樹（見 `voxel::tree_in_cell`），故 v1 採集涵蓋**地表**真實存在的
+/// 草皮／沙／泥／石，外加**樹幹（木頭）**——居民走到最近的地表/樹旁，砍一塊放進小背包。
+/// 木頭是合成鏈（木頭→木板→工作台→3×3）的第一步原料，居民也得採得到才接得上。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GatherResource {
     Grass,
     Sand,
     Dirt,
     Stone,
+    /// 木頭（砍樹幹）：合成鏈的起點原料。
+    Wood,
 }
 
 impl GatherResource {
@@ -81,6 +84,7 @@ impl GatherResource {
             GatherResource::Sand => Block::Sand,
             GatherResource::Dirt => Block::Dirt,
             GatherResource::Stone => Block::Stone,
+            GatherResource::Wood => Block::Wood,
         }
     }
 
@@ -96,16 +100,19 @@ impl GatherResource {
             GatherResource::Sand => "細沙",
             GatherResource::Dirt => "泥土",
             GatherResource::Stone => "石頭",
+            GatherResource::Wood => "木頭",
         }
     }
 
-    /// 由方塊型別反查資源（找到地表方塊後得知採到的是什麼）。地表不可採的回 None。
+    /// 由方塊型別反查資源（找到方塊後得知採到的是什麼）。不可採的回 None。
+    /// 樹冠 Leaves 不直接採（採的是樹幹 Wood，見 `find_nearest_resource` 的樹處理）。
     pub fn from_block(b: Block) -> Option<GatherResource> {
         match b {
             Block::Grass => Some(GatherResource::Grass),
             Block::Sand => Some(GatherResource::Sand),
             Block::Dirt => Some(GatherResource::Dirt),
             Block::Stone => Some(GatherResource::Stone),
+            Block::Wood => Some(GatherResource::Wood),
             _ => None,
         }
     }
@@ -294,9 +301,47 @@ fn surface_block(world: &WorldDelta, x: i32, z: i32) -> Option<(i32, Block)> {
     None
 }
 
-/// 從 (ox,oz) 螺旋向外找最近一個「可採地表方塊」（草／沙／泥／石，非水），
-/// 回傳 (x, 地表y, z, 資源)。從 [`GATHER_MIN_RADIUS`] 起找（讓居民走幾步），
-/// 找到 [`GATHER_MAX_RADIUS`] 仍無 → None。純函式（吃 &WorldDelta）、可測。
+/// 某 (x,z) 柱若是樹，回傳「樹幹底座方塊」的 y（最低的一塊 Wood）。非樹回 None。
+/// 居民站在旁邊草地、側向砍這塊樹幹底（近地表、安全可逃）。套 delta overlay（長過/砍過都算）。
+/// 由底往上掃，第一塊 Wood 即最低樹幹塊。純函式、可測。
+pub fn trunk_base(world: &WorldDelta, x: i32, z: i32) -> Option<i32> {
+    let top = BASE_HEIGHT + 14; // 與 surface_block 同上界，涵蓋正常樹高
+    (0..=top).find(|&y| voxel::effective_block_at(world, x, y, z) == Block::Wood)
+}
+
+/// 螺旋掃指定半徑環，對每個 (x,z) 呼叫 `pick`；回傳第一個 `Some` 的結果。
+/// 把「從 MIN_RADIUS 起一圈圈往外找最近」的骨架抽出來，木頭/地表兩種找法共用。
+fn spiral_find<T>(
+    ox: i32,
+    oz: i32,
+    max_radius: i32,
+    mut pick: impl FnMut(i32, i32) -> Option<T>,
+) -> Option<T> {
+    for r in GATHER_MIN_RADIUS..=max_radius {
+        for dx in -r..=r {
+            for dz in -r..=r {
+                // 只走當前半徑的「環」邊界，避免重複掃內圈。
+                if dx.abs().max(dz.abs()) != r {
+                    continue;
+                }
+                if let Some(t) = pick(ox + dx, oz + dz) {
+                    return Some(t);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 從 (ox,oz) 螺旋向外找最近一個「可採資源」。
+///
+/// **優先序**：先找**木頭（樹幹）**，沒有才找地表草／沙／泥／石。原因：草皮鋪滿整個地表、
+/// 一定搶在樹之前被「最近」選中，若不優先找木頭，居民幾乎永遠採不到木頭、合成鏈第一步
+/// （木頭→木板）就接不上。木頭稀少又是鏈起點，故只要採集半徑內有可砍的樹就先去砍。
+/// 地表材料到處都是、隨時補得到，不會因此匱乏。
+///
+/// 從 [`GATHER_MIN_RADIUS`] 起找（讓居民走幾步），找到 [`GATHER_MAX_RADIUS`] 仍無 → None。
+/// 純函式（吃 &WorldDelta）、可測。
 pub fn find_nearest_resource(
     world: &WorldDelta,
     ox: i32,
@@ -306,26 +351,32 @@ pub fn find_nearest_resource(
     // 居民站立柱的地表頂 → 推估腳底層（fy），用來剔除「挖了會把自己困住」的目標
     // （腳下那柱、明顯低於腳底的坑底）。找不到站立柱（不該發生）就不過濾、退回原行為。
     let foot_fy = surface_block(world, ox, oz).map(|(y, _)| y + 1);
-    for r in GATHER_MIN_RADIUS..=max_radius {
-        for dx in -r..=r {
-            for dz in -r..=r {
-                // 只走當前半徑的「環」邊界，避免重複掃內圈。
-                if dx.abs().max(dz.abs()) != r {
-                    continue;
-                }
-                let (x, z) = (ox + dx, oz + dz);
-                if let Some((y, b)) = surface_block(world, x, z) {
-                    if let Some(res) = GatherResource::from_block(b) {
-                        // 只挑「挖了仍逃得出去」的地表（可逃性判定，防採集挖坑卡死）。
-                        if foot_fy.map_or(true, |fy| is_escapable_after_dig(world, ox, fy, oz, x, y, z)) {
-                            return Some((x, y, z, res));
-                        }
-                    }
-                }
-            }
+    let escapable = |x: i32, y: i32, z: i32| {
+        foot_fy.map_or(true, |fy| is_escapable_after_dig(world, ox, fy, oz, x, y, z))
+    };
+
+    // 第一優先：最近一棵「砍得到」的樹（側向砍最低樹幹塊，近地表、安全可逃）。
+    // 先用 surface_block 便宜判斷該柱是不是樹（地表頂為樹冠/樹幹），是才掃樹幹底，避免空地全掃。
+    if let Some(w) = spiral_find(ox, oz, max_radius, |x, z| {
+        let (_, b) = surface_block(world, x, z)?;
+        if !matches!(b, Block::Leaves | Block::Wood) {
+            return None;
         }
+        let wy = trunk_base(world, x, z)?;
+        escapable(x, wy, z).then_some((x, wy, z, GatherResource::Wood))
+    }) {
+        return Some(w);
     }
-    None
+
+    // 退而求其次：最近一塊可採地表方塊（草／沙／泥／石，非水；跳過樹冠擋住的樹柱）。
+    spiral_find(ox, oz, max_radius, |x, z| {
+        let (y, b) = surface_block(world, x, z)?;
+        if matches!(b, Block::Leaves | Block::Wood) {
+            return None; // 樹柱已在木頭階段處理（砍不到就不採其地表）
+        }
+        let res = GatherResource::from_block(b)?;
+        escapable(x, y, z).then_some((x, y, z, res))
+    })
 }
 
 // ── 已完成目標 store（持久化：不重複的記憶土壤）──────────────────────────────
@@ -555,12 +606,14 @@ mod tests {
             GatherResource::Sand,
             GatherResource::Dirt,
             GatherResource::Stone,
+            GatherResource::Wood,
         ] {
             assert_eq!(GatherResource::from_block(res.block()), Some(res));
             assert!(!res.display_name().is_empty());
             assert_eq!(res.block_id(), res.block() as u8);
         }
-        // 不可採的方塊 → None。
+        // 不可採的方塊 → None（樹冠 Leaves 不直接採、水、空氣）。
+        assert_eq!(GatherResource::from_block(Block::Leaves), None);
         assert_eq!(GatherResource::from_block(Block::Water), None);
         assert_eq!(GatherResource::from_block(Block::Air), None);
     }
@@ -612,6 +665,73 @@ mod tests {
         let (_, _, _, res) = find_nearest_resource(&w2, ox, oz, GATHER_MAX_RADIUS).unwrap();
         // 至少能找到某個可採資源（不 panic、有結果）。
         assert!(!res.display_name().is_empty());
+    }
+
+    // ── 採木頭：補上合成鏈缺的木頭來源 ────────────────────────────────────────
+
+    /// 找一棵「旁邊有同高平地站得到、砍得到」的樹，回 (ox, oz, 樹)。
+    /// 站立柱與樹底座同高 → 砍最低樹幹塊一定通過可逃性判定（不挖坑、踏地即可）。
+    fn tree_with_flat_neighbor() -> (i32, i32, voxel::Tree) {
+        for cx in 0..600 {
+            for cz in -300..300 {
+                if let Some(t) = voxel::tree_in_cell(cx, cz) {
+                    // 站在樹西邊 5 格（chebyshev 5，落在 [MIN,MAX] 採集半徑內）。
+                    let (ox, oz) = (t.tx - 5, t.tz);
+                    if height_at(ox, oz) == t.base_h {
+                        return (ox, oz, t);
+                    }
+                }
+            }
+        }
+        panic!("找不到旁邊有平地的樹");
+    }
+
+    #[test]
+    fn trunk_base_finds_lowest_wood() {
+        let world = WorldDelta::new();
+        let t = (0..200)
+            .flat_map(|cx| (0..200).map(move |cz| (cx, cz)))
+            .find_map(|(cx, cz)| voxel::tree_in_cell(cx, cz))
+            .expect("應找得到一棵樹");
+        // 最低樹幹塊就在草地表之上一格。
+        assert_eq!(trunk_base(&world, t.tx, t.tz), Some(t.base_h + 1));
+        assert_eq!(
+            voxel::effective_block_at(&world, t.tx, t.base_h + 1, t.tz),
+            Block::Wood
+        );
+    }
+
+    #[test]
+    fn find_nearest_resource_prefers_wood_when_tree_in_range() {
+        // 採集半徑內有可砍的樹 → 應優先回木頭（否則鋪滿地表的草會搶先、居民永遠採不到木）。
+        let world = WorldDelta::new();
+        let (ox, oz, _t) = tree_with_flat_neighbor();
+        let (x, y, z, res) =
+            find_nearest_resource(&world, ox, oz, GATHER_MAX_RADIUS).expect("應找得到資源");
+        assert_eq!(res, GatherResource::Wood, "半徑內有樹 → 優先採木頭");
+        // 目標真的是樹幹 Wood，且砍得到（可逃性通過）。
+        assert_eq!(voxel::effective_block_at(&world, x, y, z), Block::Wood);
+        let fy = height_at(ox, oz) + 1;
+        assert!(
+            is_escapable_after_dig(&world, ox, fy, oz, x, y, z),
+            "居民應砍得到這塊樹幹（不把自己困住）"
+        );
+        // 居民真的能拿到木頭：模擬砍掉這塊 → 變空氣（材料入背包）。
+        let mut w2 = world.clone();
+        voxel::set_block(&mut w2, x, y, z, Block::Air);
+        assert_eq!(voxel::effective_block_at(&w2, x, y, z), Block::Air);
+    }
+
+    #[test]
+    fn gather_falls_back_to_ground_without_trees() {
+        // 沒有樹的世界（用 delta 把附近樹幹/樹冠抹平不切實際；改驗證：找不到樹時退回地表材料）。
+        // 取一個陸地點，若其半徑內剛好沒可砍的樹，結果應是地表草/沙/泥/石之一（非木頭也合法）。
+        let world = WorldDelta::new();
+        let (ox, oz) = land_point();
+        let (x, y, z, res) =
+            find_nearest_resource(&world, ox, oz, GATHER_MAX_RADIUS).expect("陸地應有可採資源");
+        // 不論回木頭或地表材料，型別都與該座標方塊一致（同源、可實際挖到）。
+        assert_eq!(voxel::effective_block_at(&world, x, y, z), res.block());
     }
 
     // ── safe_to_dig：採集別把自己挖坑卡住 ────────────────────────────────────
