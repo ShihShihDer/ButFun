@@ -362,6 +362,57 @@
       #feed { top: auto; bottom: 108px; right: 10px; max-height: 55vh; }
     }
 
+    /* ── 居民日記牆（ROADMAP 674）────────────────────────────────────────── */
+    #diaryWallBtn {
+      position: fixed; right: 10px; top: 172px; z-index: 6;
+      background: rgba(20,28,40,0.65); color: #a0e8b0; border: 1px solid rgba(160,232,176,0.3);
+      padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      user-select: none; pointer-events: auto;
+    }
+    #diaryWallBtn:hover { background: rgba(20,60,40,0.75); }
+    #diaryWall {
+      position: fixed; right: 10px; top: 172px; z-index: 20;
+      width: min(320px, 94vw); max-height: 70vh;
+      display: none; flex-direction: column;
+      background: rgba(16,22,34,0.95); color: #eaf2ff; border-radius: 14px;
+      border: 1px solid rgba(160,232,176,0.22); box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      overflow: hidden;
+    }
+    #diaryWallHead {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 9px 13px; background: rgba(160,232,176,0.07); font-size: 14px; font-weight: bold;
+    }
+    #diaryWallTitle { color: #a0e8b0; }
+    #diaryWallClose {
+      cursor: pointer; user-select: none; font-size: 18px; line-height: 1;
+      padding: 2px 8px; border-radius: 8px; background: rgba(255,255,255,0.10);
+    }
+    #diaryWallBody {
+      flex: 1; overflow-y: auto; padding: 10px 13px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .dw-card {
+      padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,0.05);
+      border-left: 3px solid rgba(160,232,176,0.35);
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .dw-name { font-size: 14px; font-weight: bold; color: #a0e8b0; }
+    .dw-desire-label { font-size: 11px; opacity: 0.6; margin-top: 3px; }
+    .dw-desire { font-style: italic; font-size: 13px; color: #d4f0cc; }
+    .dw-meta { font-size: 12px; color: #607080; }
+    .dw-open {
+      align-self: flex-start; margin-top: 4px;
+      background: rgba(160,232,176,0.16); color: #a0e8b0;
+      border: 1px solid rgba(160,232,176,0.30); border-radius: 6px;
+      padding: 3px 10px; font-size: 12px; cursor: pointer; font-family: inherit;
+    }
+    .dw-open:hover { background: rgba(160,232,176,0.28); }
+    .dw-empty { color: #506070; font-size: 12px; font-style: italic; text-align: center; padding: 8px 0; }
+    @media (orientation: portrait) {
+      #diaryWallBtn { top: auto; bottom: 144px; right: 10px; }
+      #diaryWall { top: auto; bottom: 188px; right: 10px; max-height: 55vh; }
+    }
+
     /* ── 成功提示（綠色小吐司）──────────────────────────────────────────── */
     #msg {
       position: fixed; left: 50%; top: 58px; transform: translateX(-50%);
@@ -707,6 +758,15 @@
       <span id="feedClose">✕</span>
     </div>
     <div id="feedBody"></div>
+  </div>
+  <!-- 居民日記牆（ROADMAP 674）-->
+  <div id="diaryWallBtn">📖 日記牆</div>
+  <div id="diaryWall">
+    <div id="diaryWallHead">
+      <span id="diaryWallTitle">📖 居民日記牆</span>
+      <span id="diaryWallClose">✕</span>
+    </div>
+    <div id="diaryWallBody"></div>
   </div>
   <!-- 背包 + 合成格面板（ROADMAP 664）-->
   <div id="bagPanel">
