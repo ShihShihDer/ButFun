@@ -31,6 +31,8 @@ pub const SEED: u32 = 0x_B0_07_Fu32; // "BOOTF"un · voxel
 /// 方塊型別。`#[repr(u8)]` → 直接當 1 byte 串流（pack_chunk 用）。
 /// ID 0–7：自然生成方塊；8–10：合成台 v1（ROADMAP 658）玩家合成方塊。
 /// ID 11–13：種田 v1（ROADMAP 659）農地狀態方塊。
+/// ID 14：種子（純背包物品，無實體方塊，voxel_farm::SEEDS_ID）。
+/// ID 15：工作台（ROADMAP 665）玩家合成+放置，互動開 3×3 合成格。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Block {
@@ -54,6 +56,8 @@ pub enum Block {
     FarmSoilSeeded = 12,
     /// 成熟小麥（可收割；破壞後掉落種子×2 + 農田土×1，自我延續的種田循環）。
     WheatMature = 13,
+    /// 工作台（4 木板 → 1 工作台；放置後右鍵互動開啟 3×3 合成格）。
+    Workbench = 15,
 }
 
 impl Block {
@@ -79,6 +83,7 @@ impl Block {
             11 => Some(Block::FarmSoil),
             12 => Some(Block::FarmSoilSeeded),
             13 => Some(Block::WheatMature),
+            15 => Some(Block::Workbench),
             _ => None,
         }
     }
@@ -89,7 +94,8 @@ impl Block {
         matches!(
             self,
             Block::Dirt | Block::Stone | Block::Sand | Block::Wood | Block::Grass |
-            Block::Plank | Block::StoneBrick | Block::Glass | Block::FarmSoil
+            Block::Plank | Block::StoneBrick | Block::Glass | Block::FarmSoil |
+            Block::Workbench
         )
     }
 }

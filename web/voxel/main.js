@@ -21,6 +21,8 @@ const PLANK = 8, STONE_BRICK = 9, GLASS = 10;
 // 種田 v1（ROADMAP 659）——農地狀態方塊 + 種子物品
 const FARM_SOIL = 11, FARM_SOIL_SEEDED = 12, WHEAT_MATURE = 13;
 const SEEDS = 14; // 純物品（無對應方塊），從葉片/收割掉落
+// 工作台 v1（ROADMAP 665）——玩家合成+放置，互動開 3×3 合成格
+const WORKBENCH = 15;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -38,6 +40,8 @@ const COLOR = {
   [FARM_SOIL]:         [0.38, 0.24, 0.12], // 農田土——深棕，耕過的泥土
   [FARM_SOIL_SEEDED]:  [0.32, 0.42, 0.20], // 幼苗——帶綠的深色，種子萌芽中
   [WHEAT_MATURE]:      [0.88, 0.76, 0.22], // 成熟小麥——金黃色，可收割
+  // 工作台 v1
+  [WORKBENCH]:         [0.62, 0.40, 0.18], // 工作台——深琥珀棕，木製工作台感
 };
 
 const DEBUG = location.search.includes("debug");
@@ -875,15 +879,17 @@ let target = null;
 
 // ── 快捷欄（選要放的方塊型別）+ 背包存量（採集 v1）───────────────────────────
 // 種田 v1（ROADMAP 659）：加入農田土 + 種子（種子為純物品，特殊 Plant 動作）
-// 快捷欄 11 格：GRASS DIRT STONE WOOD SAND LEAVES PLANK STONE_BRICK GLASS FARM_SOIL SEEDS
-// 鍵盤 1–9 對應前 9 格；FARM_SOIL(10)、SEEDS(11) 以滑鼠/觸控點選
-const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS];
+// 快捷欄 12 格：GRASS DIRT STONE WOOD SAND LEAVES PLANK STONE_BRICK GLASS FARM_SOIL SEEDS WORKBENCH
+// 鍵盤 1–9 對應前 9 格；其餘以滑鼠/觸控點選
+const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH];
 const BLOCK_NAME = {
   [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉",
   [PLANK]: "木板", [STONE_BRICK]: "石磚", [GLASS]: "玻璃",
   // 種田 v1
   [FARM_SOIL]: "農田土", [FARM_SOIL_SEEDED]: "幼苗", [WHEAT_MATURE]: "成熟小麥",
   [SEEDS]: "種子",
+  // 工作台 v1
+  [WORKBENCH]: "工作台",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
@@ -1083,9 +1089,14 @@ function breakAtTarget() {
   return c;
 }
 // 在準心方塊的「面外側」放一個方塊：座標 = 命中方塊 + 命中面法線。回傳放置座標或 null。
-// 種田 v1：若持有種子且命中的是農田土 → 送 plant（種植動作），而非一般 place。
+// 種田 v1 + 工作台 v1：特殊互動邏輯，再 fallback 到一般放置。
 function placeAtTarget() {
   if (!target || !wsReady) return null;
+  // 工作台互動：右鍵對準工作台方塊 → 開啟 3×3 合成面板（不放置新方塊）。
+  if (getRaw(target.bx, target.by, target.bz) === WORKBENCH) {
+    openWbPanel();
+    return null;
+  }
   // 種子的特殊種植動作：目標是農田土本身（不偏移到面外側）。
   if (selectedBlock() === SEEDS) {
     const hitRaw = getRaw(target.bx, target.by, target.bz);
@@ -1288,16 +1299,18 @@ function connect() {
       showErr("材料不足：" + bname + "（先去挖一些吧）");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "craft_ok") {
-      // 背包合成格 v1：合成成功 → 清空格子 + 重繪背包面板。
+      // 合成成功（背包 2×2 或工作台 3×3）→ 清空對應格子 + 重繪面板。
       showMsg("合成成功：" + m.name_zh + " ×" + m.out_count + "！");
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2200);
       bagGrid.fill(0); bagPick = 0;
+      wbGrid.fill(0); wbPick = 0;
       if (bagPanelVisible()) renderBagPanel();
+      if (wbPanelVisible()) renderWbPanel();
     } else if (m.t === "craft_fail") {
-      // 背包合成格 v1：材料不足，短暫提示。
       showErr("材料不足，無法合成（先多採集一些）");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
       if (bagPanelVisible()) renderBagPanel();
+      if (wbPanelVisible()) renderWbPanel();
     } else if (m.t === "plant_ok") {
       // 種田 v1：種植成功，短暫提示。
       showMsg("已種下種子！等 90 秒小麥就成熟 🌾");
@@ -1745,6 +1758,189 @@ document.addEventListener("pointerdown", (e) => {
 const bagCloseEl = document.getElementById("bagClose");
 if (bagCloseEl) bagCloseEl.addEventListener("click", closeBagPanel);
 
+// ── 工作台 3×3 合成面板 v1（ROADMAP 665）─────────────────────────────────────
+// 工作台配方表（對齊後端 voxel_craft::WORKBENCH_RECIPES）。
+// 需要 5-6 個格子，超出 2×2，必須在工作台才能完成。
+const WORKBENCH_RECIPES_JS = [
+  { id: "plank_wb",       name: "木板（大量）",   inputs: [[WOOD, 6]],                output_block: PLANK,       out_count: 16 },
+  { id: "stone_brick_wb", name: "石磚（大量）",   inputs: [[STONE, 6]],               output_block: STONE_BRICK, out_count: 10 },
+  { id: "glass_wb",       name: "玻璃（大量）",   inputs: [[SAND, 6]],                output_block: GLASS,       out_count: 8  },
+  { id: "stone_wood_mix", name: "混合石磚",       inputs: [[STONE, 3], [PLANK, 3]],   output_block: STONE_BRICK, out_count: 6  },
+  { id: "farm_kit",       name: "農耕大包",       inputs: [[DIRT, 4], [WOOD, 2]],     output_block: FARM_SOIL,   out_count: 8  },
+];
+
+// wbGrid[0..8]：3×3 共 9 格，0 代表空格，非零代表 block_id。
+const wbGrid = new Array(9).fill(0);
+// 目前被「拿起」的 block_id（0 = 沒拿）。
+let wbPick = 0;
+
+const wbPanelEl  = document.getElementById("wbPanel");
+const wbInvGridEl = document.getElementById("wbInvGrid");
+const wbGrid3x3El = document.getElementById("wbGrid3x3");
+const wbResultEl  = document.getElementById("wbResultSlot");
+const wbBtnEl     = document.getElementById("wbBtn");
+
+function openWbPanel() {
+  if (!wbPanelEl) return;
+  wbPanelEl.style.display = "flex";
+  renderWbPanel();
+}
+function closeWbPanel() {
+  if (!wbPanelEl) return;
+  wbPanelEl.style.display = "none";
+  wbPick = 0;
+}
+function wbPanelVisible() {
+  return wbPanelEl ? wbPanelEl.style.display === "flex" : false;
+}
+
+/**
+ * matchWbRecipe——無順序配方比對（純函式，確定性）。
+ * 統計 wbGrid 裡的材料次數，比對 WORKBENCH_RECIPES_JS，回傳 {recipe, canCraft} 或 null。
+ */
+function matchWbRecipe() {
+  const gridCounts = new Map();
+  for (const bid of wbGrid) {
+    if (bid !== 0) gridCounts.set(bid, (gridCounts.get(bid) || 0) + 1);
+  }
+  if (gridCounts.size === 0) return null;
+  for (const r of WORKBENCH_RECIPES_JS) {
+    const needed = new Map(r.inputs.map(([b, c]) => [b, c]));
+    if (needed.size !== gridCounts.size) continue;
+    let match = true;
+    for (const [b, c] of needed) {
+      if ((gridCounts.get(b) || 0) !== c) { match = false; break; }
+    }
+    if (!match) continue;
+    const canCraft = r.inputs.every(([b, c]) => (myInv.get(b) || 0) >= c);
+    return { recipe: r, canCraft };
+  }
+  return null;
+}
+
+/** 渲染工作台物品欄（共用 bag-inv-* CSS）。 */
+function renderWbInvGrid() {
+  if (!wbInvGridEl) return;
+  wbInvGridEl.innerHTML = "";
+  const items = [...myInv.entries()].filter(([, cnt]) => cnt > 0);
+  if (items.length === 0) {
+    const emp = document.createElement("div");
+    emp.style.cssText = "color:#605040;font-size:12px;font-style:italic;padding:6px 0";
+    emp.textContent = "背包是空的，去挖一些方塊吧";
+    wbInvGridEl.appendChild(emp);
+    return;
+  }
+  for (const [bid, cnt] of items) {
+    const slot = document.createElement("div");
+    slot.className = "bag-inv-slot" + (wbPick === bid ? " picked" : "");
+    slot.appendChild(makeSwatchEl(bid, "bag-inv-sw"));
+    const name = document.createElement("div");
+    name.className = "bag-inv-name";
+    name.textContent = BLOCK_NAME[bid] || "?";
+    const cntEl = document.createElement("div");
+    cntEl.className = "bag-inv-cnt";
+    cntEl.textContent = "×" + cnt;
+    slot.appendChild(name); slot.appendChild(cntEl);
+    slot.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      wbPick = (wbPick === bid) ? 0 : bid;
+      renderWbPanel();
+    });
+    wbInvGridEl.appendChild(slot);
+  }
+}
+
+/** 渲染 3×3 合成格 + 結果格。 */
+function renderWbCraftArea() {
+  if (!wbGrid3x3El || !wbResultEl) return;
+  wbGrid3x3El.innerHTML = "";
+  for (let i = 0; i < 9; i++) {
+    const bid = wbGrid[i];
+    const slot = document.createElement("div");
+    slot.className = "wb-grid-slot" + (bid !== 0 ? " filled" : "");
+    if (bid !== 0) {
+      slot.appendChild(makeSwatchEl(bid, "wb-grid-sw"));
+      const lbl = document.createElement("div");
+      lbl.className = "wb-grid-lbl";
+      lbl.textContent = BLOCK_NAME[bid] || "?";
+      slot.appendChild(lbl);
+    }
+    slot.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      if (wbPick !== 0 && bid === 0) {
+        wbGrid[i] = wbPick; wbPick = 0;
+      } else if (wbPick !== 0 && bid !== 0) {
+        wbGrid[i] = wbPick; wbPick = bid;
+      } else if (wbPick === 0 && bid !== 0) {
+        wbPick = bid; wbGrid[i] = 0;
+      }
+      renderWbPanel();
+    });
+    wbGrid3x3El.appendChild(slot);
+  }
+  // 結果格
+  wbResultEl.className = "";
+  wbResultEl.innerHTML = "";
+  const match = matchWbRecipe();
+  if (match) {
+    const r = match.recipe;
+    wbResultEl.classList.add(match.canCraft ? "has-result" : "no-material");
+    wbResultEl.appendChild(makeSwatchEl(r.output_block, "bag-res-sw"));
+    const nm = document.createElement("div"); nm.className = "bag-res-name"; nm.textContent = r.name;
+    const ct = document.createElement("div"); ct.className = "bag-res-cnt"; ct.textContent = "×" + r.out_count;
+    wbResultEl.appendChild(nm); wbResultEl.appendChild(ct);
+    if (!match.canCraft) {
+      const warn = document.createElement("div");
+      warn.style.cssText = "font-size:9px;color:#ff8060;margin-top:2px";
+      warn.textContent = "材料不足";
+      wbResultEl.appendChild(warn);
+    }
+  }
+}
+
+/** 渲染整個工作台面板（物品欄 + 合成格）。 */
+function renderWbPanel() {
+  renderWbInvGrid();
+  renderWbCraftArea();
+}
+
+// 結果格點擊：送出工作台合成請求。
+if (wbResultEl) wbResultEl.addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  const match = matchWbRecipe();
+  if (!match || !match.canCraft || !wsReady) return;
+  ws.send(JSON.stringify({ t: "craft", recipe_id: match.recipe.id }));
+});
+
+// 清除合成格。
+const wbClearBtnEl = document.getElementById("wbClearBtn");
+if (wbClearBtnEl) wbClearBtnEl.addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  wbGrid.fill(0); wbPick = 0;
+  renderWbPanel();
+});
+
+// 工作台按鈕（🔨）點擊開啟面板（備用：也可以右鍵對準工作台方塊開啟）。
+if (wbBtnEl) wbBtnEl.addEventListener("click", (e) => {
+  if (wbPanelVisible()) { closeWbPanel(); } else { openWbPanel(); }
+  e.stopPropagation();
+});
+
+// 關閉鈕（✕）。
+const wbCloseEl = document.getElementById("wbClose");
+if (wbCloseEl) wbCloseEl.addEventListener("click", closeWbPanel);
+
+// 點面板外關閉。
+document.addEventListener("pointerdown", (e) => {
+  if (wbPanelVisible()) {
+    if (wbPanelEl && !wbPanelEl.contains(e.target) && e.target !== wbBtnEl) closeWbPanel();
+  }
+});
+
+// ── inv_update / inv_sync 後也刷新工作台面板（若已開啟）────────────────────
+// 注意：inv_sync 和 inv_update handler 在 WS onmessage 裡，
+//       craft_ok / craft_fail 的刷新邏輯已在 WS handler 那段處理過。
+
 /** 簡短綠色提示（合成成功用；區別於 showErr 紅色錯誤）。 */
 function showMsg(text) {
   const el = document.getElementById("msg");
@@ -1813,6 +2009,17 @@ window.__voxel = {
   PLANK, STONE_BRICK, GLASS,
   // 種田 v1 常數 + QA 介面
   FARM_SOIL, FARM_SOIL_SEEDED, WHEAT_MATURE, SEEDS,
+  // ── 工作台 3×3 QA 用（ROADMAP 665）──
+  WORKBENCH,
+  get wbPanelVisible() { return wbPanelVisible(); },
+  openWbPanel() { openWbPanel(); },
+  closeWbPanel() { closeWbPanel(); },
+  renderWbPanel() { renderWbPanel(); },
+  get WORKBENCH_RECIPES_JS() { return WORKBENCH_RECIPES_JS; },
+  get wbGrid() { return [...wbGrid]; },
+  get wbPick() { return wbPick; },
+  matchWbRecipe() { return matchWbRecipe(); },
+  setWbGrid(slots) { slots.forEach((v, i) => { if (i < 9) wbGrid[i] = v; }); renderWbPanel(); },
   // ── 贈禮 v1 QA 介面（ROADMAP 660）──
   giftPickItem(inv) { return giftPickItem(inv); },
   updateGiftBtn() { updateGiftBtn(); },
