@@ -206,6 +206,17 @@ pub fn tier_up_line(tier: BondTier, a: &str, b: &str) -> String {
     }
 }
 
+/// 情誼升級時寫進訪客長期記憶的摘要文字（ROADMAP 673 社交足跡）。
+/// 確定性、純函式、零 LLM；呼叫端把回傳字串餵進 `VoxelMemory::add_memory`。
+/// `Stranger` 回空字串（初次見面太平凡，不污染記憶庫），呼叫端需跳過。
+pub fn bond_social_memory(host_name: &str, tier: BondTier) -> String {
+    match tier {
+        BondTier::Stranger => String::new(),
+        BondTier::Acquaintance => format!("和{}走動了幾次，我們漸漸相識了", host_name),
+        BondTier::Friend => format!("🤝 和{}成了老朋友，每次見面都覺得特別自在", host_name),
+    }
+}
+
 // ── 持久化 IO（只有函式，鎖在 voxel_ws.rs）──────────────────────────────────
 
 const BONDS_FILE: &str = "data/voxel_bonds.jsonl";
@@ -409,5 +420,28 @@ mod tests {
     fn constants_are_monotone() {
         assert!(ACQUAINTANCE_VISITS < FRIEND_VISITS, "相識門檻應小於友人門檻");
         assert!(FRIEND_VISITS < VISIT_CAP, "友人門檻應小於上限");
+    }
+
+    // ── ROADMAP 673：bond_social_memory ────────────────────────────────────────
+
+    #[test]
+    fn bond_social_memory_stranger_is_empty() {
+        assert!(bond_social_memory("諾娃", BondTier::Stranger).is_empty(), "初次見面不加記憶");
+    }
+
+    #[test]
+    fn bond_social_memory_acquaintance_contains_host_and_keyword() {
+        let s = bond_social_memory("諾娃", BondTier::Acquaintance);
+        assert!(!s.is_empty());
+        assert!(s.contains("諾娃"), "應含被訪者名字");
+        assert!(s.contains("相識"), "應含「相識」關鍵字，讓日記能分類");
+    }
+
+    #[test]
+    fn bond_social_memory_friend_contains_host_and_keyword() {
+        let s = bond_social_memory("賽勒", BondTier::Friend);
+        assert!(!s.is_empty());
+        assert!(s.contains("賽勒"), "應含被訪者名字");
+        assert!(s.contains("老朋友"), "應含「老朋友」關鍵字，讓日記能分類");
     }
 }
