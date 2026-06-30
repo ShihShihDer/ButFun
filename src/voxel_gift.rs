@@ -11,7 +11,7 @@ pub const GIFT_REACH: f32 = 5.0;
 /// 每次送禮新增 2 筆記憶 → 好感度 +2（對話只 +1）。
 pub const GIFT_MEMORY_COUNT: usize = 2;
 
-/// 方塊 id → 中文物品名（對齊 `voxel::Block` + `voxel_farm::SEEDS_ID`）。
+/// 方塊 id → 中文物品名（對齊 `voxel::Block` + `voxel_farm` 純物品 id）。
 /// 未知 id 回 "物品" 保守降級。
 pub fn item_name_zh(block_id: u8) -> &'static str {
     match block_id {
@@ -29,8 +29,15 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         12 => "幼苗",
         13 => "成熟小麥",
         14 => "種子",
+        18 => "小麥",
+        19 => "麵包",
         _ => "物品",
     }
+}
+
+/// 是否為「食物」類禮物（麵包）——居民會給特別溫暖的回應。
+pub fn is_food_gift(block_id: u8) -> bool {
+    block_id == 19 // BREAD_ID
 }
 
 /// 居民道謝台詞（依好感等級選不同句，零 LLM，確定性）。
@@ -83,6 +90,34 @@ pub fn gift_memory_event(player: &str, item_name: &str) -> String {
 /// 被居民存進記憶的第二筆摘要（「感受」層：代表更深的印象，讓好感度多加一層）。
 pub fn gift_memory_feeling(player: &str, item_name: &str) -> String {
     format!("{player}送我{item_name}——這個人很體貼")
+}
+
+/// 食物禮物（麵包）的居民道謝台詞——比一般禮物更歡欣。
+/// 呼叫時機：`is_food_gift(item_id) == true`。
+/// `pick` 同 `gift_thanks_line`：由呼叫端提供，確定性不走 random。
+pub fn food_gift_thanks_line(player_name: &str, affinity: usize, pick: usize) -> String {
+    if affinity == 0 || player_name.is_empty() {
+        let pool: &[&str] = &[
+            "哦……麵包？你親手做的嗎？謝謝你！",
+            "哇，麵包！你怎麼知道我最喜歡吃麵包了！",
+            "麵包耶！謝謝你帶來這麼用心的禮物。",
+        ];
+        pool[pick % pool.len()].to_string()
+    } else if affinity <= 2 {
+        let pool: &[&str] = &[
+            "{name}，你帶麵包來給我！謝謝你這麼用心。",
+            "{name}！自己做的麵包！聞起來好香，謝謝你。",
+            "哇，{name}你烤了麵包！我好感動，謝謝。",
+        ];
+        pool[pick % pool.len()].replace("{name}", player_name)
+    } else {
+        let pool: &[&str] = &[
+            "{name}，你知道我喜歡吃東西對吧……這塊麵包我要慢慢品嚐。",
+            "每次{name}來都帶著驚喜——這次是麵包！謝謝你記得我。",
+            "{name}！你親手做的麵包……我真的很珍惜和你在一起的每一刻。",
+        ];
+        pool[pick % pool.len()].replace("{name}", player_name)
+    }
 }
 
 // ── 測試 ──────────────────────────────────────────────────────────────────────
@@ -169,5 +204,39 @@ mod tests {
     fn constants_sane() {
         assert!(GIFT_REACH > 0.0);
         assert_eq!(GIFT_MEMORY_COUNT, 2);
+    }
+
+    // ── 麵包 v1（ROADMAP 668）──────────────────────────────────────────────────
+    #[test]
+    fn item_name_wheat_and_bread() {
+        assert_eq!(item_name_zh(18), "小麥");
+        assert_eq!(item_name_zh(19), "麵包");
+    }
+
+    #[test]
+    fn is_food_gift_only_bread() {
+        assert!(is_food_gift(19));
+        assert!(!is_food_gift(18)); // 小麥顆粒不算食物禮物
+        assert!(!is_food_gift(5));  // 木頭非食物
+        assert!(!is_food_gift(0));  // Air 非食物
+    }
+
+    #[test]
+    fn food_gift_thanks_non_empty_no_placeholders() {
+        // 所有好感等級、多個 pick 值，不得有未替換的 {name}/{item}。
+        for affinity in [0, 1, 2, 3, 5] {
+            for pick in 0..4 {
+                let s = food_gift_thanks_line("旅人", affinity, pick);
+                assert!(!s.is_empty(), "affinity={affinity} pick={pick} 回空");
+                assert!(!s.contains("{name}"), "affinity={affinity} pick={pick} 未替換 name");
+                assert!(!s.contains("{item}"), "affinity={affinity} pick={pick} 出現 item 佔位");
+            }
+        }
+    }
+
+    #[test]
+    fn food_gift_thanks_friend_contains_name() {
+        let s = food_gift_thanks_line("小星", 5, 0);
+        assert!(s.contains("小星"), "友人等級應含玩家名");
     }
 }
