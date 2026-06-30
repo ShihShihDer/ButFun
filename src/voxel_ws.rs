@@ -36,6 +36,7 @@ use crate::voxel_gift as vgift;
 use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
 use crate::voxel_residents::{self as vr, Body};
+use crate::voxel_time::WorldTime;
 
 /// 入場時串給玩家的 chunk 半徑（以 chunk 為單位，水平）。3 → 7×7 column。
 const SPAWN_CHUNK_RADIUS: i32 = 3;
@@ -321,6 +322,8 @@ struct VoxelHub {
     /// 農地 store（種田 v1·純記憶體；重啟後農地重置，與世界 delta 行為一致）。
     /// 記錄哪些格子種下了幼苗、何時種的，每 15 秒 tick 一次成熟檢查。
     farm: RwLock<FarmStore>,
+    /// 世界時鐘（晝夜循環 v1）：一遊戲日 = 600 秒；廣播給前端以更新天空/光照。
+    world_time: RwLock<WorldTime>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -347,6 +350,8 @@ fn hub() -> &'static VoxelHub {
             inventory: RwLock::new(InvStore::from_entries(vinv::load_inventory())),
             // 農地 store 純記憶體（與世界 delta 一致：重啟後農地重置，玩家重新種即可）。
             farm: RwLock::new(FarmStore::new()),
+            // 世界時鐘：從白天（time_of_day ≈ 0.42）開始，讓玩家一進遊戲就是白天。
+            world_time: RwLock::new(WorldTime::new()),
             tx,
         }
     })
@@ -382,7 +387,14 @@ fn players_snapshot_json() -> String {
             })
             .collect()
     }; // 心願讀鎖在此釋放
-    serde_json::json!({ "t": "players", "players": players, "residents": residents }).to_string()
+    // 時鐘快照（短鎖、不巢狀）：把 time_of_day(0.0–1.0) 帶給前端更新天空/光照。
+    let time_of_day: f32 = hub().world_time.read().unwrap().time_of_day();
+    serde_json::json!({
+        "t": "players",
+        "players": players,
+        "residents": residents,
+        "time_of_day": time_of_day,
+    }).to_string()
 }
 
 /// 廣播一次最新玩家快照給所有連線。
@@ -1337,6 +1349,9 @@ pub async fn voxel_affinity_handler(
 
 /// 一次居民世界推進：套用上輪思考的決策 → 物理/閒晃 → 社交互動 → 廣播 → 排程新一輪思考。
 fn tick_residents(dt: f32) {
+    // 0) 推進世界時鐘（短鎖即釋，不巢狀）。晝夜循環 v1。
+    { hub().world_time.write().unwrap().tick(dt); }
+
     // 1) 先取走上輪 async 思考投回的決策（短鎖、不 await）。
     let decisions = hub().agent_bus.drain();
 

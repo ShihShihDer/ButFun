@@ -62,10 +62,71 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 app.appendChild(renderer.domElement);
 
 // 半球光（天空/地面）給全向環境光（保證永不全黑），加一盞方向光做陰影感。
-scene.add(new THREE.HemisphereLight(0xcfe8ff, 0x6b7a55, 1.15));
+// hemi 存起來以便晝夜循環 v1 動態調整強度。
+const hemi = new THREE.HemisphereLight(0xcfe8ff, 0x6b7a55, 1.15);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff3da, 0.65);
 sun.position.set(40, 80, 25);
 scene.add(sun);
+
+// ── 晝夜循環 v1 ─────────────────────────────────────────────────────────────
+// time_of_day：0.0=午夜、0.25=黎明、0.5=正午、0.75=黃昏、1.0=午夜（循環）。
+// 由伺服器每幀廣播，前端只負責渲染（天空色/太陽位置/光強度）。
+let worldTime = 0.42; // 預設白天，伺服器推播後更新
+
+// 天空關鍵幀：[time, skyHex, sunColorHex, sunIntensity, hemiIntensity]
+// 每兩個鄰近幀之間做線性插值。
+const SKY_KEYS = [
+  [0.00, 0x060d1a, 0x1a2d45, 0.03, 0.30], // 深夜
+  [0.18, 0x0d1b30, 0x1a2d45, 0.05, 0.40], // 深夜末
+  [0.22, 0xd4603a, 0xd4603a, 0.30, 0.65], // 黎明前橙紅
+  [0.30, 0xf0a060, 0xf0c060, 0.50, 0.90], // 清晨金黃
+  [0.38, 0x87b7e0, 0xfff3da, 0.65, 1.15], // 白晝湛藍
+  [0.62, 0x87b7e0, 0xfff3da, 0.65, 1.15], // 白晝湛藍（延續）
+  [0.70, 0xf08040, 0xff8c40, 0.45, 0.90], // 傍晚橙
+  [0.80, 0xc04020, 0xff6020, 0.18, 0.55], // 黃昏深紅
+  [0.88, 0x1a0d20, 0x1a2d45, 0.04, 0.35], // 入夜過渡
+  [1.00, 0x060d1a, 0x1a2d45, 0.03, 0.30], // 深夜（循環對齊 t=0）
+];
+
+function _hc(hex) {
+  return [(hex >> 16 & 0xff) / 255, (hex >> 8 & 0xff) / 255, (hex & 0xff) / 255];
+}
+
+// 更新天空背景色、霧色、太陽方向/顏色、半球光強度。
+function updateSkyAndLight(t) {
+  // 找所在的插值段。
+  let i = 0;
+  while (i < SKY_KEYS.length - 2 && SKY_KEYS[i + 1][0] <= t) i++;
+  const [t0, sky0, sun0, si0, hi0] = SKY_KEYS[i];
+  const [t1, sky1, sun1, si1, hi1] = SKY_KEYS[i + 1];
+  const f = t1 > t0 ? Math.max(0, Math.min(1, (t - t0) / (t1 - t0))) : 0;
+
+  // 插值天空色並套用到背景+霧。
+  const [sr0, sg0, sb0] = _hc(sky0);
+  const [sr1, sg1, sb1] = _hc(sky1);
+  const sr = sr0 + (sr1 - sr0) * f;
+  const sg = sg0 + (sg1 - sg0) * f;
+  const sb = sb0 + (sb1 - sb0) * f;
+  scene.background.setRGB(sr, sg, sb);
+  scene.fog.color.setRGB(sr, sg, sb);
+
+  // 插值太陽色與強度。
+  const [ur0, ug0, ub0] = _hc(sun0);
+  const [ur1, ug1, ub1] = _hc(sun1);
+  sun.color.setRGB(ur0 + (ur1 - ur0) * f, ug0 + (ug1 - ug0) * f, ub0 + (ub1 - ub0) * f);
+  sun.intensity = si0 + (si1 - si0) * f;
+
+  // 太陽軌跡：t=0.25 日出（東）、t=0.5 正午（頂）、t=0.75 日落（西）。
+  const ang = (t - 0.25) * Math.PI * 2;
+  sun.position.set(-Math.cos(ang) * 80, Math.sin(ang) * 80, 25);
+
+  // 半球光強度。
+  hemi.intensity = hi0 + (hi1 - hi0) * f;
+}
+
+// 初始套用，讓進場就是白天而非等第一幀快照。
+updateSkyAndLight(worldTime);
 
 // 方塊用 Lambert + 頂點色（每方塊上色），對光反應但靠半球光保底不黑。
 // DoubleSide：切片① 求穩，避免任一面纏繞方向算錯被背面剔除成破洞/黑屏（perf 微讓步，之後可收回 FrontSide）。
@@ -1141,6 +1202,11 @@ function connect() {
       for (const [id, mesh] of others) if (!seen.has(id)) { scene.remove(mesh); others.delete(id); }
       // 乙太方界 AI 居民（與玩家分開的陣列）：位置/名字/說的話。
       if (m.residents) updateResidents(m.residents);
+      // 晝夜循環 v1：伺服器每幀帶 time_of_day(0.0–1.0)，前端據此更新天空/光照。
+      if (typeof m.time_of_day === "number") {
+        worldTime = m.time_of_day;
+        updateSkyAndLight(worldTime);
+      }
     } else if (m.t === "talk") {
       // 居民對話回覆（單播）：
       //   thinking:true → 立即佔位（後端一收到就送），顯示動畫「思考中」指示器，不當一般氣泡。
@@ -1528,6 +1594,12 @@ window.__voxel = {
   get giftBtnText() { const e = document.getElementById("chatGift"); return e ? e.textContent : ""; },
   get giftBtnEmpty() { const e = document.getElementById("chatGift"); return e ? e.classList.contains("gift-empty") : false; },
   GIFT_EXCLUDED: [...GIFT_EXCLUDED],
+  // ── 晝夜循環 v1 QA 用（ROADMAP 661）──
+  get worldTime() { return worldTime; },
+  updateSkyAndLight(t) { updateSkyAndLight(t); },
+  get skyColor() { const c = scene.background; return { r: c.r, g: c.g, b: c.b }; },
+  get sunIntensity() { return sun.intensity; },
+  get hemiIntensity() { return hemi.intensity; },
   // ── 真瀏覽器 QA 用：讀準心目標、讀方塊、觸發破壞/放置、選方塊 ──
   get target() { return target; },
   getBlock(x, y, z) { return getRaw(x, y, z); },
