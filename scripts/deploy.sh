@@ -74,6 +74,10 @@ echo "[deploy] 建置…"
 # DB 已套用的新版本就開機 panic（Migrate(VersionMissing(N))，prod-down crash loop）。
 # 每次部署前 touch db.rs，強制重新內嵌「當前所有」migration，根治這類崩潰。
 touch "$REPO/src/db.rs"
+# 同理 touch build.rs：cargo 會快取 build.rs 的輸出（git SHA 戳記），commit 移動後若沒
+# 重跑 build.rs，binary 內嵌的 BUTFUN_GIT_SHA 會停在舊值 → /version 報舊 commit →
+# 部署自驗誤判「跑的是舊 binary」而 rollback 掉好的部署。touch 強制重烤、戳記永遠對。
+touch "$REPO/build.rs"
 cargo build --release
 
 # wasm 地形（空氣牆根治）：world-core 編成 .wasm 供前端載入，前後端同一份實作。
