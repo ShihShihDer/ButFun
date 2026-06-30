@@ -791,20 +791,20 @@ function renderDiaryPage(page, name) {
   const memSection = document.createElement("div");
   const secTitle = document.createElement("div");
   secTitle.className = "diary-section-title";
-  secTitle.textContent = entries.length ? "📝 記憶片段（最新在前）" : "📝 記憶片段";
+  // 日記＝瞥見居民沒說出口的內心（第一人稱反思，不是聊天謄本）。
+  secTitle.textContent = entries.length ? "📝 內心的迴響（最新在前）" : "📝 內心的迴響";
   memSection.appendChild(secTitle);
   if (entries.length === 0) {
     const empty = document.createElement("div");
     empty.className = "diary-empty";
-    empty.textContent = name + " 還沒有任何記憶……來跟她說說話吧。";
+    empty.textContent = name + " 的心湖還很平靜……來跟她說說話，留下些漣漪吧。";
     memSection.appendChild(empty);
   } else {
     for (const e of entries) {
       const row = document.createElement("div");
       row.className = "diary-entry";
-      row.innerHTML =
-        '<span class="diary-entry-player">👤 ' + escHtml(e.player) + '</span>' +
-        '<span class="diary-entry-text">' + escHtml(e.text) + '</span>';
+      // 只渲染反思文字（無玩家名 / 無原話）——隱私邊界已在後端把關。
+      row.innerHTML = '<span class="diary-entry-text">' + escHtml(e.text) + '</span>';
       memSection.appendChild(row);
     }
   }

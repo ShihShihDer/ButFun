@@ -260,14 +260,11 @@
       color: #6080a0; margin-top: 4px;
     }
     .diary-entry {
-      display: flex; gap: 10px; align-items: flex-start;
-      padding: 7px 10px; border-radius: 8px; background: rgba(255,255,255,0.04);
+      padding: 8px 12px; border-radius: 8px; background: rgba(255,255,255,0.04);
+      border-left: 2px solid rgba(138,172,204,0.35);
     }
-    .diary-entry-player {
-      font-size: 11px; color: #8aaccc; white-space: nowrap; min-width: 52px;
-      flex-shrink: 0; padding-top: 1px;
-    }
-    .diary-entry-text { color: #d0e4f4; font-size: 13px; }
+    /* 內心反思＝第一人稱獨白，當作散文排版（不再是「玩家：原話」謄本格） */
+    .diary-entry-text { color: #d0e4f4; font-size: 13px; line-height: 1.6; font-style: italic; }
     .diary-empty { color: #506070; font-size: 12px; font-style: italic; padding: 4px 0; }
     @media (orientation: portrait) {
       #diary { top: auto; bottom: 10px; transform: translateX(-50%); max-height: 70vh; }
