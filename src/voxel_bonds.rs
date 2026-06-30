@@ -123,6 +123,24 @@ impl ResidentBonds {
             .collect()
     }
 
+    /// 計算某居民與指定居民列表之間的 Friend / Acquaintance 情誼數量。
+    /// 用於心情計算（居民↔居民關係反映情緒狀態）。純計數、不修改資料。
+    pub fn bond_counts_for(&self, resident: &str, all_ids: &[&str]) -> (usize, usize) {
+        let mut friend = 0usize;
+        let mut acquaintance = 0usize;
+        for &other in all_ids {
+            if other == resident {
+                continue;
+            }
+            match self.tier_of(resident, other) {
+                BondTier::Friend => friend += 1,
+                BondTier::Acquaintance => acquaintance += 1,
+                BondTier::Stranger => {}
+            }
+        }
+        (friend, acquaintance)
+    }
+
     /// 清除某位居民的所有情誼記錄（居民退休時用）。
     pub fn forget(&mut self, id: &str) {
         self.counts.retain(|(a, b), _| a != id && b != id);
