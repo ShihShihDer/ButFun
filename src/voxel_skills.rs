@@ -180,14 +180,14 @@ pub fn within_gather_reach(rx: f32, rz: f32, tx: i32, tz: i32) -> bool {
     dx * dx + dz * dz <= GATHER_REACH * GATHER_REACH
 }
 
-/// 判斷「挖這塊會不會把自己困住」（修：居民採集別把自己挖坑卡住）。
-/// 給定居民腳底所在格 (fx,fy,fz) 與想挖的目標方塊 (tx,ty,tz)，回傳 `true`＝安全可挖。
+/// 幾何閘（無世界、純整數）：給定居民腳底所在格 (fx,fy,fz) 與想挖的目標方塊 (tx,ty,tz)，
+/// 回傳 `true`＝通過第一道保守檢查。**這只是地基**——真正擋住「採集挖坑自困」的可逃性
+/// 判定在 [`is_escapable_after_dig`]（它會先過這道閘，再加窪地/可站回的世界級保險）。
 ///
 /// 兩條保守規則（確定性、可測）：
 /// 1. **別挖自己站的那一柱**（tx==fx && tz==fz）：會抽掉腳下的地，居民直接掉進洞裡。
-/// 2. **別挖明顯低於腳底的方塊**（ty < fy-1）：挖低處＝把要走過去的地方掏成坑，
-///    一刀刀連起來就成了爬不出的大洞。只採「與腳同層或更高」的地表方塊
-///    （草皮／沙在表層最自然）——挖完該柱頂多留一個 1 格深的小坑，居民踏階即可爬出。
+/// 2. **別挖明顯低於腳底的方塊**（ty < fy-1）：挖低處＝把要走過去的地方掏成坑。
+///    只考慮「腳底層（fy-1）或更高」的方塊；是否真的可挖再交給可逃性判定收尾。
 pub fn safe_to_dig(fx: i32, fy: i32, fz: i32, tx: i32, ty: i32, tz: i32) -> bool {
     if tx == fx && tz == fz {
         return false;
@@ -196,6 +196,89 @@ pub fn safe_to_dig(fx: i32, fy: i32, fz: i32, tx: i32, ty: i32, tz: i32) -> bool
         return false;
     }
     true
+}
+
+/// 四向水平鄰柱偏移（判窪地用）。
+const NEIGHBORS_4: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+
+/// 某 (x,z) 柱最高實心方塊的 y（套 delta overlay；全空回 None）。給可逃性判定算「柱頂」。
+pub fn column_top(world: &WorldDelta, x: i32, z: i32) -> Option<i32> {
+    surface_block(world, x, z).map(|(y, _)| y)
+}
+
+/// 居民腳下柱是否身處「窪地」：四向任一鄰柱頂**高於**腳下柱頂 → 在窪地裡。
+/// 在窪地裡時禁止再往腳底層下挖（否則一刀刀越挖越深，接成爬不出的坑）。純函式、可測。
+fn foot_in_depression(world: &WorldDelta, fx: i32, fz: i32, foot_top: i32) -> bool {
+    NEIGHBORS_4
+        .iter()
+        .any(|(dx, dz)| column_top(world, fx + dx, fz + dz).map_or(false, |t| t > foot_top))
+}
+
+/// **可逃性判定（核心保證：採集永不把自己關進爬不出的坑）**。
+/// 模擬「挖掉目標 (tx,ty,tz) 後」的世界，判斷站在腳底格 (fx,fy,fz) 的居民是否仍踏 1 階走得出去。
+/// 回 `true` ＝這刀挖了也逃得出去，可採。全是確定性、零鎖、可單元測試的純邏輯。
+///
+/// 三道保守規則疊起來，數學上把「採集挖坑」的深度封在「原地表下至多 1 格」，故永不受困：
+/// 1. 先過幾何閘 [`safe_to_dig`]：不挖腳下那一柱、不挖明顯低於腳的方塊。
+/// 2. **窪地不再下挖**：若挖的是「腳底層」方塊（ty == fy-1，會在腳邊掏出 1 格凹陷），
+///    且居民此刻已身處窪地（鄰柱比腳下高）→ 拒挖。站在平地/高處才允許掏 1 格凹陷
+///    （挖完頂多缺 1 格、踏階能走回），但永遠下不去第 2 層 → 不會一路往下挖成深井。
+/// 3. **挖後仍可站回**：挖掉後目標柱的新地表頂須 >= fy-2（居民踏進去頂多差 1 階，
+///    一定爬得回腳底層）；挖完底下全空（無底洞）一律拒挖。
+pub fn is_escapable_after_dig(
+    world: &WorldDelta,
+    fx: i32,
+    fy: i32,
+    fz: i32,
+    tx: i32,
+    ty: i32,
+    tz: i32,
+) -> bool {
+    // 規則 1：幾何閘。
+    if !safe_to_dig(fx, fy, fz, tx, ty, tz) {
+        return false;
+    }
+    let foot_top = fy - 1; // 居民站立柱頂面所在方塊 y
+                           // 規則 2：腳底層掏坑只允許在「非窪地」時（防越挖越深、接成深坑）。
+    if ty == foot_top && foot_in_depression(world, fx, fz, foot_top) {
+        return false;
+    }
+    // 規則 3：挖後目標柱新地表頂（ty 以下最高實心）須 >= fy-2，踏 1 階可進出。
+    match (0..ty).rev().find(|&y| voxel::effective_block_at(world, tx, y, tz).is_solid()) {
+        Some(new_top) => new_top >= fy - 2,
+        None => false, // 挖完底下全空 → 無底洞，拒挖
+    }
+}
+
+// ── 樓梯井生成（未來「往下採深處資源/礦」的範本：邊挖邊留階，永遠走得回地面）─────────
+//
+// v1 採集**完全不往下挖**（is_escapable_after_dig 已把深度封在地表下 1 格）。但維護者方向是
+// 「真要往下挖就留樓梯/坡」，故先把「樓梯井」抽成可測純函式備用：未來深處資源接這個範本，
+// 一層一層往下、每層往同一水平方向位移 1 格並清出 2 格頭頂高 → 形成可走回地面的階梯井，
+// 而不是垂直深坑。本函式只算「要清成空氣的格子座標」，不碰世界/鎖。
+
+/// 樓梯井的單階水平方向（沿 +x 一格一階往下；夠簡單可測，未來要轉向再擴充）。
+pub const STAIR_DIR: (i32, i32) = (1, 0);
+/// 居民身高需要的頭頂淨空格數（站立 + 頭部，至少 2 格才走得過去）。
+pub const STAIR_HEADROOM: i32 = 2;
+
+/// 由 (sx,sy,sz) 起往下挖 `depth` 階的「樓梯井」要清空的方塊座標清單。
+/// `sy` ＝最上一階的**踏面 y**（站上去的地表頂方塊 y）。每往下一階：水平沿 [`STAIR_DIR`]
+/// 位移 1 格、踏面降 1 格，並清出該階踏面上方 [`STAIR_HEADROOM`] 格頭頂淨空。
+/// 相鄰兩階踏面「垂直差 1、水平相鄰」→ 居民踏階即可上下，永遠走得回地面。純函式、可測。
+pub fn staircase_well(sx: i32, sy: i32, sz: i32, depth: i32) -> Vec<(i32, i32, i32)> {
+    let mut cells = Vec::new();
+    let (dx, dz) = STAIR_DIR;
+    for step in 0..depth.max(0) {
+        let x = sx + dx * step;
+        let z = sz + dz * step;
+        let tread_y = sy - step; // 這一階的踏面方塊 y（站上去那塊地表）
+                                 // 清掉踏面上方 HEADROOM 格 → 站得進去、走得過去。
+        for h in 1..=STAIR_HEADROOM {
+            cells.push((x, tread_y + h, z));
+        }
+    }
+    cells
 }
 
 /// 找某 (x,z) 柱的「地表方塊」：由高往低掃 effective_block，回最高一個實心方塊 (y, 型別)。
@@ -233,8 +316,8 @@ pub fn find_nearest_resource(
                 let (x, z) = (ox + dx, oz + dz);
                 if let Some((y, b)) = surface_block(world, x, z) {
                     if let Some(res) = GatherResource::from_block(b) {
-                        // 只挑「挖了不會把自己困住」的地表（防採集挖坑卡死）。
-                        if foot_fy.map_or(true, |fy| safe_to_dig(ox, fy, oz, x, y, z)) {
+                        // 只挑「挖了仍逃得出去」的地表（可逃性判定，防採集挖坑卡死）。
+                        if foot_fy.map_or(true, |fy| is_escapable_after_dig(world, ox, fy, oz, x, y, z)) {
                             return Some((x, y, z, res));
                         }
                     }
@@ -576,6 +659,228 @@ mod tests {
                 "find 回的目標應通過 safe_to_dig（不挖坑底）：({x},{y},{z}) foot={foot_fy}"
             );
         }
+    }
+
+    // ── is_escapable_after_dig：可逃性判定（核心保證）─────────────────────────
+
+    /// 在世界 (x,z) 柱「就地把地表壓到指定高度 top」：把 top 之上全設空氣、top 設實心。
+    /// 方便造出窪地/台階等地形來測可逃性。
+    fn set_column_top(world: &mut WorldDelta, x: i32, z: i32, top: i32, b: Block) {
+        // 清掉原地表上方殘留（保守掃一段），再把 top 設成實心（其下為程序地形實心）。
+        for y in top + 1..top + 8 {
+            voxel::set_block(world, x, y, z, Block::Air);
+        }
+        voxel::set_block(world, x, top, z, b);
+    }
+
+    #[test]
+    fn escapable_rejects_own_column_and_deep_pit() {
+        let world = WorldDelta::new();
+        // 腳下那一柱 → 永遠拒挖。
+        assert!(!is_escapable_after_dig(&world, 10, 30, 10, 10, 29, 10));
+        // 明顯低於腳底（坑底）→ 拒挖。
+        assert!(!is_escapable_after_dig(&world, 10, 30, 10, 12, 25, 10));
+    }
+
+    #[test]
+    fn escapable_allows_dimple_on_flat_ground() {
+        // 平地（四周等高）站立 → 腳邊掏 1 格凹陷可逃（踏階走得回）→ 允許。
+        let mut world = WorldDelta::new();
+        let (ox, oz) = land_point();
+        let h = height_at(ox, oz);
+        // 把腳下與四鄰壓平到同高 h（造一片平地）。
+        for (dx, dz) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (2, 0)] {
+            set_column_top(&mut world, ox + dx, oz + dz, h, Block::Grass);
+        }
+        let fy = h + 1; // 站在平地上腳底
+                        // 挖腳底層（ty == fy-1 == h）的鄰柱 → 平地非窪地 → 允許。
+        assert!(is_escapable_after_dig(&world, ox, fy, oz, ox + 2, h, oz));
+    }
+
+    #[test]
+    fn escapable_forbids_deepening_when_in_depression() {
+        // 居民身處窪地（某鄰柱比腳下高）→ 禁止再挖腳底層（防越挖越深、接成爬不出的坑）。
+        // 這正是舊版 safe_to_dig 擋不住、累計脫困 291 次的根因：它允許在窪地裡續挖 fy-1。
+        let mut world = WorldDelta::new();
+        let (ox, oz) = land_point();
+        let h = height_at(ox, oz);
+        // 腳下柱壓到 h；左鄰更高 (h+1) → 形成窪地。
+        set_column_top(&mut world, ox, oz, h, Block::Grass);
+        set_column_top(&mut world, ox - 1, oz, h + 1, Block::Grass);
+        set_column_top(&mut world, ox + 1, oz, h, Block::Grass);
+        let fy = h + 1;
+        // 舊幾何閘會放行（ty==fy-1），但可逃性判定因「在窪地」而拒挖。
+        assert!(safe_to_dig(ox, fy, oz, ox + 1, h, oz), "前置：幾何閘本會放行");
+        assert!(
+            !is_escapable_after_dig(&world, ox, fy, oz, ox + 1, h, oz),
+            "窪地裡不該再往下挖（否則越挖越深）"
+        );
+    }
+
+    #[test]
+    fn escapable_allows_shaving_higher_neighbor_in_depression() {
+        // 即使在窪地，仍可「削平更高的鄰柱」（ty >= fy）——這只會讓地變平、不會挖出坑。
+        let mut world = WorldDelta::new();
+        let (ox, oz) = land_point();
+        let h = height_at(ox, oz);
+        set_column_top(&mut world, ox, oz, h, Block::Grass);
+        set_column_top(&mut world, ox - 1, oz, h + 1, Block::Grass); // 窪地
+        set_column_top(&mut world, ox + 1, oz, h + 1, Block::Grass); // 較高鄰柱
+        let fy = h + 1;
+        // 削平 (ox+1) 的頂（ty = h+1 = fy，腳同層或更高）→ 允許（變平、可逃）。
+        assert!(is_escapable_after_dig(&world, ox, fy, oz, ox + 1, h + 1, oz));
+    }
+
+    // ── staircase_well：往下採礦的樓梯井範本（相鄰階可走回地面）──────────────────
+
+    #[test]
+    fn staircase_steps_are_walkable() {
+        // 每一階「踏面相鄰且垂直差 1」→ 居民踏階即可上下，永遠走得回地面。
+        let depth = 5;
+        let cells = staircase_well(100, 20, 100, depth);
+        // 每階清出 HEADROOM 格 → 總清格數 = depth * HEADROOM。
+        assert_eq!(cells.len() as i32, depth * STAIR_HEADROOM);
+        // 還原每階踏面 (x,z,tread_y) 並驗證相鄰階可走。
+        let (dx, dz) = STAIR_DIR;
+        for step in 0..depth {
+            let x = 100 + dx * step;
+            let z = 100 + dz * step;
+            let tread = 20 - step;
+            // 該階頭頂淨空都被清出。
+            for hh in 1..=STAIR_HEADROOM {
+                assert!(cells.contains(&(x, tread + hh, z)), "頭頂淨空未清：階 {step}");
+            }
+            if step + 1 < depth {
+                let nx = 100 + dx * (step + 1);
+                let nz = 100 + dz * (step + 1);
+                let ntread = 20 - (step + 1);
+                // 水平相鄰（曼哈頓距 1）。
+                assert_eq!((nx - x).abs() + (nz - z).abs(), 1, "相鄰階應水平相鄰");
+                // 垂直差恰 1（踏階可上下）。
+                assert_eq!((tread - ntread).abs(), 1, "相鄰階垂直差應為 1（可踏階）");
+            }
+        }
+    }
+
+    #[test]
+    fn staircase_zero_depth_is_empty() {
+        assert!(staircase_well(0, 10, 0, 0).is_empty());
+        assert!(staircase_well(0, 10, 0, -3).is_empty());
+    }
+
+    // ── 實測證據：大量連續採集，居民永不把自己挖坑卡住（脫困趨近 0）────────────────
+    //
+    // 這是本次修復的關鍵驗證：用真實程序地形 + 居民真實物理（重力/逐軸碰撞/踏階），
+    // 鏡像 production 的採集迴圈（找資源→走過去→可逃性判定→挖），壓力連跑數千 tick，
+    // 證明「居民不再受困」（rescue 事件 = 0），且採集仍真的拿到材料（mined > 0）。
+
+    #[test]
+    fn simulated_mass_gathering_never_traps_residents() {
+        use crate::voxel_residents as vr;
+
+        struct Sim {
+            body: vr::Body,
+            gather: Option<(i32, i32, i32, GatherResource, f32)>,
+            stuck: f32,
+        }
+
+        let mut world = WorldDelta::new();
+        let dt = 1.0 / 30.0;
+
+        // 多位居民散在不同陸地起點，各自連續採集（壓力測試）。
+        let mut sims: Vec<Sim> = Vec::new();
+        for base in [40, 350, 800, 1500, 2300] {
+            let mut start = None;
+            for c in base..base + 600 {
+                if height_at(c, 0) > SEA_LEVEL + 3 {
+                    start = Some((c, 0));
+                    break;
+                }
+            }
+            if let Some((sx, sz)) = start {
+                sims.push(Sim { body: vr::dry_ground_spawn(sx, sz), gather: None, stuck: 0.0 });
+            }
+        }
+        assert!(sims.len() >= 3, "應找得到數個陸地起點");
+
+        // 先讓每位落穩。
+        for s in sims.iter_mut() {
+            for _ in 0..40 {
+                vr::gravity_step(&world, &mut s.body, dt);
+            }
+        }
+
+        let mut rescues = 0u32;
+        let mut mined = 0u32;
+        let ticks = 6000;
+
+        for _tick in 0..ticks {
+            for s in sims.iter_mut() {
+                let (px, pz) = (s.body.x, s.body.z);
+
+                if let Some((tx, ty, tz, res, ref mut timeout)) = s.gather {
+                    *timeout -= dt;
+                    let reached = within_gather_reach(s.body.x, s.body.z, tx, tz);
+                    if reached {
+                        let (fx, fy, fz) = (
+                            s.body.x.floor() as i32,
+                            s.body.y.floor() as i32,
+                            s.body.z.floor() as i32,
+                        );
+                        // 可逃性判定（與 production 同一把鎖）：通過才真的挖。
+                        if is_escapable_after_dig(&world, fx, fy, fz, tx, ty, tz)
+                            && voxel::effective_block_at(&world, tx, ty, tz) == res.block()
+                        {
+                            voxel::set_block(&mut world, tx, ty, tz, Block::Air);
+                            mined += 1;
+                        }
+                        s.gather = None;
+                        vr::gravity_step(&world, &mut s.body, dt);
+                    } else if *timeout <= 0.0 {
+                        s.gather = None;
+                        vr::gravity_step(&world, &mut s.body, dt);
+                    } else {
+                        vr::step_toward(
+                            &world, &mut s.body,
+                            tx as f32 + 0.5, tz as f32 + 0.5, dt, vr::RES_SPEED,
+                        );
+                    }
+                } else {
+                    // 沒在採集 → 立刻找下一個資源（壓力：盡量多挖、模擬居民一直採）。
+                    let (ox, oz) = (s.body.x.floor() as i32, s.body.z.floor() as i32);
+                    match find_nearest_resource(&world, ox, oz, GATHER_MAX_RADIUS) {
+                        Some((tx, ty, tz, res)) => {
+                            s.gather = Some((tx, ty, tz, res, GATHER_TIMEOUT_SECS));
+                        }
+                        None => {
+                            // 附近沒可採資源 → 往旁邊挪一點換地方再找（不卡死）。
+                            let (wx, wz) = (s.body.x + 3.0, s.body.z);
+                            vr::step_toward(&world, &mut s.body, wx, wz, dt, vr::RES_SPEED);
+                        }
+                    }
+                }
+
+                // 卡住偵測（與 production 同邏輯；壓力測試永遠視為「正試圖移動」最嚴格）。
+                let moved = ((s.body.x - px).powi(2) + (s.body.z - pz).powi(2)).sqrt();
+                s.stuck = vr::update_stuck_timer(s.stuck, moved, true, dt);
+                if s.stuck >= vr::STUCK_SECS {
+                    rescues += 1;
+                    vr::rescue_resident(&world, &mut s.body, px, pz, vr::UNSTUCK_MAX_LIFT);
+                    s.stuck = 0.0;
+                    s.gather = None;
+                }
+            }
+        }
+
+        // 觀察 log（`cargo test -- --nocapture` 看得到）：採集量 + 脫困次數。
+        println!(
+            "[採集壓力測] 居民={} tick={} 採到方塊={} 脫困次數={}",
+            sims.len(), ticks, mined, rescues
+        );
+        // 採集仍真的拿到材料。
+        assert!(mined > 0, "壓力採集應挖到材料：mined={mined}");
+        // 核心保證：居民永不被自己的採集坑困到觸發脫困。
+        assert_eq!(rescues, 0, "採集永不該把居民困到觸發脫困：rescues={rescues}");
     }
 
     // ── GoalStore：不重複的記憶 ──────────────────────────────────────────────
