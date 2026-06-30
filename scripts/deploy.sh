@@ -91,7 +91,9 @@ if ! node "$REPO/scripts/site/gen-news.mjs"; then
 fi
 
 echo "[deploy] 測試（沒全綠就中止、不上線）…"
-cargo test --release
+# 串行跑（--test-threads=1）：舊 2D（封存中、不再維運）有跨測試共用狀態的隔離問題，
+# 并發跑會偶發假性失敗、擋住部署。串行穩定全過、不掩蓋真 bug（真錯誤串行照樣現形）。
+cargo test --release -- --test-threads=1
 
 # 確保上線位置有 binary（cargo 已覆寫 $BIN 為新版）。
 test -x "$BIN"
