@@ -14,6 +14,8 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -23,6 +25,7 @@ use uuid::Uuid;
 use crate::npc_agent::{AgentAction, AgentDecision, NearbyPlayer, SenseInput};
 use crate::npc_agent_wire::{self, AgentBus};
 use crate::resident_npc::ResidentPersona;
+use crate::state::AppState;
 use crate::voxel::{self, Block, ChunkCoord, WorldDelta, BASE_HEIGHT, CHUNK, SEA_LEVEL};
 use crate::voxel_building::{self as vbuild, BuildStore};
 use crate::voxel_desires::{self as vdes, DesireStore};
@@ -497,16 +500,43 @@ fn player_pos(id: Uuid) -> Option<(f32, f32, f32)> {
     players.get(&id).map(|p| (p.x, p.y, p.z))
 }
 
-pub async fn voxel_ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
+pub async fn voxel_ws_handler(
+    ws: WebSocketUpgrade,
+    State(app): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    // 登入綁定：WS 升級握手會夾帶同源 cookie。若帶有效 session → 解出帳號顯示名，
+    // 當作這條連線的「穩定身份」（記憶/好感度/背包都綁帳號，換訪客名也認得你）。
+    // 安全：身份只認 cookie，不認客戶端 join 自報名 → 無法靠送別人的名字冒充帳號。
+    // 訪客（無 cookie / OAuth 未設）回 None，照舊以 join 顯示名進場。
+    let account_name: Option<String> = app
+        .auth
+        .as_ref()
+        .and_then(|cfg| crate::auth::user_id_from_cookies(&headers, &cfg.session_secret))
+        .and_then(|uid| app.users.get(uid))
+        .map(|u| u.name);
+
     // 與主 ws 一致的安全硬化：訊息上限 64 KiB（任何合法 voxel 訊息都遠小於此；
     // chunk 是「伺服器送出」不受此限）。
     const WS_MAX_MSG_BYTES: usize = 64 * 1024;
     ws.max_message_size(WS_MAX_MSG_BYTES)
         .max_frame_size(WS_MAX_MSG_BYTES)
-        .on_upgrade(handle_socket)
+        .on_upgrade(move |socket| handle_socket(socket, account_name))
 }
 
-async fn handle_socket(socket: WebSocket) {
+/// 解析連線身份鍵：登入帳號名優先（穩定、跨 session），其次 join 自報顯示名，皆無則「旅人」。
+/// 純函式：身份綁定的單一真相，方便測試「登入覆蓋訪客名」。皆去頭尾空白並截斷 24 字。
+fn resolve_identity(account_name: Option<&str>, join_name: Option<&str>) -> String {
+    for candidate in [account_name, join_name].into_iter().flatten() {
+        let cleaned: String = candidate.trim().chars().take(24).collect();
+        if !cleaned.is_empty() {
+            return cleaned;
+        }
+    }
+    String::from("旅人")
+}
+
+async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
     let (mut sender, mut receiver) = socket.split();
     let my_id = Uuid::new_v4();
 
@@ -521,21 +551,19 @@ async fn handle_socket(socket: WebSocket) {
     });
 
     // 等第一則 Join（也容忍客戶端直接開動：逾時/壞訊息就用預設名）。
-    let mut name = String::from("旅人");
+    // 身份鍵：登入帳號優先（覆蓋 join 自報名），訪客才用 join 顯示名。
+    let mut join_name: Option<String> = None;
     if let Some(Ok(Message::Text(txt))) = receiver.next().await {
         if let Ok(ClientMsg::Join { name: n }) = serde_json::from_str::<ClientMsg>(&txt) {
-            if let Some(n) = n {
-                let cleaned: String = n.trim().chars().take(24).collect();
-                if !cleaned.is_empty() {
-                    name = cleaned;
-                }
-            }
+            join_name = n;
         }
     } else {
         // 連線一開始就斷/非文字 → 收攤。
         writer.abort();
         return;
     }
+    let name = resolve_identity(account_name.as_deref(), join_name.as_deref());
+    let is_account = account_name.is_some();
 
     // 建立權威玩家、登錄進 hub。
     let (sx, sy, sz) = spawn_pos();
@@ -559,6 +587,9 @@ async fn handle_socket(socket: WebSocket) {
         "t": "welcome",
         "id": my_id.to_string(),
         "name": name,
+        // 登入綁定：前端據此知道目前是「帳號身分」還是訪客（帳號名一律由 cookie 解出，
+        // 非客戶端自報；換訪客名也認得你）。
+        "account": is_account,
         "spawn": { "x": sx, "y": sy, "z": sz },
         "sea": SEA_LEVEL,
         "base": BASE_HEIGHT,
@@ -808,7 +839,8 @@ async fn handle_socket(socket: WebSocket) {
                     continue; // 沒這位居民 → 忽略
                 };
                 last_talk = Some(now);
-                // 3b) 玩家身份鍵：用顯示名辨識（登入帳號未接前，訪客以顯示名跨 session 記憶）。
+                // 3b) 玩家身份鍵：登入者為帳號名（穩定、跨 session、換訪客名也認得你），
+                //     訪客為 join 顯示名。`name` 已在入場時由 resolve_identity 綁定。
                 let player_key = name.clone();
                 // 3c) 短鎖讀記憶 → 組「脈絡區塊」（近期對話 + 關於這位玩家的長期記憶），
                 //     立刻 drop 鎖、產出 owned String 帶進無鎖 async task → 居民「記得你」。
@@ -1878,6 +1910,26 @@ mod tests {
             v["chunks"].as_array().unwrap().iter().any(|c| c["cy"] == 0),
             "應含地面 chunk"
         );
+    }
+
+    #[test]
+    fn resolve_identity_prefers_account_over_join_name() {
+        // 登入帳號優先：即使 join 自報別的名字（甚至想冒充別人），也以帳號名為準。
+        assert_eq!(
+            resolve_identity(Some("諾娃"), Some("冒充者")),
+            "諾娃"
+        );
+        // 訪客（無帳號）→ 用 join 顯示名。
+        assert_eq!(resolve_identity(None, Some("旅行者")), "旅行者");
+        // 帳號名空白／全空白 → 退回 join 名（不會綁到空字串鍵）。
+        assert_eq!(resolve_identity(Some("   "), Some("阿一")), "阿一");
+        // 兩者皆無 → 預設「旅人」。
+        assert_eq!(resolve_identity(None, None), "旅人");
+        assert_eq!(resolve_identity(Some(""), Some("")), "旅人");
+        // 去頭尾空白 + 截斷 24 字（與入場清洗一致）。
+        assert_eq!(resolve_identity(None, Some("  邊緣  ")), "邊緣");
+        let long: String = "字".repeat(30);
+        assert_eq!(resolve_identity(None, Some(&long)).chars().count(), 24);
     }
 
     #[test]

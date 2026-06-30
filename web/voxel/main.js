@@ -281,6 +281,12 @@ const STEP_SMOOTH_K = 10;
 let myId = null;
 let myName = "旅人";
 
+// 登入綁定（比照 3D #821）：開頁查 /auth/me，登入者拿到帳號身分 → 進場以帳號名綁定
+// 記憶/好感度/背包（換訪客名也認得你）。訪客仍可逛。身份真相由後端 cookie 決定，
+// 這兩個變數只供 UI 與「入場名先正確」用。
+let isLoggedIn = false;
+let myAccountName = null;
+
 // 好感度 v1（ROADMAP 656）：我與各居民的互動記憶筆數（連線後從 /voxel/affinity 拉取）。
 // key = resident_id, value = count (0=陌生人, 1-2=相識, 3+=友人)
 const myAffinity = new Map();
@@ -931,15 +937,50 @@ addEventListener("keydown", (e) => {
   if (n >= 1 && n <= HOTBAR.length) selectSlot(n - 1);
 });
 
-// AABB 是否與任一實心方塊重疊（碰撞核心）。
-function overlaps() {
-  const x0 = Math.floor(player.x - PW), x1 = Math.floor(player.x + PW);
-  const y0 = Math.floor(player.y), y1 = Math.floor(player.y + PH - 0.01);
-  const z0 = Math.floor(player.z - PW), z1 = Math.floor(player.z + PW);
+// 純函式：以「腳底在 y、半寬 pw、身高 ph」的 AABB，問 isSolid(bx,by,bz) 是否與任一實心格重疊。
+// 不依賴全域（player/solidCollide 由呼叫端帶入），方便真瀏覽器 QA 直接餵假地形驗證。
+function aabbHitsSolid(x, y, z, isSolid, pw, ph) {
+  const x0 = Math.floor(x - pw), x1 = Math.floor(x + pw);
+  const y0 = Math.floor(y), y1 = Math.floor(y + ph - 0.01);
+  const z0 = Math.floor(z - pw), z1 = Math.floor(z + pw);
   for (let bx = x0; bx <= x1; bx++)
     for (let by = y0; by <= y1; by++)
       for (let bz = z0; bz <= z1; bz++)
-        if (solidCollide(bx, by, bz)) return true;
+        if (isSolid(bx, by, bz)) return true;
+  return false;
+}
+
+// 純函式：脫困（depenetration）。若 (x,y,z) 的 AABB 卡在實心方塊內，沿 +Y 逐格上抬，
+// 回傳第一個「不再重疊」的整數腳底高度（站到方塊頂上）。本來就沒卡 → 原值返回（不動）。
+// 收斂穩定：找到第一個 clear 高度就停，不會持續往上彈；maxRise 防呆（理論上地表之上必有空氣）。
+function unstuckY(x, y, z, isSolid, pw, ph, maxRise = 96) {
+  if (!aabbHitsSolid(x, y, z, isSolid, pw, ph)) return y; // 沒卡：完全不干擾正常走路/重力/踏階
+  let ny = Math.floor(y);
+  for (let i = 0; i <= maxRise; i++) {
+    if (!aabbHitsSolid(x, ny, z, isSolid, pw, ph)) return ny;
+    ny += 1;
+  }
+  return y; // 極端情況找不到 clear：維持原值，至少不亂跳
+}
+
+// AABB 是否與任一實心方塊重疊（碰撞核心）；用上面的純函式，餵入玩家當前位置。
+function overlaps() {
+  return aabbHitsSolid(player.x, player.y, player.z, solidCollide, PW, PH);
+}
+
+// 脫困保險：玩家被實心方塊埋住時（出生瞬間 / 新 chunk 載入 / 從未載入區走入後補載），
+// 把腳底上抬到第一個不重疊高度頂出來，避免永久卡死。只在「真的重疊實心」時作用，
+// 平常走路/重力/踏階完全不觸發（unstuckY 開頭早退）。回傳是否有脫困。
+function unstuckIfNeeded() {
+  if (!overlaps()) return false;
+  const ny = unstuckY(player.x, player.y, player.z, solidCollide, PW, PH);
+  if (ny !== player.y) {
+    player.y = ny;
+    player.vy = 0;       // 清掉下墜速度，別把人又壓回方塊裡
+    stepSmooth = 0;      // 視覺別殘留踏階補間
+    player.grounded = false; // 讓重力把人輕輕放到地表，穩定收斂
+    return true;
+  }
   return false;
 }
 
@@ -1169,8 +1210,10 @@ function connect() {
   ws = new WebSocket(`${proto}://${location.host}/voxel/ws`);
   ws.onopen = () => {
     wsReady = true;
+    // 入場名：登入者用帳號名（伺服器仍以 cookie 為準覆蓋，這裡只是讓 HUD 先正確），
+    // 訪客用 localStorage 暫存名。身份綁定的真相在後端 resolve_identity。
     let nm = "旅人";
-    try { nm = localStorage.getItem("butfun_name") || "旅人"; } catch (e) { /* ignore */ }
+    try { nm = (myAccountName || localStorage.getItem("butfun_name") || "旅人"); } catch (e) { nm = myAccountName || "旅人"; }
     ws.send(JSON.stringify({ t: "join", name: nm }));
   };
   ws.onmessage = (ev) => {
@@ -1178,6 +1221,8 @@ function connect() {
     if (m.t === "welcome") {
       myId = m.id; myName = m.name || "旅人";
       player.x = m.spawn.x; player.y = m.spawn.y; player.z = m.spawn.z;
+      // 出生瞬間先脫困一次（若出生 chunk 已到、地表把人埋住，立刻頂出來）。
+      unstuckIfNeeded();
       // 好感度 v1：連線後立即拉取與各居民的好感度，讓指示燈盡快亮起。
       refreshAffinity();
     } else if (m.t === "chunks") {
@@ -1186,6 +1231,9 @@ function connect() {
         chunks.set(key, b64ToBytes(c.data));
         markDirty(c.cx, c.cy, c.cz);
       }
+      // chunk 載入後立刻脫困：若新載入的方塊把玩家埋住（出生／chunk 邊緣／下落最常見），
+      // 同一則訊息就把人頂出來，不必等下一幀。沒卡則零成本早退。
+      unstuckIfNeeded();
     } else if (m.t === "block") {
       // 伺服器權威方塊更新（破壞/放置）：本地套用 + 只重建受影響 chunk。
       setLocalBlock(m.x, m.y, m.z, m.b);
@@ -1274,6 +1322,64 @@ function connect() {
 }
 connect();
 
+// ── Google 登入入口（比照 3D #821；沿用 2D/3D 同一套同源 cookie session）─────────────
+// 右上角帳號 chip：訪客→「🔑 登入」（點了走既有 /auth/google/start）；登入→「帳號名 · 登出」。
+// 登入後伺服器以 cookie 解出帳號 → join 自動綁帳號（記憶/好感度/背包跨 session 認得你）。
+// 手機/直式友善：chip 小、靠右上、pointer-events 自理，不擋遊戲操作。
+const acctEl = document.getElementById("acct");
+
+function renderAccountChip() {
+  if (!acctEl) return;
+  acctEl.innerHTML = "";
+  if (isLoggedIn) {
+    const name = document.createElement("span");
+    name.className = "acct-name";
+    name.textContent = myAccountName || myName || "帳號";
+    name.title = "已登入：" + (myAccountName || "");
+    const out = document.createElement("button");
+    out.type = "button";
+    out.className = "acct-btn";
+    out.textContent = "登出";
+    out.title = "登出回到訪客";
+    out.addEventListener("click", (e) => {
+      if (e && e.preventDefault) e.preventDefault();
+      // 清 session cookie 後重整：回訪客態（與 2D/3D 登出一致）。
+      fetch("/auth/logout", { method: "POST", credentials: "same-origin" })
+        .catch(() => {})
+        .then(() => { try { location.reload(); } catch (_) { /* 測試 DOM 無 location */ } });
+    });
+    acctEl.appendChild(name);
+    acctEl.appendChild(out);
+  } else {
+    const login = document.createElement("button");
+    login.type = "button";
+    login.className = "acct-btn acct-login";
+    login.textContent = "🔑 登入";
+    login.title = "用 Google 登入，讓居民記得你（記憶/好感度綁帳號）";
+    login.addEventListener("click", (e) => {
+      if (e && e.preventDefault) e.preventDefault();
+      try { location.href = "/auth/google/start"; } catch (_) { /* 測試 DOM 無 location */ }
+    });
+    acctEl.appendChild(login);
+  }
+}
+
+// 開頁查 /auth/me：已登入就點亮帳號 chip、記下帳號名（進場時帶上、伺服器仍以 cookie 為準）。
+// OAuth 未設定／未登入回非 2xx → 維持訪客態（照常逛）。fetch 不可用（沙箱）就跳過。
+renderAccountChip(); // 先以訪客態畫一次（/auth/me 命中再重畫）
+if (typeof fetch === "function") {
+  fetch("/auth/me", { credentials: "same-origin" })
+    .then((r) => (r && r.ok ? r.json() : null))
+    .then((me) => {
+      if (me && me.id) {
+        isLoggedIn = true;
+        if (me.name) myAccountName = me.name;
+        renderAccountChip();
+      }
+    })
+    .catch(() => { /* 查不到就當訪客，不影響逛 */ });
+}
+
 // 走到哪、補要哪：請求玩家周邊半徑內、尚未載入也沒要過的 column。
 let reqTimer = 0;
 function streamChunks(dt) {
@@ -1350,6 +1456,10 @@ function update(dt) {
   }
   // 掉出世界保險：低於 -10 拉回出生高度
   if (player.y < -10) { player.y = 40; player.vy = 0; stepSmooth = 0; }
+
+  // 脫困保險（每幀）：若這幀結束後仍與實心方塊重疊（最常見：新 chunk 載入把人埋住、
+  // 出生瞬間、走進未載入區後補載），把人頂出方塊外，避免永久卡死。沒卡就零成本早退。
+  unstuckIfNeeded();
 
   // 踏階視覺補間衰減（frame-rate 無關的指數平滑）
   // stepSmooth > 0 → 視覺 Y 低於物理 Y；每幀靠近直到 < 0.005 格就吸附歸零。
@@ -1606,4 +1716,17 @@ window.__voxel = {
   doBreak() { return breakAtTarget(); },
   doPlace() { return placeAtTarget(); },
   selectSlotByBlock(b) { const i = HOTBAR.indexOf(b); if (i >= 0) selectSlot(i); return selectedBlock(); },
+  // ── 脫困 / 碰撞 QA 用（修玩家卡地裡）──
+  // 純函式：餵假地形（isSolid 回呼）即可驗證 AABB 重疊偵測與脫困上抬，不依賴真世界。
+  aabbHitsSolid(x, y, z, isSolid, pw, ph) { return aabbHitsSolid(x, y, z, isSolid, pw == null ? PW : pw, ph == null ? PH : ph); },
+  unstuckY(x, y, z, isSolid, pw, ph) { return unstuckY(x, y, z, isSolid, pw == null ? PW : pw, ph == null ? PH : ph); },
+  PW, PH,
+  get overlapping() { return overlaps(); },     // 當前玩家是否卡在實心方塊內
+  unstuckNow() { return unstuckIfNeeded(); },    // 手動觸發一次脫困（回傳是否有動）
+  // 直接設玩家位置（QA 模擬出生卡住／走進未載入區後補載的情境）。
+  setPlayerPos(x, y, z) { player.x = x; player.y = y; player.z = z; player.vy = 0; },
+  // ── 登入綁定 QA 用（比照 3D #821）──
+  get isLoggedIn() { return isLoggedIn; },
+  get myAccountName() { return myAccountName; },
+  get myName() { return myName; },
 };
