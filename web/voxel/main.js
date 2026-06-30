@@ -520,6 +520,7 @@ function openChat(rid, name) {
   chatRid = rid;
   chatTitleEl.textContent = name || "居民";
   chatEl.style.display = "flex";
+  updateGiftBtn(); // 贈禮 v1：更新按鈕顯示哪件物品
 }
 function closeChat() { if (chatEl) chatEl.style.display = "none"; }
 
@@ -547,6 +548,66 @@ if (chatEl) {
   // 日記鈕：開啟當前對話居民的日記。
   const diaryBtnEl = document.getElementById("chatDiary");
   if (diaryBtnEl) diaryBtnEl.addEventListener("click", () => { if (chatRid) openDiary(chatRid); });
+  // 贈禮鈕：送背包最多的一件給當前居民（ROADMAP 660）。
+  const giftBtnEl = document.getElementById("chatGift");
+  if (giftBtnEl) giftBtnEl.addEventListener("click", () => { if (chatRid) trySendGift(); });
+}
+
+// ── 居民贈禮 v1（ROADMAP 660）────────────────────────────────────────────────
+// 把採來的材料化作一份心意送給居民；居民記得你的照料，好感度 +2。
+
+/// 不可作為禮物的 block_id（純 inventory 物品 / 不合語意送出）。
+const GIFT_EXCLUDED = new Set([0, 7, 12]); // Air / Water / FarmSoilSeeded（已種幼苗）
+
+/**
+ * 從背包（myInv: Map<blockId, count>）挑出最佳禮物。
+ * 策略：選存量最多的可贈物品（最不稀缺）；同量以 blockId 小者優先（確定性）。
+ * 空背包或無可贈物品回 null。
+ * 確定性純函式，壞值（非 Map / 空 Map）安全回 null。
+ * @param {Map<number,number>} inv
+ * @returns {{ blockId: number, count: number }|null}
+ */
+function giftPickItem(inv) {
+  if (!(inv instanceof Map)) return null;
+  let best = null;
+  for (const [bid, cnt] of inv) {
+    if (GIFT_EXCLUDED.has(bid) || cnt <= 0) continue;
+    if (!best || cnt > best.count || (cnt === best.count && bid < best.blockId)) {
+      best = { blockId: bid, count: cnt };
+    }
+  }
+  return best;
+}
+
+/** 更新「🎁 贈禮」按鈕顯示（呼叫於開對話框 / inv 改變後）。 */
+function updateGiftBtn() {
+  const el = document.getElementById("chatGift");
+  if (!el) return;
+  const pick = giftPickItem(myInv);
+  if (!pick) {
+    el.textContent = "🎁 贈禮";
+    el.classList.add("gift-empty");
+  } else {
+    const iname = BLOCK_NAME[pick.blockId] || "物品";
+    el.textContent = "🎁 贈" + iname;
+    el.classList.remove("gift-empty");
+  }
+}
+
+let lastGiftMs = 0; // 贈禮本地冷卻（防連按）
+
+/** 執行贈禮：消耗最多的那件物品送給當前居民（ROADMAP 660）。 */
+function trySendGift() {
+  if (!wsReady || !chatRid) return;
+  const now = Date.now();
+  if (now - lastGiftMs < 1500) return; // 1.5 秒本地冷卻
+  const pick = giftPickItem(myInv);
+  if (!pick) {
+    appendMsg("sys", "背包是空的，先去採集一些材料吧～");
+    return;
+  }
+  lastGiftMs = now;
+  ws.send(JSON.stringify({ t: "gift", resident_id: chatRid, item_id: pick.blockId }));
 }
 
 // ── 居民日記面板（ROADMAP 650）────────────────────────────────────────────────
@@ -1100,11 +1161,13 @@ function connect() {
         if (cnt > 0) myInv.set(bid, cnt);
       }
       updateInvHud();
+      updateGiftBtn(); // 贈禮 v1：背包恢復後同步更新按鈕
     } else if (m.t === "inv_update") {
       // 採集 v1：單一材料增減後的新存量（伺服器回傳 total，非 delta）。
       if (m.count > 0) myInv.set(m.block_id, m.count);
       else myInv.delete(m.block_id);
       updateInvHud();
+      updateGiftBtn(); // 贈禮 v1：材料變動後同步更新按鈕
     } else if (m.t === "inv_denied") {
       // 採集 v1：放置材料不足，短暫提示。
       const bname = BLOCK_NAME[m.block_id] || "方塊";
@@ -1128,6 +1191,15 @@ function connect() {
     } else if (m.t === "plant_fail") {
       // 種田 v1：種植失敗（非農田土 / 沒種子 / 太遠），短暫提示。
       showErr("種植失敗：" + (m.reason || "未知原因"));
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "gift_ok") {
+      // 贈禮 v1：送禮成功——居民道謝訊息顯示在對話框；更新贈禮鈕顯示。
+      const iname = BLOCK_NAME[m.item_id] || m.item_name || "物品";
+      appendMsg("sys", "✨ 你送出了 " + iname + " 給 " + (m.resident_name || "居民"));
+      updateGiftBtn(); // 背包已更新，重算鈕
+    } else if (m.t === "gift_fail") {
+      // 贈禮 v1：送禮失敗（太遠 / 沒材料）。
+      showErr(m.reason || "無法送禮");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     }
   };
@@ -1450,6 +1522,12 @@ window.__voxel = {
   PLANK, STONE_BRICK, GLASS,
   // 種田 v1 常數 + QA 介面
   FARM_SOIL, FARM_SOIL_SEEDED, WHEAT_MATURE, SEEDS,
+  // ── 贈禮 v1 QA 介面（ROADMAP 660）──
+  giftPickItem(inv) { return giftPickItem(inv); },
+  updateGiftBtn() { updateGiftBtn(); },
+  get giftBtnText() { const e = document.getElementById("chatGift"); return e ? e.textContent : ""; },
+  get giftBtnEmpty() { const e = document.getElementById("chatGift"); return e ? e.classList.contains("gift-empty") : false; },
+  GIFT_EXCLUDED: [...GIFT_EXCLUDED],
   // ── 真瀏覽器 QA 用：讀準心目標、讀方塊、觸發破壞/放置、選方塊 ──
   get target() { return target; },
   getBlock(x, y, z) { return getRaw(x, y, z); },
