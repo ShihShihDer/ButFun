@@ -18,19 +18,26 @@ const CHUNK = 16; // 一 chunk 邊長（方塊數），與 voxel::CHUNK 一致
 const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, WOOD = 5, LEAVES = 6, WATER = 7;
 // 合成台 v1（ROADMAP 658）——玩家合成而得，不自然生成
 const PLANK = 8, STONE_BRICK = 9, GLASS = 10;
+// 種田 v1（ROADMAP 659）——農地狀態方塊 + 種子物品
+const FARM_SOIL = 11, FARM_SOIL_SEEDED = 12, WHEAT_MATURE = 13;
+const SEEDS = 14; // 純物品（無對應方塊），從葉片/收割掉落
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
-  [GRASS]:      [0.36, 0.66, 0.27],
-  [DIRT]:       [0.55, 0.40, 0.26],
-  [STONE]:      [0.50, 0.50, 0.52],
-  [SAND]:       [0.85, 0.78, 0.55],
-  [WOOD]:       [0.45, 0.31, 0.18],
-  [LEAVES]:     [0.27, 0.55, 0.27],
-  [WATER]:      [0.20, 0.45, 0.85],
+  [GRASS]:             [0.36, 0.66, 0.27],
+  [DIRT]:              [0.55, 0.40, 0.26],
+  [STONE]:             [0.50, 0.50, 0.52],
+  [SAND]:              [0.85, 0.78, 0.55],
+  [WOOD]:              [0.45, 0.31, 0.18],
+  [LEAVES]:            [0.27, 0.55, 0.27],
+  [WATER]:             [0.20, 0.45, 0.85],
   // 合成方塊：比自然原料更精緻（淺色調）
-  [PLANK]:      [0.78, 0.62, 0.42], // 木板——淺棕，比原木明亮
-  [STONE_BRICK]:[0.62, 0.59, 0.56], // 石磚——均勻灰，比原石精緻
-  [GLASS]:      [0.82, 0.93, 0.98], // 玻璃——淡藍，像磨砂玻璃
+  [PLANK]:             [0.78, 0.62, 0.42], // 木板——淺棕，比原木明亮
+  [STONE_BRICK]:       [0.62, 0.59, 0.56], // 石磚——均勻灰，比原石精緻
+  [GLASS]:             [0.82, 0.93, 0.98], // 玻璃——淡藍，像磨砂玻璃
+  // 種田 v1：農地三態——顏色漸層暗示成長進度
+  [FARM_SOIL]:         [0.38, 0.24, 0.12], // 農田土——深棕，耕過的泥土
+  [FARM_SOIL_SEEDED]:  [0.32, 0.42, 0.20], // 幼苗——帶綠的深色，種子萌芽中
+  [WHEAT_MATURE]:      [0.88, 0.76, 0.22], // 成熟小麥——金黃色，可收割
 };
 
 const DEBUG = location.search.includes("debug");
@@ -739,11 +746,15 @@ scene.add(highlight);
 let target = null;
 
 // ── 快捷欄（選要放的方塊型別）+ 背包存量（採集 v1）───────────────────────────
-// 合成台 v1（ROADMAP 658）：加入三個合成方塊（9 格熱鍵欄，keys 1–9）
-const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS];
+// 種田 v1（ROADMAP 659）：加入農田土 + 種子（種子為純物品，特殊 Plant 動作）
+// 快捷欄 9 格：GRASS DIRT STONE WOOD SAND LEAVES PLANK FARM_SOIL SEEDS
+const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, FARM_SOIL, SEEDS];
 const BLOCK_NAME = {
   [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉",
   [PLANK]: "木板", [STONE_BRICK]: "石磚", [GLASS]: "玻璃",
+  // 種田 v1
+  [FARM_SOIL]: "農田土", [FARM_SOIL_SEEDED]: "幼苗", [WHEAT_MATURE]: "成熟小麥",
+  [SEEDS]: "種子",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
@@ -908,8 +919,20 @@ function breakAtTarget() {
   return c;
 }
 // 在準心方塊的「面外側」放一個方塊：座標 = 命中方塊 + 命中面法線。回傳放置座標或 null。
+// 種田 v1：若持有種子且命中的是農田土 → 送 plant（種植動作），而非一般 place。
 function placeAtTarget() {
   if (!target || !wsReady) return null;
+  // 種子的特殊種植動作：目標是農田土本身（不偏移到面外側）。
+  if (selectedBlock() === SEEDS) {
+    const hitRaw = getRaw(target.bx, target.by, target.bz);
+    if (hitRaw === FARM_SOIL) {
+      ws.send(JSON.stringify({ t: "plant", x: target.bx, y: target.by, z: target.bz }));
+      return { x: target.bx, y: target.by, z: target.bz };
+    }
+    // 種子只能種在農田土上——其他方塊靜默忽略。
+    return null;
+  }
+  // 一般放置：在命中方塊的面外側放置。
   const px = target.bx + target.nx, py = target.by + target.ny, pz = target.bz + target.nz;
   // 別把方塊放進自己身體（避免卡死）。
   if (px === Math.floor(player.x) && pz === Math.floor(player.z) &&
@@ -1097,6 +1120,14 @@ function connect() {
       showErr("材料不足，無法合成（先多採集一些）");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
       renderCraftPanel();
+    } else if (m.t === "plant_ok") {
+      // 種田 v1：種植成功，短暫提示。
+      showMsg("已種下種子！等 90 秒小麥就成熟 🌾");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2500);
+    } else if (m.t === "plant_fail") {
+      // 種田 v1：種植失敗（非農田土 / 沒種子 / 太遠），短暫提示。
+      showErr("種植失敗：" + (m.reason || "未知原因"));
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     }
   };
   ws.onclose = () => { wsReady = false; showErr("連線中斷，重新連線中…"); setTimeout(connect, 1500); };
@@ -1270,9 +1301,10 @@ addEventListener("resize", () => {
 // ── 合成台 v1（ROADMAP 658）──────────────────────────────────────────────────
 // 前端配方表（對齊後端 voxel_craft::RECIPES，id/inputs/output 穩定契約）。
 const RECIPES_JS = [
-  { id: "plank",        name: "木板", inputs: [[WOOD, 2]],  output_block: PLANK,       out_count: 4 },
-  { id: "stone_brick",  name: "石磚", inputs: [[STONE, 2]], output_block: STONE_BRICK, out_count: 2 },
-  { id: "glass",        name: "玻璃", inputs: [[SAND, 2]],  output_block: GLASS,       out_count: 1 },
+  { id: "plank",        name: "木板",   inputs: [[WOOD, 2]],  output_block: PLANK,       out_count: 4 },
+  { id: "stone_brick",  name: "石磚",   inputs: [[STONE, 2]], output_block: STONE_BRICK, out_count: 2 },
+  { id: "glass",        name: "玻璃",   inputs: [[SAND, 2]],  output_block: GLASS,       out_count: 1 },
+  { id: "till",         name: "農田土", inputs: [[DIRT, 2]],  output_block: FARM_SOIL,   out_count: 2 },
 ];
 
 const craftPanelEl = document.getElementById("craft");
@@ -1415,6 +1447,8 @@ window.__voxel = {
   renderCraftPanel() { renderCraftPanel(); return craftBodyEl ? craftBodyEl.innerHTML : ""; },
   get RECIPES_JS() { return RECIPES_JS; },
   PLANK, STONE_BRICK, GLASS,
+  // 種田 v1 常數 + QA 介面
+  FARM_SOIL, FARM_SOIL_SEEDED, WHEAT_MATURE, SEEDS,
   // ── 真瀏覽器 QA 用：讀準心目標、讀方塊、觸發破壞/放置、選方塊 ──
   get target() { return target; },
   getBlock(x, y, z) { return getRaw(x, y, z); },

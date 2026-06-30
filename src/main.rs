@@ -130,6 +130,8 @@ mod voxel_feed;
 mod voxel_inventory;
 // 乙太方界·合成台 v1：採集材料→合成木板/石磚/玻璃，「採集→合成→建造」循環（ROADMAP 658）。
 mod voxel_craft;
+// 乙太方界·種田 v1：撒種‧等待‧收割——療癒循環加入時間維度（ROADMAP 659）。
+mod voxel_farm;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
@@ -381,6 +383,8 @@ async fn main() {
     // 乙太方界（voxel）AI 居民 tick 迴圈：讓居民活在新世界、會走動、偶爾冒話。
     // 全隔離（自己的 hub/協定），不碰 AppState；嚴守鎖紀律見 voxel_ws.rs。
     voxel_ws::spawn_residents();
+    // 種田 v1：每 15 秒檢查農地成熟，自動將幼苗升成熟小麥並廣播。
+    voxel_ws::spawn_farm_tick();
 
     let app = Router::new()
         .route("/healthz", get(health))
