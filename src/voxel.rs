@@ -28,6 +28,38 @@ pub const SEA_LEVEL: i32 = 5;
 /// 地形噪聲種子（固定 → 全世界、前後端、多人之間地貌一致）。
 pub const SEED: u32 = 0x_B0_07_Fu32; // "BOOTF"un · voxel
 
+// ── 程序生成樹（補上合成鏈缺的木頭來源·確定性、可測）────────────────────────────
+//
+// 樹是「地形的一部分」：走 generate/`block_at` 路徑、**不靠 delta**——同 chunk／同座標永遠
+// 長一樣（可測、多人/前後端天然一致）。設計把世界切成 `TREE_CELL`×`TREE_CELL` 的格，每格
+// 至多一棵、樹幹落在格內側（留 1 格邊），使「半徑 1 的樹冠」**永不跨格** → `block_at` 只需
+// 查「自己這格」的樹，O(1) 無鄰格掃描。樹只長在草地表面、避開水邊與出生保護圈。
+
+/// 種樹的格邊長（每格至多一棵樹）。控制密度、且讓半徑 1 樹冠不跨格。
+pub const TREE_CELL: i32 = 7;
+/// 一格長出樹的機率門檻（per-cell hash < 門檻才長）。約 0.5 → 自然疏密，不擋路也找得到。
+const TREE_CHANCE: f32 = 0.5;
+/// 樹幹高度下限（含）。
+const TREE_MIN_TRUNK: i32 = 3;
+/// 樹幹高度上限（含）。
+const TREE_MAX_TRUNK: i32 = 5;
+/// 出生保護圈半徑（世界方塊）：保護錨點周圍不長樹，免樹幹卡住出生／歸巢點。
+pub const SPAWN_PROTECT_RADIUS: i32 = 8;
+/// 出生保護錨點（世界座標）：玩家出生原點 + 各居民家域中心
+/// （對齊 `voxel_residents::resident_home_base`，刻意以小而穩定的常數複述，維持模組分層）。
+const SPAWN_ANCHORS: [(i32, i32); 4] = [(0, 0), (0, 75), (-75, 0), (75, 0)];
+/// 種樹噪聲種子（與地形種子分流，避免樹的分布與高度圖相關）。
+const TREE_SEED: u32 = SEED ^ 0x_5EED_7EE5;
+
+/// 一棵樹的描述：樹幹底座所在柱 (tx,tz)、底座草地表高度 base_h、樹幹高度 trunk（格數）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tree {
+    pub tx: i32,
+    pub tz: i32,
+    pub base_h: i32,
+    pub trunk: i32,
+}
+
 /// 方塊型別。`#[repr(u8)]` → 直接當 1 byte 串流（pack_chunk 用）。
 /// ID 0–7：自然生成方塊；8–10：合成台 v1（ROADMAP 658）玩家合成方塊。
 /// ID 11–13：種田 v1（ROADMAP 659）農地狀態方塊。
@@ -290,6 +322,58 @@ pub fn height_at(wx: i32, wz: i32) -> i32 {
     BASE_HEIGHT + h.round() as i32
 }
 
+/// 某格 (cellx,cellz) 是否長樹；長的話回傳該樹（已驗證地表為草、在保護圈外）。
+/// 純函式、確定性（同格永遠同結果）、可測。是「樹是地形一部分」的單一真相來源。
+pub fn tree_in_cell(cellx: i32, cellz: i32) -> Option<Tree> {
+    // 以格座標 hash 擲骰：是否長樹。
+    if hash2(cellx, cellz, TREE_SEED) >= TREE_CHANCE {
+        return None;
+    }
+    // 樹幹落在格內側（offset 1..=5 of 本格 0..=6），確保半徑 1 樹冠不跨格。
+    let ox = (1 + (hash2(cellx, cellz, TREE_SEED ^ 0x_1111_1111) * 5.0) as i32).clamp(1, 5);
+    let oz = (1 + (hash2(cellx, cellz, TREE_SEED ^ 0x_2222_2222) * 5.0) as i32).clamp(1, 5);
+    let tx = cellx * TREE_CELL + ox;
+    let tz = cellz * TREE_CELL + oz;
+    // 出生保護圈：任一錨點半徑內不長樹（免擋出生／歸巢點）。
+    for (ax, az) in SPAWN_ANCHORS {
+        let (ddx, ddz) = (tx - ax, tz - az);
+        if ddx * ddx + ddz * ddz <= SPAWN_PROTECT_RADIUS * SPAWN_PROTECT_RADIUS {
+            return None;
+        }
+    }
+    // 只在草地表長樹：地表為草（高於海平面+1 才是草，否則沙）、避開水邊。
+    let base_h = height_at(tx, tz);
+    if base_h <= SEA_LEVEL + 1 {
+        return None;
+    }
+    // 樹幹高度 TREE_MIN_TRUNK..=TREE_MAX_TRUNK。
+    let span = (TREE_MAX_TRUNK - TREE_MIN_TRUNK + 1) as f32;
+    let trunk = (TREE_MIN_TRUNK + (hash2(cellx, cellz, TREE_SEED ^ 0x_3333_3333) * span) as i32)
+        .clamp(TREE_MIN_TRUNK, TREE_MAX_TRUNK);
+    Some(Tree { tx, tz, base_h, trunk })
+}
+
+/// 樹的方塊查詢：某世界座標若落在「所屬格的樹」的樹幹或樹冠上，回 `Wood`/`Leaves`，否則 `None`。
+/// 樹冠半徑 1 不跨格 → 只需查 (wx,wz) 自己這格的樹，O(1)。純函式、可測。
+fn tree_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
+    let tree = tree_in_cell(wx.div_euclid(TREE_CELL), wz.div_euclid(TREE_CELL))?;
+    let top = tree.base_h + tree.trunk; // 樹幹最高一格的 y
+    let (dx, dz) = (wx - tree.tx, wz - tree.tz);
+    // 樹幹：本柱、地表之上到 top。
+    if dx == 0 && dz == 0 && wy > tree.base_h && wy <= top {
+        return Some(Block::Wood);
+    }
+    // 樹冠：top-1、top 兩層 3×3 環（不含樹幹柱本身，那兩格是樹幹頂）。
+    if (wy == top - 1 || wy == top) && !(dx == 0 && dz == 0) && dx.abs() <= 1 && dz.abs() <= 1 {
+        return Some(Block::Leaves);
+    }
+    // 樹冠頂蓋：top+1 的十字（樹幹正上方 + 四鄰）。
+    if wy == top + 1 && (dx == 0 && dz == 0 || dx.abs() + dz.abs() == 1) {
+        return Some(Block::Leaves);
+    }
+    None
+}
+
 /// 任一世界座標的方塊（確定性程序生成）。這是「無狀態世界」的核心查詢。
 pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
     // 地心一律基岩石頭（避免從世界底掉出去；本輪只生成 y>=0 的 chunk）。
@@ -298,9 +382,13 @@ pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
     }
     let h = height_at(wx, wz);
     if wy > h {
-        // 地表之上：海平面（含）以下補水，否則空氣。
+        // 地表之上：海平面（含）以下補水。
         if wy <= SEA_LEVEL {
             return Block::Water;
+        }
+        // 再看是否為樹（樹幹/樹冠，只填到原本是空氣的格；樹只長在草地、樹塊恆高於海平面）。
+        if let Some(tb) = tree_block_at(wx, wy, wz) {
+            return tb;
         }
         return Block::Air;
     }
@@ -355,6 +443,19 @@ pub fn pack_chunk_with_delta(coord: ChunkCoord, delta: Option<&ChunkDelta>) -> O
 mod tests {
     use super::*;
 
+    /// 找一個「地表夠高且上方數格皆空氣（無樹幹/樹冠）」的乾淨陸地柱，
+    /// 給需要純地表（不被程序生成的樹干擾）的舊地形/碰撞測試用。
+    fn clear_land_column(z: i32, min_above_sea: i32) -> i32 {
+        for cand in 0..20000 {
+            let h = height_at(cand, z);
+            if h > SEA_LEVEL + min_above_sea && (1..=4).all(|d| block_at(cand, h + d, z) == Block::Air)
+            {
+                return cand;
+            }
+        }
+        0
+    }
+
     #[test]
     fn local_index_roundtrip_is_unique() {
         // 每個 (lx,ly,lz) 應映到唯一索引，且覆蓋滿 0..CHUNK_VOL。
@@ -399,15 +500,9 @@ mod tests {
 
     #[test]
     fn surface_and_layers_make_sense() {
-        // 取一個陸地點（找個高度明顯高於海平面的座標）。
-        let (mut x, mut z) = (0, 0);
-        for cand in 0..2000 {
-            if height_at(cand, 0) > SEA_LEVEL + 2 {
-                x = cand;
-                z = 0;
-                break;
-            }
-        }
+        // 取一個乾淨陸地點（高於海平面、上方無樹）。
+        let z = 0;
+        let x = clear_land_column(z, 2);
         let h = height_at(x, z);
         assert!(h > SEA_LEVEL + 1, "測試點應在海平面之上的陸地");
         // 地表是草、其下是土、再下是石、其上是空氣。
@@ -503,15 +598,9 @@ mod tests {
 
     #[test]
     fn break_and_place_validation() {
-        // 站在地表草點上方一點。
-        let (mut x, mut z) = (0, 0);
-        for cand in 0..2000 {
-            if height_at(cand, 0) > SEA_LEVEL + 3 {
-                x = cand;
-                z = 0;
-                break;
-            }
-        }
+        // 站在乾淨地表草點上方一點（上方無樹，免樹塊干擾放置/破壞判定）。
+        let z = 0;
+        let x = clear_land_column(z, 3);
         let h = height_at(x, z);
         let world: WorldDelta = WorldDelta::new();
         // 玩家腳底站在 h+1（地表方塊頂面），眼睛 h+1+EYE。
@@ -572,5 +661,145 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── 程序生成樹 ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn trees_are_deterministic() {
+        // 同格／同座標多次查詢完全一致（多人/前後端一致的根本）。
+        for &(cx, cz) in &[(0, 0), (3, -2), (-17, 40), (123, -456)] {
+            assert_eq!(tree_in_cell(cx, cz), tree_in_cell(cx, cz));
+        }
+        for &(x, y, z) in &[(20, 12, 5), (-30, 14, 7), (100, 13, -100)] {
+            assert_eq!(block_at(x, y, z), block_at(x, y, z));
+        }
+    }
+
+    #[test]
+    fn some_trees_exist_with_wood_and_leaves() {
+        // 掃一大片地表上方空間，必須真的長出 Wood（樹幹）與 Leaves（樹冠）。
+        let (mut wood, mut leaves) = (0u32, 0u32);
+        for x in -60..60 {
+            for z in -60..60 {
+                let h = height_at(x, z);
+                for dy in 1..=8 {
+                    match block_at(x, h + dy, z) {
+                        Block::Wood => wood += 1,
+                        Block::Leaves => leaves += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert!(wood > 0, "地表應長出樹幹 Wood：wood={wood}");
+        assert!(leaves > 0, "地表應長出樹冠 Leaves：leaves={leaves}");
+    }
+
+    #[test]
+    fn tree_density_is_reasonable() {
+        // 密度合理：一大片地表上的樹數既不為 0（找得到）也不過密（別擋路）。
+        let mut trees = 0u32;
+        let (lo, hi) = (-20, 20); // 41×41 格 = 1681 柱
+        for cx in lo..hi {
+            for cz in lo..hi {
+                if tree_in_cell(cx, cz).is_some() {
+                    trees += 1;
+                }
+            }
+        }
+        // 41×41=1681 格、約半數擲中、再被「草地+保護圈」過濾 → 落在寬鬆合理區間。
+        assert!(trees > 30, "樹太稀疏（找不到木頭）：trees={trees}");
+        assert!(trees < 1200, "樹太密集（擋路）：trees={trees}");
+    }
+
+    #[test]
+    fn tree_grows_from_grass_trunk_then_leaves() {
+        // 找一棵真實的樹，驗證：底座是草、其上是樹幹 Wood、樹冠含 Leaves。
+        let tree = (0..200)
+            .flat_map(|cx| (0..200).map(move |cz| (cx, cz)))
+            .find_map(|(cx, cz)| tree_in_cell(cx, cz))
+            .expect("應找得到一棵樹");
+        // 樹底座踩在草地表上。
+        assert_eq!(block_at(tree.tx, tree.base_h, tree.tz), Block::Grass);
+        // 樹幹：底座之上整段都是 Wood。
+        for y in (tree.base_h + 1)..=(tree.base_h + tree.trunk) {
+            assert_eq!(block_at(tree.tx, y, tree.tz), Block::Wood, "樹幹應為 Wood @ y={y}");
+        }
+        // 樹幹高度在設定範圍內。
+        assert!((TREE_MIN_TRUNK..=TREE_MAX_TRUNK).contains(&tree.trunk));
+        // 樹冠：樹幹頂的 3×3 環上至少有 Leaves。
+        let top = tree.base_h + tree.trunk;
+        let mut canopy = 0u32;
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                if block_at(tree.tx + dx, top, tree.tz + dz) == Block::Leaves {
+                    canopy += 1;
+                }
+            }
+        }
+        assert!(canopy > 0, "樹幹頂應有樹冠 Leaves");
+        // 樹幹正上方頂蓋是 Leaves。
+        assert_eq!(block_at(tree.tx, top + 1, tree.tz), Block::Leaves);
+    }
+
+    #[test]
+    fn tree_canopy_never_crosses_cell() {
+        // 設計不變量：半徑 1 樹冠永不跨格 → block_at 只查自己這格即可（O(1)）。
+        // 驗證每棵樹的樹幹落點都在格內側（offset 1..=5 of 0..=6）。
+        for cx in -30..30 {
+            for cz in -30..30 {
+                if let Some(t) = tree_in_cell(cx, cz) {
+                    let ox = t.tx - cx * TREE_CELL;
+                    let oz = t.tz - cz * TREE_CELL;
+                    assert!((1..=5).contains(&ox) && (1..=5).contains(&oz),
+                        "樹幹落點應在格內側：off=({ox},{oz})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_trees_in_spawn_protection_core() {
+        // 出生保護圈核心（錨點半徑 R-2 內，足夠涵蓋出生點+落地餘裕）不得有任何樹塊。
+        let core = SPAWN_PROTECT_RADIUS - 2;
+        for (ax, az) in SPAWN_ANCHORS {
+            for dx in -core..=core {
+                for dz in -core..=core {
+                    if dx * dx + dz * dz > core * core {
+                        continue;
+                    }
+                    let (x, z) = (ax + dx, az + dz);
+                    let h = height_at(x, z);
+                    for dy in 1..=8 {
+                        let b = block_at(x, h + dy, z);
+                        assert!(
+                            b != Block::Wood && b != Block::Leaves,
+                            "保護圈核心不該有樹 @ ({x},{z},{})",
+                            h + dy
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn trees_persist_through_generate_chunk() {
+        // 樹是「地形的一部分」：generate_chunk（串流路徑）必含樹塊、且與逐點 block_at 一致。
+        // 找一棵樹，定位其所屬地面 chunk，驗證 packed chunk 裡含 Wood。
+        let tree = (0..200)
+            .flat_map(|cx| (0..200).map(move |cz| (cx, cz)))
+            .find_map(|(cx, cz)| tree_in_cell(cx, cz))
+            .expect("應找得到一棵樹");
+        let coord = chunk_of(tree.tx, tree.base_h + 1, tree.tz);
+        let chunk = generate_chunk(coord);
+        assert!(
+            chunk.blocks.iter().any(|&b| b == Block::Wood as u8),
+            "樹所屬 chunk 應含 Wood（走 generate 路徑、非 delta）"
+        );
+        // generate 與逐點 block_at 完全同源（含樹）。
+        let li = world_local_index(tree.tx, tree.base_h + 1, tree.tz);
+        assert_eq!(chunk.blocks[li], Block::Wood as u8);
     }
 }
