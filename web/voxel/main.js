@@ -747,8 +747,9 @@ let target = null;
 
 // ── 快捷欄（選要放的方塊型別）+ 背包存量（採集 v1）───────────────────────────
 // 種田 v1（ROADMAP 659）：加入農田土 + 種子（種子為純物品，特殊 Plant 動作）
-// 快捷欄 9 格：GRASS DIRT STONE WOOD SAND LEAVES PLANK FARM_SOIL SEEDS
-const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, FARM_SOIL, SEEDS];
+// 快捷欄 11 格：GRASS DIRT STONE WOOD SAND LEAVES PLANK STONE_BRICK GLASS FARM_SOIL SEEDS
+// 鍵盤 1–9 對應前 9 格；FARM_SOIL(10)、SEEDS(11) 以滑鼠/觸控點選
+const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS];
 const BLOCK_NAME = {
   [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉",
   [PLANK]: "木板", [STONE_BRICK]: "石磚", [GLASS]: "玻璃",
