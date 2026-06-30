@@ -1288,16 +1288,16 @@ function connect() {
       showErr("材料不足：" + bname + "（先去挖一些吧）");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "craft_ok") {
-      // 合成台 v1：合成成功，短暫提示並刷新合成面板。
-      const oname = BLOCK_NAME[m.out_count > 0 ? RECIPES_JS.find(r => r.id === m.recipe_id)?.output_block : 0] || m.name_zh;
+      // 背包合成格 v1：合成成功 → 清空格子 + 重繪背包面板。
       showMsg("合成成功：" + m.name_zh + " ×" + m.out_count + "！");
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2200);
-      renderCraftPanel();
+      bagGrid.fill(0); bagPick = 0;
+      if (bagPanelVisible()) renderBagPanel();
     } else if (m.t === "craft_fail") {
-      // 合成台 v1：材料不足，短暫提示。
+      // 背包合成格 v1：材料不足，短暫提示。
       showErr("材料不足，無法合成（先多採集一些）");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
-      renderCraftPanel();
+      if (bagPanelVisible()) renderBagPanel();
     } else if (m.t === "plant_ok") {
       // 種田 v1：種植成功，短暫提示。
       showMsg("已種下種子！等 90 秒小麥就成熟 🌾");
@@ -1547,8 +1547,9 @@ addEventListener("resize", () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// ── 合成台 v1（ROADMAP 658）──────────────────────────────────────────────────
+// ── 背包 + 2×2 合成格 v1（ROADMAP 664）──────────────────────────────────────
 // 前端配方表（對齊後端 voxel_craft::RECIPES，id/inputs/output 穩定契約）。
+// 無順序合成（shapeless）：格子裡只要湊齊材料種類+數量即可，位置不限。
 const RECIPES_JS = [
   { id: "plank",        name: "木板",   inputs: [[WOOD, 2]],  output_block: PLANK,       out_count: 4 },
   { id: "stone_brick",  name: "石磚",   inputs: [[STONE, 2]], output_block: STONE_BRICK, out_count: 2 },
@@ -1556,83 +1557,193 @@ const RECIPES_JS = [
   { id: "till",         name: "農田土", inputs: [[DIRT, 2]],  output_block: FARM_SOIL,   out_count: 2 },
 ];
 
-const craftPanelEl = document.getElementById("craft");
-const craftBodyEl  = document.getElementById("craftBody");
+// ── 背包面板狀態 ──────────────────────────────────────────────────────────────
+// bagGrid[0..3]：2×2 格子，0 代表空格，非零代表 block_id。
+const bagGrid = [0, 0, 0, 0];
+// 目前被「拿起」的 block_id（0 = 沒拿任何東西）。
+let bagPick = 0;
 
-function openCraftPanel() {
-  if (!craftPanelEl) return;
-  craftPanelEl.style.display = "flex";
-  renderCraftPanel();
+const bagPanelEl = document.getElementById("bagPanel");
+const bagInvGridEl = document.getElementById("bagInvGrid");
+const bagGrid2x2El = document.getElementById("bagGrid2x2");
+const bagResultEl  = document.getElementById("bagResultSlot");
+
+function openBagPanel() {
+  if (!bagPanelEl) return;
+  bagPanelEl.style.display = "flex";
+  renderBagPanel();
 }
-function closeCraftPanel() {
-  if (craftPanelEl) craftPanelEl.style.display = "none";
+function closeBagPanel() {
+  if (!bagPanelEl) return;
+  bagPanelEl.style.display = "none";
+  bagPick = 0; // 關面板時清除選取
+}
+function bagPanelVisible() {
+  return bagPanelEl ? bagPanelEl.style.display === "flex" : false;
 }
 
-/** 渲染合成面板——列出每條配方、即時顯示材料是否充足，純函式組 DOM。 */
-function renderCraftPanel() {
-  if (!craftBodyEl) return;
-  craftBodyEl.innerHTML = "";
-  RECIPES_JS.forEach(r => {
-    const canCraft = r.inputs.every(([bid, cnt]) => (myInv.get(bid) || 0) >= cnt);
-    const row = document.createElement("div");
-    row.className = "craft-row" + (canCraft ? "" : " craft-disabled");
-    // 配料欄
-    const inp = document.createElement("div");
-    inp.className = "craft-inp";
-    r.inputs.forEach(([bid, cnt]) => {
-      const have = myInv.get(bid) || 0;
-      const s = document.createElement("span");
-      s.className = "craft-mat" + (have >= cnt ? " ok" : " short");
-      s.textContent = (BLOCK_NAME[bid] || "?") + " ×" + cnt + " (" + have + ")";
-      inp.appendChild(s);
+/**
+ * matchBagRecipe——無順序配方比對（純函式，確定性）。
+ * 統計格子裡的 block_id 出現次數，比對 RECIPES_JS，回傳 {recipe, canCraft} 或 null。
+ * canCraft = 玩家實際背包材料足夠（格子放入是「預覽意圖」，不實際扣除）。
+ */
+function matchBagRecipe() {
+  const gridCounts = new Map();
+  for (const bid of bagGrid) {
+    if (bid !== 0) gridCounts.set(bid, (gridCounts.get(bid) || 0) + 1);
+  }
+  if (gridCounts.size === 0) return null;
+  for (const r of RECIPES_JS) {
+    const needed = new Map(r.inputs.map(([b, c]) => [b, c]));
+    if (needed.size !== gridCounts.size) continue;
+    let match = true;
+    for (const [b, c] of needed) {
+      if ((gridCounts.get(b) || 0) !== c) { match = false; break; }
+    }
+    if (!match) continue;
+    const canCraft = r.inputs.every(([b, c]) => (myInv.get(b) || 0) >= c);
+    return { recipe: r, canCraft };
+  }
+  return null;
+}
+
+/** 顏色方塊 DOM（inline background swatch）。 */
+function makeSwatchEl(blockId, cls) {
+  const el = document.createElement("div");
+  el.className = cls;
+  const c = COLOR[blockId] || COLOR[STONE];
+  el.style.background = `rgb(${(c[0]*255)|0},${(c[1]*255)|0},${(c[2]*255)|0})`;
+  return el;
+}
+
+/** 渲染物品欄區域——列出背包內所有有數量的方塊，可點選「拿起」。 */
+function renderBagInvGrid() {
+  if (!bagInvGridEl) return;
+  bagInvGridEl.innerHTML = "";
+  const items = [...myInv.entries()].filter(([, cnt]) => cnt > 0);
+  if (items.length === 0) {
+    const emp = document.createElement("div");
+    emp.style.cssText = "color:#506070;font-size:12px;font-style:italic;padding:6px 0";
+    emp.textContent = "背包是空的，去挖一些方塊吧";
+    bagInvGridEl.appendChild(emp);
+    return;
+  }
+  items.forEach(([bid, cnt]) => {
+    const slot = document.createElement("div");
+    slot.className = "bag-inv-slot" + (bagPick === bid ? " picked" : "");
+    slot.appendChild(makeSwatchEl(bid, "bag-inv-sw"));
+    const name = document.createElement("div");
+    name.className = "bag-inv-name";
+    name.textContent = BLOCK_NAME[bid] || "?";
+    const cntEl = document.createElement("div");
+    cntEl.className = "bag-inv-cnt";
+    cntEl.textContent = "×" + cnt;
+    slot.appendChild(name); slot.appendChild(cntEl);
+    slot.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      bagPick = (bagPick === bid) ? 0 : bid; // 同一格再點 → 取消選取
+      renderBagPanel();
     });
-    // 箭頭
-    const arr = document.createElement("span");
-    arr.className = "craft-arr";
-    arr.textContent = "→";
-    // 產出欄
-    const out = document.createElement("span");
-    out.className = "craft-out";
-    const oc = COLOR[r.output_block] || COLOR[STONE];
-    out.innerHTML =
-      '<span class="craft-swatch" style="background:rgb(' +
-      ((oc[0] * 255) | 0) + "," + ((oc[1] * 255) | 0) + "," + ((oc[2] * 255) | 0) +
-      ')"></span>' + r.name + " ×" + r.out_count;
-    // 合成鈕
-    const btn = document.createElement("button");
-    btn.className = "craft-btn";
-    btn.textContent = "合成";
-    btn.disabled = !canCraft;
-    btn.addEventListener("click", () => {
-      if (!wsReady) return;
-      ws.send(JSON.stringify({ t: "craft", recipe_id: r.id }));
-    });
-    row.appendChild(inp); row.appendChild(arr); row.appendChild(out); row.appendChild(btn);
-    craftBodyEl.appendChild(row);
+    bagInvGridEl.appendChild(slot);
   });
 }
 
-// 合成鈕（🔨）開關合成面板。
-const craftBtnEl = document.getElementById("craftBtn");
-if (craftBtnEl) craftBtnEl.addEventListener("click", (e) => {
-  if (!craftPanelEl) return;
-  if (craftPanelEl.style.display === "none" || !craftPanelEl.style.display) {
-    openCraftPanel();
-  } else {
-    closeCraftPanel();
+/** 渲染 2×2 合成格 + 結果格。 */
+function renderBagCraftArea() {
+  if (!bagGrid2x2El || !bagResultEl) return;
+  bagGrid2x2El.innerHTML = "";
+  for (let i = 0; i < 4; i++) {
+    const bid = bagGrid[i];
+    const slot = document.createElement("div");
+    slot.className = "bag-grid-slot" + (bid !== 0 ? " filled" : "");
+    if (bid !== 0) {
+      slot.appendChild(makeSwatchEl(bid, "bag-grid-sw"));
+      const lbl = document.createElement("div");
+      lbl.className = "bag-grid-lbl";
+      lbl.textContent = BLOCK_NAME[bid] || "?";
+      slot.appendChild(lbl);
+    }
+    slot.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      if (bagPick !== 0 && bid === 0) {
+        // 拿著東西 + 格子空 → 放入
+        bagGrid[i] = bagPick;
+        bagPick = 0;
+      } else if (bagPick !== 0 && bid !== 0) {
+        // 拿著東西 + 格子已有 → 交換
+        bagGrid[i] = bagPick;
+        bagPick = bid;
+      } else if (bagPick === 0 && bid !== 0) {
+        // 沒拿東西 + 格子有東西 → 拿起（格子清空）
+        bagPick = bid;
+        bagGrid[i] = 0;
+      }
+      renderBagPanel();
+    });
+    bagGrid2x2El.appendChild(slot);
   }
+  // 結果格
+  const match = matchBagRecipe();
+  bagResultEl.className = ""; // 重設 class
+  bagResultEl.innerHTML = "";
+  if (match) {
+    const r = match.recipe;
+    bagResultEl.classList.add(match.canCraft ? "has-result" : "no-material");
+    bagResultEl.appendChild(makeSwatchEl(r.output_block, "bag-res-sw"));
+    const cnt = document.createElement("div");
+    cnt.className = "bag-res-cnt";
+    cnt.textContent = "×" + r.out_count;
+    const name = document.createElement("div");
+    name.className = "bag-res-name";
+    name.textContent = r.name;
+    bagResultEl.appendChild(cnt); bagResultEl.appendChild(name);
+    if (!match.canCraft) {
+      const warn = document.createElement("div");
+      warn.style.cssText = "font-size:9px;color:#ff8060;margin-top:2px";
+      warn.textContent = "材料不足";
+      bagResultEl.appendChild(warn);
+    }
+  }
+}
+
+/** 渲染整個背包面板（物品欄 + 合成格）。 */
+function renderBagPanel() {
+  renderBagInvGrid();
+  renderBagCraftArea();
+}
+
+// 結果格點擊：送出合成請求。
+if (bagResultEl) bagResultEl.addEventListener("pointerdown", (e) => {
   e.stopPropagation();
-});
-// 點面板外關閉（與日記、Feed 面板保持一致）。
-document.addEventListener("pointerdown", (e) => {
-  if (craftPanelEl && craftPanelEl.style.display === "flex") {
-    if (!craftPanelEl.contains(e.target) && e.target !== craftBtnEl) closeCraftPanel();
-  }
+  const match = matchBagRecipe();
+  if (!match || !match.canCraft || !wsReady) return;
+  ws.send(JSON.stringify({ t: "craft", recipe_id: match.recipe.id }));
 });
 
-// 合成台面板關閉鈕（✕）。
-const craftCloseEl = document.getElementById("craftClose");
-if (craftCloseEl) craftCloseEl.addEventListener("click", closeCraftPanel);
+// 清除合成格按鈕。
+const bagClearBtnEl = document.getElementById("bagClearBtn");
+if (bagClearBtnEl) bagClearBtnEl.addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  bagGrid.fill(0);
+  bagPick = 0;
+  renderBagPanel();
+});
+
+// 背包按鈕（🎒）開關面板。
+const bagBtnEl = document.getElementById("bagBtn");
+if (bagBtnEl) bagBtnEl.addEventListener("click", (e) => {
+  if (bagPanelVisible()) { closeBagPanel(); } else { openBagPanel(); }
+  e.stopPropagation();
+});
+// 點面板外關閉。
+document.addEventListener("pointerdown", (e) => {
+  if (bagPanelVisible()) {
+    if (!bagPanelEl.contains(e.target) && e.target !== bagBtnEl) closeBagPanel();
+  }
+});
+// 關閉鈕（✕）。
+const bagCloseEl = document.getElementById("bagClose");
+if (bagCloseEl) bagCloseEl.addEventListener("click", closeBagPanel);
 
 /** 簡短綠色提示（合成成功用；區別於 showErr 紅色錯誤）。 */
 function showMsg(text) {
@@ -1689,12 +1800,16 @@ window.__voxel = {
   get myInv() { return Object.fromEntries(myInv); },
   setInvForTest(bid, cnt) { if (cnt > 0) myInv.set(bid, cnt); else myInv.delete(bid); updateInvHud(); },
   updateInvHud() { updateInvHud(); },
-  // ── 合成台 QA 用（ROADMAP 658）──
-  get craftPanelVisible() { return craftPanelEl ? craftPanelEl.style.display === "flex" : false; },
-  openCraftPanel() { openCraftPanel(); },
-  closeCraftPanel() { closeCraftPanel(); },
-  renderCraftPanel() { renderCraftPanel(); return craftBodyEl ? craftBodyEl.innerHTML : ""; },
+  // ── 背包合成格 QA 用（ROADMAP 664）──
+  get bagPanelVisible() { return bagPanelVisible(); },
+  openBagPanel() { openBagPanel(); },
+  closeBagPanel() { closeBagPanel(); },
+  renderBagPanel() { renderBagPanel(); },
   get RECIPES_JS() { return RECIPES_JS; },
+  get bagGrid() { return [...bagGrid]; },
+  get bagPick() { return bagPick; },
+  matchBagRecipe() { return matchBagRecipe(); },
+  setBagGrid(slots) { slots.forEach((v, i) => { if (i < 4) bagGrid[i] = v; }); renderBagPanel(); },
   PLANK, STONE_BRICK, GLASS,
   // 種田 v1 常數 + QA 介面
   FARM_SOIL, FARM_SOIL_SEEDED, WHEAT_MATURE, SEEDS,

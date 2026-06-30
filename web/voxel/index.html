@@ -323,60 +323,110 @@
       pointer-events: none;
     }
 
-    /* ── 合成台按鈕（右側頂部，類 feedBtn）───────────────────────────────── */
-    #craftBtn {
+    /* ── 背包 + 合成格按鈕（ROADMAP 664）──────────────────────────────────── */
+    #bagBtn {
       position: fixed; right: 10px; top: 88px; z-index: 6;
       background: rgba(20,28,40,0.65); color: #f0d080;
       border: 1px solid rgba(240,208,128,0.3);
       padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
       user-select: none; pointer-events: auto;
     }
-    #craftBtn:hover { background: rgba(60,50,20,0.75); }
+    #bagBtn:hover { background: rgba(60,50,20,0.75); }
 
-    /* ── 合成台面板（ROADMAP 658）────────────────────────────────────────── */
-    #craft {
+    /* ── 背包 + 合成格面板（ROADMAP 664）───────────────────────────────────── */
+    #bagPanel {
       position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
-      z-index: 20; width: min(400px, 94vw); max-height: 80vh;
+      z-index: 20; width: min(520px, 94vw); max-height: 85vh;
       display: none; flex-direction: column;
-      background: rgba(16,22,34,0.95); color: #eaf2ff; border-radius: 16px;
+      background: rgba(16,22,34,0.96); color: #eaf2ff; border-radius: 16px;
       border: 1px solid rgba(240,208,128,0.25); box-shadow: 0 8px 32px rgba(0,0,0,0.55);
       overflow: hidden;
     }
-    #craftHead {
+    #bagHead {
       display: flex; align-items: center; justify-content: space-between;
       padding: 10px 14px; background: rgba(240,208,128,0.08); font-weight: bold; font-size: 15px;
+      flex-shrink: 0;
     }
-    #craftTitle { color: #f0d080; }
-    #craftClose {
+    #bagTitle { color: #f0d080; }
+    #bagClose {
       cursor: pointer; user-select: none; font-size: 18px; line-height: 1;
       padding: 2px 9px; border-radius: 8px; background: rgba(255,255,255,0.10);
     }
-    #craftBody {
+    #bagBody {
       flex: 1; overflow-y: auto; padding: 12px 14px;
-      display: flex; flex-direction: column; gap: 8px; font-size: 13px;
+      display: flex; flex-direction: row; gap: 16px;
     }
-    .craft-row {
-      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-      padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,0.05);
+    #bagInvSection { flex: 1; min-width: 0; }
+    #bagCraftSection { flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; }
+    .bag-sec-lbl {
+      font-size: 11px; color: #7090b0; letter-spacing: 0.8px;
+      margin-bottom: 8px; text-transform: uppercase;
     }
-    .craft-row.craft-disabled { opacity: 0.55; }
-    .craft-inp { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
-    .craft-mat { padding: 2px 7px; border-radius: 6px; font-size: 12px; }
-    .craft-mat.ok    { background: rgba(80,200,100,0.20); color: #80e898; border: 1px solid rgba(80,200,100,0.3); }
-    .craft-mat.short { background: rgba(255,120,60,0.18); color: #ff9060; border: 1px solid rgba(255,120,60,0.3); }
-    .craft-arr { color: #8090a8; font-size: 14px; flex-shrink: 0; }
-    .craft-out { display: flex; align-items: center; gap: 5px; font-size: 13px; color: #d8ecfc; flex: 1; min-width: 80px; }
-    .craft-swatch { width: 16px; height: 16px; border-radius: 3px; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.2); }
-    .craft-btn {
-      margin-left: auto; padding: 5px 12px; border-radius: 8px; border: none;
-      background: rgba(255,216,107,0.85); color: #2a2410; font-weight: bold;
-      font-size: 13px; cursor: pointer; flex-shrink: 0;
+    /* 物品欄格子 */
+    #bagInvGrid { display: flex; flex-wrap: wrap; gap: 6px; }
+    .bag-inv-slot {
+      width: 52px; height: 52px; border-radius: 8px;
+      border: 2px solid rgba(255,255,255,0.2);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      cursor: pointer; user-select: none; gap: 2px;
+      background: rgba(255,255,255,0.05);
+      transition: border-color 0.12s, box-shadow 0.12s, background 0.12s;
     }
-    .craft-btn:disabled { background: rgba(120,110,80,0.45); color: #888; cursor: not-allowed; }
-    .craft-btn:not(:disabled):hover { background: #ffd86b; }
+    .bag-inv-slot:hover { background: rgba(255,255,255,0.10); }
+    .bag-inv-slot.picked {
+      border-color: #ffd86b; box-shadow: 0 0 8px rgba(255,216,107,0.55);
+      background: rgba(255,216,107,0.10);
+    }
+    .bag-inv-sw { width: 22px; height: 22px; border-radius: 4px; }
+    .bag-inv-cnt { font-size: 10px; color: #ffd86b; line-height: 1; }
+    .bag-inv-name { font-size: 9px; color: #9db8d0; line-height: 1; }
+    /* 合成格 2×2 */
+    #bagCraftRow { display: flex; align-items: center; gap: 10px; }
+    #bagGrid2x2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .bag-grid-slot {
+      width: 54px; height: 54px; border-radius: 8px;
+      border: 2px solid rgba(255,255,255,0.2);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      cursor: pointer; user-select: none; gap: 2px;
+      background: rgba(255,255,255,0.04);
+      transition: border-color 0.12s, background 0.12s;
+    }
+    .bag-grid-slot.filled { background: rgba(255,255,255,0.09); border-color: rgba(255,255,255,0.38); }
+    .bag-grid-slot:hover { background: rgba(255,255,255,0.12); }
+    .bag-grid-sw { width: 26px; height: 26px; border-radius: 4px; }
+    .bag-grid-lbl { font-size: 9px; color: #cde; line-height: 1; }
+    #bagCraftArrow { font-size: 22px; color: #8090a8; flex-shrink: 0; }
+    /* 結果格 */
+    #bagResultSlot {
+      width: 64px; height: 64px; border-radius: 10px;
+      border: 2px solid rgba(255,255,255,0.15);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 3px; background: rgba(255,255,255,0.04);
+      transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+    }
+    #bagResultSlot.has-result {
+      border-color: #ffd86b; cursor: pointer;
+      box-shadow: 0 0 10px rgba(255,216,107,0.45);
+      background: rgba(255,216,107,0.09);
+    }
+    #bagResultSlot.no-material { border-color: rgba(255,100,60,0.4); }
+    .bag-res-sw { width: 28px; height: 28px; border-radius: 5px; }
+    .bag-res-cnt { font-size: 10px; color: #ffd86b; line-height: 1; }
+    .bag-res-name { font-size: 9px; color: #9db8d0; line-height: 1; }
+    /* 清除鈕 */
+    #bagClearBtn {
+      margin-top: 4px; padding: 5px 0; border-radius: 8px; border: none;
+      font-size: 11px; background: rgba(255,255,255,0.09); color: #8090a8;
+      cursor: pointer; width: 100%;
+    }
+    #bagClearBtn:hover { background: rgba(255,255,255,0.15); color: #cde; }
+    /* 提示文字 */
+    #bagHint { font-size: 11px; color: #506880; margin-top: 8px; line-height: 1.5; }
     @media (orientation: portrait) {
-      #craftBtn { top: auto; bottom: 104px; right: 10px; }
-      #craft { top: auto; transform: translateX(-50%); bottom: 10px; max-height: 65vh; }
+      #bagBtn { top: auto; bottom: 104px; right: 10px; }
+      #bagPanel { top: auto; transform: translateX(-50%); bottom: 10px; max-height: 72vh; }
+      #bagBody { flex-direction: column; }
+      #bagCraftRow { justify-content: center; }
     }
   </style>
   <!-- Three.js 走 CDN importmap（比照 /3d/ 與 /play3d/）。 -->
@@ -429,8 +479,8 @@
     </div>
     <div id="diaryBody"></div>
   </div>
-  <!-- 合成台按鈕（ROADMAP 658）-->
-  <button id="craftBtn">🔨 合成</button>
+  <!-- 背包 + 合成格按鈕（ROADMAP 664）-->
+  <button id="bagBtn">🎒 背包</button>
   <!-- 城鎮動態 Feed（ROADMAP 655）-->
   <div id="feedBtn">🌐 動態</div>
   <div id="feed">
@@ -440,13 +490,28 @@
     </div>
     <div id="feedBody"></div>
   </div>
-  <!-- 合成台面板（ROADMAP 658）-->
-  <div id="craft">
-    <div id="craftHead">
-      <span id="craftTitle">🔨 合成台</span>
-      <span id="craftClose">✕</span>
+  <!-- 背包 + 合成格面板（ROADMAP 664）-->
+  <div id="bagPanel">
+    <div id="bagHead">
+      <span id="bagTitle">🎒 背包 · 合成</span>
+      <span id="bagClose">✕</span>
     </div>
-    <div id="craftBody"></div>
+    <div id="bagBody">
+      <div id="bagInvSection">
+        <div class="bag-sec-lbl">物品欄</div>
+        <div id="bagInvGrid"></div>
+      </div>
+      <div id="bagCraftSection">
+        <div class="bag-sec-lbl">合成格（2×2 無順序）</div>
+        <div id="bagCraftRow">
+          <div id="bagGrid2x2"></div>
+          <div id="bagCraftArrow">➔</div>
+          <div id="bagResultSlot"></div>
+        </div>
+        <button id="bagClearBtn">清除合成格</button>
+        <div id="bagHint">點物品→選中，點格子→放入；格子湊齊配方→結果格亮起→點結果格→合成</div>
+      </div>
+    </div>
   </div>
   <!-- 相對於 /voxel/ 載入；?v 由後端 serve_voxel_index 注入內容雜湊 -->
   <script type="module" src="main.js?v=1"></script>
