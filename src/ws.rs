@@ -68,6 +68,7 @@ fn forward_action(err: &RecvError) -> ForwardAction {
     }
 }
 
+#[allow(dead_code)] // 封存:2D /ws路由已移除,handler保留
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     headers: HeaderMap,
