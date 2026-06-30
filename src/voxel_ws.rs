@@ -1392,7 +1392,9 @@ fn tick_farm() {
     }
 }
 
-/// `GET /voxel/diary` — 回傳所有居民的日記頁（記憶摘要 + 當前心願）。
+/// `GET /voxel/diary` — 回傳所有居民的日記頁（curated 內心反思 + 當前心願）。
+/// 日記是「瞥見居民沒說出口的內心」，不是聊天謄本：記憶在 `voxel_diary` 內被昇華成
+/// 第一人稱反思、同主題收斂降噪、永不倒出玩家原話 / 玩家名（隱私邊界）。
 /// 短鎖讀取快照 → drop 鎖 → 格式化 → 回 JSON；零 LLM、零持久化、零 migration。
 /// 呼叫端（瀏覽器）直接 `fetch("/voxel/diary")` 即可，無需任何認證。
 pub async fn voxel_diary_handler() -> axum::response::Response {
