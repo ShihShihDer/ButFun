@@ -282,6 +282,13 @@ async fn llm_chat_fast(system: &str, user: &str) -> Option<String> {
             return Some(t);
         }
     }
+    // 本地 ollama(deb-pc)排在雲端後備之前：Groq 額度爆時直接走「快又免費」的本地，
+    // 不必逐把 key 乾等 Cerebras/Gemini 逾時(那正是對話 ~16s 乾走的元兇)。熱機 ~0.4s。
+    if ollama_configured() {
+        if let Ok(Some(t)) = tokio::time::timeout(Duration::from_secs(8), ollama_chat(system, user)).await {
+            return Some(t);
+        }
+    }
     if cerebras_enabled() {
         if let Ok(Some(t)) = tokio::time::timeout(FAST, cerebras_chat(system, user)).await {
             return Some(t);
