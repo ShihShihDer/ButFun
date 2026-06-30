@@ -31,6 +31,7 @@ use crate::voxel_feed as vfeed;
 use crate::voxel_craft as vcraft;
 use crate::voxel_inventory::{self as vinv, InvStore};
 use crate::voxel_memory::{self as vmem, VoxelMemory};
+use crate::voxel_farm::{self as vfarm, FarmStore};
 use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
 use crate::voxel_residents::{self as vr, Body};
@@ -316,6 +317,9 @@ struct VoxelHub {
     builds: RwLock<BuildStore>,
     /// 玩家背包（採集 v1）：挖方塊得材料、放置消耗存量。持久化到 data/voxel_inventory.jsonl。
     inventory: RwLock<InvStore>,
+    /// 農地 store（種田 v1·純記憶體；重啟後農地重置，與世界 delta 行為一致）。
+    /// 記錄哪些格子種下了幼苗、何時種的，每 15 秒 tick 一次成熟檢查。
+    farm: RwLock<FarmStore>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -340,6 +344,8 @@ fn hub() -> &'static VoxelHub {
             builds: RwLock::new(BuildStore::from_entries(vbuild::load_builds())),
             // 啟動時從 data/voxel_inventory.jsonl 載回玩家背包（重啟後存量還在）。
             inventory: RwLock::new(InvStore::from_entries(vinv::load_inventory())),
+            // 農地 store 純記憶體（與世界 delta 一致：重啟後農地重置，玩家重新種即可）。
+            farm: RwLock::new(FarmStore::new()),
             tx,
         }
     })
@@ -405,6 +411,9 @@ enum ClientMsg {
     Talk { resident_id: String, text: String },
     /// 合成台 v1：用配料合成新型方塊（ROADMAP 658）。`recipe_id` 對齊 voxel_craft::Recipe.id。
     Craft { recipe_id: String },
+    /// 種田 v1：在農田土上種下種子（ROADMAP 659）。
+    /// 伺服器驗證目標是 FarmSoil(11)、玩家有種子(14)後，把方塊改成 FarmSoilSeeded(12)。
+    Plant { x: i32, y: i32, z: i32 },
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -645,22 +654,61 @@ async fn handle_socket(socket: WebSocket) {
                 }; // delta 寫鎖在此釋放
                 if broken {
                     broadcast_block(x, y, z, Block::Air);
-                    // 只有實心方塊才給材料（Air/Water 已被 can_break 濾掉，雙保險）。
+                    // 農地方塊有特殊掉落；其餘實心方塊掉落自身。
                     if target_block.is_solid() {
-                        let bid = target_block as u8;
-                        // inventory 寫鎖（delta 已釋放，循序不巢狀，守死鎖鐵律）。
-                        let entry = hub().inventory.write().unwrap().give(&name, bid, 1);
-                        vinv::append_inv(&entry);
-                        let new_count =
-                            hub().inventory.read().unwrap().count(&name, bid);
-                        let _ = out_tx.try_send(Message::Text(
-                            serde_json::json!({
-                                "t": "inv_update",
-                                "block_id": bid,
-                                "count": new_count
-                            })
-                            .to_string(),
-                        ));
+                        // 種田 v1：農地狀態方塊的特殊掉落規則。
+                        //   Leaves(6)        → 種子(14)×1（葉片→種子，v1 種子來源）。
+                        //   FarmSoilSeeded(12)→ 農田土(11)×1 + 種子(14)×1（取消種植退還）。
+                        //   WheatMature(13)   → 農田土(11)×1 + 種子(14)×2（收割，淨賺+1）。
+                        //   其餘實心方塊     → 自身×1（原行為）。
+                        let drops: &[(u8, u32)] = match target_block {
+                            Block::Leaves          => &[(vfarm::SEEDS_ID, 1)],
+                            Block::FarmSoilSeeded  => &[(11, 1), (vfarm::SEEDS_ID, 1)],
+                            Block::WheatMature     => &[(11, 1), (vfarm::SEEDS_ID, 2)],
+                            _ => &[], // 後面用 else 分支處理
+                        };
+
+                        // 種田 v1 的方塊 → 農地 store 也要清掉記錄。
+                        if matches!(target_block, Block::FarmSoilSeeded | Block::WheatMature) {
+                            hub().farm.write().unwrap().remove(x, y, z);
+                        }
+
+                        if !drops.is_empty() {
+                            // inventory 寫鎖（delta 已釋放，循序不巢狀，守死鎖鐵律）。
+                            let mut inv = hub().inventory.write().unwrap();
+                            for &(did, cnt) in drops {
+                                let entry = inv.give(&name, did, cnt);
+                                drop(inv); // 先釋放再 append（不持鎖 IO）
+                                vinv::append_inv(&entry);
+                                let new_count =
+                                    hub().inventory.read().unwrap().count(&name, did);
+                                let _ = out_tx.try_send(Message::Text(
+                                    serde_json::json!({
+                                        "t": "inv_update",
+                                        "block_id": did,
+                                        "count": new_count
+                                    })
+                                    .to_string(),
+                                ));
+                                // 重新借鎖繼續下一個 drop（若有）。
+                                inv = hub().inventory.write().unwrap();
+                            }
+                        } else {
+                            // 一般實心方塊：掉落自身。
+                            let bid = target_block as u8;
+                            let entry = hub().inventory.write().unwrap().give(&name, bid, 1);
+                            vinv::append_inv(&entry);
+                            let new_count =
+                                hub().inventory.read().unwrap().count(&name, bid);
+                            let _ = out_tx.try_send(Message::Text(
+                                serde_json::json!({
+                                    "t": "inv_update",
+                                    "block_id": bid,
+                                    "count": new_count
+                                })
+                                .to_string(),
+                            ));
+                        }
                     }
                 }
             }
@@ -979,6 +1027,55 @@ async fn handle_socket(socket: WebSocket) {
                     }
                 }
             }
+            Ok(ClientMsg::Plant { x, y, z }) => {
+                // 種田 v1（ROADMAP 659）：在農田土(11)上種下種子(14) → FarmSoilSeeded(12)。
+                // 鎖序：inventory → delta → farm（循序取放，不巢狀，守死鎖鐵律）。
+                let Some((px, py, pz)) = player_pos(my_id) else {
+                    continue;
+                };
+                // 觸及範圍驗證（種植在方塊本身，不是面外側，距離比放置更寬鬆）。
+                if !voxel::in_reach(px, py, pz, x, y, z) {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "plant_fail", "reason": "太遠了" }).to_string(),
+                    ));
+                    continue;
+                }
+                // 確認目標方塊是農田土(11)。
+                let target = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
+                if target != Block::FarmSoil {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "plant_fail", "reason": "需要農田土" }).to_string(),
+                    ));
+                    continue;
+                }
+                // 消耗 1 顆種子（inventory 寫鎖即釋）。
+                let seed_entry = hub().inventory.write().unwrap().take(&name, vfarm::SEEDS_ID, 1);
+                let Some(seed_e) = seed_entry else {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "plant_fail", "reason": "沒有種子" }).to_string(),
+                    ));
+                    continue;
+                };
+                // 套 delta：FarmSoil → FarmSoilSeeded（delta 寫鎖即釋）。
+                voxel::set_block(&mut hub().deltas.write().unwrap(), x, y, z, Block::FarmSoilSeeded);
+                // 記錄農地 + 持久化種子消耗（兩者都在鎖外）。
+                hub().farm.write().unwrap().plant(x, y, z, vfarm::now_secs());
+                vinv::append_inv(&seed_e);
+                // 廣播方塊更新 + 送背包更新。
+                broadcast_block(x, y, z, Block::FarmSoilSeeded);
+                let new_seed_cnt = hub().inventory.read().unwrap().count(&name, vfarm::SEEDS_ID);
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({
+                        "t": "inv_update",
+                        "block_id": vfarm::SEEDS_ID,
+                        "count": new_seed_cnt
+                    })
+                    .to_string(),
+                ));
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "plant_ok", "x": x, "y": y, "z": z }).to_string(),
+                ));
+            }
             // 重複 Join 或壞訊息：忽略。
             _ => {}
         }
@@ -1015,6 +1112,37 @@ pub fn spawn_residents() {
             tick_residents(RESIDENT_DT);
         }
     });
+}
+
+/// 啟動農地成熟 tick（每 15 秒檢查一次，成熟的幼苗換成成熟小麥並廣播）。
+pub fn spawn_farm_tick() {
+    tokio::spawn(async move {
+        let _ = hub(); // 觸發 hub 初始化
+        let mut ticker = tokio::time::interval(Duration::from_secs(15));
+        loop {
+            ticker.tick().await;
+            tick_farm();
+        }
+    });
+}
+
+/// 農地成熟 tick——找所有已成熟的幼苗，換成成熟小麥，廣播給所有連線。
+/// 純同步、短鎖即釋（farm 讀鎖 → drop → farm 寫鎖 → drop → delta 寫鎖 → drop → broadcast）。
+fn tick_farm() {
+    let now = vfarm::now_secs();
+    // 先讀鎖取成熟座標清單，馬上釋放。
+    let mature: Vec<(i32, i32, i32)> = hub().farm.read().unwrap().mature_plots(now);
+    if mature.is_empty() {
+        return;
+    }
+    for (fx, fy, fz) in mature {
+        // 寫鎖清掉農地記錄（避免下輪重複處理）。
+        hub().farm.write().unwrap().remove(fx, fy, fz);
+        // delta 寫鎖：把方塊從 FarmSoilSeeded(12) 換成 WheatMature(13)。
+        voxel::set_block(&mut hub().deltas.write().unwrap(), fx, fy, fz, Block::WheatMature);
+        // 廣播方塊更新（所有連線玩家即時看到小麥變金黃）。
+        broadcast_block(fx, fy, fz, Block::WheatMature);
+    }
 }
 
 /// `GET /voxel/diary` — 回傳所有居民的日記頁（記憶摘要 + 當前心願）。

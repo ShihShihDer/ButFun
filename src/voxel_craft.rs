@@ -28,6 +28,7 @@ pub struct Recipe {
 ///
 /// 材料 id 常數（對齊 `Block` enum）：
 ///   Wood=5, Stone=3, Sand=4 → Plank=8, StoneBrick=9, Glass=10
+///   Dirt=2 → FarmSoil=11（種田 v1）
 pub const RECIPES: &[Recipe] = &[
     Recipe {
         id: "plank",
@@ -49,6 +50,13 @@ pub const RECIPES: &[Recipe] = &[
         inputs: &[(4, 2)],   // 2 沙 → 1 玻璃
         output_block: 10,
         output_count: 1,
+    },
+    Recipe {
+        id: "till",
+        name_zh: "農田土",
+        inputs: &[(2, 2)],   // 2 泥土 → 2 農田土（種田 v1）
+        output_block: 11,
+        output_count: 2,
     },
 ];
 
@@ -97,11 +105,11 @@ mod tests {
 
     #[test]
     fn all_recipes_output_crafted_block_ids() {
-        // 合成品 id 應落在合成台 v1 範圍（Plank=8 / StoneBrick=9 / Glass=10）。
+        // 合成品 id 應落在合成台範圍（Plank=8..=FarmSoil=11）。
         for r in RECIPES {
             assert!(
-                r.output_block >= 8 && r.output_block <= 10,
-                "配方「{}」產出 id={} 應在 8~10 之間",
+                r.output_block >= 8 && r.output_block <= 11,
+                "配方「{}」產出 id={} 應在 8~11 之間",
                 r.id, r.output_block
             );
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
@@ -146,6 +154,7 @@ mod tests {
         store.give("旅人", 5, 10); // Wood (plank 用)
         store.give("旅人", 3, 10); // Stone (stone_brick 用)
         store.give("旅人", 4, 10); // Sand (glass 用)
+        store.give("旅人", 2, 10); // Dirt (till/農田土 用)
         for r in RECIPES {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);
         }

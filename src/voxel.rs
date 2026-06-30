@@ -30,6 +30,7 @@ pub const SEED: u32 = 0x_B0_07_Fu32; // "BOOTF"un · voxel
 
 /// 方塊型別。`#[repr(u8)]` → 直接當 1 byte 串流（pack_chunk 用）。
 /// ID 0–7：自然生成方塊；8–10：合成台 v1（ROADMAP 658）玩家合成方塊。
+/// ID 11–13：種田 v1（ROADMAP 659）農地狀態方塊。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Block {
@@ -47,6 +48,12 @@ pub enum Block {
     StoneBrick = 9,
     /// 玻璃（2 沙 → 1 玻璃）。半透明質感，窗戶或裝飾用。
     Glass = 10,
+    /// 農田土（2 泥土 → 2 農田土，合成台 till 配方）。可種植種子。
+    FarmSoil = 11,
+    /// 幼苗（農田土種下種子後的生長狀態，~90 秒後自動長成成熟小麥）。
+    FarmSoilSeeded = 12,
+    /// 成熟小麥（可收割；破壞後掉落種子×2 + 農田土×1，自我延續的種田循環）。
+    WheatMature = 13,
 }
 
 impl Block {
@@ -69,13 +76,21 @@ impl Block {
             8 => Some(Block::Plank),
             9 => Some(Block::StoneBrick),
             10 => Some(Block::Glass),
+            11 => Some(Block::FarmSoil),
+            12 => Some(Block::FarmSoilSeeded),
+            13 => Some(Block::WheatMature),
             _ => None,
         }
     }
 
-    /// 玩家是否可「放置」此方塊（只准放實心方塊；空氣＝挖掉、水不給手放）。
+    /// 玩家是否可「放置」此方塊（只准放 FarmSoil 和原本的實心建材；
+    /// FarmSoilSeeded / WheatMature 是伺服器維護的狀態方塊，玩家不能手動放置）。
     pub fn is_placeable(self) -> bool {
-        self.is_solid()
+        matches!(
+            self,
+            Block::Dirt | Block::Stone | Block::Sand | Block::Wood | Block::Grass |
+            Block::Plank | Block::StoneBrick | Block::Glass | Block::FarmSoil
+        )
     }
 }
 
