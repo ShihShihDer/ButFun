@@ -27,6 +27,8 @@ const WORKBENCH = 15;
 const FURNACE = 16;
 // 拋光石 v1（ROADMAP 666）——熔爐冶煉所得，精緻灰石建材
 const SMOOTH_STONE = 17;
+// 麵包 v1（ROADMAP 668）——純物品，收割小麥→合麵包；18=小麥顆粒,19=麵包
+const WHEAT = 18, BREAD = 19;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -949,7 +951,7 @@ let target = null;
 // 種田 v1（ROADMAP 659）：加入農田土 + 種子（種子為純物品，特殊 Plant 動作）
 // 快捷欄 14 格：…WORKBENCH FURNACE SMOOTH_STONE
 // 鍵盤 1–9 對應前 9 格；其餘以滑鼠/觸控點選
-const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE];
+const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE, WHEAT, BREAD];
 const BLOCK_NAME = {
   [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉",
   [PLANK]: "木板", [STONE_BRICK]: "石磚", [GLASS]: "玻璃",
@@ -960,6 +962,8 @@ const BLOCK_NAME = {
   [WORKBENCH]: "工作台",
   // 熔爐 v1
   [FURNACE]: "熔爐", [SMOOTH_STONE]: "拋光石",
+  // 麵包 v1（ROADMAP 668）
+  [WHEAT]: "小麥", [BREAD]: "麵包",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
@@ -1182,6 +1186,8 @@ function placeAtTarget() {
     // 種子只能種在農田土上——其他方塊靜默忽略。
     return null;
   }
+  // 麵包 v1（ROADMAP 668）：純物品，不可放置——靜默忽略。
+  if (selectedBlock() === WHEAT || selectedBlock() === BREAD) return null;
   // 一般放置：在命中方塊的面外側放置。
   const px = target.bx + target.nx, py = target.by + target.ny, pz = target.bz + target.nz;
   // 別把方塊放進自己身體（避免卡死）。
@@ -1684,6 +1690,8 @@ const RECIPES_JS = [
   { id: "stone_brick",  name: "石磚",   inputs: [[STONE, 2]], output_block: STONE_BRICK, out_count: 2 },
   { id: "glass",        name: "玻璃",   inputs: [[SAND, 2]],  output_block: GLASS,       out_count: 1 },
   { id: "till",         name: "農田土", inputs: [[DIRT, 2]],  output_block: FARM_SOIL,   out_count: 2 },
+  // 麵包 v1（ROADMAP 668）：3 小麥顆粒 → 1 麵包
+  { id: "bread",        name: "麵包",   inputs: [[WHEAT, 3]], output_block: BREAD,       out_count: 1 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
@@ -2264,6 +2272,8 @@ window.__voxel = {
   get giftBtnText() { const e = document.getElementById("chatGift"); return e ? e.textContent : ""; },
   get giftBtnEmpty() { const e = document.getElementById("chatGift"); return e ? e.classList.contains("gift-empty") : false; },
   GIFT_EXCLUDED: [...GIFT_EXCLUDED],
+  // ── 麵包 v1 QA 用（ROADMAP 668）──
+  WHEAT, BREAD,
   // ── 晝夜循環 v1 QA 用（ROADMAP 661）──
   get worldTime() { return worldTime; },
   updateSkyAndLight(t) { updateSkyAndLight(t); },

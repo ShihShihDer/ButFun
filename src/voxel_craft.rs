@@ -32,6 +32,7 @@ pub struct Recipe {
 ///   Wood=5, Stone=3, Sand=4 → Plank=8, StoneBrick=9, Glass=10
 ///   Dirt=2 → FarmSoil=11（種田 v1）
 ///   Plank=8 → Workbench=15（工作台 v1，ROADMAP 665）
+///   Wheat=18 → Bread=19（麵包 v1，ROADMAP 668；18/19 為純物品 id，非方塊 enum）
 pub const RECIPES: &[Recipe] = &[
     Recipe {
         id: "plank",
@@ -66,6 +67,13 @@ pub const RECIPES: &[Recipe] = &[
         name_zh: "工作台",
         inputs: &[(8, 4)],   // 4 木板 → 1 工作台（2×2 剛好放滿四格）
         output_block: 15,
+        output_count: 1,
+    },
+    Recipe {
+        id: "bread",
+        name_zh: "麵包",
+        inputs: &[(18, 3)],  // 3 小麥顆粒 → 1 麵包（療癒農業循環終點；ROADMAP 668）
+        output_block: 19,
         output_count: 1,
     },
 ];
@@ -248,11 +256,22 @@ mod tests {
     }
 
     #[test]
+    fn bread_recipe_exists_and_correct() {
+        // 麵包配方：3 小麥(18) → 1 麵包(19)（ROADMAP 668）
+        let r = find_recipe("bread").unwrap();
+        assert_eq!(r.output_block, 19, "麵包 item id 應為 19");
+        assert_eq!(r.output_count, 1);
+        assert_eq!(r.inputs, &[(18, 3)], "麵包需要 3 小麥顆粒(18)");
+    }
+
+    #[test]
     fn all_recipes_output_crafted_block_ids() {
-        // 2×2 配方產出 id 應在 8–11 或 15（工作台）
+        // 2×2 配方產出 id 應在 8–11、15（工作台）或 19（麵包純物品）
         for r in RECIPES {
-            let ok = (r.output_block >= 8 && r.output_block <= 11) || r.output_block == 15;
-            assert!(ok, "配方「{}」產出 id={} 應在 8~11 或 15", r.id, r.output_block);
+            let ok = (r.output_block >= 8 && r.output_block <= 11)
+                || r.output_block == 15
+                || r.output_block == 19; // 麵包（純物品 id）
+            assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
         // 3×3 工作台配方產出 id（8~17）
@@ -372,6 +391,7 @@ mod tests {
         store.give("旅人", 4, 10);  // Sand
         store.give("旅人", 2, 10);  // Dirt
         store.give("旅人", 8, 10);  // Plank（工作台 + stone_wood_mix 用）
+        store.give("旅人", 18, 10); // Wheat（麵包配方用，WHEAT_ID）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);
         }

@@ -896,12 +896,13 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         // 種田 v1：農地狀態方塊的特殊掉落規則。
                         //   Leaves(6)        → 種子(14)×1（葉片→種子，v1 種子來源）。
                         //   FarmSoilSeeded(12)→ 農田土(11)×1 + 種子(14)×1（取消種植退還）。
-                        //   WheatMature(13)   → 農田土(11)×1 + 種子(14)×2（收割，淨賺+1）。
+                        //   WheatMature(13)   → 農田土(11)×1 + 種子(14)×1 + 小麥(18)×1（收割；ROADMAP 668）。
                         //   其餘實心方塊     → 自身×1（原行為）。
                         let drops: &[(u8, u32)] = match target_block {
                             Block::Leaves          => &[(vfarm::SEEDS_ID, 1)],
                             Block::FarmSoilSeeded  => &[(11, 1), (vfarm::SEEDS_ID, 1)],
-                            Block::WheatMature     => &[(11, 1), (vfarm::SEEDS_ID, 2)],
+                            // 麵包 v1（ROADMAP 668）：收割得 1 種子 + 1 小麥顆粒，不再雙倍種子。
+                            Block::WheatMature     => &[(11, 1), (vfarm::SEEDS_ID, 1), (vfarm::WHEAT_ID, 1)],
                             _ => &[], // 後面用 else 分支處理
                         };
 
@@ -1411,9 +1412,13 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 let affinity = {
                     hub().memory.read().unwrap().affinity_count(&name, &resident_id)
                 };
-                // 7) 組道謝台詞（純函式，無鎖）。
+                // 7) 組道謝台詞（純函式，無鎖）——麵包(BREAD_ID=19)走食物專屬更歡欣的句池。
                 let pick = (vfarm::now_secs() as usize).wrapping_add(item_id as usize);
-                let thanks = vgift::gift_thanks_line(iname, &name, affinity, pick);
+                let thanks = if vgift::is_food_gift(item_id) {
+                    vgift::food_gift_thanks_line(&name, affinity, pick)
+                } else {
+                    vgift::gift_thanks_line(iname, &name, affinity, pick)
+                };
                 // 8) residents 寫鎖：設 say + say_timer（即釋）。
                 {
                     let mut residents = hub().residents.write().unwrap();

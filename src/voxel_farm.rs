@@ -6,8 +6,9 @@
 //! 種植流程：
 //!   FarmSoil(11)  →[Plant action]→  FarmSoilSeeded(12)  →[~90s]→  WheatMature(13)
 //!
-//! 收穫：Break WheatMature → Seeds(14)×2 + FarmSoil(11)（自我延續的循環）。
+//! 收穫：Break WheatMature → Seeds(14)×1 + Wheat(18)×1 + FarmSoil(11)（得顆粒以合麵包）。
 //! 取消種植：Break FarmSoilSeeded → Seeds(14)×1 + FarmSoil(11)（退還種子）。
+//! 麵包：3 Wheat(18) → Bread(19)（2×2 合成格一排）。
 //!
 //! FarmStore **純記憶體**（與世界 delta 行為一致：重啟後農地重置）。
 //! 之後需持久化再加 jsonl 層，此版先讓玩家看到「有感的農地時間維度」。
@@ -18,6 +19,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// 種子物品 id（純 inventory 物品，無對應 Block enum；Block::from_u8(SEEDS_ID) = None）。
 /// 從葉片(6)/成熟小麥(13)/幼苗(12)破壞後掉落。
 pub const SEEDS_ID: u8 = 14;
+
+/// 小麥顆粒物品 id（純 inventory 物品，從成熟小麥(13)收割時掉落 ×1）。
+/// 3 顆粒在 2×2 合成格合一排 → 1 麵包（療癒農業循環終點）。
+pub const WHEAT_ID: u8 = 18;
+
+/// 麵包物品 id（純 inventory 物品，3 小麥顆粒在 2×2 格一排 → 1 麵包）。
+/// 可送給居民當禮物（居民特別開心）。
+pub const BREAD_ID: u8 = 19;
 
 /// 幼苗成熟所需秒數（~90 秒 = 1.5 分鐘）。調校讓玩家在一輪遊玩中體驗完整循環。
 pub const GROW_SECS: u64 = 90;
@@ -173,5 +182,18 @@ mod tests {
         s.plant(2, 5, 0, 0);
         let m = s.mature_plots(GROW_SECS);
         assert_eq!(m.len(), 3);
+    }
+
+    // ── 麵包 v1（ROADMAP 668）常數一致性測試 ──────────────────────────────────
+    #[test]
+    fn item_ids_unique_and_in_range() {
+        // 四個物品 id 互不相同
+        assert_ne!(SEEDS_ID, WHEAT_ID);
+        assert_ne!(SEEDS_ID, BREAD_ID);
+        assert_ne!(WHEAT_ID, BREAD_ID);
+        // 皆在合法 u8 範圍；14 是 SEEDS 不被方塊 enum 佔用，18/19 同理。
+        assert_eq!(SEEDS_ID, 14);
+        assert_eq!(WHEAT_ID, 18);
+        assert_eq!(BREAD_ID, 19);
     }
 }
