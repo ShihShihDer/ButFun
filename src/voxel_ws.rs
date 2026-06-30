@@ -1699,15 +1699,15 @@ fn tick_residents(dt: f32) {
                     (g.tx, g.ty, g.tz, reached, g.timeout <= 0.0)
                 };
                 if reached {
-                    // 走到了：先確認「挖這塊不會把自己困住」（防採集挖坑卡死）。
-                    // 走過來後實際站位可能與當初找資源時不同，這裡用即時腳底格再核一次。
+                    // 走到了：先做可逃性判定，確認「挖這塊還逃得出去」（防採集挖坑卡死）。
+                    // 走過來後實際站位可能與當初找資源時不同，這裡用即時腳底格＋當下世界再核一次。
                     let res = r.gather.take().unwrap().resource;
                     let (fx, fy, fz) = (
                         r.body.x.floor() as i32,
                         r.body.y.floor() as i32,
                         r.body.z.floor() as i32,
                     );
-                    if vskill::safe_to_dig(fx, fy, fz, tx, ty, tz) {
+                    if vskill::is_escapable_after_dig(&world, fx, fy, fz, tx, ty, tz) {
                         // 排程挖掘 + 採集次數 +1，清掉任務（站定落重力）。
                         gather_mines.push((r.id.clone(), r.name, tx, ty, tz, res));
                         r.gathered_since_build = r.gathered_since_build.saturating_add(1);
