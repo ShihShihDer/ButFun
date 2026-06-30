@@ -895,6 +895,86 @@ export const __diaryTest = {
   renderDiaryPage: (page, name) => { renderDiaryPage(page, name); return diaryBodyEl && diaryBodyEl.innerHTML; },
 };
 
+// ── 居民日記牆（ROADMAP 674）────────────────────────────────────────────────────
+// 玩家從任何地方都可翻閱所有居民的日記——不需走近、不需開聊天——一覽 AI 居民的內心世界。
+const diaryWallEl = document.getElementById("diaryWall");
+const diaryWallBodyEl = document.getElementById("diaryWallBody");
+const diaryWallBtnEl = document.getElementById("diaryWallBtn");
+
+/**
+ * 把所有居民的 DiaryPage 渲染成日記牆卡片列表（純函式，操作 DOM）。
+ * 每張卡片顯示居民名、當前心願摘要、內心反思條數，並附「📖 詳細日記」按鈕。
+ * @param {Array<{resident_id:string,resident_name:string,desire?:string,entries:Array}>} pages
+ */
+export function renderDiaryWall(pages) {
+  if (!diaryWallBodyEl) return;
+  if (!pages || pages.length === 0) {
+    diaryWallBodyEl.innerHTML = '<div class="dw-empty">還沒有居民日記。</div>';
+    return;
+  }
+  diaryWallBodyEl.innerHTML = "";
+  for (const page of pages) {
+    const card = document.createElement("div");
+    card.className = "dw-card";
+    const name = escHtml(page.resident_name || page.resident_id);
+    const desireHtml = page.desire
+      ? '<div class="dw-desire-label">💭 當前心願</div>' +
+        '<div class="dw-desire">「' + escHtml(page.desire) + '」</div>'
+      : '<div class="dw-meta">還沒有心願……等旅人的話語種下第一顆夢想。</div>';
+    const entryCount = Array.isArray(page.entries) ? page.entries.length : 0;
+    const metaHtml = entryCount > 0
+      ? '<div class="dw-meta">共 ' + entryCount + ' 段內心反思</div>'
+      : '<div class="dw-meta">心湖還很平靜……</div>';
+    card.innerHTML =
+      '<div class="dw-name">' + name + '</div>' +
+      desireHtml +
+      metaHtml;
+    // 「詳細日記」按鈕：點擊後關日記牆、開個別居民完整日記。
+    const openBtn = document.createElement("button");
+    openBtn.className = "dw-open";
+    openBtn.textContent = "📖 詳細日記";
+    const rid = page.resident_id;
+    openBtn.addEventListener("click", () => { closeDiaryWall(); openDiary(rid); });
+    card.appendChild(openBtn);
+    diaryWallBodyEl.appendChild(card);
+  }
+}
+
+let diaryWallVisible = false;
+
+/** 開啟日記牆面板，從 /voxel/diary 抓取所有居民日記並渲染卡片列表。 */
+async function openDiaryWall() {
+  if (!diaryWallEl) return;
+  diaryWallVisible = true;
+  diaryWallEl.style.display = "flex";
+  if (diaryWallBodyEl) diaryWallBodyEl.innerHTML = '<div class="dw-empty">載入中…</div>';
+  try {
+    const resp = await fetch("/voxel/diary");
+    if (!resp.ok) throw new Error("diary fetch: " + resp.status);
+    const pages = await resp.json();
+    renderDiaryWall(Array.isArray(pages) ? pages : []);
+  } catch (_e) {
+    if (diaryWallBodyEl) diaryWallBodyEl.innerHTML = '<div class="dw-empty">無法讀取日記。</div>';
+  }
+}
+
+/** 關閉日記牆面板。 */
+function closeDiaryWall() {
+  diaryWallVisible = false;
+  if (diaryWallEl) diaryWallEl.style.display = "none";
+}
+
+// 綁定日記牆按鈕與關閉事件。
+if (diaryWallBtnEl) diaryWallBtnEl.addEventListener("click", () => {
+  diaryWallVisible ? closeDiaryWall() : openDiaryWall();
+});
+if (diaryWallEl) {
+  const closeBtn = document.getElementById("diaryWallClose");
+  if (closeBtn) closeBtn.addEventListener("click", closeDiaryWall);
+  // 點面板外（背景遮罩）也關閉。
+  diaryWallEl.addEventListener("click", (e) => { if (e.target === diaryWallEl) closeDiaryWall(); });
+}
+
 // ── 城鎮動態 Feed（ROADMAP 655）────────────────────────────────────────────────
 const feedEl = document.getElementById("feed");
 const feedBodyEl = document.getElementById("feedBody");
@@ -2292,6 +2372,11 @@ window.__voxel = {
   openDiary(rid) { return openDiary(rid); },
   closeDiary() { closeDiary(); },
   get diaryVisible() { return diaryEl ? diaryEl.style.display !== "none" : false; },
+  // ── 日記牆 QA 用（ROADMAP 674）──
+  openDiaryWall() { return openDiaryWall(); },
+  closeDiaryWall() { closeDiaryWall(); },
+  get diaryWallVisible() { return diaryWallVisible; },
+  renderDiaryWall(p) { renderDiaryWall(p); return diaryWallBodyEl && diaryWallBodyEl.innerHTML; },
   // ── 動態 Feed QA 用（ROADMAP 655）──
   openFeed() { return openFeed(); },
   closeFeed() { closeFeed(); },
