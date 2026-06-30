@@ -182,13 +182,21 @@
       padding: 8px 14px; border-radius: 10px; border: none; background: #ffd86b;
       color: #2a2410; font-weight: bold; font-size: 14px; cursor: pointer;
     }
-    /* 聊天框頂列：居民名 + 日記鈕 + 關閉鈕 */
+    /* 聊天框頂列：居民名 + 日記鈕 + 贈禮鈕 + 關閉鈕 */
     #chatDiary {
       cursor: pointer; user-select: none; font-size: 13px; padding: 3px 9px;
       border-radius: 8px; background: rgba(180,240,200,0.18);
       border: 1px solid rgba(180,240,200,0.35); color: #a0e8b0;
     }
     #chatDiary:hover { background: rgba(180,240,200,0.28); }
+    #chatGift {
+      cursor: pointer; user-select: none; font-size: 13px; padding: 3px 9px;
+      border-radius: 8px; background: rgba(255,220,80,0.16);
+      border: 1px solid rgba(255,220,80,0.35); color: #ffe060;
+      transition: background 0.15s;
+    }
+    #chatGift:hover { background: rgba(255,220,80,0.28); }
+    #chatGift.gift-empty { opacity: 0.45; cursor: not-allowed; }
     @media (orientation: portrait) { #chat { bottom: 60px; max-height: 50vh; } }
 
     /* ── 居民日記面板 ─────────────────────────────────────────────────────── */
@@ -383,6 +391,7 @@
       <span id="chatTitle">居民</span>
       <div style="display:flex;gap:6px;align-items:center">
         <span id="chatDiary">📖 日記</span>
+        <span id="chatGift">🎁 贈禮</span>
         <span id="chatClose">✕</span>
       </div>
     </div>

@@ -132,6 +132,8 @@ mod voxel_inventory;
 mod voxel_craft;
 // 乙太方界·種田 v1：撒種‧等待‧收割——療癒循環加入時間維度（ROADMAP 659）。
 mod voxel_farm;
+// 乙太方界·居民贈禮 v1：把採來的材料化作一份心意送給居民（ROADMAP 660）。
+mod voxel_gift;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環

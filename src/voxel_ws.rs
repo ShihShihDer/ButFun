@@ -32,6 +32,7 @@ use crate::voxel_craft as vcraft;
 use crate::voxel_inventory::{self as vinv, InvStore};
 use crate::voxel_memory::{self as vmem, VoxelMemory};
 use crate::voxel_farm::{self as vfarm, FarmStore};
+use crate::voxel_gift as vgift;
 use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
 use crate::voxel_residents::{self as vr, Body};
@@ -414,6 +415,9 @@ enum ClientMsg {
     /// 種田 v1：在農田土上種下種子（ROADMAP 659）。
     /// 伺服器驗證目標是 FarmSoil(11)、玩家有種子(14)後，把方塊改成 FarmSoilSeeded(12)。
     Plant { x: i32, y: i32, z: i32 },
+    /// 居民贈禮 v1：把背包裡的一件材料送給附近居民（ROADMAP 660）。
+    /// 伺服器驗證觸及範圍 + 背包存量後，扣材料、加記憶 ×2、居民冒泡道謝。
+    Gift { resident_id: String, item_id: u8 },
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -1075,6 +1079,105 @@ async fn handle_socket(socket: WebSocket) {
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({ "t": "plant_ok", "x": x, "y": y, "z": z }).to_string(),
                 ));
+            }
+            // ── 居民贈禮 v1（ROADMAP 660）────────────────────────────────────────
+            Ok(ClientMsg::Gift { resident_id, item_id }) => {
+                // 1) 短鎖取玩家位置（players 讀鎖即釋）。
+                let player_pos: Option<(f32, f32)> = {
+                    let players = hub().players.read().unwrap();
+                    players.get(&my_id).map(|p| (p.x, p.z))
+                };
+                let Some((px, pz)) = player_pos else {
+                    continue;
+                };
+                // 2) 短鎖取居民快照（residents 讀鎖即釋）。
+                let res_snap: Option<(&'static str, f32, f32)> = {
+                    let residents = hub().residents.read().unwrap();
+                    residents
+                        .iter()
+                        .find(|r| r.id == resident_id)
+                        .map(|r| (r.name, r.body.x, r.body.z))
+                };
+                let Some((rname, rx, rz)) = res_snap else {
+                    continue; // 找不到居民
+                };
+                // 3) 驗觸及範圍（水平 XZ）。
+                let dx = px - rx;
+                let dz = pz - rz;
+                if dx * dx + dz * dz > vgift::GIFT_REACH * vgift::GIFT_REACH {
+                    let msg = serde_json::json!({
+                        "t": "gift_fail",
+                        "reason": "走近一點再送禮"
+                    }).to_string();
+                    let _ = out_tx.send(Message::Text(msg)).await;
+                    continue;
+                }
+                // 4) 驗並消耗背包材料（inventory 寫鎖即釋）。
+                let taken_entry = {
+                    hub().inventory.write().unwrap().take(&name, item_id, 1)
+                };
+                let Some(inv_entry) = taken_entry else {
+                    let iname = vgift::item_name_zh(item_id);
+                    let msg = serde_json::json!({
+                        "t": "gift_fail",
+                        "reason": format!("背包裡沒有{iname}")
+                    }).to_string();
+                    let _ = out_tx.send(Message::Text(msg)).await;
+                    continue;
+                };
+                vinv::append_inv(&inv_entry);
+                // 5) 加兩筆記憶（memory 寫鎖各自短取即釋，循序不巢狀）。
+                let iname = vgift::item_name_zh(item_id);
+                let mem1 = vgift::gift_memory_event(&name, iname);
+                let mem2 = vgift::gift_memory_feeling(&name, iname);
+                let entry1 = {
+                    hub().memory.write().unwrap().add_memory(&resident_id, &name, &mem1)
+                };
+                vmem::append_memory(&entry1);
+                let entry2 = {
+                    hub().memory.write().unwrap().add_memory(&resident_id, &name, &mem2)
+                };
+                vmem::append_memory(&entry2);
+                // 6) 讀好感度（memory 讀鎖即釋）。
+                let affinity = {
+                    hub().memory.read().unwrap().affinity_count(&name, &resident_id)
+                };
+                // 7) 組道謝台詞（純函式，無鎖）。
+                let pick = (vfarm::now_secs() as usize).wrapping_add(item_id as usize);
+                let thanks = vgift::gift_thanks_line(iname, &name, affinity, pick);
+                // 8) residents 寫鎖：設 say + say_timer（即釋）。
+                {
+                    let mut residents = hub().residents.write().unwrap();
+                    if let Some(r) = residents.iter_mut().find(|r| r.id == resident_id) {
+                        r.say = thanks.chars().take(50).collect();
+                        r.say_timer = SAY_SECS;
+                    }
+                }
+                // 9) 廣播讓所有人看到居民道謝泡泡。
+                broadcast_players();
+                // 10) 回送 inv_update（扣材料後存量）+ gift_ok（通知玩家成功）。
+                let remain = hub().inventory.read().unwrap().count(&name, item_id);
+                let inv_msg = serde_json::json!({
+                    "t": "inv_update",
+                    "block_id": item_id,
+                    "count": remain,
+                }).to_string();
+                let _ = out_tx.send(Message::Text(inv_msg)).await;
+                let ok_msg = serde_json::json!({
+                    "t": "gift_ok",
+                    "resident_id": &resident_id,
+                    "resident_name": rname,
+                    "item_id": item_id,
+                    "item_name": iname,
+                    "affinity": affinity,
+                }).to_string();
+                let _ = out_tx.send(Message::Text(ok_msg)).await;
+                // 11) Feed：記錄贈禮事件（鎖外 IO）。
+                vfeed::append_feed(
+                    "贈禮",
+                    rname,
+                    &format!("{name}送了{iname}給{rname}"),
+                );
             }
             // 重複 Join 或壞訊息：忽略。
             _ => {}
