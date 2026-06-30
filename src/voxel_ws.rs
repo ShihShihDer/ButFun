@@ -158,6 +158,8 @@ struct VoxelResident {
     gather: Option<GatherSkill>,
     /// 本輪（自上次蓋造後）已採集次數：達 GATHER_QUOTA 才開始蓋下一個建物（備料感）。
     gathered_since_build: u32,
+    /// 卡住計時（秒）：想動卻幾乎沒位移時累加，達 vr::STUCK_SECS → 脫困/送回家域。
+    stuck_timer: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -329,6 +331,8 @@ fn init_residents() -> Vec<VoxelResident> {
             // agency v1：入場無採集任務、尚未採集。
             gather: None,
             gathered_since_build: 0,
+            // 入場未卡住。
+            stuck_timer: 0.0,
         });
     }
     out
@@ -1563,6 +1567,9 @@ fn tick_residents(dt: f32) {
     let mut gather_mines: Vec<(String, &'static str, i32, i32, i32, vskill::GatherResource)> =
         Vec::new();
 
+    // 卡住脫困/送回事件（鎖內偵測、鎖外記 Feed）。格式：(resident_name, 脫困結果)。
+    let mut rescue_events: Vec<(&'static str, vr::Rescue)> = Vec::new();
+
     {
         let world = hub().deltas.read().unwrap();
         let mut residents = hub().residents.write().unwrap();
@@ -1678,6 +1685,9 @@ fn tick_residents(dt: f32) {
                 }
             }
 
+            // 卡住偵測用：記下移動前的水平位置（本 tick 結束再比對位移）。
+            let (pre_x, pre_z) = (r.body.x, r.body.z);
+
             // agency v1·採集技能執行（技能調用骨架：找目標→走過去→動作）。
             // 若正在採集：朝鎖定的資源走；走到旁邊→排程挖掘（鎖外 set_block）；逾時→放棄。
             // 採集中時跳過閒晃/歸巢邏輯（這一刀是「她真的在做事」）。
@@ -1689,10 +1699,20 @@ fn tick_residents(dt: f32) {
                     (g.tx, g.ty, g.tz, reached, g.timeout <= 0.0)
                 };
                 if reached {
-                    // 走到了：排程挖掘 + 採集次數 +1，清掉任務（站定落重力）。
+                    // 走到了：先確認「挖這塊不會把自己困住」（防採集挖坑卡死）。
+                    // 走過來後實際站位可能與當初找資源時不同，這裡用即時腳底格再核一次。
                     let res = r.gather.take().unwrap().resource;
-                    gather_mines.push((r.id.clone(), r.name, tx, ty, tz, res));
-                    r.gathered_since_build = r.gathered_since_build.saturating_add(1);
+                    let (fx, fy, fz) = (
+                        r.body.x.floor() as i32,
+                        r.body.y.floor() as i32,
+                        r.body.z.floor() as i32,
+                    );
+                    if vskill::safe_to_dig(fx, fy, fz, tx, ty, tz) {
+                        // 排程挖掘 + 採集次數 +1，清掉任務（站定落重力）。
+                        gather_mines.push((r.id.clone(), r.name, tx, ty, tz, res));
+                        r.gathered_since_build = r.gathered_since_build.saturating_add(1);
+                    }
+                    // 不安全就放棄這塊（不挖、不計數）；下個 agency tick 重找安全資源。
                     vr::gravity_step(&world, &mut r.body, dt);
                 } else if timed_out {
                     // 走不到（地形擋路等）→ 放棄這次採集，下個 agency tick 再決定。
@@ -1738,6 +1758,34 @@ fn tick_residents(dt: f32) {
                     // 日夜作息 v1：夜間額外多停一段（extra_wait），讓居民在原地駐足更久。
                     r.wait_timer = 1.0 + rand::random::<f32>() * 3.0 + extra_wait;
                 }
+            }
+
+            // 卡住偵測 + 脫困/送回（修：居民採集挖坑把自己卡住、爬不出來）。
+            // 「想動卻幾乎沒位移」累積到門檻 → 先試往上脫困、脫不了就送回家域出生地表。
+            let moved = ((r.body.x - pre_x).powi(2) + (r.body.z - pre_z).powi(2)).sqrt();
+            // 採集中、或不在原地歇息時，視為「正試圖移動」（純歇息不算卡住）。
+            let trying_to_move = r.gather.is_some() || r.wait_timer <= 0.0;
+            r.stuck_timer = vr::update_stuck_timer(r.stuck_timer, moved, trying_to_move, dt);
+            if r.stuck_timer >= vr::STUCK_SECS {
+                let how = vr::rescue_resident(
+                    &world, &mut r.body, r.home_x, r.home_z, vr::UNSTUCK_MAX_LIFT,
+                );
+                // 脫困後重置：清採集任務、目標設在腳邊、歇一下、清卡住計時。
+                r.stuck_timer = 0.0;
+                r.gather = None;
+                r.target_x = r.body.x;
+                r.target_z = r.body.z;
+                r.wait_timer = 1.0;
+                let bubble = match how {
+                    vr::Rescue::LiftedUp => "唔…爬出來了！",
+                    vr::Rescue::SentHome => "（回到熟悉的地方）",
+                };
+                if r.say.is_empty() {
+                    r.say = bubble.to_string();
+                    r.say_timer = SAY_SECS;
+                }
+                rescue_events.push((r.name, how));
+                tracing::info!(resident = %r.id, ?how, "voxel 居民卡住 → 脫困/送回");
             }
 
             // 思考排程（蒐集快照，spawn 留到鎖外）。
@@ -1864,6 +1912,14 @@ fn tick_residents(dt: f32) {
         vfeed::append_feed("採集", rname, &format!("採集了{}", res.display_name()));
         // 冒一句採集泡泡（不打斷其他話）。
         say_updates.push((rid.clone(), format!("採到{}了～", res.display_name())));
+    }
+
+    // 5c) 卡住脫困/送回的 Feed（鎖已釋放）：送回家域是較顯著的事件，記一筆讓玩家看得到；
+    //     往上脫困是小事不洗版。實測證據：居民不再凍在原地、會自己脫困。
+    for (rname, how) in rescue_events {
+        if how == vr::Rescue::SentHome {
+            vfeed::append_feed("脫困", rname, "卡住了，回到家域重新開始");
+        }
     }
 
     // 6) 居民 agency（目標+記憶驅動）：蓋造不重複、有進展、會持久 + 採集技能調用。
