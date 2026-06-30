@@ -119,6 +119,9 @@ const RECALL_DIST: f32 = 5.0;
 const RECALL_COOLDOWN_SECS: f32 = 180.0;
 /// 每個合格 tick 觸發回想的機率（10Hz 下 0.002 ≈ 在範圍內平均 50 秒才偶發一次）。
 const RECALL_CHANCE_PER_TICK: f32 = 0.002;
+/// 心情自語冷卻（秒，ROADMAP 677）：冷卻到期後依心情自發冒一句泡泡；
+/// 初始值在各居民間錯開，避免同 tick 全員一起說話。
+const MOOD_SAY_COOLDOWN: f32 = 120.0;
 /// 居民建造頻率：每隔這麼多秒放一塊方塊（慢節奏，讓玩家能目睹過程）。
 const BUILD_INTERVAL_SECS: f32 = 8.0;
 /// 居民每蓋一個建物前要先採集幾次（備料感、「她真的在做事」）。
@@ -174,6 +177,8 @@ struct VoxelResident {
     visit_stay_timer: f32,
     /// 探訪冷卻倒數（秒）：> 0 = 冷卻中，不可發起新探訪。
     visit_cooldown: f32,
+    /// 心情自語冷卻倒數（秒，ROADMAP 677）：歸零後依心情層級自發冒泡泡，再重置。
+    mood_say_cooldown: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -468,6 +473,8 @@ fn init_residents() -> Vec<VoxelResident> {
             visiting: None,
             visit_stay_timer: 0.0,
             visit_cooldown: vvisit::VISIT_COOLDOWN_SECS * 0.5 + i as f32 * 60.0,
+            // 錯開初始冷卻，避免所有居民在同一時刻第一次自語
+            mood_say_cooldown: 60.0 + i as f32 * 20.0,
         });
     }
     out
@@ -2008,6 +2015,11 @@ fn tick_residents(dt: f32) {
                 r.social_cooldown -= dt;
             }
 
+            // 心情自語冷卻倒數（ROADMAP 677）：到期後才可自發冒泡。
+            if r.mood_say_cooldown > 0.0 {
+                r.mood_say_cooldown -= dt;
+            }
+
             // 旁聽搭話冷卻倒數（embodied 靠近說話 v1）：到期後才可再因旁聽搭話。
             if r.overhear_cooldown > 0.0 {
                 r.overhear_cooldown -= dt;
@@ -2137,6 +2149,30 @@ fn tick_residents(dt: f32) {
                         }
                     }
                 }
+            }
+
+            // 心情自語 v1（ROADMAP 677）：冷卻到期且 say 為空時，依心情自發冒一句台詞。
+            // 鎖序：bonds 讀（即釋）→ memory 讀（即釋），不巢狀，不持鎖 await。
+            if r.say.is_empty() && r.mood_say_cooldown <= 0.0 {
+                let all_ids: Vec<String> =
+                    (0..RESIDENT_COUNT).map(|j| format!("vox_res_{j}")).collect();
+                let all_id_refs: Vec<&str> = all_ids.iter().map(|s| s.as_str()).collect();
+                let (friends, acq) = {
+                    let bonds = hub().bonds.read().unwrap();
+                    bonds.bond_counts_for(&r.id, &all_id_refs)
+                }; // bonds 讀鎖釋放
+                let mems = {
+                    hub().memory.read().unwrap().memory_count(&r.id)
+                }; // memory 讀鎖釋放
+                let tier = voxel_mood::compute_mood(friends, acq, mems);
+                // pick 由位置的位元決定（確定性，隨居民移動自然變化）
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                if let Some(line) = voxel_mood::spontaneous_line(tier, pick) {
+                    r.say = line.to_string();
+                    r.say_timer = SAY_SECS;
+                }
+                // 無論是否說話都重置冷卻（Neutral 不說話，但仍更新，防每 tick 都查）
+                r.mood_say_cooldown = MOOD_SAY_COOLDOWN;
             }
 
             // 探訪計時 v1（ROADMAP 671）：冷卻 + 逗留倒數。
