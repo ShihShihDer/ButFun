@@ -21,8 +21,11 @@ use crate::resident_npc::ResidentPersona;
 /// 刻意極少（成本鐵律 + 風險最小化）；要更多再往上調。
 pub const AGENT_ENABLED_COUNT: usize = 2;
 
-/// 兩次思考的間隔（秒）。低頻：避免燒 LLM、也避免跟既有居民 tick 行為頻繁打架。
-pub const THINK_INTERVAL_SECS: f32 = 45.0;
+/// 兩次思考的間隔（秒）。**刻意拉長到 90 秒**（原 45）：背景思考量直接砍半，
+/// 大幅省下免費腦池額度（12 位居民 × 每 45 秒思考一次曾把額度燒爆）。思考已改走便宜／
+/// 獨立額度（Cerebras/Gemini/ollama，不碰 Groq，見 `npc_chat::think_llm_chat`），間隔再放長
+/// 讓那些獨立額度也耐用；居民「想事情」沒那麼頻繁，反而更像真人慢生活、不洗版。
+pub const THINK_INTERVAL_SECS: f32 = 90.0;
 
 /// 感知半徑（像素）：蒐集這個範圍內的玩家 / 可採節點餵給 agent 當情境。
 pub const SENSE_RADIUS: f32 = 360.0;
