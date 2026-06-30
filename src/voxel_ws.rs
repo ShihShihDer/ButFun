@@ -92,6 +92,12 @@ const GREET_DIST: f32 = 4.0;
 const GREET_COOLDOWN: f32 = 25.0;
 /// 每個合格 tick 觸發招呼的機率（10Hz 下 0.04 ≈ 靠近後約 2.5 秒內冒一句）。
 const GREET_CHANCE_PER_TICK: f32 = 0.04;
+/// 記憶回想泡泡觸發距離（方塊）：比招呼稍近，表示「走到面前才說起回憶」。
+const RECALL_DIST: f32 = 5.0;
+/// 回想泡泡冷卻（秒）：觸發一次後要等這麼久——稀少才有感，不能跟招呼一樣頻繁。
+const RECALL_COOLDOWN_SECS: f32 = 180.0;
+/// 每個合格 tick 觸發回想的機率（10Hz 下 0.002 ≈ 在範圍內平均 50 秒才偶發一次）。
+const RECALL_CHANCE_PER_TICK: f32 = 0.002;
 /// 居民建造頻率：每隔這麼多秒放一塊方塊（慢節奏，讓玩家能目睹過程）。
 const BUILD_INTERVAL_SECS: f32 = 8.0;
 
@@ -125,6 +131,8 @@ struct VoxelResident {
     pending_response: Option<(String, String, f32)>,
     /// 建造 tick 倒數（秒）：降到 0 時嘗試放一塊或啟動新計畫；錯開避免同 tick 全員觸發。
     build_tick: f32,
+    /// 記憶回想泡泡冷卻（秒）：> 0 表示最近剛回想過，尚不可再觸發（稀少才有感）。
+    recall_cooldown: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -289,6 +297,8 @@ fn init_residents() -> Vec<VoxelResident> {
             pending_response: None,
             // 錯開建造 tick，讓 4 位居民不同 tick 檢查（BUILD_INTERVAL_SECS / 4 * i 間距）。
             build_tick: BUILD_INTERVAL_SECS * 0.5 + i as f32 * (BUILD_INTERVAL_SECS / 4.0),
+            // 錯開首次回想冷卻，避免啟動後短時間全員同時觸發（前 60 秒不回想）。
+            recall_cooldown: 60.0 + i as f32 * 30.0,
         });
     }
     out
@@ -1499,6 +1509,33 @@ fn tick_residents(dt: f32) {
                         r.say = line.chars().take(40).collect();
                         r.say_timer = SAY_SECS;
                         r.greet_timer = GREET_COOLDOWN;
+                    }
+                }
+            }
+
+            // 記憶回想泡泡 v1：友人等級（好感 ≥ RECALL_AFFINITY_THRESHOLD）時，
+            // 居民偶爾主動說出「我記得你說過…」——記憶第一次驅動主動社交行為。
+            // 冷卻期到 + 沒在說話 + 玩家靠近 + 隨機觸發 → 短鎖讀記憶 → 生成泡泡。
+            if r.recall_cooldown > 0.0 {
+                r.recall_cooldown -= dt;
+            } else if r.say.is_empty() {
+                if let Some((d2, nearest_name)) = nearest_player_info(r.body.x, r.body.z, &player_pts) {
+                    if d2 < RECALL_DIST * RECALL_DIST && rand::random::<f32>() < RECALL_CHANCE_PER_TICK {
+                        // 一次性短鎖：先查好感，夠了再取最近一筆記憶（不巢狀、不持鎖 await）。
+                        let top = {
+                            let mem = hub().memory.read().unwrap();
+                            if mem.affinity_count(nearest_name, &r.id) >= vmem::RECALL_AFFINITY_THRESHOLD {
+                                mem.recall(&r.id, nearest_name, 1)
+                            } else {
+                                Vec::new()
+                            }
+                        }; // 記憶讀鎖在此釋放
+                        if let Some(entry) = top.into_iter().next() {
+                            let bubble = vmem::recall_bubble(&entry.summary);
+                            r.say = bubble.chars().take(40).collect();
+                            r.say_timer = SAY_SECS;
+                            r.recall_cooldown = RECALL_COOLDOWN_SECS;
+                        }
                     }
                 }
             }

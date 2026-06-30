@@ -168,6 +168,32 @@ impl VoxelMemory {
     }
 }
 
+/// 記憶回想泡泡的好感度門檻：友人（3+ 筆記憶）才觸發。
+pub const RECALL_AFFINITY_THRESHOLD: usize = 3;
+/// 回想泡泡擷取的原句最大字元數（不含前綴「我記得你說過」）。
+const RECALL_SNIPPET_MAX: usize = 18;
+
+/// 把一筆長期記憶摘要轉成居民「回想泡泡」文字——居民主動說出你當初說過的話。
+///
+/// 摘要格式為「和X聊過，對方提到「…」」；這裡自動抽出「…」部分，
+/// 若無「」結構則取開頭一截，讓泡泡永遠帶有玩家原話的味道。
+/// 純函式、確定性、可測；不走 LLM、不持鎖。
+pub fn recall_bubble(memory_summary: &str) -> String {
+    // 從「找到起始引號，往後截取（含引號讓玩家一眼認出自己說的話）。
+    let snippet: String = memory_summary
+        .find('\u{300c}') // 「
+        .map(|i| &memory_summary[i..])
+        .unwrap_or(memory_summary)
+        .chars()
+        .take(RECALL_SNIPPET_MAX + 2) // +2 為「」各一字
+        .collect();
+    if snippet.is_empty() {
+        "我還記得你……".to_string()
+    } else {
+        format!("我記得你說過{snippet}")
+    }
+}
+
 /// 由「玩家這次說的話」規則化擷取一句長期記憶摘要（不另呼 LLM，省成本、確定性、可測）。
 /// 形如「和{玩家}聊過，對方提到「…」」；截斷玩家原句到 [`SUMMARY_MAX_CHARS`] 內。
 /// 之後若要升級成 LLM 摘要，替換此函式即可、上下游不必動。
@@ -478,5 +504,55 @@ mod tests {
         store.add_memory("vox_res_0", "小明", "b");
         store.add_memory("vox_res_0", "小明", "c");
         assert!(store.affinity_count("小明", "vox_res_0") >= 3, "三筆以上應達友人等級");
+    }
+
+    // ── recall_bubble 測試 ───────────────────────────────────────────────────
+
+    #[test]
+    fn recall_bubble_standard_format() {
+        // 典型摘要：含「…」格式 → 抽出引號部分。
+        let summary = "和阿星聊過，對方提到「想在這裡蓋觀星塔」";
+        let bubble = recall_bubble(summary);
+        assert!(bubble.contains("「想在這裡蓋觀星塔"), "應含玩家原話");
+        assert!(bubble.starts_with("我記得你說過"), "應有前綴");
+    }
+
+    #[test]
+    fn recall_bubble_no_bracket_falls_back_to_opening() {
+        // 沒有「…」結構 → 取開頭截斷。
+        let summary = "某個特殊格式沒有引號的摘要文字";
+        let bubble = recall_bubble(summary);
+        assert!(!bubble.is_empty(), "不能回空字串");
+    }
+
+    #[test]
+    fn recall_bubble_empty_summary_returns_fallback() {
+        let bubble = recall_bubble("");
+        assert_eq!(bubble, "我還記得你……", "空摘要應回備用語");
+    }
+
+    #[test]
+    fn recall_bubble_snippet_bounded() {
+        // 很長的摘要，抽出後不應超出泡泡合理長度。
+        let long_inner = "「".to_string() + &"X".repeat(50) + "」";
+        let bubble = recall_bubble(&long_inner);
+        // RECALL_SNIPPET_MAX+2 = 20 字，前綴「我記得你說過」7 字 → 全文 ≤ 27
+        assert!(bubble.chars().count() <= 28, "回想泡泡不應過長");
+    }
+
+    #[test]
+    fn recall_bubble_non_empty_for_typical_memory() {
+        // 確認典型 summarize_exchange 輸出能正常轉換成泡泡。
+        let summary = summarize_exchange("阿信", "你這裡的石頭好漂亮").unwrap();
+        let bubble = recall_bubble(&summary);
+        assert!(!bubble.is_empty(), "典型記憶應能產生非空泡泡");
+        assert!(bubble.contains("你這裡的石頭好漂亮")
+            || bubble.contains("你這裡"), "應含玩家原話或部份");
+    }
+
+    #[test]
+    fn recall_affinity_threshold_is_sane() {
+        assert!(RECALL_AFFINITY_THRESHOLD >= 2, "門檻不能太低（陌生人不該觸發）");
+        assert!(RECALL_AFFINITY_THRESHOLD <= 5, "門檻不能太高（永遠觸發不了）");
     }
 }
