@@ -632,6 +632,7 @@ function openChat(rid, name) {
   const sb = document.getElementById("speakBar");
   if (sb) sb.style.display = "none";
   updateGiftBtn(); // 贈禮 v1：更新按鈕顯示哪件物品
+  hideTradeOffer(); // 換居民時清掉舊交易提案（不同居民的提案不共用）
 }
 function closeChat() {
   if (chatEl) chatEl.style.display = "none";
@@ -676,6 +677,12 @@ if (chatEl) {
   // 贈禮鈕：送背包最多的一件給當前居民（ROADMAP 660）。
   const giftBtnEl = document.getElementById("chatGift");
   if (giftBtnEl) giftBtnEl.addEventListener("click", () => { if (chatRid) trySendGift(); });
+  // 交易鈕：向當前居民請求以物易物（ROADMAP 670）。
+  const tradeBtnEl = document.getElementById("chatTrade");
+  if (tradeBtnEl) tradeBtnEl.addEventListener("click", () => { if (chatRid) tryRequestTrade(); });
+  // 接受交易按鈕。
+  const tradeAcceptBtnEl = document.getElementById("tradeAcceptBtn");
+  if (tradeAcceptBtnEl) tradeAcceptBtnEl.addEventListener("click", () => { if (chatRid) sendTradeAccept(chatRid); });
 }
 
 // ── 常駐說話輸入列（embodied 靠近說話 v1）─────────────────────────────────────
@@ -749,6 +756,52 @@ function trySendGift() {
   }
   lastGiftMs = now;
   ws.send(JSON.stringify({ t: "gift", resident_id: chatRid, item_id: pick.blockId }));
+}
+
+// ── 居民以物易物（ROADMAP 670）───────────────────────────────────────────────
+// 玩家點「⇌ 交易」→ 伺服器回 trade_offer → 前端顯示提案橫幅 → 玩家點接受 → 伺服器執行交易。
+
+let lastTradeMs = 0;     // 交易請求本地冷卻（防連按）
+let pendingTradeRid = null; // 目前有開放提案的居民 id
+
+/** 請求與當前居民交易（發 TradeRequest，等 trade_offer 回應）。 */
+function tryRequestTrade() {
+  if (!wsReady || !chatRid) return;
+  const now = Date.now();
+  if (now - lastTradeMs < 2000) return; // 2 秒冷卻
+  lastTradeMs = now;
+  hideTradeOffer(); // 清掉舊提案
+  ws.send(JSON.stringify({ t: "trade_request", resident_id: chatRid }));
+}
+
+/** 接受指定居民的交易提案（發 TradeAccept）。 */
+function sendTradeAccept(rid) {
+  if (!wsReady) return;
+  ws.send(JSON.stringify({ t: "trade_accept", resident_id: rid }));
+  hideTradeOffer();
+}
+
+/** 顯示交易提案橫幅（trade_offer 到來時呼叫）。 */
+function showTradeOffer(m) {
+  const el = document.getElementById("tradeOffer");
+  const textEl = document.getElementById("tradeOfferText");
+  if (!el || !textEl) return;
+  pendingTradeRid = m.resident_id;
+  const offerLine = m.offer_count > 1
+    ? `${m.offer_name}×${m.offer_count}`
+    : m.offer_name;
+  const wantLine = m.want_count > 1
+    ? `${m.want_name}×${m.want_count}`
+    : m.want_name;
+  textEl.textContent = `${m.resident_name || "居民"} 提議：給你 ${offerLine}，換你的 ${wantLine}`;
+  el.style.display = "flex";
+}
+
+/** 隱藏交易提案橫幅。 */
+function hideTradeOffer() {
+  const el = document.getElementById("tradeOffer");
+  if (el) el.style.display = "none";
+  pendingTradeRid = null;
 }
 
 // ── 居民日記面板（ROADMAP 650）────────────────────────────────────────────────
@@ -1443,6 +1496,22 @@ function connect() {
       const who = m.resident || "居民";
       const what = m.kind || "建物";
       appendMsg("sys", "🏗️ " + who + " 完成了「" + what + "」的建造！走近去看看吧。");
+    } else if (m.t === "trade_offer") {
+      // 居民交易 v1（ROADMAP 670）：收到交易提案，顯示橫幅讓玩家確認。
+      showTradeOffer(m);
+      appendMsg("sys", "⇌ " + (m.resident_name || "居民") + " 想和你交易");
+    } else if (m.t === "trade_done") {
+      // 交易完成：顯示成功訊息，收起提案。
+      hideTradeOffer();
+      const got = m.got_count > 1 ? `${m.got_name}×${m.got_count}` : m.got_name;
+      const gave = m.gave_count > 1 ? `${m.gave_name}×${m.gave_count}` : m.gave_name;
+      appendMsg("sys", "✅ 交易成功！你給出了 " + gave + "，得到了 " + got);
+      updateGiftBtn();
+    } else if (m.t === "trade_fail") {
+      // 交易失敗（太遠 / 沒材料 / 提案過期）。
+      hideTradeOffer();
+      showErr(m.reason || "交易失敗");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2200);
     }
   };
   ws.onclose = () => { wsReady = false; showErr("連線中斷，重新連線中…"); setTimeout(connect, 1500); };

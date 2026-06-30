@@ -200,6 +200,27 @@
     }
     #chatGift:hover { background: rgba(255,220,80,0.28); }
     #chatGift.gift-empty { opacity: 0.45; cursor: not-allowed; }
+    /* 交易按鈕（居民以物易物 v1）*/
+    #chatTrade {
+      cursor: pointer; user-select: none; font-size: 13px; padding: 3px 9px;
+      border-radius: 8px; background: rgba(120,200,255,0.16);
+      border: 1px solid rgba(120,200,255,0.35); color: #88d8ff;
+      transition: background 0.15s;
+    }
+    #chatTrade:hover { background: rgba(120,200,255,0.28); }
+    /* 交易提案橫幅（trade_offer 到來後顯示）*/
+    #tradeOffer {
+      display: none; margin: 4px 12px 0; padding: 8px 12px; border-radius: 10px;
+      background: rgba(120,200,255,0.13); border: 1px solid rgba(120,200,255,0.3);
+      font-size: 13px; color: #b8e8ff; gap: 8px; flex-direction: column;
+    }
+    #tradeOfferText { line-height: 1.5; }
+    #tradeAcceptBtn {
+      align-self: flex-start; padding: 4px 14px; border-radius: 8px; border: none;
+      background: rgba(120,200,255,0.32); color: #e0f4ff; font-size: 13px; cursor: pointer;
+      font-weight: bold;
+    }
+    #tradeAcceptBtn:hover { background: rgba(120,200,255,0.5); }
     @media (orientation: portrait) { #chat { bottom: 60px; max-height: 50vh; } }
 
     /* ── 常駐說話輸入列（embodied 靠近說話 v1）：底部、直式友善，打字→範圍說話 ── */
@@ -638,10 +659,16 @@
       <div style="display:flex;gap:6px;align-items:center">
         <span id="chatDiary">📖 日記</span>
         <span id="chatGift">🎁 贈禮</span>
+        <span id="chatTrade">⇌ 交易</span>
         <span id="chatClose">✕</span>
       </div>
     </div>
     <div id="chatLog"></div>
+    <!-- 交易提案橫幅（trade_offer 到來後顯示；接受/取消後隱藏）-->
+    <div id="tradeOffer">
+      <div id="tradeOfferText"></div>
+      <button id="tradeAcceptBtn">✓ 接受</button>
+    </div>
     <div id="chatQuick"></div>
     <div id="chatInputRow">
       <input id="chatInput" type="text" maxlength="200" placeholder="跟居民說點什麼…" autocomplete="off" />
