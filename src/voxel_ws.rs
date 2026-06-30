@@ -43,6 +43,7 @@ use crate::voxel_relations::{self as vrel, SocialStore};
 use crate::voxel_residents::{self as vr, Body};
 use crate::voxel_time::{self as vt, WorldTime, TimePhase};
 use crate::voxel_announce as vannounce;
+use crate::voxel_bonds::{self as vbonds, ResidentBonds};
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 
@@ -511,6 +512,9 @@ struct VoxelHub {
     /// 待確認的交易提案（純記憶體，無需持久化）。
     /// 鍵=居民 id，值=(提案, 到期 unix 秒)；居民同時只對一個提案；30 秒內未接受自動過期。
     pending_trades: RwLock<HashMap<String, (TradeOffer, u64)>>,
+    /// 居民情誼帳本（ROADMAP 672）：拜訪次數累積情誼（陌生→相識→老朋友），持久化跨重啟。
+    /// 每次探訪到達時 record_visit → 若升級則 Feed 廣播 + 問候語更換。
+    bonds: RwLock<ResidentBonds>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -556,6 +560,8 @@ fn hub() -> &'static VoxelHub {
             last_phase: std::sync::Mutex::new(TimePhase::Day),
             // 居民交易 v1：純記憶體，重啟清空（提案是即時的，無需持久化）。
             pending_trades: RwLock::new(HashMap::new()),
+            // 居民情誼 v1（ROADMAP 672）：啟動時從 data/voxel_bonds.jsonl 載回情誼記錄。
+            bonds: RwLock::new(ResidentBonds::from_entries(vbonds::load_bonds())),
             tx,
         }
     })
@@ -1922,6 +1928,12 @@ fn tick_residents(dt: f32) {
     // 格式：(visitor_name, host_name, is_return)
     let mut visit_events: Vec<(&'static str, String, bool)> = Vec::new();
 
+    // 居民情誼 v1（ROADMAP 672）：到達/離開事件（鎖內偵測，鎖外更新情誼+生成問候語）。
+    // 抵達格式：(visitor_id, visitor_name, host_name)
+    let mut bond_arrive_events: Vec<(String, &'static str, String)> = Vec::new();
+    // 離開格式：(visitor_id, visitor_name, host_name)
+    let mut bond_depart_events: Vec<(String, &'static str, String)> = Vec::new();
+
     {
         let world = hub().deltas.read().unwrap();
         let mut residents = hub().residents.write().unwrap();
@@ -2089,11 +2101,8 @@ fn tick_residents(dt: f32) {
                     r.visiting = None;
                     r.target_x = r.home_x;
                     r.target_z = r.home_z;
-                    if r.say.is_empty() {
-                        let say = vvisit::departure_say(r.name);
-                        r.say = say.chars().take(40).collect();
-                        r.say_timer = SAY_SECS;
-                    }
+                    // 告別語依情誼層級，由鎖外 bond_depart_events 推入 say_updates（ROADMAP 672）。
+                    bond_depart_events.push((r.id.clone(), r.name, host_name.clone()));
                     visit_events.push((r.name, host_name, true)); // is_return = true
                 }
             }
@@ -2164,11 +2173,9 @@ fn tick_residents(dt: f32) {
                             // 剛抵達：設逗留計時、冒問候泡泡（若目前沒有其他話）。
                             if r.visit_stay_timer <= 0.0 {
                                 r.visit_stay_timer = vvisit::VISIT_STAY_SECS;
-                                if r.say.is_empty() {
-                                    let say = vvisit::arrival_say(r.name, host_name);
-                                    r.say = say.chars().take(40).collect();
-                                    r.say_timer = SAY_SECS;
-                                }
+                                // 問候語依情誼層級，由鎖外 bond_arrive_events 處理後推入 say_updates
+                                // （ROADMAP 672）；say_timer 留給 say_updates 套用。
+                                bond_arrive_events.push((r.id.clone(), r.name, host_name.clone()));
                                 // Feed 事件（鎖外 IO，須在鎖釋放後再 push；這裡先推送 event tuple）。
                                 visit_events.push((r.name, host_name.clone(), false));
                             }
@@ -2417,6 +2424,43 @@ fn tick_residents(dt: f32) {
         } else {
             vfeed::append_feed(vvisit::FEED_KIND_ARRIVE, visitor, &format!("抵達{host}家！"));
         }
+    }
+
+    // 5e) 居民情誼 v1（ROADMAP 672）：更新情誼帳本、升級廣播 + 生成依層級問候語。
+    // 抵達事件：record_visit（bonds 寫鎖）→ 若升級 → save + Feed；再讀新層級生成問候語。
+    for (visitor_id, visitor_name, host_name) in bond_arrive_events {
+        // 取確定性 pick（unix 秒，足夠分散不同居民在同一秒的選句差異）。
+        let pick = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as usize;
+        // 短鎖：record_visit → 取新層級 → 是否升級。
+        let (tier, tier_changed) = {
+            let mut bonds = hub().bonds.write().unwrap();
+            bonds.record_visit(visitor_name, &host_name)
+        }; // bonds 寫鎖釋放
+        if tier_changed {
+            // 升級里程碑：持久化 + Feed 廣播，讓玩家看到「兩位居民漸漸成了老朋友」。
+            {
+                let bonds = hub().bonds.read().unwrap();
+                vbonds::save_bonds(&bonds);
+            } // bonds 讀鎖釋放
+            let milestone = vbonds::tier_up_line(tier, visitor_name, &host_name);
+            vfeed::append_feed("居民情誼", visitor_name, &milestone);
+        }
+        // 依新層級生成問候語 → say_updates（守 say_updates 的「say 空才套」原則）。
+        let greeting = vbonds::arrival_line(tier, &host_name, visitor_name, pick);
+        say_updates.push((visitor_id, greeting));
+    }
+    // 離開事件：讀當前層級（bonds 讀鎖）→ 生成告別語 → say_updates。
+    for (visitor_id, visitor_name, host_name) in bond_depart_events {
+        let pick = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as usize + 1; // +1 讓同一秒的抵達/離開選到不同句
+        let tier = { hub().bonds.read().unwrap().tier_of(visitor_name, &host_name) }; // drop
+        let farewell = vbonds::departure_line(tier, visitor_name, pick);
+        say_updates.push((visitor_id, farewell));
     }
 
     // 6) 居民 agency（目標+記憶驅動）：蓋造不重複、有進展、會持久 + 採集技能調用。
