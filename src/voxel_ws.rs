@@ -228,6 +228,119 @@ fn resident_talk_system_prompt(name: &str, persona: ResidentPersona, desire: Opt
     )
 }
 
+// ── 問居民學配方（維護者：「問 NPC 好像不錯」——知識活在居民身上）──────────
+// 玩家對居民說的話若像在問「某物怎麼合成」，就從真實配方表 `voxel_craft` 抓出
+// 對應配方，格式化成一小段「事實」注入該次對話的 system prompt——居民用自己的
+// 口吻、但 grounded 在真表，正確告訴你怎麼合（不亂編配方）。
+// 只在偵測到配方問題時注入（省 token，別每句都塞整張表）。
+// 全為純函式（偵測 / 事實字串 / 事實區塊），確定性、無鎖、無 IO、可測。
+
+/// 配料 / 產出方塊 id → 面向玩家的繁中名稱（純展示用；配方數值的單一事實仍在 voxel_craft）。
+fn block_name_zh(id: u8) -> &'static str {
+    match id {
+        2 => "泥土",
+        3 => "石頭",
+        4 => "沙子",
+        5 => "木頭",
+        8 => "木板",
+        9 => "石磚",
+        10 => "玻璃",
+        11 => "農田土",
+        15 => "工作台",
+        _ => "材料",
+    }
+}
+
+/// 可合成產物的「關鍵詞」：由配方產出方塊 id 取得（玩家會用這些詞問配方）。
+/// 回 None 表示該產出不是玩家會口語詢問的合成物。
+fn craft_product_keyword(output_block: u8) -> Option<&'static str> {
+    match output_block {
+        8 => Some("木板"),
+        9 => Some("石磚"),
+        10 => Some("玻璃"),
+        11 => Some("農田土"),
+        15 => Some("工作台"),
+        _ => None,
+    }
+}
+
+/// 「合成意圖」詞：這句話帶有想知道「怎麼做某物」的味道才算問配方。
+/// 刻意收斂——純閒聊（例「你在做什麼」沒帶產物名）不會誤觸發。
+const CRAFT_INTENT_TOKENS: &[&str] = &[
+    "合成", "配方", "製作", "製造", "做", "弄", "造", "怎麼合", "如何合",
+];
+
+/// 偵測：這句玩家的話是否在「問某個可合成物的配方」。
+/// 條件＝同時含 ①合成意圖詞 ②某可合成產物名（產物名由配方表產出推導，單一事實）。
+/// 回傳被問到的產物關鍵詞（去重、保序）；空＝不是配方問題。純函式、可測、零 LLM。
+fn detect_recipe_query(text: &str) -> Vec<&'static str> {
+    // ① 沒有任何合成意圖詞 → 早退（最常見的閒聊路徑，零成本不注入）。
+    if !CRAFT_INTENT_TOKENS.iter().any(|tok| text.contains(tok)) {
+        return Vec::new();
+    }
+    // ② 收集句中出現的可合成產物關鍵詞。
+    let mut hit: Vec<&'static str> = Vec::new();
+    for r in vcraft::RECIPES.iter().chain(vcraft::WORKBENCH_RECIPES.iter()) {
+        if let Some(kw) = craft_product_keyword(r.output_block) {
+            if text.contains(kw) && !hit.contains(&kw) {
+                hit.push(kw);
+            }
+        }
+    }
+    hit
+}
+
+/// 把一條真實配方格式化成一句「事實」：材料 → 在哪個合成格 → 產出。
+/// `in_workbench`＝true 表示需在放置好的工作台 3×3 面板合成。數字 / 材料全對齊 voxel_craft。
+fn recipe_fact_line(r: &vcraft::Recipe, in_workbench: bool) -> String {
+    let inputs = r
+        .inputs
+        .iter()
+        .map(|&(id, n)| format!("{n} 個{}", block_name_zh(id)))
+        .collect::<Vec<_>>()
+        .join("、");
+    let where_zh = if in_workbench {
+        "放置好的工作台 3×3 面板"
+    } else {
+        "背包 2×2 合成格"
+    };
+    format!(
+        "做「{}」：把 {} 放進{} → 得到 {} 個{}",
+        r.name_zh, inputs, where_zh, r.output_count, block_name_zh(r.output_block)
+    )
+}
+
+/// 若玩家在問配方 → 回傳要注入 system prompt 的「真實配方事實」區塊（含口吻指引）。
+/// 不是配方問題 → None（不注入、不多燒 token）。grounded 在 voxel_craft 真表，避免 LLM 亂編。
+fn recipe_knowledge_block(text: &str) -> Option<String> {
+    let products = detect_recipe_query(text);
+    if products.is_empty() {
+        return None;
+    }
+    // 對每個被問到的產物，蒐集背包(2×2) + 工作台(3×3) 兩套真實配方。
+    let mut facts: Vec<String> = Vec::new();
+    for kw in &products {
+        for r in vcraft::RECIPES.iter() {
+            if craft_product_keyword(r.output_block) == Some(*kw) {
+                facts.push(recipe_fact_line(r, false));
+            }
+        }
+        for r in vcraft::WORKBENCH_RECIPES.iter() {
+            if craft_product_keyword(r.output_block) == Some(*kw) {
+                facts.push(recipe_fact_line(r, true));
+            }
+        }
+    }
+    if facts.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "【旅人正在問你怎麼合成東西。以下是這片天地裡千真萬確的配方，請依這些事實、\
+        用你自己的口吻親切地教他，材料與數字要完全正確，絕不可自行編造或更改】\n{}",
+        facts.join("\n")
+    ))
+}
+
 /// 居民對話罐頭回覆（LLM 未啟用 / 連不到時的降級，永遠回得出一句）。依名字雜湊選句、增加變化。
 fn resident_canned_reply(name: &str) -> String {
     const POOL: [&str; 4] = [
@@ -979,6 +1092,12 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             base_sys
                         } else {
                             format!("{base_sys}\n\n{context}")
+                        };
+                        // 旅人在問配方？→ 注入真實配方事實（grounded 在 voxel_craft，
+                        // 只在問配方時注入，純閒聊不多燒 token）。
+                        let sys = match recipe_knowledge_block(&clean_for_llm) {
+                            Some(facts) => format!("{sys}\n\n{facts}"),
+                            None => sys,
                         };
                         let reply: String = match tokio::time::timeout(
                             Duration::from_secs(TALK_LLM_TIMEOUT_SECS),
@@ -2234,6 +2353,69 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 問居民學配方 ─────────────────────────────────────────────
+    #[test]
+    fn detect_recipe_query_catches_making_questions() {
+        // 意圖詞 + 產物名 → 命中。
+        assert_eq!(detect_recipe_query("怎麼做玻璃"), vec!["玻璃"]);
+        assert_eq!(detect_recipe_query("玻璃怎麼合"), vec!["玻璃"]);
+        assert_eq!(detect_recipe_query("木板怎麼弄"), vec!["木板"]);
+        assert_eq!(detect_recipe_query("我想合成石磚"), vec!["石磚"]);
+        assert_eq!(detect_recipe_query("工作台的配方是什麼"), vec!["工作台"]);
+    }
+
+    #[test]
+    fn detect_recipe_query_ignores_chitchat() {
+        // 純閒聊（沒帶產物名）→ 不觸發，即使含「做」。
+        assert!(detect_recipe_query("你在做什麼呀").is_empty());
+        assert!(detect_recipe_query("今天天氣真好").is_empty());
+        // 只提到產物、沒有合成意圖 → 不觸發（單純讚嘆/閒聊）。
+        assert!(detect_recipe_query("這玻璃好漂亮").is_empty());
+        assert!(detect_recipe_query("木板是誰放的").is_empty());
+        // 空字串安全。
+        assert!(detect_recipe_query("").is_empty());
+    }
+
+    #[test]
+    fn recipe_fact_line_matches_real_table() {
+        // 玻璃背包配方：2 沙 → 1 玻璃（對齊 voxel_craft）。
+        let glass = vcraft::find_recipe("glass").unwrap();
+        let line = recipe_fact_line(glass, false);
+        assert!(line.contains("2 個沙子"), "玻璃要 2 沙：{line}");
+        assert!(line.contains("背包 2×2 合成格"), "在背包合成：{line}");
+        assert!(line.contains("1 個玻璃"), "產出 1 玻璃：{line}");
+        // 工作台大量玻璃：6 沙 → 8 玻璃。
+        let glass_wb = vcraft::find_workbench_recipe("glass_wb").unwrap();
+        let wb_line = recipe_fact_line(glass_wb, true);
+        assert!(wb_line.contains("6 個沙子") && wb_line.contains("8 個玻璃"), "{wb_line}");
+        assert!(wb_line.contains("工作台 3×3"), "工作台合成：{wb_line}");
+    }
+
+    #[test]
+    fn recipe_knowledge_block_is_grounded_and_complete() {
+        // 問玻璃 → 區塊含背包與工作台兩套真實配方數字。
+        let block = recipe_knowledge_block("玻璃怎麼合").expect("應產出配方事實");
+        assert!(block.contains("2 個沙子"), "含背包配方：{block}");
+        assert!(block.contains("6 個沙子"), "含工作台配方：{block}");
+        assert!(block.contains("絕不可自行編造"), "含不准亂編的指引");
+        // 木板配方：2 木 → 4 木板。
+        let plank = recipe_knowledge_block("木板要怎麼製作").expect("木板應有配方");
+        assert!(plank.contains("2 個木頭") && plank.contains("4 個木板"), "{plank}");
+    }
+
+    #[test]
+    fn recipe_knowledge_block_none_for_chitchat() {
+        // 一般閒聊不注入任何東西（省 token、不影響對話）。
+        assert!(recipe_knowledge_block("你好呀今天過得如何").is_none());
+        assert!(recipe_knowledge_block("這裡風景真美").is_none());
+    }
+
+    #[test]
+    fn detect_recipe_query_dedups_multiple_mentions() {
+        // 同一產物提兩次只回一個（去重）。
+        assert_eq!(detect_recipe_query("玻璃啊玻璃怎麼合成"), vec!["玻璃"]);
+    }
 
     #[test]
     fn spawn_is_above_dry_land() {
