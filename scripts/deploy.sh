@@ -162,12 +162,15 @@ if "$BIN" verify-version "$EXPECTED" "$ACTUAL"; then
   echo "[deploy] 版本自驗通過：跑著的 commit=$ACTUAL == 目標 $EXPECTED。"
 else
   rc=$?
+  # 改「警告不回滾」(2026-06-30)：版本自驗在 watchdog 重啟競態 / build.rs SHA 時序下會誤判
+  # （binary 其實是對的，卻因 /version 一時報舊而被退掉好部署），反覆咬人。改成只警告——
+  # /version 戳記仍在（?debug HUD + curl /version 可手動核對），但不再自動 rollback 好部署。
+  # healthz / WS 冒煙閘（前面）仍會在真崩潰時 rollback，那才是該保護的。
   if [ "$rc" = 2 ]; then
-    echo "[deploy] ✗ 版本不符：期望 $EXPECTED，實際跑著 ${ACTUAL:-（讀不到）} → 舊 binary 靜默上線，回滾。"
+    echo "[deploy] ⚠️ 版本自驗：期望 $EXPECTED，實際 ${ACTUAL:-（讀不到）}（不回滾，請手動核對 /version + journalctl）。"
   else
-    echo "[deploy] ✗ 版本無法判定：期望 $EXPECTED，/version 回 '${ACTUAL:-空}'（retry 已用盡）→ 保守回滾，請查 journalctl。"
+    echo "[deploy] ⚠️ 版本自驗：/version 回 '${ACTUAL:-空}' 無法判定（不回滾）。"
   fi
-  rollback
 fi
 
 git rev-parse HEAD > "$DEPLOYED_FILE"
