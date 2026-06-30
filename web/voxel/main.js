@@ -456,6 +456,29 @@ function setAffinityEmoji(sprite, emoji) {
   sprite.material.needsUpdate = true;
 }
 
+/** 製作心情指示燈 sprite（心情 emoji，居名牌左側，ROADMAP 676）。 */
+function makeMoodSprite(emoji) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64; canvas.height = 40;
+  const ctx = canvas.getContext("2d");
+  ctx.font = "24px system-ui, sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  if (emoji) ctx.fillText(emoji, 32, 20);
+  const tex = new THREE.CanvasTexture(canvas);
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false })
+  );
+  sprite.scale.set(0.7, 0.44, 1);
+  return sprite;
+}
+
+function setMoodEmoji(sprite, emoji) {
+  const fresh = makeMoodSprite(emoji);
+  if (sprite.material.map) sprite.material.map.dispose();
+  sprite.material.map = fresh.material.map;
+  sprite.material.needsUpdate = true;
+}
+
 /** 從後端拉取玩家與各居民的好感度計數 → 更新 myAffinity Map。
  *  連線後取一次；每次對話後再更新，讓指示燈即時反映互動。零 LLM。 */
 async function refreshAffinity() {
@@ -498,8 +521,13 @@ function buildResident(id, name) {
   affinityIndicator.position.set(0.85, 2.05, 0);
   affinityIndicator.visible = false;
   group.add(affinityIndicator);
+  // 心情指示燈（ROADMAP 676）：伺服器廣播 mood emoji，偏置在名牌左側與好感度左右對稱。
+  const moodIndicator = makeMoodSprite("");
+  moodIndicator.position.set(-0.85, 2.05, 0);
+  moodIndicator.visible = false;
+  group.add(moodIndicator);
   scene.add(group);
-  return { group, label, desireLabel, bubble, affinityIndicator, lastName: name, lastSay: "", lastDesire: "", lastAffinity: "" };
+  return { group, label, desireLabel, bubble, affinityIndicator, moodIndicator, lastName: name, lastSay: "", lastDesire: "", lastAffinity: "", lastMood: "" };
 }
 
 // 依伺服器快照更新所有居民（位置/朝向/名字/說的話）。新出現的就建、消失的就移除。
@@ -532,6 +560,13 @@ function updateResidents(list) {
       ent.lastAffinity = emoji;
       if (emoji) { setAffinityEmoji(ent.affinityIndicator, emoji); ent.affinityIndicator.visible = true; }
       else { ent.affinityIndicator.visible = false; }
+    }
+    // 心情指示燈（ROADMAP 676）：伺服器動態計算並廣播 mood emoji，sig 保護不重建貼圖。
+    const moodEmoji = r.mood || "";
+    if (moodEmoji !== ent.lastMood) {
+      ent.lastMood = moodEmoji;
+      if (moodEmoji) { setMoodEmoji(ent.moodIndicator, moodEmoji); ent.moodIndicator.visible = true; }
+      else { ent.moodIndicator.visible = false; }
     }
     // 距離 LOD：遠到接近霧盡頭就整個隱藏（省繪製，不崩 FPS）。
     const dx = r.x - player.x, dz = r.z - player.z;

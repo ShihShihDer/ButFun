@@ -47,6 +47,7 @@ use crate::voxel_bonds::{self as vbonds, ResidentBonds};
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
+use crate::voxel_mood;
 
 /// 入場時串給玩家的 chunk 半徑（以 chunk 為單位，水平）。3 → 7×7 column。
 const SPAWN_CHUNK_RADIUS: i32 = 3;
@@ -189,6 +190,9 @@ struct ResidentView {
     /// 居民當前的心願（None / 省略 = 尚未有心願）。前端據此顯示夢想副標籤。
     #[serde(skip_serializing_if = "Option::is_none")]
     desire: Option<String>,
+    /// 居民當前心情 emoji（None / 省略 = 跳過更新）。ROADMAP 676。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mood: Option<String>,
 }
 
 /// 居民名字池（取自 resident_npc 的近城居民風格名，柔和轉寫式、與主要 NPC 一致）。
@@ -582,19 +586,49 @@ fn players_snapshot_json() -> String {
             .map(|r| (r.id.clone(), r.name, r.body.x, r.body.y, r.body.z, r.yaw, r.say.clone()))
             .collect()
     }; // 居民讀鎖在此釋放
+    // 計算每位居民的心情 emoji（ROADMAP 676）：短鎖讀 bonds → drop → 短鎖讀 memory → drop。
+    let resident_id_strs: Vec<String> = (0..RESIDENT_COUNT).map(|i| format!("vox_res_{i}")).collect();
+    let resident_ids: Vec<&str> = resident_id_strs.iter().map(|s| s.as_str()).collect();
+    let mood_map: HashMap<String, String> = {
+        // 1. bonds 讀鎖
+        let bonds = hub().bonds.read().unwrap();
+        let counts: Vec<(String, usize, usize)> = resident_ids
+            .iter()
+            .map(|&rid| {
+                let (f, a) = bonds.bond_counts_for(rid, &resident_ids);
+                (rid.to_string(), f, a)
+            })
+            .collect();
+        drop(bonds); // bonds 讀鎖釋放
+        // 2. memory 讀鎖
+        let mem = hub().memory.read().unwrap();
+        counts
+            .into_iter()
+            .map(|(rid, friends, acq)| {
+                let mems = mem.memory_count(&rid);
+                let tier = voxel_mood::compute_mood(friends, acq, mems);
+                let emoji = voxel_mood::mood_emoji(tier).to_string();
+                (rid, emoji)
+            })
+            .collect()
+    }; // memory 讀鎖在此釋放
     let residents: Vec<ResidentView> = {
         let des = hub().desires.read().unwrap();
         resident_snaps
             .into_iter()
-            .map(|(id, name, x, y, z, yaw, say)| ResidentView {
-                desire: des.get_desire(&id).map(|d| d.desire.clone()),
-                id,
-                name,
-                x,
-                y,
-                z,
-                yaw,
-                say,
+            .map(|(id, name, x, y, z, yaw, say)| {
+                let mood = mood_map.get(&id).cloned();
+                ResidentView {
+                    desire: des.get_desire(&id).map(|d| d.desire.clone()),
+                    mood,
+                    id,
+                    name,
+                    x,
+                    y,
+                    z,
+                    yaw,
+                    say,
+                }
             })
             .collect()
     }; // 心願讀鎖在此釋放
@@ -2781,6 +2815,24 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
             format!("你最近聽到的鄰居近況：{}", notes.join("；"))
         }
     }; // social 讀鎖在此釋放
+    // 短鎖讀情誼+記憶，計算居民心情（ROADMAP 676）——循序取鎖，不巢狀。
+    let (mood_sense_value, mood_note): (i32, String) = {
+        let all_ids: Vec<String> = (0..RESIDENT_COUNT).map(|i| format!("vox_res_{i}")).collect();
+        let all_id_refs: Vec<&str> = all_ids.iter().map(|s| s.as_str()).collect();
+        let (friends, acq) = {
+            let bonds = hub().bonds.read().unwrap();
+            bonds.bond_counts_for(&id, &all_id_refs)
+        }; // bonds 讀鎖釋放
+        let mems = {
+            let mem = hub().memory.read().unwrap();
+            mem.memory_count(&id)
+        }; // memory 讀鎖釋放
+        let tier = voxel_mood::compute_mood(friends, acq, mems);
+        (
+            voxel_mood::mood_to_sense_value(tier),
+            format!("你的心情：{}", voxel_mood::mood_description_zh(tier)),
+        )
+    };
     let world_news = {
         let mut parts =
             vec!["你生活在新生的『乙太方界』——一片由方塊構成的清淨天地。".to_string()];
@@ -2793,6 +2845,7 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
         if !social_note.is_empty() {
             parts.push(social_note);
         }
+        parts.push(mood_note);
         parts.concat()
     };
     let sense = SenseInput {
@@ -2801,7 +2854,7 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
         hp: 100,
         max_hp: 100,
         energy: 80,
-        mood: 70,
+        mood: mood_sense_value,
         needs_summary: String::new(),
         nearby_players,
         nearby_nodes: Vec::new(),

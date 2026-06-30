@@ -150,6 +150,8 @@ mod voxel_visit;
 mod voxel_bonds;
 // 乙太方界·老友情境問候 v1：好感度達老友時，居民說出記憶驅動的特定台詞（ROADMAP 675）。
 mod voxel_fond_greeting;
+// 乙太方界·居民心情指示 v1：根據情誼與記憶動態計算心情 emoji，廣播給前端（ROADMAP 676）。
+mod voxel_mood;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環

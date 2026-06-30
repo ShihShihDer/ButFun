@@ -169,6 +169,12 @@ impl VoxelMemory {
             .map(|q| q.iter().filter(|e| e.player == player).count())
             .unwrap_or(0)
     }
+
+    /// 某居民的長期記憶總筆數（所有玩家合計，純計數不複製資料）。
+    /// 用於心情計算——越多記憶代表與玩家互動越頻繁。
+    pub fn memory_count(&self, resident: &str) -> usize {
+        self.long.get(resident).map(|q| q.len()).unwrap_or(0)
+    }
 }
 
 /// 記憶回想泡泡的好感度門檻：友人（3+ 筆記憶）才觸發。
