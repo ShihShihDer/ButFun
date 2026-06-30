@@ -860,9 +860,11 @@ mod tests {
                     }
                 }
 
-                // 卡住偵測（與 production 同邏輯；壓力測試永遠視為「正試圖移動」最嚴格）。
+                // 卡住偵測（與 production 同邏輯）：只有「純導航（沒在採集）+ 幾何被困」才累加。
                 let moved = ((s.body.x - px).powi(2) + (s.body.z - pz).powi(2)).sqrt();
-                s.stuck = vr::update_stuck_timer(s.stuck, moved, true, dt);
+                let navigating = s.gather.is_none();
+                let confined = navigating && vr::is_confined(&world, &s.body);
+                s.stuck = vr::update_stuck_timer(s.stuck, moved, navigating, confined, dt);
                 if s.stuck >= vr::STUCK_SECS {
                     rescues += 1;
                     vr::rescue_resident(&world, &mut s.body, px, pz, vr::UNSTUCK_MAX_LIFT);

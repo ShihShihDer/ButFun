@@ -197,18 +197,51 @@ pub fn dry_ground_spawn(ox: i32, oz: i32) -> Body {
     Body::at(bx as f32 + 0.5, (bh + 2) as f32, bz as f32 + 0.5)
 }
 
-// ── 卡住偵測 + 脫困/送回（修：居民採集挖坑把自己卡住、爬不出來）──────────────────
+// ── 卡住偵測 + 脫困/送回（修：只救「真被困」的，不打斷正常採集/建造）──────────────
 //
 // 玩家端有前端 depenetration（unstuckY），但居民是後端權威移動、沒有等價脫困。
-// 這裡補上：偵測「居民卡住」→ 先試往上脫困（埋在實心方塊裡時頂到地表），
-// 脫不了就送回家域出生地表（dry_ground_spawn 那套安全地表）。全是確定性純函式、可測。
+// 這裡補上脫困，但偵測要**精準**：早期版本只看「想動卻 6 秒沒位移」就救，會把
+// 居民「採集時故意停在資源旁挖方塊」「走向採不到的資源時頂著障礙」這類**正常停頓**
+// 誤判成卡住 → 每分鐘誤救數次、打斷採集。
+//
+// 修正後分兩件事一起成立才算「真被困」：
+//   ① **正在導航**（朝閒晃/歸巢目標走，不是在執行採集/蓋造動作——動作有各自逾時）；
+//   ② **幾何困住**（埋在實心方塊裡，或四面（含踏階）都爬不出去）。
+// 只是單側被擋（例如頂著一塊資源、其他方向能走）→ 不算被困、不誤救。
+// 全是確定性純函式、可測。
 
-/// 連續「想動卻幾乎沒位移」累積多少秒視為卡住（觸發脫困/送回）。
+/// 連續「正在導航卻零進展、且幾何上真被困」累積多少秒視為卡住（觸發脫困/送回）。
 pub const STUCK_SECS: f32 = 6.0;
-/// 單 tick 水平位移小於此值視為「幾乎沒動」（搭配 trying_to_move 才算卡住，純歇息不算）。
+/// 單 tick 水平位移小於此值視為「幾乎沒動」（還要同時 navigating + confined 才算卡住）。
 pub const STUCK_MOVE_EPS: f32 = 0.02;
 /// 往上脫困最多抬幾格找可站的地表空位（超過就改送回家）。
 pub const UNSTUCK_MAX_LIFT: i32 = 6;
+
+/// 幾何困住判定（純函式、可測）：居民此刻是否真的「爬不出去」。
+/// ① 身體埋在實心方塊裡（被方塊覆蓋）→ 一定要救；
+/// ② 否則朝四個水平方向各試探一步（含踏上一階），任一方向走得出去 → **不算**被困；
+/// ③ 四向（含踏階）全部被擋 → 卡在爬不出的坑/箱裡。
+/// 關鍵：採集時頂著一塊資源（只有單側被擋、其他方向是空地）→ 回 `false`，不誤救。
+pub fn is_confined(world: &WorldDelta, body: &Body) -> bool {
+    // 埋在實心方塊裡（被覆蓋）→ 一定要救。
+    if overlaps(world, body.x, body.y, body.z) {
+        return true;
+    }
+    // 步距取略大於 AABB 半寬，確保真的探進鄰格、不會原地打轉誤判。
+    const PROBE: f32 = RES_HALF_W + 0.2;
+    for (dx, dz) in [(PROBE, 0.0), (-PROBE, 0.0), (0.0, PROBE), (0.0, -PROBE)] {
+        // 平移過去不撞實心 → 走得出去，不算被困。
+        if !overlaps(world, body.x + dx, body.y, body.z + dz) {
+            return false;
+        }
+        // 踏上一階再過去不撞實心 → 爬得出淺坑（≤1 格），也不算被困。
+        if !overlaps(world, body.x + dx, body.y + 1.05, body.z + dz) {
+            return false;
+        }
+    }
+    // 四個方向（含踏階）都出不去 → 卡在爬不出的坑/箱裡。
+    true
+}
 
 /// 一次脫困的結果（供呼叫端冒泡/記 feed/log）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -219,10 +252,15 @@ pub enum Rescue {
     SentHome,
 }
 
-/// 更新「卡住計時」：居民正試圖移動（採集中或不在歇息）卻幾乎沒位移 → 累加 dt；
-/// 有在動、或本來就在原地歇息 → 歸零。純函式、可測。
-pub fn update_stuck_timer(prev: f32, moved_dist: f32, trying_to_move: bool, dt: f32) -> f32 {
-    if trying_to_move && moved_dist < STUCK_MOVE_EPS {
+/// 更新「卡住計時」。只有三件事**同時**成立才累加 dt：
+///   ① `navigating`：居民正朝某導航目標走（閒晃/歸巢），**不是**在執行採集/蓋造動作
+///      （採集/蓋造的故意停頓有各自的逾時處理，不該被當成卡住）；
+///   ② `confined`：此刻幾何上**真的被困**（見 [`is_confined`]）；
+///   ③ 幾乎沒位移（`moved_dist < STUCK_MOVE_EPS`）。
+/// 其餘情況（在動、原地歇息、執行動作中的停頓、只是單側被擋）一律歸零——不誤救。
+/// 純函式、可測。
+pub fn update_stuck_timer(prev: f32, moved_dist: f32, navigating: bool, confined: bool, dt: f32) -> f32 {
+    if navigating && confined && moved_dist < STUCK_MOVE_EPS {
         prev + dt
     } else {
         0.0
@@ -430,24 +468,213 @@ mod tests {
 
     // ── 卡住偵測 + 脫困/送回 ──────────────────────────────────────────────────
 
+    /// 實測對比（`cargo test -- --nocapture` 看數字）：模擬 prod 真因——居民鎖定
+    /// 一個「採不到的資源」（被牆/地形擋住），整段頂著障礙零位移。
+    /// 舊規則（gather.is_some() ⇒ trying_to_move）會把這誤判成卡住、每分鐘狂救；
+    /// 新規則（採集動作豁免 + 幾何困住判定）→ 0 次誤救。
     #[test]
-    fn stuck_timer_accumulates_when_trying_but_not_moving() {
+    fn false_rescue_rate_before_vs_after_on_gather_pause() {
+        let mut world = WorldDelta::new();
+        let (x, z) = land_point();
+        let h = height_at(x, z);
+        // +x 放一面 2 格高的牆當「採不到、頂著的資源」。
+        for up in 0..=1 {
+            voxel::set_block(&mut world, x + 1, h + 1 + up, z, Block::Stone);
+        }
         let dt = 1.0 / 30.0;
-        // 想動卻幾乎沒位移 → 累加。
-        let t = update_stuck_timer(0.0, 0.0, true, dt);
+        let secs = 600.0_f32; // 模擬 10 分鐘採集頂牆
+        let ticks = (secs / dt) as u32;
+
+        // 舊規則：採集中視為 trying_to_move、沒有幾何判定。
+        let mut old_body = Body::at(x as f32 + 0.5, (h + 1) as f32, z as f32 + 0.5);
+        let mut old_stuck = 0.0_f32;
+        let mut old_rescues = 0u32;
+        // 新規則：採集動作豁免（navigating=false）。
+        let mut new_body = Body::at(x as f32 + 0.5, (h + 1) as f32, z as f32 + 0.5);
+        let mut new_stuck = 0.0_f32;
+        let mut new_rescues = 0u32;
+
+        for _ in 0..ticks {
+            // 舊規則 tick。
+            let (px, pz) = (old_body.x, old_body.z);
+            step_toward(&world, &mut old_body, x as f32 + 2.0, z as f32 + 0.5, dt, RES_SPEED);
+            let moved = ((old_body.x - px).powi(2) + (old_body.z - pz).powi(2)).sqrt();
+            // 舊邏輯：gather.is_some() ⇒ 視為 trying_to_move、無 confined 把關。
+            old_stuck = if moved < STUCK_MOVE_EPS { old_stuck + dt } else { 0.0 };
+            if old_stuck >= STUCK_SECS { old_rescues += 1; old_stuck = 0.0; }
+
+            // 新規則 tick。
+            let (px2, pz2) = (new_body.x, new_body.z);
+            step_toward(&world, &mut new_body, x as f32 + 2.0, z as f32 + 0.5, dt, RES_SPEED);
+            let moved2 = ((new_body.x - px2).powi(2) + (new_body.z - pz2).powi(2)).sqrt();
+            let navigating = false; // 採集動作中 → 豁免
+            let confined = navigating && is_confined(&world, &new_body);
+            new_stuck = update_stuck_timer(new_stuck, moved2, navigating, confined, dt);
+            if new_stuck >= STUCK_SECS { new_rescues += 1; new_stuck = 0.0; }
+        }
+
+        let per_min = |n: u32| n as f32 / (secs / 60.0);
+        println!(
+            "[脫困誤救對比] 採集頂牆 {secs}s：舊規則救={old_rescues}（{:.1}/分） 新規則救={new_rescues}（{:.1}/分）",
+            per_min(old_rescues), per_min(new_rescues)
+        );
+        // 舊規則確實會周期性誤救（重現 prod 的「跟著採集冒出來」）。
+        assert!(old_rescues > 0, "舊規則應重現採集誤救");
+        // 新規則：採集停頓 0 誤救。
+        assert_eq!(new_rescues, 0, "新規則採集停頓不該誤救：new_rescues={new_rescues}");
+    }
+
+    #[test]
+    fn stuck_timer_accumulates_only_when_navigating_confined_and_still() {
+        let dt = 1.0 / 30.0;
+        // 正在導航 + 幾何被困 + 幾乎沒位移 → 累加。
+        let t = update_stuck_timer(0.0, 0.0, true, true, dt);
         assert!((t - dt).abs() < 1e-6);
         // 連續累加數 tick。
-        let t2 = update_stuck_timer(t, 0.001, true, dt);
+        let t2 = update_stuck_timer(t, 0.001, true, true, dt);
         assert!(t2 > t);
     }
 
     #[test]
-    fn stuck_timer_resets_when_moving_or_resting() {
+    fn stuck_timer_resets_when_moving_resting_or_not_confined() {
         let dt = 1.0 / 30.0;
         // 有在動（位移超過門檻）→ 歸零。
-        assert_eq!(update_stuck_timer(5.0, 0.5, true, dt), 0.0);
-        // 沒在試圖移動（原地歇息）→ 歸零（歇息不算卡住）。
-        assert_eq!(update_stuck_timer(5.0, 0.0, false, dt), 0.0);
+        assert_eq!(update_stuck_timer(5.0, 0.5, true, true, dt), 0.0);
+        // 沒在導航（執行採集/蓋造動作中的停頓，或原地歇息）→ 歸零。
+        assert_eq!(update_stuck_timer(5.0, 0.0, false, true, dt), 0.0);
+        // 在導航、沒位移，但幾何上沒被困（只是單側被擋）→ 歸零（不誤救）。
+        assert_eq!(update_stuck_timer(5.0, 0.0, true, false, dt), 0.0);
+    }
+
+    // ── 幾何困住判定 is_confined ───────────────────────────────────────────────
+
+    #[test]
+    fn is_confined_false_on_open_ground() {
+        let world = WorldDelta::new();
+        let (x, z) = land_point();
+        let h = height_at(x, z);
+        // 站在開闊地表上方 → 四面都能走 → 不算被困。
+        let body = Body::at(x as f32 + 0.5, (h + 1) as f32, z as f32 + 0.5);
+        assert!(!is_confined(&world, &body), "開闊地表不該判為被困");
+    }
+
+    #[test]
+    fn is_confined_true_when_buried() {
+        let world = WorldDelta::new();
+        let (x, z) = land_point();
+        let h = height_at(x, z);
+        // 腳底卡進地表方塊裡（被覆蓋）→ 一定算被困。
+        let body = Body::at(x as f32 + 0.5, h as f32, z as f32 + 0.5);
+        assert!(overlaps(&world, body.x, body.y, body.z), "前置：身體應被覆蓋");
+        assert!(is_confined(&world, &body), "埋在實心裡應判為被困");
+    }
+
+    #[test]
+    fn is_confined_false_when_only_one_side_blocked() {
+        // 採集誤救真因的釘樁：居民頂著一塊資源（只有單側被擋、其他方向是空地）。
+        // 舊邏輯會把這當卡住誤救；新邏輯幾何判定 → 不被困。
+        let mut world = WorldDelta::new();
+        let (x, z) = land_point();
+        let h = height_at(x, z);
+        let body = Body::at(x as f32 + 0.5, (h + 1) as f32, z as f32 + 0.5);
+        // 只在 +x 方向身體高度放一面牆（模擬頂著的資源/障礙）。
+        for up in 0..=1 {
+            voxel::set_block(&mut world, x + 1, h + 1 + up, z, Block::Stone);
+        }
+        assert!(!overlaps(&world, body.x, body.y, body.z), "前置：身體本身沒被覆蓋");
+        assert!(!is_confined(&world, &body), "單側被擋、其他方向能走 → 不該判為被困");
+    }
+
+    #[test]
+    fn is_confined_false_in_shallow_one_deep_pit() {
+        // 只有 1 格高的牆圍著（淺坑）→ 踏一階就出得去 → 不算被困。
+        let mut world = WorldDelta::new();
+        let (x, z) = land_point();
+        let h = height_at(x, z);
+        for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            voxel::set_block(&mut world, x + dx, h + 1, z + dz, Block::Stone);
+        }
+        let body = Body::at(x as f32 + 0.5, (h + 1) as f32, z as f32 + 0.5);
+        assert!(!is_confined(&world, &body), "1 格淺坑踏階出得去 → 不該判為被困");
+    }
+
+    #[test]
+    fn is_confined_true_in_deep_walled_pit() {
+        // 四面高牆（≥2 格）圍住、爬不出 → 真被困。
+        let mut world = WorldDelta::new();
+        let (x, z) = land_point();
+        let h = height_at(x, z);
+        for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            for up in 1..=4 {
+                voxel::set_block(&mut world, x + dx, h + up, z + dz, Block::Stone);
+            }
+        }
+        let body = Body::at(x as f32 + 0.5, (h + 1) as f32, z as f32 + 0.5);
+        assert!(!overlaps(&world, body.x, body.y, body.z), "前置：站在坑底空氣裡");
+        assert!(is_confined(&world, &body), "高牆深坑爬不出 → 應判為被困");
+    }
+
+    #[test]
+    fn gathering_pause_against_resource_never_triggers_rescue() {
+        // 端到端釘樁：居民走向「採不到的資源」頂著障礙、整段零位移——
+        // 因為這是執行採集動作（navigating=false），卡住計時永不累加 → 不誤救。
+        let mut world = WorldDelta::new();
+        let (x, z) = land_point();
+        let h = height_at(x, z);
+        // +x 放一面牆當「頂著的資源」。
+        for up in 0..=1 {
+            voxel::set_block(&mut world, x + 1, h + 1 + up, z, Block::Stone);
+        }
+        let mut body = Body::at(x as f32 + 0.5, (h + 1) as f32, z as f32 + 0.5);
+        let dt = 1.0 / 30.0;
+        let mut stuck = 0.0_f32;
+        let mut rescues = 0u32;
+        // 模擬 20 秒：採集中（navigating=false），一直頂著牆零位移。
+        for _ in 0..600 {
+            let (px, pz) = (body.x, body.z);
+            // 頂著資源：朝牆走（被擋、幾乎不動）。
+            step_toward(&world, &mut body, x as f32 + 2.0, z as f32 + 0.5, dt, RES_SPEED);
+            let moved = ((body.x - px).powi(2) + (body.z - pz).powi(2)).sqrt();
+            let navigating = false; // 採集動作中，豁免脫困偵測
+            let confined = navigating && is_confined(&world, &body);
+            stuck = update_stuck_timer(stuck, moved, navigating, confined, dt);
+            if stuck >= STUCK_SECS {
+                rescues += 1;
+                stuck = 0.0;
+            }
+        }
+        assert_eq!(rescues, 0, "採集頂著資源的正常停頓不該觸發脫困：rescues={rescues}");
+    }
+
+    #[test]
+    fn truly_trapped_resident_while_navigating_is_still_rescued() {
+        // 對照組：真被困（四面高牆）+ 正在導航 → 6 秒後仍會觸發脫困（真卡住要救）。
+        let mut world = WorldDelta::new();
+        let (x, z) = land_point();
+        let h = height_at(x, z);
+        for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            for up in 1..=4 {
+                voxel::set_block(&mut world, x + dx, h + up, z + dz, Block::Stone);
+            }
+        }
+        let mut body = Body::at(x as f32 + 0.5, (h + 1) as f32, z as f32 + 0.5);
+        let dt = 1.0 / 30.0;
+        let mut stuck = 0.0_f32;
+        let mut rescued = false;
+        for _ in 0..300 {
+            let (px, pz) = (body.x, body.z);
+            // 正在導航：朝坑外某點走（被牆擋住零進展）。
+            step_toward(&world, &mut body, x as f32 + 5.0, z as f32 + 0.5, dt, RES_SPEED);
+            let moved = ((body.x - px).powi(2) + (body.z - pz).powi(2)).sqrt();
+            let navigating = true;
+            let confined = navigating && is_confined(&world, &body);
+            stuck = update_stuck_timer(stuck, moved, navigating, confined, dt);
+            if stuck >= STUCK_SECS {
+                rescued = true;
+                break;
+            }
+        }
+        assert!(rescued, "真被困（高牆）且在導航 → 應在門檻時間內觸發脫困");
     }
 
     #[test]

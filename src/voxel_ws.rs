@@ -1762,12 +1762,15 @@ fn tick_residents(dt: f32) {
                 }
             }
 
-            // 卡住偵測 + 脫困/送回（修：居民採集挖坑把自己卡住、爬不出來）。
-            // 「想動卻幾乎沒位移」累積到門檻 → 先試往上脫困、脫不了就送回家域出生地表。
+            // 卡住偵測 + 脫困/送回（修：只救「真被困」的，不打斷正常採集/建造）。
+            // 只有「正在導航（非採集/蓋造動作中）+ 幾何上真被困 + 幾乎沒位移」才算卡住。
             let moved = ((r.body.x - pre_x).powi(2) + (r.body.z - pre_z).powi(2)).sqrt();
-            // 採集中、或不在原地歇息時，視為「正試圖移動」（純歇息不算卡住）。
-            let trying_to_move = r.gather.is_some() || r.wait_timer <= 0.0;
-            r.stuck_timer = vr::update_stuck_timer(r.stuck_timer, moved, trying_to_move, dt);
+            // 正在導航：朝閒晃/歸巢目標走，且不是在執行採集動作、也不在原地歇息。
+            // 採集（gather）有自己的 25 秒逾時處理「走不到資源就放棄」，不該被脫困偵測搶先誤救。
+            let navigating = r.gather.is_none() && r.wait_timer <= 0.0;
+            // 幾何困住判定（埋在實心裡或四面爬不出）；只在導航時才需要算。
+            let confined = navigating && vr::is_confined(&world, &r.body);
+            r.stuck_timer = vr::update_stuck_timer(r.stuck_timer, moved, navigating, confined, dt);
             if r.stuck_timer >= vr::STUCK_SECS {
                 let how = vr::rescue_resident(
                     &world, &mut r.body, r.home_x, r.home_z, vr::UNSTUCK_MAX_LIFT,
