@@ -132,6 +132,38 @@ if ! node "$REPO/scripts/e2e/gameloop-smoke.mjs" "$WS_URL"; then
   rollback
 fi
 
+# 版本自驗（最關鍵）：確認「跑著的 binary == 剛部署的目標 commit」。
+# /healthz + WS 冒煙只證明「活著」，分辨不出「活著但跑的是舊 binary」——舊 binary 靜默上線
+# 會默默服務舊碼、沒人發現（剛因此繞了一整天）。這裡 curl /version 取 binary 編譯期烤入的 commit，
+# 比對工作樹 HEAD short SHA；不符 → 回滾 + 明確報錯（印出「期望 X 實際 Y」）。
+# 比對邏輯共用 binary 的 `verify-version` 子指令（與後端同一份純函式，見 src/version.rs），
+# 不在 bash 再抄一份。VERSION_URL 由 HEALTH_URL 推導（換掉最後一段路徑），可用 BUTFUN_VERSION_URL 覆寫。
+EXPECTED="$(git rev-parse --short HEAD)"
+VERSION_URL="${BUTFUN_VERSION_URL:-${HEALTH_URL%/*}/version}"
+echo "[deploy] 版本自驗 $VERSION_URL（期望 commit=$EXPECTED）…"
+ACTUAL=""
+for _ in $(seq 1 10); do
+  # /version 還沒起來（剛重啟）→ curl 失敗或空 → retry，別誤殺正常部署。
+  body="$(curl -fsS -m 5 "$VERSION_URL" 2>/dev/null || true)"
+  ACTUAL="$(printf '%s' "$body" | sed -n 's/.*"commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  [ -n "$ACTUAL" ] && break
+  sleep 2
+done
+
+# verify-version：0=相符 / 2=不符 / 3=未知（空或 unknown）。新 $BIN 已是這次建的版本，
+# 但這條子指令只比兩個字串、不依賴自身烤入的 SHA，故拿來當「比對器」永遠安全。
+if "$BIN" verify-version "$EXPECTED" "$ACTUAL"; then
+  echo "[deploy] 版本自驗通過：跑著的 commit=$ACTUAL == 目標 $EXPECTED。"
+else
+  rc=$?
+  if [ "$rc" = 2 ]; then
+    echo "[deploy] ✗ 版本不符：期望 $EXPECTED，實際跑著 ${ACTUAL:-（讀不到）} → 舊 binary 靜默上線，回滾。"
+  else
+    echo "[deploy] ✗ 版本無法判定：期望 $EXPECTED，/version 回 '${ACTUAL:-空}'（retry 已用盡）→ 保守回滾，請查 journalctl。"
+  fi
+  rollback
+fi
+
 git rev-parse HEAD > "$DEPLOYED_FILE"
 echo "[deploy] 上線成功：$(git rev-parse --short HEAD)"
 notify "玩家現在玩到的就是這版：$(git log -1 --format=%s)"

@@ -49,6 +49,17 @@ const DEBUG = location.search.includes("debug");
 const isTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
 const hudEl = document.getElementById("hud");
 const dbgEl = document.getElementById("dbg");
+
+// 後端版本戳記：?debug=1 時 fetch /version，把「後端 commit / build 時間」顯示在 dbg HUD，
+// 與前端內容雜湊（window.__BUILD__）並列 → 前後端版本都對得上 origin/main = 全上線了，一眼看出。
+// 堵死「舊 binary 靜默上線、沒人發現」。失敗（端點不存在/離線）一律安全靜默，不影響遊戲。
+let backendVersion = null;
+if (DEBUG) {
+  fetch("/version", { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((v) => { if (v) backendVersion = v; })
+    .catch(() => {});
+}
 const errEl = document.getElementById("err");
 function showErr(msg) { if (errEl) { errEl.textContent = msg; errEl.style.display = "block"; } }
 
@@ -1615,12 +1626,17 @@ function loop() {
       : `乙太方界 · ${myName}\nWASD移動·拖曳轉視角·空白跳\n左鍵/輕點挖·右鍵/放置鈕放·1-6選方塊\nchunk: ${chunks.size}　線上: ${others.size + 1}　居民: ${residents.size}`;
     if (DEBUG) {
       dbgEl.style.display = "block";
+      // 後端版本：直式/手機友善，commit 與 build 時間各自一行。後端離線/未起時顯示「?」。
+      const beCommit = backendVersion ? backendVersion.commit : "?";
+      const beBuilt = backendVersion ? (backendVersion.built_at || "?") : "?";
       dbgEl.textContent =
         `FPS ${fps.toFixed(0)}\n` +
         `chunks ${chunks.size}  meshes ${meshes.size}\n` +
         `pos ${player.x.toFixed(1)},${player.y.toFixed(1)},${player.z.toFixed(1)}\n` +
         `grounded ${player.grounded}\n` +
-        `build ${window.__BUILD__ || "?"}`;
+        `build ${window.__BUILD__ || "?"}\n` +
+        `後端 ${beCommit}\n` +
+        `built ${beBuilt}`;
     }
   }
   requestAnimationFrame(loop);
