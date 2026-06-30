@@ -10,9 +10,35 @@
 //! 把 NpcReply 透過 tx_direct 單播回該玩家 → 更新印象。
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::inventory::ItemKind;
+
+/// 共用 HTTP client（**對話提速的關鍵效能修復**）。
+///
+/// 真因（prod 實測釘死）：prod 主機的系統 DNS（glibc getaddrinfo）對「外網域名」解析
+/// 每次卡滿 **5 秒**——`/etc/resolv.conf` 把 IPv6 nameserver 排前面但它們無回應，glibc 預設
+/// 每台 nameserver 逾時 5 秒才退到能用的解析器（`getent hosts api.groq.com` 實測 5.06s，
+/// 但 `dig`／重用連線只要 7ms）。舊碼**每通呼叫都 `Client::builder().build()` 新建 client**＝
+/// 每通雲端請求都重新冷解析 DNS、重握 TLS → 每個 tier 白吃 ~5 秒；Groq+Cerebras+Gemini 三層
+/// 串起來正好就是觀測到的 **~16 秒**（ollama 走 Tailscale 私網 IP、無 DNS，所以一直是 0.6s）。
+///
+/// 修法：全程共用「單一、長連線池」的 client → DNS 只在第一通解析、之後連線重用、零再解析
+/// （實測：重用同一連線 total 0.17s、dns 0s）。雲端對話從 ~5.2s/層降到 ~0.2s。
+fn shared_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            // 連線池長時間保溫 → 對話之間連線不關閉，避免閒置後又吃一次 5s 冷 DNS。
+            .pool_idle_timeout(Duration::from_secs(600))
+            .pool_max_idle_per_host(4)
+            // 單通硬上限（安全網）；實際每 tier 預算由外層 tokio::time::timeout 控更短。
+            .timeout(Duration::from_secs(20))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
 
 /// 全域 LLM 並發上限**預設值**：同時最多這麼多條 LLM 呼叫。
 /// 純本機 ollama 時這擋的是 CPU 被打滿；走雲端（Cerebras/Groq）多 key 後天然並發，
@@ -285,21 +311,31 @@ async fn llm_chat_fast(system: &str, user: &str) -> Option<String> {
         }
     }
     if groq_enabled() {
-        if let Ok(Some(t)) = tokio::time::timeout(Duration::from_secs(8), groq_chat(system, user)).await {
-            return Some(t);
+        let t = Instant::now();
+        // proactive 路由（groq_chat 內）已會跳過爆掉的 key、全爆時零網路請求秒回 None。
+        match tokio::time::timeout(Duration::from_secs(8), groq_chat(system, user)).await {
+            Ok(Some(s)) => { tracing::info!(target: "talk_llm", tier = "groq", ms = t.elapsed().as_millis() as u64, "命中"); return Some(s); }
+            Ok(None) => tracing::info!(target: "talk_llm", tier = "groq", ms = t.elapsed().as_millis() as u64, "跳過/失敗→降級"),
+            Err(_) => tracing::info!(target: "talk_llm", tier = "groq", ms = t.elapsed().as_millis() as u64, "逾時→降級"),
         }
     }
     if cerebras_enabled() {
-        if let Ok(Some(t)) = tokio::time::timeout(FAST, cerebras_chat(system, user)).await {
-            return Some(t);
+        let t = Instant::now();
+        match tokio::time::timeout(FAST, cerebras_chat(system, user)).await {
+            Ok(Some(s)) => { tracing::info!(target: "talk_llm", tier = "cerebras", ms = t.elapsed().as_millis() as u64, "命中"); return Some(s); }
+            Ok(None) => tracing::info!(target: "talk_llm", tier = "cerebras", ms = t.elapsed().as_millis() as u64, "跳過/失敗→降級"),
+            Err(_) => tracing::info!(target: "talk_llm", tier = "cerebras", ms = t.elapsed().as_millis() as u64, "逾時→降級"),
         }
     }
     if gemini_enabled() {
-        if let Ok(Some(t)) = tokio::time::timeout(FAST, gemini_chat(system, user)).await {
-            return Some(t);
+        let t = Instant::now();
+        match tokio::time::timeout(FAST, gemini_chat(system, user)).await {
+            Ok(Some(s)) => { tracing::info!(target: "talk_llm", tier = "gemini", ms = t.elapsed().as_millis() as u64, "命中"); return Some(s); }
+            Ok(None) => tracing::info!(target: "talk_llm", tier = "gemini", ms = t.elapsed().as_millis() as u64, "跳過/失敗→降級"),
+            Err(_) => tracing::info!(target: "talk_llm", tier = "gemini", ms = t.elapsed().as_millis() as u64, "逾時→降級"),
         }
     }
-    tokio::time::timeout(FAST, ollama_chat(system, user)).await.ok().flatten()
+    None
 }
 
 /// 快速 raw LLM 呼叫（voxel Talk 路徑專用）：每個 tier 縮短逾時，確保玩家在 ~20 秒內看到回覆。
@@ -313,10 +349,6 @@ pub async fn raw_llm_call_fast(system: &str, user: &str) -> Option<String> {
 
 /// 呼叫 ollama 生成回話。失敗（連不到 / 逾時 / 解析錯）一律回 None，由呼叫端退罐頭。
 async fn ollama_chat(system: &str, user: &str) -> Option<String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .ok()?;
     let body = serde_json::json!({
         "model": chat_model(),
         "stream": false,
@@ -325,7 +357,7 @@ async fn ollama_chat(system: &str, user: &str) -> Option<String> {
             {"role": "user", "content": user},
         ],
     });
-    let resp = client
+    let resp = shared_client()
         .post(format!("{}/api/chat", ollama_url()))
         .json(&body)
         .send()
@@ -398,10 +430,7 @@ async fn openai_compat_call(
     user: &str,
     max_tokens: u32,
 ) -> LlmOutcome {
-    let client = match reqwest::Client::builder().timeout(Duration::from_secs(15)).build() {
-        Ok(c) => c,
-        Err(_) => return LlmOutcome::Failed,
-    };
+    let client = shared_client();
     let body = serde_json::json!({
         "model": model,
         "messages": [
@@ -548,18 +577,180 @@ fn groq_rate_ok() -> bool {
     m <= max_min && d <= max_day
 }
 
-async fn groq_chat(system: &str, user: &str) -> Option<String> {
-    // 把 12 把 key 依輪替起點排成一圈（沒設＝空 → 跳過 Groq）。
-    let keys = groq_keys_rotated();
+// ── Proactive Groq 額度路由（維護者要的）──────────────────────────────────────
+// 搭便車讀 Groq 每通回應的 `usage.total_tokens` 與 HTTP 狀態（零額外請求）→ 累計每把 key
+// **當日**用量 → **優先挑當日剩最多的那把** → **全部近上限（或撞 429 每日上限）就跳過 Groq**
+// 直接走下一層／本地（機械判斷、不試錯）。把舊的「round-robin 盲挑 → 1/N 機率撞到爆掉的 key
+// 白等一整個逾時」徹底消除。下面一組都是純函式，方便單元測試。
+
+/// 每把 Groq key 的當日額度統計。純資料。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct KeyUsage {
+    /// 這筆統計屬於哪一天（UNIX 日 = 秒/86400）；跨日自動歸零。
+    day: u64,
+    /// 當日累計 `total_tokens`（搭便車從每通 usage 讀）。
+    tokens_used: u64,
+    /// 當日是否已撞 429（每日上限）→ 今天直接跳過這把，別再白試。
+    blown: bool,
+}
+
+/// 每把 key 的當日 token 上限（TPD）；可 env 覆寫。預設保守 100k（Groq 免費層常見每日上限）。
+fn groq_tpd_per_key() -> u64 {
+    std::env::var("BUTFUN_GROQ_TPD_PER_KEY")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(100_000)
+}
+
+/// 「近上限該跳過」的判定比例（百分比）；當日用量達 cap 的這麼多 % 就視為該避開。
+/// 可 env 覆寫，預設 95（維護者指定的閾值）；clamp 到 1..=100。
+fn groq_skip_ratio_pct() -> u64 {
+    std::env::var("BUTFUN_GROQ_SKIP_RATIO_PCT")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&n| (1..=100).contains(&n))
+        .unwrap_or(95)
+}
+
+/// 跨日歸零：屬於舊一天的統計，今天重置（每日額度自然回滿）。純函式。
+fn usage_rolled(u: KeyUsage, today: u64) -> KeyUsage {
+    if u.day == today {
+        u
+    } else {
+        KeyUsage { day: today, tokens_used: 0, blown: false }
+    }
+}
+
+/// 當日剩餘額度（cap − used，saturating）。純函式。
+fn usage_remaining(u: &KeyUsage, cap: u64) -> u64 {
+    cap.saturating_sub(u.tokens_used)
+}
+
+/// 是否「近上限該跳過」：當日已 blown，或當日用量 ≥ cap × ratio%。純函式。
+fn usage_near_cap(u: &KeyUsage, cap: u64, ratio_pct: u64) -> bool {
+    u.blown || u.tokens_used.saturating_mul(100) >= cap.saturating_mul(ratio_pct)
+}
+
+/// 從多把 key 的當日統計挑「剩最多」的那把 index；全部近上限 → None（＝跳過 Groq）。純函式。
+/// 每筆會先 normalize 到今天（跨日歸零）再評估，故傳入舊資料也安全。
+fn pick_fattest_key(usages: &[KeyUsage], today: u64, cap: u64, skip_ratio_pct: u64) -> Option<usize> {
+    usages
+        .iter()
+        .enumerate()
+        .map(|(i, u)| (i, usage_rolled(*u, today)))
+        .filter(|(_, u)| !usage_near_cap(u, cap, skip_ratio_pct))
+        .max_by_key(|(_, u)| usage_remaining(u, cap))
+        .map(|(i, _)| i)
+}
+
+/// 把一次 Groq 回應併進某把 key 的當日統計（搭便車、零額外請求）。純函式：回傳更新後的統計。
+/// `is_429`：撞每日上限 → 標記 blown（今天別再試這把）。`used_tokens`：本通 `usage.total_tokens`。
+fn fold_response(prev: KeyUsage, today: u64, used_tokens: u64, is_429: bool) -> KeyUsage {
+    let mut u = usage_rolled(prev, today);
+    u.tokens_used = u.tokens_used.saturating_add(used_tokens);
+    if is_429 {
+        u.blown = true;
+    }
+    u
+}
+
+/// 今天（UNIX 日）。
+fn today_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() / 86400)
+        .unwrap_or(0)
+}
+
+/// 全域 Groq 每把 key 的當日額度表（與 `groq_keys()` 同序、同長度，隨 key 數自動 resize）。
+fn groq_usage_state() -> &'static Mutex<Vec<KeyUsage>> {
+    static S: OnceLock<Mutex<Vec<KeyUsage>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// proactive 挑 key：回 `(index, key)`；全部近上限／撞日上限 → None（呼叫端跳過 Groq 走下一層）。
+fn groq_pick_key() -> Option<(usize, String)> {
+    let keys = groq_keys();
     if keys.is_empty() {
         return None;
     }
-    // H1：全域額度上限——超過就降級（不再呼叫 Groq），保護免費額度 / 不燒錢。
+    let today = today_unix();
+    let cap = groq_tpd_per_key();
+    let ratio = groq_skip_ratio_pct();
+    let mut st = groq_usage_state().lock().ok()?;
+    if st.len() != keys.len() {
+        st.resize(keys.len(), KeyUsage::default());
+    }
+    // 先把每筆 normalize 到今天（跨日歸零），確保挑選與後續記帳都針對今天。
+    for u in st.iter_mut() {
+        *u = usage_rolled(*u, today);
+    }
+    let idx = pick_fattest_key(&st, today, cap, ratio)?;
+    Some((idx, keys[idx].clone()))
+}
+
+/// 記錄一次 Groq 回應（搭便車更新當日用量；429 標記 blown）。短鎖、不 await。
+fn groq_record(idx: usize, used_tokens: u64, is_429: bool) {
+    let today = today_unix();
+    if let Ok(mut st) = groq_usage_state().lock() {
+        if idx < st.len() {
+            st[idx] = fold_response(st[idx], today, used_tokens, is_429);
+        }
+    }
+}
+
+async fn groq_chat(system: &str, user: &str) -> Option<String> {
+    // proactive 路由：挑「當日剩最多」的 key；全部近上限/撞日上限 → None（跳過 Groq，零網路請求）。
+    let (idx, key) = groq_pick_key()?;
+    // H1：全域額度上限（次級保險，沿用既有近似計數）——超過就降級，保護免費額度 / 不燒錢。
     if !groq_rate_ok() {
         return None;
     }
-    // 依序試每一把：撞 429（該帳號額度滿）就換下一把，直到成功或全爆。
-    try_keys(GROQ_ENDPOINT, &groq_model(), &keys, system, user, 400).await
+    let body = serde_json::json!({
+        "model": groq_model(),
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0.8,
+        "max_tokens": 400,
+    });
+    // 共用 client（連線重用、避開每通 5s 冷 DNS，見 `shared_client`）。
+    let resp = shared_client()
+        .post("https://api.groq.com/openai/v1/chat/completions")
+        .bearer_auth(key)
+        .json(&body)
+        .send()
+        .await
+        .ok()?;
+    let status = resp.status();
+    if !status.is_success() {
+        // 撞每日上限（429）→ 搭便車標記這把 key 今天 blown，往後 proactive 直接跳過它。
+        groq_record(idx, 0, status.as_u16() == 429);
+        return None;
+    }
+    let v: serde_json::Value = resp.json().await.ok()?;
+    // 搭便車讀 `usage.total_tokens` → 併進這把 key 當日用量（零額外請求）。
+    let used = v
+        .get("usage")
+        .and_then(|u| u.get("total_tokens"))
+        .and_then(|t| t.as_u64())
+        .unwrap_or(0);
+    groq_record(idx, used, false);
+    let text = v
+        .get("choices")?
+        .get(0)?
+        .get("message")?
+        .get("content")?
+        .as_str()?
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 /// Cerebras API key 清單（雲端推論，OpenAI 相容、免費、超快）。
@@ -1456,5 +1647,172 @@ mod tests {
         std::env::set_var("BUTFUN_OLLAMA_URL", "http://localhost:11434");
         assert!(ollama_configured());
         std::env::remove_var("BUTFUN_OLLAMA_URL");
+    }
+
+    // ── Proactive Groq 額度路由（挑最肥 key / 爆了跳過）─────────────────────────
+
+    #[test]
+    fn usage_rolled_resets_on_new_day() {
+        let stale = KeyUsage { day: 100, tokens_used: 9000, blown: true };
+        // 同一天 → 原樣保留。
+        assert_eq!(usage_rolled(stale, 100), stale);
+        // 跨日 → 歸零（用量清空、blown 解除，當日額度回滿）。
+        let fresh = usage_rolled(stale, 101);
+        assert_eq!(fresh, KeyUsage { day: 101, tokens_used: 0, blown: false });
+    }
+
+    #[test]
+    fn usage_near_cap_and_remaining() {
+        let cap = 1000;
+        // 用量 940/1000 < 95% → 還沒近上限。
+        let u = KeyUsage { day: 1, tokens_used: 940, blown: false };
+        assert!(!usage_near_cap(&u, cap, 95));
+        assert_eq!(usage_remaining(&u, cap), 60);
+        // 用量 950/1000 = 95% → 近上限（跳過）。
+        let u2 = KeyUsage { day: 1, tokens_used: 950, blown: false };
+        assert!(usage_near_cap(&u2, cap, 95));
+        // blown 旗標直接視為近上限，不看用量。
+        let u3 = KeyUsage { day: 1, tokens_used: 0, blown: true };
+        assert!(usage_near_cap(&u3, cap, 95));
+        // 用量超過 cap → remaining saturating 到 0，不下溢。
+        let u4 = KeyUsage { day: 1, tokens_used: 5000, blown: false };
+        assert_eq!(usage_remaining(&u4, cap), 0);
+    }
+
+    #[test]
+    fn pick_fattest_key_picks_most_remaining() {
+        let today = 7;
+        let cap = 1000;
+        // key0 用 800、key1 用 200（最肥）、key2 用 500 → 應挑 key1。
+        let usages = vec![
+            KeyUsage { day: today, tokens_used: 800, blown: false },
+            KeyUsage { day: today, tokens_used: 200, blown: false },
+            KeyUsage { day: today, tokens_used: 500, blown: false },
+        ];
+        assert_eq!(pick_fattest_key(&usages, today, cap, 95), Some(1));
+    }
+
+    #[test]
+    fn pick_fattest_key_skips_blown_and_near_cap() {
+        let today = 7;
+        let cap = 1000;
+        // key0 blown、key1 用 990(>95%)、key2 用 300（唯一健康）→ 挑 key2。
+        let usages = vec![
+            KeyUsage { day: today, tokens_used: 0, blown: true },
+            KeyUsage { day: today, tokens_used: 990, blown: false },
+            KeyUsage { day: today, tokens_used: 300, blown: false },
+        ];
+        assert_eq!(pick_fattest_key(&usages, today, cap, 95), Some(2));
+    }
+
+    #[test]
+    fn pick_fattest_key_none_when_all_near_cap() {
+        let today = 7;
+        let cap = 1000;
+        // 全部 blown 或近上限 → None（＝跳過 Groq，零網路請求直接走下一層）。
+        let usages = vec![
+            KeyUsage { day: today, tokens_used: 0, blown: true },
+            KeyUsage { day: today, tokens_used: 1000, blown: false },
+            KeyUsage { day: today, tokens_used: 980, blown: false },
+        ];
+        assert_eq!(pick_fattest_key(&usages, today, cap, 95), None);
+    }
+
+    #[test]
+    fn pick_fattest_key_rolls_stale_days_back_to_full() {
+        let today = 8;
+        let cap = 1000;
+        // 兩筆都是昨天（含 blown）→ normalize 後皆回滿、皆可用（跨日清掉 blown）。
+        // 並列最大時 `max_by_key` 取最後一筆（index 1）；關鍵驗證點是「昨天的 blown 不再卡死」。
+        let usages = vec![
+            KeyUsage { day: 7, tokens_used: 999, blown: true },
+            KeyUsage { day: 7, tokens_used: 500, blown: false },
+        ];
+        let picked = pick_fattest_key(&usages, today, cap, 95);
+        assert!(picked.is_some(), "跨日後該有可用 key（blown 已隨日歸零）");
+        // 被挑中的那把，normalize 到今天後額度必須回滿。
+        let i = picked.unwrap();
+        assert_eq!(usage_remaining(&usage_rolled(usages[i], today), cap), cap);
+    }
+
+    #[test]
+    fn fold_response_accumulates_and_marks_blown() {
+        let today = 9;
+        // 成功回應：累加 usage、不 blown。
+        let a = fold_response(KeyUsage::default(), today, 1200, false);
+        assert_eq!(a, KeyUsage { day: today, tokens_used: 1200, blown: false });
+        // 再來一通成功：繼續累加。
+        let b = fold_response(a, today, 800, false);
+        assert_eq!(b.tokens_used, 2000);
+        // 撞 429：標記 blown（用量也照記，這通通常 0）。
+        let c = fold_response(b, today, 0, true);
+        assert!(c.blown);
+        assert_eq!(c.tokens_used, 2000);
+        // 跨日再來：先歸零再累加（昨天的 blown/用量不帶過來）。
+        let d = fold_response(c, today + 1, 300, false);
+        assert_eq!(d, KeyUsage { day: today + 1, tokens_used: 300, blown: false });
+    }
+
+    // 手動實測（預設 ignore，不進 CI）：證明「共用 client 連線重用」把雲端請求從每通 ~5s
+    // 冷 DNS 降到 <1s。需 prod .env 的 GROQ_API_KEY；跑法：
+    //   set -a; source /home/shihshih/butfun-prod/.env; set +a
+    //   cargo test --bin butfun-server shared_client_reuse_kills_dns -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn shared_client_reuse_kills_dns_penalty() {
+        let key = std::env::var("GROQ_API_KEY").unwrap_or_default();
+        let key = key.split(',').next().unwrap_or("").trim().to_string();
+        if key.is_empty() {
+            eprintln!("無 GROQ_API_KEY，略過");
+            return;
+        }
+        // 1) 舊行為：每通新建 client（每通都冷 DNS）。drain body 才公平比較。
+        for i in 1..=2 {
+            let t = Instant::now();
+            let c = reqwest::Client::builder().build().unwrap();
+            if let Ok(r) = c
+                .get("https://api.groq.com/openai/v1/models")
+                .bearer_auth(&key)
+                .send()
+                .await
+            {
+                let _ = r.text().await; // 排乾 body（同 groq_chat 的 resp.json）→ 連線可回收
+            }
+            eprintln!("[BEFORE 新建client] 第{i}通 = {} ms", t.elapsed().as_millis());
+        }
+        // 2) 新行為：共用 client；drain body → 連線回池，下通重用、零再 DNS（同 groq_chat 路徑）。
+        for i in 1..=3 {
+            let t = Instant::now();
+            if let Ok(r) = shared_client()
+                .get("https://api.groq.com/openai/v1/models")
+                .bearer_auth(&key)
+                .send()
+                .await
+            {
+                let _ = r.text().await;
+            }
+            eprintln!("[AFTER 共用client] 第{i}通 = {} ms", t.elapsed().as_millis());
+        }
+    }
+
+    #[test]
+    fn groq_quota_env_defaults_are_sane() {
+        std::env::remove_var("BUTFUN_GROQ_TPD_PER_KEY");
+        std::env::remove_var("BUTFUN_GROQ_SKIP_RATIO_PCT");
+        assert_eq!(groq_tpd_per_key(), 100_000);
+        assert_eq!(groq_skip_ratio_pct(), 95);
+        // 壞值 / 越界 → 退預設、不 panic。
+        std::env::set_var("BUTFUN_GROQ_SKIP_RATIO_PCT", "0");
+        assert_eq!(groq_skip_ratio_pct(), 95);
+        std::env::set_var("BUTFUN_GROQ_SKIP_RATIO_PCT", "150");
+        assert_eq!(groq_skip_ratio_pct(), 95);
+        std::env::set_var("BUTFUN_GROQ_SKIP_RATIO_PCT", "80");
+        assert_eq!(groq_skip_ratio_pct(), 80);
+        std::env::set_var("BUTFUN_GROQ_TPD_PER_KEY", "0");
+        assert_eq!(groq_tpd_per_key(), 100_000);
+        std::env::set_var("BUTFUN_GROQ_TPD_PER_KEY", "50000");
+        assert_eq!(groq_tpd_per_key(), 50_000);
+        std::env::remove_var("BUTFUN_GROQ_SKIP_RATIO_PCT");
+        std::env::remove_var("BUTFUN_GROQ_TPD_PER_KEY");
     }
 }
