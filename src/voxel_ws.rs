@@ -42,6 +42,7 @@ use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
 use crate::voxel_residents::{self as vr, Body};
 use crate::voxel_time::{self as vt, WorldTime, TimePhase};
+use crate::voxel_announce as vannounce;
 
 /// 入場時串給玩家的 chunk 半徑（以 chunk 為單位，水平）。3 → 7×7 column。
 const SPAWN_CHUNK_RADIUS: i32 = 3;
@@ -2233,6 +2234,11 @@ fn tick_residents(dt: f32) {
             }
             // 完工 Feed（每個建物只發一次，不洗版）。
             vfeed::append_feed("蓋家完工", &rname, &kind_name);
+            // 完工廣播：WS 廣播給所有在線玩家（看得到「世界在長大」），慶賀泡泡同步排入 say_updates。
+            let _ = hub().tx.send(std::sync::Arc::new(vannounce::build_complete_msg(&rname, &kind_name)));
+            if let Some(kind) = vbuild::BuildKind::from_str(&kind_str) {
+                say_updates.push((rid.clone(), vannounce::build_complete_say(&rname, kind)));
+            }
             // 蓋完一個 → 重置採集計數，下一輪先採料再蓋下一種（有進展感）。
             {
                 let mut residents = hub().residents.write().unwrap();
