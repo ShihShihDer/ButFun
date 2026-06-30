@@ -2,6 +2,9 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
+  <!-- base：讓相對資源(main.js)永遠解析到 /voxel/，這樣首頁無論掛在 / 或 /voxel/ 都載得到。
+       WS 與所有 fetch 都用絕對路徑(location.host/voxel/ws、/version…)，不受 base 影響。 -->
+  <base href="/voxel/" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>乙太方界 — ButFun</title>
   <style>

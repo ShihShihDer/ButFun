@@ -424,7 +424,8 @@ async fn main() {
         // 版本戳記（堵死「舊 binary 靜默上線」）：回後端編譯期烤入的 git commit + build 時間，
         // 順帶前端 voxel 內容雜湊。輕量、無個資，給人也給腳本（deploy 自驗）讀。見 api_version。
         .route("/version", get(api_version))
-        .route("/ws", get(ws::ws_handler))
+        // （封存：2D 的 WebSocket /ws 已移除——前端 game.js 已封存、無人連線。
+        //   ws::ws_handler 保留可復原，voxel 用獨立的 /voxel/ws。）
         // 只收建議（POST），刻意不開公開的 GET 清單：建議是玩家送回的回饋（含自選
         // 署名），維護者本就直接讀 `data/suggestions.jsonl` 三角化。先前
         // `GET /api/suggestions` 是未驗身公開端點，會把全部玩家建議整包吐給任何人，
@@ -438,26 +439,23 @@ async fn main() {
         // 官網即時世界小窗：吐「故鄉星球玩家的去識別化座標 + 城鎮幾何」，讓官網畫
         // 俯瞰活地圖（看得到有人在動）。只回座標數字、不含任何玩家身分（最小揭露）。
         .route("/api/worldview", get(api_worldview))
-        // 經濟儀表（ROADMAP 108）：商隊金庫餘額 + 注入/支付累計統計；
-        // 只彙總數字、不含個資（公開端點，供維護者調參）。
-        .route("/api/economy", get(api_economy))
+        // （封存：2D 經濟儀表 /api/economy 已移除——前端無人消費。api_economy 保留可復原。）
         // 登入相關路由
         .merge(auth::auth_router())
         // 個人資料編輯(改顯示名)——需登入,見 profile.rs
         .merge(profile::profile_router())
         // 外觀自訂(捏臉)——需登入,見 appearance.rs
         .merge(appearance::appearance_router())
-        // 封存舊世界（2026-06-30 維護者拍板「只剩乙太方界，2D/3D 封存、不再運營」）：
-        // 舊 2D（/）+ 3D（/3d/、/play3d/）的入口一律「暫時轉址(307)」到 /voxel/，
-        // 訪客只會進到乙太方界。serve_index/serve_3d_index/serve_play3d_index 與其前端、
-        // 2D/3D 後端、玩家資料全部保留不刪（可復原：把這幾條換回原 handler 即恢復）。
-        // 用 307（非永久）避免瀏覽器永久快取轉址，保留可逆性。
-        .route("/", get(|| async { axum::response::Redirect::temporary("/voxel/") }))
-        .route("/index.html", get(|| async { axum::response::Redirect::temporary("/voxel/") }))
-        .route("/3d/", get(|| async { axum::response::Redirect::temporary("/voxel/") }))
-        .route("/3d/index.html", get(|| async { axum::response::Redirect::temporary("/voxel/") }))
-        .route("/play3d/", get(|| async { axum::response::Redirect::temporary("/voxel/") }))
-        .route("/play3d/index.html", get(|| async { axum::response::Redirect::temporary("/voxel/") }))
+        // 封存舊世界 + 統一正門（2026-06-30 維護者「只剩乙太方界、進遊戲統一 /」）：
+        // 「/」直接服務乙太方界——voxel 首頁的 <base href="/voxel/"> 讓相對資源(main.js)
+        // 仍解析到 /voxel/，WS/fetch 全用絕對路徑不受影響。舊 3D 入口(/3d/、/play3d/)307轉回 /。
+        // serve_index/serve_3d_index/serve_play3d_index + 2D/3D 前後端 + 玩家資料全保留可復原。
+        .route("/", get(serve_voxel_index))
+        .route("/index.html", get(serve_voxel_index))
+        .route("/3d/", get(|| async { axum::response::Redirect::temporary("/") }))
+        .route("/3d/index.html", get(|| async { axum::response::Redirect::temporary("/") }))
+        .route("/play3d/", get(|| async { axum::response::Redirect::temporary("/") }))
+        .route("/play3d/index.html", get(|| async { axum::response::Redirect::temporary("/") }))
         // AI 生態世界 voxel 基底（切片①）：新頁 /voxel/ + 獨立 WS /voxel/ws，全隔離、
         // additive，與現有 2D/3D 協定零交集（見 voxel.rs / voxel_ws.rs）。
         .route("/voxel/", get(serve_voxel_index))
@@ -816,6 +814,7 @@ async fn api_status(State(app): State<AppState>) -> impl IntoResponse {
 
 /// 經濟儀表（ROADMAP 108）：彙總商隊金庫與乙太流量資訊，供維護者調參用。
 /// 只回彙總數字，不含玩家身分或個別玩家乙太（最小揭露原則）。
+#[allow(dead_code)] // 封存:2D /api/economy路由已移除,handler保留
 async fn api_economy(State(app): State<AppState>) -> impl IntoResponse {
     let snap = app.npc_treasury.read().unwrap().snapshot();
     let online = app.players.read().map(|p| p.len()).unwrap_or(0);
