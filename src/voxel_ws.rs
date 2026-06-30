@@ -46,6 +46,7 @@ use crate::voxel_announce as vannounce;
 use crate::voxel_bonds::{self as vbonds, ResidentBonds};
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
+use crate::voxel_fond_greeting as vfond;
 
 /// 入場時串給玩家的 chunk 半徑（以 chunk 為單位，水平）。3 → 7×7 column。
 const SPAWN_CHUNK_RADIUS: i32 = 3;
@@ -2003,18 +2004,35 @@ fn tick_residents(dt: f32) {
             // 主動招呼：招呼冷卻倒數；冷卻完、目前沒在說話、且有玩家靠很近時，
             // 偶爾（低機率）冒一句招呼，讓世界更有人氣（用既有泡泡、低頻不洗版）。
             // 好感度 v1：查玩家記憶筆數 → 決定招呼溫度（陌生人/相識/友人，零 LLM）。
+            // 老友情境問候 v1（ROADMAP 675）：好感 ≥ FOND_AFFINITY 時，改用記憶驅動的特定台詞。
             if r.greet_timer > 0.0 {
                 r.greet_timer -= dt;
             } else if r.say.is_empty() {
                 if let Some((d2, nearest_name)) = nearest_player_info(r.body.x, r.body.z, &player_pts) {
                     if d2 < GREET_DIST * GREET_DIST && rand::random::<f32>() < GREET_CHANCE_PER_TICK {
                         let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                        // 短鎖讀好感度（僅計數，不 await）→ 立即釋放記憶鎖。
-                        let affinity = {
+                        // 短鎖讀好感度 + 必要時取最近記憶摘要（一次鎖即釋，不巢狀）。
+                        let (affinity, summaries): (usize, Vec<String>) = {
                             let mem = hub().memory.read().unwrap();
-                            mem.affinity_count(nearest_name, &r.id)
+                            let aff = mem.affinity_count(nearest_name, &r.id);
+                            let sums = if aff >= vfond::FOND_AFFINITY {
+                                // 老友：取最近 4 筆摘要供情境偵測（僅字串，輕量）。
+                                mem.recall(&r.id, nearest_name, 4)
+                                    .into_iter()
+                                    .map(|e| e.summary)
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            };
+                            (aff, sums)
+                        }; // 記憶讀鎖在此釋放
+                        let line = if affinity >= vfond::FOND_AFFINITY && !nearest_name.is_empty() {
+                            // 老友情境問候：依記憶摘要偵測情境，說出記憶驅動的特定台詞。
+                            let ctx = vfond::detect_context(&summaries);
+                            vfond::fond_greeting_line(nearest_name, &ctx, pick)
+                        } else {
+                            greeting_line_affinity(affinity, nearest_name, pick)
                         };
-                        let line = greeting_line_affinity(affinity, nearest_name, pick);
                         r.say = line.chars().take(40).collect();
                         r.say_timer = SAY_SECS;
                         r.greet_timer = GREET_COOLDOWN;

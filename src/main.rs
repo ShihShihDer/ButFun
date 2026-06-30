@@ -148,6 +148,8 @@ mod voxel_trade;
 mod voxel_visit;
 // 乙太方界·居民情誼 v1：拜訪累積情誼層級（陌生→相識→老朋友），持久化跨重啟（ROADMAP 672）。
 mod voxel_bonds;
+// 乙太方界·老友情境問候 v1：好感度達老友時，居民說出記憶驅動的特定台詞（ROADMAP 675）。
+mod voxel_fond_greeting;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
