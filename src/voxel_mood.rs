@@ -71,6 +71,42 @@ pub fn mood_description_zh(tier: MoodTier) -> &'static str {
     }
 }
 
+/// 心情自語台詞（ROADMAP 677）——冷卻到期時居民自發冒出的泡泡，零 LLM、純確定性。
+///
+/// `pick` 由呼叫端傳入（如居民位置的位元運算結果），用於在台詞池中循環選擇。
+/// `Neutral` 心情平靜不說話，回 `None`；其餘層級各有 3–5 條台詞輪流。
+pub fn spontaneous_line(tier: MoodTier, pick: usize) -> Option<&'static str> {
+    let pool: &[&'static str] = match tier {
+        MoodTier::Joyful => &[
+            "✨ 今天特別開心！",
+            "哈哈，感覺什麼都做得到！",
+            "嗯哼～這世界真美。",
+            "能認識這麼多朋友，真幸福。",
+            "心情好，連方塊都比較好看！",
+        ],
+        MoodTier::Content => &[
+            "嗯，今天過得挺好的。",
+            "生活有規律，感覺不錯。",
+            "偶爾抬頭看看天，挺好。",
+        ],
+        MoodTier::Neutral => return None,
+        MoodTier::Curious => &[
+            "這個世界有點有趣…",
+            "嗯，我在想一些事情。",
+            "附近好像有什麼動靜…？",
+        ],
+        MoodTier::Lonely => &[
+            "有點寂寞啊…",
+            "今天好像沒什麼人…",
+            "😔 希望有人來聊聊天。",
+        ],
+    };
+    if pool.is_empty() {
+        return None;
+    }
+    Some(pool[pick % pool.len()])
+}
+
 /// 把心情轉成 `SenseInput.mood` 整數值（0–100）。
 /// 替換原先的硬編碼 `70`，讓 LLM 能感知居民當下的情緒狀態。
 pub fn mood_to_sense_value(tier: MoodTier) -> i32 {
@@ -182,5 +218,68 @@ mod tests {
         assert!(mood_to_sense_value(MoodTier::Content) > mood_to_sense_value(MoodTier::Neutral));
         assert!(mood_to_sense_value(MoodTier::Neutral) > mood_to_sense_value(MoodTier::Curious));
         assert!(mood_to_sense_value(MoodTier::Curious) > mood_to_sense_value(MoodTier::Lonely));
+    }
+
+    // ── spontaneous_line（ROADMAP 677）────────────────────────────────────────
+
+    #[test]
+    fn neutral_mood_no_spontaneous_line() {
+        // 心情平靜不自語
+        assert!(spontaneous_line(MoodTier::Neutral, 0).is_none());
+        assert!(spontaneous_line(MoodTier::Neutral, 99).is_none());
+    }
+
+    #[test]
+    fn joyful_always_returns_some() {
+        for pick in [0, 1, 2, 3, 4, 7, 100] {
+            assert!(
+                spontaneous_line(MoodTier::Joyful, pick).is_some(),
+                "Joyful pick={pick} 應回台詞"
+            );
+        }
+    }
+
+    #[test]
+    fn content_always_returns_some() {
+        for pick in [0, 1, 2, 5] {
+            assert!(spontaneous_line(MoodTier::Content, pick).is_some());
+        }
+    }
+
+    #[test]
+    fn curious_always_returns_some() {
+        for pick in [0, 1, 2, 9] {
+            assert!(spontaneous_line(MoodTier::Curious, pick).is_some());
+        }
+    }
+
+    #[test]
+    fn lonely_always_returns_some() {
+        for pick in [0, 1, 2] {
+            assert!(spontaneous_line(MoodTier::Lonely, pick).is_some());
+        }
+    }
+
+    #[test]
+    fn joyful_lines_cycle_with_different_picks() {
+        // 不同 pick 值應產生不同台詞（5 條台詞，pick 0~4 各不同）
+        let lines: Vec<_> = (0..5)
+            .map(|p| spontaneous_line(MoodTier::Joyful, p).unwrap())
+            .collect();
+        // 至少要有 2 種不同台詞（5 條不可能全一樣）
+        let unique: std::collections::HashSet<_> = lines.iter().collect();
+        assert!(unique.len() >= 2, "Joyful 應有多條不同台詞");
+    }
+
+    #[test]
+    fn lonely_line_non_empty() {
+        let line = spontaneous_line(MoodTier::Lonely, 0).unwrap();
+        assert!(!line.is_empty(), "Lonely 台詞不能是空字串");
+    }
+
+    #[test]
+    fn content_line_non_empty() {
+        let line = spontaneous_line(MoodTier::Content, 1).unwrap();
+        assert!(!line.is_empty());
     }
 }
