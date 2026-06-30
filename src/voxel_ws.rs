@@ -1028,7 +1028,8 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 // 合成台 v1（ROADMAP 658）：消耗配料 → 給產出方塊 → 送 inv_update + craft_ok/fail。
                 // 鎖紀律：一次 inventory 寫鎖內完成「確認 + 消耗」再釋放；give 在第二把寫鎖；
                 //         兩把皆短鎖即釋、循序不巢狀，守 prod 死鎖鐵律。
-                if let Some(recipe) = vcraft::find_recipe(&recipe_id) {
+                // find_any_recipe 統一查 2×2（RECIPES）和工作台（WORKBENCH_RECIPES）兩表。
+                if let Some(recipe) = vcraft::find_any_recipe(&recipe_id) {
                     // 步驟 1：單把寫鎖內完成「確認足夠材料 + 消耗所有配料」（原子，防 TOCTOU）。
                     let (ok, consumed) = {
                         let mut inv = hub().inventory.write().unwrap();

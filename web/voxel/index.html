@@ -428,6 +428,90 @@
       #bagBody { flex-direction: column; }
       #bagCraftRow { justify-content: center; }
     }
+
+    /* ── 工作台按鈕（ROADMAP 665）──────────────────────────────────────────── */
+    #wbBtn {
+      position: fixed; right: 10px; top: 130px; z-index: 6;
+      background: rgba(40,24,12,0.72); color: #d4a055;
+      border: 1px solid rgba(212,160,85,0.35);
+      padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      user-select: none; pointer-events: auto; display: none; /* 靠近工作台時才顯示 */
+    }
+    #wbBtn:hover { background: rgba(70,40,10,0.80); }
+    /* ── 工作台 3×3 合成面板（ROADMAP 665）──────────────────────────────────── */
+    #wbPanel {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      z-index: 20; width: min(560px, 94vw); max-height: 90vh;
+      display: none; flex-direction: column;
+      background: rgba(18,14,10,0.97); color: #eaf2ff; border-radius: 16px;
+      border: 1px solid rgba(212,160,85,0.30); box-shadow: 0 8px 32px rgba(0,0,0,0.65);
+      overflow: hidden;
+    }
+    #wbHead {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px; background: rgba(212,160,85,0.10); font-weight: bold; font-size: 15px;
+      flex-shrink: 0;
+    }
+    #wbTitle { color: #d4a055; }
+    #wbClose {
+      cursor: pointer; user-select: none; font-size: 18px; line-height: 1;
+      padding: 2px 9px; border-radius: 8px; background: rgba(255,255,255,0.10);
+    }
+    #wbBody {
+      flex: 1; overflow-y: auto; padding: 12px 14px;
+      display: flex; flex-direction: row; gap: 16px;
+    }
+    #wbInvSection { flex: 1; min-width: 0; }
+    #wbCraftSection { flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; }
+    .wb-sec-lbl {
+      font-size: 11px; color: #907050; letter-spacing: 0.8px;
+      margin-bottom: 8px; text-transform: uppercase;
+    }
+    /* 工作台物品欄（共用 .bag-inv-* 樣式） */
+    #wbInvGrid { display: flex; flex-wrap: wrap; gap: 6px; }
+    /* 3×3 合成格 */
+    #wbCraftRow { display: flex; align-items: center; gap: 10px; }
+    #wbGrid3x3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+    .wb-grid-slot {
+      width: 48px; height: 48px; border-radius: 7px;
+      border: 2px solid rgba(255,255,255,0.18);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      cursor: pointer; user-select: none; gap: 2px;
+      background: rgba(255,255,255,0.03);
+      transition: border-color 0.12s, background 0.12s;
+    }
+    .wb-grid-slot.filled { background: rgba(255,255,255,0.09); border-color: rgba(212,160,85,0.45); }
+    .wb-grid-slot:hover { background: rgba(255,255,255,0.11); }
+    .wb-grid-sw { width: 24px; height: 24px; border-radius: 4px; }
+    .wb-grid-lbl { font-size: 9px; color: #c8b880; line-height: 1; }
+    #wbCraftArrow { font-size: 22px; color: #806840; flex-shrink: 0; }
+    /* 結果格（共用樣式邏輯，另設 id） */
+    #wbResultSlot {
+      width: 64px; height: 64px; border-radius: 10px;
+      border: 2px solid rgba(255,255,255,0.12);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 3px; background: rgba(255,255,255,0.03);
+      transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+    }
+    #wbResultSlot.has-result {
+      border-color: #d4a055; cursor: pointer;
+      box-shadow: 0 0 10px rgba(212,160,85,0.50);
+      background: rgba(212,160,85,0.10);
+    }
+    #wbResultSlot.no-material { border-color: rgba(255,100,60,0.4); }
+    #wbClearBtn {
+      margin-top: 4px; padding: 5px 0; border-radius: 8px; border: none;
+      font-size: 11px; background: rgba(255,255,255,0.09); color: #8090a8;
+      cursor: pointer; width: 100%;
+    }
+    #wbClearBtn:hover { background: rgba(255,255,255,0.15); color: #cde; }
+    #wbHint { font-size: 11px; color: #50483a; margin-top: 8px; line-height: 1.5; }
+    @media (orientation: portrait) {
+      #wbBtn { top: auto; bottom: 146px; right: 10px; }
+      #wbPanel { top: auto; transform: translateX(-50%); bottom: 10px; max-height: 75vh; }
+      #wbBody { flex-direction: column; }
+      #wbCraftRow { justify-content: center; }
+    }
   </style>
   <!-- Three.js 走 CDN importmap（比照 /3d/ 與 /play3d/）。 -->
   <script type="importmap">
@@ -481,6 +565,8 @@
   </div>
   <!-- 背包 + 合成格按鈕（ROADMAP 664）-->
   <button id="bagBtn">🎒 背包</button>
+  <!-- 工作台開啟鈕（靠近工作台方塊時顯示，ROADMAP 665）-->
+  <button id="wbBtn">🔨 工作台</button>
   <!-- 城鎮動態 Feed（ROADMAP 655）-->
   <div id="feedBtn">🌐 動態</div>
   <div id="feed">
@@ -510,6 +596,29 @@
         </div>
         <button id="bagClearBtn">清除合成格</button>
         <div id="bagHint">點物品→選中，點格子→放入；格子湊齊配方→結果格亮起→點結果格→合成</div>
+      </div>
+    </div>
+  </div>
+  <!-- 工作台 3×3 合成面板（ROADMAP 665）-->
+  <div id="wbPanel">
+    <div id="wbHead">
+      <span id="wbTitle">🔨 工作台 · 3×3 合成</span>
+      <span id="wbClose">✕</span>
+    </div>
+    <div id="wbBody">
+      <div id="wbInvSection">
+        <div class="wb-sec-lbl">物品欄</div>
+        <div id="wbInvGrid"></div>
+      </div>
+      <div id="wbCraftSection">
+        <div class="wb-sec-lbl">合成格（3×3 無順序）</div>
+        <div id="wbCraftRow">
+          <div id="wbGrid3x3"></div>
+          <div id="wbCraftArrow">➔</div>
+          <div id="wbResultSlot"></div>
+        </div>
+        <button id="wbClearBtn">清除合成格</button>
+        <div id="wbHint">點物品→選中，點格子→放入；湊齊配方→結果格亮起→點結果格→合成</div>
       </div>
     </div>
   </div>
