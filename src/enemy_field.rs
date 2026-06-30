@@ -1498,8 +1498,10 @@ mod tests {
         // 夜間非休息型怪物仍應追玩家。
         let mut f = EnemyField::new();
         f.ensure_chunks_around(0.0, 0.0, CHUNK_SIZE + 10.0);
-        let enemies = f.enemies();
-        // 找一隻夜間不休息的怪。
+        let mut enemies = f.enemies();
+        // HashMap 迭代順序不固定 → 先依 id 排序，確保每次都挑「同一隻」非休息怪。
+        // （之前沒排序 → 每跑挑到不同隻 → flaky，與并發無關，是順序不定。）
+        enemies.sort_by(|a, b| a.id.cmp(&b.id));
         let active = enemies.iter()
             .find(|e| e.enemy.is_alive() && !is_night_rester(e.id))
             .cloned()
@@ -1508,16 +1510,23 @@ mod tests {
         let bx = active.x;
         let by = active.y;
         f.advance(1.0, &[player], true, |_, _| false);
-        // 注意：PlacedEnemy.id 含 chunk 座標，跨 chunk 移動後 ID 會改變，
-        // 因此以「離出發點最近的存活怪」代替 ID 查找。
+        // 追「同一隻」怪：優先以 id 查（1 秒約移 147px < CHUNK 512，通常不跨 chunk、id 穩定）。
+        // 萬一跨 chunk 使 id 改變，退而找「最接近預期追擊位置（往玩家 +x 方向）」的存活怪——
+        // 比舊版「最接近起點」穩健：怪追開後，最接近起點的常是沒追的別隻 → 誤判方向。
         let after = f.enemies().into_iter()
             .filter(|e| e.enemy.is_alive())
-            .min_by(|a, b| {
-                let da = (a.x - bx).powi(2) + (a.y - by).powi(2);
-                let db = (b.x - bx).powi(2) + (b.y - by).powi(2);
-                da.partial_cmp(&db).unwrap()
+            .find(|e| e.id == active.id)
+            .or_else(|| {
+                let want_x = bx + 100.0;
+                f.enemies().into_iter()
+                    .filter(|e| e.enemy.is_alive())
+                    .min_by(|a, b| {
+                        let da = (a.x - want_x).powi(2) + (a.y - by).powi(2);
+                        let db = (b.x - want_x).powi(2) + (b.y - by).powi(2);
+                        da.partial_cmp(&db).unwrap()
+                    })
             })
-            .expect("enemy still alive");
+            .expect("active enemy still alive");
         let moved = after.x - bx;
         // 夜間非休息型怪物應有明顯移動（CHASE_SPEED * 1.4 * 1s = 147px）。
         assert!(moved > 50.0, "非休息型怪物夜間應追玩家，但只移了 {moved:.1}px");
