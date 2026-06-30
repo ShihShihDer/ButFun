@@ -105,6 +105,17 @@ let DEBUG_HUD = false;
 try { DEBUG_HUD = new URLSearchParams(location.search).get("debug") === "1"; } catch (e) { /* 無 location（測試 DOM）→ 維持關 */ }
 let selfPredErrPx = 0;  // 自身預測位置與最近一筆權威位置的距離（世界 px），每幀更新供 debug 讀數
 
+// 後端版本戳記：debug HUD 開時 fetch /version，顯示「後端 commit / build 時間」，與前端
+// 內容雜湊（window.__BUILD__）並列 → 前後端版本都對得上 origin/main 一眼看出，堵死舊 binary
+// 靜默上線。失敗（端點不存在/離線）安全靜默。typeof fetch 守測試 DOM 無 fetch 的情況。
+let backendVersion = null;
+if (DEBUG_HUD && typeof fetch === "function") {
+  fetch("/version", { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((v) => { if (v) backendVersion = v; })
+    .catch(() => {});
+}
+
 // 3) AOI 進出淡入淡出 — 實體第一次出現淡入、離開快照淡出再移除，不啪一下彈出/消失。
 const FADE_RATE = 6;           // 淡入淡出速率（每秒，1-exp 收斂）
 
@@ -6186,7 +6197,9 @@ function updateDebugHud(dt) {
   // window.__BUILD__ 由後端 serve_3d_index 注入（main.js 內容雜湊前 12 hex）；
   // 顯示在 debug HUD 讓維護者一眼確認瀏覽器拿到的是最新版前端。
   const build = (typeof window !== "undefined" && window.__BUILD__) ? `\nbuild ${window.__BUILD__}` : "";
-  const txt = `FPS ${_fpsEMA.toFixed(0)}\n預測誤差 ${selfPredErrPx.toFixed(0)}px\n線上 ${players.size} 人${build}`;
+  // 後端版本（直式/手機友善，各自一行）：commit 對得上 origin/main = 後端也上線了。離線時不顯示。
+  const backend = backendVersion ? `\n後端 ${backendVersion.commit}\nbuilt ${backendVersion.built_at || "?"}` : "";
+  const txt = `FPS ${_fpsEMA.toFixed(0)}\n預測誤差 ${selfPredErrPx.toFixed(0)}px\n線上 ${players.size} 人${build}${backend}`;
   if (txt !== _dbgLastText) { el.textContent = txt; _dbgLastText = txt; }
 }
 

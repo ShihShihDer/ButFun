@@ -105,6 +105,7 @@ mod state;
 mod suggestions;
 mod tools;
 mod users;
+mod version;
 mod world_event;
 mod ws;
 // AI 生態世界 voxel 基底（切片①）：全隔離的方塊世界，並行於現有世界、互不干涉。
@@ -287,6 +288,32 @@ use suggestions::NewSuggestion;
 
 #[tokio::main]
 async fn main() {
+    // 部署自驗 CLI（非伺服器啟動路徑）：`butfun-server verify-version <expected> <actual>`。
+    // 比對「該部署的目標 commit」與「跑著的 server 回報的 commit」，印出判定並以 exit code 表態，
+    // 讓 scripts/deploy.sh 與後端共用同一份比對邏輯（單一事實，不在 bash 再抄一份）。
+    //   exit 0 = 相符 / 2 = 不符 / 3 = 未知。放在最前面，避免初始化 tracing/DB。
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.get(1).map(String::as_str) == Some("verify-version") {
+            let expected = args.get(2).map(String::as_str).unwrap_or("");
+            let actual = args.get(3).map(String::as_str).unwrap_or("");
+            match version::verify(expected, actual) {
+                version::Verdict::Match => {
+                    println!("match commit={actual}");
+                    std::process::exit(0);
+                }
+                version::Verdict::Mismatch => {
+                    println!("mismatch expected={expected} actual={actual}");
+                    std::process::exit(2);
+                }
+                version::Verdict::Unknown => {
+                    println!("unknown expected={expected} actual={actual}");
+                    std::process::exit(3);
+                }
+            }
+        }
+    }
+
     // 開發/正式上線都從 .env 載入秘密(systemd 會用 EnvironmentFile,本機 cargo run 用 dotenvy)。
     let _ = dotenvy::dotenv();
     // 在啟動當下定錨 uptime 起點（LazyLock 首次存取才初始化，不在這摸一下會變成「第一次
@@ -392,6 +419,9 @@ async fn main() {
 
     let app = Router::new()
         .route("/healthz", get(health))
+        // 版本戳記（堵死「舊 binary 靜默上線」）：回後端編譯期烤入的 git commit + build 時間，
+        // 順帶前端 voxel 內容雜湊。輕量、無個資，給人也給腳本（deploy 自驗）讀。見 api_version。
+        .route("/version", get(api_version))
         .route("/ws", get(ws::ws_handler))
         // 只收建議（POST），刻意不開公開的 GET 清單：建議是玩家送回的回饋（含自選
         // 署名），維護者本就直接讀 `data/suggestions.jsonl` 三角化。先前
@@ -499,6 +529,29 @@ async fn health() -> &'static str {
     "ok"
 }
 
+/// `/version`：後端版本戳記。回 `{commit, built_at, voxel}`：
+///   - `commit`   = 編譯期烤進 binary 的 git short SHA（build.rs 注入；抓不到 git 時 "unknown"）。
+///   - `built_at` = 編譯期 build 時間（UTC）。
+///   - `voxel`    = 前端 voxel main.js 的內容雜湊（與 serve_voxel_index 注入 `__BUILD__` 同算法；
+///                  讀不到就 null，不擋端點）。
+///
+/// 輕量、無個資。給人也給腳本讀：scripts/deploy.sh 自驗 curl 此端點取 `commit` 比對目標 commit
+/// →「舊 binary 靜默上線」會被當場抓到；前端 ?debug=1 HUD fetch 此端點顯示「後端 <commit>」，
+/// 與前端內容雜湊並列 → 前後端版本都對得上 origin/main = 全上線了，一眼看出。回 no-store（永遠新鮮）。
+async fn api_version() -> impl IntoResponse {
+    let voxel = std::fs::read("web/voxel/main.js")
+        .ok()
+        .map(|b| content_version12(&b));
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(serde_json::json!({
+            "commit": version::GIT_SHA,
+            "built_at": version::BUILD_TIME,
+            "voxel": voxel,
+        })),
+    )
+}
+
 /// 把 HTML 裡的 `game.js?v=...` 版本字串換成「game.js 內容的 sha256 前 12 個 hex 字元」。
 ///
 /// 根治「前端部署後玩家約 4h 看不到新版」的快取 bug：原本 index.html 寫死
@@ -509,11 +562,19 @@ async fn health() -> &'static str {
 ///
 /// 穩健替換：找每一處 `game.js?v=` 後面到下一個 `"` 為止那段，整段換成新雜湊；
 /// 找不到 `game.js?v=` 就原樣返回（不硬塞）。抽成純函式好測。
-fn inject_gamejs_version(html: &str, gamejs: &[u8]) -> String {
+/// 內容雜湊版本字串：sha256 前 6 bytes → 12 個 hex 字元。夠長到不碰撞、夠短到 URL 乾淨。
+/// game.js／main.js 的 `?v=` 版本注入、`window.__BUILD__`、`/version` 端點全部共用同一算法。
+fn content_version12(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(gamejs);
-    // 取前 12 個 hex 字元（6 bytes）當版本——夠長到不會碰撞、夠短到 URL 乾淨。
-    let version: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+    Sha256::digest(bytes)
+        .iter()
+        .take(6)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn inject_gamejs_version(html: &str, gamejs: &[u8]) -> String {
+    let version = content_version12(gamejs);
 
     let needle = "game.js?v=";
     let mut out = String::with_capacity(html.len());
@@ -587,10 +648,7 @@ async fn serve_index() -> impl IntoResponse {
 /// 差別僅在 needle 是 `main.js?v=`，並額外注入 `window.__BUILD__`。
 /// 抽成純函式便於測試（不碰磁碟）。
 fn inject_mainjs_version(html: &str, mainjs: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(mainjs);
-    // 前 12 hex（6 bytes）——與 game.js 雜湊長度一致，夠長不碰撞、夠短 URL 乾淨。
-    let version: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+    let version = content_version12(mainjs);
 
     // 第一步：替換所有 main.js?v=<舊版> 為 main.js?v=<hash>（邏輯同 inject_gamejs_version）。
     let needle = "main.js?v=";
