@@ -28,6 +28,7 @@ use crate::resident_npc::ResidentPersona;
 use crate::state::AppState;
 use crate::voxel::{self, Block, ChunkCoord, WorldDelta, BASE_HEIGHT, CHUNK, SEA_LEVEL};
 use crate::voxel_building::{self as vbuild, BuildStore};
+use crate::voxel_skills::{self as vskill, GatherSkill, GoalStore, NextActivity};
 use crate::voxel_desires::{self as vdes, DesireStore};
 use crate::voxel_diary;
 use crate::voxel_feed as vfeed;
@@ -113,6 +114,10 @@ const RECALL_COOLDOWN_SECS: f32 = 180.0;
 const RECALL_CHANCE_PER_TICK: f32 = 0.002;
 /// 居民建造頻率：每隔這麼多秒放一塊方塊（慢節奏，讓玩家能目睹過程）。
 const BUILD_INTERVAL_SECS: f32 = 8.0;
+/// 居民每蓋一個建物前要先採集幾次（備料感、「她真的在做事」）。
+const GATHER_QUOTA: u32 = 2;
+/// 全部建物蓋完後，閒置時每個 agency tick 觸發一次「散心採集」的機率（低頻、不洗版）。
+const IDLE_GATHER_CHANCE: f32 = 0.15;
 
 /// 一位乙太方界居民的權威運行狀態（位置/朝向 + 閒晃目標 + 思考排程 + 當前冒的話）。
 struct VoxelResident {
@@ -149,6 +154,10 @@ struct VoxelResident {
     /// 旁聽搭話冷卻（秒，embodied 靠近說話 v1）：> 0 表示最近因旁聽搭過一句，
     /// 尚不可再搭（防同一位連發、對話風暴）。零 LLM。
     overhear_cooldown: f32,
+    /// 當前採集任務（居民 agency v1·技能調用）：Some = 正走向某資源要挖；None = 沒在採集。
+    gather: Option<GatherSkill>,
+    /// 本輪（自上次蓋造後）已採集次數：達 GATHER_QUOTA 才開始蓋下一個建物（備料感）。
+    gathered_since_build: u32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -317,6 +326,9 @@ fn init_residents() -> Vec<VoxelResident> {
             recall_cooldown: 60.0 + i as f32 * 30.0,
             // 旁聽搭話冷卻：初始 0，可立即因旁聽搭話（之後由 should_chime_in 套冷卻）。
             overhear_cooldown: 0.0,
+            // agency v1：入場無採集任務、尚未採集。
+            gather: None,
+            gathered_since_build: 0,
         });
     }
     out
@@ -345,6 +357,12 @@ struct VoxelHub {
     /// 居民建造計畫（每人至多一份 active plan）。持久化到 data/voxel_builds.jsonl。
     /// 居民有心願後 → 分類 → 生成方塊清單 → 每 8 秒放一塊（渴望化為方塊 v1）。
     builds: RwLock<BuildStore>,
+    /// 居民已完成目標 store（agency v1）：每居民「蓋過哪些建物」。持久化到 data/voxel_goals.jsonl。
+    /// 讓挑目標永不重選蓋過的種類（不鬼打牆）、蓋完自然生出下一個（進展）。
+    goals: RwLock<GoalStore>,
+    /// 居民小背包（agency v1·純記憶體）：採集挖到的材料進這裡（rid → block_id → 數量）。
+    /// 「她真的在做事」的成果；與玩家背包（inventory）分開，互不干涉。
+    res_inv: RwLock<HashMap<String, HashMap<u8, u32>>>,
     /// 玩家背包（採集 v1）：挖方塊得材料、放置消耗存量。持久化到 data/voxel_inventory.jsonl。
     inventory: RwLock<InvStore>,
     /// 農地 store（種田 v1·純記憶體；重啟後農地重置，與世界 delta 行為一致）。
@@ -362,9 +380,16 @@ static HUB: OnceLock<VoxelHub> = OnceLock::new();
 fn hub() -> &'static VoxelHub {
     HUB.get_or_init(|| {
         let (tx, _rx) = broadcast::channel(256);
+        // 重啟還原：把居民先前蓋的方塊／挖的洞 replay 套回 delta（持久化，重啟後還在）。
+        let mut deltas = WorldDelta::new();
+        for bb in vbuild::load_world_blocks() {
+            if let Some(b) = Block::from_u8(bb.b) {
+                voxel::set_block(&mut deltas, bb.x, bb.y, bb.z, b);
+            }
+        }
         VoxelHub {
             players: RwLock::new(HashMap::new()),
-            deltas: RwLock::new(WorldDelta::new()),
+            deltas: RwLock::new(deltas),
             residents: RwLock::new(init_residents()),
             agent_bus: AgentBus::new(),
             // 啟動時從 data/voxel_memory.jsonl 載回長期記憶（檔缺 = 首次啟動，回空），
@@ -376,6 +401,10 @@ fn hub() -> &'static VoxelHub {
             social: RwLock::new(SocialStore::from_entries(vrel::load_social())),
             // 啟動時從 data/voxel_builds.jsonl 載回未完成的建造計畫（重啟後繼續蓋）。
             builds: RwLock::new(BuildStore::from_entries(vbuild::load_builds())),
+            // 啟動時從 data/voxel_goals.jsonl 載回已完成目標（重啟後不重蓋蓋過的）。
+            goals: RwLock::new(GoalStore::from_entries(vskill::load_goals())),
+            // 居民小背包純記憶體（採集成果；重啟重置，與農地一致）。
+            res_inv: RwLock::new(HashMap::new()),
             // 啟動時從 data/voxel_inventory.jsonl 載回玩家背包（重啟後存量還在）。
             inventory: RwLock::new(InvStore::from_entries(vinv::load_inventory())),
             // 農地 store 純記憶體（與世界 delta 一致：重啟後農地重置，玩家重新種即可）。
@@ -1525,9 +1554,14 @@ fn tick_residents(dt: f32) {
     // is_response=false → 發起對話；is_response=true → 回應對話。
     let mut social_events: Vec<(String, String, String, String, String, bool)> = Vec::new();
 
-    // 建造候選（鎖內收集位置快照，鎖外執行放塊 / 啟動計畫）。
+    // 建造候選（鎖內收集位置快照，鎖外執行放塊 / 啟動計畫 / 決定活動）。
     // 格式：(resident_id, resident_name, wx, wy, wz, resident_idx)
     let mut build_candidates: Vec<(String, &'static str, i32, i32, i32, usize)> = Vec::new();
+
+    // 採集挖掘動作（agency v1·技能調用）：居民走到資源旁時收集，鎖外執行 set_block + 入袋 + feed。
+    // 格式：(resident_id, resident_name, x, y, z, 資源)
+    let mut gather_mines: Vec<(String, &'static str, i32, i32, i32, vskill::GatherResource)> =
+        Vec::new();
 
     {
         let world = hub().deltas.read().unwrap();
@@ -1644,7 +1678,39 @@ fn tick_residents(dt: f32) {
                 }
             }
 
-            if r.wait_timer > 0.0 {
+            // agency v1·採集技能執行（技能調用骨架：找目標→走過去→動作）。
+            // 若正在採集：朝鎖定的資源走；走到旁邊→排程挖掘（鎖外 set_block）；逾時→放棄。
+            // 採集中時跳過閒晃/歸巢邏輯（這一刀是「她真的在做事」）。
+            if r.gather.is_some() {
+                let (tx, ty, tz, reached, timed_out) = {
+                    let g = r.gather.as_mut().unwrap();
+                    g.timeout -= dt;
+                    let reached = vskill::within_gather_reach(r.body.x, r.body.z, g.tx, g.tz);
+                    (g.tx, g.ty, g.tz, reached, g.timeout <= 0.0)
+                };
+                if reached {
+                    // 走到了：排程挖掘 + 採集次數 +1，清掉任務（站定落重力）。
+                    let res = r.gather.take().unwrap().resource;
+                    gather_mines.push((r.id.clone(), r.name, tx, ty, tz, res));
+                    r.gathered_since_build = r.gathered_since_build.saturating_add(1);
+                    vr::gravity_step(&world, &mut r.body, dt);
+                } else if timed_out {
+                    // 走不到（地形擋路等）→ 放棄這次採集，下個 agency tick 再決定。
+                    r.gather = None;
+                    vr::gravity_step(&world, &mut r.body, dt);
+                } else {
+                    // 朝資源方塊中心走（沿牆滑行、踏階由物理處理）。
+                    let (bx, bz) = (r.body.x, r.body.z);
+                    vr::step_toward(
+                        &world, &mut r.body,
+                        tx as f32 + 0.5, tz as f32 + 0.5,
+                        dt, vr::RES_SPEED * speed_mult,
+                    );
+                    if let Some(yaw) = vr::yaw_from_move(r.body.x - bx, r.body.z - bz) {
+                        r.yaw = yaw;
+                    }
+                }
+            } else if r.wait_timer > 0.0 {
                 // 小歇：原地落重力（站穩、不亂飄）。
                 r.wait_timer -= dt;
                 vr::gravity_step(&world, &mut r.body, dt);
@@ -1681,9 +1747,10 @@ fn tick_residents(dt: f32) {
                 think_jobs.push((r.id.clone(), r.name, r.persona, r.body.x, r.body.z));
             }
 
-            // 建造 tick 倒數；到期則加入候選（只收快照，實際放塊在鎖外執行）。
+            // agency tick 倒數；到期且「沒在採集」時才加入候選（採集中不打斷、交給技能跑完）。
+            // 只收快照，實際放塊 / 決定活動在鎖外執行。
             r.build_tick -= dt;
-            if r.build_tick <= 0.0 {
+            if r.build_tick <= 0.0 && r.gather.is_none() {
                 // 居民 id 格式固定 "vox_res_{i}"，取末位數字當 index。
                 let idx = r.id.trim_start_matches("vox_res_").parse::<usize>().unwrap_or(0);
                 build_candidates.push((
@@ -1768,69 +1835,91 @@ fn tick_residents(dt: f32) {
         }
     }
 
-    // 6) 居民建造（builds/desires/deltas/residents 的鎖全在上面釋放後才取，守循序不巢狀鐵律）。
-    //    流程：① 若無計畫 → 讀心願 → 分類 → 啟動計畫 → 冒「開始蓋」台詞
-    //           ② 若有計畫 → 彈下一塊 → set_block → broadcast → 持久化 → 重設 build_tick
-    //    say_updates 在 tick_residents 頂層宣告（含過渡台詞 + 建造台詞），最後一次性套用。
+    // 5b) 採集挖掘執行（agency v1·技能調用收尾）：居民走到資源旁 → 真的挖掉 → 入小背包。
+    //     鎖序：deltas 寫（即釋）→ broadcast → res_inv 寫（即釋）→ 持久化/Feed（鎖外）。
+    //     **她真的在做事**：玩家會看到地表被挖出一個洞、feed 出現「採集了草皮」。
+    for (rid, rname, gx, gy, gz, res) in gather_mines {
+        // 只在目標方塊「現在仍是該資源」時才挖（防別人先挖走→空挖）。
+        let still_there = {
+            let world = hub().deltas.read().unwrap();
+            voxel::effective_block_at(&world, gx, gy, gz) == res.block()
+        }; // deltas 讀鎖釋放
+        if !still_there {
+            continue;
+        }
+        // 挖掉（設成空氣）。
+        {
+            let mut world = hub().deltas.write().unwrap();
+            voxel::set_block(&mut world, gx, gy, gz, Block::Air);
+        } // deltas 寫鎖釋放
+        broadcast_block(gx, gy, gz, Block::Air);
+        // 持久化這次世界改動（重啟後挖的洞還在）。
+        vbuild::append_world_block(gx, gy, gz, Block::Air as u8);
+        // 入居民小背包（純記憶體）。
+        {
+            let mut inv = hub().res_inv.write().unwrap();
+            *inv.entry(rid.clone()).or_default().entry(res.block_id()).or_insert(0) += 1;
+        } // res_inv 寫鎖釋放
+        // 里程碑 Feed（真實事件、低頻、不洗版）。
+        vfeed::append_feed("採集", rname, &format!("採集了{}", res.display_name()));
+        // 冒一句採集泡泡（不打斷其他話）。
+        say_updates.push((rid.clone(), format!("採到{}了～", res.display_name())));
+    }
 
-    for (rid, rname, rx, _ry, rz, ridx) in build_candidates {
+    // 6) 居民 agency（目標+記憶驅動）：蓋造不重複、有進展、會持久 + 採集技能調用。
+    //    流程：① 有計畫 → 彈下一塊放置（持久化）；完成 → 記下「蓋過這種」（不再重蓋）+ 完工 Feed
+    //           ② 無計畫 → choose_activity（依已完成清單+心願，永不重選蓋過的）→ 採集 or 蓋下一個
+    //    say_updates 在 tick_residents 頂層宣告（含過渡/採集/建造台詞），最後一次性套用。
+
+    for (rid, rname, rx, _ry, rz, _ridx) in build_candidates {
         let has_plan = hub().builds.read().unwrap().has_plan(&rid); // drop
 
         if !has_plan {
-            // 無計畫：讀心願 → 分類 → 啟動
-            let desire_opt: Option<String> = {
+            // ── 無計畫：挑下一個活動（目標+記憶驅動，不鬼打牆）──────────────────
+            // 已完成的建物種類（持久 GoalStore）+ 玩家心願（可選對應建物）+ 已採集次數。
+            let done_kinds = hub().goals.read().unwrap().done_kinds(&rid); // drop
+            let desired_kind: Option<vbuild::BuildKind> = {
                 let des = hub().desires.read().unwrap();
-                des.get_desire(&rid).map(|d| d.desire.clone())
+                des.get_desire(&rid).and_then(|d| vbuild::classify_desire(&d.desire))
             }; // desires 讀鎖釋放
+            let gathered = {
+                let residents = hub().residents.read().unwrap();
+                residents.iter().find(|r| r.id == rid).map_or(0, |r| r.gathered_since_build)
+            }; // residents 讀鎖釋放
 
-            if let Some(desire_text) = desire_opt {
-                if let Some(kind) = vbuild::classify_desire(&desire_text) {
-                    // 找建造位置：居民當前 x/z + 固定方位偏移
-                    let (ox, oz) = vbuild::build_anchor_offset(ridx);
-                    let bx = rx + ox;
-                    let bz = rz + oz;
-                    let by = vbuild::surface_y(bx, bz);
-
-                    let plan = {
-                        let mut builds = hub().builds.write().unwrap();
-                        if builds.has_plan(&rid) {
-                            // double-check（並發安全）
-                            None
-                        } else {
-                            Some(builds.new_plan(&rid, kind, bx, by, bz))
-                        }
-                    }; // builds 寫鎖釋放
-
-                    if let Some(p) = plan {
-                        vbuild::append_build(&p);
-                        let say = vbuild::build_say_line(&p.kind_name, 0);
-                        say_updates.push((rid.clone(), say));
-                        // 動態 Feed：居民開始建造。
-                        vfeed::append_feed("蓋家動工", &rname, &p.kind_name);
+            match vskill::choose_activity(&done_kinds, desired_kind, gathered, GATHER_QUOTA) {
+                NextActivity::Gather => {
+                    start_gather(&rid, rx, rz);
+                }
+                NextActivity::Build(kind) => {
+                    // 建造位置以「家域中心」為基準、依已蓋數量散開（不疊在舊建物上）。
+                    let done_count = done_kinds.len();
+                    start_build(&rid, rname, kind, done_count, &mut say_updates);
+                }
+                NextActivity::Wander => {
+                    // 全部蓋完：偶爾散心採集（低頻、不洗版），否則純閒晃。
+                    if rand::random::<f32>() < IDLE_GATHER_CHANCE {
+                        start_gather(&rid, rx, rz);
                     }
                 }
             }
-            // 本 tick 不放塊，重設 build_tick 等下次
-            {
-                let mut residents = hub().residents.write().unwrap();
-                if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
-                    r.build_tick = BUILD_INTERVAL_SECS;
-                }
-            } // residents 寫鎖釋放
+            // 重設 agency tick 等下次（採集中不會再進這裡，見 build_candidate 閘）。
+            reset_build_tick(&rid);
             continue;
         }
 
-        // 有計畫：彈下一塊
-        let (next_block, kind_name, progress_pct, plan_done) = {
+        // ── 有計畫：彈下一塊放置 + 持久化 + 進度冒泡 ──────────────────────────
+        let (next_block, kind_name, kind_str, progress_pct, plan_done) = {
             let mut builds = hub().builds.write().unwrap();
             if let Some(plan) = builds.get_plan_mut(&rid) {
                 let bb = plan.pop_next();
                 let kn = plan.kind_name.clone();
+                let ks = plan.kind.clone();
                 let pct = plan.progress_pct();
                 let done = plan.is_done();
-                (bb, kn, pct, done)
+                (bb, kn, ks, pct, done)
             } else {
-                (None, String::new(), 100, true)
+                (None, String::new(), String::new(), 100, true)
             }
         }; // builds 寫鎖釋放
 
@@ -1842,36 +1931,49 @@ fn tick_residents(dt: f32) {
                     voxel::set_block(&mut world, bb.x, bb.y, bb.z, block);
                 } // deltas 寫鎖釋放
                 broadcast_block(bb.x, bb.y, bb.z, block);
+                // 持久化這塊（重啟後蓋的東西還在）。
+                vbuild::append_world_block(bb.x, bb.y, bb.z, bb.b);
 
-                // 持久化更新後的計畫（remaining 已縮短）
+                // 持久化更新後的計畫（remaining 已縮短，重啟後接著蓋）
                 if let Some(plan) = hub().builds.read().unwrap().plans.get(&rid) {
                     vbuild::append_build(plan);
                 } // builds 讀鎖釋放
 
-                // 關鍵進度冒泡（開始蓋時已冒過；之後在 50%、95%、完成時各冒一次）
+                // 進度冒泡：50% / 95% 各冒一次（完工 Feed 改由 plan_done 統一發、不重複）
                 if progress_pct == 50 || progress_pct >= 95 {
                     let say = vbuild::build_say_line(&kind_name, progress_pct);
                     say_updates.push((rid.clone(), say));
-                    // 動態 Feed：完工里程碑。
-                    if progress_pct >= 95 {
-                        vfeed::append_feed("蓋家完工", &rname, &kind_name);
-                    }
                 }
             }
         }
 
         if plan_done {
-            let mut builds = hub().builds.write().unwrap();
-            builds.remove_if_done(&rid);
-        } // builds 寫鎖釋放（若未取則無鎖）
-
-        // 重設 build_tick
-        {
-            let mut residents = hub().residents.write().unwrap();
-            if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
-                r.build_tick = BUILD_INTERVAL_SECS;
+            {
+                let mut builds = hub().builds.write().unwrap();
+                builds.remove_if_done(&rid);
+            } // builds 寫鎖釋放
+            // 記下「這位居民蓋過這種建物」→ 之後永不重蓋（不鬼打牆）+ 持久化。
+            if let Some(kind) = vbuild::BuildKind::from_str(&kind_str) {
+                let rec = {
+                    let mut goals = hub().goals.write().unwrap();
+                    goals.mark_done(&rid, kind)
+                }; // goals 寫鎖釋放
+                if let Some(rec) = rec {
+                    vskill::append_goal(&rec);
+                }
             }
-        } // residents 寫鎖釋放
+            // 完工 Feed（每個建物只發一次，不洗版）。
+            vfeed::append_feed("蓋家完工", &rname, &kind_name);
+            // 蓋完一個 → 重置採集計數，下一輪先採料再蓋下一種（有進展感）。
+            {
+                let mut residents = hub().residents.write().unwrap();
+                if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                    r.gathered_since_build = 0;
+                }
+            } // residents 寫鎖釋放
+        }
+
+        reset_build_tick(&rid);
     }
 
     // 一次性套用說話更新（單獨一把 residents 寫鎖；say_updates 可能為空）。
@@ -1888,6 +1990,78 @@ fn tick_residents(dt: f32) {
             }
         }
     } // residents 寫鎖釋放
+}
+
+// ── agency v1 輔助（全在 tick_residents 鎖釋放後呼叫；各短鎖即釋、不巢狀、不 await）──────
+
+/// 開始一次採集任務：以 (rx,rz) 為原點找最近資源 → 設居民的 gather 技能狀態。
+/// 找不到資源（罕見）→ 視為已備料（gathered=配額），下個 agency tick 直接蓋，避免卡死。
+fn start_gather(rid: &str, rx: i32, rz: i32) {
+    let found = {
+        let world = hub().deltas.read().unwrap();
+        vskill::find_nearest_resource(&world, rx, rz, vskill::GATHER_MAX_RADIUS)
+    }; // deltas 讀鎖釋放
+    let mut residents = hub().residents.write().unwrap();
+    if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+        match found {
+            Some((tx, ty, tz, res)) => {
+                r.gather = Some(GatherSkill {
+                    resource: res,
+                    tx,
+                    ty,
+                    tz,
+                    timeout: vskill::GATHER_TIMEOUT_SECS,
+                });
+            }
+            None => {
+                // 附近沒可採資源 → 當作備料完成（不卡在採集前置）。
+                r.gathered_since_build = GATHER_QUOTA;
+            }
+        }
+    }
+}
+
+/// 開始蓋一個建物：以「家域中心」為基準、依已蓋數量散開錨點 → 建計畫 → 動工 Feed + 冒泡。
+fn start_build(
+    rid: &str,
+    rname: &str,
+    kind: vbuild::BuildKind,
+    done_count: usize,
+    say_updates: &mut Vec<(String, String)>,
+) {
+    let (ox, oz) = vskill::build_offset(done_count);
+    let (hx, hz) = {
+        let residents = hub().residents.read().unwrap();
+        residents
+            .iter()
+            .find(|r| r.id == rid)
+            .map(|r| (r.home_x, r.home_z))
+            .unwrap_or((0.0, 0.0))
+    }; // residents 讀鎖釋放
+    let bx = hx.floor() as i32 + ox;
+    let bz = hz.floor() as i32 + oz;
+    let by = vbuild::surface_y(bx, bz);
+    let plan = {
+        let mut builds = hub().builds.write().unwrap();
+        if builds.has_plan(rid) {
+            None // double-check 並發安全
+        } else {
+            Some(builds.new_plan(rid, kind, bx, by, bz))
+        }
+    }; // builds 寫鎖釋放
+    if let Some(p) = plan {
+        vbuild::append_build(&p);
+        say_updates.push((rid.to_string(), vbuild::build_say_line(&p.kind_name, 0)));
+        vfeed::append_feed("蓋家動工", rname, &p.kind_name);
+    }
+}
+
+/// 重設某居民的 agency tick 倒數（下次再決策／放塊）。
+fn reset_build_tick(rid: &str) {
+    let mut residents = hub().residents.write().unwrap();
+    if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+        r.build_tick = BUILD_INTERVAL_SECS;
+    }
 }
 
 /// 為一位居民發起一次無鎖 async 思考：短鎖讀附近玩家 → drop → spawn → npc_think/npc_pray

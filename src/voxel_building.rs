@@ -47,6 +47,17 @@ impl BuildKind {
             BuildKind::Garden => "garden",
         }
     }
+
+    /// 由 `as_str()` 字串反查 BuildKind（從持久化的目標記錄還原）；未知回 None。
+    pub fn from_str(s: &str) -> Option<BuildKind> {
+        match s {
+            "house" => Some(BuildKind::House),
+            "well" => Some(BuildKind::Well),
+            "tower" => Some(BuildKind::Tower),
+            "garden" => Some(BuildKind::Garden),
+            _ => None,
+        }
+    }
 }
 
 /// 依心願文字規則分類建物種類（零 LLM、確定性、可測）。
@@ -394,6 +405,52 @@ pub fn append_build(plan: &BuildPlan) {
 /// 載回所有建造計畫記錄（伺服器啟動時呼叫一次）。檔不存在 / 壞行皆容忍。
 pub fn load_builds() -> Vec<BuildPlan> {
     read_lines(VOXEL_BUILDS_PATH)
+}
+
+// ── 居民改動世界的方塊持久化（重啟後蓋的東西/挖的洞還在）──────────────────────
+//
+// hub 的 world delta 是記憶體層；居民蓋造放的每一塊、採集挖掉的每一格，都 append 到這份
+// jsonl，啟動時 replay 套回 delta → **重啟後居民蓋的東西還在、挖的洞還在**（持久化）。
+// append-only、向後相容（檔缺=空）。玩家自己 break/place 不走這裡（沿用原 session 內行為）。
+
+/// 居民改動方塊落地路徑（`data/` 已 gitignore）。
+const VOXEL_RES_BLOCKS_PATH: &str = "data/voxel_resident_blocks.jsonl";
+
+/// Append 一筆「居民改了某方塊」記錄（放置或挖空都走這裡，b=0 即 Air）。
+/// **鐵律**：只在不持任何鎖時呼叫（小檔同步寫，不 await）。
+pub fn append_world_block(x: i32, y: i32, z: i32, b: u8) {
+    let bb = BuildBlock { x, y, z, b };
+    if let Ok(line) = serde_json::to_string(&bb) {
+        write_world_line(VOXEL_RES_BLOCKS_PATH, &line);
+    }
+}
+
+/// 載回所有居民方塊改動（伺服器啟動時呼叫一次，依序套回 delta）。檔不存在 / 壞行皆容忍。
+pub fn load_world_blocks() -> Vec<BuildBlock> {
+    let content = match std::fs::read_to_string(VOXEL_RES_BLOCKS_PATH) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    content
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            if l.is_empty() { None } else { serde_json::from_str::<BuildBlock>(l).ok() }
+        })
+        .collect()
+}
+
+fn write_world_line(path: &str, line: &str) {
+    use std::io::Write;
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        Ok(mut f) => {
+            let _ = writeln!(f, "{line}");
+        }
+        Err(e) => tracing::warn!("無法寫入居民方塊改動 {path}: {e}"),
+    }
 }
 
 fn write_line(path: &str, line: &str) {
