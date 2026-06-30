@@ -23,6 +23,10 @@ const FARM_SOIL = 11, FARM_SOIL_SEEDED = 12, WHEAT_MATURE = 13;
 const SEEDS = 14; // 純物品（無對應方塊），從葉片/收割掉落
 // 工作台 v1（ROADMAP 665）——玩家合成+放置，互動開 3×3 合成格
 const WORKBENCH = 15;
+// 熔爐 v1（ROADMAP 666）——工作台合成+放置，互動開冶煉面板
+const FURNACE = 16;
+// 拋光石 v1（ROADMAP 666）——熔爐冶煉所得，精緻灰石建材
+const SMOOTH_STONE = 17;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -42,6 +46,9 @@ const COLOR = {
   [WHEAT_MATURE]:      [0.88, 0.76, 0.22], // 成熟小麥——金黃色，可收割
   // 工作台 v1
   [WORKBENCH]:         [0.62, 0.40, 0.18], // 工作台——深琥珀棕，木製工作台感
+  // 熔爐 v1
+  [FURNACE]:           [0.36, 0.26, 0.20], // 熔爐——暗灰棕，燻黑石材爐
+  [SMOOTH_STONE]:      [0.72, 0.72, 0.74], // 拋光石——明亮冷灰，精煉石材感
 };
 
 const DEBUG = location.search.includes("debug");
@@ -940,9 +947,9 @@ let target = null;
 
 // ── 快捷欄（選要放的方塊型別）+ 背包存量（採集 v1）───────────────────────────
 // 種田 v1（ROADMAP 659）：加入農田土 + 種子（種子為純物品，特殊 Plant 動作）
-// 快捷欄 12 格：GRASS DIRT STONE WOOD SAND LEAVES PLANK STONE_BRICK GLASS FARM_SOIL SEEDS WORKBENCH
+// 快捷欄 14 格：…WORKBENCH FURNACE SMOOTH_STONE
 // 鍵盤 1–9 對應前 9 格；其餘以滑鼠/觸控點選
-const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH];
+const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE];
 const BLOCK_NAME = {
   [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉",
   [PLANK]: "木板", [STONE_BRICK]: "石磚", [GLASS]: "玻璃",
@@ -951,6 +958,8 @@ const BLOCK_NAME = {
   [SEEDS]: "種子",
   // 工作台 v1
   [WORKBENCH]: "工作台",
+  // 熔爐 v1
+  [FURNACE]: "熔爐", [SMOOTH_STONE]: "拋光石",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
@@ -1156,6 +1165,11 @@ function placeAtTarget() {
   // 工作台互動：右鍵對準工作台方塊 → 開啟 3×3 合成面板（不放置新方塊）。
   if (getRaw(target.bx, target.by, target.bz) === WORKBENCH) {
     openWbPanel();
+    return null;
+  }
+  // 熔爐互動：右鍵對準熔爐方塊 → 開啟冶煉面板（不放置新方塊）。
+  if (getRaw(target.bx, target.by, target.bz) === FURNACE) {
+    openFurnacePanel();
     return null;
   }
   // 種子的特殊種植動作：目標是農田土本身（不偏移到面外側）。
@@ -1383,11 +1397,13 @@ function connect() {
       wbGrid.fill(0); wbPick = 0;
       if (bagPanelVisible()) renderBagPanel();
       if (wbPanelVisible()) renderWbPanel();
+      if (furnacePanelVisible()) renderFurnacePanel();
     } else if (m.t === "craft_fail") {
       showErr("材料不足，無法合成（先多採集一些）");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
       if (bagPanelVisible()) renderBagPanel();
       if (wbPanelVisible()) renderWbPanel();
+      if (furnacePanelVisible()) renderFurnacePanel();
     } else if (m.t === "plant_ok") {
       // 種田 v1：種植成功，短暫提示。
       showMsg("已種下種子！等 90 秒小麥就成熟 🌾");
@@ -2030,6 +2046,113 @@ document.addEventListener("pointerdown", (e) => {
 // 注意：inv_sync 和 inv_update handler 在 WS onmessage 裡，
 //       craft_ok / craft_fail 的刷新邏輯已在 WS handler 那段處理過。
 
+// ── 熔爐面板（ROADMAP 666）──────────────────────────────────────────────────────
+// 與工作台面板並列，但更簡：不需要拖放格，只顯示配方清單，點「冶煉」送 craft message。
+const FURNACE_RECIPES_JS = [
+  { id: "smelt_stone", name: "拋光石",       inputs: [[STONE, 3]], output_block: SMOOTH_STONE, out_count: 3 },
+  { id: "smelt_glass", name: "玻璃（冶煉）", inputs: [[SAND,  2]], output_block: GLASS,        out_count: 3 },
+  { id: "smelt_brick", name: "石磚（冶煉）", inputs: [[STONE, 2]], output_block: STONE_BRICK,  out_count: 4 },
+];
+
+const furnacePanelEl      = document.getElementById("furnacePanel");
+const furnaceBtnEl        = document.getElementById("furnaceBtn");
+const furnaceInvGridEl    = document.getElementById("furnaceInvGrid");
+const furnaceRecipeListEl = document.getElementById("furnaceRecipeList");
+
+function openFurnacePanel() {
+  if (!furnacePanelEl) return;
+  furnacePanelEl.style.display = "flex";
+  renderFurnacePanel();
+}
+function closeFurnacePanel() {
+  if (!furnacePanelEl) return;
+  furnacePanelEl.style.display = "none";
+}
+function furnacePanelVisible() {
+  return furnacePanelEl ? furnacePanelEl.style.display === "flex" : false;
+}
+
+/** 渲染熔爐物品欄（只讀，讓玩家知道現有材料）。 */
+function renderFurnaceInvGrid() {
+  if (!furnaceInvGridEl) return;
+  furnaceInvGridEl.innerHTML = "";
+  const items = [...myInv.entries()].filter(([, cnt]) => cnt > 0);
+  if (items.length === 0) {
+    const emp = document.createElement("div");
+    emp.style.cssText = "color:#605040;font-size:12px;font-style:italic;padding:6px 0";
+    emp.textContent = "背包是空的，去挖一些方塊吧";
+    furnaceInvGridEl.appendChild(emp);
+    return;
+  }
+  for (const [bid, cnt] of items) {
+    const slot = document.createElement("div");
+    slot.className = "bag-inv-slot";
+    slot.appendChild(makeSwatchEl(bid, "bag-inv-sw"));
+    const name = document.createElement("div");
+    name.className = "bag-inv-name";
+    name.textContent = BLOCK_NAME[bid] || "?";
+    const cntEl = document.createElement("div");
+    cntEl.className = "bag-inv-cnt";
+    cntEl.textContent = "×" + cnt;
+    slot.appendChild(name); slot.appendChild(cntEl);
+    furnaceInvGridEl.appendChild(slot);
+  }
+}
+
+/** 渲染冶煉配方清單（每張卡含輸入→輸出說明 + 冶煉鈕）。 */
+function renderFurnaceRecipes() {
+  if (!furnaceRecipeListEl) return;
+  furnaceRecipeListEl.innerHTML = "";
+  for (const r of FURNACE_RECIPES_JS) {
+    const canSmelt = r.inputs.every(([b, c]) => (myInv.get(b) || 0) >= c);
+    const card = document.createElement("div");
+    card.className = "furnace-recipe-card" + (canSmelt ? " available" : "");
+    const nameEl = document.createElement("div");
+    nameEl.className = "furnace-recipe-name";
+    nameEl.textContent = r.name;
+    card.appendChild(nameEl);
+    const ioEl = document.createElement("div");
+    ioEl.className = "furnace-recipe-io";
+    const inputStrs = r.inputs.map(([b, c]) => (BLOCK_NAME[b] || "?") + "×" + c);
+    ioEl.textContent = inputStrs.join(" + ") + " → " + (BLOCK_NAME[r.output_block] || "?") + "×" + r.out_count;
+    card.appendChild(ioEl);
+    const btn = document.createElement("button");
+    btn.className = "furnace-smelt-btn";
+    btn.textContent = canSmelt ? "冶煉" : "材料不足";
+    btn.disabled = !canSmelt;
+    btn.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      if (!canSmelt || !wsReady) return;
+      ws.send(JSON.stringify({ t: "craft", recipe_id: r.id }));
+    });
+    card.appendChild(btn);
+    furnaceRecipeListEl.appendChild(card);
+  }
+}
+
+/** 渲染整個熔爐面板（物品欄 + 配方清單）。 */
+function renderFurnacePanel() {
+  renderFurnaceInvGrid();
+  renderFurnaceRecipes();
+}
+
+// 熔爐 HUD 按鈕（🔥）開閉面板。
+if (furnaceBtnEl) furnaceBtnEl.addEventListener("click", (e) => {
+  if (furnacePanelVisible()) { closeFurnacePanel(); } else { openFurnacePanel(); }
+  e.stopPropagation();
+});
+
+// 關閉鈕（✕）。
+const furnaceCloseEl = document.getElementById("furnaceClose");
+if (furnaceCloseEl) furnaceCloseEl.addEventListener("click", closeFurnacePanel);
+
+// 點面板外關閉。
+document.addEventListener("pointerdown", (e) => {
+  if (furnacePanelVisible()) {
+    if (furnacePanelEl && !furnacePanelEl.contains(e.target) && e.target !== furnaceBtnEl) closeFurnacePanel();
+  }
+});
+
 /** 簡短綠色提示（合成成功用；區別於 showErr 紅色錯誤）。 */
 function showMsg(text) {
   const el = document.getElementById("msg");
@@ -2113,6 +2236,17 @@ window.__voxel = {
   get wbPick() { return wbPick; },
   matchWbRecipe() { return matchWbRecipe(); },
   setWbGrid(slots) { slots.forEach((v, i) => { if (i < 9) wbGrid[i] = v; }); renderWbPanel(); },
+  // ── 熔爐 v1 QA 用（ROADMAP 666）──
+  FURNACE, SMOOTH_STONE,
+  get furnacePanelVisible() { return furnacePanelVisible(); },
+  openFurnacePanel() { openFurnacePanel(); },
+  closeFurnacePanel() { closeFurnacePanel(); },
+  renderFurnacePanel() { renderFurnacePanel(); },
+  get FURNACE_RECIPES_JS() { return FURNACE_RECIPES_JS; },
+  canSmelt(recipeId) {
+    const r = FURNACE_RECIPES_JS.find(x => x.id === recipeId);
+    return r ? r.inputs.every(([b, c]) => (myInv.get(b) || 0) >= c) : false;
+  },
   // ── 贈禮 v1 QA 介面（ROADMAP 660）──
   giftPickItem(inv) { return giftPickItem(inv); },
   updateGiftBtn() { updateGiftBtn(); },

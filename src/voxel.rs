@@ -58,6 +58,10 @@ pub enum Block {
     WheatMature = 13,
     /// 工作台（4 木板 → 1 工作台；放置後右鍵互動開啟 3×3 合成格）。
     Workbench = 15,
+    /// 熔爐（8 石頭在工作台圍成一圈 → 1 熔爐；放置後右鍵互動開冶煉面板）。
+    Furnace = 16,
+    /// 拋光石（3 石頭在熔爐冶煉 → 3 拋光石；精緻灰石建材，比原石光滑）。
+    SmoothStone = 17,
 }
 
 impl Block {
@@ -84,6 +88,8 @@ impl Block {
             12 => Some(Block::FarmSoilSeeded),
             13 => Some(Block::WheatMature),
             15 => Some(Block::Workbench),
+            16 => Some(Block::Furnace),
+            17 => Some(Block::SmoothStone),
             _ => None,
         }
     }
@@ -95,7 +101,7 @@ impl Block {
             self,
             Block::Dirt | Block::Stone | Block::Sand | Block::Wood | Block::Grass |
             Block::Plank | Block::StoneBrick | Block::Glass | Block::FarmSoil |
-            Block::Workbench
+            Block::Workbench | Block::Furnace | Block::SmoothStone
         )
     }
 }

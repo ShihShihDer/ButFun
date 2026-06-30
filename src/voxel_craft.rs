@@ -1,10 +1,11 @@
-//! 乙太方界·合成台 v1 + 工作台 3×3 v1（ROADMAP 658 / 665）。
+//! 乙太方界·合成台 v1 + 工作台 3×3 v1 + 熔爐 v1（ROADMAP 658 / 665 / 666）。
 //!
 //! **玩家有感**：挖了木頭可合成更工整的木板（2×2），合出工作台後放置到世界→
-//! 右鍵互動開 3×3 格→合成大量物品或混合配方——「採集→合成→建造」循環更深。
+//! 右鍵互動開 3×3 格→合成大量物品或混合配方；合出熔爐→放置→右鍵開冶煉面板→
+//! 把石頭冶煉成拋光石（獨特建材）——「採集→合成→冶煉→建造」循環更深。
 //!
-//! **純邏輯層**：`Recipe` 表 + `find_recipe` + `find_workbench_recipe` + `find_any_recipe` +
-//! `can_craft`，確定性、無副作用、全可測。
+//! **純邏輯層**：`Recipe` 表 + `find_recipe` + `find_workbench_recipe` +
+//! `find_furnace_recipe` + `find_any_recipe` + `can_craft`，確定性、無副作用、全可測。
 //! 鎖 / WS / IO 全在 `voxel_ws.rs`，本模組零 async、零鎖、零 IO。
 //!
 //! **成本鐵律**：零 LLM、零 migration、零新協議欄位（WS "craft" 訊息 additive）。
@@ -109,6 +110,41 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
         output_block: 11,
         output_count: 8,
     },
+    Recipe {
+        id: "furnace_wb",
+        name_zh: "熔爐",
+        inputs: &[(3, 8)],          // 8 石頭 → 1 熔爐（需工作台大格）
+        output_block: 16,
+        output_count: 1,
+    },
+];
+
+/// 熔爐冶煉配方（需放置熔爐方塊後右鍵開啟冶煉面板才能使用）。
+///
+/// 冶煉概念：把原始方塊「精煉」成獨特材料，或比工作台更高效地產出建材。
+/// Block id：Stone=3, Sand=4, Glass=10, SmoothStone=17。
+pub const FURNACE_RECIPES: &[Recipe] = &[
+    Recipe {
+        id: "smelt_stone",
+        name_zh: "拋光石",
+        inputs: &[(3, 3)],          // 3 石頭 → 3 拋光石（唯一能得到拋光石的途徑）
+        output_block: 17,
+        output_count: 3,
+    },
+    Recipe {
+        id: "smelt_glass",
+        name_zh: "玻璃（冶煉）",
+        inputs: &[(4, 2)],          // 2 沙 → 3 玻璃（比背包配方 2沙→1玻璃 更高效）
+        output_block: 10,
+        output_count: 3,
+    },
+    Recipe {
+        id: "smelt_brick",
+        name_zh: "石磚（冶煉）",
+        inputs: &[(3, 2)],          // 2 石頭 → 4 石磚（比背包配方 2石→2磚 雙倍產量）
+        output_block: 9,
+        output_count: 4,
+    },
 ];
 
 /// 依 id 找背包配方（2×2，找不到回 None）。
@@ -121,10 +157,17 @@ pub fn find_workbench_recipe(id: &str) -> Option<&'static Recipe> {
     WORKBENCH_RECIPES.iter().find(|r| r.id == id)
 }
 
-/// 依 id 搜尋兩套配方表，背包優先（找不到回 None）。
+/// 依 id 找熔爐冶煉配方（找不到回 None）。
+pub fn find_furnace_recipe(id: &str) -> Option<&'static Recipe> {
+    FURNACE_RECIPES.iter().find(|r| r.id == id)
+}
+
+/// 依 id 搜尋三套配方表，背包 → 工作台 → 熔爐（找不到回 None）。
 /// WS Craft handler 用——前端送 recipe_id，後端統一查這裡。
 pub fn find_any_recipe(id: &str) -> Option<&'static Recipe> {
-    find_recipe(id).or_else(|| find_workbench_recipe(id))
+    find_recipe(id)
+        .or_else(|| find_workbench_recipe(id))
+        .or_else(|| find_furnace_recipe(id))
 }
 
 /// 玩家是否有足夠材料合成指定配方（純讀、不改狀態、可在鎖外呼叫）。
@@ -196,7 +239,7 @@ mod tests {
 
     #[test]
     fn all_recipes_have_nonempty_inputs() {
-        for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()) {
+        for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(!r.inputs.is_empty(), "配方「{}」應有配料", r.id);
             for &(_, cnt) in r.inputs {
                 assert!(cnt > 0, "配方「{}」配料數量應 > 0", r.id);
@@ -212,14 +255,23 @@ mod tests {
             assert!(ok, "配方「{}」產出 id={} 應在 8~11 或 15", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
-        // 3×3 配方產出 id 應在合成台範圍
+        // 3×3 工作台配方產出 id（8~17）
         for r in WORKBENCH_RECIPES {
             assert!(
-                r.output_block >= 8 && r.output_block <= 15,
+                r.output_block >= 8 && r.output_block <= 17,
                 "工作台配方「{}」產出 id={} 超出範圍",
                 r.id, r.output_block
             );
             assert!(r.output_count > 0, "工作台配方「{}」產出數量應 > 0", r.id);
+        }
+        // 熔爐冶煉配方產出 id（8~17）
+        for r in FURNACE_RECIPES {
+            assert!(
+                r.output_block >= 8 && r.output_block <= 17,
+                "熔爐配方「{}」產出 id={} 超出範圍",
+                r.id, r.output_block
+            );
+            assert!(r.output_count > 0, "熔爐配方「{}」產出數量應 > 0", r.id);
         }
     }
 
@@ -250,9 +302,66 @@ mod tests {
     #[test]
     fn cannot_craft_with_zero_materials() {
         let store = InvStore::default();
-        for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()) {
+        for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(!can_craft(r, &store, "旅人"), "零材料不能合成「{}」", r.id);
         }
+    }
+
+    #[test]
+    fn find_furnace_recipe_finds_all_smelt_recipes() {
+        assert!(find_furnace_recipe("smelt_stone").is_some());
+        assert!(find_furnace_recipe("smelt_glass").is_some());
+        assert!(find_furnace_recipe("smelt_brick").is_some());
+        assert!(find_furnace_recipe("unknown").is_none());
+        // 熔爐配方不在背包 / 工作台表
+        assert!(find_recipe("smelt_stone").is_none());
+        assert!(find_workbench_recipe("smelt_stone").is_none());
+    }
+
+    #[test]
+    fn find_any_recipe_finds_furnace_recipes() {
+        assert!(find_any_recipe("smelt_stone").is_some());
+        assert!(find_any_recipe("smelt_glass").is_some());
+        assert!(find_any_recipe("smelt_brick").is_some());
+        // 熔爐工作台配方也在 find_any_recipe 範圍
+        assert!(find_any_recipe("furnace_wb").is_some());
+    }
+
+    #[test]
+    fn smelt_stone_outputs_smooth_stone() {
+        let r = find_furnace_recipe("smelt_stone").unwrap();
+        assert_eq!(r.output_block, 17, "拋光石 id 應為 17（SmoothStone）");
+        assert_eq!(r.output_count, 3);
+        assert_eq!(r.inputs, &[(3, 3)], "需 3 石頭");
+    }
+
+    #[test]
+    fn smelt_glass_better_yield_than_bag() {
+        // 熔爐 2沙→3玻璃（1.5:1）> 背包 2沙→1玻璃（0.5:1）
+        let furnace = find_furnace_recipe("smelt_glass").unwrap();
+        let bag = find_recipe("glass").unwrap();
+        assert_eq!(furnace.inputs, &[(4, 2)]);
+        assert_eq!(bag.inputs, &[(4, 2)]);
+        assert!(furnace.output_count > bag.output_count,
+            "熔爐玻璃產量 {} 應 > 背包 {}", furnace.output_count, bag.output_count);
+    }
+
+    #[test]
+    fn smelt_brick_double_yield_vs_bag() {
+        // 熔爐 2石→4磚 > 背包 2石→2磚
+        let furnace = find_furnace_recipe("smelt_brick").unwrap();
+        let bag = find_recipe("stone_brick").unwrap();
+        assert_eq!(furnace.inputs[0].1, bag.inputs[0].1, "消耗相同石頭數");
+        assert!(furnace.output_count > bag.output_count,
+            "熔爐磚產量 {} 應 > 背包 {}", furnace.output_count, bag.output_count);
+    }
+
+    #[test]
+    fn furnace_wb_recipe_in_workbench_table() {
+        let r = find_workbench_recipe("furnace_wb").unwrap();
+        assert_eq!(r.output_block, 16, "熔爐 id 應為 16（Furnace）");
+        assert_eq!(r.output_count, 1);
+        assert_eq!(r.inputs, &[(3, 8)], "熔爐需 8 石頭");
     }
 
     #[test]
@@ -263,7 +372,7 @@ mod tests {
         store.give("旅人", 4, 10);  // Sand
         store.give("旅人", 2, 10);  // Dirt
         store.give("旅人", 8, 10);  // Plank（工作台 + stone_wood_mix 用）
-        for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()) {
+        for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);
         }
     }
