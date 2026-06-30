@@ -197,6 +197,69 @@ pub fn dry_ground_spawn(ox: i32, oz: i32) -> Body {
     Body::at(bx as f32 + 0.5, (bh + 2) as f32, bz as f32 + 0.5)
 }
 
+// ── 卡住偵測 + 脫困/送回（修：居民採集挖坑把自己卡住、爬不出來）──────────────────
+//
+// 玩家端有前端 depenetration（unstuckY），但居民是後端權威移動、沒有等價脫困。
+// 這裡補上：偵測「居民卡住」→ 先試往上脫困（埋在實心方塊裡時頂到地表），
+// 脫不了就送回家域出生地表（dry_ground_spawn 那套安全地表）。全是確定性純函式、可測。
+
+/// 連續「想動卻幾乎沒位移」累積多少秒視為卡住（觸發脫困/送回）。
+pub const STUCK_SECS: f32 = 6.0;
+/// 單 tick 水平位移小於此值視為「幾乎沒動」（搭配 trying_to_move 才算卡住，純歇息不算）。
+pub const STUCK_MOVE_EPS: f32 = 0.02;
+/// 往上脫困最多抬幾格找可站的地表空位（超過就改送回家）。
+pub const UNSTUCK_MAX_LIFT: i32 = 6;
+
+/// 一次脫困的結果（供呼叫端冒泡/記 feed/log）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rescue {
+    /// 埋在實心方塊裡 → 往上頂到最近地表空位（depenetration）。
+    LiftedUp,
+    /// 頂不出來、或卡在爬不出的坑裡 → 送回家域出生地表。
+    SentHome,
+}
+
+/// 更新「卡住計時」：居民正試圖移動（採集中或不在歇息）卻幾乎沒位移 → 累加 dt；
+/// 有在動、或本來就在原地歇息 → 歸零。純函式、可測。
+pub fn update_stuck_timer(prev: f32, moved_dist: f32, trying_to_move: bool, dt: f32) -> f32 {
+    if trying_to_move && moved_dist < STUCK_MOVE_EPS {
+        prev + dt
+    } else {
+        0.0
+    }
+}
+
+/// 嘗試把「埋在實心方塊裡」的居民往上頂到最近可站的地表（比照玩家 depenetration）。
+/// 一開始就沒重疊（沒被埋）→ 直接回 `true`（無需脫困）。
+/// 從目前腳底往上找最多 `max_lift` 格，第一個「整個身體不再重疊實心」的高度就站上去
+/// （vy 歸零、交給重力落穩）。`max_lift` 內都頂不出來 → 回 `false`（交給送回家）。
+pub fn try_unstuck_up(world: &WorldDelta, body: &mut Body, max_lift: i32) -> bool {
+    if !overlaps(world, body.x, body.y, body.z) {
+        return true;
+    }
+    let base = body.y.floor() as i32;
+    for up in 1..=max_lift {
+        let ny = (base + up) as f32;
+        if !overlaps(world, body.x, ny, body.z) {
+            body.y = ny;
+            body.vy = 0.0;
+            return true;
+        }
+    }
+    false
+}
+
+/// 脫困一位卡住的居民：① 若埋在實心方塊裡，先試往上頂到地表（LiftedUp）；
+/// ② 沒被埋（卡在爬不出的坑裡）或頂不出來 → 送回家域 (hx,hz) 的出生地表（SentHome）。
+/// 確定性、不碰鎖/IO（dry_ground_spawn 為純函式），守無鎖 await 鐵律。
+pub fn rescue_resident(world: &WorldDelta, body: &mut Body, hx: f32, hz: f32, max_lift: i32) -> Rescue {
+    if overlaps(world, body.x, body.y, body.z) && try_unstuck_up(world, body, max_lift) {
+        return Rescue::LiftedUp;
+    }
+    *body = dry_ground_spawn(hx.floor() as i32, hz.floor() as i32);
+    Rescue::SentHome
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,6 +426,86 @@ mod tests {
             let d = ((hx * hx + hz * hz) as f32).sqrt();
             assert!(d >= 50.0, "居民 {i} 家基準距原點應 ≥ 50 格：d={d}");
         }
+    }
+
+    // ── 卡住偵測 + 脫困/送回 ──────────────────────────────────────────────────
+
+    #[test]
+    fn stuck_timer_accumulates_when_trying_but_not_moving() {
+        let dt = 1.0 / 30.0;
+        // 想動卻幾乎沒位移 → 累加。
+        let t = update_stuck_timer(0.0, 0.0, true, dt);
+        assert!((t - dt).abs() < 1e-6);
+        // 連續累加數 tick。
+        let t2 = update_stuck_timer(t, 0.001, true, dt);
+        assert!(t2 > t);
+    }
+
+    #[test]
+    fn stuck_timer_resets_when_moving_or_resting() {
+        let dt = 1.0 / 30.0;
+        // 有在動（位移超過門檻）→ 歸零。
+        assert_eq!(update_stuck_timer(5.0, 0.5, true, dt), 0.0);
+        // 沒在試圖移動（原地歇息）→ 歸零（歇息不算卡住）。
+        assert_eq!(update_stuck_timer(5.0, 0.0, false, dt), 0.0);
+    }
+
+    #[test]
+    fn try_unstuck_up_noop_when_free() {
+        let world = WorldDelta::new();
+        let (x, z) = land_point();
+        let h = height_at(x, z);
+        // 站在地表上方（沒被埋）→ 不需脫困、位置不變。
+        let mut body = Body::at(x as f32 + 0.5, (h + 1) as f32, z as f32 + 0.5);
+        let y0 = body.y;
+        assert!(try_unstuck_up(&world, &mut body, UNSTUCK_MAX_LIFT));
+        assert_eq!(body.y, y0, "沒被埋不該移動");
+    }
+
+    #[test]
+    fn try_unstuck_up_lifts_buried_body() {
+        let world = WorldDelta::new();
+        let (x, z) = land_point();
+        let h = height_at(x, z);
+        // 腳底卡進地表方塊裡（y=h，身體與實心重疊）。
+        let mut body = Body::at(x as f32 + 0.5, h as f32, z as f32 + 0.5);
+        assert!(overlaps(&world, body.x, body.y, body.z), "前置：身體應卡在地裡");
+        assert!(try_unstuck_up(&world, &mut body, UNSTUCK_MAX_LIFT), "應頂得出來");
+        assert!(!overlaps(&world, body.x, body.y, body.z), "脫困後不應再重疊實心");
+    }
+
+    #[test]
+    fn rescue_buried_resident_lifts_up() {
+        let world = WorldDelta::new();
+        let (x, z) = land_point();
+        let h = height_at(x, z);
+        let mut body = Body::at(x as f32 + 0.5, h as f32, z as f32 + 0.5);
+        let r = rescue_resident(&world, &mut body, x as f32, z as f32, UNSTUCK_MAX_LIFT);
+        assert_eq!(r, Rescue::LiftedUp, "埋在地裡應往上脫困");
+        assert!(!overlaps(&world, body.x, body.y, body.z));
+    }
+
+    #[test]
+    fn rescue_pit_trapped_resident_sends_home() {
+        // 居民「沒被埋」但卡在爬不出的坑裡（站在坑底空氣中）→ 送回家域出生地表。
+        let mut world = WorldDelta::new();
+        let (x, z) = land_point();
+        let h = height_at(x, z);
+        // 在 (x,z) 周圍築一圈高牆，圍出一個爬不出的坑；居民站在坑底（地表上方、沒被埋）。
+        for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            for up in 1..=4 {
+                voxel::set_block(&mut world, x + dx, h + up, z + dz, Block::Stone);
+            }
+        }
+        let mut body = Body::at(x as f32 + 0.5, (h + 1) as f32, z as f32 + 0.5);
+        // 前置：身體本身沒卡進實心（站在坑底空氣裡）。
+        assert!(!overlaps(&world, body.x, body.y, body.z));
+        // 家域中心放在遠處平地（送回目標）。
+        let (hx, hz) = land_point();
+        let r = rescue_resident(&world, &mut body, hx as f32 + 50.0, hz as f32, UNSTUCK_MAX_LIFT);
+        assert_eq!(r, Rescue::SentHome, "坑裡爬不出應送回家");
+        // 送回後不卡在實心方塊裡。
+        assert!(!overlaps(&world, body.x, body.y, body.z));
     }
 
     #[test]

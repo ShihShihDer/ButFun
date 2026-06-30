@@ -180,6 +180,24 @@ pub fn within_gather_reach(rx: f32, rz: f32, tx: i32, tz: i32) -> bool {
     dx * dx + dz * dz <= GATHER_REACH * GATHER_REACH
 }
 
+/// 判斷「挖這塊會不會把自己困住」（修：居民採集別把自己挖坑卡住）。
+/// 給定居民腳底所在格 (fx,fy,fz) 與想挖的目標方塊 (tx,ty,tz)，回傳 `true`＝安全可挖。
+///
+/// 兩條保守規則（確定性、可測）：
+/// 1. **別挖自己站的那一柱**（tx==fx && tz==fz）：會抽掉腳下的地，居民直接掉進洞裡。
+/// 2. **別挖明顯低於腳底的方塊**（ty < fy-1）：挖低處＝把要走過去的地方掏成坑，
+///    一刀刀連起來就成了爬不出的大洞。只採「與腳同層或更高」的地表方塊
+///    （草皮／沙在表層最自然）——挖完該柱頂多留一個 1 格深的小坑，居民踏階即可爬出。
+pub fn safe_to_dig(fx: i32, fy: i32, fz: i32, tx: i32, ty: i32, tz: i32) -> bool {
+    if tx == fx && tz == fz {
+        return false;
+    }
+    if ty < fy - 1 {
+        return false;
+    }
+    true
+}
+
 /// 找某 (x,z) 柱的「地表方塊」：由高往低掃 effective_block，回最高一個實心方塊 (y, 型別)。
 /// 套 delta overlay → 別人挖過/蓋過也算數。全空（不該發生）回 None。
 fn surface_block(world: &WorldDelta, x: i32, z: i32) -> Option<(i32, Block)> {
@@ -202,6 +220,9 @@ pub fn find_nearest_resource(
     oz: i32,
     max_radius: i32,
 ) -> Option<(i32, i32, i32, GatherResource)> {
+    // 居民站立柱的地表頂 → 推估腳底層（fy），用來剔除「挖了會把自己困住」的目標
+    // （腳下那柱、明顯低於腳底的坑底）。找不到站立柱（不該發生）就不過濾、退回原行為。
+    let foot_fy = surface_block(world, ox, oz).map(|(y, _)| y + 1);
     for r in GATHER_MIN_RADIUS..=max_radius {
         for dx in -r..=r {
             for dz in -r..=r {
@@ -212,7 +233,10 @@ pub fn find_nearest_resource(
                 let (x, z) = (ox + dx, oz + dz);
                 if let Some((y, b)) = surface_block(world, x, z) {
                     if let Some(res) = GatherResource::from_block(b) {
-                        return Some((x, y, z, res));
+                        // 只挑「挖了不會把自己困住」的地表（防採集挖坑卡死）。
+                        if foot_fy.map_or(true, |fy| safe_to_dig(ox, fy, oz, x, y, z)) {
+                            return Some((x, y, z, res));
+                        }
                     }
                 }
             }
@@ -505,6 +529,53 @@ mod tests {
         let (_, _, _, res) = find_nearest_resource(&w2, ox, oz, GATHER_MAX_RADIUS).unwrap();
         // 至少能找到某個可採資源（不 panic、有結果）。
         assert!(!res.display_name().is_empty());
+    }
+
+    // ── safe_to_dig：採集別把自己挖坑卡住 ────────────────────────────────────
+
+    #[test]
+    fn safe_to_dig_rejects_own_column() {
+        // 腳下那一柱（同 x,z）→ 不可挖（會抽掉腳下的地）。
+        assert!(!safe_to_dig(10, 30, 10, 10, 29, 10));
+        assert!(!safe_to_dig(10, 30, 10, 10, 30, 10));
+    }
+
+    #[test]
+    fn safe_to_dig_rejects_blocks_below_feet() {
+        // 目標明顯低於腳底（ty < fy-1）→ 挖坑，不可挖。
+        assert!(!safe_to_dig(10, 30, 10, 12, 28, 10)); // 低 2 格
+        assert!(!safe_to_dig(10, 30, 10, 12, 25, 10)); // 低 5 格（坑底）
+    }
+
+    #[test]
+    fn safe_to_dig_allows_same_level_surface() {
+        // 平地：腳底 fy，旁邊一柱地表頂在 fy-1（站立柱頂同層）→ 可挖（頂多留 1 格小坑）。
+        assert!(safe_to_dig(10, 30, 10, 12, 29, 10));
+        // 旁邊一柱比腳高（台階上方）→ 可挖，不會把自己困住。
+        assert!(safe_to_dig(10, 30, 10, 12, 30, 10));
+        assert!(safe_to_dig(10, 30, 10, 12, 31, 10));
+    }
+
+    #[test]
+    fn find_nearest_resource_skips_pit_below() {
+        // 在站立柱旁挖一個深坑（地表掏到很低）→ find 不該回那個坑底（safe_to_dig 擋下）。
+        let world = WorldDelta::new();
+        let (ox, oz) = land_point();
+        // 在最小半徑環上挑一柱，把它地表往下掏 4 格成坑。
+        let (px, pz) = (ox + GATHER_MIN_RADIUS, oz);
+        let h = height_at(px, pz);
+        let mut w2 = world.clone();
+        for dy in 0..4 {
+            voxel::set_block(&mut w2, px, h - dy, pz, Block::Air);
+        }
+        // find 回的目標（若有）必不是那個被掏成坑的柱（其地表已遠低於腳底）。
+        if let Some((x, y, z, _)) = find_nearest_resource(&w2, ox, oz, GATHER_MAX_RADIUS) {
+            let foot_fy = height_at(ox, oz) + 1;
+            assert!(
+                safe_to_dig(ox, foot_fy, oz, x, y, z),
+                "find 回的目標應通過 safe_to_dig（不挖坑底）：({x},{y},{z}) foot={foot_fy}"
+            );
+        }
     }
 
     // ── GoalStore：不重複的記憶 ──────────────────────────────────────────────
