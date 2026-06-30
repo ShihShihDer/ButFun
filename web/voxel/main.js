@@ -301,8 +301,8 @@ const bodyMat = new THREE.MeshLambertMaterial({ color: 0xffcf6b });
 const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
 scene.add(bodyMesh);
 
-// 其他玩家
-const others = new Map(); // id -> Mesh
+// 其他玩家：id -> { mesh, bubble, lastSay }（bubble = 頭上對話泡泡，embodied 靠近說話 v1）
+const others = new Map();
 const otherMat = new THREE.MeshLambertMaterial({ color: 0x8fd0ff });
 
 // ── 乙太方界 AI 居民（切片③）────────────────────────────────────────────────
@@ -357,6 +357,23 @@ function setSpriteText(sprite, text, bubble) {
   if (sprite.material.map) sprite.material.map.dispose();
   sprite.material.map = fresh.material.map;
   sprite.material.needsUpdate = true;
+}
+
+// ── embodied 靠近說話 v1：自己頭上的對話泡泡（本地驅動，說話立即冒、計時消失）─────
+// 不蓋住畫面、跟著角色在 3D 世界裡（「話活在世界裡」）。別人看到的版本走 players 廣播的 say。
+const MY_BUBBLE_SECS = 6;
+const myBubble = makeTextSprite("", true);
+myBubble.visible = false;
+scene.add(myBubble);
+let myBubbleTimer = 0;
+let myBubbleText = "";
+function showMyBubble(text) {
+  const t = (text || "").trim();
+  if (!t) return;
+  myBubbleText = t.slice(0, 60);
+  setSpriteText(myBubble, myBubbleText, true);
+  myBubble.visible = true;
+  myBubbleTimer = MY_BUBBLE_SECS;
 }
 
 // 居民「夢想副標籤」sprite 工廠——名牌之下、小字 dim 暖色，顯示玩家種下的心願。
@@ -591,16 +608,33 @@ function openChat(rid, name) {
   chatRid = rid;
   chatTitleEl.textContent = name || "居民";
   chatEl.style.display = "flex";
+  // 開定向對話 modal 時收起常駐說話列，避免兩者重疊。
+  const sb = document.getElementById("speakBar");
+  if (sb) sb.style.display = "none";
   updateGiftBtn(); // 贈禮 v1：更新按鈕顯示哪件物品
 }
-function closeChat() { if (chatEl) chatEl.style.display = "none"; }
+function closeChat() {
+  if (chatEl) chatEl.style.display = "none";
+  const sb = document.getElementById("speakBar");
+  if (sb) sb.style.display = "flex"; // 恢復常駐說話列
+}
 
-// 送一句話給目前對話的居民。
+// 送一句話給目前對話的居民（指定對象＝點居民 / 走近面對）。
 function sendTalk(text) {
   const t = (text || "").trim();
   if (!t || !chatRid || !wsReady) return;
   ws.send(JSON.stringify({ t: "talk", resident_id: chatRid, text: t.slice(0, 200) }));
   appendMsg("me", "你：" + t);
+  showMyBubble(t); // embodied：自己頭上也冒泡（話活在世界裡）
+}
+
+// embodied 靠近說話 v1：範圍「說話」——不指定居民，伺服器挑半徑內最近/面對者回話，
+// 其餘附近居民旁聽（進記憶、偶爾搭話）。不開 modal，回覆走世界裡的頭上泡泡。
+function sendSpeak(text) {
+  const t = (text || "").trim();
+  if (!t || !wsReady) return;
+  ws.send(JSON.stringify({ t: "talk", text: t.slice(0, 200) })); // 無 resident_id = 範圍說話
+  showMyBubble(t); // 自己頭上立即冒泡（零延遲、不等伺服器來回）
 }
 
 if (chatEl) {
@@ -622,6 +656,22 @@ if (chatEl) {
   // 贈禮鈕：送背包最多的一件給當前居民（ROADMAP 660）。
   const giftBtnEl = document.getElementById("chatGift");
   if (giftBtnEl) giftBtnEl.addEventListener("click", () => { if (chatRid) trySendGift(); });
+}
+
+// ── 常駐說話輸入列（embodied 靠近說話 v1）─────────────────────────────────────
+// 底部常駐輸入列：打字 → 範圍「說話」（不必先點居民）。手機/直式友善、不開 modal。
+const speakInputEl = document.getElementById("speakInput");
+const speakSendEl = document.getElementById("speakSend");
+if (speakInputEl && speakSendEl) {
+  const fireSpeak = () => {
+    sendSpeak(speakInputEl.value);
+    speakInputEl.value = "";
+    speakInputEl.blur(); // 送完收鍵盤焦點，讓 WASD 等遊戲鍵恢復作用
+  };
+  speakSendEl.addEventListener("click", fireSpeak);
+  speakInputEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { fireSpeak(); e.preventDefault(); }
+  });
 }
 
 // ── 居民贈禮 v1（ROADMAP 660）────────────────────────────────────────────────
@@ -1253,12 +1303,28 @@ function connect() {
       for (const p of m.players) {
         if (p.id === myId) continue;
         seen.add(p.id);
-        let mesh = others.get(p.id);
-        if (!mesh) { mesh = new THREE.Mesh(bodyGeo, otherMat); scene.add(mesh); others.set(p.id, mesh); }
-        mesh.position.set(p.x, p.y + PH / 2, p.z);
-        mesh.rotation.y = p.yaw || 0;
+        let ent = others.get(p.id);
+        if (!ent) {
+          const mesh = new THREE.Mesh(bodyGeo, otherMat); scene.add(mesh);
+          // 頭上對話泡泡（child of mesh，sprite 永遠面向鏡頭、不受 mesh 旋轉影響）。
+          const bubble = makeTextSprite("", true);
+          bubble.position.y = PH / 2 + 1.7; // mesh 原點在身體中心，泡泡浮到頭頂上方
+          bubble.visible = false;
+          mesh.add(bubble);
+          ent = { mesh, bubble, lastSay: "" };
+          others.set(p.id, ent);
+        }
+        ent.mesh.position.set(p.x, p.y + PH / 2, p.z);
+        ent.mesh.rotation.y = p.yaw || 0;
+        // embodied：別人說話 → 頭上冒泡（你走過會「聽到」別人在聊，世界有人聲）。
+        const say = p.say || "";
+        if (say !== ent.lastSay) {
+          ent.lastSay = say;
+          if (say) { setSpriteText(ent.bubble, say, true); ent.bubble.visible = true; }
+          else { ent.bubble.visible = false; }
+        }
       }
-      for (const [id, mesh] of others) if (!seen.has(id)) { scene.remove(mesh); others.delete(id); }
+      for (const [id, ent] of others) if (!seen.has(id)) { scene.remove(ent.mesh); others.delete(id); }
       // 乙太方界 AI 居民（與玩家分開的陣列）：位置/名字/說的話。
       if (m.residents) updateResidents(m.residents);
       // 晝夜循環 v1：伺服器每幀帶 time_of_day(0.0–1.0)，前端據此更新天空/光照。
@@ -1487,6 +1553,13 @@ function update(dt) {
   // 玩家身體 + 朝向（用 visualY 避免角色瞬跳一格）
   bodyMesh.position.set(player.x, visualY + PH / 2, player.z);
   if (dir.lengthSq() > 1e-4) bodyMesh.rotation.y = Math.atan2(dir.x, dir.z);
+
+  // embodied 靠近說話 v1：自己頭上的對話泡泡跟隨角色 + 倒數消失（話活在世界裡）。
+  if (myBubbleTimer > 0) {
+    myBubbleTimer -= dt;
+    if (myBubbleTimer <= 0) { myBubble.visible = false; myBubbleText = ""; }
+  }
+  if (myBubble.visible) myBubble.position.set(player.x, visualY + PH + 0.85, player.z);
 
   // 第三人稱鏡頭跟隨（用 visualY 讓鏡頭也跟著平滑升，不突然跳）
   const lookTarget = new THREE.Vector3(player.x, visualY + 1.3, player.z);
@@ -1979,6 +2052,10 @@ window.__voxel = {
   },
   get lastTalkReply() { return lastTalkReply; },
   closeChat() { closeChat(); },
+  // ── embodied 靠近說話 v1 QA 用：範圍說話 + 讀自己頭上泡泡狀態 ──
+  speak(text) { sendSpeak(text); return myBubbleText; },
+  get myBubbleText() { return myBubble.visible ? myBubbleText : ""; },
+  get myBubbleVisible() { return myBubble.visible; },
   // ── 日記 QA 用（ROADMAP 650）──
   openDiary(rid) { return openDiary(rid); },
   closeDiary() { closeDiary(); },

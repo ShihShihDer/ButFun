@@ -49,7 +49,7 @@ const CY_MAX: i32 = 1;
 /// 安全上限：單次 req 最多回幾個 chunk（擋惡意客戶端狂要）。
 const MAX_REQ_CHUNKS: usize = 8;
 
-/// 一名 voxel 玩家的權威狀態（位置 + 朝向）。
+/// 一名 voxel 玩家的權威狀態（位置 + 朝向 + 當前冒泡的話）。
 #[derive(Clone, Debug, Serialize)]
 struct VoxelPlayer {
     id: Uuid,
@@ -58,6 +58,12 @@ struct VoxelPlayer {
     y: f32,
     z: f32,
     yaw: f32,
+    /// 此刻玩家頭上冒泡的話（embodied 靠近說話 v1）：空 = 不冒泡。廣播給別人看到你在說話。
+    #[serde(default)]
+    say: String,
+    /// 冒泡剩餘秒數（不廣播；伺服器 tick 倒數，歸零清空 say）。
+    #[serde(skip)]
+    say_timer: f32,
 }
 
 // ── 乙太方界 AI 居民（切片③）────────────────────────────────────────────────
@@ -79,9 +85,13 @@ const SAY_SECS: f32 = 6.0;
 /// 居民 tick 頻率（秒）。10Hz：移動平滑、頻寬/CPU 都極小。
 const RESIDENT_DT: f32 = 0.1;
 
-// ── 玩家↔居民對話（切片：點居民聊天）──────────────────────────────────────────
+// ── 玩家↔居民對話（切片：點居民聊天／embodied 靠近說話）────────────────────────
 /// 玩家送來的單句對話長度上限（字元）。超過就截斷，擋惡意灌爆 prompt。
 const TALK_MAX_CHARS: usize = 200;
+/// 玩家頭上對話泡泡顯示秒數（embodied 靠近說話 v1）：和居民冒泡同節奏。
+const PLAYER_SAY_SECS: f32 = 6.0;
+/// 玩家對話泡泡的最大字元數（截短避免撐爆世界裡的泡泡貼圖）。
+const PLAYER_SAY_MAX_CHARS: usize = 60;
 /// 居民回覆長度上限（字元）：避免 LLM 偶爾長篇大論塞爆前端對話框。
 const TALK_REPLY_MAX_CHARS: usize = 300;
 /// 每條連線的對話冷卻（毫秒）：防單人狂送吃爆 LLM 額度（比照 npc_chat 的 per-player 冷卻）。
@@ -136,6 +146,9 @@ struct VoxelResident {
     build_tick: f32,
     /// 記憶回想泡泡冷卻（秒）：> 0 表示最近剛回想過，尚不可再觸發（稀少才有感）。
     recall_cooldown: f32,
+    /// 旁聽搭話冷卻（秒，embodied 靠近說話 v1）：> 0 表示最近因旁聽搭過一句，
+    /// 尚不可再搭（防同一位連發、對話風暴）。零 LLM。
+    overhear_cooldown: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -302,6 +315,8 @@ fn init_residents() -> Vec<VoxelResident> {
             build_tick: BUILD_INTERVAL_SECS * 0.5 + i as f32 * (BUILD_INTERVAL_SECS / 4.0),
             // 錯開首次回想冷卻，避免啟動後短時間全員同時觸發（前 60 秒不回想）。
             recall_cooldown: 60.0 + i as f32 * 30.0,
+            // 旁聽搭話冷卻：初始 0，可立即因旁聽搭話（之後由 should_chime_in 套冷卻）。
+            overhear_cooldown: 0.0,
         });
     }
     out
@@ -436,9 +451,16 @@ enum ClientMsg {
     Break { x: i32, y: i32, z: i32 },
     /// 放置方塊：放置世界座標 + 方塊型別 id（對齊 Block enum）。伺服器驗證後套用並廣播。
     Place { x: i32, y: i32, z: i32, b: u8 },
-    /// 跟居民對話：指定居民 id + 玩家說的話。伺服器以該居民人設呼叫 LLM 對話路徑，
-    /// 回 `talk`（單播）給玩家、並冒泡讓附近人看到。
-    Talk { resident_id: String, text: String },
+    /// 跟居民對話（embodied 靠近說話 v1）：
+    /// - `resident_id = Some(id)`：指定對象（點居民 / 走近面對）——舊行為，向後相容。
+    /// - `resident_id = None`：範圍「說話」——伺服器挑半徑內最近/面對者當被指名者回話，
+    ///   其餘範圍內的居民旁聽（進記憶、零 LLM，偶爾依個性搭一句）。
+    /// 回 `talk`（單播）給玩家、並由被指名者頭上冒泡讓附近人看到。
+    Talk {
+        #[serde(default)]
+        resident_id: Option<String>,
+        text: String,
+    },
     /// 合成台 v1：用配料合成新型方塊（ROADMAP 658）。`recipe_id` 對齊 voxel_craft::Recipe.id。
     Craft { recipe_id: String },
     /// 種田 v1：在農田土上種下種子（ROADMAP 659）。
@@ -588,6 +610,8 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 y: sy,
                 z: sz,
                 yaw: 0.0,
+                say: String::new(),
+                say_timer: 0.0,
             },
         );
     }
@@ -836,193 +860,221 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         continue;
                     }
                 }
-                // 3) 短鎖取居民人設快照 → drop（ResidentPersona 是 Copy，name 是 'static）。
-                //    絕不持鎖 await，比照 spawn_resident_think / TalkToNpc 的鎖紀律。
-                let snap: Option<(&'static str, ResidentPersona)> = {
-                    let residents = hub().residents.read().unwrap();
-                    residents
-                        .iter()
-                        .find(|r| r.id == resident_id)
-                        .map(|r| (r.name, r.persona))
-                }; // 讀鎖在此釋放
-                let Some((rname, rpersona)) = snap else {
-                    continue; // 沒這位居民 → 忽略
-                };
                 last_talk = Some(now);
-                // 3b) 玩家身份鍵：登入者為帳號名（穩定、跨 session、換訪客名也認得你），
-                //     訪客為 join 顯示名。`name` 已在入場時由 resolve_identity 綁定。
+                // 身份鍵：登入者為帳號名（穩定、跨 session、換訪客名也認得你），訪客為 join 顯示名。
+                // `name` 已在入場時由 resolve_identity 綁定。
                 let player_key = name.clone();
-                // 3c) 短鎖讀記憶 → 組「脈絡區塊」（近期對話 + 關於這位玩家的長期記憶），
-                //     立刻 drop 鎖、產出 owned String 帶進無鎖 async task → 居民「記得你」。
-                let context = {
-                    let mem = hub().memory.read().unwrap();
-                    let history = mem.recent_dialogue(&player_key, &resident_id);
-                    let memories = mem.recall(&resident_id, &player_key, vmem::RECALL_LIMIT);
-                    vmem::build_context_block(&history, &memories, &player_key)
-                }; // 記憶讀鎖在此釋放（絕不持鎖 await）
-                // 3d) 短鎖讀居民當前心願 → drop（帶進 prompt 讓居民「帶著夢想說話」）。
-                let current_desire: Option<String> = {
-                    let des = hub().desires.read().unwrap();
-                    des.get_desire(&resident_id).map(|d| d.desire.clone())
-                }; // 心願讀鎖在此釋放
 
-                // 念頭播種 v1：在 spawn 前預計算（clean/resident_id 即將被 move）。
-                // 玩家對居民 A 說話時，附近居民 B/C/D 若戳中個性 → 冒反應泡泡 + 接收念頭。
-                // 全程零 LLM；三把鎖各自短取即釋，絕不巢狀、絕不持鎖 await。
-                let overhear_text = clean.clone();
-                let overhear_player = player_key.clone();
-                let addressed_rid_clone = resident_id.clone();
-                // 短鎖①：玩家位置
-                let player_pos_opt: Option<(f32, f32)> = {
+                // 3) embodied 靠近說話 v1：玩家自己頭上先冒泡（不論有沒有人被指名）→ 話活在世界裡。
+                //    短鎖 players 寫，設 say + 計時；步驟 8 的 broadcast_players 立即推給所有人。
+                {
+                    let mut players = hub().players.write().unwrap();
+                    if let Some(p) = players.get_mut(&my_id) {
+                        p.say = clean.chars().take(PLAYER_SAY_MAX_CHARS).collect();
+                        p.say_timer = PLAYER_SAY_SECS;
+                    }
+                } // players 寫鎖釋放
+
+                // 4) 短鎖快照玩家位置 + 朝向（指名選擇與旁聽範圍都要）→ drop。
+                let player_snap: Option<(f32, f32, f32)> = {
                     let players = hub().players.read().unwrap();
-                    players.get(&my_id).map(|p| (p.x, p.z))
+                    players.get(&my_id).map(|p| (p.x, p.z, p.yaw))
                 }; // players 讀鎖釋放
-                // 短鎖②：居民快照（排除正在對話的那位）
+                // 短鎖快照所有居民（id, name, persona, x, z）→ drop（絕不持鎖 await）。
                 let res_snaps: Vec<(String, &'static str, ResidentPersona, f32, f32)> = {
                     let res = hub().residents.read().unwrap();
                     res.iter()
-                        .filter(|r| r.id != addressed_rid_clone)
                         .map(|r| (r.id.clone(), r.name, r.persona, r.body.x, r.body.z))
                         .collect()
                 }; // residents 讀鎖釋放
-                // 短鎖③：哪些居民已有心願（不重複播種）
-                let has_desire_ids: Vec<String> = {
-                    let des = hub().desires.read().unwrap();
-                    res_snaps
+
+                // 5) 決定「被指名」回話的居民（純函式、零鎖）：
+                //    - 顯式 resident_id（點居民 / 走近面對）→ 找該居民（保留舊行為，不受半徑限制）。
+                //    - 範圍說話（None）→ 半徑內最近/面對者（vh::pick_addressed），半徑內無人 → 無人回話。
+                let addressed: Option<(String, &'static str, ResidentPersona)> = match &resident_id {
+                    Some(rid) => res_snaps
                         .iter()
-                        .filter(|(rid, ..)| des.get_desire(rid).is_some())
-                        .map(|(rid, ..)| rid.clone())
-                        .collect()
-                }; // desires 讀鎖釋放
-                // 純函式：按距離 + 個性篩選（零 LLM）
-                let overhear_targets: Vec<(String, &'static str, ResidentPersona, bool)> =
-                    match player_pos_opt {
-                        None => Vec::new(),
-                        Some((px, pz)) => res_snaps
-                            .into_iter()
-                            .filter(|(_, _, persona, rx, rz)| {
-                                let dx = rx - px;
-                                let dz = rz - pz;
-                                dx * dx + dz * dz
-                                    <= vh::OVERHEAR_RADIUS * vh::OVERHEAR_RADIUS
-                                    && vh::speech_fits_persona(&overhear_text, *persona)
+                        .find(|(id, ..)| id == rid)
+                        .map(|(id, n, p, ..)| (id.clone(), *n, *p)),
+                    None => match player_snap {
+                        Some((px, pz, yaw)) => {
+                            let positions: Vec<(f32, f32)> =
+                                res_snaps.iter().map(|(_, _, _, x, z)| (*x, *z)).collect();
+                            vh::pick_addressed(px, pz, yaw, &positions, vh::OVERHEAR_RADIUS).map(|i| {
+                                let (id, n, p, ..) = &res_snaps[i];
+                                (id.clone(), *n, *p)
                             })
-                            .map(|(rid, rname, persona, _, _)| {
-                                let has_des = has_desire_ids.contains(&rid);
-                                (rid, rname, persona, has_des)
-                            })
-                            .collect(),
-                    };
+                        }
+                        None => None,
+                    },
+                };
+                let addressed_id: Option<String> = addressed.as_ref().map(|(id, ..)| id.clone());
 
-                // 4a) 立即送「思考中」佔位 → 前端用 `thinking:true` 顯示動畫指示器，
-                //     不當成一般回覆氣泡顯示，避免「居民只回 …」的誤解。
-                //     此訊息為私聊（只送這位玩家），不走 AgentBus 冒泡。
-                let ack = serde_json::json!({
-                    "t": "talk",
-                    "resident_id": &resident_id,
-                    "name": rname,
-                    "reply": "…",
-                    "thinking": true,  // 前端判斷旗標：顯示動畫指示器而非一般氣泡
-                })
-                .to_string();
-                let _ = out_tx.send(Message::Text(ack)).await;
-
-                // 4b) 無鎖 async task：呼叫快速 LLM 路徑（每 tier 5-8 秒逾時，最差 ~23 秒）
-                //     取代舊的 raw_llm_call（每 tier 最多 15-20 秒，Cerebras+Gemini 掛著時合計 35 秒）。
-                //     取得回覆後單播給這位玩家，並投 AgentBus 讓居民冒泡（附近人看得到）。
-                let reply_tx = out_tx.clone();
-                tokio::spawn(async move {
-                    // 把「脈絡區塊」附到人設後 → 居民帶著記憶/對話歷史/心願回話。
-                    let base_sys = resident_talk_system_prompt(rname, rpersona, current_desire.as_deref());
-                    let sys = if context.is_empty() {
-                        base_sys
-                    } else {
-                        format!("{base_sys}\n\n{context}")
-                    };
-                    // raw_llm_call_fast：每 tier 縮短逾時；外層再加 TALK_LLM_TIMEOUT_SECS 安全網。
-                    let reply: String = match tokio::time::timeout(
-                        Duration::from_secs(TALK_LLM_TIMEOUT_SECS),
-                        crate::npc_chat::raw_llm_call_fast(&sys, &clean),
-                    )
-                    .await
-                    {
-                        Ok(Some(t)) => t.chars().take(TALK_REPLY_MAX_CHARS).collect(),
-                        _ => resident_canned_reply(rname), // 逾時 / LLM 未啟用 / 全失敗 → 罐頭後備
-                    };
-                    let msg = serde_json::json!({
+                // 6) 被指名者 → 走既有 LLM 對話路徑（記憶/心願/思考中佔位/罐頭後備、世界冒泡）。
+                if let Some((addr_id, rname, rpersona)) = addressed.clone() {
+                    // 6a) 短鎖讀記憶 → 組脈絡區塊（近期對話 + 關於這位玩家的長期記憶）→ drop。
+                    let context = {
+                        let mem = hub().memory.read().unwrap();
+                        let history = mem.recent_dialogue(&player_key, &addr_id);
+                        let memories = mem.recall(&addr_id, &player_key, vmem::RECALL_LIMIT);
+                        vmem::build_context_block(&history, &memories, &player_key)
+                    }; // 記憶讀鎖在此釋放
+                    // 6b) 短鎖讀居民當前心願 → drop（帶進 prompt 讓居民「帶著夢想說話」）。
+                    let current_desire: Option<String> = {
+                        let des = hub().desires.read().unwrap();
+                        des.get_desire(&addr_id).map(|d| d.desire.clone())
+                    }; // 心願讀鎖在此釋放
+                    // 6c) 立即送「思考中」佔位（私聊單播，不走 AgentBus 冒泡）。
+                    let ack = serde_json::json!({
                         "t": "talk",
-                        "resident_id": resident_id,
+                        "resident_id": &addr_id,
                         "name": rname,
-                        "reply": reply,
+                        "reply": "…",
+                        "thinking": true,
                     })
                     .to_string();
-                    let _ = reply_tx.send(Message::Text(msg)).await;
+                    let _ = out_tx.send(Message::Text(ack)).await;
 
-                    // 記憶寫入（短鎖、不 await）：
-                    // 1) 短期對話歷史記一輪 → 下一句對話帶得上脈絡（同段對話連貫）。
-                    // 2) 規則摘要這次互動 → 存進該居民的長期記憶 + 落地 jsonl（重啟後仍記得）。
-                    let new_memory = {
-                        let mut mem = hub().memory.write().unwrap();
-                        mem.record_turn(&player_key, &resident_id, &clean, &reply);
-                        vmem::summarize_exchange(&player_key, &clean)
-                            .map(|summary| mem.add_memory(&resident_id, &player_key, &summary))
-                    }; // 記憶寫鎖在此釋放
-                    if let Some(entry) = new_memory {
-                        // append-only 小檔寫（同步、不持鎖）：絕不覆寫/刪除既有記憶。
-                        vmem::append_memory(&entry);
-                    }
-                    // 心願萃取（記憶驅動行為 v1）：若居民的 LLM 回覆中浮現「我想…」等心願模式，
-                    // 更新居民的當前心願 → 後續思考與對話都帶著這個夢想（記憶驅動行為）。
-                    // 規則擷取：零 LLM 成本、確定性、可測。
-                    if let Some(desire_text) = vdes::extract_desire(&reply) {
-                        let new_desire = {
-                            let mut des = hub().desires.write().unwrap();
-                            des.set_desire(&resident_id, &desire_text, &player_key)
-                        }; // 心願寫鎖在此釋放
-                        // append-only 小檔寫（同步、不持鎖）：重啟後仍記得心願。
-                        vdes::append_desire(&new_desire);
-                        // 動態 Feed：居民透過對話種下新心願。
-                        vfeed::append_feed("新心願", &new_desire.resident, &new_desire.desire);
-                    }
-                    // 冒泡（下一 tick 由 tick_residents 套用 say，自動截到 40 字、計時消失）。
-                    hub().agent_bus.push_decision(
-                        resident_id,
-                        AgentDecision::new(AgentAction::Idle, reply, "對話"),
-                    );
-                });
+                    // 6d) 無鎖 async task：快速 LLM 路徑 → 回覆單播 + AgentBus 冒泡 + 記憶/心願寫入。
+                    let reply_tx = out_tx.clone();
+                    let clean_for_llm = clean.clone();
+                    let pkey = player_key.clone();
+                    tokio::spawn(async move {
+                        let base_sys =
+                            resident_talk_system_prompt(rname, rpersona, current_desire.as_deref());
+                        let sys = if context.is_empty() {
+                            base_sys
+                        } else {
+                            format!("{base_sys}\n\n{context}")
+                        };
+                        let reply: String = match tokio::time::timeout(
+                            Duration::from_secs(TALK_LLM_TIMEOUT_SECS),
+                            crate::npc_chat::raw_llm_call_fast(&sys, &clean_for_llm),
+                        )
+                        .await
+                        {
+                            Ok(Some(t)) => t.chars().take(TALK_REPLY_MAX_CHARS).collect(),
+                            _ => resident_canned_reply(rname), // 逾時 / LLM 未啟用 → 罐頭後備
+                        };
+                        let msg = serde_json::json!({
+                            "t": "talk",
+                            "resident_id": addr_id,
+                            "name": rname,
+                            "reply": reply,
+                        })
+                        .to_string();
+                        let _ = reply_tx.send(Message::Text(msg)).await;
 
-                // 念頭播種：套用對附近居民的效果（spawn 後，短鎖分批，不巢狀，不持鎖 await）。
-                if !overhear_targets.is_empty() {
-                    // ① 反應泡泡（residents 寫鎖，短取即釋）
-                    {
-                        let mut res = hub().residents.write().unwrap();
-                        for (rid, rname, persona, _) in &overhear_targets {
-                            if let Some(r) = res.iter_mut().find(|r| &r.id == rid) {
-                                r.say = vh::canned_overhear_reaction(*persona, rname);
-                                r.say_timer = vh::REACTION_SAY_SECS;
+                        // 記憶寫入（短鎖、不 await）：對話歷史 + 規則摘要進長期記憶並落地。
+                        let new_memory = {
+                            let mut mem = hub().memory.write().unwrap();
+                            mem.record_turn(&pkey, &addr_id, &clean_for_llm, &reply);
+                            vmem::summarize_exchange(&pkey, &clean_for_llm)
+                                .map(|summary| mem.add_memory(&addr_id, &pkey, &summary))
+                        }; // 記憶寫鎖在此釋放
+                        if let Some(entry) = new_memory {
+                            vmem::append_memory(&entry);
+                        }
+                        // 心願萃取（記憶驅動行為 v1）：回覆浮現「我想…」→ 更新心願並落地。
+                        if let Some(desire_text) = vdes::extract_desire(&reply) {
+                            let new_desire = {
+                                let mut des = hub().desires.write().unwrap();
+                                des.set_desire(&addr_id, &desire_text, &pkey)
+                            }; // 心願寫鎖在此釋放
+                            vdes::append_desire(&new_desire);
+                            vfeed::append_feed("新心願", &new_desire.resident, &new_desire.desire);
+                        }
+                        // 冒泡（下一 tick 由 tick_residents 套用 say，自動截到 40 字、計時消失）。
+                        hub().agent_bus.push_decision(
+                            addr_id,
+                            AgentDecision::new(AgentAction::Idle, reply, "對話"),
+                        );
+                    });
+                }
+
+                // 7) 旁聽（embodied）：半徑內、非被指名的居民「聽到」。
+                //    a) 進記憶（零 LLM）：每位旁聽者記下「聽到旅人說…」（餵養念頭起念）。
+                //    b) 搭話閘：should_chime_in（戳中度×外向度×冷卻×機率）→ 偶爾冒 canned 泡泡，
+                //       多半只聽不講，防對話風暴。
+                //    c) 念頭播種：戳中個性 + 尚無心願 → 種下心願（保留既有閉環）。
+                if let Some((px, pz, _)) = player_snap {
+                    let r2 = vh::OVERHEAR_RADIUS * vh::OVERHEAR_RADIUS;
+                    let in_range: Vec<(String, &'static str, ResidentPersona)> = res_snaps
+                        .iter()
+                        .filter(|(id, _, _, rx, rz)| {
+                            Some(id) != addressed_id.as_ref() && {
+                                let dx = rx - px;
+                                let dz = rz - pz;
+                                dx * dx + dz * dz <= r2
+                            }
+                        })
+                        .map(|(id, n, p, _, _)| (id.clone(), *n, *p))
+                        .collect();
+
+                    if !in_range.is_empty() {
+                        // a) 旁聽進記憶（社交記憶 store，append-only；鎖外落地、絕不持鎖 await）。
+                        if let Some(summary) = vrel::overhear_summary(&player_key, &clean) {
+                            let entries: Vec<_> = {
+                                let mut soc = hub().social.write().unwrap();
+                                in_range
+                                    .iter()
+                                    .map(|(id, _, _)| soc.record_overheard(id, &player_key, &summary))
+                                    .collect()
+                            }; // social 寫鎖釋放
+                            for e in &entries {
+                                vrel::append_social(e);
                             }
                         }
-                    } // residents 寫鎖釋放
-                    // ② 心願播種：只給尚無心願的居民（desires 寫鎖，每筆分開）
-                    let desire_seeds: Vec<(String, String)> = overhear_targets
-                        .iter()
-                        .filter(|(_, _, _, has_des)| !has_des)
-                        .filter_map(|(rid, ..)| {
-                            vdes::extract_desire(&overhear_text).map(|d| (rid.clone(), d))
-                        })
-                        .collect();
-                    for (rid, desire_text) in desire_seeds {
-                        let entry = {
-                            let mut des = hub().desires.write().unwrap();
-                            des.set_desire(&rid, &desire_text, &overhear_player)
-                        }; // desires 寫鎖釋放
-                        vdes::append_desire(&entry);
-                        // 動態 Feed：玩家說的話戳中居民，念頭種下。
-                        vfeed::append_feed("念頭種下", &entry.resident, &entry.desire);
+
+                        // b) 搭話閘 + canned 泡泡（residents 寫鎖，短取即釋）。
+                        {
+                            let mut res = hub().residents.write().unwrap();
+                            for (id, n, p) in &in_range {
+                                if let Some(r) = res.iter_mut().find(|r| &r.id == id) {
+                                    if !r.say.is_empty() {
+                                        continue; // 正在說話 → 不打斷
+                                    }
+                                    let fits = vh::speech_fits_persona(&clean, *p);
+                                    let extro = vh::persona_extroversion(*p);
+                                    let cd_ok = r.overhear_cooldown <= 0.0;
+                                    if vh::should_chime_in(fits, extro, cd_ok, rand::random::<f32>()) {
+                                        r.say = vh::canned_overhear_reaction(*p, n);
+                                        r.say_timer = vh::REACTION_SAY_SECS;
+                                        r.overhear_cooldown = vh::OVERHEAR_CHIME_COOLDOWN_SECS;
+                                    }
+                                }
+                            }
+                        } // residents 寫鎖釋放
+
+                        // c) 念頭播種：戳中個性 + 尚無心願 → 種心願（desires 寫鎖，每筆分開）。
+                        if let Some(desire_text) = vdes::extract_desire(&clean) {
+                            let has_desire_ids: Vec<String> = {
+                                let des = hub().desires.read().unwrap();
+                                in_range
+                                    .iter()
+                                    .filter(|(id, _, _)| des.get_desire(id).is_some())
+                                    .map(|(id, _, _)| id.clone())
+                                    .collect()
+                            }; // desires 讀鎖釋放
+                            for (id, _, p) in &in_range {
+                                if has_desire_ids.contains(id)
+                                    || !vh::speech_fits_persona(&clean, *p)
+                                {
+                                    continue;
+                                }
+                                let entry = {
+                                    let mut des = hub().desires.write().unwrap();
+                                    des.set_desire(id, &desire_text, &player_key)
+                                }; // desires 寫鎖釋放
+                                vdes::append_desire(&entry);
+                                vfeed::append_feed("念頭種下", &entry.resident, &entry.desire);
+                            }
+                        }
                     }
-                    // ③ 廣播：讓附近玩家看到居民的反應泡泡
-                    broadcast_players();
                 }
+
+                // 8) 廣播：玩家自己的對話泡泡 + 居民旁聽反應泡泡，一次推給所有人。
+                broadcast_players();
             }
             Ok(ClientMsg::Craft { recipe_id }) => {
                 // 合成台 v1（ROADMAP 658）：消耗配料 → 給產出方塊 → 送 inv_update + craft_ok/fail。
@@ -1442,6 +1494,20 @@ fn tick_residents(dt: f32) {
         players.values().map(|p| (p.x, p.z, p.name.clone())).collect()
     }; // 玩家讀鎖在此釋放
 
+    // embodied 靠近說話 v1：玩家對話泡泡倒數（短鎖、不巢狀）。say_timer 歸零就清空 say，
+    // 下方 broadcast_players 自然把「泡泡消失」推給所有人。
+    {
+        let mut players = hub().players.write().unwrap();
+        for p in players.values_mut() {
+            if p.say_timer > 0.0 {
+                p.say_timer -= dt;
+                if p.say_timer <= 0.0 {
+                    p.say.clear();
+                }
+            }
+        }
+    } // 玩家寫鎖在此釋放
+
     // 社交對話生成用：快照所有居民心願（先 drop desires 鎖，再取居民寫鎖，守循序不巢狀鐵律）。
     // 居民 id 格式固定為 "vox_res_{i}"，直接枚舉取（不需先讀居民清單）。
     let desire_snaps: HashMap<String, String> = {
@@ -1500,6 +1566,11 @@ fn tick_residents(dt: f32) {
             // 社交冷卻倒數。
             if r.social_cooldown > 0.0 {
                 r.social_cooldown -= dt;
+            }
+
+            // 旁聽搭話冷卻倒數（embodied 靠近說話 v1）：到期後才可再因旁聽搭話。
+            if r.overhear_cooldown > 0.0 {
+                r.overhear_cooldown -= dt;
             }
 
             // 待回應倒數：另一位居民搭話後，延遲幾秒再自然回應（零 LLM、程式化台詞）。
@@ -2014,13 +2085,34 @@ mod tests {
 
     #[test]
     fn talk_parses() {
+        // 顯式對象（點居民 / 走近面對）：resident_id = Some。
         let m: ClientMsg =
             serde_json::from_str(r#"{"t":"talk","resident_id":"vox_res_0","text":"你好"}"#).unwrap();
         match m {
             ClientMsg::Talk { resident_id, text } => {
-                assert_eq!(resident_id, "vox_res_0");
+                assert_eq!(resident_id.as_deref(), Some("vox_res_0"));
                 assert_eq!(text, "你好");
             }
+            _ => panic!("應解析成 Talk"),
+        }
+    }
+
+    #[test]
+    fn range_talk_parses_without_resident_id() {
+        // embodied 範圍說話：不帶 resident_id（常駐輸入列）→ resident_id = None。
+        let m: ClientMsg = serde_json::from_str(r#"{"t":"talk","text":"嗨大家"}"#).unwrap();
+        match m {
+            ClientMsg::Talk { resident_id, text } => {
+                assert_eq!(resident_id, None);
+                assert_eq!(text, "嗨大家");
+            }
+            _ => panic!("應解析成 Talk"),
+        }
+        // 顯式 null 也視為範圍說話。
+        let m2: ClientMsg =
+            serde_json::from_str(r#"{"t":"talk","resident_id":null,"text":"哈囉"}"#).unwrap();
+        match m2 {
+            ClientMsg::Talk { resident_id, .. } => assert_eq!(resident_id, None),
             _ => panic!("應解析成 Talk"),
         }
     }
