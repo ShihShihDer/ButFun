@@ -447,18 +447,17 @@ async fn main() {
         .merge(profile::profile_router())
         // 外觀自訂(捏臉)——需登入,見 appearance.rs
         .merge(appearance::appearance_router())
-        // 首頁與 index.html：經後端動態注入 game.js 的內容雜湊版本，並回 no-cache，
-        // 讓前端部署後玩家立刻拿到新版（根治「快取卡 4h」——見 serve_index）。
-        // 必須放在 fallback_service(ServeDir) 之前才會優先命中。
-        .route("/", get(serve_index))
-        .route("/index.html", get(serve_index))
-        // 3D 試驗場頁（/3d/、/play3d/）的 index 同樣回 no-cache，根治玩家被快取卡住舊
-        // 前端的問題（過去走 ServeDir，index 無 no-cache → 卡住舊 main.js?v=）。
-        // main.js 仍交給下方 ServeDir，維持 ?v= 版本快取。必須放在 fallback 之前才優先命中。
-        .route("/3d/", get(serve_3d_index))
-        .route("/3d/index.html", get(serve_3d_index))
-        .route("/play3d/", get(serve_play3d_index))
-        .route("/play3d/index.html", get(serve_play3d_index))
+        // 封存舊世界（2026-06-30 維護者拍板「只剩乙太方界，2D/3D 封存、不再運營」）：
+        // 舊 2D（/）+ 3D（/3d/、/play3d/）的入口一律「暫時轉址(307)」到 /voxel/，
+        // 訪客只會進到乙太方界。serve_index/serve_3d_index/serve_play3d_index 與其前端、
+        // 2D/3D 後端、玩家資料全部保留不刪（可復原：把這幾條換回原 handler 即恢復）。
+        // 用 307（非永久）避免瀏覽器永久快取轉址，保留可逆性。
+        .route("/", get(|| async { axum::response::Redirect::temporary("/voxel/") }))
+        .route("/index.html", get(|| async { axum::response::Redirect::temporary("/voxel/") }))
+        .route("/3d/", get(|| async { axum::response::Redirect::temporary("/voxel/") }))
+        .route("/3d/index.html", get(|| async { axum::response::Redirect::temporary("/voxel/") }))
+        .route("/play3d/", get(|| async { axum::response::Redirect::temporary("/voxel/") }))
+        .route("/play3d/index.html", get(|| async { axum::response::Redirect::temporary("/voxel/") }))
         // AI 生態世界 voxel 基底（切片①）：新頁 /voxel/ + 獨立 WS /voxel/ws，全隔離、
         // additive，與現有 2D/3D 協定零交集（見 voxel.rs / voxel_ws.rs）。
         .route("/voxel/", get(serve_voxel_index))
@@ -632,6 +631,7 @@ static INDEX_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
 
 /// 首頁 handler：回「已注入 game.js 內容雜湊」的 index.html，並帶 no-cache 標頭。
 /// HTML 永遠新鮮（極小、無快取）；game.js 的 URL 隨內容雜湊變，照舊可被快取。
+#[allow(dead_code)] // 封存:2D/3D入口已轉址,handler保留可復原
 async fn serve_index() -> impl IntoResponse {
     (
         [
@@ -691,6 +691,7 @@ fn inject_mainjs_version(html: &str, mainjs: &[u8]) -> String {
 ///   把 `main.js?v=<任何舊值>` 換成 `main.js?v=<雜湊>`，並注入 `window.__BUILD__`；
 ///   前端改了、雜湊就變、URL 就變、CF/瀏覽器就抓新版——無需重啟伺服器。
 /// index.html 帶 no-cache，main.js 本體仍走 ServeDir 可被快取。
+#[allow(dead_code)] // 封存:2D/3D入口已轉址,handler保留可復原
 async fn serve_3d_index() -> impl IntoResponse {
     let html = match std::fs::read_to_string("web/3d/index.html") {
         Ok(s) => s,
@@ -719,6 +720,7 @@ async fn serve_3d_index() -> impl IntoResponse {
 }
 
 /// `/play3d/`、`/play3d/index.html` 的 handler：同 `serve_3d_index`，對 web/play3d/main.js 算雜湊。
+#[allow(dead_code)] // 封存:2D/3D入口已轉址,handler保留可復原
 async fn serve_play3d_index() -> impl IntoResponse {
     let html = match std::fs::read_to_string("web/play3d/index.html") {
         Ok(s) => s,
