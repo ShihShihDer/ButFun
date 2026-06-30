@@ -199,6 +199,28 @@
     #chatGift.gift-empty { opacity: 0.45; cursor: not-allowed; }
     @media (orientation: portrait) { #chat { bottom: 60px; max-height: 50vh; } }
 
+    /* ── 常駐說話輸入列（embodied 靠近說話 v1）：底部、直式友善，打字→範圍說話 ── */
+    #speakBar {
+      position: fixed; left: 50%; bottom: 62px; transform: translateX(-50%);
+      z-index: 9; display: flex; gap: 6px; width: min(380px, 80vw);
+      pointer-events: auto;
+    }
+    #speakInput {
+      flex: 1; min-width: 0; padding: 9px 13px; border-radius: 999px; border: none;
+      font-size: 14px; background: rgba(245,248,255,0.94); color: #1a2230;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+    }
+    #speakInput::placeholder { color: #6b7790; }
+    #speakSend {
+      padding: 9px 16px; border-radius: 999px; border: none; background: #ffd86b;
+      color: #2a2410; font-weight: bold; font-size: 14px; cursor: pointer;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.35); white-space: nowrap;
+    }
+    /* 直式：往上挪一點避開快捷欄，並收窄避免擋到觸控搖桿 */
+    @media (orientation: portrait) {
+      #speakBar { bottom: 66px; width: min(340px, 74vw); }
+    }
+
     /* ── 居民日記面板 ─────────────────────────────────────────────────────── */
     #diary {
       position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
@@ -554,6 +576,11 @@
       <input id="chatInput" type="text" maxlength="200" placeholder="跟居民說點什麼…" autocomplete="off" />
       <button id="chatSend">送出</button>
     </div>
+  </div>
+  <!-- 常駐說話輸入列（embodied 靠近說話 v1）：打字→範圍說話，附近居民聽得到 -->
+  <div id="speakBar">
+    <input id="speakInput" type="text" maxlength="200" placeholder="說點什麼…附近的居民聽得到" autocomplete="off" />
+    <button id="speakSend">說</button>
   </div>
   <!-- 居民日記面板（ROADMAP 650）-->
   <div id="diary">
