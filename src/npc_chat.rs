@@ -276,16 +276,16 @@ pub async fn raw_llm_call(system: &str, user: &str) -> Option<String> {
 /// Groq 實測最穩、給略多時間；Cerebras/Gemini 降為後備（額度爆/掛掉時才輪到）。
 async fn llm_chat_fast(system: &str, user: &str) -> Option<String> {
     const FAST: Duration = Duration::from_secs(5);
-    if groq_enabled() {
-        // Groq 實測最穩定，排第一；給略多時間確保真的有機會拿到回覆。
-        if let Ok(Some(t)) = tokio::time::timeout(Duration::from_secs(8), groq_chat(system, user)).await {
+    // 對話「本地優先」：deb-pc 本地 ollama 快(~0.6s)、走 Tailscale IP 無 DNS、不受 Groq 每日
+    // 額度限制，又開了平行處理(不被思考排隊卡住) → 對話直接走本地、雲端當備胎。
+    // (先前 Groq 優先會吃 5s 冷 DNS + 每日額度爆 429 降級，正是對話 ~16s 的元兇。)
+    if ollama_configured() {
+        if let Ok(Some(t)) = tokio::time::timeout(Duration::from_secs(8), ollama_chat(system, user)).await {
             return Some(t);
         }
     }
-    // 本地 ollama(deb-pc)排在雲端後備之前：Groq 額度爆時直接走「快又免費」的本地，
-    // 不必逐把 key 乾等 Cerebras/Gemini 逾時(那正是對話 ~16s 乾走的元兇)。熱機 ~0.4s。
-    if ollama_configured() {
-        if let Ok(Some(t)) = tokio::time::timeout(Duration::from_secs(8), ollama_chat(system, user)).await {
+    if groq_enabled() {
+        if let Ok(Some(t)) = tokio::time::timeout(Duration::from_secs(8), groq_chat(system, user)).await {
             return Some(t);
         }
     }
