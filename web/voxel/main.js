@@ -1421,6 +1421,17 @@ function connect() {
       // 贈禮 v1：送禮失敗（太遠 / 沒材料）。
       showErr(m.reason || "無法送禮");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "return_gift") {
+      // 居民回禮 v1（ROADMAP 667）：只有當事玩家才顯示提示並更新背包。
+      if (m.player === myName) {
+        const iname = BLOCK_NAME[m.item_id] || m.item_name || "物品";
+        // 更新本地庫存（伺服器已累計新數量）。
+        if (m.new_count > 0) myInv.set(m.item_id, m.new_count);
+        updateInvHud();
+        updateGiftBtn();
+        // 顯示溫馨提示（比一般系統訊息更暖、附愛心）。
+        appendMsg("sys", "💛 " + (m.resident_name || "居民") + " 把 " + iname + " ×" + m.qty + " 送給你了！");
+      }
     }
   };
   ws.onclose = () => { wsReady = false; showErr("連線中斷，重新連線中…"); setTimeout(connect, 1500); };

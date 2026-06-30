@@ -37,6 +37,7 @@ use crate::voxel_inventory::{self as vinv, InvStore};
 use crate::voxel_memory::{self as vmem, VoxelMemory};
 use crate::voxel_farm::{self as vfarm, FarmStore};
 use crate::voxel_gift as vgift;
+use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
 use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
 use crate::voxel_residents::{self as vr, Body};
@@ -485,6 +486,9 @@ struct VoxelHub {
     /// 農地 store（種田 v1·純記憶體；重啟後農地重置，與世界 delta 行為一致）。
     /// 記錄哪些格子種下了幼苗、何時種的，每 15 秒 tick 一次成熟檢查。
     farm: RwLock<FarmStore>,
+    /// 居民回禮已送記錄（ROADMAP 667）：每對（居民, 玩家）一生只送一次。
+    /// 持久化到 data/voxel_return_gifts.jsonl。
+    return_gifts: RwLock<ReturnGiftStore>,
     /// 世界時鐘（晝夜循環 v1）：一遊戲日 = 600 秒；廣播給前端以更新天空/光照。
     world_time: RwLock<WorldTime>,
     /// 上一 tick 的時段（日夜作息 v1）：偵測時段轉換、觸發居民過渡台詞。
@@ -526,6 +530,8 @@ fn hub() -> &'static VoxelHub {
             inventory: RwLock::new(InvStore::from_entries(vinv::load_inventory())),
             // 農地 store 純記憶體（與世界 delta 一致：重啟後農地重置，玩家重新種即可）。
             farm: RwLock::new(FarmStore::new()),
+            // 啟動時從 data/voxel_return_gifts.jsonl 載回已回贈紀錄（重啟後仍記得送過）。
+            return_gifts: RwLock::new(ReturnGiftStore::from_entries(vret::load_return_gifts())),
             // 世界時鐘：從白天（time_of_day ≈ 0.42）開始，讓玩家一進遊戲就是白天。
             world_time: RwLock::new(WorldTime::new()),
             // 日夜作息 v1：初始時段 Day（對應 WorldTime::new() 的 time_of_day ≈ 0.42）。
@@ -1691,6 +1697,10 @@ fn tick_residents(dt: f32) {
     // 卡住脫困/送回事件（鎖內偵測、鎖外記 Feed）。格式：(resident_name, 脫困結果)。
     let mut rescue_events: Vec<(&'static str, vr::Rescue)> = Vec::new();
 
+    // 居民回禮事件（ROADMAP 667）：鎖內偵測，鎖外執行（加入背包 + 廣播）。
+    // 格式：(resident_id, resident_name, player_name, block_id, qty, message)
+    let mut return_gift_events: Vec<(String, &'static str, String, u8, u32, String)> = Vec::new();
+
     {
         let world = hub().deltas.read().unwrap();
         let mut residents = hub().residents.write().unwrap();
@@ -1801,6 +1811,44 @@ fn tick_residents(dt: f32) {
                             r.say = bubble.chars().take(40).collect();
                             r.say_timer = SAY_SECS;
                             r.recall_cooldown = RECALL_COOLDOWN_SECS;
+                        }
+                    }
+                }
+            }
+
+            // 回禮 v1（ROADMAP 667）：好感達門檻 + 玩家靠近 + 尚未回贈 → 收集事件（鎖外落地）。
+            // 鎖序：memory 讀（即釋）→ return_gifts 讀（即釋）→ 收集 event；
+            // 實際 inventory 寫 / append / broadcast 在居民鎖釋放後進行（鎖紀律）。
+            if r.say.is_empty() {
+                if let Some((d2, nearest_name)) =
+                    nearest_player_info(r.body.x, r.body.z, &player_pts)
+                {
+                    let in_reach = d2 < vret::RETURN_GIFT_REACH * vret::RETURN_GIFT_REACH;
+                    // 名字空白 = 訪客（無持久身份），跳過。
+                    let is_logged_in = !nearest_name.is_empty();
+                    if in_reach && is_logged_in {
+                        // 一次性短鎖讀好感度（不 await）。
+                        let affinity = {
+                            hub().memory.read().unwrap().affinity_count(nearest_name, &r.id)
+                        }; // memory 讀鎖在此釋放
+                        // 一次性短鎖讀「已送過？」（不 await）。
+                        let already = {
+                            hub().return_gifts.read().unwrap().already_given(&r.id, nearest_name)
+                        }; // return_gifts 讀鎖在此釋放
+                        if vret::should_return_gift(affinity, already) {
+                            let (bid, qty) = vret::pick_return_gift(&r.id);
+                            let iname = vret::return_item_name(bid);
+                            let msg = vret::return_gift_message(r.name, nearest_name, iname);
+                            r.say = msg.chars().take(40).collect();
+                            r.say_timer = SAY_SECS;
+                            return_gift_events.push((
+                                r.id.clone(),
+                                r.name,
+                                nearest_name.to_string(),
+                                bid,
+                                qty,
+                                msg,
+                            ));
                         }
                     }
                 }
@@ -1997,6 +2045,42 @@ fn tick_residents(dt: f32) {
             let detail = format!("對{}說：「{}」", listener_name, line.chars().take(30).collect::<String>());
             vfeed::append_feed("鄰里閒聊", speaker_name, &detail);
         }
+    }
+
+    // 4b) 回禮事件落地（ROADMAP 667）：鎖已全釋放；mark → append → 加背包 → 廣播。
+    // 鎖序：return_gifts 寫（即釋）→ inventory 寫（即釋）→ tx broadcast。
+    for (rid, rname, pname, bid, qty, _msg) in &return_gift_events {
+        // 標記已送（寫鎖即釋）。
+        let entry = {
+            hub().return_gifts.write().unwrap().mark_given(rid, pname)
+        }; // return_gifts 寫鎖在此釋放
+        vret::append_return_gift(&entry);
+        // 加進玩家背包（寫鎖即釋）。
+        let inv_entry = {
+            hub().inventory.write().unwrap().give(pname, *bid, *qty)
+        }; // inventory 寫鎖在此釋放
+        vinv::append_inv(&inv_entry);
+        // 廣播回禮事件（所有人收到；前端依 player 是否為自己決定是否顯示 toast）。
+        let new_count = hub().inventory.read().unwrap().count(pname, *bid);
+        let iname = vret::return_item_name(*bid);
+        let msg = serde_json::json!({
+            "t": "return_gift",
+            "resident_id": rid,
+            "resident_name": rname,
+            "player": pname,
+            "item_id": bid,
+            "item_name": iname,
+            "qty": qty,
+            "new_count": new_count,
+        })
+        .to_string();
+        let _ = hub().tx.send(std::sync::Arc::new(msg));
+        // Feed：記錄這個溫馨時刻。
+        vfeed::append_feed(
+            "居民回禮",
+            rname,
+            &format!("把{}份{}送給了{}", qty, iname, pname),
+        );
     }
 
     // 5) 無鎖 spawn 思考（LLM）。整個 agent 思考可由 BUTFUN_NPC_AGENT=0 關掉，
