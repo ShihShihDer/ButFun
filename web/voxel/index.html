@@ -248,9 +248,26 @@
       #diary { top: auto; bottom: 10px; transform: translateX(-50%); max-height: 70vh; }
     }
 
+    /* ── Google 登入帳號 chip（比照 3D #821）：右上角，訪客「🔑 登入」／登入「名 · 登出」 ── */
+    #acct {
+      position: fixed; right: 10px; top: 10px; z-index: 9;
+      display: flex; align-items: center; gap: 6px; pointer-events: auto;
+    }
+    .acct-btn {
+      background: rgba(20,28,40,0.7); color: #ffe6a0; border: 1px solid rgba(255,216,107,0.4);
+      padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      user-select: none; font-family: inherit;
+    }
+    .acct-btn:hover { background: rgba(60,50,20,0.8); }
+    .acct-name {
+      background: rgba(20,28,40,0.7); color: #eaf2ff; border: 1px solid rgba(255,255,255,0.18);
+      padding: 6px 10px; border-radius: 8px; font-size: 13px; max-width: 40vw;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
     /* ── 城鎮動態 Feed（ROADMAP 655）────────────────────────────────────────── */
     #feedBtn {
-      position: fixed; right: 10px; top: 10px; z-index: 6;
+      position: fixed; right: 10px; top: 46px; z-index: 6;
       background: rgba(20,28,40,0.65); color: #a0d4f8; border: 1px solid rgba(160,212,248,0.3);
       padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
       user-select: none; pointer-events: auto;
@@ -308,7 +325,7 @@
 
     /* ── 合成台按鈕（右側頂部，類 feedBtn）───────────────────────────────── */
     #craftBtn {
-      position: fixed; right: 10px; top: 52px; z-index: 6;
+      position: fixed; right: 10px; top: 88px; z-index: 6;
       background: rgba(20,28,40,0.65); color: #f0d080;
       border: 1px solid rgba(240,208,128,0.3);
       padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
@@ -374,6 +391,8 @@
 <body>
   <div id="app"></div>
   <div id="hud">載入中…</div>
+  <!-- Google 登入帳號 chip（內容由 main.js 依登入態填）-->
+  <div id="acct"></div>
   <div id="dbg"></div>
   <div id="err"></div>
   <div id="msg"></div>
