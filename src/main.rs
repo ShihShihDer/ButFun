@@ -141,6 +141,8 @@ mod voxel_return_gift;
 mod voxel_time;
 // 乙太方界·居民技能庫 v1：目標+記憶驅動 agency——蓋造不重複/有進展、採集技能（技能調用範本）。
 mod voxel_skills;
+// 乙太方界·建物完工廣播 v1：居民完成蓋造時 WS 廣播 + 慶賀泡泡，讓所有玩家看到世界在長大（ROADMAP 669）。
+mod voxel_announce;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環

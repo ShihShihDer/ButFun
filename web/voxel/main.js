@@ -1438,6 +1438,11 @@ function connect() {
         // 顯示溫馨提示（比一般系統訊息更暖、附愛心）。
         appendMsg("sys", "💛 " + (m.resident_name || "居民") + " 把 " + iname + " ×" + m.qty + " 送給你了！");
       }
+    } else if (m.t === "build_complete") {
+      // 建物完工廣播 v1（ROADMAP 669）：全員可見，世界在長大。
+      const who = m.resident || "居民";
+      const what = m.kind || "建物";
+      appendMsg("sys", "🏗️ " + who + " 完成了「" + what + "」的建造！走近去看看吧。");
     }
   };
   ws.onclose = () => { wsReady = false; showErr("連線中斷，重新連線中…"); setTimeout(connect, 1500); };
