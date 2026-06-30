@@ -2447,6 +2447,13 @@ fn tick_residents(dt: f32) {
             } // bonds 讀鎖釋放
             let milestone = vbonds::tier_up_line(tier, visitor_name, &host_name);
             vfeed::append_feed("居民情誼", visitor_name, &milestone);
+            // ROADMAP 673：社交足跡——情誼升級時在訪客記憶裡留下一筆，讓日記有社交痕跡。
+            let social_mem = vbonds::bond_social_memory(&host_name, tier);
+            if !social_mem.is_empty() {
+                let entry = hub().memory.write().unwrap()
+                    .add_memory(&visitor_id, &host_name, &social_mem);
+                vmem::append_memory(&entry);
+            } // memory 寫鎖釋放
         }
         // 依新層級生成問候語 → say_updates（守 say_updates 的「say 空才套」原則）。
         let greeting = vbonds::arrival_line(tier, &host_name, visitor_name, pick);

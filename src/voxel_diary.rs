@@ -60,7 +60,8 @@ enum Theme {
     Flora,      // 花草 / 田地 / 種植
     Mining,     // 礦石 / 挖掘 / 洞穴
     Praise,     // 被讚美 / 被打動的時刻
-    Friendship, // 被記得 / 重逢 / 關係變化
+    SocialBond, // 居民間情誼升級（相識/老朋友）——ROADMAP 673 社交足跡
+    Friendship, // 被記得 / 重逢 / 關係變化（玩家與居民）
     Other,      // 有意義但未歸類的對話（全部收斂成一條）
 }
 
@@ -170,11 +171,17 @@ fn classify_theme(snippet: &str) -> Option<Theme> {
     const FLORA: &[&str] = &["花", "田", "種", "農", "草", "樹", "園", "綠"];
     const MINING: &[&str] = &["礦", "挖", "石頭", "石", "洞", "晶", "乙太", "礦石", "礦坑"];
     const PRAISE: &[&str] = &["好美", "漂亮", "真美", "好棒", "真棒", "厲害", "喜歡這", "好喜歡", "好可愛", "好漂亮"];
+    // ROADMAP 673：居民間情誼升級寫入記憶時含「相識」或「老朋友」，排在 Friendship 前避免被吸收。
+    const SOCIAL_BOND: &[&str] = &["相識", "老朋友"];
     const FRIENDSHIP: &[&str] = &["想你", "想念", "記得我", "想見", "陪", "朋友", "好久不見", "回來看", "惦記"];
 
     // 順序：先判「被打動 / 關係」這類情感訊號，再判興趣物件。
     if PRAISE.iter().any(|k| s.contains(k)) {
         return Some(Theme::Praise);
+    }
+    // 社交情誼（居民↔居民，ROADMAP 673）：比玩家 Friendship 更具體，先判。
+    if SOCIAL_BOND.iter().any(|k| s.contains(k)) {
+        return Some(Theme::SocialBond);
     }
     if FRIENDSHIP.iter().any(|k| s.contains(k)) {
         return Some(Theme::Friendship);
@@ -240,6 +247,13 @@ fn reflection_for(theme: Theme, repeated: bool) -> String {
         }
         (Theme::Praise, true) => {
             "好幾次被旅人這樣稱讚，我漸漸相信，這裡真的有它獨一無二的美。"
+        }
+        // ROADMAP 673：居民間情誼升級的社交足跡——第一人稱，無具體人名（守隱私邊界）。
+        (Theme::SocialBond, false) => {
+            "在這個世界裡，我和一位同伴漸漸相識了——有個叫得出名字的夥伴，心裡暖暖的。"
+        }
+        (Theme::SocialBond, true) => {
+            "🤝 這片土地上，我和幾位同伴都處出了情誼，世界不再只有我一個人在走動。"
         }
         (Theme::Friendship, false) => {
             "有人記得我、特地回來找我說話——那份被惦記的感覺，很暖。"
@@ -415,10 +429,30 @@ mod tests {
     }
 
     #[test]
+    fn reflect_social_bond_classified_and_non_empty() {
+        // 「相識」→ SocialBond（不被 Friendship 的「朋友」吸收）。
+        assert_eq!(
+            classify_theme("和諾娃走動了幾次，我們漸漸相識了"),
+            Some(Theme::SocialBond)
+        );
+        // 「老朋友」→ SocialBond（比 Friendship 更早判）。
+        assert_eq!(
+            classify_theme("🤝 和賽勒成了老朋友，每次見面都覺得自在"),
+            Some(Theme::SocialBond)
+        );
+        // 反思文字非空且第一人稱。
+        for repeated in [false, true] {
+            let t = reflection_for(Theme::SocialBond, repeated);
+            assert!(!t.is_empty());
+            assert!(t.contains("我"), "社交情誼反思應是第一人稱：{t}");
+        }
+    }
+
+    #[test]
     fn reflection_for_is_non_empty_and_first_person() {
         for theme in [
             Theme::Stars, Theme::Fishing, Theme::Building, Theme::Flora,
-            Theme::Mining, Theme::Praise, Theme::Friendship, Theme::Other,
+            Theme::Mining, Theme::Praise, Theme::SocialBond, Theme::Friendship, Theme::Other,
         ] {
             for repeated in [false, true] {
                 let t = reflection_for(theme, repeated);
