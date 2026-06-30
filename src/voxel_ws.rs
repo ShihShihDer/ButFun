@@ -43,6 +43,7 @@ use crate::voxel_relations::{self as vrel, SocialStore};
 use crate::voxel_residents::{self as vr, Body};
 use crate::voxel_time::{self as vt, WorldTime, TimePhase};
 use crate::voxel_announce as vannounce;
+use crate::voxel_trade::{self as vtrade, TradeOffer};
 
 /// 入場時串給玩家的 chunk 半徑（以 chunk 為單位，水平）。3 → 7×7 column。
 const SPAWN_CHUNK_RADIUS: i32 = 3;
@@ -494,6 +495,9 @@ struct VoxelHub {
     world_time: RwLock<WorldTime>,
     /// 上一 tick 的時段（日夜作息 v1）：偵測時段轉換、觸發居民過渡台詞。
     last_phase: std::sync::Mutex<TimePhase>,
+    /// 待確認的交易提案（純記憶體，無需持久化）。
+    /// 鍵=居民 id，值=(提案, 到期 unix 秒)；居民同時只對一個提案；30 秒內未接受自動過期。
+    pending_trades: RwLock<HashMap<String, (TradeOffer, u64)>>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -537,6 +541,8 @@ fn hub() -> &'static VoxelHub {
             world_time: RwLock::new(WorldTime::new()),
             // 日夜作息 v1：初始時段 Day（對應 WorldTime::new() 的 time_of_day ≈ 0.42）。
             last_phase: std::sync::Mutex::new(TimePhase::Day),
+            // 居民交易 v1：純記憶體，重啟清空（提案是即時的，無需持久化）。
+            pending_trades: RwLock::new(HashMap::new()),
             tx,
         }
     })
@@ -622,6 +628,11 @@ enum ClientMsg {
     /// 居民贈禮 v1：把背包裡的一件材料送給附近居民（ROADMAP 660）。
     /// 伺服器驗證觸及範圍 + 背包存量後，扣材料、加記憶 ×2、居民冒泡道謝。
     Gift { resident_id: String, item_id: u8 },
+    /// 居民交易 v1：向指定居民請求以物易物（ROADMAP 670）。
+    /// 伺服器回 `trade_offer`，玩家再傳 TradeAccept 接受；提案 30 秒後自動過期。
+    TradeRequest { resident_id: String },
+    /// 居民交易 v1：接受當前待確認的交易提案（ROADMAP 670）。
+    TradeAccept { resident_id: String },
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -1454,6 +1465,193 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     &format!("{name}送了{iname}給{rname}"),
                 );
             }
+
+            // ── 居民交易 v1（ROADMAP 670）────────────────────────────────────────
+            Ok(ClientMsg::TradeRequest { resident_id }) => {
+                // 1) 短鎖取玩家位置（players 讀鎖即釋）。
+                let player_pos: Option<(f32, f32)> = {
+                    let players = hub().players.read().unwrap();
+                    players.get(&my_id).map(|p| (p.x, p.z))
+                };
+                let Some((px, pz)) = player_pos else { continue; };
+                // 2) 短鎖取居民快照（residents 讀鎖即釋）。
+                let res_snap: Option<(&'static str, f32, f32)> = {
+                    let residents = hub().residents.read().unwrap();
+                    residents.iter()
+                        .find(|r| r.id == resident_id)
+                        .map(|r| (r.name, r.body.x, r.body.z))
+                };
+                let Some((rname, rx, rz)) = res_snap else { continue; };
+                // 3) 驗觸及範圍。
+                let dx = px - rx;
+                let dz = pz - rz;
+                if dx * dx + dz * dz > vtrade::TRADE_REACH * vtrade::TRADE_REACH {
+                    let msg = serde_json::json!({
+                        "t": "trade_fail",
+                        "reason": "走近一點再交易"
+                    }).to_string();
+                    let _ = out_tx.send(Message::Text(msg)).await;
+                    continue;
+                }
+                // 4) 讀好感度（memory 讀鎖即釋）。
+                let affinity = {
+                    hub().memory.read().unwrap().affinity_count(&name, &resident_id)
+                };
+                // 5) 生成交易提案（確定性純函式，無鎖）。
+                let offer = vtrade::make_offer(&resident_id, affinity);
+                let oname = vtrade::item_name_zh(offer.offer_item);
+                let wname = vtrade::item_name_zh(offer.want_item);
+                let say = vtrade::offer_say_line(&offer);
+                let expires_at = vfarm::now_secs() + vtrade::TRADE_OFFER_TTL;
+                // 6) 存待確認提案（pending_trades 寫鎖即釋）。
+                {
+                    hub().pending_trades.write().unwrap()
+                        .insert(resident_id.clone(), (offer.clone(), expires_at));
+                }
+                // 7) 設居民台詞（residents 寫鎖即釋）。
+                {
+                    let mut residents = hub().residents.write().unwrap();
+                    if let Some(r) = residents.iter_mut().find(|r| r.id == resident_id) {
+                        r.say = say.chars().take(50).collect();
+                        r.say_timer = SAY_SECS;
+                    }
+                }
+                broadcast_players();
+                // 8) 回傳 trade_offer（單播給發起玩家）。
+                let msg = serde_json::json!({
+                    "t": "trade_offer",
+                    "resident_id": &resident_id,
+                    "resident_name": rname,
+                    "offer_item": offer.offer_item,
+                    "offer_count": offer.offer_count,
+                    "offer_name": oname,
+                    "want_item": offer.want_item,
+                    "want_count": offer.want_count,
+                    "want_name": wname,
+                    "affinity": affinity,
+                }).to_string();
+                let _ = out_tx.send(Message::Text(msg)).await;
+            }
+
+            Ok(ClientMsg::TradeAccept { resident_id }) => {
+                // 1) 短鎖取玩家位置（players 讀鎖即釋）。
+                let player_pos: Option<(f32, f32)> = {
+                    let players = hub().players.read().unwrap();
+                    players.get(&my_id).map(|p| (p.x, p.z))
+                };
+                let Some((px, pz)) = player_pos else { continue; };
+                // 2) 短鎖取居民快照（residents 讀鎖即釋）。
+                let res_snap: Option<(&'static str, f32, f32)> = {
+                    let residents = hub().residents.read().unwrap();
+                    residents.iter()
+                        .find(|r| r.id == resident_id)
+                        .map(|r| (r.name, r.body.x, r.body.z))
+                };
+                let Some((rname, rx, rz)) = res_snap else { continue; };
+                // 3) 驗觸及範圍。
+                let dx = px - rx;
+                let dz = pz - rz;
+                if dx * dx + dz * dz > vtrade::TRADE_REACH * vtrade::TRADE_REACH {
+                    let msg = serde_json::json!({
+                        "t": "trade_fail",
+                        "reason": "走近一點再交易"
+                    }).to_string();
+                    let _ = out_tx.send(Message::Text(msg)).await;
+                    continue;
+                }
+                // 4) 取並移除待確認提案（pending_trades 寫鎖即釋）。
+                let pending = {
+                    hub().pending_trades.write().unwrap().remove(&resident_id)
+                };
+                let Some((offer, expires_at)) = pending else {
+                    let msg = serde_json::json!({
+                        "t": "trade_fail",
+                        "reason": "沒有待確認的交易提案，請重新點「交易」"
+                    }).to_string();
+                    let _ = out_tx.send(Message::Text(msg)).await;
+                    continue;
+                };
+                // 5) 驗提案是否過期。
+                if vfarm::now_secs() > expires_at {
+                    let msg = serde_json::json!({
+                        "t": "trade_fail",
+                        "reason": "交易提案已過期，請重新點「交易」"
+                    }).to_string();
+                    let _ = out_tx.send(Message::Text(msg)).await;
+                    continue;
+                }
+                let wname = vtrade::item_name_zh(offer.want_item);
+                let oname = vtrade::item_name_zh(offer.offer_item);
+                // 6) 驗並扣玩家背包中 want_item × want_count（inventory 寫鎖即釋）。
+                let taken = {
+                    hub().inventory.write().unwrap()
+                        .take(&name, offer.want_item, offer.want_count)
+                };
+                let Some(taken_entry) = taken else {
+                    let msg = serde_json::json!({
+                        "t": "trade_fail",
+                        "reason": format!("背包裡的{}不夠（需要{}個）", wname, offer.want_count)
+                    }).to_string();
+                    let _ = out_tx.send(Message::Text(msg)).await;
+                    continue;
+                };
+                vinv::append_inv(&taken_entry);
+                // 7) 給玩家 offer_item × offer_count（inventory 寫鎖即釋）。
+                let give_entry = {
+                    hub().inventory.write().unwrap()
+                        .give(&name, offer.offer_item, offer.offer_count)
+                };
+                vinv::append_inv(&give_entry);
+                // 8) 寫 1 筆記憶（memory 寫鎖即釋）。
+                let mem = vtrade::trade_memory(&name, oname, wname);
+                let mem_entry = {
+                    hub().memory.write().unwrap().add_memory(&resident_id, &name, &mem)
+                };
+                vmem::append_memory(&mem_entry);
+                // 9) 居民說成交台詞（residents 寫鎖即釋）。
+                let done_say = vtrade::done_say_line(&name, oname);
+                {
+                    let mut residents = hub().residents.write().unwrap();
+                    if let Some(r) = residents.iter_mut().find(|r| r.id == resident_id) {
+                        r.say = done_say.chars().take(50).collect();
+                        r.say_timer = SAY_SECS;
+                    }
+                }
+                broadcast_players();
+                // 10) 回傳兩筆 inv_update（讓前端同步背包） + trade_done。
+                let want_remain = hub().inventory.read().unwrap().count(&name, offer.want_item);
+                let offer_new = hub().inventory.read().unwrap().count(&name, offer.offer_item);
+                let upd1 = serde_json::json!({
+                    "t": "inv_update",
+                    "block_id": offer.want_item,
+                    "count": want_remain,
+                }).to_string();
+                let _ = out_tx.send(Message::Text(upd1)).await;
+                let upd2 = serde_json::json!({
+                    "t": "inv_update",
+                    "block_id": offer.offer_item,
+                    "count": offer_new,
+                }).to_string();
+                let _ = out_tx.send(Message::Text(upd2)).await;
+                let done_msg = serde_json::json!({
+                    "t": "trade_done",
+                    "resident_name": rname,
+                    "got_item": offer.offer_item,
+                    "got_name": oname,
+                    "got_count": offer.offer_count,
+                    "gave_item": offer.want_item,
+                    "gave_name": wname,
+                    "gave_count": offer.want_count,
+                }).to_string();
+                let _ = out_tx.send(Message::Text(done_msg)).await;
+                // 11) Feed（鎖外 IO）。
+                vfeed::append_feed(
+                    "交易",
+                    rname,
+                    &format!("{name}與{rname}交易：{wname}×{}→{oname}×{}", offer.want_count, offer.offer_count),
+                );
+            }
+
             // 重複 Join 或壞訊息：忽略。
             _ => {}
         }
