@@ -44,6 +44,7 @@ use crate::voxel_residents::{self as vr, Body};
 use crate::voxel_time::{self as vt, WorldTime, TimePhase};
 use crate::voxel_announce as vannounce;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
+use crate::voxel_visit as vvisit;
 
 /// 入場時串給玩家的 chunk 半徑（以 chunk 為單位，水平）。3 → 7×7 column。
 const SPAWN_CHUNK_RADIUS: i32 = 3;
@@ -163,6 +164,13 @@ struct VoxelResident {
     gathered_since_build: u32,
     /// 卡住計時（秒）：想動卻幾乎沒位移時累加，達 vr::STUCK_SECS → 脫困/送回家域。
     stuck_timer: f32,
+    /// 探訪目標（ROADMAP 671）：Some(目標 home_x, home_z, 目標居民名) = 正在前往或停留；
+    /// None = 在自己家域（正常閒晃/採集/蓋造）。
+    visiting: Option<(f32, f32, String)>,
+    /// 探訪抵達後的逗留倒數（秒）：> 0 = 正在鄰居家逗留，到 0 時啟程返家。
+    visit_stay_timer: f32,
+    /// 探訪冷卻倒數（秒）：> 0 = 冷卻中，不可發起新探訪。
+    visit_cooldown: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -449,6 +457,11 @@ fn init_residents() -> Vec<VoxelResident> {
             gathered_since_build: 0,
             // 入場未卡住。
             stuck_timer: 0.0,
+            // 探訪 v1（ROADMAP 671）：入場無探訪目標；首次冷卻錯開（前 5~10 分鐘不探訪，
+            // 讓居民先在家域穩定下來再出發）。
+            visiting: None,
+            visit_stay_timer: 0.0,
+            visit_cooldown: vvisit::VISIT_COOLDOWN_SECS * 0.5 + i as f32 * 60.0,
         });
     }
     out
@@ -1905,6 +1918,10 @@ fn tick_residents(dt: f32) {
     // 格式：(resident_id, resident_name, player_name, block_id, qty, message)
     let mut return_gift_events: Vec<(String, &'static str, String, u8, u32, String)> = Vec::new();
 
+    // 探訪 v1（ROADMAP 671）抵達 / 返家 Feed 事件（鎖內偵測，鎖外 IO）。
+    // 格式：(visitor_name, host_name, is_return)
+    let mut visit_events: Vec<(&'static str, String, bool)> = Vec::new();
+
     {
         let world = hub().deltas.read().unwrap();
         let mut residents = hub().residents.write().unwrap();
@@ -2058,6 +2075,29 @@ fn tick_residents(dt: f32) {
                 }
             }
 
+            // 探訪計時 v1（ROADMAP 671）：冷卻 + 逗留倒數。
+            // 冷卻倒數：每 tick 減 dt，到 0 後 should_visit 才可觸發（守 alive 不低於 -1 以防溢位）。
+            if r.visit_cooldown > -1.0 {
+                r.visit_cooldown -= dt;
+            }
+            // 逗留倒數：只有已抵達目的地（visit_stay_timer > 0）才倒數；在途中不計。
+            if r.visit_stay_timer > 0.0 {
+                r.visit_stay_timer -= dt;
+                if r.visit_stay_timer <= 0.0 {
+                    // 逗留結束：清探訪狀態、冒告別台詞、回歸家域中心閒晃。
+                    let host_name = r.visiting.as_ref().map(|(_, _, n)| n.clone()).unwrap_or_default();
+                    r.visiting = None;
+                    r.target_x = r.home_x;
+                    r.target_z = r.home_z;
+                    if r.say.is_empty() {
+                        let say = vvisit::departure_say(r.name);
+                        r.say = say.chars().take(40).collect();
+                        r.say_timer = SAY_SECS;
+                    }
+                    visit_events.push((r.name, host_name, true)); // is_return = true
+                }
+            }
+
             // 卡住偵測用：記下移動前的水平位置（本 tick 結束再比對位移）。
             let (pre_x, pre_z) = (r.body.x, r.body.z);
 
@@ -2115,15 +2155,51 @@ fn tick_residents(dt: f32) {
                     r.yaw = yaw;
                 }
                 if reached {
-                    // 挑下一個閒晃目標 + 小歇片刻。
-                    // 以「家域感知中心」為基準：超出家域則歸巢，否則原地自由閒晃。
+                    // ── 探訪 v1（ROADMAP 671）：在抵達前先處理探訪邏輯 ──────────────
+                    if let Some((vx, vz, ref host_name)) = r.visiting.clone() {
+                        let dx = r.body.x - vx;
+                        let dz = r.body.z - vz;
+                        let dist = (dx * dx + dz * dz).sqrt();
+                        if dist < vvisit::VISIT_ARRIVE_DIST {
+                            // 剛抵達：設逗留計時、冒問候泡泡（若目前沒有其他話）。
+                            if r.visit_stay_timer <= 0.0 {
+                                r.visit_stay_timer = vvisit::VISIT_STAY_SECS;
+                                if r.say.is_empty() {
+                                    let say = vvisit::arrival_say(r.name, host_name);
+                                    r.say = say.chars().take(40).collect();
+                                    r.say_timer = SAY_SECS;
+                                }
+                                // Feed 事件（鎖外 IO，須在鎖釋放後再 push；這裡先推送 event tuple）。
+                                visit_events.push((r.name, host_name.clone(), false));
+                            }
+                        } else {
+                            // 還在路上：直接朝目標前進，不另外閒晃。
+                            r.target_x = vx;
+                            r.target_z = vz;
+                        }
+                    }
+
+                    // ── 正常閒晃（探訪中改以目的地為中心）──────────────────────────
                     let angle = rand::random::<f32>() * std::f32::consts::TAU;
                     // 日夜作息 v1：夜間閒晃半徑隨速度乘數縮小（居民不往遠處跑）。
                     let radius = (WANDER_MIN_R + rand::random::<f32>() * (WANDER_MAX_R - WANDER_MIN_R)) * speed_mult.max(0.4);
+                    // 探訪中：以目的地為閒晃中心（讓居民在鄰居家附近自然走動）；
+                    // 否則：以自己家域中心為基準（正常行為）。
+                    let (center_x, center_z) = if let Some((vx, vz, _)) = &r.visiting {
+                        (*vx, *vz)
+                    } else {
+                        (r.home_x, r.home_z)
+                    };
+                    // 探訪中用探訪範圍（讓居民在鄰居家附近閒晃）；否則用家域半徑（正常行為）。
+                    let wander_r = if r.visiting.is_some() {
+                        vvisit::VISIT_WANDER_RADIUS
+                    } else {
+                        vr::HOME_RADIUS
+                    };
                     let (wcx, wcz) = vr::wander_center(
                         r.body.x, r.body.z,
-                        r.home_x, r.home_z,
-                        vr::HOME_RADIUS,
+                        center_x, center_z,
+                        wander_r,
                     );
                     let (tx, tz) = vr::wander_target(wcx, wcz, angle, radius);
                     r.target_x = tx;
@@ -2334,6 +2410,15 @@ fn tick_residents(dt: f32) {
         }
     }
 
+    // 5d) 探訪 Feed（ROADMAP 671）：抵達 / 返家各一筆，讓離線玩家也知道居民在往來。
+    for (visitor, host, is_return) in visit_events {
+        if is_return {
+            vfeed::append_feed(vvisit::FEED_KIND_RETURN, visitor, &format!("從{host}那裡回家了"));
+        } else {
+            vfeed::append_feed(vvisit::FEED_KIND_ARRIVE, visitor, &format!("抵達{host}家！"));
+        }
+    }
+
     // 6) 居民 agency（目標+記憶驅動）：蓋造不重複、有進展、會持久 + 採集技能調用。
     //    流程：① 有計畫 → 彈下一塊放置（持久化）；完成 → 記下「蓋過這種」（不再重蓋）+ 完工 Feed
     //           ② 無計畫 → choose_activity（依已完成清單+心願，永不重選蓋過的）→ 採集 or 蓋下一個
@@ -2365,9 +2450,50 @@ fn tick_residents(dt: f32) {
                     start_build(&rid, rname, kind, done_count, &mut say_updates);
                 }
                 NextActivity::Wander => {
-                    // 全部蓋完：偶爾散心採集（低頻、不洗版），否則純閒晃。
-                    if rand::random::<f32>() < IDLE_GATHER_CHANCE {
-                        start_gather(&rid, rx, rz);
+                    // 全部蓋完：探訪鄰居 v1（ROADMAP 671）——偶爾出發拜訪另一位居民。
+                    // 探訪冷卻 + 確定性觸發（不需改動鎖，下面在 residents 寫鎖段套用）。
+                    let (is_visiting, visit_cooldown) = {
+                        let residents = hub().residents.read().unwrap();
+                        residents.iter().find(|r| r.id == rid)
+                            .map_or((false, 0.0), |r| (r.visiting.is_some(), r.visit_cooldown))
+                    }; // residents 讀鎖釋放
+
+                    if !is_visiting && vvisit::should_visit(true, visit_cooldown, rand::random::<f32>()) {
+                        // 挑目標居民（確定性：用居民位置 bits 避免每幀不同）。
+                        let pick = ((rx as u32).wrapping_add(rz as u32)) as usize;
+                        let my_idx = rid.trim_start_matches("vox_res_").parse::<usize>().unwrap_or(0);
+                        // 快照所有居民的家域中心（短鎖）。
+                        let homes_snap: Vec<(f32, f32, String)> = {
+                            let res = hub().residents.read().unwrap();
+                            res.iter().map(|r| (r.home_x, r.home_z, r.name.to_string())).collect()
+                        }; // residents 讀鎖釋放
+                        let homes_ref: Vec<(f32, f32, &str)> = homes_snap
+                            .iter().map(|(x, z, n)| (*x, *z, n.as_str())).collect();
+                        if let Some((tx, tz, host_name)) = vvisit::pick_destination(my_idx, &homes_ref, pick) {
+                            let host = host_name.to_string();
+                            {
+                                let mut residents = hub().residents.write().unwrap();
+                                if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                                    r.visiting = Some((tx, tz, host.clone()));
+                                    r.visit_stay_timer = 0.0;
+                                    r.visit_cooldown = vvisit::VISIT_COOLDOWN_SECS;
+                                    // 設定閒晃目標直接朝目的地前進
+                                    r.target_x = tx;
+                                    r.target_z = tz;
+                                }
+                            } // residents 寫鎖釋放
+                            // Feed 事件（鎖外 IO）。
+                            vfeed::append_feed(
+                                vvisit::FEED_KIND_DEPART,
+                                rname,
+                                &format!("動身去拜訪{host}！"),
+                            );
+                        }
+                    } else if !is_visiting {
+                        // 不探訪：偶爾散心採集（低頻、不洗版），否則純閒晃。
+                        if rand::random::<f32>() < IDLE_GATHER_CHANCE {
+                            start_gather(&rid, rx, rz);
+                        }
                     }
                 }
             }
