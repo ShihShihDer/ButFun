@@ -2833,6 +2833,40 @@ pub async fn voxel_affinity_handler(
         .unwrap()
 }
 
+/// 乙太方界·居民交情網（ROADMAP 708）：回傳 4 位居民兩兩之間的情誼層級與拜訪次數。
+///
+/// 情誼（672）驅動問候語/八卦轉述/互助蓋家，早就悄悄累積在伺服器內部，
+/// 但玩家從沒有任何管道看見「這座小社會到底誰跟誰要好」——這份資料只存在於
+/// 決策邏輯裡，從未攤開給人看過。本端點把它讀出來，供前端「交情網」面板呈現。
+pub async fn voxel_relations_handler() -> axum::response::Response {
+    use axum::http::header;
+    let rows: Vec<serde_json::Value> = {
+        // 短讀鎖一次性快照全部兩兩組合 → 立即釋放，不與其他鎖巢狀。
+        let bonds = hub().bonds.read().unwrap();
+        let mut out = Vec::with_capacity(RESIDENT_COUNT * (RESIDENT_COUNT - 1) / 2);
+        for i in 0..RESIDENT_COUNT {
+            for j in (i + 1)..RESIDENT_COUNT {
+                let id_a = format!("vox_res_{i}");
+                let id_b = format!("vox_res_{j}");
+                let tier = bonds.tier_of(&id_a, &id_b);
+                out.push(serde_json::json!({
+                    "a": resident_name_of(&id_a),
+                    "b": resident_name_of(&id_b),
+                    "tier": vbonds::tier_key(tier),
+                    "visits": bonds.visit_count(&id_a, &id_b),
+                }));
+            }
+        }
+        out
+    };
+    let body = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into());
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
 /// 一次居民世界推進：套用上輪思考的決策 → 物理/閒晃 → 社交互動 → 廣播 → 排程新一輪思考。
 fn tick_residents(dt: f32) {
     // 0) 推進世界時鐘（短鎖即釋，不巢狀）。晝夜循環 v1。
