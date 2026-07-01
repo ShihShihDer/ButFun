@@ -254,8 +254,26 @@ fn talk_cooldown_ok(elapsed_ms: u64) -> bool {
     elapsed_ms >= TALK_COOLDOWN_MS
 }
 
+/// 居民「能力與誠實」指引——純函式、確定性、無 IO、可測。
+///
+/// 這段文字列出 agency v1 的真實能力邊界，並告訴居民如何對玩家溫暖而誠實：
+/// 可以嚮往、可以說想學、可以幫一部分，但**絕不為討好而承諾做不到的事**。
+/// 回傳 `&'static str`，零分配、可直接嵌入 system prompt。
+pub(crate) fn resident_honesty_guide() -> &'static str {
+    "【你的能力與誠實】\
+你確實會做的事：採集草、沙、木頭、石頭、礦石等材料；在自己家附近蓋小型結構（小屋、水井、花圃、瞭望塔）；\
+記得認識的旅人、和人聊天、種田、表達自己的心願。\
+你目前還做不到的事：大規模整地（例如推平一百格乘一百格那樣的工程）、指揮或協調其他居民一起行動、\
+規劃整座城鎮的佈局、把旅人隨口交代的任意指令變成真正的行動去執行。\
+誠實原則：旅人若交代了你力所不能及的事，請別為了讓對方開心而假裝做得到——\
+你可以溫暖地說嚮往（「好想學……」「聽起來真壯觀……」），\
+可以說你能幫上的那一小部分，也可以坦白說「這件事太大了，光靠我一個人做不來」。\
+誠實不是冷漠——有限制、會嚮往、坦白做不到，才更像真正活著的人。"
+}
+
 /// 組對話用 system prompt：複用居民 agent 人設字串（`resident_agent_persona`），
-/// 再補上「身處乙太方界、有旅人來搭話、請自然回應」的語境與口吻約束。
+/// 再補上「身處乙太方界、有旅人來搭話、請自然回應」的語境與口吻約束，
+/// 以及「能力與誠實」指引（`resident_honesty_guide`）——讓居民溫暖但不開空頭支票。
 /// `desire` 非空時把心願注入——居民帶著夢想和玩家對話，玩家能感受到「你的話種下了什麼」。
 fn resident_talk_system_prompt(name: &str, persona: ResidentPersona, desire: Option<&str>) -> String {
     let base = npc_agent_wire::resident_agent_persona(name, persona);
@@ -267,10 +285,12 @@ fn resident_talk_system_prompt(name: &str, persona: ResidentPersona, desire: Opt
             )
         })
         .unwrap_or_default();
+    let honesty = resident_honesty_guide();
     format!(
         "{base}\n\n你現在身處『乙太方界』——一片由方塊構成、寧靜清新的新生天地，你是這裡的居民。{desire_note}\
         此刻有一位來訪的旅人向你搭話。請以你的身份、用繁體中文自然回應，1 到 2 句、口吻溫暖親切，\
-        可以聊聊你在這片方塊天地裡的生活或當下的心情；絕不跳出角色，也不要提到你是 AI 或語言模型。"
+        可以聊聊你在這片方塊天地裡的生活或當下的心情；絕不跳出角色，也不要提到你是 AI 或語言模型。\
+        \n\n{honesty}"
     )
 }
 
@@ -4107,6 +4127,54 @@ mod tests {
         for n in RESIDENT_NAMES {
             assert!(!resident_canned_reply(n).is_empty());
         }
+    }
+
+    #[test]
+    fn honesty_guide_non_empty_and_has_key_principles() {
+        // 誠實指引本身：非空、含能力說明、含誠實原則關鍵詞。
+        let guide = resident_honesty_guide();
+        assert!(!guide.is_empty(), "誠實指引不應為空");
+        // 能做的能力
+        assert!(guide.contains("採集"), "應提到採集能力");
+        assert!(guide.contains("小型結構"), "應提到可蓋小型結構");
+        // 做不到的事
+        assert!(guide.contains("做不到"), "應說明做不到的項目");
+        assert!(guide.contains("整地"), "應提到無法大規模整地");
+        // 誠實原則關鍵詞
+        assert!(guide.contains("誠實"), "應含誠實原則段落");
+        assert!(guide.contains("假裝"), "應告知別假裝做得到");
+    }
+
+    #[test]
+    fn honesty_guide_injected_into_talk_prompt_for_all_personas() {
+        // 所有人設下，system prompt 都應帶入誠實指引（治討好傾向）。
+        let guide = resident_honesty_guide();
+        for persona in [
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::FarmWorker,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let sys = resident_talk_system_prompt("艾拉", persona, None);
+            assert!(
+                sys.contains(guide),
+                "persona {:?} 的 prompt 應含誠實指引",
+                persona
+            );
+        }
+    }
+
+    #[test]
+    fn honesty_guide_injected_with_desire_note() {
+        // 帶心願時，誠實指引仍要在 prompt 裡（心願不能擠掉誠實指引）。
+        let guide = resident_honesty_guide();
+        let sys = resident_talk_system_prompt(
+            "諾娃",
+            ResidentPersona::Wanderer,
+            Some("在廣場蓋一座水井"),
+        );
+        assert!(sys.contains("水井"), "心願應注入 prompt");
+        assert!(sys.contains(guide), "帶心願時誠實指引仍應存在");
     }
 
     #[test]
