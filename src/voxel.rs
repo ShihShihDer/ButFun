@@ -71,6 +71,7 @@ pub struct Tree {
 /// ID 23：鐵磚（ROADMAP 684）工作台 4 鐵錠→1 鐵磚；壓縮金屬建材，比鐵錠更光滑。
 /// ID 24–30：流動水（水流動模擬）——來源水 Water=7 是 level 0/無限，24..=30 是流動 level 1..=7
 /// （遞減、離源太遠乾涸）；非實心、碰撞/挖放規則同 Water；id 定義集中在 voxel_water。
+/// ID 31：火把（ROADMAP 685）背包 2×2：1 木+1 煤礦→4 火把；橘黃燈柱，礦坑標記/裝飾用。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Block {
@@ -129,6 +130,9 @@ pub enum Block {
     WaterFlow6 = 29,
     /// 流動水 level 7（最弱、離源最遠；再遠一格就乾涸）。
     WaterFlow7 = 30,
+    /// 火把（ROADMAP 685）——背包 2×2 合成：1 木頭 + 1 煤礦 → 4 火把；
+    /// 橘黃燈柱，點亮礦坑黑暗隧道、標記探索路線，也是裝飾性光源方塊。
+    Torch = 31,
 }
 
 impl Block {
@@ -183,6 +187,7 @@ impl Block {
             28 => Some(Block::WaterFlow5),
             29 => Some(Block::WaterFlow6),
             30 => Some(Block::WaterFlow7),
+            31 => Some(Block::Torch),
             _ => None,
         }
     }
@@ -195,7 +200,8 @@ impl Block {
             Block::Dirt | Block::Stone | Block::Sand | Block::Wood | Block::Grass |
             Block::Plank | Block::StoneBrick | Block::Glass | Block::FarmSoil |
             Block::Workbench | Block::Furnace | Block::SmoothStone |
-            Block::CoalOre | Block::IronOre | Block::IronIngot | Block::IronBlock
+            Block::CoalOre | Block::IronOre | Block::IronIngot | Block::IronBlock |
+            Block::Torch
         )
     }
 }
@@ -666,8 +672,9 @@ mod tests {
             assert_eq!(Block::from_u8(id), Some(b));
             assert_eq!(b as u8, id);
         }
-        // 未使用的 id 仍回 None（向後相容、越界安全）。
-        assert_eq!(Block::from_u8(31), None);
+        // 31 = Torch（ROADMAP 685），32 以後是未使用 id。
+        assert_eq!(Block::from_u8(31), Some(Block::Torch));
+        assert_eq!(Block::from_u8(32), None);
     }
 
     #[test]

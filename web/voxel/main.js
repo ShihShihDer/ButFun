@@ -41,6 +41,8 @@ const IRON_BLOCK = 23;
 const WATER_FLOW_BASE = 24, WATER_FLOW_MAX_LVL = 7;
 // 任一方塊 id 是否為「水」（來源或流動）——渲染與碰撞都把兩者當水看待。
 function isWaterId(b) { return b === WATER || (b >= WATER_FLOW_BASE && b < WATER_FLOW_BASE + WATER_FLOW_MAX_LVL); }
+// 火把 v1（ROADMAP 685）——背包合成（1 木頭 + 1 煤礦 → 4 火把）；橘黃光源，礦坑標記用
+const TORCH = 31;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -70,6 +72,8 @@ const COLOR = {
   [IRON_INGOT]:        [0.76, 0.76, 0.82], // 鐵錠——明亮銀灰，冶煉後的光澤金屬
   // 鐵磚 v1（ROADMAP 684）——壓縮精煉，比鐵錠更亮更飽和
   [IRON_BLOCK]:        [0.88, 0.88, 0.94], // 鐵磚——高亮銀白帶藍，光潔金屬塊感
+  // 火把 v1（ROADMAP 685）——橘黃火焰感，點亮礦坑隧道
+  [TORCH]:             [1.00, 0.61, 0.05], // 火把——暖橘黃，燃燒火焰的光感
 };
 
 const DEBUG = location.search.includes("debug");
@@ -1139,9 +1143,9 @@ let target = null;
 
 // ── 快捷欄（選要放的方塊型別）+ 背包存量（採集 v1）───────────────────────────
 // 種田 v1（ROADMAP 659）：加入農田土 + 種子（種子為純物品，特殊 Plant 動作）
-// 快捷欄 20 格：…WORKBENCH FURNACE SMOOTH_STONE WHEAT BREAD COAL_ORE IRON_ORE IRON_INGOT IRON_BLOCK
+// 快捷欄 21 格：…WORKBENCH FURNACE SMOOTH_STONE WHEAT BREAD COAL_ORE IRON_ORE IRON_INGOT IRON_BLOCK TORCH
 // 鍵盤 1–9 對應前 9 格；其餘以滑鼠/觸控點選
-const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE, WHEAT, BREAD, COAL_ORE, IRON_ORE, IRON_INGOT, IRON_BLOCK];
+const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE, WHEAT, BREAD, COAL_ORE, IRON_ORE, IRON_INGOT, IRON_BLOCK, TORCH];
 const BLOCK_NAME = {
   [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉",
   [PLANK]: "木板", [STONE_BRICK]: "石磚", [GLASS]: "玻璃",
@@ -1160,6 +1164,8 @@ const BLOCK_NAME = {
   [IRON_INGOT]: "鐵錠",
   // 鐵磚 v1（ROADMAP 684）
   [IRON_BLOCK]: "鐵磚",
+  // 火把 v1（ROADMAP 685）
+  [TORCH]: "火把",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
@@ -1954,6 +1960,8 @@ const RECIPES_JS = [
   { id: "workbench",    name: "工作台", inputs: [[PLANK, 4]], output_block: WORKBENCH,   out_count: 1 },
   // 麵包 v1（ROADMAP 668）：3 小麥顆粒 → 1 麵包
   { id: "bread",        name: "麵包",   inputs: [[WHEAT, 3]], output_block: BREAD,       out_count: 1 },
+  // 火把 v1（ROADMAP 685）：1 木頭 + 1 煤礦 → 4 火把
+  { id: "torch",        name: "火把",   inputs: [[WOOD, 1], [COAL_ORE, 1]], output_block: TORCH, out_count: 4 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
@@ -2604,4 +2612,6 @@ window.__voxel = {
   IRON_INGOT,
   // ── 鐵磚 v1 QA 用（ROADMAP 684）──
   IRON_BLOCK,
+  // ── 火把 v1 QA 用（ROADMAP 685）──
+  TORCH,
 };
