@@ -149,6 +149,19 @@ pub fn wander_target(cx: f32, cz: f32, angle: f32, radius: f32) -> (f32, f32) {
 /// 居民家域半徑（方塊）：超出此距離時歸巢（以家為閒晃中心），在內時自由閒晃。
 pub const HOME_RADIUS: f32 = 20.0;
 
+/// 夜間遮蔽（回自己蓋的小屋）時的閒晃半徑：刻意遠比 [`HOME_RADIUS`] 小，
+/// 讓居民緊靠在自家附近，而非在整個家域內遊走——玩家一眼就能看出「牠回家了」。
+pub const SHELTER_WANDER_RADIUS: f32 = 2.5;
+
+/// 此刻是否該回自己蓋的小屋遮蔽（夜間 + 已知小屋座標）。純函式、可測。
+///
+/// 只是「回家附近待著」的行為判斷，不含任何路徑/物理——呼叫端拿到 `true` 後，
+/// 改用小屋座標當閒晃中心＋ [`SHELTER_WANDER_RADIUS`]，其餘走既有 `wander_center`/
+/// `wander_target`，零新路徑邏輯。
+pub fn should_shelter(is_night: bool, has_house: bool) -> bool {
+    is_night && has_house
+}
+
 /// 取閒晃中心：若居民超出家域半徑，以家 (hx,hz) 為中心（引導歸巢），
 /// 否則以當前位置 (cx,cz) 為中心（在家域內自由閒晃）。純函式、可測。
 pub fn wander_center(cx: f32, cz: f32, hx: f32, hz: f32, home_radius: f32) -> (f32, f32) {
@@ -741,5 +754,22 @@ mod tests {
         for i in 0..4_usize {
             assert_eq!(resident_home_base(i), resident_home_base(i + 4));
         }
+    }
+
+    // ── should_shelter：夜間歸巢遮蔽判斷 ──────────────────────────────────────
+
+    #[test]
+    fn should_shelter_only_when_night_and_has_house() {
+        assert!(should_shelter(true, true), "夜間 + 有小屋 → 該遮蔽");
+        assert!(!should_shelter(false, true), "白天不遮蔽，就算有小屋");
+        assert!(!should_shelter(true, false), "夜間但沒蓋過小屋 → 沒地方回，不遮蔽");
+        assert!(!should_shelter(false, false), "白天且沒小屋 → 不遮蔽");
+    }
+
+    #[test]
+    fn shelter_wander_radius_is_smaller_than_home_radius() {
+        // 遮蔽半徑該遠比家域半徑小，讓居民緊靠在自家附近（一眼看得出「回家了」）。
+        assert!(SHELTER_WANDER_RADIUS > 0.0);
+        assert!(SHELTER_WANDER_RADIUS < HOME_RADIUS);
     }
 }
