@@ -45,6 +45,8 @@ function isWaterId(b) { return b === WATER || (b >= WATER_FLOW_BASE && b < WATER
 const TORCH = 31;
 // 鎬具 v1（ROADMAP 687）——純物品，不可放置；提升石/礦採集速度
 const PICKAXE_WOOD = 32, PICKAXE_STONE = 33, PICKAXE_IRON = 34;
+// 梯子 v1（ROADMAP 688）——可放置；玩家進入方格後自動抓握、取消重力可垂直攀爬
+const LADDER = 35;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -76,6 +78,8 @@ const COLOR = {
   [IRON_BLOCK]:        [0.88, 0.88, 0.94], // 鐵磚——高亮銀白帶藍，光潔金屬塊感
   // 火把 v1（ROADMAP 685）——橘黃火焰感，點亮礦坑隧道
   [TORCH]:             [1.00, 0.61, 0.05], // 火把——暖橘黃，燃燒火焰的光感
+  // 梯子 v1（ROADMAP 688）——暖木棕，比木板略深；放置後可垂直攀爬
+  [LADDER]:            [0.62, 0.42, 0.20], // 梯子——深暖棕，木製梯架感
   // 鎬具 v1（ROADMAP 687）——工具物品，不渲染為世界方塊（只在 UI 顯示）
   [PICKAXE_WOOD]:  [0.60, 0.44, 0.26], // 木鎬——深棕木柄感
   [PICKAXE_STONE]: [0.58, 0.58, 0.60], // 石鎬——冷灰石質感
@@ -214,7 +218,8 @@ function getRaw(wx, wy, wz) {
 // 碰撞用：未載入(-1)視為空（不擋路、不卡人）；來源水/流動水與空氣皆不實心。
 function solidCollide(wx, wy, wz) {
   const r = getRaw(wx, wy, wz);
-  return r > 0 && !isWaterId(r); // -1/AIR/WATER/流動水 → false
+  // 梯子（LADDER=35）非實心——玩家可穿入；水與 AIR 同理不碰撞
+  return r > 0 && !isWaterId(r) && r !== LADDER;
 }
 
 // ── 六面定義（外向法線；用 DoubleSide 材質保險，避免纏繞方向把面剔成黑屏）──────
@@ -227,12 +232,13 @@ const FACES = [
   { n: [0, 0, -1], v: [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]], d: [0, 0, -1] },
 ];
 
-// 不透明面是否該畫：相鄰是空氣或水（來源/流動，看得到）才畫；未載入(-1)當作實心 → 不畫
+// 不透明面是否該畫：相鄰是空氣、水或梯子（可視穿）才畫；未載入(-1)當作實心 → 不畫
 //（避免世界邊緣冒出一面牆，等鄰塊串到再補）。
 function faceVisibleOpaque(nx, ny, nz) {
   const r = getRaw(nx, ny, nz);
   if (r === -1) return false;
-  return r === AIR || isWaterId(r);
+  // 梯子（LADDER=35）是可穿越方塊，視覺上等同空氣（讓相鄰方塊渲染面朝向梯子）
+  return r === AIR || isWaterId(r) || r === LADDER;
 }
 // 水面只朝空氣畫（露出水面那一片）；相鄰是別的水（來源/流動）不畫內面，鄰格未載入時不畫。
 function faceVisibleWater(nx, ny, nz) {
@@ -1174,6 +1180,8 @@ const BLOCK_NAME = {
   [TORCH]: "火把",
   // 鎬具 v1（ROADMAP 687）
   [PICKAXE_WOOD]: "木鎬", [PICKAXE_STONE]: "石鎬", [PICKAXE_IRON]: "鐵鎬",
+  // 梯子 v1（ROADMAP 688）
+  [LADDER]: "梯子",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
@@ -1226,6 +1234,19 @@ addEventListener("keydown", (e) => {
   const n = parseInt(e.key, 10);
   if (n >= 1 && n <= HOTBAR.length) selectSlot(n - 1);
 });
+
+// 純函式：玩家 AABB 是否與任一梯子方塊重疊（攀爬判定）。
+// 不依賴全域，可測；getBlock(bx,by,bz) 回傳方塊 id（未載入回 -1）。
+function aabbHitsLadder(x, y, z, getBlock, pw, ph) {
+  const x0 = Math.floor(x - pw), x1 = Math.floor(x + pw);
+  const y0 = Math.floor(y), y1 = Math.floor(y + ph - 0.01);
+  const z0 = Math.floor(z - pw), z1 = Math.floor(z + pw);
+  for (let bx = x0; bx <= x1; bx++)
+    for (let by = y0; by <= y1; by++)
+      for (let bz = z0; bz <= z1; bz++)
+        if (getBlock(bx, by, bz) === LADDER) return true;
+  return false;
+}
 
 // 純函式：以「腳底在 y、半寬 pw、身高 ph」的 AABB，問 isSolid(bx,by,bz) 是否與任一實心格重疊。
 // 不依賴全域（player/solidCollide 由呼叫端帶入），方便真瀏覽器 QA 直接餵假地形驗證。
@@ -1380,6 +1401,7 @@ const BLOCK_HARDNESS = {
   [FARM_SOIL]: 0.4, [FARM_SOIL_SEEDED]: 0.4, [WHEAT_MATURE]: 0.2,
   [WORKBENCH]: 1.2, [FURNACE]: 1.5,
   [TORCH]: 0.1,
+  [LADDER]: 0.4,  // 梯子——木製，輕鬆打破
 };
 function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
 
@@ -1901,6 +1923,8 @@ function sendMove(dt) {
 
 // ── 主迴圈 ─────────────────────────────────────────────────────────────────
 const SPEED = 5.0, GRAVITY = 24.0;
+// 梯子攀爬速度（方塊/秒）；比走路略慢，強調「謹慎攀降」感。
+const CLIMB_SPEED = 3.5;
 let last = performance.now();
 let frames = 0, fpsT = 0, fps = 0;
 let dbgT = 0;
@@ -1916,7 +1940,22 @@ function update(dt) {
   if (keys["KeyA"] || keys["ArrowLeft"]) mx -= 1;
   // 觸控搖桿（y 往上＝前進）
   mz += -joyVec.y; mx += joyVec.x;
-  if ((keys["Space"]) && player.grounded) tryJump();
+
+  // ── 梯子攀爬 v1（ROADMAP 688）：進入梯子方格後取消重力、Space/跳鈕上爬、S/搖桿下降 ──
+  const climbing = aabbHitsLadder(player.x, player.y, player.z, getRaw, PW, PH);
+  if (climbing) {
+    player.vy = 0;       // 取消重力累積
+    player.grounded = false;
+    // 上爬：Space（桌機）或搖桿向上（-joyVec.y > 0.2；y 軸向上為負）
+    const climbUp = keys["Space"] || (-joyVec.y > 0.2);
+    // 下降：S 鍵（桌機）或搖桿向下（joyVec.y > 0.2）
+    const climbDown = keys["KeyS"] || keys["ArrowDown"] || (joyVec.y > 0.2);
+    if (climbUp)        player.y += CLIMB_SPEED * dt;
+    else if (climbDown) player.y -= CLIMB_SPEED * dt;
+    // 水平仍可移動（側步可脫離梯子）
+  } else {
+    if ((keys["Space"]) && player.grounded) tryJump();
+  }
 
   const dir = new THREE.Vector3();
   dir.addScaledVector(fwd, mz).addScaledVector(right, mx);
@@ -1926,21 +1965,23 @@ function update(dt) {
     moveAxis("z", dir.z * SPEED * dt);
   }
 
-  // 重力 + 垂直碰撞
-  player.vy -= GRAVITY * dt;
-  // 限制單幀垂直位移避免穿牆
-  let dy = Math.max(-1.5, Math.min(1.5, player.vy * dt));
-  const prevY = player.y;
-  player.y += dy;
-  if (overlaps()) {
-    player.y = prevY;
-    if (player.vy < 0) player.grounded = true;
-    player.vy = 0;
-  } else {
-    if (player.vy < 0) player.grounded = false;
+  if (!climbing) {
+    // 重力 + 垂直碰撞（只在非攀爬模式下套用）
+    player.vy -= GRAVITY * dt;
+    // 限制單幀垂直位移避免穿牆
+    let dy = Math.max(-1.5, Math.min(1.5, player.vy * dt));
+    const prevY = player.y;
+    player.y += dy;
+    if (overlaps()) {
+      player.y = prevY;
+      if (player.vy < 0) player.grounded = true;
+      player.vy = 0;
+    } else {
+      if (player.vy < 0) player.grounded = false;
+    }
+    // 掉出世界保險：低於 -10 拉回出生高度
+    if (player.y < -10) { player.y = 40; player.vy = 0; stepSmooth = 0; }
   }
-  // 掉出世界保險：低於 -10 拉回出生高度
-  if (player.y < -10) { player.y = 40; player.vy = 0; stepSmooth = 0; }
 
   // 脫困保險（每幀）：若這幀結束後仍與實心方塊重疊（最常見：新 chunk 載入把人埋住、
   // 出生瞬間、走進未載入區後補載），把人頂出方塊外，避免永久卡死。沒卡就零成本早退。
@@ -2074,6 +2115,8 @@ const RECIPES_JS = [
   // 鎬具 v1（ROADMAP 687）：採石/採礦手感加速；剛好 2×2 四格
   { id: "wood_pickaxe",  name: "木鎬", inputs: [[WOOD, 3], [PLANK, 1]],  output_block: PICKAXE_WOOD,  out_count: 1 },
   { id: "stone_pickaxe", name: "石鎬", inputs: [[STONE, 3], [PLANK, 1]], output_block: PICKAXE_STONE, out_count: 1 },
+  // 梯子 v1（ROADMAP 688）：3 木板 → 3 梯子（垂直攀爬，深礦上下自如）
+  { id: "ladder", name: "梯子", inputs: [[PLANK, 3]], output_block: LADDER, out_count: 3 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
@@ -2733,4 +2776,9 @@ window.__voxel = {
   blockHardness, pickaxeBonus,
   get mining() { return mining; },
   get isMouseDown() { return isMouseDown; },
+  // ── 梯子 v1 QA 用（ROADMAP 688）──
+  LADDER, CLIMB_SPEED,
+  aabbHitsLadder(x, y, z, getBlock, pw, ph) {
+    return aabbHitsLadder(x, y, z, getBlock, pw == null ? PW : pw, ph == null ? PH : ph);
+  },
 };
