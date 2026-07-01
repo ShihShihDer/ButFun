@@ -1125,6 +1125,15 @@ function renderDiaryPage(page, name) {
     }
   }
   diaryBodyEl.appendChild(memSection);
+
+  // 模糊印象區塊（記憶 v2 最小可行版）：更早以前被記憶 cap 淘汰的舊記憶，
+  // 沒有直接消失、留下一句去識別化的殘影——只在真的有淡忘過才顯示。
+  if (page && page.faint_impression) {
+    const impSection = document.createElement("div");
+    impSection.className = "diary-impression";
+    impSection.textContent = page.faint_impression;
+    diaryBodyEl.appendChild(impSection);
+  }
 }
 
 /** 純函式：轉義 HTML 特殊字元，避免記憶摘要插入 XSS（防護邊界）。 */

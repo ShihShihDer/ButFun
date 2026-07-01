@@ -2341,12 +2341,12 @@ pub async fn voxel_diary_handler() -> axum::response::Response {
         rs.iter().map(|r| (r.id.clone(), r.name)).collect()
     };
 
-    // 2) 短鎖快照全部長期記憶（每位）→ drop。
-    let all_memories: Vec<(String, Vec<crate::voxel_memory::MemoryEntry>)> = {
+    // 2) 短鎖快照全部長期記憶 + 淡忘計數（每位）→ drop。
+    let all_memories: Vec<(String, Vec<crate::voxel_memory::MemoryEntry>, usize)> = {
         let mem = hub().memory.read().unwrap();
         resident_ids
             .iter()
-            .map(|(id, _)| (id.clone(), mem.all_memories_for(id)))
+            .map(|(id, _)| (id.clone(), mem.all_memories_for(id), mem.faded_count(id)))
             .collect()
     };
 
@@ -2361,8 +2361,8 @@ pub async fn voxel_diary_handler() -> axum::response::Response {
         .iter()
         .zip(all_memories.iter())
         .zip(desires.iter())
-        .map(|(((id, name), (_, mems)), desire)| {
-            voxel_diary::format_diary_page(id, name, desire.as_deref(), mems)
+        .map(|(((id, name), (_, mems, faded)), desire)| {
+            voxel_diary::format_diary_page(id, name, desire.as_deref(), mems, *faded)
         })
         .collect();
 
