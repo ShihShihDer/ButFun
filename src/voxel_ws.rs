@@ -840,9 +840,16 @@ enum ClientMsg {
     },
     /// 合成台 v1：用配料合成新型方塊（ROADMAP 658）。`recipe_id` 對齊 voxel_craft::Recipe.id。
     Craft { recipe_id: String },
-    /// 種田 v1：在農田土上種下種子（ROADMAP 659）。
-    /// 伺服器驗證目標是 FarmSoil(11)、玩家有種子(14)後，把方塊改成 FarmSoilSeeded(12)。
-    Plant { x: i32, y: i32, z: i32 },
+    /// 種田 v1：在農田土上種下種子（ROADMAP 659）。第二種作物 v1：`seed` 是選種的種子
+    /// 物品 id（additive、`#[serde(default)]` 向後相容——省略時預設小麥種子(14)）。
+    /// 伺服器驗證目標是 FarmSoil(11)、玩家持有對應種子後，把方塊改成對應的 Seeded 狀態。
+    Plant {
+        x: i32,
+        y: i32,
+        z: i32,
+        #[serde(default)]
+        seed: Option<u8>,
+    },
     /// 居民贈禮 v1：把背包裡的一件材料送給附近居民（ROADMAP 660）。
     /// 伺服器驗證觸及範圍 + 背包存量後，扣材料、加記憶 ×2、居民冒泡道謝。
     Gift { resident_id: String, item_id: u8 },
@@ -1154,17 +1161,28 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         //   Leaves(6)        → 種子(14)×1（葉片→種子，v1 種子來源）。
                         //   FarmSoilSeeded(12)→ 農田土(11)×1 + 種子(14)×1（取消種植退還）。
                         //   WheatMature(13)   → 農田土(11)×1 + 種子(14)×1 + 小麥(18)×1（收割；ROADMAP 668）。
+                        //   第二種作物 v1：
+                        //   Grass(1)          → 草(1)×1 + 胡蘿蔔種子(48)×1（原掉落不變，額外送種子當第二作物來源）。
+                        //   CarrotSeeded(46)  → 農田土(11)×1 + 胡蘿蔔種子(48)×1（取消種植退還）。
+                        //   CarrotMature(47)  → 農田土(11)×1 + 胡蘿蔔種子(48)×1 + 胡蘿蔔(49)×1（收割）。
                         //   其餘實心方塊     → 自身×1（原行為）。
                         let drops: &[(u8, u32)] = match target_block {
                             Block::Leaves          => &[(vfarm::SEEDS_ID, 1)],
                             Block::FarmSoilSeeded  => &[(11, 1), (vfarm::SEEDS_ID, 1)],
                             // 麵包 v1（ROADMAP 668）：收割得 1 種子 + 1 小麥顆粒，不再雙倍種子。
                             Block::WheatMature     => &[(11, 1), (vfarm::SEEDS_ID, 1), (vfarm::WHEAT_ID, 1)],
+                            Block::Grass           => &[(Block::Grass as u8, 1), (vfarm::CARROT_SEEDS_ID, 1)],
+                            Block::CarrotSeeded    => &[(11, 1), (vfarm::CARROT_SEEDS_ID, 1)],
+                            Block::CarrotMature    => &[(11, 1), (vfarm::CARROT_SEEDS_ID, 1), (vfarm::CARROT_ID, 1)],
                             _ => &[], // 後面用 else 分支處理
                         };
 
                         // 種田 v1 的方塊 → 農地 store 也要清掉記錄。
-                        if matches!(target_block, Block::FarmSoilSeeded | Block::WheatMature) {
+                        if matches!(
+                            target_block,
+                            Block::FarmSoilSeeded | Block::WheatMature
+                                | Block::CarrotSeeded | Block::CarrotMature
+                        ) {
                             hub().farm.write().unwrap().remove(x, y, z);
                         }
 
@@ -1687,8 +1705,9 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     }
                 }
             }
-            Ok(ClientMsg::Plant { x, y, z }) => {
+            Ok(ClientMsg::Plant { x, y, z, seed }) => {
                 // 種田 v1（ROADMAP 659）：在農田土(11)上種下種子(14) → FarmSoilSeeded(12)。
+                // 第二種作物 v1：`seed` 為胡蘿蔔種子(48) 時改種胡蘿蔔 → CarrotSeeded(46)。
                 // 鎖序：inventory → delta → farm（循序取放，不巢狀，守死鎖鐵律）。
                 let Some((px, py, pz)) = player_pos(my_id) else {
                     continue;
@@ -1708,18 +1727,25 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     ));
                     continue;
                 }
+                // 依 seed 選作物種類（省略/非胡蘿蔔種子一律當小麥，向後相容舊客戶端）。
+                let is_carrot = seed == Some(vfarm::CARROT_SEEDS_ID);
+                let (seed_id, kind, seeded_block) = if is_carrot {
+                    (vfarm::CARROT_SEEDS_ID, vfarm::CropKind::Carrot, Block::CarrotSeeded)
+                } else {
+                    (vfarm::SEEDS_ID, vfarm::CropKind::Wheat, Block::FarmSoilSeeded)
+                };
                 // 消耗 1 顆種子（inventory 寫鎖即釋）。
-                let seed_entry = hub().inventory.write().unwrap().take(&name, vfarm::SEEDS_ID, 1);
+                let seed_entry = hub().inventory.write().unwrap().take(&name, seed_id, 1);
                 let Some(seed_e) = seed_entry else {
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({ "t": "plant_fail", "reason": "沒有種子" }).to_string(),
                     ));
                     continue;
                 };
-                // 套 delta：FarmSoil → FarmSoilSeeded（delta 寫鎖即釋）。
-                voxel::set_block(&mut hub().deltas.write().unwrap(), x, y, z, Block::FarmSoilSeeded);
+                // 套 delta：FarmSoil → 對應 Seeded 狀態（delta 寫鎖即釋）。
+                voxel::set_block(&mut hub().deltas.write().unwrap(), x, y, z, seeded_block);
                 // 記錄農地 + 持久化種子消耗（兩者都在鎖外）。
-                hub().farm.write().unwrap().plant(x, y, z, vfarm::now_secs());
+                hub().farm.write().unwrap().plant(x, y, z, vfarm::now_secs(), kind);
                 vinv::append_inv(&seed_e);
                 // 水耕檢查（短讀鎖即釋）：下雨時視同水耕（下雨天氣 v1，ROADMAP 700）。
                 let irrigated = *hub().weather.read().unwrap() || {
@@ -1727,18 +1753,21 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     is_irrigated_in_delta(&deltas, x, y, z)
                 };
                 // 廣播方塊更新 + 送背包更新。
-                broadcast_block(x, y, z, Block::FarmSoilSeeded);
-                let new_seed_cnt = hub().inventory.read().unwrap().count(&name, vfarm::SEEDS_ID);
+                broadcast_block(x, y, z, seeded_block);
+                let new_seed_cnt = hub().inventory.read().unwrap().count(&name, seed_id);
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({
                         "t": "inv_update",
-                        "block_id": vfarm::SEEDS_ID,
+                        "block_id": seed_id,
                         "count": new_seed_cnt
                     })
                     .to_string(),
                 ));
                 let _ = out_tx.try_send(Message::Text(
-                    serde_json::json!({ "t": "plant_ok", "x": x, "y": y, "z": z, "irrigated": irrigated }).to_string(),
+                    serde_json::json!({
+                        "t": "plant_ok", "x": x, "y": y, "z": z,
+                        "irrigated": irrigated, "carrot": is_carrot
+                    }).to_string(),
                 ));
             }
             // ── 居民贈禮 v1（ROADMAP 660）────────────────────────────────────────
@@ -2329,8 +2358,8 @@ fn tick_farm() {
     let now = vfarm::now_secs();
     // 短讀鎖取 delta 快照用於水耕判斷（每 15s 一次，clone 代價小），馬上釋放。
     let deltas_snap: voxel::WorldDelta = hub().deltas.read().unwrap().clone();
-    // 短讀鎖取成熟座標（含水耕加速），馬上釋放。
-    let mature: Vec<(i32, i32, i32)> = hub()
+    // 短讀鎖取成熟座標＋作物種類（含水耕加速），馬上釋放。
+    let mature: Vec<((i32, i32, i32), vfarm::CropKind)> = hub()
         .farm
         .read()
         .unwrap()
@@ -2340,13 +2369,18 @@ fn tick_farm() {
     if mature.is_empty() {
         return;
     }
-    for (fx, fy, fz) in mature {
+    for ((fx, fy, fz), kind) in mature {
         // 寫鎖清掉農地記錄（避免下輪重複處理）。
         hub().farm.write().unwrap().remove(fx, fy, fz);
-        // delta 寫鎖：把方塊從 FarmSoilSeeded(12) 換成 WheatMature(13)。
-        voxel::set_block(&mut hub().deltas.write().unwrap(), fx, fy, fz, Block::WheatMature);
-        // 廣播方塊更新（所有連線玩家即時看到小麥變金黃）。
-        broadcast_block(fx, fy, fz, Block::WheatMature);
+        // delta 寫鎖：依作物種類把 Seeded 換成對應 Mature 狀態
+        //（FarmSoilSeeded→WheatMature / CarrotSeeded→CarrotMature，第二種作物 v1）。
+        let mature_block = match kind {
+            vfarm::CropKind::Wheat => Block::WheatMature,
+            vfarm::CropKind::Carrot => Block::CarrotMature,
+        };
+        voxel::set_block(&mut hub().deltas.write().unwrap(), fx, fy, fz, mature_block);
+        // 廣播方塊更新（所有連線玩家即時看到作物成熟變色）。
+        broadcast_block(fx, fy, fz, mature_block);
     }
 }
 

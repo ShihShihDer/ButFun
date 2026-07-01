@@ -153,6 +153,12 @@ pub enum Block {
     /// 放置後右鍵互動：夜晚（深夜/入夜）時睡覺跳過黑夜直達隔天黎明，
     /// 白天睡不著（無效果）。實心方塊，破壞可回收。
     Bed = 45,
+    /// 胡蘿蔔幼苗（第二種作物 v1）——農田土種下胡蘿蔔種子後的生長狀態，
+    /// ~60 秒（水耕 30 秒）後自動長成成熟胡蘿蔔。伺服器維護狀態，玩家不可手動放置。
+    CarrotSeeded = 46,
+    /// 成熟胡蘿蔔（第二種作物 v1）——可收割；破壞後掉落農田土×1 + 胡蘿蔔種子×1 + 胡蘿蔔×1，
+    /// 種田系統第一次有兩種作物可選（小麥慢而多用途／胡蘿蔔快而輕巧）。
+    CarrotMature = 47,
 }
 
 impl Block {
@@ -219,6 +225,8 @@ impl Block {
             43 => Some(Block::DoorClosed),
             44 => Some(Block::DoorOpen),
             45 => Some(Block::Bed),
+            46 => Some(Block::CarrotSeeded),
+            47 => Some(Block::CarrotMature),
             _ => None,
         }
     }
@@ -841,6 +849,18 @@ mod tests {
         assert!(Block::Bed.is_solid(), "床應為實心方塊");
         assert!(Block::Bed.is_placeable(), "床應可放置");
         assert_eq!(Block::from_u8(45), Some(Block::Bed));
+    }
+
+    #[test]
+    fn carrot_states_are_solid_but_not_player_placeable() {
+        // 胡蘿蔔幼苗/成熟胡蘿蔔（id 46/47）：比照 FarmSoilSeeded/WheatMature，
+        // 實心（可站立）但伺服器維護狀態，玩家不能手動放置。
+        assert!(Block::CarrotSeeded.is_solid(), "胡蘿蔔幼苗應為實心");
+        assert!(Block::CarrotMature.is_solid(), "成熟胡蘿蔔應為實心");
+        assert!(!Block::CarrotSeeded.is_placeable(), "胡蘿蔔幼苗不可手動放置");
+        assert!(!Block::CarrotMature.is_placeable(), "成熟胡蘿蔔不可手動放置");
+        assert_eq!(Block::from_u8(46), Some(Block::CarrotSeeded));
+        assert_eq!(Block::from_u8(47), Some(Block::CarrotMature));
     }
 
     #[test]
