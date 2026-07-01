@@ -277,13 +277,15 @@ fn generate_blocks(kind: BuildKind, cx: i32, cy: i32, cz: i32) -> Vec<BuildBlock
                     add(&mut out, cx + dx, cy - 1, cz + dz, Block::Wood);
                 }
             }
-            // 牆壁 2 層（只邊框，中心空，Wood）
+            // 牆壁 2 層（只邊框，中心空，Wood）；正面中央（dx=0,dz=1）兩層疊放木門，
+            // 讓小木屋第一次真的「能被打開」——不再是封死的裝飾殼（ROADMAP·門洞 v1）。
             for layer in 0..2 {
                 let y = cy + layer;
                 for dx in -1i32..=1 {
                     for dz in -1i32..=1 {
                         if dx.abs() == 1 || dz.abs() == 1 {
-                            add(&mut out, cx + dx, y, cz + dz, Block::Wood);
+                            let b = if dx == 0 && dz == 1 { Block::DoorClosed } else { Block::Wood };
+                            add(&mut out, cx + dx, y, cz + dz, b);
                         }
                     }
                 }
@@ -543,8 +545,21 @@ mod tests {
     #[test]
     fn house_block_count() {
         let blocks = generate_blocks(BuildKind::House, 0, 5, 0);
-        // 地板 9 + 牆 8+8 + 屋頂 9 = 34
+        // 地板 9 + 牆 8+8 + 屋頂 9 = 34（門洞取代 2 塊木牆，總數不變）
         assert_eq!(blocks.len(), 34);
+    }
+
+    #[test]
+    fn house_has_two_layer_door_at_front() {
+        let blocks = generate_blocks(BuildKind::House, 10, 5, 20);
+        // 正面（dx=0,dz=+1）兩層都應是門，讓居民蓋的家真的能被打開走進去。
+        let door_layer0 = blocks.iter().find(|b| b.x == 10 && b.y == 5 && b.z == 21);
+        let door_layer1 = blocks.iter().find(|b| b.x == 10 && b.y == 6 && b.z == 21);
+        assert_eq!(door_layer0.map(|b| b.b), Some(Block::DoorClosed as u8));
+        assert_eq!(door_layer1.map(|b| b.b), Some(Block::DoorClosed as u8));
+        // 其餘牆體邊框仍是 Wood，沒有被誤改。
+        let corner = blocks.iter().find(|b| b.x == 9 && b.y == 5 && b.z == 19).unwrap();
+        assert_eq!(corner.b, Block::Wood as u8);
     }
 
     #[test]
