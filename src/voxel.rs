@@ -142,12 +142,20 @@ pub enum Block {
     /// 讓「採集→合成→建造基地+儲存」閉環第一次真正完整。
     /// ID 42（跳過 36~41 = 斧頭/鏟子純物品 ID）。
     Chest = 42,
+    /// 木門（關）（ROADMAP 693）——背包 2×2 合成：4 木板 → 2 門；
+    /// 實心，右鍵切換成開啟狀態（DoorOpen），讓建造封閉房間成為可能。
+    DoorClosed = 43,
+    /// 木門（開）（ROADMAP 693）——DoorClosed 右鍵後的狀態：
+    /// **非實心**——玩家可穿入；DDA 仍命中此格（r>0），右鍵再關。
+    /// 伺服器維護狀態，玩家不可直接放置。
+    DoorOpen = 44,
 }
 
 impl Block {
-    /// 是否為「實心、可站立／會擋路」的方塊（碰撞與面剔除用）。空氣、來源水、流動水、梯子皆非實心。
+    /// 是否為「實心、可站立／會擋路」的方塊（碰撞與面剔除用）。空氣、來源水、流動水、梯子、開門皆非實心。
     pub fn is_solid(self) -> bool {
-        !matches!(self, Block::Air | Block::Water | Block::Ladder) && !self.is_flowing_water()
+        !matches!(self, Block::Air | Block::Water | Block::Ladder | Block::DoorOpen)
+            && !self.is_flowing_water()
     }
 
     /// 是否為「可攀爬」方塊——玩家 AABB 重疊時取消重力、可垂直移動（目前只有梯子）。
@@ -204,6 +212,8 @@ impl Block {
             31 => Some(Block::Torch),
             35 => Some(Block::Ladder),
             42 => Some(Block::Chest),
+            43 => Some(Block::DoorClosed),
+            44 => Some(Block::DoorOpen),
             _ => None,
         }
     }
@@ -217,7 +227,7 @@ impl Block {
             Block::Plank | Block::StoneBrick | Block::Glass | Block::FarmSoil |
             Block::Workbench | Block::Furnace | Block::SmoothStone |
             Block::CoalOre | Block::IronOre | Block::IronIngot | Block::IronBlock |
-            Block::Torch | Block::Ladder | Block::Chest
+            Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed
         )
     }
 }
@@ -328,7 +338,9 @@ pub fn can_break(world: &WorldDelta, px: f32, py: f32, pz: f32, bx: i32, by: i32
     if !in_reach(px, py, pz, bx, by, bz) {
         return false;
     }
-    effective_block_at(world, bx, by, bz).is_solid()
+    let b = effective_block_at(world, bx, by, bz);
+    // 一般：實心方塊可挖；特例：木門（開）雖非實心，仍視為可破壞（破後退木門關）。
+    b.is_solid() || matches!(b, Block::DoorOpen)
 }
 
 /// 放置驗證：方塊型別可放、在觸及範圍內、且目標目前是空氣或水（不覆蓋既有實心方塊）。
@@ -797,6 +809,25 @@ mod tests {
         assert!(!can_place(&world, px, py, pz, x, h + 1, z, Block::Water));
         // 太遠不能放。
         assert!(!can_place(&world, px, py, pz, x, h + 50, z, Block::Stone));
+    }
+
+    #[test]
+    fn door_open_can_be_broken() {
+        // DoorOpen 雖非實心，can_break 仍允許破壞（退還木門關）。
+        let z = 0;
+        let x = clear_land_column(z, 5);
+        let h = height_at(x, z);
+        let mut world = WorldDelta::new();
+        // 玩家站在地表上方，設 DoorOpen 於腳邊。
+        let (px, py, pz) = (x as f32 + 0.5, (h + 1) as f32, z as f32 + 0.5);
+        set_block(&mut world, x, h + 1, z, Block::DoorOpen);
+        assert!(can_break(&world, px, py, pz, x, h + 1, z), "開門可破壞");
+        // DoorClosed 依舊可破壞（實心）。
+        set_block(&mut world, x, h + 1, z, Block::DoorClosed);
+        assert!(can_break(&world, px, py, pz, x, h + 1, z), "關門可破壞");
+        // 空氣仍不可破壞。
+        set_block(&mut world, x, h + 1, z, Block::Air);
+        assert!(!can_break(&world, px, py, pz, x, h + 1, z), "空氣不可破壞");
     }
 
     #[test]

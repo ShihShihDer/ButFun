@@ -53,6 +53,8 @@ const AXE_WOOD = 36, AXE_STONE = 37, AXE_IRON = 38;
 const SHOVEL_WOOD = 39, SHOVEL_STONE = 40, SHOVEL_IRON = 41;
 // 箱子 v1（ROADMAP 692）——工作台合成（8 木板 → 1 箱子）；放置後右鍵互動開儲物面板
 const CHEST = 42;
+// 木門 v1（ROADMAP 693）——背包 2×2 合成（4 木板 → 2 門）；右鍵切換開/關，DoorOpen 非實心可穿越
+const DOOR_CLOSED = 43, DOOR_OPEN = 44;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -100,6 +102,9 @@ const COLOR = {
   [SHOVEL_IRON]:  [0.78, 0.80, 0.84], // 鐵鏟——冷銀，鐵製鏟面反光
   // 箱子 v1（ROADMAP 692）——暖棕木箱感，比工作台淺、比梯子亮；金屬鉚釘感
   [CHEST]:        [0.72, 0.52, 0.28], // 箱子——中暖棕，木箱+鐵釘視覺
+  // 木門 v1（ROADMAP 693）——關閉=深暖棕厚實；開啟=淡杏白，一眼分辨可穿越
+  [DOOR_CLOSED]:  [0.58, 0.36, 0.14], // 木門（關）——深暖棕，實心大門感
+  [DOOR_OPEN]:    [0.85, 0.72, 0.55], // 木門（開）——淡杏白，半透感，可穿越
 };
 
 const DEBUG = location.search.includes("debug");
@@ -311,8 +316,8 @@ function getRaw(wx, wy, wz) {
 // 碰撞用：未載入(-1)視為空（不擋路、不卡人）；來源水/流動水與空氣皆不實心。
 function solidCollide(wx, wy, wz) {
   const r = getRaw(wx, wy, wz);
-  // 梯子（LADDER=35）非實心——玩家可穿入；水與 AIR 同理不碰撞
-  return r > 0 && !isWaterId(r) && r !== LADDER;
+  // 梯子（LADDER=35）、木門（開）（DOOR_OPEN=44）非實心——玩家可穿入；水與 AIR 同理不碰撞
+  return r > 0 && !isWaterId(r) && r !== LADDER && r !== DOOR_OPEN;
 }
 
 // ── 六面定義（外向法線；用 DoubleSide 材質保險，避免纏繞方向把面剔成黑屏）──────
@@ -330,8 +335,8 @@ const FACES = [
 function faceVisibleOpaque(nx, ny, nz) {
   const r = getRaw(nx, ny, nz);
   if (r === -1) return false;
-  // 梯子（LADDER=35）是可穿越方塊，視覺上等同空氣（讓相鄰方塊渲染面朝向梯子）
-  return r === AIR || isWaterId(r) || r === LADDER;
+  // 梯子（LADDER=35）、木門（開）（DOOR_OPEN=44）是可穿越方塊，視覺上等同空氣
+  return r === AIR || isWaterId(r) || r === LADDER || r === DOOR_OPEN;
 }
 // 水面只朝空氣畫（露出水面那一片）；相鄰是別的水（來源/流動）不畫內面，鄰格未載入時不畫。
 function faceVisibleWater(nx, ny, nz) {
@@ -871,7 +876,7 @@ if (speakInputEl && speakSendEl) {
 // 把採來的材料化作一份心意送給居民；居民記得你的照料，好感度 +2。
 
 /// 不可作為禮物的 block_id（純 inventory 物品 / 不合語意送出）。
-const GIFT_EXCLUDED = new Set([0, 7, 12]); // Air / Water / FarmSoilSeeded（已種幼苗）
+const GIFT_EXCLUDED = new Set([0, 7, 12, DOOR_OPEN]); // Air / Water / FarmSoilSeeded / DoorOpen（伺服器狀態，不可贈）
 
 /**
  * 從背包（myInv: Map<blockId, count>）挑出最佳禮物。
@@ -1250,7 +1255,7 @@ let target = null;
 // 種田 v1（ROADMAP 659）：加入農田土 + 種子（種子為純物品，特殊 Plant 動作）
 // 快捷欄 21 格：…WORKBENCH FURNACE SMOOTH_STONE WHEAT BREAD COAL_ORE IRON_ORE IRON_INGOT IRON_BLOCK TORCH
 // 鍵盤 1–9 對應前 9 格；其餘以滑鼠/觸控點選
-const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE, WHEAT, BREAD, COAL_ORE, IRON_ORE, IRON_INGOT, IRON_BLOCK, TORCH, PICKAXE_WOOD, PICKAXE_STONE, PICKAXE_IRON, AXE_WOOD, AXE_STONE, AXE_IRON, SHOVEL_WOOD, SHOVEL_STONE, SHOVEL_IRON, CHEST];
+const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE, WHEAT, BREAD, COAL_ORE, IRON_ORE, IRON_INGOT, IRON_BLOCK, TORCH, PICKAXE_WOOD, PICKAXE_STONE, PICKAXE_IRON, AXE_WOOD, AXE_STONE, AXE_IRON, SHOVEL_WOOD, SHOVEL_STONE, SHOVEL_IRON, CHEST, DOOR_CLOSED];
 const BLOCK_NAME = {
   [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉",
   [PLANK]: "木板", [STONE_BRICK]: "石磚", [GLASS]: "玻璃",
@@ -1280,6 +1285,8 @@ const BLOCK_NAME = {
   [SHOVEL_WOOD]: "木鏟", [SHOVEL_STONE]: "石鏟", [SHOVEL_IRON]: "鐵鏟",
   // 箱子 v1（ROADMAP 692）
   [CHEST]: "箱子",
+  // 木門 v1（ROADMAP 693）
+  [DOOR_CLOSED]: "木門（關）", [DOOR_OPEN]: "木門（開）",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
@@ -1505,6 +1512,8 @@ const BLOCK_HARDNESS = {
   [TORCH]: 0.1,
   [LADDER]: 0.4,  // 梯子——木製，輕鬆打破
   [CHEST]: 1.0,   // 箱子——木箱，中等硬度（含存量，需謹慎破壞）
+  [DOOR_CLOSED]: 0.8,  // 木門（關）——木製，輕鬆打破
+  [DOOR_OPEN]:   0.8,  // 木門（開）——同材質，可破壞
 };
 function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
 
@@ -1623,6 +1632,12 @@ function placeAtTarget() {
   // 箱子互動：右鍵對準箱子方塊 → 傳送 open_chest，伺服器回 chest_view 後開面板。
   if (getRaw(target.bx, target.by, target.bz) === CHEST) {
     openChestPanel(target.bx, target.by, target.bz);
+    return null;
+  }
+  // 木門互動（ROADMAP 693）：右鍵對準門（開或關）→ 傳送 toggle_door，伺服器廣播新狀態。
+  const _doorRaw = getRaw(target.bx, target.by, target.bz);
+  if (_doorRaw === DOOR_CLOSED || _doorRaw === DOOR_OPEN) {
+    ws.send(JSON.stringify({ t: "toggle_door", x: target.bx, y: target.by, z: target.bz }));
     return null;
   }
   // 種子的特殊種植動作：目標是農田土本身（不偏移到面外側）。
@@ -2285,6 +2300,8 @@ const RECIPES_JS = [
   // 鏟子 v1（ROADMAP 690）：挖土/沙/草地加速，完成採集三件套（鎬+斧+鏟）
   { id: "wood_shovel",  name: "木鏟", inputs: [[WOOD, 1], [PLANK, 1]],  output_block: SHOVEL_WOOD,  out_count: 1 },
   { id: "stone_shovel", name: "石鏟", inputs: [[STONE, 1], [PLANK, 1]], output_block: SHOVEL_STONE, out_count: 1 },
+  // 木門 v1（ROADMAP 693）：4 木板 → 2 門（填滿 2×2 格）
+  { id: "door", name: "木門", inputs: [[PLANK, 4]], output_block: DOOR_CLOSED, out_count: 2 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
@@ -3075,4 +3092,6 @@ window.__voxel = {
   get chestPos() { return _chestPos; },
   get chestItems() { return [..._chestItems]; },
   renderChestPanel() { renderChestPanel(); },
+  // ── 木門 v1 QA 用（ROADMAP 693）──
+  DOOR_CLOSED, DOOR_OPEN,
 };

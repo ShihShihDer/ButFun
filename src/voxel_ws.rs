@@ -821,6 +821,10 @@ enum ClientMsg {
     ChestPut { x: i32, y: i32, z: i32, item_id: u8, count: u32 },
     /// 箱子 v1：從箱子取出 `count` 個 `item_id` 到背包（ROADMAP 692）。
     ChestTake { x: i32, y: i32, z: i32, item_id: u8, count: u32 },
+    /// 木門 v1：右鍵切換目標門的開/關狀態（ROADMAP 693）。
+    /// DoorClosed(43)→DoorOpen(44) 或 DoorOpen(44)→DoorClosed(43)；伺服器驗 reach 後廣播。
+    #[serde(rename = "toggle_door")]
+    ToggleDoor { x: i32, y: i32, z: i32 },
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -1094,6 +1098,16 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     // 水流動：剛挖出一個空格 → 排入這格 + 鄰格，讓相鄰水體往缺口流過來
                     //（delta 鎖已釋放，只短暫持 water_queue 鎖，不 await，守鎖紀律）。
                     enqueue_water_around(x, y, z);
+                    // 木門（開）v1（ROADMAP 693）：非實心但可破壞 → 退還木門（關）。
+                    if matches!(target_block, Block::DoorOpen) {
+                        let bid = Block::DoorClosed as u8; // 43
+                        let entry = hub().inventory.write().unwrap().give(&name, bid, 1);
+                        vinv::append_inv(&entry);
+                        let nc = hub().inventory.read().unwrap().count(&name, bid);
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({"t":"inv_update","block_id":bid,"count":nc}).to_string(),
+                        ));
+                    }
                     // 農地方塊有特殊掉落；其餘實心方塊掉落自身。
                     if target_block.is_solid() {
                         // 種田 v1：農地狀態方塊的特殊掉落規則。
@@ -2033,6 +2047,21 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({ "t": "chest_view", "x": x, "y": y, "z": z, "items": items }).to_string(),
                 ));
+            }
+
+            // 木門 v1（ROADMAP 693）：右鍵切換門的開/關狀態。
+            // 鎖序：delta 讀（驗方塊）→ delta 寫（toggle）→ drop；不嵌套、不持鎖 IO。
+            Ok(ClientMsg::ToggleDoor { x, y, z }) => {
+                let Some((px, py, pz)) = player_pos(my_id) else { continue; };
+                if !voxel::in_reach(px, py, pz, x, y, z) { continue; }
+                let target_blk = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
+                let new_blk = match target_blk {
+                    Block::DoorClosed => Block::DoorOpen,
+                    Block::DoorOpen   => Block::DoorClosed,
+                    _ => continue, // 不是門，忽略
+                };
+                voxel::set_block(&mut hub().deltas.write().unwrap(), x, y, z, new_blk);
+                broadcast_block(x, y, z, new_blk);
             }
 
             // 重複 Join 或壞訊息：忽略。
