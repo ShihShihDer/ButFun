@@ -76,6 +76,13 @@ pub const RECIPES: &[Recipe] = &[
         output_block: 19,
         output_count: 1,
     },
+    Recipe {
+        id: "torch",
+        name_zh: "火把",
+        inputs: &[(5, 1), (20, 1)],  // 1 木頭 + 1 煤礦 → 4 火把（ROADMAP 685）
+        output_block: 31,
+        output_count: 4,
+    },
 ];
 
 /// 工作台 3×3 合成配方（需放置工作台方塊後右鍵開啟面板才能合成）。
@@ -280,11 +287,12 @@ mod tests {
 
     #[test]
     fn all_recipes_output_crafted_block_ids() {
-        // 2×2 配方產出 id 應在 8–11、15（工作台）或 19（麵包純物品）
+        // 2×2 配方產出 id：8–11、15（工作台）、19（麵包）、31（火把 ROADMAP 685）
         for r in RECIPES {
             let ok = (r.output_block >= 8 && r.output_block <= 11)
                 || r.output_block == 15
-                || r.output_block == 19; // 麵包（純物品 id）
+                || r.output_block == 19 // 麵包（純物品 id）
+                || r.output_block == 31; // 火把（Torch，ROADMAP 685）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
@@ -411,6 +419,7 @@ mod tests {
         store.give("旅人", 20, 10); // CoalOre（smelt_iron 燃料用）
         store.give("旅人", 21, 10); // IronOre（smelt_iron 原料用）
         store.give("旅人", 22, 10); // IronIngot（iron_block 配方用，ROADMAP 684）
+        // 火把配方：1 木頭(5) + 1 煤礦(20) → 4 火把（Wood/CoalOre 已加，數量足夠）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);
         }
@@ -511,5 +520,43 @@ mod tests {
         // 不在 2×2 背包或熔爐表
         assert!(find_recipe("iron_block").is_none());
         assert!(find_furnace_recipe("iron_block").is_none());
+    }
+
+    #[test]
+    fn torch_recipe_exists_and_correct() {
+        // 火把配方：1 木頭(5) + 1 煤礦(20) → 4 火把(31)（ROADMAP 685）
+        let r = find_recipe("torch").unwrap();
+        assert_eq!(r.output_block, 31, "火把 id 應為 31（Torch）");
+        assert_eq!(r.output_count, 4, "1 木+1 煤礦產出 4 火把");
+        assert!(r.inputs.contains(&(5, 1)), "torch 需要 1 木頭(5)");
+        assert!(r.inputs.contains(&(20, 1)), "torch 需要 1 煤礦(20)");
+    }
+
+    #[test]
+    fn torch_requires_both_wood_and_coal() {
+        let r = find_recipe("torch").unwrap();
+
+        let mut store_wood_only = InvStore::default();
+        store_wood_only.give("旅人", 5, 5); // 只有木頭沒煤礦
+        assert!(!can_craft(r, &store_wood_only, "旅人"), "只有木頭不夠合火把");
+
+        let mut store_coal_only = InvStore::default();
+        store_coal_only.give("旅人", 20, 5); // 只有煤礦沒木頭
+        assert!(!can_craft(r, &store_coal_only, "旅人"), "只有煤礦不夠合火把");
+
+        let mut store_both = InvStore::default();
+        store_both.give("旅人", 5, 1);
+        store_both.give("旅人", 20, 1);
+        assert!(can_craft(r, &store_both, "旅人"), "各 1 木頭+煤礦可合 4 火把");
+    }
+
+    #[test]
+    fn torch_in_find_any_recipe() {
+        // 火把是 2×2 背包配方，應可透過統一查詢和背包表找到
+        assert!(find_any_recipe("torch").is_some());
+        assert!(find_recipe("torch").is_some());
+        // 不在工作台或熔爐表
+        assert!(find_workbench_recipe("torch").is_none());
+        assert!(find_furnace_recipe("torch").is_none());
     }
 }
