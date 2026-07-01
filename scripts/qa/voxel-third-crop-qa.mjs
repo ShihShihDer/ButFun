@@ -184,10 +184,15 @@ function check(label, ok, detail) {
   const selectedAfterSoil = await page.evaluate(() => window.__voxel.HOTBAR[window.__voxel.selectedSlot]);
   check("selectedBlock() 真的變成農田土（玩家選得到）", selectedAfterSoil === consts.FARM_SOIL);
 
-  // ── 5) 放置農田土（瞄準洞底第 4 層泥土上表面，回填成農田土）──
+  // ── 5) 放置農田土（瞄準洞底第 4 層泥土；洞較深，偶爾會鎖到鄰格側面而非正上方——
+  //    只要「命中面 + 法向量」換算出的落點座標正確即可，不強求鎖到頂面本身）──
   const floorTgt = await aimAtBlock(flatGrass.x, flatGrass.y - 4, flatGrass.z);
-  check("準心鎖定洞底泥土（放置基準面）",
-    targetIs(floorTgt, flatGrass.x, flatGrass.y - 4, flatGrass.z), JSON.stringify(floorTgt));
+  const floorLandsAt = floorTgt
+    ? { x: floorTgt.bx + floorTgt.nx, y: floorTgt.by + floorTgt.ny, z: floorTgt.bz + floorTgt.nz }
+    : null;
+  check("準心鎖定洞底（換算落點座標正確）",
+    !!floorLandsAt && floorLandsAt.x === flatGrass.x && floorLandsAt.y === flatGrass.y - 3 && floorLandsAt.z === flatGrass.z,
+    JSON.stringify(floorTgt));
   const soilPos = await page.evaluate(() => window.__voxel.doPlace());
   await sleep(900);
   const soilBlock = await blockAt(soilPos);
