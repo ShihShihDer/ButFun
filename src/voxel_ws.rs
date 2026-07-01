@@ -208,6 +208,12 @@ struct VoxelResident {
     cheer_cooldown: f32,
     /// 互動心情補助倒數（秒，ROADMAP 681）：玩家對話/贈禮時設為正值，倒數歸零前心情提升一格。
     mood_boost_secs: f32,
+    /// 整地任務·走向工地時「歷來最接近工地中心的平方水平距離」（配 level_walk_stall 偵測卡死）。
+    /// 指派整地任務時重置為 f32::MAX；每 tick 走近就刷新。無整地任務時不使用。
+    level_best_d2: f32,
+    /// 整地任務·走向工地時「連續沒更接近的卡住秒數」：達 vdt::LEVEL_WALK_STALL_SECS →
+    /// 就近挪到工地可站處（保證她真的走到、不因貪心尋路卡死而白白逾時放棄）。
+    level_walk_stall: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -647,6 +653,9 @@ fn init_residents() -> Vec<VoxelResident> {
             cheer_cooldown: vcheer::cheer_cooldown_offset(i),
             // 互動心情補助（ROADMAP 681）：入場無補助。
             mood_boost_secs: 0.0,
+            // 整地任務·走向工地卡死偵測（入場無任務）：最佳距離設無限大、卡住 0。
+            level_best_d2: f32::MAX,
+            level_walk_stall: 0.0,
         });
     }
     out
@@ -1539,6 +1548,9 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                                     r.target_x = cx as f32 + 0.5;
                                     r.target_z = cz as f32 + 0.5;
                                     r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                    // 重置「走向工地卡死」偵測（配下方 tick 的就近挪位保險）。
+                                    r.level_best_d2 = f32::MAX;
+                                    r.level_walk_stall = 0.0;
                                 }
                             } // residents 寫鎖釋放
                             // 誠實而願意的回覆（單播給玩家 + 世界冒泡 + 記憶 + Feed）。
@@ -3141,6 +3153,22 @@ fn tick_residents(dt: f32) {
                     vr::step_toward(&world, &mut r.body, center_x, center_z, dt, vr::RES_SPEED * speed_mult);
                     if let Some(yaw) = vr::yaw_from_move(r.body.x - bx, r.body.z - bz) {
                         r.yaw = yaw;
+                    }
+                    // 走路卡死保險（真因修正）：貪心尋路（沿牆滑行、只踏一階）遇到深水/深坑/
+                    // 高牆會繞不過而原地卡死，任務就這樣白白倒數到逾時放棄——這正是玩家實測到的
+                    // 「答應了卻沒整完」。這裡偵測「連續沒更接近工地」，卡太久就**就近把她挪到工地**
+                    // 可站處（沿用既有脫困挪位精神，但挪到工地就地開工、不放棄），確保「說到做到」。
+                    let ndx = r.body.x - center_x;
+                    let ndz = r.body.z - center_z;
+                    let cur_d2 = ndx * ndx + ndz * ndz;
+                    let (nb, ns, relocate) =
+                        vdt::walk_stall_update(r.level_best_d2, r.level_walk_stall, cur_d2, dt);
+                    r.level_best_d2 = nb;
+                    r.level_walk_stall = ns;
+                    if relocate {
+                        let (sx, sy, sz) =
+                            vdt::nearest_site_stand(&world, r.body.x, r.body.z, cx, cz, radius);
+                        r.body = Body::at(sx, sy, sz);
                     }
                 } else {
                     // 已在工地：排程本 tick 整地一批（鎖外套用），原地落重力站穩。

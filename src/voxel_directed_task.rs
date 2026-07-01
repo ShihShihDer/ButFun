@@ -35,6 +35,16 @@ pub const LEVEL_ARRIVE_MARGIN: f32 = 2.0;
 /// 因為玩家通常站在居民附近下令，正常情況遠在此之前就整完了。
 pub const LEVEL_DEADLINE_SECS: f32 = 180.0;
 
+/// 朝工地走卻連續這麼多秒「沒更接近」（被地形/深水/坑/牆卡死、貪心尋路繞不過）→
+/// 就近把居民挪到工地邊緣可站處，讓她能真正開始整地。沿用本專案既有「卡住就脫困/挪位」
+/// 精神（見 voxel_residents::rescue_resident 也會把卡死居民挪回家域）——差別是：整地是
+/// **玩家交代的任務**，不能挪回家域放棄，而是挪到工地就地完成，確保「說到做到」。
+pub const LEVEL_WALK_STALL_SECS: f32 = 8.0;
+
+/// 判定「有更接近工地」的最小平方距離改善量（濾掉浮點抖動 / 沿牆滑行的原地微動，
+/// 避免把「其實正在慢慢繞過去」誤判成卡住）。
+pub const LEVEL_PROGRESS_EPS: f32 = 0.05;
+
 // ── 玩家指令偵測（純函式、確定性、可測、零 LLM）──────────────────────────────
 
 /// 「整地意圖」關鍵詞：玩家這句話像在叫居民把一塊地弄平就命中。
@@ -226,6 +236,43 @@ pub fn cell_in_body(bx: i32, by: i32, bz: i32, px: f32, py: f32, pz: f32) -> boo
     let z0 = (pz - BODY_HALF_W).floor() as i32;
     let z1 = (pz + BODY_HALF_W).floor() as i32;
     (x0..=x1).contains(&bx) && (y0..=y1).contains(&by) && (z0..=z1).contains(&bz)
+}
+
+// ── 走到工地：卡住偵測 + 就近挪位（保證「說到做到」）────────────────────────────────
+
+/// 依「本 tick 到工地中心的平方水平距離」更新走路卡住狀態。
+/// 回傳（新的最佳平方距離, 新的卡住秒數, 是否該就近挪位到工地）。
+///
+/// 規則（確定性）：本 tick 若比歷來最佳「更接近工地」（改善 ≥ [`LEVEL_PROGRESS_EPS`]）
+/// → 記下新最佳、卡住歸零（她正在往工地走，沒卡）；否則累加卡住秒數，一旦達
+/// [`LEVEL_WALK_STALL_SECS`] 就回報「該挪位」（並把卡住歸零、最佳更新為當前，讓挪位後重新計）。
+/// 純函式、可測——呼叫端（voxel_ws）據 `should_relocate` 決定是否 [`nearest_site_stand`] 挪位。
+pub fn walk_stall_update(best_d2: f32, stall: f32, cur_d2: f32, dt: f32) -> (f32, f32, bool) {
+    if cur_d2 + LEVEL_PROGRESS_EPS < best_d2 {
+        // 有更接近工地 → 沒卡，重置計時。
+        (cur_d2, 0.0, false)
+    } else {
+        let s = stall + dt;
+        if s >= LEVEL_WALK_STALL_SECS {
+            // 卡太久 → 該就近挪位；重置狀態（挪位後從新位置重新計）。
+            (cur_d2, 0.0, true)
+        } else {
+            (best_d2, s, false)
+        }
+    }
+}
+
+/// 工地內「最靠近 (px,pz) 且可站立」的落腳點（世界座標，腳底 y）。
+/// 用途：居民朝工地走卻被卡死太久（見 [`walk_stall_update`]）時，就近把她挪到工地邊緣，
+/// 讓她能開始整地——最小視覺跳動（挪到離她最近的工地柱、而非中心）、且保證任務不放棄。
+///
+/// 作法：把 (px,pz) 夾到工地方形範圍 [cx±r, cz±r] 得目標柱，取該柱地表頂 + 1 當腳底
+///（站在方塊之上一格，重力會落穩）。柱全空則退回 `BASE_HEIGHT + 1`。純函式、可測。
+pub fn nearest_site_stand(world: &WorldDelta, px: f32, pz: f32, cx: i32, cz: i32, radius: i32) -> (f32, f32, f32) {
+    let tx = (px.round() as i32).clamp(cx - radius, cx + radius);
+    let tz = (pz.round() as i32).clamp(cz - radius, cz + radius);
+    let top = ground_top(world, tx, tz).unwrap_or(BASE_HEIGHT);
+    (tx as f32 + 0.5, (top + 1) as f32, tz as f32 + 0.5)
 }
 
 // ── 單元測試 ──────────────────────────────────────────────────────────────────
@@ -443,6 +490,64 @@ mod tests {
         let base = height_at(x, z);
         voxel::set_block(&mut world, x, base + 3, z, Block::Stone);
         assert_eq!(ground_top(&world, x, z), Some(base + 3));
+    }
+
+    // ── walk_stall_update：卡住偵測（有進步歸零 / 卡太久回報挪位）────────────────────
+
+    #[test]
+    fn walk_stall_resets_when_getting_closer() {
+        // 每 tick 都更接近工地 → 永遠不卡、卡住秒數保持 0。
+        let (mut best, mut stall) = (f32::MAX, 0.0);
+        for d2 in [100.0_f32, 80.0, 60.0, 40.0, 20.0] {
+            let (nb, ns, reloc) = walk_stall_update(best, stall, d2, 0.1);
+            assert!(!reloc, "正在接近工地不該挪位");
+            assert_eq!(ns, 0.0, "有進步 → 卡住歸零");
+            best = nb; stall = ns;
+        }
+        assert_eq!(best, 20.0);
+    }
+
+    #[test]
+    fn walk_stall_triggers_relocate_after_stuck() {
+        // 距離卡在同一值不再改善 → 累加到 LEVEL_WALK_STALL_SECS 時回報該挪位。
+        let (mut best, mut stall) = (50.0_f32, 0.0);
+        let mut relocated = false;
+        let mut elapsed = 0.0;
+        // 卡在 50.0（沒有更接近）。
+        for _ in 0..(LEVEL_WALK_STALL_SECS / 0.1) as i32 + 2 {
+            let (nb, ns, reloc) = walk_stall_update(best, stall, 50.0, 0.1);
+            best = nb; stall = ns; elapsed += 0.1;
+            if reloc { relocated = true; break; }
+        }
+        assert!(relocated, "卡住超過門檻應回報挪位");
+        assert!(
+            elapsed >= LEVEL_WALK_STALL_SECS - 0.05,
+            "應在累積達門檻後才挪位：elapsed={elapsed}"
+        );
+    }
+
+    #[test]
+    fn walk_stall_ignores_tiny_jitter() {
+        // 只有 < EPS 的微小改善（沿牆滑行抖動）不算進步 → 仍會累加卡住。
+        let (nb, ns, _reloc) = walk_stall_update(50.0, 1.0, 50.0 - LEVEL_PROGRESS_EPS / 2.0, 0.1);
+        assert_eq!(nb, 50.0, "微小抖動不更新最佳");
+        assert!(ns > 1.0, "微小抖動不算進步 → 卡住繼續累加");
+    }
+
+    // ── nearest_site_stand：就近挪到工地可站處 ──────────────────────────────────────
+
+    #[test]
+    fn nearest_site_stand_clamps_into_site_and_stands_on_top() {
+        let mut world = WorldDelta::new();
+        // 工地中心 (10,10) 半徑 4 → 範圍 x,z ∈ [6,14]。造一柱地表頂在 8。
+        make_solid_column(&mut world, 14, 10, 8);
+        // 居民遠在 (100,10)（工地外）→ 夾到最靠近的邊緣柱 (14,10)，站在頂 (y=8) 之上一格。
+        let (sx, sy, sz) = nearest_site_stand(&world, 100.0, 10.0, 10, 10, 4);
+        assert_eq!((sx, sz), (14.5, 10.5), "應夾到最近的工地柱中心");
+        assert_eq!(sy, 9.0, "應站在地表頂(8)之上一格");
+        // 已在工地內的點 → 不外推，留在原柱。
+        let (ax, _ay, az) = nearest_site_stand(&world, 11.4, 9.6, 10, 10, 4);
+        assert_eq!((ax, az), (11.5, 10.5));
     }
 
     // ── cell_in_body：安全過濾（別把居民埋了）────────────────────────────────────
