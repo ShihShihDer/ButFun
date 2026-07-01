@@ -137,6 +137,11 @@ pub enum Block {
     /// **非實心**——玩家可穿入；站在梯子方格中可垂直攀爬，讓深礦探索能上下自如。
     /// ID 35（跳過 32/33/34 = 純物品鎬具 ID）。
     Ladder = 35,
+    /// 箱子（ROADMAP 692）——工作台合成：8 木板 → 1 箱子；
+    /// 放置後右鍵互動開啟共用儲存面板，可存入/取出任意材料——
+    /// 讓「採集→合成→建造基地+儲存」閉環第一次真正完整。
+    /// ID 42（跳過 36~41 = 斧頭/鏟子純物品 ID）。
+    Chest = 42,
 }
 
 impl Block {
@@ -198,6 +203,7 @@ impl Block {
             30 => Some(Block::WaterFlow7),
             31 => Some(Block::Torch),
             35 => Some(Block::Ladder),
+            42 => Some(Block::Chest),
             _ => None,
         }
     }
@@ -211,7 +217,7 @@ impl Block {
             Block::Plank | Block::StoneBrick | Block::Glass | Block::FarmSoil |
             Block::Workbench | Block::Furnace | Block::SmoothStone |
             Block::CoalOre | Block::IronOre | Block::IronIngot | Block::IronBlock |
-            Block::Torch | Block::Ladder
+            Block::Torch | Block::Ladder | Block::Chest
         )
     }
 }

@@ -706,6 +706,63 @@
       #furnacePanel { top: auto; transform: translateX(-50%); bottom: 10px; max-height: 75vh; }
       #furnaceBody { flex-direction: column; }
     }
+
+    /* ── 箱子儲存面板（ROADMAP 692）──────────────────────────────────────────── */
+    #chestPanel {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      z-index: 20; width: min(520px, 94vw); max-height: 90vh;
+      display: none; flex-direction: column;
+      background: rgba(14,10,6,0.97); color: #eaf2ff; border-radius: 16px;
+      border: 1px solid rgba(184,133,72,0.32); box-shadow: 0 8px 32px rgba(0,0,0,0.65);
+      overflow: hidden;
+    }
+    #chestHead {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px; background: rgba(184,133,72,0.10); font-weight: bold; font-size: 15px;
+      flex-shrink: 0;
+    }
+    #chestTitle { color: #c8904c; }
+    #chestClose {
+      cursor: pointer; user-select: none; font-size: 18px; line-height: 1;
+      padding: 2px 9px; border-radius: 8px; background: rgba(255,255,255,0.10);
+    }
+    #chestBody {
+      flex: 1; overflow-y: auto; padding: 12px 14px;
+      display: flex; flex-direction: column; gap: 14px;
+    }
+    .chest-sec-lbl {
+      font-size: 11px; color: #906840; letter-spacing: 0.8px;
+      margin-bottom: 8px; text-transform: uppercase;
+    }
+    #chestBoxGrid { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chest-box-slot {
+      width: 52px; height: 52px; border-radius: 8px;
+      border: 2px solid rgba(184,133,72,0.30);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      cursor: pointer; user-select: none; gap: 2px;
+      background: rgba(184,133,72,0.06);
+      transition: border-color 0.12s, background 0.12s;
+    }
+    .chest-box-slot:hover { background: rgba(184,133,72,0.14); border-color: rgba(184,133,72,0.55); }
+    .chest-box-slot.has-item { border-color: rgba(184,133,72,0.50); background: rgba(184,133,72,0.10); }
+    #chestInvGrid { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chest-inv-slot {
+      width: 52px; height: 52px; border-radius: 8px;
+      border: 2px solid rgba(255,255,255,0.18);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      cursor: pointer; user-select: none; gap: 2px;
+      background: rgba(255,255,255,0.04);
+      transition: border-color 0.12s, background 0.12s;
+    }
+    .chest-inv-slot:hover { background: rgba(255,255,255,0.10); }
+    .chest-inv-slot.picked { border-color: #ffd86b; box-shadow: 0 0 8px rgba(255,216,107,0.55); }
+    .chest-slot-sw { width: 22px; height: 22px; border-radius: 4px; }
+    .chest-slot-cnt { font-size: 10px; color: #ffd86b; line-height: 1; }
+    .chest-slot-name { font-size: 9px; color: #9db8d0; line-height: 1; }
+    #chestHint { font-size: 11px; color: #504030; line-height: 1.5; padding: 0 0 6px; }
+    @media (orientation: portrait) {
+      #chestPanel { top: auto; transform: translateX(-50%); bottom: 10px; max-height: 78vh; }
+    }
   </style>
   <!-- Three.js 走 CDN importmap（比照 /3d/ 與 /play3d/）。 -->
   <script type="importmap">
@@ -858,6 +915,24 @@
         <div id="furnaceRecipeList"></div>
         <div id="furnaceHint">選擇配方→點「冶煉」→消耗材料得產出；需靠近熔爐方塊</div>
       </div>
+    </div>
+  </div>
+  <!-- 箱子儲存面板（ROADMAP 692）：右鍵點箱子方塊開啟，可存取物品 -->
+  <div id="chestPanel">
+    <div id="chestHead">
+      <span id="chestTitle">📦 箱子</span>
+      <span id="chestClose">✕</span>
+    </div>
+    <div id="chestBody">
+      <div>
+        <div class="chest-sec-lbl">箱子內容</div>
+        <div id="chestBoxGrid"></div>
+      </div>
+      <div>
+        <div class="chest-sec-lbl">我的物品欄</div>
+        <div id="chestInvGrid"></div>
+      </div>
+      <div id="chestHint">點物品欄的格子→存入箱子；點箱子的格子→取回物品欄</div>
     </div>
   </div>
   <!-- 相對於 /voxel/ 載入；?v 由後端 serve_voxel_index 注入內容雜湊 -->

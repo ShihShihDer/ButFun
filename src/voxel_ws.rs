@@ -50,6 +50,7 @@ use crate::voxel_fond_greeting as vfond;
 use crate::voxel_mood;
 use crate::voxel_comfort as vcomfort;
 use crate::voxel_cheer as vcheer;
+use crate::voxel_chest as vchest;
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -583,6 +584,9 @@ struct VoxelHub {
     /// 居民情誼帳本（ROADMAP 672）：拜訪次數累積情誼（陌生→相識→老朋友），持久化跨重啟。
     /// 每次探訪到達時 record_visit → 若升級則 Feed 廣播 + 問候語更換。
     bonds: RwLock<ResidentBonds>,
+    /// 箱子儲存 store（ROADMAP 692）：世界座標 → 方塊 id → 數量。
+    /// 持久化到 data/voxel_chests.jsonl；多人共用同一箱子（序列化 RwLock 解決競爭）。
+    chest: RwLock<vchest::ChestStore>,
     /// 水流動待處理佇列（水流動模擬）：只有「可能變化」的格才排入
     /// （玩家/居民挖破地形的缺口鄰格、水格自己擴散到的新鄰格），每 tick 只算佇列、
     /// 穩定的移出——**不整世界每 tick 掃描**（效能鐵律）。
@@ -673,6 +677,8 @@ fn hub() -> &'static VoxelHub {
             pending_trades: RwLock::new(HashMap::new()),
             // 居民情誼 v1（ROADMAP 672）：啟動時從 data/voxel_bonds.jsonl 載回情誼記錄。
             bonds: RwLock::new(ResidentBonds::from_entries(vbonds::load_bonds())),
+            // 啟動時從 data/voxel_chests.jsonl 載回箱子存量（重啟後仍保留儲存物品）。
+            chest: RwLock::new(vchest::ChestStore::from_entries(vchest::load_chests())),
             // 水流佇列：啟動空；玩家/居民挖破地形時排入缺口鄰格，水才開始流。
             water_queue: std::sync::Mutex::new(WaterQueue::default()),
             tx,
@@ -809,6 +815,12 @@ enum ClientMsg {
     TradeRequest { resident_id: String },
     /// 居民交易 v1：接受當前待確認的交易提案（ROADMAP 670）。
     TradeAccept { resident_id: String },
+    /// 箱子 v1：開啟指定座標的箱子，伺服器回傳 `chest_view`（ROADMAP 692）。
+    OpenChest { x: i32, y: i32, z: i32 },
+    /// 箱子 v1：把背包中的 `count` 個 `item_id` 放入箱子（ROADMAP 692）。
+    ChestPut { x: i32, y: i32, z: i32, item_id: u8, count: u32 },
+    /// 箱子 v1：從箱子取出 `count` 個 `item_id` 到背包（ROADMAP 692）。
+    ChestTake { x: i32, y: i32, z: i32, item_id: u8, count: u32 },
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -1100,6 +1112,36 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         // 種田 v1 的方塊 → 農地 store 也要清掉記錄。
                         if matches!(target_block, Block::FarmSoilSeeded | Block::WheatMature) {
                             hub().farm.write().unwrap().remove(x, y, z);
+                        }
+
+                        // 箱子 v1（ROADMAP 692）：破壞箱子前先把箱內物品歸還破壞者，
+                        // 再掉落箱子方塊本身——守「不讓材料憑空消失」鐵律。
+                        if matches!(target_block, Block::Chest) {
+                            let pos = vchest::pos_key(x, y, z);
+                            // chest 寫鎖（短鎖，馬上釋放）：取出全部內容。
+                            let contents = hub().chest.write().unwrap().clear(&pos);
+                            // 不在鎖內做 IO / 廣播（守 prod-deadlock 鐵律）。
+                            let mut inv = hub().inventory.write().unwrap();
+                            for (cid, cnt) in contents {
+                                let e = inv.give(&name, cid, cnt);
+                                drop(inv);
+                                vinv::append_inv(&e);
+                                let nc = hub().inventory.read().unwrap().count(&name, cid);
+                                let _ = out_tx.try_send(Message::Text(
+                                    serde_json::json!({ "t": "inv_update", "block_id": cid, "count": nc }).to_string(),
+                                ));
+                                inv = hub().inventory.write().unwrap();
+                            }
+                            // 還要把箱子方塊本身歸還（掉落自身）。
+                            let chest_bid = Block::Chest as u8;
+                            let e2 = inv.give(&name, chest_bid, 1);
+                            drop(inv);
+                            vinv::append_inv(&e2);
+                            let nc2 = hub().inventory.read().unwrap().count(&name, chest_bid);
+                            let _ = out_tx.try_send(Message::Text(
+                                serde_json::json!({ "t": "inv_update", "block_id": chest_bid, "count": nc2 }).to_string(),
+                            ));
+                            continue; // 已處理完，不走後面的 else/drops 分支
                         }
 
                         if !drops.is_empty() {
@@ -1898,6 +1940,99 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     rname,
                     &format!("{name}與{rname}交易：{wname}×{}→{oname}×{}", offer.want_count, offer.offer_count),
                 );
+            }
+
+            // ── 箱子 v1：開啟 ─────────────────────────────────────────────────────────
+            Ok(ClientMsg::OpenChest { x, y, z }) => {
+                // 驗觸及 + 目標是 Chest 方塊 → 回傳 chest_view（箱子內容清單）。
+                let Some((px, py, pz)) = player_pos(my_id) else { continue; };
+                let target = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
+                if !matches!(target, Block::Chest) { continue; }
+                if !voxel::can_break(&hub().deltas.read().unwrap(), px, py, pz, x, y, z) {
+                    continue; // 借用 can_break 的觸及範圍驗證（方塊存在且夠近）
+                }
+                let pos = vchest::pos_key(x, y, z);
+                let contents = hub().chest.read().unwrap().contents(&pos);
+                let items: Vec<serde_json::Value> = contents
+                    .iter()
+                    .map(|&(id, cnt)| serde_json::json!({ "id": id, "count": cnt }))
+                    .collect();
+                let msg = serde_json::json!({
+                    "t": "chest_view",
+                    "x": x, "y": y, "z": z,
+                    "items": items,
+                }).to_string();
+                let _ = out_tx.send(Message::Text(msg)).await;
+            }
+
+            // ── 箱子 v1：放入物品 ──────────────────────────────────────────────────────
+            Ok(ClientMsg::ChestPut { x, y, z, item_id, count }) => {
+                if count == 0 { continue; }
+                let Some((px, py, pz)) = player_pos(my_id) else { continue; };
+                let target = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
+                if !matches!(target, Block::Chest) { continue; }
+                if !voxel::can_break(&hub().deltas.read().unwrap(), px, py, pz, x, y, z) { continue; }
+                let pos = vchest::pos_key(x, y, z);
+                // 1) 扣背包（inventory 寫鎖即釋）。
+                let taken = hub().inventory.write().unwrap().take(&name, item_id, count);
+                let Some(inv_e) = taken else {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "chest_fail", "reason": "背包數量不足" }).to_string(),
+                    ));
+                    continue;
+                };
+                vinv::append_inv(&inv_e);
+                // 2) 放入箱子（chest 寫鎖即釋）。
+                let chest_e = hub().chest.write().unwrap().put(&pos, item_id, count);
+                vchest::append_chest(&chest_e);
+                // 3) 回傳最新 inv_update + chest_view。
+                let new_inv_count = hub().inventory.read().unwrap().count(&name, item_id);
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "inv_update", "block_id": item_id, "count": new_inv_count }).to_string(),
+                ));
+                let contents = hub().chest.read().unwrap().contents(&pos);
+                let items: Vec<serde_json::Value> = contents
+                    .iter()
+                    .map(|&(id, cnt)| serde_json::json!({ "id": id, "count": cnt }))
+                    .collect();
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "chest_view", "x": x, "y": y, "z": z, "items": items }).to_string(),
+                ));
+            }
+
+            // ── 箱子 v1：取出物品 ──────────────────────────────────────────────────────
+            Ok(ClientMsg::ChestTake { x, y, z, item_id, count }) => {
+                if count == 0 { continue; }
+                let Some((px, py, pz)) = player_pos(my_id) else { continue; };
+                let target = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
+                if !matches!(target, Block::Chest) { continue; }
+                if !voxel::can_break(&hub().deltas.read().unwrap(), px, py, pz, x, y, z) { continue; }
+                let pos = vchest::pos_key(x, y, z);
+                // 1) 從箱子取（chest 寫鎖即釋）。
+                let (actual, chest_e) = hub().chest.write().unwrap().take(&pos, item_id, count);
+                if actual == 0 {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "chest_fail", "reason": "箱子裡沒有這個物品" }).to_string(),
+                    ));
+                    continue;
+                }
+                vchest::append_chest(&chest_e);
+                // 2) 加入背包（inventory 寫鎖即釋）。
+                let inv_e = hub().inventory.write().unwrap().give(&name, item_id, actual);
+                vinv::append_inv(&inv_e);
+                // 3) 回傳最新 inv_update + chest_view。
+                let new_inv_count = hub().inventory.read().unwrap().count(&name, item_id);
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "inv_update", "block_id": item_id, "count": new_inv_count }).to_string(),
+                ));
+                let contents = hub().chest.read().unwrap().contents(&pos);
+                let items: Vec<serde_json::Value> = contents
+                    .iter()
+                    .map(|&(id, cnt)| serde_json::json!({ "id": id, "count": cnt }))
+                    .collect();
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "chest_view", "x": x, "y": y, "z": z, "items": items }).to_string(),
+                ));
             }
 
             // 重複 Join 或壞訊息：忽略。

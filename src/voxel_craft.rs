@@ -246,6 +246,14 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
         output_block: SHOVEL_IRON_ID,
         output_count: 1,
     },
+    // ── 箱子 v1（ROADMAP 692）：8 木板 → 1 箱子（工作台合成，需 8 格）────────────────
+    Recipe {
+        id: "chest",
+        name_zh: "箱子",
+        inputs: &[(8, 8)],   // 8 木板 → 1 箱子（工作台合成，放置後可儲存物品）
+        output_block: 42,    // Block::Chest = 42
+        output_count: 1,
+    },
 ];
 
 /// 熔爐冶煉配方（需放置熔爐方塊後右鍵開啟冶煉面板才能使用）。
@@ -412,13 +420,14 @@ mod tests {
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
         // 3×3 工作台配方產出 id
-        //   （8~17、23 = IronBlock，34 = 鐵鎬、38 = 鐵斧、41 = 鐵鏟 ROADMAP 690）
+        //   （8~17、23 = IronBlock，34 = 鐵鎬、38 = 鐵斧、41 = 鐵鏟 ROADMAP 690、42 = 箱子 ROADMAP 692）
         for r in WORKBENCH_RECIPES {
             let ok = (r.output_block >= 8 && r.output_block <= 17)
                 || r.output_block == 23
                 || r.output_block == PICKAXE_IRON_ID  // 鐵鎬（ROADMAP 687）
                 || r.output_block == AXE_IRON_ID      // 鐵斧（ROADMAP 689）
-                || r.output_block == SHOVEL_IRON_ID;  // 鐵鏟（ROADMAP 690）
+                || r.output_block == SHOVEL_IRON_ID   // 鐵鏟（ROADMAP 690）
+                || r.output_block == 42;               // 箱子（ROADMAP 692）
             assert!(
                 ok,
                 "工作台配方「{}」產出 id={} 超出範圍",
@@ -534,7 +543,7 @@ mod tests {
         store.give("旅人", 3, 10);  // Stone
         store.give("旅人", 4, 10);  // Sand
         store.give("旅人", 2, 10);  // Dirt
-        store.give("旅人", 8, 10);  // Plank（工作台 + stone_wood_mix 用）
+        store.give("旅人", 8, 10);  // Plank（工作台 + stone_wood_mix + 箱子 8木板 用）
         store.give("旅人", 18, 10); // Wheat（麵包配方用，WHEAT_ID）
         store.give("旅人", 20, 10); // CoalOre（smelt_iron 燃料用）
         store.give("旅人", 21, 10); // IronOre（smelt_iron 原料用）
@@ -828,5 +837,42 @@ mod tests {
         assert!(SHOVEL_STONE_ID < SHOVEL_IRON_ID);
         // 不與斧頭衝突（斧頭 36/37/38）
         assert!(SHOVEL_WOOD_ID > AXE_IRON_ID, "鏟子 id 應高於斧頭最大 id(38)");
+    }
+
+    // ── 箱子配方測試（ROADMAP 692）────────────────────────────────────────────
+
+    #[test]
+    fn chest_recipe_in_workbench_only() {
+        // 箱子：8 木板(8) → 1 箱子(42)，需工作台（8 格超出 2×2 上限）
+        let r = find_workbench_recipe("chest").unwrap();
+        assert_eq!(r.output_block, 42, "箱子 block id 應為 42");
+        assert_eq!(r.output_count, 1, "8 木板得 1 箱子");
+        assert_eq!(r.inputs, &[(8, 8)], "箱子需要 8 木板(id=8)");
+        // 不在 2×2 背包表
+        assert!(find_recipe("chest").is_none(), "箱子不在 2×2 背包表");
+        assert!(find_furnace_recipe("chest").is_none(), "箱子不在熔爐表");
+    }
+
+    #[test]
+    fn chest_requires_eight_planks() {
+        let r = find_workbench_recipe("chest").unwrap();
+
+        let mut store_7 = InvStore::default();
+        store_7.give("旅人", 8, 7); // 只有 7 木板
+        assert!(!can_craft(r, &store_7, "旅人"), "7 木板不夠合箱子（需 8）");
+
+        let mut store_8 = InvStore::default();
+        store_8.give("旅人", 8, 8); // 剛好 8 木板
+        assert!(can_craft(r, &store_8, "旅人"), "8 木板可合 1 箱子");
+    }
+
+    #[test]
+    fn chest_in_find_any_recipe() {
+        // 箱子可透過統一查詢找到（工作台配方）
+        assert!(find_any_recipe("chest").is_some());
+        assert!(find_workbench_recipe("chest").is_some());
+        // 不在 2×2 背包或熔爐表
+        assert!(find_recipe("chest").is_none());
+        assert!(find_furnace_recipe("chest").is_none());
     }
 }
