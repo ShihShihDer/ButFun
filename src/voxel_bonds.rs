@@ -147,6 +147,15 @@ impl ResidentBonds {
     }
 }
 
+/// 情誼層級 → 穩定字串鍵（供 API/前端序列化用，與顯示文案分開，避免文案改動牽動協議）。
+pub fn tier_key(tier: BondTier) -> &'static str {
+    match tier {
+        BondTier::Stranger => "stranger",
+        BondTier::Acquaintance => "acquaintance",
+        BondTier::Friend => "friend",
+    }
+}
+
 /// 對稱鍵：確保 (a,b) == (b,a)。
 fn bond_key(a: &str, b: &str) -> (String, String) {
     if a <= b {
@@ -285,6 +294,13 @@ mod tests {
         let b = make_bonds();
         assert_eq!(b.tier_of("露娜", "諾娃"), BondTier::Stranger);
         assert_eq!(b.visit_count("露娜", "諾娃"), 0);
+    }
+
+    #[test]
+    fn tier_key_stable_strings() {
+        assert_eq!(tier_key(BondTier::Stranger), "stranger");
+        assert_eq!(tier_key(BondTier::Acquaintance), "acquaintance");
+        assert_eq!(tier_key(BondTier::Friend), "friend");
     }
 
     #[test]

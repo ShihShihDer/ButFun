@@ -476,6 +476,49 @@
       #compassPanel { top: auto; bottom: 268px; right: 10px; max-height: 45vh; }
     }
 
+    /* ── 居民交情網（ROADMAP 708）────────────────────────────────────────── */
+    #relationsBtn {
+      position: fixed; right: 10px; top: 256px; z-index: 6;
+      background: rgba(20,28,40,0.65); color: #ffb0c8; border: 1px solid rgba(255,176,200,0.3);
+      padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      user-select: none; pointer-events: auto;
+    }
+    #relationsBtn:hover { background: rgba(72,32,48,0.75); }
+    #relationsPanel {
+      position: fixed; right: 10px; top: 256px; z-index: 20;
+      width: min(280px, 94vw); max-height: 60vh;
+      display: none; flex-direction: column;
+      background: rgba(16,22,34,0.95); color: #eaf2ff; border-radius: 14px;
+      border: 1px solid rgba(255,176,200,0.22); box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      overflow: hidden;
+    }
+    #relationsHead {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 9px 13px; background: rgba(255,176,200,0.07); font-size: 14px; font-weight: bold;
+    }
+    #relationsTitle { color: #ffb0c8; }
+    #relationsClose {
+      cursor: pointer; user-select: none; font-size: 18px; line-height: 1;
+      padding: 2px 8px; border-radius: 8px; background: rgba(255,255,255,0.10);
+    }
+    #relationsBody {
+      flex: 1; overflow-y: auto; padding: 10px 13px;
+      display: flex; flex-direction: column; gap: 8px; font-size: 13px;
+    }
+    .relations-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 6px 8px; border-radius: 10px; background: rgba(255,255,255,0.05);
+    }
+    .relations-row.tier-stranger { opacity: 0.55; }
+    .relations-icon { display: inline-block; font-size: 15px; width: 20px; text-align: center; }
+    .relations-names { flex: 1; color: #eaf2ff; }
+    .relations-tier { color: #ffb0c8; font-size: 12px; }
+    .relations-empty { color: #506070; font-size: 12px; font-style: italic; text-align: center; padding: 8px 0; }
+    @media (orientation: portrait) {
+      #relationsBtn { top: auto; bottom: 264px; right: 10px; }
+      #relationsPanel { top: auto; bottom: 308px; right: 10px; max-height: 45vh; }
+    }
+
     /* ── 成功提示（綠色小吐司）──────────────────────────────────────────── */
     #msg {
       position: fixed; left: 50%; top: 58px; transform: translateX(-50%);
@@ -911,6 +954,15 @@
       <span id="compassClose">✕</span>
     </div>
     <div id="compassBody"></div>
+  </div>
+  <!-- 居民交情網（ROADMAP 708）：情誼（672）早已驅動問候/八卦/互助蓋家，此面板讓玩家第一次看見 -->
+  <div id="relationsBtn">🧑‍🤝‍🧑 交情</div>
+  <div id="relationsPanel">
+    <div id="relationsHead">
+      <span id="relationsTitle">🧑‍🤝‍🧑 居民交情網</span>
+      <span id="relationsClose">✕</span>
+    </div>
+    <div id="relationsBody"></div>
   </div>
   <!-- 背包 + 合成格面板（ROADMAP 664）-->
   <div id="bagPanel">

@@ -1423,6 +1423,93 @@ if (compassEl) {
   if (closeBtn) closeBtn.addEventListener("click", closeCompass);
 }
 
+// ── 居民交情網（ROADMAP 708）────────────────────────────────────────────────
+// 居民彼此拜訪（671）很久前就悄悄累積情誼（672：陌生→相識→老朋友），驅動問候語
+// /八卦轉述（694）/互助蓋家（696），但這份資料只活在伺服器內部，玩家完全看不見
+// 「這座小社會到底誰跟誰要好」。本面板讀新後端唯讀端點 `/voxel/relations`，把這
+// 份隱形的社交網絡攤開給玩家看——跟羅盤（705）異曲同工：讓早已存在的系統第一次
+// 被看見，而不是新造一套關係系統。
+const relationsEl = document.getElementById("relationsPanel");
+const relationsBodyEl = document.getElementById("relationsBody");
+const relationsBtnEl = document.getElementById("relationsBtn");
+
+const RELATION_TIER_ICON = { friend: "🤝", acquaintance: "🙂", stranger: "·" };
+const RELATION_TIER_LABEL = { friend: "老朋友", acquaintance: "相識", stranger: "陌生" };
+const RELATION_TIER_RANK = { friend: 2, acquaintance: 1, stranger: 0 };
+
+/** 依情誼層級排序（老朋友優先），同層級依拜訪次數多到少排列。純函式、確定性、可測。
+ * @param {Array<{a:string,b:string,tier:string,visits:number}>} rows
+ * @returns {Array} 排序後的新陣列（不改動原陣列）
+ */
+export function sortRelationRows(rows) {
+  return [...rows].sort((x, y) => {
+    const r = (RELATION_TIER_RANK[y.tier] ?? 0) - (RELATION_TIER_RANK[x.tier] ?? 0);
+    return r !== 0 ? r : (y.visits ?? 0) - (x.visits ?? 0);
+  });
+}
+
+let relationsVisible = false;
+let relationsRefreshTimer = null;
+
+/** 重新渲染交情網列表。 */
+function renderRelationsPanel(rows) {
+  if (!relationsBodyEl) return;
+  if (!rows || rows.length === 0) {
+    relationsBodyEl.innerHTML = '<div class="relations-empty">目前沒有交情資料。</div>';
+    return;
+  }
+  const sorted = sortRelationRows(rows);
+  relationsBodyEl.innerHTML = "";
+  for (const row of sorted) {
+    const div = document.createElement("div");
+    div.className = "relations-row tier-" + (row.tier || "stranger");
+    div.innerHTML =
+      '<span class="relations-icon">' + (RELATION_TIER_ICON[row.tier] || "·") + '</span>' +
+      '<span class="relations-names">' + escHtml(row.a) + ' ↔ ' + escHtml(row.b) + '</span>' +
+      '<span class="relations-tier">' + (RELATION_TIER_LABEL[row.tier] || "陌生") + '</span>';
+    relationsBodyEl.appendChild(div);
+  }
+}
+
+/** 向後端抓最新交情資料並重新渲染。 */
+async function refreshRelations() {
+  if (!relationsBodyEl) return;
+  try {
+    const resp = await fetch("/voxel/relations");
+    if (!resp.ok) throw new Error("relations fetch failed: " + resp.status);
+    const rows = await resp.json();
+    renderRelationsPanel(rows);
+  } catch (err) {
+    relationsBodyEl.innerHTML = '<div class="relations-empty">無法讀取交情資料。</div>';
+  }
+}
+
+/** 開啟居民交情網面板（情誼靠拜訪慢慢累積、變化很慢，30 秒刷新一次足夠，
+ * 面板關閉時停止刷新，不背景空耗）。 */
+function openRelations() {
+  if (!relationsEl) return;
+  relationsVisible = true;
+  relationsEl.style.display = "flex";
+  refreshRelations();
+  if (relationsRefreshTimer) clearInterval(relationsRefreshTimer);
+  relationsRefreshTimer = setInterval(() => { if (relationsVisible) refreshRelations(); }, 30_000);
+}
+
+/** 關閉居民交情網面板。 */
+function closeRelations() {
+  relationsVisible = false;
+  if (relationsEl) relationsEl.style.display = "none";
+  if (relationsRefreshTimer) { clearInterval(relationsRefreshTimer); relationsRefreshTimer = null; }
+}
+
+if (relationsBtnEl) relationsBtnEl.addEventListener("click", () => {
+  relationsVisible ? closeRelations() : openRelations();
+});
+if (relationsEl) {
+  const closeBtn = document.getElementById("relationsClose");
+  if (closeBtn) closeBtn.addEventListener("click", closeRelations);
+}
+
 // ── 準心選取 + 高亮外框（MCPE 風）──────────────────────────────────────────────
 // 選中方塊的線框外框（略大一點點避免 z-fighting）。對準時顯示、沒對到時隱藏。
 const highlight = new THREE.LineSegments(
@@ -3250,6 +3337,13 @@ window.__voxel = {
   renderCompassPanel() { renderCompassPanel(); return compassBodyEl && compassBodyEl.innerHTML; },
   worldBearing(px, pz, rx, rz) { return worldBearing(px, pz, rx, rz); },
   compassRelativeDeg(px, pz, rx, rz, yaw) { return compassRelativeDeg(px, pz, rx, rz, yaw); },
+  // ── 居民交情網 QA 用（ROADMAP 708）──
+  openRelations() { return openRelations(); },
+  closeRelations() { closeRelations(); },
+  get relationsVisible() { return relationsVisible; },
+  refreshRelations() { return refreshRelations(); },
+  renderRelationsPanel(rows) { renderRelationsPanel(rows); return relationsBodyEl && relationsBodyEl.innerHTML; },
+  sortRelationRows(rows) { return sortRelationRows(rows); },
   // ── 好感度 QA 用（ROADMAP 656）──
   affinityEmoji(count) { return affinityEmoji(count); },
   get myAffinity() { return Object.fromEntries(myAffinity); },
