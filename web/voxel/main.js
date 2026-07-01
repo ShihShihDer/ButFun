@@ -43,6 +43,8 @@ const WATER_FLOW_BASE = 24, WATER_FLOW_MAX_LVL = 7;
 function isWaterId(b) { return b === WATER || (b >= WATER_FLOW_BASE && b < WATER_FLOW_BASE + WATER_FLOW_MAX_LVL); }
 // 火把 v1（ROADMAP 685）——背包合成（1 木頭 + 1 煤礦 → 4 火把）；橘黃光源，礦坑標記用
 const TORCH = 31;
+// 鎬具 v1（ROADMAP 687）——純物品，不可放置；提升石/礦採集速度
+const PICKAXE_WOOD = 32, PICKAXE_STONE = 33, PICKAXE_IRON = 34;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -74,6 +76,10 @@ const COLOR = {
   [IRON_BLOCK]:        [0.88, 0.88, 0.94], // 鐵磚——高亮銀白帶藍，光潔金屬塊感
   // 火把 v1（ROADMAP 685）——橘黃火焰感，點亮礦坑隧道
   [TORCH]:             [1.00, 0.61, 0.05], // 火把——暖橘黃，燃燒火焰的光感
+  // 鎬具 v1（ROADMAP 687）——工具物品，不渲染為世界方塊（只在 UI 顯示）
+  [PICKAXE_WOOD]:  [0.60, 0.44, 0.26], // 木鎬——深棕木柄感
+  [PICKAXE_STONE]: [0.58, 0.58, 0.60], // 石鎬——冷灰石質感
+  [PICKAXE_IRON]:  [0.80, 0.82, 0.90], // 鐵鎬——明亮銀藍，精煉金屬感
 };
 
 const DEBUG = location.search.includes("debug");
@@ -1145,7 +1151,7 @@ let target = null;
 // 種田 v1（ROADMAP 659）：加入農田土 + 種子（種子為純物品，特殊 Plant 動作）
 // 快捷欄 21 格：…WORKBENCH FURNACE SMOOTH_STONE WHEAT BREAD COAL_ORE IRON_ORE IRON_INGOT IRON_BLOCK TORCH
 // 鍵盤 1–9 對應前 9 格；其餘以滑鼠/觸控點選
-const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE, WHEAT, BREAD, COAL_ORE, IRON_ORE, IRON_INGOT, IRON_BLOCK, TORCH];
+const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE, WHEAT, BREAD, COAL_ORE, IRON_ORE, IRON_INGOT, IRON_BLOCK, TORCH, PICKAXE_WOOD, PICKAXE_STONE, PICKAXE_IRON];
 const BLOCK_NAME = {
   [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉",
   [PLANK]: "木板", [STONE_BRICK]: "石磚", [GLASS]: "玻璃",
@@ -1166,6 +1172,8 @@ const BLOCK_NAME = {
   [IRON_BLOCK]: "鐵磚",
   // 火把 v1（ROADMAP 685）
   [TORCH]: "火把",
+  // 鎬具 v1（ROADMAP 687）
+  [PICKAXE_WOOD]: "木鎬", [PICKAXE_STONE]: "石鎬", [PICKAXE_IRON]: "鐵鎬",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
@@ -1357,13 +1365,99 @@ function setLocalBlock(wx, wy, wz, b) {
   markDirty(cx, cy, cz); // markDirty 只標該 chunk + 6 鄰塊
 }
 
+// ── 採礦手感 v1（ROADMAP 687）─────────────────────────────────────────────────
+// 桌機：按住左鍵持續挖，挖滿進度條後才真正送 break（與手感一致）。
+// 行動裝置：輕點保持即時挖（MCPE v1；採礦進度條不影響手機操作體感）。
+
+// 方塊硬度（秒）——土/草/沙最快，礦石最慢。
+const BLOCK_HARDNESS = {
+  [GRASS]: 0.35, [DIRT]: 0.35, [SAND]: 0.35, [LEAVES]: 0.25,
+  [WOOD]: 0.75,
+  [PLANK]: 0.9, [STONE_BRICK]: 1.8,
+  [STONE]: 1.8, [SMOOTH_STONE]: 2.0,
+  [COAL_ORE]: 2.5, [IRON_ORE]: 2.5,
+  [IRON_INGOT]: 1.5, [IRON_BLOCK]: 2.0,
+  [FARM_SOIL]: 0.4, [FARM_SOIL_SEEDED]: 0.4, [WHEAT_MATURE]: 0.2,
+  [WORKBENCH]: 1.2, [FURNACE]: 1.5,
+  [TORCH]: 0.1,
+};
+function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
+
+// 鎬具加速倍率（持特定鎬對特定類方塊的速度倍數）。
+function pickaxeBonus(bid) {
+  const stoneTypes = [STONE, STONE_BRICK, SMOOTH_STONE, COAL_ORE, IRON_ORE, IRON_BLOCK, IRON_INGOT, WORKBENCH, FURNACE];
+  if (!stoneTypes.includes(bid)) return 1.0;
+  if ((myInv.get(PICKAXE_IRON) || 0) > 0) return 6.0;   // 鐵鎬：最快
+  if ((myInv.get(PICKAXE_STONE) || 0) > 0) return 4.0;  // 石鎬：快
+  if ((myInv.get(PICKAXE_WOOD) || 0) > 0) return 2.5;   // 木鎬：普通加速
+  return 1.0; // 空手：基礎速度
+}
+
+// 採礦狀態（桌機按住左鍵期間維持）。
+let mining = null; // { x, y, z, bid, progress, total } 或 null
+
+// 進度條 DOM（在 crosshair 正下方渲染進度）。
+const miningBarEl = document.getElementById("miningBar");
+const miningBarFillEl = document.getElementById("miningBarFill");
+
+function updateMiningBar(frac) {
+  if (!miningBarEl) return;
+  if (frac === null) {
+    miningBarEl.style.display = "none";
+    return;
+  }
+  miningBarEl.style.display = "block";
+  if (miningBarFillEl) miningBarFillEl.style.width = Math.min(1, frac) * 100 + "%";
+}
+
+/** 開始對準心對準的方塊計時挖掘（桌機模式）。*/
+function startMining() {
+  if (!target || !wsReady) return;
+  const bid = getRaw(target.bx, target.by, target.bz);
+  const hardness = blockHardness(bid);
+  const bonus = pickaxeBonus(bid);
+  const total = hardness / bonus; // 實際需要幾秒
+  mining = { x: target.bx, y: target.by, z: target.bz, bid, progress: 0, total };
+  updateMiningBar(0);
+}
+
+/** 取消當前採礦計時（鬆開左鍵、切換目標時）。*/
+function cancelMining() {
+  mining = null;
+  updateMiningBar(null);
+}
+
+/** 每幀推進採礦進度（dt 秒），完成時送 break 訊息。應在 requestAnimationFrame 迴圈呼叫。*/
+function tickMining(dt) {
+  if (!mining) return;
+  // 若準心目標改變（轉頭對準另一格），重置進度。
+  if (!target || target.bx !== mining.x || target.by !== mining.y || target.bz !== mining.z) {
+    cancelMining();
+    if (target && isMouseDown) startMining();
+    return;
+  }
+  mining.progress += dt;
+  if (mining.progress >= mining.total) {
+    // 進度滿：送 break，立刻開始下一塊（如果按著）。
+    ws.send(JSON.stringify({ t: "break", x: mining.x, y: mining.y, z: mining.z }));
+    cancelMining();
+    if (isMouseDown) startMining();
+  } else {
+    updateMiningBar(mining.progress / mining.total);
+  }
+}
+
 // 破壞準心對準的方塊：送 break（伺服器驗證後廣播 → setLocalBlock 套用）。回傳被挖座標或 null。
+// 注意：行動裝置仍走即時送 break（MCPE 快感體驗）；桌機走 startMining / tickMining。
 function breakAtTarget() {
   if (!target || !wsReady) return null;
   const c = { x: target.bx, y: target.by, z: target.bz };
   ws.send(JSON.stringify({ t: "break", x: c.x, y: c.y, z: c.z }));
   return c;
 }
+
+// 桌機是否按住左鍵（追蹤採礦狀態用）。
+let isMouseDown = false;
 // 在準心方塊的「面外側」放一個方塊：座標 = 命中方塊 + 命中面法線。回傳放置座標或 null。
 // 種田 v1 + 工作台 v1：特殊互動邏輯，再 fallback 到一般放置。
 function placeAtTarget() {
@@ -1456,11 +1550,20 @@ if (!isTouch) {
       return;
     }
     if (e.button === 2) { placeAtTarget(); return; }
+    if (e.button !== 0) return;
+    isMouseDown = true;
     // 鎖定中游標藏在螢幕中心 → 用中心點做居民 raycast / 破壞。
     const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
     const rid = pickResident(cx, cy);
-    if (rid) { const ent = residents.get(rid); openChat(rid, ent && ent.lastName); }
-    else breakAtTarget();
+    if (rid) {
+      const ent = residents.get(rid);
+      openChat(rid, ent && ent.lastName);
+    } else {
+      startMining(); // 採礦手感 v1：開始計時挖掘，而非立即 break
+    }
+  });
+  document.addEventListener("mouseup", (e) => {
+    if (e.button === 0) { isMouseDown = false; cancelMining(); }
   });
   document.addEventListener("mousemove", (e) => {
     if (!pointerLocked) return;
@@ -1886,6 +1989,9 @@ function update(dt) {
   // 準心對準的方塊（破壞/放置目標）+ 高亮外框。
   updateTarget();
 
+  // 採礦手感 v1（ROADMAP 687）：桌機按住左鍵期間每幀推進挖掘進度。
+  if (!isTouch) tickMining(dt);
+
   streamChunks(dt);
   sendMove(dt);
 
@@ -1965,6 +2071,9 @@ const RECIPES_JS = [
   { id: "bread",        name: "麵包",   inputs: [[WHEAT, 3]], output_block: BREAD,       out_count: 1 },
   // 火把 v1（ROADMAP 685）：1 木頭 + 1 煤礦 → 4 火把
   { id: "torch",        name: "火把",   inputs: [[WOOD, 1], [COAL_ORE, 1]], output_block: TORCH, out_count: 4 },
+  // 鎬具 v1（ROADMAP 687）：採石/採礦手感加速；剛好 2×2 四格
+  { id: "wood_pickaxe",  name: "木鎬", inputs: [[WOOD, 3], [PLANK, 1]],  output_block: PICKAXE_WOOD,  out_count: 1 },
+  { id: "stone_pickaxe", name: "石鎬", inputs: [[STONE, 3], [PLANK, 1]], output_block: PICKAXE_STONE, out_count: 1 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
@@ -2183,6 +2292,8 @@ const WORKBENCH_RECIPES_JS = [
   { id: "stone_wood_mix", name: "混合石磚",       inputs: [[STONE, 3], [PLANK, 3]],   output_block: STONE_BRICK, out_count: 6  },
   { id: "farm_kit",       name: "農耕大包",       inputs: [[DIRT, 4], [WOOD, 2]],     output_block: FARM_SOIL,   out_count: 8  },
   { id: "iron_block",     name: "鐵磚",           inputs: [[IRON_INGOT, 6]],           output_block: IRON_BLOCK,  out_count: 2  },
+  // 鐵鎬（ROADMAP 687）：3 鐵錠 + 2 木板 → 1 鐵鎬（5 格，需工作台）
+  { id: "iron_pickaxe",   name: "鐵鎬",           inputs: [[IRON_INGOT, 3], [PLANK, 2]], output_block: PICKAXE_IRON, out_count: 1  },
 ];
 
 // wbGrid[0..8]：3×3 共 9 格，0 代表空格，非零代表 block_id。
@@ -2617,4 +2728,9 @@ window.__voxel = {
   IRON_BLOCK,
   // ── 火把 v1 QA 用（ROADMAP 685）──
   TORCH,
+  // ── 鎬具 v1 QA 用（ROADMAP 687）──
+  PICKAXE_WOOD, PICKAXE_STONE, PICKAXE_IRON,
+  blockHardness, pickaxeBonus,
+  get mining() { return mining; },
+  get isMouseDown() { return isMouseDown; },
 };
