@@ -598,6 +598,9 @@ struct VoxelHub {
     /// （重啟後從晴天重新機率式演變，比照 farm store 的「重啟重置」慣例）。
     /// 每次 `tick_farm`（15 秒）擲骰更新一次，隨快照廣播給前端更新天空+雨滴視覺。
     weather: RwLock<bool>,
+    /// 雨剛開始下的一次性旗標（ROADMAP 701）：`tick_farm` 偵測到晴→雨轉換時設 true，
+    /// `tick_residents` 讀到後立即清回 false（consume-once），觸發附近居民的雨天反應台詞。
+    rain_started_flag: RwLock<bool>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -689,6 +692,8 @@ fn hub() -> &'static VoxelHub {
             water_queue: std::sync::Mutex::new(WaterQueue::default()),
             // 天氣：啟動時永遠從晴天開始，之後靠 tick_farm 的機率擲骰自然演變。
             weather: RwLock::new(false),
+            // 雨剛開始旗標：啟動時無雨無旗標。
+            rain_started_flag: RwLock::new(false),
             tx,
         }
     })
@@ -2288,9 +2293,14 @@ fn is_irrigated_in_delta(deltas: &voxel::WorldDelta, fx: i32, fy: i32, fz: i32) 
 /// 下雨天氣 v1（ROADMAP 700）：每輪先擲骰演變天氣（短寫鎖即釋），下雨時所有農地視同水耕。
 fn tick_farm() {
     // 天氣擲骰（短寫鎖即釋，不與其他鎖巢狀）：純函式 next_raining 決定下一輪狀態。
+    // ROADMAP 701：順便偵測「晴→雨」轉換，設一次性旗標讓 tick_residents 觸發居民雨天反應。
     let raining = {
         let mut w = hub().weather.write().unwrap();
+        let was_raining = *w;
         *w = vweather::next_raining(*w, rand::random::<f32>());
+        if *w && !was_raining {
+            *hub().rain_started_flag.write().unwrap() = true;
+        }
         *w
     };
     let now = vfarm::now_secs();
@@ -2417,6 +2427,15 @@ fn tick_residents(dt: f32) {
     let speed_mult = vt::wander_mult(phase);
     let extra_wait = vt::rest_wait_extra(phase);
     let is_night = vt::is_sleepable(phase);
+    // 下雨天氣（700）接上居民行為（ROADMAP 701）：短讀鎖取目前是否下雨。
+    let raining = *hub().weather.read().unwrap();
+    // 雨剛開始的一次性旗標：consume-once（讀到就清回 false），供下方觸發居民雨天反應台詞。
+    let rain_just_started = {
+        let mut f = hub().rain_started_flag.write().unwrap();
+        let v = *f;
+        *f = false;
+        v
+    };
     // 夜間歸巢遮蔽：批次快照各居民已蓋好的小屋座標（goals 讀鎖即釋），
     // 供下面 residents 寫鎖那段挑閒晃中心用——不與 residents 鎖巢狀（守死鎖鐵律）。
     let house_locations: HashMap<String, (i32, i32, i32)> = {
@@ -2814,6 +2833,14 @@ fn tick_residents(dt: f32) {
                 }
             }
 
+            // 雨天反應 v1（ROADMAP 701）：雨剛開始下的那一刻，say 為空的居民冒一句應景台詞
+            // （零 LLM、確定性選句）；優先於下方的心情自語（罕見的一次性事件，值得蓋過閒聊冷卻）。
+            if rain_just_started && r.say.is_empty() {
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                r.say = vweather::rain_started_line(pick).to_string();
+                r.say_timer = SAY_SECS;
+            }
+
             // 心情自語 v1（ROADMAP 677）：冷卻到期且 say 為空時，依心情自發冒一句台詞。
             // 鎖序：bonds 讀（即釋）→ memory 讀（即釋），不巢狀，不持鎖 await。
             if r.say.is_empty() && r.mood_say_cooldown <= 0.0 {
@@ -2941,10 +2968,11 @@ fn tick_residents(dt: f32) {
                     let angle = rand::random::<f32>() * std::f32::consts::TAU;
                     // 日夜作息 v1：夜間閒晃半徑隨速度乘數縮小（居民不往遠處跑）。
                     let radius = (WANDER_MIN_R + rand::random::<f32>() * (WANDER_MAX_R - WANDER_MIN_R)) * speed_mult.max(0.4);
-                    // 夜間歸巢遮蔽（本輪新增）：不在探訪中 + 現在是夜間 + 已蓋好自己的小屋
+                    // 歸巢遮蔽：不在探訪中 + （現在是夜間 或 正在下雨）+ 已蓋好自己的小屋
                     // → 以小屋為閒晃中心（緊靠自家），取代原本的家域出生點。
+                    // ROADMAP 701：白天下雨時也比照夜間歸巢，居民第一次會為了避雨回家。
                     let sheltering = r.visiting.is_none()
-                        && vr::should_shelter(is_night, house_locations.contains_key(&r.id));
+                        && vr::should_shelter(is_night, raining, house_locations.contains_key(&r.id));
                     // 探訪中：以目的地為閒晃中心（讓居民在鄰居家附近自然走動）；
                     // 夜間遮蔽：以自己蓋的小屋為中心；否則：以自己家域中心為基準（正常行為）。
                     let (center_x, center_z) = if let Some((vx, vz, _)) = &r.visiting {
