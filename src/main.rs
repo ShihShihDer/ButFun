@@ -160,6 +160,8 @@ mod voxel_cheer;
 mod voxel_chest;
 // 乙太方界·居民口耳相傳 v1：老朋友到訪時轉述見聞，記憶經朋友網絡流通（ROADMAP 694）。
 mod voxel_gossip;
+// 乙太方界·下雨天氣 v1：機率式晴/雨切換，下雨時農地視同水耕（ROADMAP 700）。
+mod voxel_weather;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環

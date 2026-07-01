@@ -52,6 +52,7 @@ use crate::voxel_mood;
 use crate::voxel_comfort as vcomfort;
 use crate::voxel_cheer as vcheer;
 use crate::voxel_chest as vchest;
+use crate::voxel_weather as vweather;
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -593,6 +594,10 @@ struct VoxelHub {
     /// 穩定的移出——**不整世界每 tick 掃描**（效能鐵律）。
     /// 內含去重集合避免同格重複排隊。純記憶體：水流狀態本身走 delta 持久化那條路。
     water_queue: std::sync::Mutex<WaterQueue>,
+    /// 世界天氣（下雨天氣 v1，ROADMAP 700）：`true` = 正在下雨。純記憶體、無需持久化
+    /// （重啟後從晴天重新機率式演變，比照 farm store 的「重啟重置」慣例）。
+    /// 每次 `tick_farm`（15 秒）擲骰更新一次，隨快照廣播給前端更新天空+雨滴視覺。
+    weather: RwLock<bool>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -682,6 +687,8 @@ fn hub() -> &'static VoxelHub {
             chest: RwLock::new(vchest::ChestStore::from_entries(vchest::load_chests())),
             // 水流佇列：啟動空；玩家/居民挖破地形時排入缺口鄰格，水才開始流。
             water_queue: std::sync::Mutex::new(WaterQueue::default()),
+            // 天氣：啟動時永遠從晴天開始，之後靠 tick_farm 的機率擲骰自然演變。
+            weather: RwLock::new(false),
             tx,
         }
     })
@@ -763,11 +770,14 @@ fn players_snapshot_json() -> String {
     }; // 心願讀鎖在此釋放
     // 時鐘快照（短鎖、不巢狀）：把 time_of_day(0.0–1.0) 帶給前端更新天空/光照。
     let time_of_day: f32 = hub().world_time.read().unwrap().time_of_day();
+    // 天氣快照（下雨天氣 v1，短鎖、不巢狀）：帶給前端更新天空色調 + 雨滴視覺。
+    let raining: bool = *hub().weather.read().unwrap();
     serde_json::json!({
         "t": "players",
         "players": players,
         "residents": residents,
         "time_of_day": time_of_day,
+        "raining": raining,
     }).to_string()
 }
 
@@ -1683,8 +1693,8 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 // 記錄農地 + 持久化種子消耗（兩者都在鎖外）。
                 hub().farm.write().unwrap().plant(x, y, z, vfarm::now_secs());
                 vinv::append_inv(&seed_e);
-                // 水耕檢查（短讀鎖即釋）。
-                let irrigated = {
+                // 水耕檢查（短讀鎖即釋）：下雨時視同水耕（下雨天氣 v1，ROADMAP 700）。
+                let irrigated = *hub().weather.read().unwrap() || {
                     let deltas = hub().deltas.read().unwrap();
                     is_irrigated_in_delta(&deltas, x, y, z)
                 };
@@ -2275,7 +2285,14 @@ fn is_irrigated_in_delta(deltas: &voxel::WorldDelta, fx: i32, fy: i32, fz: i32) 
 
 /// 純同步、短鎖即釋（delta 讀鎖 → drop → farm 讀鎖 → drop → farm 寫鎖 → drop → delta 寫鎖 → drop → broadcast）。
 /// 水耕農業 v1（ROADMAP 686）：水源鄰近時生長加速 45s，否則 90s。
+/// 下雨天氣 v1（ROADMAP 700）：每輪先擲骰演變天氣（短寫鎖即釋），下雨時所有農地視同水耕。
 fn tick_farm() {
+    // 天氣擲骰（短寫鎖即釋，不與其他鎖巢狀）：純函式 next_raining 決定下一輪狀態。
+    let raining = {
+        let mut w = hub().weather.write().unwrap();
+        *w = vweather::next_raining(*w, rand::random::<f32>());
+        *w
+    };
     let now = vfarm::now_secs();
     // 短讀鎖取 delta 快照用於水耕判斷（每 15s 一次，clone 代價小），馬上釋放。
     let deltas_snap: voxel::WorldDelta = hub().deltas.read().unwrap().clone();
@@ -2285,7 +2302,7 @@ fn tick_farm() {
         .read()
         .unwrap()
         .mature_plots_irrigated(now, |fx, fy, fz| {
-            is_irrigated_in_delta(&deltas_snap, fx, fy, fz)
+            raining || is_irrigated_in_delta(&deltas_snap, fx, fy, fz)
         });
     if mature.is_empty() {
         return;

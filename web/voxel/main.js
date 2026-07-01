@@ -187,9 +187,17 @@ function updateSkyAndLight(t) {
   // 插值天空色並套用到背景+霧。
   const [sr0, sg0, sb0] = _hc(sky0);
   const [sr1, sg1, sb1] = _hc(sky1);
-  const sr = sr0 + (sr1 - sr0) * f;
-  const sg = sg0 + (sg1 - sg0) * f;
-  const sb = sb0 + (sb1 - sb0) * f;
+  let sr = sr0 + (sr1 - sr0) * f;
+  let sg = sg0 + (sg1 - sg0) * f;
+  let sb = sb0 + (sb1 - sb0) * f;
+  // 下雨天氣 v1（ROADMAP 700）：天空/霧色往灰藍調混，讓下雨天一眼可辨。
+  if (isRaining) {
+    const [gr, gg, gb] = [0.42, 0.46, 0.52];
+    const rw = 0.55;
+    sr = sr + (gr - sr) * rw;
+    sg = sg + (gg - sg) * rw;
+    sb = sb + (gb - sb) * rw;
+  }
   scene.background.setRGB(sr, sg, sb);
   scene.fog.color.setRGB(sr, sg, sb);
 
@@ -197,7 +205,7 @@ function updateSkyAndLight(t) {
   const [ur0, ug0, ub0] = _hc(sun0);
   const [ur1, ug1, ub1] = _hc(sun1);
   sun.color.setRGB(ur0 + (ur1 - ur0) * f, ug0 + (ug1 - ug0) * f, ub0 + (ub1 - ub0) * f);
-  sun.intensity = si0 + (si1 - si0) * f;
+  sun.intensity = (si0 + (si1 - si0) * f) * (isRaining ? 0.6 : 1); // 下雨天陽光轉弱
 
   // 太陽軌跡：t=0.25 日出（東）、t=0.5 正午（頂）、t=0.75 日落（西）。
   const ang = (t - 0.25) * Math.PI * 2;
@@ -207,8 +215,49 @@ function updateSkyAndLight(t) {
   hemi.intensity = hi0 + (hi1 - hi0) * f;
 }
 
+// ── 下雨天氣 v1（ROADMAP 700）─────────────────────────────────────────────
+// 伺服器機率式演變晴/雨並隨玩家快照廣播 raining:bool；前端只負責視覺：天空灰藍調 + 雨滴粒子。
+// 宣告需在初始 updateSkyAndLight() 呼叫之前，避免其讀取 isRaining 時尚未初始化。
+let isRaining = false;
+
 // 初始套用，讓進場就是白天而非等第一幀快照。
 updateSkyAndLight(worldTime);
+
+// 雨滴粒子：單一 THREE.Points（一次 draw call，效能鐵律——別用逐滴 mesh）。
+// 座標系相對鏡頭：每幀把整片粒子雲平移到鏡頭上方，粒子本身只在小範圍內落下+重置高度循環。
+const RAIN_COUNT = 400;
+const RAIN_SPREAD = 30;   // 粒子雲水平範圍（格）
+const RAIN_HEIGHT = 20;   // 粒子雲垂直範圍（格），落到底部就重置回頂部
+const RAIN_FALL_SPEED = 24; // 格/秒
+const rainPositions = new Float32Array(RAIN_COUNT * 3);
+for (let i = 0; i < RAIN_COUNT; i++) {
+  rainPositions[i * 3 + 0] = (Math.random() - 0.5) * RAIN_SPREAD;
+  rainPositions[i * 3 + 1] = Math.random() * RAIN_HEIGHT;
+  rainPositions[i * 3 + 2] = (Math.random() - 0.5) * RAIN_SPREAD;
+}
+const rainGeom = new THREE.BufferGeometry();
+rainGeom.setAttribute("position", new THREE.BufferAttribute(rainPositions, 3));
+const rainMat = new THREE.PointsMaterial({
+  color: 0xaac4e0, size: 0.12, transparent: true, opacity: 0.55, depthWrite: false,
+});
+const rainPoints = new THREE.Points(rainGeom, rainMat);
+rainPoints.visible = false;
+scene.add(rainPoints);
+
+// 每幀推進雨滴下落（純視覺，無碰撞）；不下雨時整組隱藏、零成本早退。
+function updateRain(dt) {
+  if (!isRaining) { rainPoints.visible = false; return; }
+  rainPoints.visible = true;
+  // 粒子雲整體跟著鏡頭水平移動，讓雨看起來覆蓋玩家周遭而非固定世界座標。
+  rainPoints.position.set(camera.position.x, camera.position.y + RAIN_HEIGHT / 2, camera.position.z);
+  const pos = rainGeom.attributes.position;
+  for (let i = 0; i < RAIN_COUNT; i++) {
+    let y = pos.getY(i) - RAIN_FALL_SPEED * dt;
+    if (y < -RAIN_HEIGHT / 2) y += RAIN_HEIGHT; // 落到底部循環回頂部
+    pos.setY(i, y);
+  }
+  pos.needsUpdate = true;
+}
 
 // 方塊用 Lambert + 頂點色（每方塊上色），對光反應但靠半球光保底不黑。
 // DoubleSide：切片① 求穩，避免任一面纏繞方向算錯被背面剔除成破洞/黑屏（perf 微讓步，之後可收回 FrontSide）。
@@ -1959,10 +2008,11 @@ function connect() {
       // 乙太方界 AI 居民（與玩家分開的陣列）：位置/名字/說的話。
       if (m.residents) updateResidents(m.residents);
       // 晝夜循環 v1：伺服器每幀帶 time_of_day(0.0–1.0)，前端據此更新天空/光照。
-      if (typeof m.time_of_day === "number") {
-        worldTime = m.time_of_day;
-        updateSkyAndLight(worldTime);
-      }
+      // 下雨天氣 v1（ROADMAP 700）：raining 隨同一份快照送達，一併觸發天空重繪。
+      let skyDirty = false;
+      if (typeof m.time_of_day === "number") { worldTime = m.time_of_day; skyDirty = true; }
+      if (typeof m.raining === "boolean" && m.raining !== isRaining) { isRaining = m.raining; skyDirty = true; }
+      if (skyDirty) updateSkyAndLight(worldTime);
     } else if (m.t === "talk") {
       // 居民對話回覆（單播）：
       //   thinking:true → 立即佔位（後端一收到就送），顯示動畫「思考中」指示器，不當一般氣泡。
@@ -2311,6 +2361,7 @@ function update(dt) {
     updateNearbyTorchLights();
   }
 
+  updateRain(dt);
   streamChunks(dt);
   sendMove(dt);
 
@@ -3143,6 +3194,11 @@ window.__voxel = {
   get skyColor() { const c = scene.background; return { r: c.r, g: c.g, b: c.b }; },
   get sunIntensity() { return sun.intensity; },
   get hemiIntensity() { return hemi.intensity; },
+  // ── 下雨天氣 v1 QA 用（ROADMAP 700）──
+  get isRaining() { return isRaining; },
+  set isRaining(v) { isRaining = !!v; updateSkyAndLight(worldTime); },
+  get rainVisible() { return rainPoints.visible; },
+  updateRain(dt) { updateRain(dt); },
   // ── 真瀏覽器 QA 用：讀準心目標、讀方塊、觸發破壞/放置、選方塊 ──
   get target() { return target; },
   getBlock(x, y, z) { return getRaw(x, y, z); },
