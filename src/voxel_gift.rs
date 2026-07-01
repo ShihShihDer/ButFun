@@ -36,6 +36,13 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         22 => "鐵錠",
         23 => "鐵磚",
         31 => "火把",
+        32 => "木鎬",
+        33 => "石鎬",
+        34 => "鐵鎬",
+        35 => "梯子",
+        36 => "木斧",
+        37 => "石斧",
+        38 => "鐵斧",
         _ => "物品",
     }
 }
@@ -143,6 +150,12 @@ mod tests {
         assert_eq!(item_name_zh(22), "鐵錠");
         assert_eq!(item_name_zh(23), "鐵磚");
         assert_eq!(item_name_zh(31), "火把");
+        assert_eq!(item_name_zh(32), "木鎬");
+        assert_eq!(item_name_zh(34), "鐵鎬");
+        assert_eq!(item_name_zh(35), "梯子");
+        assert_eq!(item_name_zh(36), "木斧");
+        assert_eq!(item_name_zh(37), "石斧");
+        assert_eq!(item_name_zh(38), "鐵斧");
     }
 
     #[test]
