@@ -65,6 +65,8 @@ pub struct Tree {
 /// ID 11–13：種田 v1（ROADMAP 659）農地狀態方塊。
 /// ID 14：種子（純背包物品，無實體方塊，voxel_farm::SEEDS_ID）。
 /// ID 15：工作台（ROADMAP 665）玩家合成+放置，互動開 3×3 合成格。
+/// ID 18–19：小麥/麵包（純背包物品，voxel_farm）。
+/// ID 20–21：深層礦石（ROADMAP 682）煤礦/鐵礦，生成於地底石層，可採集+放置。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Block {
@@ -94,6 +96,12 @@ pub enum Block {
     Furnace = 16,
     /// 拋光石（3 石頭在熔爐冶煉 → 3 拋光石；精緻灰石建材，比原石光滑）。
     SmoothStone = 17,
+    /// 煤礦（ROADMAP 682）——深層石頭中有機率生成（y ≤ COAL_ORE_DEPTH）；
+    /// 採集後回收礦方塊本身（可放置），送給居民有特別驚喜反應。
+    CoalOre = 20,
+    /// 鐵礦（ROADMAP 682）——比煤礦更深、更稀少（y ≤ IRON_ORE_DEPTH）；
+    /// 採集後同樣可放置，居民收到時會表現出更強烈的好奇心。
+    IronOre = 21,
 }
 
 impl Block {
@@ -122,6 +130,8 @@ impl Block {
             15 => Some(Block::Workbench),
             16 => Some(Block::Furnace),
             17 => Some(Block::SmoothStone),
+            20 => Some(Block::CoalOre),
+            21 => Some(Block::IronOre),
             _ => None,
         }
     }
@@ -133,7 +143,8 @@ impl Block {
             self,
             Block::Dirt | Block::Stone | Block::Sand | Block::Wood | Block::Grass |
             Block::Plank | Block::StoneBrick | Block::Glass | Block::FarmSoil |
-            Block::Workbench | Block::Furnace | Block::SmoothStone
+            Block::Workbench | Block::Furnace | Block::SmoothStone |
+            Block::CoalOre | Block::IronOre
         )
     }
 }
@@ -275,6 +286,31 @@ pub fn can_place(
 
 // ── 自寫 hash value noise（零外部相依、確定性、可測；不抄外部碼）─────────────────
 
+/// 煤礦最高出現深度（y ≤ 此值且屬石頭層才生成；BASE_HEIGHT=8 下通常距地表 ≥5 格）。
+pub const COAL_ORE_DEPTH: i32 = 3;
+/// 鐵礦最高出現深度（y ≤ 此值且屬石頭層才生成；比煤礦更稀少且更深）。
+pub const IRON_ORE_DEPTH: i32 = 1;
+/// 煤礦在合格石層中的每格生成機率（2%，掃 40×4×40 區塊約有 128 格）。
+pub const COAL_ORE_DENSITY: f32 = 0.020;
+/// 鐵礦在合格石層中的每格生成機率（1%，比煤礦稀少）。
+pub const IRON_ORE_DENSITY: f32 = 0.010;
+
+/// 三維確定性雜湊→[0,1)，用於礦石生成。獨立 seed 讓煤礦/鐵礦分佈不重疊。
+#[inline]
+fn ore_hash3(wx: i32, wy: i32, wz: i32, seed: u32) -> f32 {
+    let mut h = (wx as u32)
+        .wrapping_mul(0x_27d4_eb2d)
+        .wrapping_add((wy as u32).wrapping_mul(0x_6c62_272e))
+        .wrapping_add((wz as u32).wrapping_mul(0x_9e37_79b1))
+        .wrapping_add(seed);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x_85eb_ca6b);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0x_c2b2_ae35);
+    h ^= h >> 16;
+    (h as f32) / (u32::MAX as f32)
+}
+
 /// 整數座標 → [0,1) 的確定性雜湊（用幾個質數攪和 + xorshift finalize）。
 #[inline]
 fn hash2(x: i32, z: i32, seed: u32) -> f32 {
@@ -403,6 +439,14 @@ pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
     if wy >= h - 3 {
         return Block::Dirt;
     }
+    // 深層礦石（ROADMAP 682）：距地表足夠深的石頭層有機率含礦。
+    // 兩種礦石使用不同 seed，分佈互不重疊。
+    if wy <= COAL_ORE_DEPTH && ore_hash3(wx, wy, wz, 0xdead_beef) < COAL_ORE_DENSITY {
+        return Block::CoalOre;
+    }
+    if wy <= IRON_ORE_DEPTH && ore_hash3(wx, wy, wz, 0xcafe_1234) < IRON_ORE_DENSITY {
+        return Block::IronOre;
+    }
     Block::Stone
 }
 
@@ -508,9 +552,10 @@ mod tests {
         // 地表是草、其下是土、再下是石、其上是空氣。
         assert_eq!(block_at(x, h, z), Block::Grass);
         assert_eq!(block_at(x, h - 1, z), Block::Dirt);
-        assert_eq!(block_at(x, h - 8, z), Block::Stone);
+        // 深層石層可能含礦石（ROADMAP 682）。
+        assert!(matches!(block_at(x, h - 8, z), Block::Stone | Block::CoalOre | Block::IronOre));
         assert_eq!(block_at(x, h + 1, z), Block::Air);
-        // 地心是石頭。
+        // 負 y 座標一律石頭（ROADMAP 682 礦石只在 y≥0 層生成）。
         assert_eq!(block_at(x, -5, z), Block::Stone);
     }
 
@@ -801,5 +846,93 @@ mod tests {
         // generate 與逐點 block_at 完全同源（含樹）。
         let li = world_local_index(tree.tx, tree.base_h + 1, tree.tz);
         assert_eq!(chunk.blocks[li], Block::Wood as u8);
+    }
+
+    // ── 深層礦石（ROADMAP 682）────────────────────────────────────────────────
+
+    #[test]
+    fn ore_hash3_is_deterministic() {
+        // 同座標多次呼叫必須完全一致。
+        for &(x, y, z, seed) in &[
+            (0, 0, 0, 0u32),
+            (100, 3, -50, 0xdead_beef),
+            (-12345, 1, 6789, 0xcafe_1234),
+        ] {
+            let a = ore_hash3(x, y, z, seed);
+            let b = ore_hash3(x, y, z, seed);
+            assert_eq!(a, b, "ore_hash3 應為確定性");
+        }
+    }
+
+    #[test]
+    fn ore_hash3_is_in_range() {
+        // 回傳值必須在 [0, 1)。
+        for &(x, y, z) in &[(0, 0, 0), (100, 3, -50), (-999, 1, 42)] {
+            let v = ore_hash3(x, y, z, 0xdead_beef);
+            assert!(v >= 0.0 && v < 1.0, "ore_hash3 應在 [0,1)：{v}");
+        }
+    }
+
+    #[test]
+    fn ore_generation_exists_at_valid_depths() {
+        // 掃一個足夠大的區域，確認煤礦和鐵礦在合法深度真的有生成。
+        let (mut coal, mut iron) = (0u32, 0u32);
+        for x in -100..100 {
+            for z in -100..100 {
+                for y in 0..=COAL_ORE_DEPTH {
+                    let b = block_at(x, y, z);
+                    if b == Block::CoalOre { coal += 1; }
+                    if b == Block::IronOre { iron += 1; }
+                }
+            }
+        }
+        assert!(coal > 0, "應能在地底找到煤礦：coal={coal}");
+        assert!(iron > 0, "應能在地底找到鐵礦：iron={iron}");
+    }
+
+    #[test]
+    fn ore_not_generated_above_depth_limit() {
+        // 超過深度限制的石層不生成礦石。
+        let z = 0;
+        let x = clear_land_column(z, 2);
+        let h = height_at(x, z);
+        // 選一個高於 COAL_ORE_DEPTH 的石層深度。
+        let mid_stone = h - 5;
+        if mid_stone > COAL_ORE_DEPTH {
+            let b = block_at(x, mid_stone, z);
+            assert!(
+                !matches!(b, Block::CoalOre | Block::IronOre),
+                "深度 {mid_stone} > COAL_ORE_DEPTH={COAL_ORE_DEPTH}，不應生成礦石：{b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ore_blocks_are_solid_and_placeable() {
+        assert!(Block::CoalOre.is_solid());
+        assert!(Block::IronOre.is_solid());
+        assert!(Block::CoalOre.is_placeable());
+        assert!(Block::IronOre.is_placeable());
+    }
+
+    #[test]
+    fn ore_from_u8_roundtrips() {
+        assert_eq!(Block::from_u8(20), Some(Block::CoalOre));
+        assert_eq!(Block::from_u8(21), Some(Block::IronOre));
+    }
+
+    #[test]
+    fn negative_y_always_stone_not_ore() {
+        // y < 0 的早期返回確保礦石不在世界底部生成。
+        for x in &[-5, 0, 100] {
+            for z in &[-5, 0, 100] {
+                for y in &[-1, -5, -100] {
+                    assert_eq!(
+                        block_at(*x, *y, *z), Block::Stone,
+                        "y={y} 應永遠是 Stone（非礦石）"
+                    );
+                }
+            }
+        }
     }
 }

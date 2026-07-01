@@ -29,6 +29,9 @@ const FURNACE = 16;
 const SMOOTH_STONE = 17;
 // 麵包 v1（ROADMAP 668）——純物品，收割小麥→合麵包；18=小麥顆粒,19=麵包
 const WHEAT = 18, BREAD = 19;
+// 深層礦石 v1（ROADMAP 682）——地底石層採掘所得
+const COAL_ORE = 20; // 煤礦——最淺的礦石，y ≤ 3 的石層有機率生成
+const IRON_ORE = 21; // 鐵礦——更深更稀少，y ≤ 1 的石層有機率生成
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -51,6 +54,9 @@ const COLOR = {
   // 熔爐 v1
   [FURNACE]:           [0.36, 0.26, 0.20], // 熔爐——暗灰棕，燻黑石材爐
   [SMOOTH_STONE]:      [0.72, 0.72, 0.74], // 拋光石——明亮冷灰，精煉石材感
+  // 深層礦石 v1（ROADMAP 682）——石灰底+礦石紋理感
+  [COAL_ORE]:          [0.35, 0.33, 0.32], // 煤礦——深灰帶黑，石中夾黑炭
+  [IRON_ORE]:          [0.66, 0.44, 0.28], // 鐵礦——帶鏽橙的石，鐵質感
 };
 
 const DEBUG = location.search.includes("debug");
@@ -1117,9 +1123,9 @@ let target = null;
 
 // ── 快捷欄（選要放的方塊型別）+ 背包存量（採集 v1）───────────────────────────
 // 種田 v1（ROADMAP 659）：加入農田土 + 種子（種子為純物品，特殊 Plant 動作）
-// 快捷欄 14 格：…WORKBENCH FURNACE SMOOTH_STONE
+// 快捷欄 18 格：…WORKBENCH FURNACE SMOOTH_STONE WHEAT BREAD COAL_ORE IRON_ORE
 // 鍵盤 1–9 對應前 9 格；其餘以滑鼠/觸控點選
-const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE, WHEAT, BREAD];
+const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE, WHEAT, BREAD, COAL_ORE, IRON_ORE];
 const BLOCK_NAME = {
   [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉",
   [PLANK]: "木板", [STONE_BRICK]: "石磚", [GLASS]: "玻璃",
@@ -1132,6 +1138,8 @@ const BLOCK_NAME = {
   [FURNACE]: "熔爐", [SMOOTH_STONE]: "拋光石",
   // 麵包 v1（ROADMAP 668）
   [WHEAT]: "小麥", [BREAD]: "麵包",
+  // 深層礦石 v1（ROADMAP 682）
+  [COAL_ORE]: "煤礦", [IRON_ORE]: "鐵礦",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
@@ -2493,4 +2501,6 @@ window.__voxel = {
   get isLoggedIn() { return isLoggedIn; },
   get myAccountName() { return myAccountName; },
   get myName() { return myName; },
+  // ── 深層礦石 v1 QA 用（ROADMAP 682）──
+  COAL_ORE, IRON_ORE,
 };
