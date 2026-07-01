@@ -113,7 +113,9 @@ case "$turn" in
     WT="${BUTFUN_WORKER_WORKTREE:-/tmp/bf-worker}"
     git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || { git worktree prune >/dev/null 2>&1; git worktree add --detach "$WT" >/dev/null 2>&1 || true; }
     cd "$WT" || { log "❌ worker worktree ($WT) 不可用，本輪中止——絕不 fallback 到主樹(免在主樹留 WIP 弄髒、擋部署一整天)"; exit 1; }
-    "$HERE/notify.sh" beat "🔨 $(date '+%H:%M') 還在開發中（做好會通知你）…" >/dev/null 2>&1 || true
+    # 心跳帶「上一輪實際成果」（最近的 PR），讓維護者看得懂迴圈在幹嘛，不是空話。gh 失敗就退回泛用字。
+    _lastpr="$(cd "$REPO" 2>/dev/null && gh pr list --author @me --state all -L 1 --json number,title -q '.[0] | "PR #\(.number)：\(.title)"' 2>/dev/null || true)"
+    "$HERE/notify.sh" beat "🔨 $(date '+%H:%M') 開發下一個切片中…（上一個成果：${_lastpr:-剛起步}）" >/dev/null 2>&1 || true
     # 一起燒：BUTFUN_WORKER_DUAL=1 → Claude(主軸) + agy(玩家建議/打磨) 兩個 worker 並行，各自 worktree、各開 PR、分流避免撞同項。
     # （2026-06-26 維護者「agy claude 一起燒」。要回單 worker 把 env 設回 0/unset。）
     if [ "${BUTFUN_WORKER_DUAL:-0}" = "1" ]; then
@@ -153,7 +155,9 @@ case "$turn" in
     ;;
   review)
     log "reviewer（Claude $REVIEW_MODEL）把關"
-    "$HERE/notify.sh" beat "🔍 $(date '+%H:%M') 正在檢查剛做好的東西（跑測試,約 5-8 分）…" >/dev/null 2>&1 || true
+    # 審查心跳帶「正在審哪個 PR」——讓維護者知道在把關什麼。
+    _openpr="$(cd "$REPO" 2>/dev/null && gh pr list --author @me --state open -L 1 --json number,title -q '.[0] | "PR #\(.number)：\(.title)"' 2>/dev/null || true)"
+    "$HERE/notify.sh" beat "🔍 $(date '+%H:%M') 審查+測試中（${_openpr:-剛做好的東西}）…約 5-8 分…" >/dev/null 2>&1 || true
     RWT="${BUTFUN_REVIEW_WORKTREE:-/tmp/bf-review}"
     git -C "$RWT" rev-parse --git-dir >/dev/null 2>&1 || { git worktree prune >/dev/null 2>&1; git worktree add --detach "$RWT" >/dev/null 2>&1 || true; }
     before="$(git -C "$REPO" rev-parse origin/main 2>/dev/null)"
