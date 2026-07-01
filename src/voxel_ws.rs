@@ -2364,6 +2364,18 @@ fn tick_residents(dt: f32) {
     let phase = { hub().world_time.read().unwrap().phase() };
     let speed_mult = vt::wander_mult(phase);
     let extra_wait = vt::rest_wait_extra(phase);
+    let is_night = vt::is_sleepable(phase);
+    // 夜間歸巢遮蔽：批次快照各居民已蓋好的小屋座標（goals 讀鎖即釋），
+    // 供下面 residents 寫鎖那段挑閒晃中心用——不與 residents 鎖巢狀（守死鎖鐵律）。
+    let house_locations: HashMap<String, (i32, i32, i32)> = {
+        let goals = hub().goals.read().unwrap();
+        (0..RESIDENT_COUNT)
+            .filter_map(|j| {
+                let rid = format!("vox_res_{j}");
+                goals.house_of(&rid).map(|loc| (rid, loc))
+            })
+            .collect()
+    }; // goals 讀鎖釋放
     // say_updates 提前宣告，過渡台詞與建造台詞共用同一張 Vec，在末尾一次套用。
     let mut say_updates: Vec<(String, String)> = Vec::new();
     {
@@ -2877,16 +2889,25 @@ fn tick_residents(dt: f32) {
                     let angle = rand::random::<f32>() * std::f32::consts::TAU;
                     // 日夜作息 v1：夜間閒晃半徑隨速度乘數縮小（居民不往遠處跑）。
                     let radius = (WANDER_MIN_R + rand::random::<f32>() * (WANDER_MAX_R - WANDER_MIN_R)) * speed_mult.max(0.4);
+                    // 夜間歸巢遮蔽（本輪新增）：不在探訪中 + 現在是夜間 + 已蓋好自己的小屋
+                    // → 以小屋為閒晃中心（緊靠自家），取代原本的家域出生點。
+                    let sheltering = r.visiting.is_none()
+                        && vr::should_shelter(is_night, house_locations.contains_key(&r.id));
                     // 探訪中：以目的地為閒晃中心（讓居民在鄰居家附近自然走動）；
-                    // 否則：以自己家域中心為基準（正常行為）。
+                    // 夜間遮蔽：以自己蓋的小屋為中心；否則：以自己家域中心為基準（正常行為）。
                     let (center_x, center_z) = if let Some((vx, vz, _)) = &r.visiting {
                         (*vx, *vz)
+                    } else if sheltering {
+                        let (hx, _hy, hz) = house_locations[&r.id];
+                        (hx as f32 + 0.5, hz as f32 + 0.5)
                     } else {
                         (r.home_x, r.home_z)
                     };
-                    // 探訪中用探訪範圍（讓居民在鄰居家附近閒晃）；否則用家域半徑（正常行為）。
+                    // 探訪中用探訪範圍；夜間遮蔽用更小的遮蔽半徑（緊靠自家）；否則用家域半徑（正常行為）。
                     let wander_r = if r.visiting.is_some() {
                         vvisit::VISIT_WANDER_RADIUS
+                    } else if sheltering {
+                        vr::SHELTER_WANDER_RADIUS
                     } else {
                         vr::HOME_RADIUS
                     };
@@ -3478,7 +3499,7 @@ fn tick_residents(dt: f32) {
         }
 
         // ── 有計畫：彈下一塊放置 + 持久化 + 進度冒泡 ──────────────────────────
-        let (next_block, kind_name, kind_str, progress_pct, plan_done) = {
+        let (next_block, kind_name, kind_str, progress_pct, plan_done, plan_anchor) = {
             let mut builds = hub().builds.write().unwrap();
             if let Some(plan) = builds.get_plan_mut(&rid) {
                 let bb = plan.pop_next();
@@ -3486,9 +3507,10 @@ fn tick_residents(dt: f32) {
                 let ks = plan.kind.clone();
                 let pct = plan.progress_pct();
                 let done = plan.is_done();
-                (bb, kn, ks, pct, done)
+                let anchor = (plan.cx, plan.cy, plan.cz);
+                (bb, kn, ks, pct, done, anchor)
             } else {
-                (None, String::new(), String::new(), 100, true)
+                (None, String::new(), String::new(), 100, true, (0, 0, 0))
             }
         }; // builds 寫鎖釋放
 
@@ -3527,7 +3549,7 @@ fn tick_residents(dt: f32) {
             if let Some(kind) = vbuild::BuildKind::from_str(&kind_str) {
                 let rec = {
                     let mut goals = hub().goals.write().unwrap();
-                    goals.mark_done(&rid, kind)
+                    goals.mark_done(&rid, kind, plan_anchor)
                 }; // goals 寫鎖釋放
                 if let Some(rec) = rec {
                     vskill::append_goal(&rec);

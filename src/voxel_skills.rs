@@ -390,6 +390,14 @@ pub struct GoalRecord {
     pub kind: String,
     /// 單調遞增序號（保留還原順序；亦供去重）。
     pub seq: u64,
+    /// 建物錨點世界座標（供「回家遮蔽」等需要地點的行為查詢）。
+    /// `Option` 供舊資料向後相容（舊行沒有這三欄，載回時視為 `None`）。
+    #[serde(default)]
+    pub x: Option<i32>,
+    #[serde(default)]
+    pub y: Option<i32>,
+    #[serde(default)]
+    pub z: Option<i32>,
 }
 
 /// 每居民「已完成建物種類」集合 store。讓 `choose_activity` 永不重選蓋過的種類。
@@ -397,6 +405,8 @@ pub struct GoalRecord {
 pub struct GoalStore {
     /// resident id → 已完成的 BuildKind 字串集合（去重）。
     done: HashMap<String, Vec<String>>,
+    /// resident id → 已蓋好的小屋世界座標（ROADMAP 夜間歸巢遮蔽用；只記 House）。
+    houses: HashMap<String, (i32, i32, i32)>,
     next_seq: u64,
 }
 
@@ -405,12 +415,17 @@ impl GoalStore {
         Self::default()
     }
 
-    /// 由 jsonl 記錄還原（重啟後仍記得蓋過什麼 → 不會重蓋）。
+    /// 由 jsonl 記錄還原（重啟後仍記得蓋過什麼 → 不會重蓋；也還原小屋座標）。
     pub fn from_entries(entries: Vec<GoalRecord>) -> Self {
         let mut s = Self::default();
         for e in entries {
             if e.seq >= s.next_seq {
                 s.next_seq = e.seq.wrapping_add(1);
+            }
+            if e.kind == BuildKind::House.as_str() {
+                if let (Some(x), Some(y), Some(z)) = (e.x, e.y, e.z) {
+                    s.houses.insert(e.resident.clone(), (x, y, z));
+                }
             }
             let v = s.done.entry(e.resident.clone()).or_default();
             if !v.contains(&e.kind) {
@@ -440,21 +455,32 @@ impl GoalStore {
         self.done.get(resident).map_or(0, |v| v.len())
     }
 
-    /// 標記某居民完成了某建物；回傳新 record 供呼叫端 append 落地。
+    /// 標記某居民完成了某建物（附上錨點座標）；回傳新 record 供呼叫端 append 落地。
     /// 已存在則回 None（不重複落地）。
-    pub fn mark_done(&mut self, resident: &str, kind: BuildKind) -> Option<GoalRecord> {
+    pub fn mark_done(&mut self, resident: &str, kind: BuildKind, loc: (i32, i32, i32)) -> Option<GoalRecord> {
         let v = self.done.entry(resident.to_string()).or_default();
         if v.iter().any(|k| k == kind.as_str()) {
             return None;
         }
         v.push(kind.as_str().to_string());
+        if kind == BuildKind::House {
+            self.houses.insert(resident.to_string(), loc);
+        }
         let rec = GoalRecord {
             resident: resident.to_string(),
             kind: kind.as_str().to_string(),
             seq: self.next_seq,
+            x: Some(loc.0),
+            y: Some(loc.1),
+            z: Some(loc.2),
         };
         self.next_seq = self.next_seq.wrapping_add(1);
         Some(rec)
+    }
+
+    /// 此居民已蓋好的小屋世界座標（沒蓋過小屋則 `None`）。供夜間歸巢遮蔽查詢。
+    pub fn house_of(&self, resident: &str) -> Option<(i32, i32, i32)> {
+        self.houses.get(resident).copied()
     }
 }
 
@@ -1011,7 +1037,7 @@ mod tests {
     fn goal_store_mark_and_query() {
         let mut s = GoalStore::new();
         assert!(!s.is_done("vox_res_0", BuildKind::Garden));
-        let rec = s.mark_done("vox_res_0", BuildKind::Garden);
+        let rec = s.mark_done("vox_res_0", BuildKind::Garden, (1, 2, 3));
         assert!(rec.is_some());
         assert!(s.is_done("vox_res_0", BuildKind::Garden));
         assert_eq!(s.done_count("vox_res_0"), 1);
@@ -1022,9 +1048,9 @@ mod tests {
     #[test]
     fn goal_store_mark_twice_is_idempotent() {
         let mut s = GoalStore::new();
-        assert!(s.mark_done("r", BuildKind::Well).is_some());
+        assert!(s.mark_done("r", BuildKind::Well, (0, 0, 0)).is_some());
         // 第二次標記同種 → None（不重複落地），數量不變。
-        assert!(s.mark_done("r", BuildKind::Well).is_none());
+        assert!(s.mark_done("r", BuildKind::Well, (0, 0, 0)).is_none());
         assert_eq!(s.done_count("r"), 1);
     }
 
@@ -1032,18 +1058,32 @@ mod tests {
     fn goal_store_drives_non_repeat_goal() {
         let mut s = GoalStore::new();
         // 蓋完花圃 → done_kinds 含花圃 → next_build_goal 換小屋。
-        s.mark_done("r", BuildKind::Garden);
+        s.mark_done("r", BuildKind::Garden, (0, 0, 0));
         let done = s.done_kinds("r");
         assert_eq!(next_build_goal(&done, None), Some(BuildKind::House));
     }
 
     #[test]
+    fn goal_store_house_of_tracks_location_only_for_house() {
+        let mut s = GoalStore::new();
+        assert_eq!(s.house_of("r"), None);
+        // 花圃不是小屋，不記地點。
+        s.mark_done("r", BuildKind::Garden, (5, 6, 7));
+        assert_eq!(s.house_of("r"), None);
+        // 小屋才記地點。
+        s.mark_done("r", BuildKind::House, (10, 20, 30));
+        assert_eq!(s.house_of("r"), Some((10, 20, 30)));
+        // 別的居民不受影響。
+        assert_eq!(s.house_of("other"), None);
+    }
+
+    #[test]
     fn goal_store_from_entries_restores() {
         let entries = vec![
-            GoalRecord { resident: "r".into(), kind: "garden".into(), seq: 0 },
-            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 1 },
+            GoalRecord { resident: "r".into(), kind: "garden".into(), seq: 0, x: Some(1), y: Some(2), z: Some(3) },
+            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 1, x: Some(10), y: Some(20), z: Some(30) },
             // 重複行：去重。
-            GoalRecord { resident: "r".into(), kind: "garden".into(), seq: 2 },
+            GoalRecord { resident: "r".into(), kind: "garden".into(), seq: 2, x: Some(1), y: Some(2), z: Some(3) },
         ];
         let s = GoalStore::from_entries(entries);
         assert!(s.is_done("r", BuildKind::Garden));
@@ -1051,6 +1091,29 @@ mod tests {
         assert_eq!(s.done_count("r"), 2, "重複種類應去重");
         // 重啟後 next 應跳過已蓋的兩種 → 水井。
         assert_eq!(next_build_goal(&s.done_kinds("r"), None), Some(BuildKind::Well));
+        // 小屋座標也還原回來（供夜間歸巢遮蔽）。
+        assert_eq!(s.house_of("r"), Some((10, 20, 30)));
+    }
+
+    #[test]
+    fn goal_store_from_entries_tolerates_missing_location() {
+        // 舊資料沒有 x/y/z 欄位（serde default → None）：不應 panic，house_of 安全回 None。
+        let entries = vec![
+            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 0, x: None, y: None, z: None },
+        ];
+        let s = GoalStore::from_entries(entries);
+        assert!(s.is_done("r", BuildKind::House));
+        assert_eq!(s.house_of("r"), None);
+    }
+
+    #[test]
+    fn goal_record_old_jsonl_without_location_deserializes() {
+        // 模擬升級前寫入的舊行（沒有 x/y/z 欄位）：serde(default) 應安全補 None，不壞資料。
+        let old_line = r#"{"resident":"vox_res_0","kind":"house","seq":0}"#;
+        let rec: GoalRecord = serde_json::from_str(old_line).expect("舊格式應可解析");
+        assert_eq!(rec.x, None);
+        assert_eq!(rec.y, None);
+        assert_eq!(rec.z, None);
     }
 
     #[test]
@@ -1060,14 +1123,15 @@ mod tests {
         let path = dir.join("voxel_goals.jsonl");
         let _ = std::fs::remove_file(&path);
         let pstr = path.to_str().unwrap();
-        let r1 = GoalRecord { resident: "vox_res_0".into(), kind: "garden".into(), seq: 0 };
-        let r2 = GoalRecord { resident: "vox_res_0".into(), kind: "house".into(), seq: 1 };
+        let r1 = GoalRecord { resident: "vox_res_0".into(), kind: "garden".into(), seq: 0, x: Some(1), y: Some(2), z: Some(3) };
+        let r2 = GoalRecord { resident: "vox_res_0".into(), kind: "house".into(), seq: 1, x: Some(10), y: Some(20), z: Some(30) };
         write_line(pstr, &serde_json::to_string(&r1).unwrap());
         write_line(pstr, &serde_json::to_string(&r2).unwrap());
         let loaded = read_lines(pstr);
         assert_eq!(loaded.len(), 2);
         let s = GoalStore::from_entries(loaded);
         assert_eq!(s.done_count("vox_res_0"), 2);
+        assert_eq!(s.house_of("vox_res_0"), Some((10, 20, 30)));
         let _ = std::fs::remove_file(&path);
     }
 }
