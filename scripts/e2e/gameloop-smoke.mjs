@@ -10,8 +10,10 @@
 // （日夜循環極長，12 秒窗口內只有極罕見的跨日翻轉邊界會誤判——可接受）。
 //
 // 成功 exit 0；失敗 exit 1（可接進 deploy.sh 回滾判斷）。
-
-import { WebSocket } from "ws";
+//
+// 刻意不 import "ws"：deploy.sh 在 butfun-prod 這棵獨立部署樹跑，跟開發樹的
+// node_modules 不保證同步（踩過一次 MODULE_NOT_FOUND 誤判部署失敗）。Node 22+
+// 內建全域 WebSocket（標準瀏覽器 API 子集），拿來當部署閘門零額外依賴、更穩。
 
 const URL = process.argv[2] || "ws://localhost:3000/voxel/ws";
 const TIMEOUT_MS = 12_000;
@@ -28,14 +30,14 @@ function run() {
     let firstTod = null;
     let done = false;
 
-    ws.on("open", () => {
+    ws.onopen = () => {
       ws.send(JSON.stringify({ t: "join", name: "煙霧哨兵" }));
-    });
+    };
 
-    ws.on("message", (raw) => {
+    ws.onmessage = (event) => {
       if (done) return;
       let msg;
-      try { msg = JSON.parse(raw.toString()); } catch { return; }
+      try { msg = JSON.parse(event.data.toString()); } catch { return; }
 
       if (msg.t === "welcome") {
         myId = msg.id;
@@ -73,12 +75,12 @@ function run() {
           resolve({ firstTod, secondTod: tod });
         }
       }
-    });
+    };
 
-    ws.on("error", (e) => {
+    ws.onerror = (e) => {
       clearTimeout(timer);
-      reject(e);
-    });
+      reject(new Error(e.message || "WebSocket 錯誤"));
+    };
   });
 }
 
