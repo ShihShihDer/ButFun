@@ -3278,8 +3278,48 @@ fn tick_residents(dt: f32) {
                 }
             }
         }
-        // 依新層級生成問候語 → say_updates（守 say_updates 的「say 空才套」原則）。
-        let greeting = vbonds::arrival_line(tier, &host_name, visitor_name, pick);
+        // ROADMAP 696：居民互助蓋家 v1——老朋友到訪時，若主人正在蓋家，順手幫忙推進一塊，
+        // 讓情誼（672）不只停在問候與八卦（694），第一次外溢成「真的動手互相幫忙」。
+        // 只在剩餘 ≥2 塊時才幫（見 should_help_build 註解），完工收尾仍統一交給第 6 節處理，
+        // 這裡不重複那段邏輯，避免兩處都跑一次完工廣播。
+        let mut help_line: Option<String> = None;
+        if tier == vbonds::BondTier::Friend {
+            let host_id = {
+                let residents = hub().residents.read().unwrap();
+                residents.iter().find(|r| r.name == host_name).map(|r| r.id.clone())
+            }; // residents 讀鎖釋放
+            if let Some(host_id) = host_id {
+                let remaining_before = {
+                    hub().builds.read().unwrap().plans.get(&host_id).map_or(0, |p| p.remaining.len())
+                }; // builds 讀鎖釋放
+                if vbuild::should_help_build(remaining_before, rand::random::<f32>()) {
+                    let popped = {
+                        let mut builds = hub().builds.write().unwrap();
+                        builds.get_plan_mut(&host_id)
+                            .and_then(|p| p.pop_next().map(|bb| (bb, p.kind_name.clone())))
+                    }; // builds 寫鎖釋放
+                    if let Some((bb, kind_name)) = popped {
+                        if let Some(block) = Block::from_u8(bb.b) {
+                            {
+                                let mut world = hub().deltas.write().unwrap();
+                                voxel::set_block(&mut world, bb.x, bb.y, bb.z, block);
+                            } // deltas 寫鎖釋放
+                            broadcast_block(bb.x, bb.y, bb.z, block);
+                            enqueue_water_around(bb.x, bb.y, bb.z);
+                            vbuild::append_world_block(bb.x, bb.y, bb.z, bb.b);
+                            if let Some(plan) = hub().builds.read().unwrap().plans.get(&host_id) {
+                                vbuild::append_build(plan);
+                            } // builds 讀鎖釋放
+                            help_line = Some(vbuild::help_say_line(visitor_name, &kind_name));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 依新層級生成問候語 → say_updates（守 say_updates 的「say 空才套」原則）；
+        // 若這次到訪順手幫了忙，優先冒幫忙台詞（更有感），蓋過一般問候語。
+        let greeting = help_line.unwrap_or_else(|| vbonds::arrival_line(tier, &host_name, visitor_name, pick));
         say_updates.push((visitor_id, greeting));
     }
     // 離開事件：讀當前層級（bonds 讀鎖）→ 生成告別語 → say_updates。
