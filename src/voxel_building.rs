@@ -146,6 +146,11 @@ pub struct BuildPlan {
     pub total: u32,
     /// 單調遞增序號（越大越新；from_entries 用來取最新一份計畫）。
     pub seq: u64,
+    /// 這是否為「擴建」（基礎四種都蓋完後再蓋的第 2 座）而非首次建造。
+    /// 完工時決定要呼叫 `GoalStore::mark_done` 還是 `mark_expansion`。
+    /// `#[serde(default)]` 供舊 jsonl 向後相容（舊行沒有這欄，一律視為 `false`）。
+    #[serde(default)]
+    pub expansion: bool,
 }
 
 impl BuildPlan {
@@ -207,6 +212,7 @@ impl BuildStore {
     }
 
     /// 新建並插入計畫；回傳 clone 供呼叫端落地 jsonl。
+    /// `expansion`：是否為擴建（基礎四種都蓋完後再蓋的第 2 座），影響完工時記錄方式。
     pub fn new_plan(
         &mut self,
         resident: &str,
@@ -214,6 +220,7 @@ impl BuildStore {
         cx: i32,
         cy: i32,
         cz: i32,
+        expansion: bool,
     ) -> BuildPlan {
         let blocks = generate_blocks(kind, cx, cy, cz);
         let total = blocks.len() as u32;
@@ -227,6 +234,7 @@ impl BuildStore {
             remaining: blocks.into(),
             total,
             seq: self.next_seq,
+            expansion,
         };
         self.next_seq += 1;
         self.plans.insert(resident.to_string(), plan.clone());
@@ -676,7 +684,7 @@ mod tests {
     fn store_has_plan_after_new() {
         let mut s = BuildStore::new();
         assert!(!s.has_plan("vox_res_0"));
-        s.new_plan("vox_res_0", BuildKind::House, 10, 5, 20);
+        s.new_plan("vox_res_0", BuildKind::House, 10, 5, 20, false);
         assert!(s.has_plan("vox_res_0"));
         assert!(!s.has_plan("vox_res_1"));
     }
@@ -684,7 +692,7 @@ mod tests {
     #[test]
     fn store_pop_next_reduces_remaining() {
         let mut s = BuildStore::new();
-        s.new_plan("vox_res_0", BuildKind::Well, 0, 5, 0);
+        s.new_plan("vox_res_0", BuildKind::Well, 0, 5, 0, false);
         let before = s.plans["vox_res_0"].remaining.len();
         let b = s.get_plan_mut("vox_res_0").unwrap().pop_next();
         assert!(b.is_some());
@@ -694,7 +702,7 @@ mod tests {
     #[test]
     fn store_remove_if_done_works() {
         let mut s = BuildStore::new();
-        s.new_plan("vox_res_0", BuildKind::Well, 0, 5, 0);
+        s.new_plan("vox_res_0", BuildKind::Well, 0, 5, 0, false);
         // drain all blocks
         while s.get_plan_mut("vox_res_0").and_then(|p| p.pop_next()).is_some() {}
         assert!(s.plans["vox_res_0"].is_done());
@@ -714,6 +722,7 @@ mod tests {
             remaining: vec![BuildBlock { x: 5, y: 3, z: 5, b: Block::Wood as u8 }].into(),
             total: 34,
             seq: 0,
+            expansion: false,
         };
         let s = BuildStore::from_entries(vec![plan]);
         assert!(s.has_plan("vox_res_0"));
@@ -731,6 +740,7 @@ mod tests {
             remaining: VecDeque::new(), // done
             total: 34,
             seq: 0,
+            expansion: false,
         };
         let s = BuildStore::from_entries(vec![plan]);
         assert!(!s.has_plan("vox_res_0"), "已完成的計畫不應載回");
@@ -748,6 +758,7 @@ mod tests {
             remaining: vec![BuildBlock { x: 0, y: 0, z: 0, b: Block::Wood as u8 }].into(),
             total: 10,
             seq: 0,
+            expansion: false,
         };
         let new = BuildPlan {
             resident: "vox_res_0".into(),
@@ -759,6 +770,7 @@ mod tests {
             remaining: vec![BuildBlock { x: 5, y: 3, z: 5, b: Block::Stone as u8 }].into(),
             total: 50,
             seq: 5,
+            expansion: false,
         };
         let s = BuildStore::from_entries(vec![old, new]);
         assert_eq!(s.plans["vox_res_0"].kind, "tower", "應保留 seq 較大的計畫");
@@ -812,7 +824,7 @@ mod tests {
 
     fn store_with_plan(resident: &str, kind: BuildKind) -> BuildStore {
         let mut s = BuildStore::new();
-        s.new_plan(resident, kind, 0, 64, 0);
+        s.new_plan(resident, kind, 0, 64, 0, false);
         s
     }
 
@@ -861,7 +873,7 @@ mod tests {
     #[test]
     fn player_help_picks_correct_resident_among_many() {
         let mut s = store_with_plan("vox_res_0", BuildKind::House);
-        s.new_plan("vox_res_1", BuildKind::Well, 20, 64, 20);
+        s.new_plan("vox_res_1", BuildKind::Well, 20, 64, 20, false);
         let front1 = s.plans["vox_res_1"].remaining.front().cloned().unwrap();
 
         let result = s.try_player_help(front1.x, front1.y, front1.z, front1.b);
