@@ -1646,8 +1646,11 @@ function connect() {
       if (wbPanelVisible()) renderWbPanel();
       if (furnacePanelVisible()) renderFurnacePanel();
     } else if (m.t === "plant_ok") {
-      // 種田 v1：種植成功，短暫提示。
-      showMsg("已種下種子！等 90 秒小麥就成熟 🌾");
+      // 種田 v1 / 水耕農業 v1（ROADMAP 686）：種植成功，依是否鄰近水源給不同提示。
+      const plantMsg = m.irrigated
+        ? "💧 水耕！種子將在 45 秒後成熟 🌾"
+        : "已種下種子！等 90 秒小麥就成熟 🌾";
+      showMsg(plantMsg);
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2500);
     } else if (m.t === "plant_fail") {
       // 種田 v1：種植失敗（非農田土 / 沒種子 / 太遠），短暫提示。

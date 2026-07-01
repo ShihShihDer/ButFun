@@ -1,10 +1,11 @@
 //! 乙太方界·種田 v1——撒種‧等待‧收割（ROADMAP 659）。
+//! 水耕農業 v1（ROADMAP 686）：農田土鄰近水源時生長加速（90s→45s）。
 //!
 //! **純邏輯層**：`FarmStore` + 生長計時純函式，確定性、無副作用、全可測。
 //! 鎖 / WS / IO 全在 `voxel_ws.rs`，本模組零 async、零鎖、零 IO。
 //!
 //! 種植流程：
-//!   FarmSoil(11)  →[Plant action]→  FarmSoilSeeded(12)  →[~90s]→  WheatMature(13)
+//!   FarmSoil(11)  →[Plant action]→  FarmSoilSeeded(12)  →[~90s / 水耕 ~45s]→  WheatMature(13)
 //!
 //! 收穫：Break WheatMature → Seeds(14)×1 + Wheat(18)×1 + FarmSoil(11)（得顆粒以合麵包）。
 //! 取消種植：Break FarmSoilSeeded → Seeds(14)×1 + FarmSoil(11)（退還種子）。
@@ -30,6 +31,17 @@ pub const BREAD_ID: u8 = 19;
 
 /// 幼苗成熟所需秒數（~90 秒 = 1.5 分鐘）。調校讓玩家在一輪遊玩中體驗完整循環。
 pub const GROW_SECS: u64 = 90;
+
+/// 水耕加速後的生長秒數（有水源鄰近時縮短為原本的一半）。
+pub const IRRIGATED_GROW_SECS: u64 = 45;
+
+/// 農田土偵測水源的最大曼哈頓距離（X/Z 各 ±4 格、Y 差 ±1 格）。
+pub const FARM_WATER_RANGE: i32 = 4;
+
+/// 依水耕狀態回傳有效生長秒數。
+pub fn effective_grow_secs(irrigated: bool) -> u64 {
+    if irrigated { IRRIGATED_GROW_SECS } else { GROW_SECS }
+}
 
 /// 一塊農地的種植記錄。
 #[derive(Clone, Debug, PartialEq)]
@@ -74,6 +86,23 @@ impl FarmStore {
         self.plots
             .iter()
             .filter(|(_, p)| now_secs >= p.planted_secs.saturating_add(GROW_SECS))
+            .map(|(&coord, _)| coord)
+            .collect()
+    }
+
+    /// 回傳所有已成熟的農地座標，考慮水耕加速。
+    /// `is_irrigated`：呼叫端提供的閉包，判定某 (x, y, z) 是否鄰近水源。
+    /// 鄰近水源時用 [`IRRIGATED_GROW_SECS`]（45s），否則用 [`GROW_SECS`]（90s）。
+    pub fn mature_plots_irrigated<F>(&self, now_secs: u64, is_irrigated: F) -> Vec<(i32, i32, i32)>
+    where
+        F: Fn(i32, i32, i32) -> bool,
+    {
+        self.plots
+            .iter()
+            .filter(|(&(px, py, pz), p)| {
+                let grow = effective_grow_secs(is_irrigated(px, py, pz));
+                now_secs >= p.planted_secs.saturating_add(grow)
+            })
             .map(|(&coord, _)| coord)
             .collect()
     }
@@ -195,5 +224,57 @@ mod tests {
         assert_eq!(SEEDS_ID, 14);
         assert_eq!(WHEAT_ID, 18);
         assert_eq!(BREAD_ID, 19);
+    }
+
+    // ── 水耕農業 v1（ROADMAP 686）──────────────────────────────────────────────
+
+    #[test]
+    fn effective_grow_secs_values() {
+        assert_eq!(effective_grow_secs(true),  IRRIGATED_GROW_SECS);
+        assert_eq!(effective_grow_secs(false), GROW_SECS);
+        // 水耕應比普通快（若 IRRIGATED_GROW_SECS 被誤改就能抓到）。
+        assert!(IRRIGATED_GROW_SECS < GROW_SECS, "水耕應比普通生長更快");
+    }
+
+    #[test]
+    fn irrigated_plot_matures_faster() {
+        let mut s = FarmStore::new();
+        s.plant(0, 5, 0, 0);
+        // 45 秒時：水耕成熟、普通未熟。
+        assert_eq!(s.mature_plots_irrigated(IRRIGATED_GROW_SECS, |_, _, _| true).len(), 1);
+        assert!(s.mature_plots_irrigated(IRRIGATED_GROW_SECS, |_, _, _| false).is_empty());
+    }
+
+    #[test]
+    fn non_irrigated_plot_matures_at_normal_time() {
+        let mut s = FarmStore::new();
+        s.plant(3, 5, 3, 0);
+        // 90 秒時：有水/無水都成熟。
+        assert_eq!(s.mature_plots_irrigated(GROW_SECS, |_, _, _| false).len(), 1);
+        assert_eq!(s.mature_plots_irrigated(GROW_SECS, |_, _, _| true).len(), 1);
+    }
+
+    #[test]
+    fn irrigated_not_mature_before_45s() {
+        let mut s = FarmStore::new();
+        s.plant(0, 5, 0, 0);
+        // 44 秒時即便有水也未熟。
+        assert!(s.mature_plots_irrigated(IRRIGATED_GROW_SECS - 1, |_, _, _| true).is_empty());
+    }
+
+    #[test]
+    fn mixed_irrigated_and_dry_plots() {
+        let mut s = FarmStore::new();
+        s.plant(0, 5, 0, 0); // 乾燥農地
+        s.plant(10, 5, 0, 0); // 水耕農地
+        // 45 秒時只有水耕的成熟。
+        let mature = s.mature_plots_irrigated(IRRIGATED_GROW_SECS, |x, _, _| x == 10);
+        assert_eq!(mature.len(), 1);
+        assert!(mature.contains(&(10, 5, 0)));
+    }
+
+    #[test]
+    fn farm_water_range_is_positive() {
+        assert!(FARM_WATER_RANGE > 0, "水耕偵測範圍應大於 0");
     }
 }
