@@ -338,11 +338,7 @@ function faceVisibleOpaque(nx, ny, nz) {
   // 梯子（LADDER=35）、木門（開）（DOOR_OPEN=44）是可穿越方塊，視覺上等同空氣
   return r === AIR || isWaterId(r) || r === LADDER || r === DOOR_OPEN;
 }
-// 水面只朝空氣畫（露出水面那一片）；相鄰是別的水（來源/流動）不畫內面，鄰格未載入時不畫。
-function faceVisibleWater(nx, ny, nz) {
-  const r = getRaw(nx, ny, nz);
-  return r === AIR;
-}
+// 水面可見性改由 rebuildChunk 內的水流分支就地判斷（含階梯落差牆），見 waterTopH/emitWaterFace。
 
 // 重建一個 chunk 的合併 mesh（不透明 + 水各一個 geometry）。
 function rebuildChunk(key) {
@@ -367,10 +363,27 @@ function rebuildChunk(key) {
         if (b === AIR) continue;
         const wx = baseX + lx, wy = baseY + ly, wz = baseZ + lz;
         if (isWaterId(b)) {
-          // 來源水與流動水都走半透明水 mesh（簡化：同色；等級差異先不做深淺，求穩+一致）。
+          // 流動水視覺（麥塊做法）：依等級渲染成遞減高度，形成往低處流的階梯水面。
+          // 來源水（WATER）維持滿格；流動水 level 1..7 越遠越矮。純視覺，不動後端水流邏輯。
+          const topH = waterTopH(b);
           for (const f of FACES) {
-            if (!faceVisibleWater(wx + f.d[0], wy + f.d[1], wz + f.d[2])) continue;
-            emitFace(wpos, wnorm, null, widx, lx, ly, lz, f, null);
+            const nb = getRaw(wx + f.d[0], wy + f.d[1], wz + f.d[2]);
+            if (f.n[1] === 1) {
+              // 頂面：上方空氣才露出水面，畫在 topH（矮水面一眼看得出在漫）。
+              if (nb === AIR) emitWaterFace(wpos, wnorm, widx, lx, ly, lz, f, topH, topH);
+            } else if (f.n[1] === -1) {
+              // 底面：下方空氣才畫（避免內面）。
+              if (nb === AIR) emitWaterFace(wpos, wnorm, widx, lx, ly, lz, f, 0, 0);
+            } else {
+              // 側面：鄰空氣→整片側牆(0..topH)；鄰為較矮的水→畫階梯落差牆(鄰topH..topH)，
+              // 讓「越流越低」的水階在側面也看得出來，不是兩塊水之間破洞。
+              if (nb === AIR) {
+                emitWaterFace(wpos, wnorm, widx, lx, ly, lz, f, topH, 0);
+              } else if (isWaterId(nb)) {
+                const nH = waterTopH(nb);
+                if (nH < topH - 1e-3) emitWaterFace(wpos, wnorm, widx, lx, ly, lz, f, topH, nH);
+              }
+            }
           }
         } else {
           const c = COLOR[b] || COLOR[STONE];
@@ -415,6 +428,23 @@ function emitFace(pos, norm, col, idx, lx, ly, lz, f, c) {
     pos.push(lx + v[0], ly + v[1], lz + v[2]);
     norm.push(f.n[0], f.n[1], f.n[2]);
     if (col && c) col.push(c[0], c[1], c[2]);
+  }
+  idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
+}
+
+// 水面高度（0..1）：來源水滿格；流動水依 level 遞減，形成往低處的階梯。純視覺、不動後端。
+function waterTopH(b) {
+  if (b === WATER) return 1.0;              // 來源水滿格
+  const lvl = b - WATER_FLOW_BASE + 1;      // 1..7（越大＝離源越遠＝越矮）
+  return Math.max(0.12, 1.0 - lvl * 0.11);  // level1≈0.89 … level7≈0.23
+}
+// 推一個水面（4 頂點、2 三角）：頂邊在 yTop、底邊在 yBot（側面藉此畫出階梯落差牆）。
+function emitWaterFace(pos, norm, idx, lx, ly, lz, f, yTop, yBot) {
+  const start = pos.length / 3;
+  for (const v of f.v) {
+    const y = v[1] === 1 ? yTop : yBot;
+    pos.push(lx + v[0], ly + y, lz + v[2]);
+    norm.push(f.n[0], f.n[1], f.n[2]);
   }
   idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
 }
@@ -1253,9 +1283,40 @@ let target = null;
 
 // ── 快捷欄（選要放的方塊型別）+ 背包存量（採集 v1）───────────────────────────
 // 種田 v1（ROADMAP 659）：加入農田土 + 種子（種子為純物品，特殊 Plant 動作）
-// 快捷欄 21 格：…WORKBENCH FURNACE SMOOTH_STONE WHEAT BREAD COAL_ORE IRON_ORE IRON_INGOT IRON_BLOCK TORCH
-// 鍵盤 1–9 對應前 9 格；其餘以滑鼠/觸控點選
-const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE, WHEAT, BREAD, COAL_ORE, IRON_ORE, IRON_INGOT, IRON_BLOCK, TORCH, PICKAXE_WOOD, PICKAXE_STONE, PICKAXE_IRON, AXE_WOOD, AXE_STONE, AXE_IRON, SHOVEL_WOOD, SHOVEL_STONE, SHOVEL_IRON, CHEST, DOOR_CLOSED];
+// 快捷欄麥塊化：固定 9 格（麥塊就是 9 格），數字鍵 1-9 選格、手機點選。
+// 完整物品清單移到「背包」面板，從背包點物品即可指派進當前選中的快捷欄格。
+// 空格 = AIR(0)；每格內容持久化到 localStorage，重整後保留。
+const HOTBAR_SIZE = 9;
+const HOTBAR_LS_KEY = "butfun.voxel.hotbar.v1";
+// 預設起手：草/土/石/木/木板 + 木鎬，其餘留空；開局不空白、也不再洗版。
+const HOTBAR_DEFAULT = [GRASS, DIRT, STONE, WOOD, PLANK, PICKAXE_WOOD, AIR, AIR, AIR];
+// 從 localStorage 還原上次的快捷欄指派；資料壞掉或不可用就 fallback 預設。
+function loadHotbar() {
+  try {
+    const raw = localStorage.getItem(HOTBAR_LS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length === HOTBAR_SIZE &&
+          arr.every((n) => Number.isInteger(n) && n >= 0)) {
+        return arr;
+      }
+    }
+  } catch (_) { /* localStorage 不可用或壞資料：用預設 */ }
+  return HOTBAR_DEFAULT.slice();
+}
+const HOTBAR = loadHotbar();
+// 把當前快捷欄指派寫回 localStorage（每次指派/變更後呼叫）。
+function saveHotbar() {
+  try { localStorage.setItem(HOTBAR_LS_KEY, JSON.stringify(HOTBAR)); } catch (_) { /* 忽略：無痕/禁 storage */ }
+}
+// 指派一個 block 到指定快捷欄格（麥塊互動：從背包點物品→放進當前格），存檔並重建 UI。
+function assignToHotbar(slot, blockId) {
+  if (slot < 0 || slot >= HOTBAR_SIZE) return;
+  HOTBAR[slot] = blockId;
+  saveHotbar();
+  buildHotbar();
+  updateInvHud();
+}
 const BLOCK_NAME = {
   [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉",
   [PLANK]: "木板", [STONE_BRICK]: "石磚", [GLASS]: "玻璃",
@@ -1300,6 +1361,7 @@ function updateInvHud() {
     const slot = hotbarEl.children[i];
     if (!slot) return;
     const cnt = slot.querySelector(".cnt");
+    if (b === AIR) { if (cnt) cnt.textContent = ""; slot.classList.add("empty"); return; }
     const n = myInv.get(b) || 0;
     if (cnt) cnt.textContent = n > 0 ? "×" + n : "";
     slot.classList.toggle("empty", n === 0);
@@ -1310,20 +1372,37 @@ function buildHotbar() {
   if (!hotbarEl) return;
   hotbarEl.innerHTML = "";
   HOTBAR.forEach((b, i) => {
+    const isEmpty = (b === AIR); // 空格：只顯示格號，不放色塊/名稱
     const slot = document.createElement("div");
     slot.className = "slot" + (i === selectedSlot ? " sel" : "") + " empty";
     const sw = document.createElement("div");
     sw.className = "sw";
-    const c = COLOR[b] || COLOR[STONE];
-    sw.style.background = `rgb(${(c[0] * 255) | 0},${(c[1] * 255) | 0},${(c[2] * 255) | 0})`;
+    if (isEmpty) {
+      sw.style.background = "transparent";
+    } else {
+      const c = COLOR[b] || COLOR[STONE];
+      sw.style.background = `rgb(${(c[0] * 255) | 0},${(c[1] * 255) | 0},${(c[2] * 255) | 0})`;
+    }
     const lbl = document.createElement("div");
-    lbl.textContent = (i + 1) + " " + (BLOCK_NAME[b] || "?");
+    lbl.textContent = isEmpty ? String(i + 1) : ((i + 1) + " " + (BLOCK_NAME[b] || "?"));
     const cnt = document.createElement("div");
     cnt.className = "cnt";
     slot.appendChild(sw); slot.appendChild(lbl); slot.appendChild(cnt);
-    slot.addEventListener("pointerdown", (e) => { selectSlot(i); e.stopPropagation(); });
+    slot.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      // 麥塊互動：背包開著且手上拿著物品（bagPick）→ 指派到這一格；否則單純選格。
+      if (bagPanelVisible() && bagPick !== 0) {
+        assignToHotbar(i, bagPick);
+        bagPick = 0;
+        selectSlot(i);
+        renderBagPanel();
+      } else {
+        selectSlot(i);
+      }
+    });
     hotbarEl.appendChild(slot);
   });
+  updateInvHud(); // 重建後補上數量/空格樣式
 }
 function selectSlot(i) {
   selectedSlot = ((i % HOTBAR.length) + HOTBAR.length) % HOTBAR.length;
@@ -1333,7 +1412,7 @@ function selectSlot(i) {
 }
 function selectedBlock() { return HOTBAR[selectedSlot]; }
 buildHotbar();
-// 數字鍵 1..6 切快捷欄
+// 數字鍵 1-9 切快捷欄（麥塊固定 9 格）
 addEventListener("keydown", (e) => {
   if (e.target && e.target.tagName === "INPUT") return; // 對話輸入中不搶鍵
   const n = parseInt(e.key, 10);
@@ -1619,6 +1698,8 @@ let isMouseDown = false;
 // 種田 v1 + 工作台 v1：特殊互動邏輯，再 fallback 到一般放置。
 function placeAtTarget() {
   if (!target || !wsReady) return null;
+  // 空的快捷欄格（AIR）：沒選任何方塊，靜默忽略（避免送出 place AIR 誤刪）。
+  if (selectedBlock() === AIR) return null;
   // 工作台互動：右鍵對準工作台方塊 → 開啟 3×3 合成面板（不放置新方塊）。
   if (getRaw(target.bx, target.by, target.bz) === WORKBENCH) {
     openWbPanel();
@@ -2389,7 +2470,13 @@ function renderBagInvGrid() {
     slot.appendChild(name); slot.appendChild(cntEl);
     slot.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
-      bagPick = (bagPick === bid) ? 0 : bid; // 同一格再點 → 取消選取
+      if (bagPick === bid) {
+        bagPick = 0; // 再點同一格 → 放下（取消選取），不動快捷欄
+      } else {
+        bagPick = bid;
+        // 麥塊互動：點背包物品 → 指派進當前選中的快捷欄格（也可再點某格改放）。
+        assignToHotbar(selectedSlot, bid);
+      }
       renderBagPanel();
     });
     bagInvGridEl.appendChild(slot);
@@ -3039,7 +3126,26 @@ window.__voxel = {
   getBlock(x, y, z) { return getRaw(x, y, z); },
   doBreak() { return breakAtTarget(); },
   doPlace() { return placeAtTarget(); },
-  selectSlotByBlock(b) { const i = HOTBAR.indexOf(b); if (i >= 0) selectSlot(i); return selectedBlock(); },
+  selectSlotByBlock(b) {
+    // 麥塊 9 格快捷欄：若該方塊已在欄上就選那格；不在就指派進當前格（QA/測試可選任意方塊）。
+    let i = HOTBAR.indexOf(b);
+    if (i < 0) { i = selectedSlot; assignToHotbar(i, b); }
+    selectSlot(i);
+    return selectedBlock();
+  },
+  // ── 快捷欄麥塊化 QA 用 ──
+  get HOTBAR() { return [...HOTBAR]; },
+  get HOTBAR_SIZE() { return HOTBAR_SIZE; },
+  get selectedSlot() { return selectedSlot; },
+  assignToHotbar(slot, blockId) { assignToHotbar(slot, blockId); return [...HOTBAR]; },
+  // ── 流動水階梯視覺 QA 用：注入一塊測試 chunk + 讀水面高度，驗證階梯遞減 ──
+  waterTopH(b) { return waterTopH(b); },
+  injectChunkForTest(cx, cy, cz, bytes) {
+    chunks.set(ckey(cx, cy, cz), Uint8Array.from(bytes));
+    markDirty(cx, cy, cz);
+    return chunks.get(ckey(cx, cy, cz)).length;
+  },
+  WATER, WATER_FLOW_BASE, CHUNK,
   // ── 脫困 / 碰撞 QA 用（修玩家卡地裡）──
   // 純函式：餵假地形（isSolid 回呼）即可驗證 AABB 重疊偵測與脫困上抬，不依賴真世界。
   aabbHitsSolid(x, y, z, isSolid, pw, ph) { return aabbHitsSolid(x, y, z, isSolid, pw == null ? PW : pw, ph == null ? PH : ph); },
