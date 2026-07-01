@@ -202,6 +202,83 @@ updateSkyAndLight(worldTime);
 const opaqueMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
 const waterMat = new THREE.MeshLambertMaterial({ color: 0x2f6fd0, transparent: true, opacity: 0.55, side: THREE.DoubleSide });
 
+// ── 火把發光 v1（ROADMAP 691）─────────────────────────────────────────────────
+// 火把（block 31）放置後向周遭散發暖橘光；手持火把時鏡頭附近同樣有光。
+// 純前端、零後端、零協議、零 migration、零 LLM。
+
+// 追蹤世界中所有已知火把座標（key="wx,wy,wz" → {wx,wy,wz}）。
+const torchPositions = new Map();
+function torchKey(wx, wy, wz) { return wx + "," + wy + "," + wz; }
+function registerTorchBlock(wx, wy, wz) {
+  torchPositions.set(torchKey(wx, wy, wz), { wx, wy, wz });
+}
+function unregisterTorchBlock(wx, wy, wz) {
+  torchPositions.delete(torchKey(wx, wy, wz));
+}
+/** 掃描整個 chunk 找火把並登記（chunk 載入時呼叫，讓重連後既有火把也有光）。 */
+function scanChunkForTorches(cx, cy, cz) {
+  const ch = chunks.get(ckey(cx, cy, cz));
+  if (!ch) return;
+  const bx = cx * CHUNK, by = cy * CHUNK, bz = cz * CHUNK;
+  for (let ly = 0; ly < CHUNK; ly++)
+    for (let lz = 0; lz < CHUNK; lz++)
+      for (let lx = 0; lx < CHUNK; lx++)
+        if (ch[lx + lz * CHUNK + ly * CHUNK * CHUNK] === TORCH)
+          registerTorchBlock(bx + lx, by + ly, bz + lz);
+}
+
+const TORCH_LIGHT_COLOR = 0xff8820;     // 暖橘黃（比火把顏色稍橘，光感更暖）
+const TORCH_LIGHT_INTENSITY = 2.5;      // 亮度（影響照亮半徑內的方塊面）
+const TORCH_LIGHT_DIST = 10;            // 光照衰減半徑（方塊單位）
+const MAX_TORCH_POOL = 6;               // 效能上限：同時啟用的近旁火把光數量
+
+// 放置火把光源池——預建好 PointLight 陣列、只移位、不動態 add/remove（效能穩定）。
+const torchLightPool = [];
+for (let _i = 0; _i < MAX_TORCH_POOL; _i++) {
+  const pl = new THREE.PointLight(TORCH_LIGHT_COLOR, 0, TORCH_LIGHT_DIST);
+  pl.visible = false;
+  scene.add(pl);
+  torchLightPool.push(pl);
+}
+
+// 手持火把光源——手拿火把時從鏡頭附近散出較暗的暖光（8 格半徑）。
+const heldTorchLight = new THREE.PointLight(TORCH_LIGHT_COLOR, 0, 8);
+scene.add(heldTorchLight);
+
+let _torchRefreshTimer = 0; // 每 2 秒刷新一次近旁火把光（非每幀掃，降 CPU）
+
+/**
+ * 更新「放置火把」光源池：
+ * 選距鏡頭最近的 MAX_TORCH_POOL 個登記火把 → 移過去點亮；其餘熄滅。
+ * 每 2 秒呼叫一次（中頻，非每幀）。
+ */
+function updateNearbyTorchLights() {
+  if (torchPositions.size === 0) {
+    for (const pl of torchLightPool) { pl.visible = false; pl.intensity = 0; }
+    return;
+  }
+  const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z;
+  const sorted = [];
+  for (const { wx, wy, wz } of torchPositions.values()) {
+    const dx = wx + 0.5 - cx, dy = wy + 0.5 - cy, dz = wz + 0.5 - cz;
+    sorted.push({ wx, wy, wz, d2: dx * dx + dy * dy + dz * dz });
+  }
+  sorted.sort((a, b) => a.d2 - b.d2);
+  for (let i = 0; i < torchLightPool.length; i++) {
+    const pl = torchLightPool[i];
+    if (i < sorted.length) {
+      const t = sorted[i];
+      pl.position.set(t.wx + 0.5, t.wy + 0.5, t.wz + 0.5);
+      pl.intensity = TORCH_LIGHT_INTENSITY;
+      pl.visible = true;
+    } else {
+      pl.intensity = 0;
+      pl.visible = false;
+    }
+  }
+}
+// ── end 火把發光 v1 ───────────────────────────────────────────────────────────
+
 // ── 世界資料：chunk 方塊 + mesh ─────────────────────────────────────────────
 const chunks = new Map();      // "cx,cy,cz" -> Uint8Array(4096)
 const meshes = new Map();      // "cx,cy,cz" -> { solid: Mesh|null, water: Mesh|null }
@@ -1397,7 +1474,11 @@ function setLocalBlock(wx, wy, wz, b) {
   const ch = chunks.get(ckey(cx, cy, cz));
   if (!ch) return; // 該 chunk 還沒載入——之後串流會帶正確（含 delta）的版本。
   const lx = wx - cx * CHUNK, ly = wy - cy * CHUNK, lz = wz - cz * CHUNK;
+  const old = ch[lx + lz * CHUNK + ly * CHUNK * CHUNK];
+  // 火把發光 v1：放火把→登記；破壞火把→移除登記（讓光源池即時更新）。
+  if (old === TORCH) unregisterTorchBlock(wx, wy, wz);
   ch[lx + lz * CHUNK + ly * CHUNK * CHUNK] = b;
+  if (b === TORCH) registerTorchBlock(wx, wy, wz);
   markDirty(cx, cy, cz); // markDirty 只標該 chunk + 6 鄰塊
 }
 
@@ -1720,6 +1801,7 @@ function connect() {
         const key = ckey(c.cx, c.cy, c.cz);
         chunks.set(key, b64ToBytes(c.data));
         markDirty(c.cx, c.cy, c.cz);
+        scanChunkForTorches(c.cx, c.cy, c.cz); // 火把發光 v1：掃描新 chunk 的既有火把
       }
       // chunk 載入後立刻脫困：若新載入的方塊把玩家埋住（出生／chunk 邊緣／下落最常見），
       // 同一則訊息就把人頂出來，不必等下一幀。沒卡則零成本早退。
@@ -2070,6 +2152,23 @@ function update(dt) {
 
   // 採礦手感 v1（ROADMAP 687）：桌機按住左鍵期間每幀推進挖掘進度。
   if (!isTouch) tickMining(dt);
+
+  // 火把發光 v1（ROADMAP 691）：手持火把時在鏡頭附近亮暖橘光。
+  const holdingTorch = selectedBlock() === TORCH && (myInv.get(TORCH) || 0) > 0;
+  if (holdingTorch) {
+    heldTorchLight.position.copy(camera.position);
+    heldTorchLight.intensity = 1.8;
+    heldTorchLight.visible = true;
+  } else {
+    heldTorchLight.intensity = 0;
+    heldTorchLight.visible = false;
+  }
+  // 每 2 秒刷新近旁放置火把的光源池位置（非每幀掃，節省 CPU）。
+  _torchRefreshTimer -= dt;
+  if (_torchRefreshTimer <= 0) {
+    _torchRefreshTimer = 2.0;
+    updateNearbyTorchLights();
+  }
 
   streamChunks(dt);
   sendMove(dt);
@@ -2835,4 +2934,11 @@ window.__voxel = {
   // ── 鏟子 v1 QA 用（ROADMAP 690）──
   SHOVEL_WOOD, SHOVEL_STONE, SHOVEL_IRON,
   shovelBonus,
+  // ── 火把發光 v1 QA 用（ROADMAP 691）──
+  get torchCount() { return torchPositions.size; },
+  get heldTorchActive() { return heldTorchLight.intensity > 0; },
+  get activeTorchLights() { return torchLightPool.filter(pl => pl.visible).length; },
+  registerTorchBlock,
+  unregisterTorchBlock,
+  updateNearbyTorchLights,
 };
