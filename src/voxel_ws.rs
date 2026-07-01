@@ -826,6 +826,10 @@ enum ClientMsg {
     /// DoorClosed(43)→DoorOpen(44) 或 DoorOpen(44)→DoorClosed(43)；伺服器驗 reach 後廣播。
     #[serde(rename = "toggle_door")]
     ToggleDoor { x: i32, y: i32, z: i32 },
+    /// 床 v1：右鍵目標床（Block::Bed=45），夜晚（深夜/入夜）時睡覺跳過黑夜到隔天黎明。
+    /// 白天/黎明/黃昏睡不著，伺服器回 `sleep_fail`；成功則廣播新時鐘給所有人（`sleep_ok` 單播）。
+    #[serde(rename = "sleep_in_bed")]
+    SleepInBed { x: i32, y: i32, z: i32 },
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -2063,6 +2067,27 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 };
                 voxel::set_block(&mut hub().deltas.write().unwrap(), x, y, z, new_blk);
                 broadcast_block(x, y, z, new_blk);
+            }
+
+            Ok(ClientMsg::SleepInBed { x, y, z }) => {
+                let Some((px, py, pz)) = player_pos(my_id) else { continue; };
+                if !voxel::in_reach(px, py, pz, x, y, z) { continue; }
+                let target_blk = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
+                if target_blk != Block::Bed { continue; } // 不是床，忽略
+                let phase = { hub().world_time.read().unwrap().phase() };
+                if !vt::is_sleepable(phase) {
+                    let msg = serde_json::json!({
+                        "t": "sleep_fail",
+                        "reason": "現在還不是晚上，睡不著喔。",
+                    }).to_string();
+                    let _ = out_tx.send(Message::Text(msg)).await;
+                    continue;
+                }
+                { hub().world_time.write().unwrap().skip_to_dawn(); }
+                broadcast_players(); // 讓所有人立刻看到跳到黎明的天色（time_of_day 隨快照廣播）
+                vfeed::append_feed("睡覺", &name, "睡了一覺，天亮了！");
+                let msg = serde_json::json!({ "t": "sleep_ok" }).to_string();
+                let _ = out_tx.send(Message::Text(msg)).await;
             }
 
             // 重複 Join 或壞訊息：忽略。

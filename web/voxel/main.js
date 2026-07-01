@@ -55,6 +55,8 @@ const SHOVEL_WOOD = 39, SHOVEL_STONE = 40, SHOVEL_IRON = 41;
 const CHEST = 42;
 // 木門 v1（ROADMAP 693）——背包 2×2 合成（4 木板 → 2 門）；右鍵切換開/關，DoorOpen 非實心可穿越
 const DOOR_CLOSED = 43, DOOR_OPEN = 44;
+// 床 v1——背包 2×2 合成（3 木板 + 3 葉片 → 1 床）；右鍵夜晚睡覺跳過黑夜到隔天黎明
+const BED = 45;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -105,6 +107,8 @@ const COLOR = {
   // 木門 v1（ROADMAP 693）——關閉=深暖棕厚實；開啟=淡杏白，一眼分辨可穿越
   [DOOR_CLOSED]:  [0.58, 0.36, 0.14], // 木門（關）——深暖棕，實心大門感
   [DOOR_OPEN]:    [0.85, 0.72, 0.55], // 木門（開）——淡杏白，半透感，可穿越
+  // 床 v1——暖紅被褥感，一眼認出是家具而非建材
+  [BED]:          [0.72, 0.30, 0.28], // 床——暖磚紅，被褥的溫暖感
 };
 
 const DEBUG = location.search.includes("debug");
@@ -1348,6 +1352,8 @@ const BLOCK_NAME = {
   [CHEST]: "箱子",
   // 木門 v1（ROADMAP 693）
   [DOOR_CLOSED]: "木門（關）", [DOOR_OPEN]: "木門（開）",
+  // 床 v1
+  [BED]: "床",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
@@ -1593,6 +1599,7 @@ const BLOCK_HARDNESS = {
   [CHEST]: 1.0,   // 箱子——木箱，中等硬度（含存量，需謹慎破壞）
   [DOOR_CLOSED]: 0.8,  // 木門（關）——木製，輕鬆打破
   [DOOR_OPEN]:   0.8,  // 木門（開）——同材質，可破壞
+  [BED]: 0.6,  // 床——布料+木架，輕鬆打破
 };
 function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
 
@@ -1719,6 +1726,11 @@ function placeAtTarget() {
   const _doorRaw = getRaw(target.bx, target.by, target.bz);
   if (_doorRaw === DOOR_CLOSED || _doorRaw === DOOR_OPEN) {
     ws.send(JSON.stringify({ t: "toggle_door", x: target.bx, y: target.by, z: target.bz }));
+    return null;
+  }
+  // 床互動：右鍵對準床 → 傳送 sleep_in_bed，夜晚時伺服器把時鐘撥到隔天黎明。
+  if (getRaw(target.bx, target.by, target.bz) === BED) {
+    ws.send(JSON.stringify({ t: "sleep_in_bed", x: target.bx, y: target.by, z: target.bz }));
     return null;
   }
   // 種子的特殊種植動作：目標是農田土本身（不偏移到面外側）。
@@ -2063,6 +2075,14 @@ function connect() {
       // 箱子操作失敗（數量不足等）。
       showErr(m.reason || "箱子操作失敗");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "sleep_ok") {
+      // 床 v1：睡覺成功——時鐘已跳到黎明（time_of_day 隨下一份 players 快照自動更新天色）。
+      showMsg("😴 睡了一覺，天亮了！");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2200);
+    } else if (m.t === "sleep_fail") {
+      // 床 v1：白天/黎明/黃昏睡不著。
+      showErr(m.reason || "睡不著");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     }
   };
   ws.onclose = () => { wsReady = false; showErr("連線中斷，重新連線中…"); setTimeout(connect, 1500); };
@@ -2383,6 +2403,8 @@ const RECIPES_JS = [
   { id: "stone_shovel", name: "石鏟", inputs: [[STONE, 1], [PLANK, 1]], output_block: SHOVEL_STONE, out_count: 1 },
   // 木門 v1（ROADMAP 693）：4 木板 → 2 門（填滿 2×2 格）
   { id: "door", name: "木門", inputs: [[PLANK, 4]], output_block: DOOR_CLOSED, out_count: 2 },
+  // 床 v1：3 木板 + 3 葉片（當被褥）→ 1 床
+  { id: "bed", name: "床", inputs: [[PLANK, 3], [LEAVES, 3]], output_block: BED, out_count: 1 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
@@ -3200,4 +3222,6 @@ window.__voxel = {
   renderChestPanel() { renderChestPanel(); },
   // ── 木門 v1 QA 用（ROADMAP 693）──
   DOOR_CLOSED, DOOR_OPEN,
+  // ── 床 v1 QA 用 ──
+  BED,
 };
