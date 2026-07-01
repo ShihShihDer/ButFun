@@ -33,7 +33,7 @@ pub const BUILD_PROGRESSION: [BuildKind; 4] = [
 /// 依「已完成清單」+「玩家種下的心願（可選對應建物）」挑下一個蓋造目標。
 /// - 心願對應的建物若尚未蓋過 → 優先蓋它（玩家的話真的有後果）。
 /// - 否則照 [`BUILD_PROGRESSION`] 取第一個還沒蓋過的（自主進展，沒玩家也會長）。
-/// - 全部蓋過 → `None`（不再重蓋，改去採集／閒晃）。
+/// - 全部蓋過 → `None`（不再重蓋，改去採集／閒晃；見 [`MAX_EXPANSIONS`] 擴建額度）。
 ///
 /// 純函式、確定性、零 LLM——這是「不鬼打牆重蓋」的核心保證。
 pub fn next_build_goal(done: &[BuildKind], desired: Option<BuildKind>) -> Option<BuildKind> {
@@ -44,6 +44,10 @@ pub fn next_build_goal(done: &[BuildKind], desired: Option<BuildKind>) -> Option
     }
     BUILD_PROGRESSION.iter().copied().find(|k| !done.contains(k))
 }
+
+/// 基礎四種建物全蓋完後，居民一輩子最多再擴建幾座（每座任一已蓋過的種類皆可）。
+/// 對應 [`build_offset`] 原本就多留的 2 個格位（SPOTS 共 6 個、基礎只用 0..4）。
+pub const MAX_EXPANSIONS: u32 = 2;
 
 /// 每個建物錨點相對「家域中心」的偏移（依「已蓋幾個」散開成環，避免新建物疊在舊建物上）。
 /// 蓋過的數量當序號 → 第 N 個建物落在第 N 個格位 → 家域慢慢長成一片小聚落。純函式、可測。
@@ -153,31 +157,44 @@ pub enum NextActivity {
     Gather,
     /// 去蓋指定建物（下一個還沒蓋過的目標）。
     Build(BuildKind),
-    /// 沒有可蓋目標（全蓋完）——交回呼叫端：偶爾採集，否則閒晃。
+    /// 基礎四種都蓋完了，但仍有具體渴望且擴建額度未滿 → 再蓋一座同種建物（擴建）。
+    Expand(BuildKind),
+    /// 沒有可蓋目標、也沒有可擴建的渴望——交回呼叫端：偶爾採集，否則閒晃。
     Wander,
 }
 
-/// 依「已蓋清單、心願、本輪已採集次數、採集配額」挑下一步活動：
+/// 依「已蓋清單、心願、本輪已採集次數、採集配額、已擴建次數」挑下一步活動：
 /// - 還有沒蓋過的建物時：先採集 `gather_quota` 次（備料、有在做事的感覺），再蓋。
-/// - 沒有可蓋目標（全蓋完）：回 `Wander`，由呼叫端決定偶爾採集或閒晃。
+/// - 基礎全蓋完後，若仍懷著具體渴望（哪怕對應的種類早蓋過）且擴建額度未滿
+///   （見 [`MAX_EXPANSIONS`]）→ 再蓋一座——**心願不再石沉大海**：此前對已蓋過種類
+///   的渴望會被 `next_build_goal` 直接忽略，永遠不會被回應。
+/// - 沒有可蓋目標、也沒有可擴建的渴望 → `Wander`，由呼叫端決定偶爾採集或閒晃。
 ///
-/// 這把「目標＋記憶」收斂成一個可測的決策點：永遠不會選到已蓋過的建物。
+/// 這把「目標＋記憶」收斂成一個可測的決策點：永遠不會選到已蓋過的建物（除非是擴建）。
 pub fn choose_activity(
     done_builds: &[BuildKind],
     desired: Option<BuildKind>,
     gathered_since_build: u32,
     gather_quota: u32,
+    expansion_count: u32,
 ) -> NextActivity {
-    match next_build_goal(done_builds, desired) {
-        Some(kind) => {
-            if gathered_since_build < gather_quota {
+    if let Some(kind) = next_build_goal(done_builds, desired) {
+        return if gathered_since_build < gather_quota {
+            NextActivity::Gather
+        } else {
+            NextActivity::Build(kind)
+        };
+    }
+    if let Some(kind) = desired {
+        if expansion_count < MAX_EXPANSIONS {
+            return if gathered_since_build < gather_quota {
                 NextActivity::Gather
             } else {
-                NextActivity::Build(kind)
-            }
+                NextActivity::Expand(kind)
+            };
         }
-        None => NextActivity::Wander,
     }
+    NextActivity::Wander
 }
 
 /// 居民是否已走到資源旁、可以動手挖（只看水平距離；垂直由重力處理）。純函式、可測。
@@ -398,6 +415,10 @@ pub struct GoalRecord {
     pub y: Option<i32>,
     #[serde(default)]
     pub z: Option<i32>,
+    /// 這筆是否為「擴建」（基礎四種都蓋完後再蓋的第 2 座）而非首次完成。
+    /// `#[serde(default)]` 對舊資料向後相容（舊行沒有這欄，一律視為 `false`＝首次完成）。
+    #[serde(default)]
+    pub expansion: bool,
 }
 
 /// 每居民「已完成建物種類」集合 store。讓 `choose_activity` 永不重選蓋過的種類。
@@ -407,6 +428,9 @@ pub struct GoalStore {
     done: HashMap<String, Vec<String>>,
     /// resident id → 已蓋好的小屋世界座標（ROADMAP 夜間歸巢遮蔽用；只記 House）。
     houses: HashMap<String, (i32, i32, i32)>,
+    /// resident id → 已擴建次數（見 [`MAX_EXPANSIONS`]）。擴建記錄不進 `done`（種類早就在裡面了），
+    /// 只在這裡累計次數，避免無止盡擴建。
+    expansions: HashMap<String, u32>,
     next_seq: u64,
 }
 
@@ -415,12 +439,18 @@ impl GoalStore {
         Self::default()
     }
 
-    /// 由 jsonl 記錄還原（重啟後仍記得蓋過什麼 → 不會重蓋；也還原小屋座標）。
+    /// 由 jsonl 記錄還原（重啟後仍記得蓋過什麼 → 不會重蓋；也還原小屋座標／擴建次數）。
     pub fn from_entries(entries: Vec<GoalRecord>) -> Self {
         let mut s = Self::default();
         for e in entries {
             if e.seq >= s.next_seq {
                 s.next_seq = e.seq.wrapping_add(1);
+            }
+            if e.expansion {
+                // 擴建不進 done 集合（種類早已在裡面）、也不覆蓋小屋座標
+                // （保留最初那間供夜間歸巢遮蔽查詢，擴建的第 2 間不取代它）。
+                *s.expansions.entry(e.resident.clone()).or_insert(0) += 1;
+                continue;
             }
             if e.kind == BuildKind::House.as_str() {
                 if let (Some(x), Some(y), Some(z)) = (e.x, e.y, e.z) {
@@ -455,6 +485,11 @@ impl GoalStore {
         self.done.get(resident).map_or(0, |v| v.len())
     }
 
+    /// 此居民已擴建過幾座（基礎四種蓋完後的追加建物；上限見 [`MAX_EXPANSIONS`]）。
+    pub fn expansion_count(&self, resident: &str) -> u32 {
+        self.expansions.get(resident).copied().unwrap_or(0)
+    }
+
     /// 標記某居民完成了某建物（附上錨點座標）；回傳新 record 供呼叫端 append 落地。
     /// 已存在則回 None（不重複落地）。
     pub fn mark_done(&mut self, resident: &str, kind: BuildKind, loc: (i32, i32, i32)) -> Option<GoalRecord> {
@@ -473,9 +508,33 @@ impl GoalStore {
             x: Some(loc.0),
             y: Some(loc.1),
             z: Some(loc.2),
+            expansion: false,
         };
         self.next_seq = self.next_seq.wrapping_add(1);
         Some(rec)
+    }
+
+    /// 標記某居民擴建完成了一座（種類早已蓋過，這是追加的第 2 座）；回傳新 record 供
+    /// 呼叫端 append 落地。擴建次數不設上限（呼叫端 [`choose_activity`] 已用
+    /// [`MAX_EXPANSIONS`] 把關，這裡單純記錄，職責分離、跟 `mark_done` 同一種手法）。
+    pub fn mark_expansion(
+        &mut self,
+        resident: &str,
+        kind: BuildKind,
+        loc: (i32, i32, i32),
+    ) -> GoalRecord {
+        *self.expansions.entry(resident.to_string()).or_insert(0) += 1;
+        let rec = GoalRecord {
+            resident: resident.to_string(),
+            kind: kind.as_str().to_string(),
+            seq: self.next_seq,
+            x: Some(loc.0),
+            y: Some(loc.1),
+            z: Some(loc.2),
+            expansion: true,
+        };
+        self.next_seq = self.next_seq.wrapping_add(1);
+        rec
     }
 
     /// 此居民已蓋好的小屋世界座標（沒蓋過小屋則 `None`）。供夜間歸巢遮蔽查詢。
@@ -600,27 +659,66 @@ mod tests {
     #[test]
     fn choose_gathers_before_building() {
         // 還沒採滿配額 → 先採集。
-        assert_eq!(choose_activity(&[], None, 0, 2), NextActivity::Gather);
-        assert_eq!(choose_activity(&[], None, 1, 2), NextActivity::Gather);
+        assert_eq!(choose_activity(&[], None, 0, 2, 0), NextActivity::Gather);
+        assert_eq!(choose_activity(&[], None, 1, 2, 0), NextActivity::Gather);
         // 採滿配額 → 蓋下一個目標（花圃）。
-        assert_eq!(choose_activity(&[], None, 2, 2), NextActivity::Build(BuildKind::Garden));
+        assert_eq!(choose_activity(&[], None, 2, 2, 0), NextActivity::Build(BuildKind::Garden));
     }
 
     #[test]
-    fn choose_wander_when_all_built() {
+    fn choose_wander_when_all_built_and_no_desire() {
         let all = [BuildKind::Garden, BuildKind::House, BuildKind::Well, BuildKind::Tower];
-        // 全蓋完，不論採集次數都回 Wander（不再重蓋）。
-        assert_eq!(choose_activity(&all, None, 0, 2), NextActivity::Wander);
-        assert_eq!(choose_activity(&all, None, 5, 2), NextActivity::Wander);
+        // 全蓋完、沒有渴望，不論採集次數都回 Wander（不再重蓋）。
+        assert_eq!(choose_activity(&all, None, 0, 2, 0), NextActivity::Wander);
+        assert_eq!(choose_activity(&all, None, 5, 2, 0), NextActivity::Wander);
     }
 
     #[test]
     fn choose_build_respects_desire() {
         // 心願塔、採滿配額 → 蓋塔。
         assert_eq!(
-            choose_activity(&[], Some(BuildKind::Tower), 2, 2),
+            choose_activity(&[], Some(BuildKind::Tower), 2, 2, 0),
             NextActivity::Build(BuildKind::Tower)
         );
+    }
+
+    // ── 擴建 v1：全蓋完後，具體渴望不再石沉大海 ─────────────────────────────
+
+    #[test]
+    fn choose_expand_when_all_built_but_desire_and_slots_remain() {
+        let all = [BuildKind::Garden, BuildKind::House, BuildKind::Well, BuildKind::Tower];
+        // 全蓋完 + 想再要一座水井（即使早蓋過）+ 擴建額度未滿 + 採滿配額 → 擴建。
+        assert_eq!(
+            choose_activity(&all, Some(BuildKind::Well), 2, 2, 0),
+            NextActivity::Expand(BuildKind::Well)
+        );
+    }
+
+    #[test]
+    fn choose_gather_before_expand() {
+        let all = [BuildKind::Garden, BuildKind::House, BuildKind::Well, BuildKind::Tower];
+        // 擴建前也要先採滿配額（跟一般蓋造待遇一致）。
+        assert_eq!(
+            choose_activity(&all, Some(BuildKind::Well), 0, 2, 0),
+            NextActivity::Gather
+        );
+    }
+
+    #[test]
+    fn choose_wander_when_expansion_cap_reached() {
+        let all = [BuildKind::Garden, BuildKind::House, BuildKind::Well, BuildKind::Tower];
+        // 擴建額度已滿（MAX_EXPANSIONS=2）→ 即使仍有渴望，也回 Wander，不再無止盡擴建。
+        assert_eq!(
+            choose_activity(&all, Some(BuildKind::Well), 2, 2, MAX_EXPANSIONS),
+            NextActivity::Wander
+        );
+    }
+
+    #[test]
+    fn choose_wander_when_all_built_and_no_desire_even_with_slots() {
+        let all = [BuildKind::Garden, BuildKind::House, BuildKind::Well, BuildKind::Tower];
+        // 全蓋完但沒有渴望 → 就算擴建額度還有，也不會憑空擴建（要有具體渴望才動工）。
+        assert_eq!(choose_activity(&all, None, 2, 2, 0), NextActivity::Wander);
     }
 
     // ── GatherResource ────────────────────────────────────────────────────────
@@ -1080,10 +1178,10 @@ mod tests {
     #[test]
     fn goal_store_from_entries_restores() {
         let entries = vec![
-            GoalRecord { resident: "r".into(), kind: "garden".into(), seq: 0, x: Some(1), y: Some(2), z: Some(3) },
-            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 1, x: Some(10), y: Some(20), z: Some(30) },
+            GoalRecord { resident: "r".into(), kind: "garden".into(), seq: 0, x: Some(1), y: Some(2), z: Some(3), expansion: false },
+            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 1, x: Some(10), y: Some(20), z: Some(30), expansion: false },
             // 重複行：去重。
-            GoalRecord { resident: "r".into(), kind: "garden".into(), seq: 2, x: Some(1), y: Some(2), z: Some(3) },
+            GoalRecord { resident: "r".into(), kind: "garden".into(), seq: 2, x: Some(1), y: Some(2), z: Some(3), expansion: false },
         ];
         let s = GoalStore::from_entries(entries);
         assert!(s.is_done("r", BuildKind::Garden));
@@ -1099,7 +1197,7 @@ mod tests {
     fn goal_store_from_entries_tolerates_missing_location() {
         // 舊資料沒有 x/y/z 欄位（serde default → None）：不應 panic，house_of 安全回 None。
         let entries = vec![
-            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 0, x: None, y: None, z: None },
+            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 0, x: None, y: None, z: None, expansion: false },
         ];
         let s = GoalStore::from_entries(entries);
         assert!(s.is_done("r", BuildKind::House));
@@ -1114,6 +1212,40 @@ mod tests {
         assert_eq!(rec.x, None);
         assert_eq!(rec.y, None);
         assert_eq!(rec.z, None);
+        assert!(!rec.expansion, "舊行沒有 expansion 欄位，應安全補 false（視為首次完成）");
+    }
+
+    // ── 擴建 v1：GoalStore.mark_expansion ─────────────────────────────────────
+
+    #[test]
+    fn goal_store_mark_expansion_increments_and_records() {
+        let mut s = GoalStore::new();
+        assert_eq!(s.expansion_count("r"), 0);
+        let rec = s.mark_expansion("r", BuildKind::Well, (1, 2, 3));
+        assert_eq!(s.expansion_count("r"), 1);
+        assert!(rec.expansion);
+        assert_eq!(rec.kind, "well");
+        // 擴建不影響 done_kinds（種類早在裡面，這只是次數累計，不重複去重進 done）。
+        s.mark_done("r", BuildKind::Well, (1, 2, 3));
+        assert_eq!(s.done_count("r"), 1, "擴建不應算進 done 集合");
+        let _ = s.mark_expansion("r", BuildKind::Garden, (4, 5, 6));
+        assert_eq!(s.expansion_count("r"), 2, "同居民累計次數");
+        // 別的居民不受影響。
+        assert_eq!(s.expansion_count("other"), 0);
+    }
+
+    #[test]
+    fn goal_store_from_entries_restores_expansion_count_and_keeps_original_house() {
+        let entries = vec![
+            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 0, x: Some(10), y: Some(20), z: Some(30), expansion: false },
+            // 擴建的第 2 間小屋：不應覆蓋原本的小屋座標（夜間歸巢遮蔽要認原屋）。
+            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 1, x: Some(99), y: Some(99), z: Some(99), expansion: true },
+        ];
+        let s = GoalStore::from_entries(entries);
+        assert_eq!(s.expansion_count("r"), 1);
+        assert_eq!(s.house_of("r"), Some((10, 20, 30)), "擴建記錄不應覆蓋原屋座標");
+        // 擴建記錄不重複算進 done_count（done_count 只看基礎種類，這裡只有 1 種 house）。
+        assert_eq!(s.done_count("r"), 1);
     }
 
     #[test]
@@ -1123,8 +1255,8 @@ mod tests {
         let path = dir.join("voxel_goals.jsonl");
         let _ = std::fs::remove_file(&path);
         let pstr = path.to_str().unwrap();
-        let r1 = GoalRecord { resident: "vox_res_0".into(), kind: "garden".into(), seq: 0, x: Some(1), y: Some(2), z: Some(3) };
-        let r2 = GoalRecord { resident: "vox_res_0".into(), kind: "house".into(), seq: 1, x: Some(10), y: Some(20), z: Some(30) };
+        let r1 = GoalRecord { resident: "vox_res_0".into(), kind: "garden".into(), seq: 0, x: Some(1), y: Some(2), z: Some(3), expansion: false };
+        let r2 = GoalRecord { resident: "vox_res_0".into(), kind: "house".into(), seq: 1, x: Some(10), y: Some(20), z: Some(30), expansion: false };
         write_line(pstr, &serde_json::to_string(&r1).unwrap());
         write_line(pstr, &serde_json::to_string(&r2).unwrap());
         let loaded = read_lines(pstr);

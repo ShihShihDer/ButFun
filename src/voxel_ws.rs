@@ -4157,8 +4157,11 @@ fn tick_residents(dt: f32) {
 
         if !has_plan {
             // ── 無計畫：挑下一個活動（目標+記憶驅動，不鬼打牆）──────────────────
-            // 已完成的建物種類（持久 GoalStore）+ 玩家心願（可選對應建物）+ 已採集次數。
-            let done_kinds = hub().goals.read().unwrap().done_kinds(&rid); // drop
+            // 已完成的建物種類 + 已擴建次數（持久 GoalStore）+ 玩家心願（可選對應建物）+ 已採集次數。
+            let (done_kinds, expansion_count) = {
+                let goals = hub().goals.read().unwrap();
+                (goals.done_kinds(&rid), goals.expansion_count(&rid))
+            }; // goals 讀鎖釋放
             let desired_kind: Option<vbuild::BuildKind> = {
                 let des = hub().desires.read().unwrap();
                 des.get_desire(&rid).and_then(|d| vbuild::classify_desire(&d.desire))
@@ -4168,14 +4171,22 @@ fn tick_residents(dt: f32) {
                 residents.iter().find(|r| r.id == rid).map_or(0, |r| r.gathered_since_build)
             }; // residents 讀鎖釋放
 
-            match vskill::choose_activity(&done_kinds, desired_kind, gathered, GATHER_QUOTA) {
+            match vskill::choose_activity(&done_kinds, desired_kind, gathered, GATHER_QUOTA, expansion_count) {
                 NextActivity::Gather => {
                     start_gather(&rid, rx, rz);
                 }
                 NextActivity::Build(kind) => {
                     // 建造位置以「家域中心」為基準、依已蓋數量散開（不疊在舊建物上）。
                     let done_count = done_kinds.len();
-                    start_build(&rid, rname, kind, done_count, &mut say_updates);
+                    start_build(&rid, rname, kind, done_count, &mut say_updates, false);
+                }
+                NextActivity::Expand(kind) => {
+                    // 擴建 v1：基礎四種都蓋完了，但這位居民仍懷著具體渴望（哪怕對應種類早蓋過）——
+                    // 此前這份渴望會被 `next_build_goal` 直接忽略，永遠石沉大海；現在用
+                    // `build_offset` 原本就多留的兩個格位（見 MAX_EXPANSIONS）再蓋一座，
+                    // 讓「你的話真的有後果」延伸到擴建，不再是空頭支票。
+                    let expand_seq = vskill::BUILD_PROGRESSION.len() + expansion_count as usize;
+                    start_build(&rid, rname, kind, expand_seq, &mut say_updates, true);
                 }
                 NextActivity::Wander => {
                     // 全部蓋完：探訪鄰居 v1（ROADMAP 671）——偶爾出發拜訪另一位居民。
@@ -4233,7 +4244,7 @@ fn tick_residents(dt: f32) {
         }
 
         // ── 有計畫：彈下一塊放置 + 持久化 + 進度冒泡 ──────────────────────────
-        let (next_block, kind_name, kind_str, progress_pct, plan_done, plan_anchor) = {
+        let (next_block, kind_name, kind_str, progress_pct, plan_done, plan_anchor, plan_expansion) = {
             let mut builds = hub().builds.write().unwrap();
             if let Some(plan) = builds.get_plan_mut(&rid) {
                 let bb = plan.pop_next();
@@ -4242,9 +4253,10 @@ fn tick_residents(dt: f32) {
                 let pct = plan.progress_pct();
                 let done = plan.is_done();
                 let anchor = (plan.cx, plan.cy, plan.cz);
-                (bb, kn, ks, pct, done, anchor)
+                let exp = plan.expansion;
+                (bb, kn, ks, pct, done, anchor, exp)
             } else {
-                (None, String::new(), String::new(), 100, true, (0, 0, 0))
+                (None, String::new(), String::new(), 100, true, (0, 0, 0), false)
             }
         }; // builds 寫鎖釋放
 
@@ -4279,8 +4291,17 @@ fn tick_residents(dt: f32) {
                 let mut builds = hub().builds.write().unwrap();
                 builds.remove_if_done(&rid);
             } // builds 寫鎖釋放
-            // 記下「這位居民蓋過這種建物」→ 之後永不重蓋（不鬼打牆）+ 持久化。
-            if let Some(kind) = vbuild::BuildKind::from_str(&kind_str) {
+            if plan_expansion {
+                // 擴建完工：記到 expansion 計數（不進 done 集合，種類早就在裡面了）。
+                if let Some(kind) = vbuild::BuildKind::from_str(&kind_str) {
+                    let rec = {
+                        let mut goals = hub().goals.write().unwrap();
+                        goals.mark_expansion(&rid, kind, plan_anchor)
+                    }; // goals 寫鎖釋放
+                    vskill::append_goal(&rec);
+                }
+            } else if let Some(kind) = vbuild::BuildKind::from_str(&kind_str) {
+                // 記下「這位居民蓋過這種建物」→ 之後永不重蓋（不鬼打牆）+ 持久化。
                 let rec = {
                     let mut goals = hub().goals.write().unwrap();
                     goals.mark_done(&rid, kind, plan_anchor)
@@ -4290,7 +4311,11 @@ fn tick_residents(dt: f32) {
                 }
             }
             // 完工 Feed（每個建物只發一次，不洗版）。
-            vfeed::append_feed("蓋家完工", &rname, &kind_name);
+            vfeed::append_feed(
+                if plan_expansion { "蓋家擴建完工" } else { "蓋家完工" },
+                &rname,
+                &kind_name,
+            );
             // 完工廣播：WS 廣播給所有在線玩家（看得到「世界在長大」），慶賀泡泡同步排入 say_updates。
             let _ = hub().tx.send(std::sync::Arc::new(vannounce::build_complete_msg(&rname, &kind_name)));
             if let Some(kind) = vbuild::BuildKind::from_str(&kind_str) {
@@ -4354,15 +4379,19 @@ fn start_gather(rid: &str, rx: i32, rz: i32) {
     }
 }
 
-/// 開始蓋一個建物：以「家域中心」為基準、依已蓋數量散開錨點 → 建計畫 → 動工 Feed + 冒泡。
+/// 開始蓋一個建物：以「家域中心」為基準、依格位序號散開錨點 → 建計畫 → 動工 Feed + 冒泡。
+/// `offset_seq`：一般建造傳「已蓋數量」（0..4）；擴建傳 `BUILD_PROGRESSION.len() + 已擴建次數`
+/// （落在 `build_offset` 原本就多留的第 5/6 格位，不與基礎四座重疊）。
+/// `is_expansion`：完工時要記到 `GoalStore::mark_expansion` 而非 `mark_done`。
 fn start_build(
     rid: &str,
     rname: &str,
     kind: vbuild::BuildKind,
-    done_count: usize,
+    offset_seq: usize,
     say_updates: &mut Vec<(String, String)>,
+    is_expansion: bool,
 ) {
-    let (ox, oz) = vskill::build_offset(done_count);
+    let (ox, oz) = vskill::build_offset(offset_seq);
     let (hx, hz) = {
         let residents = hub().residents.read().unwrap();
         residents
@@ -4379,13 +4408,19 @@ fn start_build(
         if builds.has_plan(rid) {
             None // double-check 並發安全
         } else {
-            Some(builds.new_plan(rid, kind, bx, by, bz))
+            Some(builds.new_plan(rid, kind, bx, by, bz, is_expansion))
         }
     }; // builds 寫鎖釋放
     if let Some(p) = plan {
         vbuild::append_build(&p);
-        say_updates.push((rid.to_string(), vbuild::build_say_line(&p.kind_name, 0)));
-        vfeed::append_feed("蓋家動工", rname, &p.kind_name);
+        let say = if is_expansion {
+            format!("我已經有{}了，但這次還想再蓋一座！", p.kind_name)
+        } else {
+            vbuild::build_say_line(&p.kind_name, 0)
+        };
+        say_updates.push((rid.to_string(), say));
+        let feed_kind = if is_expansion { "蓋家擴建動工" } else { "蓋家動工" };
+        vfeed::append_feed(feed_kind, rname, &p.kind_name);
     }
 }
 
