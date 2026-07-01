@@ -48,6 +48,7 @@ use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
 use crate::voxel_mood;
+use crate::voxel_comfort as vcomfort;
 
 /// 入場時串給玩家的 chunk 半徑（以 chunk 為單位，水平）。3 → 7×7 column。
 const SPAWN_CHUNK_RADIUS: i32 = 3;
@@ -179,6 +180,10 @@ struct VoxelResident {
     visit_cooldown: f32,
     /// 心情自語冷卻倒數（秒，ROADMAP 677）：歸零後依心情層級自發冒泡泡，再重置。
     mood_say_cooldown: f32,
+    /// 孤獨尋伴冷卻倒數（秒，ROADMAP 678）：Lonely 心情時歸零則走向最近玩家。
+    seek_comfort_cooldown: f32,
+    /// 正在尋伴：已設目標走向玩家，到達後冒求陪泡泡等玩家搭話。
+    seeking_comfort: bool,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -416,6 +421,22 @@ fn nearest_player_info(rx: f32, rz: f32, players: &[(f32, f32, String)]) -> Opti
         })
 }
 
+/// 最近玩家的 (平方距離, 玩家 X, 玩家 Z, 玩家名)，供尋伴導航同時取得座標 + 距離。
+/// 沒有玩家回 None。純函式、可測。
+fn nearest_player_with_pos(rx: f32, rz: f32, players: &[(f32, f32, String)]) -> Option<(f32, f32, f32, &str)> {
+    players
+        .iter()
+        .map(|(px, pz, name)| {
+            let dx = px - rx;
+            let dz = pz - rz;
+            (dx * dx + dz * dz, *px, *pz, name.as_str())
+        })
+        .fold(None, |acc, item| match acc {
+            None => Some(item),
+            Some(best) => if item.0 < best.0 { Some(item) } else { Some(best) },
+        })
+}
+
 /// 一組玩家水平座標中，離 (rx,rz) 最近者的平方距離。沒有玩家回 None。純函式、可測。
 fn nearest_player_dist_sq(rx: f32, rz: f32, players: &[(f32, f32)]) -> Option<f32> {
     players
@@ -475,6 +496,9 @@ fn init_residents() -> Vec<VoxelResident> {
             visit_cooldown: vvisit::VISIT_COOLDOWN_SECS * 0.5 + i as f32 * 60.0,
             // 錯開初始冷卻，避免所有居民在同一時刻第一次自語
             mood_say_cooldown: 60.0 + i as f32 * 20.0,
+            // 孤獨尋伴（ROADMAP 678）：初始冷卻各自錯開，避免入場後立刻全員搶玩家。
+            seek_comfort_cooldown: vcomfort::seek_cooldown_offset(i),
+            seeking_comfort: false,
         });
     }
     out
@@ -1150,6 +1174,11 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         let des = hub().desires.read().unwrap();
                         des.get_desire(&addr_id).map(|d| d.desire.clone())
                     }; // 心願讀鎖在此釋放
+                    // 6b.5) 短鎖讀是否正在孤獨尋伴（ROADMAP 678）——玩家搭話時需致謝送禮。
+                    let was_seeking_comfort: bool = {
+                        let res = hub().residents.read().unwrap();
+                        res.iter().find(|r| r.id == addr_id).map(|r| r.seeking_comfort).unwrap_or(false)
+                    }; // residents 讀鎖在此釋放
                     // 6c) 立即送「思考中」佔位（私聊單播，不走 AgentBus 冒泡）。
                     let ack = serde_json::json!({
                         "t": "talk",
@@ -1178,6 +1207,13 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         let sys = match recipe_knowledge_block(&clean_for_llm) {
                             Some(facts) => format!("{sys}\n\n{facts}"),
                             None => sys,
+                        };
+                        // 孤獨尋伴情境（ROADMAP 678）：居民之前主動走來尋求陪伴，
+                        // 旅人終於搭話——引導 LLM 自然地表達感謝與溫暖。
+                        let sys = if was_seeking_comfort {
+                            format!("{sys}\n\n[情境提示] 你剛才因為心情寂寞主動走到旅人面前、希望有人陪你說說話。現在旅人終於開口了——請在回覆中帶著感激與溫暖，說你心情好多了。")
+                        } else {
+                            sys
                         };
                         let reply: String = match tokio::time::timeout(
                             Duration::from_secs(TALK_LLM_TIMEOUT_SECS),
@@ -1215,6 +1251,43 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             }; // 心願寫鎖在此釋放
                             vdes::append_desire(&new_desire);
                             vfeed::append_feed("新心願", &new_desire.resident, &new_desire.desire);
+                        }
+                        // 孤獨尋伴致謝 + 贈木頭（ROADMAP 678）：清除尋伴狀態、給 1 木頭、通知前端。
+                        // 鎖序：residents 寫（即釋）→ inventory 寫（即釋）；不持鎖 await。
+                        if was_seeking_comfort && !pkey.is_empty() {
+                            {
+                                let mut res = hub().residents.write().unwrap();
+                                if let Some(r) = res.iter_mut().find(|r| r.id == addr_id) {
+                                    r.seeking_comfort = false;
+                                }
+                            } // residents 寫鎖在此釋放
+                            let inv_e = hub().inventory.write().unwrap().give(
+                                &pkey,
+                                vcomfort::COMFORT_GIFT_BLOCK,
+                                vcomfort::COMFORT_GIFT_QTY,
+                            );
+                            vinv::append_inv(&inv_e);
+                            let new_count = hub()
+                                .inventory
+                                .read()
+                                .unwrap()
+                                .count(&pkey, vcomfort::COMFORT_GIFT_BLOCK);
+                            let inv_msg = serde_json::json!({
+                                "t": "inv_update",
+                                "block_id": vcomfort::COMFORT_GIFT_BLOCK,
+                                "count": new_count,
+                            })
+                            .to_string();
+                            let _ = reply_tx.send(Message::Text(inv_msg)).await;
+                            vfeed::append_feed(
+                                "孤獨尋伴",
+                                rname,
+                                &format!(
+                                    "旅人 {} 陪伴了我，心情好多了，送上 {} 致謝！",
+                                    &pkey,
+                                    vcomfort::comfort_gift_name()
+                                ),
+                            );
                         }
                         // 冒泡（下一 tick 由 tick_residents 套用 say，自動截到 40 字、計時消失）。
                         hub().agent_bus.push_decision(
@@ -2020,6 +2093,11 @@ fn tick_residents(dt: f32) {
                 r.mood_say_cooldown -= dt;
             }
 
+            // 孤獨尋伴冷卻倒數（ROADMAP 678）。
+            if r.seek_comfort_cooldown > 0.0 {
+                r.seek_comfort_cooldown -= dt;
+            }
+
             // 旁聽搭話冷卻倒數（embodied 靠近說話 v1）：到期後才可再因旁聽搭話。
             if r.overhear_cooldown > 0.0 {
                 r.overhear_cooldown -= dt;
@@ -2047,13 +2125,14 @@ fn tick_residents(dt: f32) {
                 }
             }
 
-            // 主動招呼：招呼冷卻倒數；冷卻完、目前沒在說話、且有玩家靠很近時，
+            // 主動招呼：招呼冷卻倒數；冷卻完、目前沒在說話、非尋伴狀態、且有玩家靠近時，
             // 偶爾（低機率）冒一句招呼，讓世界更有人氣（用既有泡泡、低頻不洗版）。
             // 好感度 v1：查玩家記憶筆數 → 決定招呼溫度（陌生人/相識/友人，零 LLM）。
             // 老友情境問候 v1（ROADMAP 675）：好感 ≥ FOND_AFFINITY 時，改用記憶驅動的特定台詞。
+            // 尋伴時不走普通招呼（ROADMAP 678）：等抵達玩家旁才冒求陪泡泡。
             if r.greet_timer > 0.0 {
                 r.greet_timer -= dt;
-            } else if r.say.is_empty() {
+            } else if r.say.is_empty() && !r.seeking_comfort {
                 if let Some((d2, nearest_name)) = nearest_player_info(r.body.x, r.body.z, &player_pts) {
                     if d2 < GREET_DIST * GREET_DIST && rand::random::<f32>() < GREET_CHANCE_PER_TICK {
                         let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
@@ -2109,6 +2188,70 @@ fn tick_residents(dt: f32) {
                             r.say_timer = SAY_SECS;
                             r.recall_cooldown = RECALL_COOLDOWN_SECS;
                         }
+                    }
+                }
+            }
+
+            // 孤獨尋伴 v1（ROADMAP 678）：Lonely 心情到期後走向最近玩家；到了冒求陪泡泡。
+            // 鎖序：bonds 讀（即釋）→ memory 讀（即釋），不巢狀，不持鎖 await。
+            if r.seeking_comfort {
+                // 繼續更新目標（玩家可能在移動）或放棄（玩家走太遠 / 無玩家在線）。
+                match nearest_player_with_pos(r.body.x, r.body.z, &player_pts) {
+                    Some((d2, px, pz, _)) if d2 < vcomfort::SEEK_RANGE * vcomfort::SEEK_RANGE => {
+                        r.target_x = px;
+                        r.target_z = pz;
+                        r.wait_timer = 0.0;
+                    }
+                    _ => {
+                        // 玩家太遠或不在線，放棄尋伴。
+                        r.seeking_comfort = false;
+                        r.seek_comfort_cooldown = vcomfort::SEEK_COMFORT_COOLDOWN;
+                    }
+                }
+            } else if r.seek_comfort_cooldown <= 0.0 && r.say.is_empty() {
+                // 觸發尋伴：只有 Lonely 心情才走。
+                let all_ids: Vec<String> =
+                    (0..RESIDENT_COUNT).map(|j| format!("vox_res_{j}")).collect();
+                let all_id_refs: Vec<&str> = all_ids.iter().map(|s| s.as_str()).collect();
+                let (friends, acq) = {
+                    let bonds = hub().bonds.read().unwrap();
+                    bonds.bond_counts_for(&r.id, &all_id_refs)
+                }; // bonds 讀鎖釋放
+                let mems = {
+                    hub().memory.read().unwrap().memory_count(&r.id)
+                }; // memory 讀鎖釋放
+                if voxel_mood::compute_mood(friends, acq, mems) == voxel_mood::MoodTier::Lonely {
+                    if let Some((d2, px, pz, _)) =
+                        nearest_player_with_pos(r.body.x, r.body.z, &player_pts)
+                    {
+                        if d2 < vcomfort::SEEK_RANGE * vcomfort::SEEK_RANGE {
+                            r.target_x = px;
+                            r.target_z = pz;
+                            r.wait_timer = 0.0;
+                            r.seeking_comfort = true;
+                            r.seek_comfort_cooldown = vcomfort::SEEK_COMFORT_COOLDOWN;
+                        } else {
+                            // 玩家太遠，重置冷卻等下次機會。
+                            r.seek_comfort_cooldown = vcomfort::SEEK_COMFORT_COOLDOWN;
+                        }
+                    } else {
+                        // 無在線玩家，重置冷卻。
+                        r.seek_comfort_cooldown = vcomfort::SEEK_COMFORT_COOLDOWN;
+                    }
+                } else {
+                    // 心情已不再 Lonely，重置冷卻，不觸發尋伴。
+                    r.seek_comfort_cooldown = vcomfort::SEEK_COMFORT_COOLDOWN;
+                }
+            }
+            // 尋伴抵達：已到玩家附近且 say 空 → 冒求陪泡泡（等玩家搭話）。
+            if r.seeking_comfort && r.say.is_empty() {
+                if let Some((d2, _, _, _)) =
+                    nearest_player_with_pos(r.body.x, r.body.z, &player_pts)
+                {
+                    if d2 < vcomfort::COMFORT_ARRIVE_DIST * vcomfort::COMFORT_ARRIVE_DIST {
+                        let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                        r.say = vcomfort::comfort_seek_line(pick).chars().take(40).collect();
+                        r.say_timer = SAY_SECS;
                     }
                 }
             }
@@ -3177,6 +3320,33 @@ mod tests {
         let (d2, name) = nearest_player_info(0.0, 0.0, &pts).unwrap();
         assert!((d2 - 1.0).abs() < 1e-4, "最近者平方距離應為 1：{d2}");
         assert_eq!(name, "近人", "最近者名字應為 '近人'");
+    }
+
+    #[test]
+    fn nearest_player_with_pos_returns_none_when_empty() {
+        let empty: Vec<(f32, f32, String)> = vec![];
+        assert!(nearest_player_with_pos(0.0, 0.0, &empty).is_none());
+    }
+
+    #[test]
+    fn nearest_player_with_pos_single() {
+        let pts = vec![(3.0, 4.0, "旅人".to_string())];
+        let (d2, px, pz, name) = nearest_player_with_pos(0.0, 0.0, &pts).unwrap();
+        assert!((d2 - 25.0).abs() < 1e-4, "平方距離應為 25：{d2}");
+        assert!((px - 3.0).abs() < 1e-4);
+        assert!((pz - 4.0).abs() < 1e-4);
+        assert_eq!(name, "旅人");
+    }
+
+    #[test]
+    fn nearest_player_with_pos_picks_closest() {
+        let pts = vec![
+            (10.0, 0.0, "遠人".to_string()),
+            (1.0, 0.0, "近人".to_string()),
+        ];
+        let (d2, _, _, name) = nearest_player_with_pos(0.0, 0.0, &pts).unwrap();
+        assert!((d2 - 1.0).abs() < 1e-4, "最近距離平方應為 1：{d2}");
+        assert_eq!(name, "近人");
     }
 
     #[test]
