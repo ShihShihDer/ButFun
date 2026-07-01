@@ -156,6 +156,8 @@ mod voxel_mood;
 mod voxel_comfort;
 // 乙太方界·居民互相打氣 v1：Joyful/Content 居民主動走向 Lonely 同伴說暖心話，AI 社群自我支撐（ROADMAP 679）。
 mod voxel_cheer;
+// 乙太方界·箱子儲存 v1：合成箱子→放置→右鍵儲存材料（ROADMAP 692）。
+mod voxel_chest;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環

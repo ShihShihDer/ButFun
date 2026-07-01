@@ -51,6 +51,8 @@ const LADDER = 35;
 const AXE_WOOD = 36, AXE_STONE = 37, AXE_IRON = 38;
 // 鏟子 v1（ROADMAP 690）——純物品，不可放置；持鏟挖草地/泥土/沙地/農田大幅加速
 const SHOVEL_WOOD = 39, SHOVEL_STONE = 40, SHOVEL_IRON = 41;
+// 箱子 v1（ROADMAP 692）——工作台合成（8 木板 → 1 箱子）；放置後右鍵互動開儲物面板
+const CHEST = 42;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -96,6 +98,8 @@ const COLOR = {
   [SHOVEL_WOOD]:  [0.65, 0.45, 0.18], // 木鏟——赭棕，新刻木鏟頭感
   [SHOVEL_STONE]: [0.50, 0.46, 0.42], // 石鏟——灰赭，石材鏟頭（比石斧偏紅）
   [SHOVEL_IRON]:  [0.78, 0.80, 0.84], // 鐵鏟——冷銀，鐵製鏟面反光
+  // 箱子 v1（ROADMAP 692）——暖棕木箱感，比工作台淺、比梯子亮；金屬鉚釘感
+  [CHEST]:        [0.72, 0.52, 0.28], // 箱子——中暖棕，木箱+鐵釘視覺
 };
 
 const DEBUG = location.search.includes("debug");
@@ -1246,7 +1250,7 @@ let target = null;
 // 種田 v1（ROADMAP 659）：加入農田土 + 種子（種子為純物品，特殊 Plant 動作）
 // 快捷欄 21 格：…WORKBENCH FURNACE SMOOTH_STONE WHEAT BREAD COAL_ORE IRON_ORE IRON_INGOT IRON_BLOCK TORCH
 // 鍵盤 1–9 對應前 9 格；其餘以滑鼠/觸控點選
-const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE, WHEAT, BREAD, COAL_ORE, IRON_ORE, IRON_INGOT, IRON_BLOCK, TORCH, PICKAXE_WOOD, PICKAXE_STONE, PICKAXE_IRON, AXE_WOOD, AXE_STONE, AXE_IRON, SHOVEL_WOOD, SHOVEL_STONE, SHOVEL_IRON];
+const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE, WHEAT, BREAD, COAL_ORE, IRON_ORE, IRON_INGOT, IRON_BLOCK, TORCH, PICKAXE_WOOD, PICKAXE_STONE, PICKAXE_IRON, AXE_WOOD, AXE_STONE, AXE_IRON, SHOVEL_WOOD, SHOVEL_STONE, SHOVEL_IRON, CHEST];
 const BLOCK_NAME = {
   [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉",
   [PLANK]: "木板", [STONE_BRICK]: "石磚", [GLASS]: "玻璃",
@@ -1274,6 +1278,8 @@ const BLOCK_NAME = {
   [LADDER]: "梯子",
   // 鏟子 v1（ROADMAP 690）
   [SHOVEL_WOOD]: "木鏟", [SHOVEL_STONE]: "石鏟", [SHOVEL_IRON]: "鐵鏟",
+  // 箱子 v1（ROADMAP 692）
+  [CHEST]: "箱子",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
@@ -1498,6 +1504,7 @@ const BLOCK_HARDNESS = {
   [WORKBENCH]: 1.2, [FURNACE]: 1.5,
   [TORCH]: 0.1,
   [LADDER]: 0.4,  // 梯子——木製，輕鬆打破
+  [CHEST]: 1.0,   // 箱子——木箱，中等硬度（含存量，需謹慎破壞）
 };
 function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
 
@@ -1613,6 +1620,11 @@ function placeAtTarget() {
     openFurnacePanel();
     return null;
   }
+  // 箱子互動：右鍵對準箱子方塊 → 傳送 open_chest，伺服器回 chest_view 後開面板。
+  if (getRaw(target.bx, target.by, target.bz) === CHEST) {
+    openChestPanel(target.bx, target.by, target.bz);
+    return null;
+  }
   // 種子的特殊種植動作：目標是農田土本身（不偏移到面外側）。
   if (selectedBlock() === SEEDS) {
     const hitRaw = getRaw(target.bx, target.by, target.bz);
@@ -1673,7 +1685,7 @@ let pointerLocked = false;
 const MOUSE_SENS = 0.0022;
 // 有面板/對話開著時不進滑鼠鎖定（那些需要游標操作）。
 function anyPanelOpen() {
-  return bagPanelVisible() || wbPanelVisible() || furnacePanelVisible() ||
+  return bagPanelVisible() || wbPanelVisible() || furnacePanelVisible() || chestPanelVisible() ||
          (chatEl && chatEl.style.display === "flex");
 }
 // 釋放滑鼠鎖定（開面板/對話時呼叫，讓游標回來能點格子/打字）。
@@ -1870,6 +1882,7 @@ function connect() {
       else myInv.delete(m.block_id);
       updateInvHud();
       updateGiftBtn(); // 贈禮 v1：材料變動後同步更新按鈕
+      if (chestPanelVisible()) renderChestPanel(); // 箱子 v1：背包變動後同步更新箱子面板背包區
     } else if (m.t === "inv_denied") {
       // 採集 v1：放置材料不足，短暫提示。
       const bname = BLOCK_NAME[m.block_id] || "方塊";
@@ -1942,6 +1955,18 @@ function connect() {
       hideTradeOffer();
       showErr(m.reason || "交易失敗");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2200);
+    } else if (m.t === "chest_view") {
+      // 箱子 v1（ROADMAP 692）：伺服器回傳箱子內容，更新面板。
+      _chestPos = { x: m.x, y: m.y, z: m.z };
+      _chestItems = (m.items || []).slice();
+      if (chestPanelEl) {
+        chestPanelEl.style.display = "flex";
+        renderChestPanel();
+      }
+    } else if (m.t === "chest_fail") {
+      // 箱子操作失敗（數量不足等）。
+      showErr(m.reason || "箱子操作失敗");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     }
   };
   ws.onclose = () => { wsReady = false; showErr("連線中斷，重新連線中…"); setTimeout(connect, 1500); };
@@ -2484,6 +2509,8 @@ const WORKBENCH_RECIPES_JS = [
   { id: "iron_axe",       name: "鐵斧",           inputs: [[IRON_INGOT, 3], [PLANK, 2]], output_block: AXE_IRON,     out_count: 1  },
   // 鐵鏟（ROADMAP 690）：2 鐵錠 + 3 木板 → 1 鐵鏟（5 格，需工作台；挖軟土 6×）
   { id: "iron_shovel",    name: "鐵鏟",           inputs: [[IRON_INGOT, 2], [PLANK, 3]], output_block: SHOVEL_IRON,  out_count: 1  },
+  // 箱子 v1（ROADMAP 692）：8 木板 → 1 箱子（8 格，需工作台；放置後儲物）
+  { id: "chest",          name: "箱子",           inputs: [[PLANK, 8]],                  output_block: CHEST,        out_count: 1  },
 ];
 
 // wbGrid[0..8]：3×3 共 9 格，0 代表空格，非零代表 block_id。
@@ -2769,6 +2796,105 @@ document.addEventListener("pointerdown", (e) => {
   }
 });
 
+// ── 箱子面板 v1（ROADMAP 692）──────────────────────────────────────────────────
+// 箱子世界座標（開啟中的箱子）；null = 沒有打開的箱子。
+let _chestPos = null;
+// 箱子當前內容（從 chest_view 伺服器訊息更新）：[{id, count}, ...]。
+let _chestItems = [];
+
+const chestPanelEl = document.getElementById("chestPanel");
+const chestInvGridEl = document.getElementById("chestInvGrid");
+const chestBoxGridEl = document.getElementById("chestBoxGrid");
+
+function chestPanelVisible() {
+  return chestPanelEl ? chestPanelEl.style.display === "flex" : false;
+}
+
+/** 開啟箱子面板：傳送 open_chest 請求，伺服器回 chest_view 後才真正渲染內容。 */
+function openChestPanel(bx, by, bz) {
+  if (!chestPanelEl) return;
+  releaseMouse();
+  _chestPos = { x: bx, y: by, z: bz };
+  _chestItems = [];
+  chestPanelEl.style.display = "flex";
+  renderChestPanel();
+  if (wsReady) ws.send(JSON.stringify({ t: "open_chest", x: bx, y: by, z: bz }));
+}
+
+function closeChestPanel() {
+  if (!chestPanelEl) return;
+  chestPanelEl.style.display = "none";
+  _chestPos = null;
+}
+
+/**
+ * 渲染箱子面板——分上下兩區：
+ * - 上：箱子內容（_chestItems）；點某格→取出 1 個。
+ * - 下：玩家背包（myInv）；點某格→放入 1 個（排除工具純物品）。
+ */
+function renderChestPanel() {
+  if (!chestPanelEl) return;
+  // 箱子內容區。
+  if (chestBoxGridEl) {
+    chestBoxGridEl.innerHTML = "";
+    if (_chestItems.length === 0) {
+      const empty = document.createElement("span");
+      empty.className = "chest-empty-hint";
+      empty.textContent = "（空箱子——從下方背包點格子存入物品）";
+      chestBoxGridEl.appendChild(empty);
+    } else {
+      for (const { id, count } of _chestItems) {
+        const sl = makeSwatchEl(id, "chest-box-slot");
+        const cnt = document.createElement("span");
+        cnt.className = "inv-count";
+        cnt.textContent = "×" + count;
+        sl.appendChild(cnt);
+        sl.title = (BLOCK_NAME[id] || "方塊") + " ×" + count + "\n（點擊取出 1 個）";
+        sl.addEventListener("click", () => {
+          if (!_chestPos || !wsReady) return;
+          ws.send(JSON.stringify({ t: "chest_take", x: _chestPos.x, y: _chestPos.y, z: _chestPos.z, item_id: id, count: 1 }));
+        });
+        chestBoxGridEl.appendChild(sl);
+      }
+    }
+  }
+  // 玩家背包區（只顯示可存入箱子的物品：排除種子 14、麵包 19 等純物品也可存，工具只存 item_id≤41）。
+  if (chestInvGridEl) {
+    chestInvGridEl.innerHTML = "";
+    const EXCLUDE_FROM_CHEST = new Set([0]); // 只排 Air
+    for (const [bid, cnt] of myInv) {
+      if (EXCLUDE_FROM_CHEST.has(bid) || cnt <= 0) continue;
+      const sl = makeSwatchEl(bid, "chest-inv-slot");
+      const c = document.createElement("span");
+      c.className = "inv-count";
+      c.textContent = "×" + cnt;
+      sl.appendChild(c);
+      sl.title = (BLOCK_NAME[bid] || "物品") + " ×" + cnt + "\n（點擊存入 1 個）";
+      sl.addEventListener("click", () => {
+        if (!_chestPos || !wsReady) return;
+        ws.send(JSON.stringify({ t: "chest_put", x: _chestPos.x, y: _chestPos.y, z: _chestPos.z, item_id: bid, count: 1 }));
+      });
+      chestInvGridEl.appendChild(sl);
+    }
+    if (chestInvGridEl.children.length === 0) {
+      const hint = document.createElement("span");
+      hint.className = "chest-empty-hint";
+      hint.textContent = "（背包空的）";
+      chestInvGridEl.appendChild(hint);
+    }
+  }
+}
+
+const chestCloseEl = document.getElementById("chestClose");
+if (chestCloseEl) chestCloseEl.addEventListener("click", closeChestPanel);
+
+// 點面板外關閉箱子面板。
+document.addEventListener("pointerdown", (e) => {
+  if (chestPanelVisible()) {
+    if (chestPanelEl && !chestPanelEl.contains(e.target)) closeChestPanel();
+  }
+});
+
 /** 簡短綠色提示（合成成功用；區別於 showErr 紅色錯誤）。 */
 function showMsg(text) {
   const el = document.getElementById("msg");
@@ -2941,4 +3067,12 @@ window.__voxel = {
   registerTorchBlock,
   unregisterTorchBlock,
   updateNearbyTorchLights,
+  // ── 箱子 v1 QA 用（ROADMAP 692）──
+  CHEST,
+  get chestPanelVisible() { return chestPanelVisible(); },
+  openChestPanel(bx, by, bz) { openChestPanel(bx, by, bz); },
+  closeChestPanel() { closeChestPanel(); },
+  get chestPos() { return _chestPos; },
+  get chestItems() { return [..._chestItems]; },
+  renderChestPanel() { renderChestPanel(); },
 };
