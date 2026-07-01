@@ -61,6 +61,10 @@ const BED = 45;
 // 胡蘿蔔幼苗/成熟胡蘿蔔為伺服器狀態方塊；種子/收成為純物品，從草地(GRASS)破壞額外掉落種子。
 const CARROT_SEEDED = 46, CARROT_MATURE = 47;
 const CARROT_SEEDS = 48, CARROT = 49;
+// 第三種作物 v1——馬鈴薯比小麥慢熟但收成量大（120s/水耕60s，收成×2）。
+// 馬鈴薯幼苗/成熟馬鈴薯為伺服器狀態方塊；種子/收成為純物品，從泥土(DIRT)破壞額外掉落種子（與胡蘿蔔取自草地區隔）。
+const POTATO_SEEDED = 50, POTATO_MATURE = 51;
+const POTATO_SEEDS = 52, POTATO = 53;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -116,6 +120,9 @@ const COLOR = {
   // 第二種作物 v1（胡蘿蔔）——橘色調對比小麥的金黃，一眼分辨兩種作物
   [CARROT_SEEDED]: [0.30, 0.44, 0.22], // 胡蘿蔔幼苗——帶綠的深色，種子萌芽中
   [CARROT_MATURE]:  [0.90, 0.52, 0.16], // 成熟胡蘿蔔——飽和橘色，可收割
+  // 第三種作物 v1（馬鈴薯）——土黃偏棕，與小麥金黃、胡蘿蔔橘都能一眼分辨
+  [POTATO_SEEDED]: [0.32, 0.30, 0.18], // 馬鈴薯幼苗——暗土黃，埋在土裡的感覺
+  [POTATO_MATURE]:  [0.78, 0.64, 0.38], // 成熟馬鈴薯——土黃偏棕，可收割
 };
 
 const DEBUG = location.search.includes("debug");
@@ -966,7 +973,7 @@ if (speakInputEl && speakSendEl) {
 // 把採來的材料化作一份心意送給居民；居民記得你的照料，好感度 +2。
 
 /// 不可作為禮物的 block_id（純 inventory 物品 / 不合語意送出）。
-const GIFT_EXCLUDED = new Set([0, 7, 12, DOOR_OPEN, CARROT_SEEDED]); // Air / Water / FarmSoilSeeded / DoorOpen / CarrotSeeded（伺服器狀態，不可贈）
+const GIFT_EXCLUDED = new Set([0, 7, 12, DOOR_OPEN, CARROT_SEEDED, POTATO_SEEDED]); // Air / Water / FarmSoilSeeded / DoorOpen / CarrotSeeded / PotatoSeeded（伺服器狀態，不可贈）
 
 /**
  * 從背包（myInv: Map<blockId, count>）挑出最佳禮物。
@@ -1593,6 +1600,9 @@ const BLOCK_NAME = {
   // 第二種作物 v1
   [CARROT_SEEDED]: "胡蘿蔔幼苗", [CARROT_MATURE]: "成熟胡蘿蔔",
   [CARROT_SEEDS]: "胡蘿蔔種子", [CARROT]: "胡蘿蔔",
+  // 第三種作物 v1
+  [POTATO_SEEDED]: "馬鈴薯幼苗", [POTATO_MATURE]: "成熟馬鈴薯",
+  [POTATO_SEEDS]: "馬鈴薯種子", [POTATO]: "馬鈴薯",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
@@ -1833,6 +1843,7 @@ const BLOCK_HARDNESS = {
   [IRON_INGOT]: 1.5, [IRON_BLOCK]: 2.0,
   [FARM_SOIL]: 0.4, [FARM_SOIL_SEEDED]: 0.4, [WHEAT_MATURE]: 0.2,
   [CARROT_SEEDED]: 0.4, [CARROT_MATURE]: 0.2,
+  [POTATO_SEEDED]: 0.4, [POTATO_MATURE]: 0.2,
   [WORKBENCH]: 1.2, [FURNACE]: 1.5,
   [TORCH]: 0.1,
   [LADDER]: 0.4,  // 梯子——木製，輕鬆打破
@@ -1974,19 +1985,21 @@ function placeAtTarget() {
     return null;
   }
   // 種子的特殊種植動作：目標是農田土本身（不偏移到面外側）。
-  // 第二種作物 v1：胡蘿蔔種子選中時種下胡蘿蔔，附帶 seed 欄位讓伺服器分辨作物種類。
-  if (selectedBlock() === SEEDS || selectedBlock() === CARROT_SEEDS) {
+  // 第二種作物 v1：胡蘿蔔種子選中時種下胡蘿蔔；第三種作物 v1：馬鈴薯種子選中時種下馬鈴薯，
+  // 皆附帶 seed 欄位讓伺服器分辨作物種類。
+  if (selectedBlock() === SEEDS || selectedBlock() === CARROT_SEEDS || selectedBlock() === POTATO_SEEDS) {
     const hitRaw = getRaw(target.bx, target.by, target.bz);
     if (hitRaw === FARM_SOIL) {
-      const seed = selectedBlock() === CARROT_SEEDS ? CARROT_SEEDS : undefined;
+      const sel = selectedBlock();
+      const seed = sel === CARROT_SEEDS ? CARROT_SEEDS : sel === POTATO_SEEDS ? POTATO_SEEDS : undefined;
       ws.send(JSON.stringify({ t: "plant", x: target.bx, y: target.by, z: target.bz, seed }));
       return { x: target.bx, y: target.by, z: target.bz };
     }
     // 種子只能種在農田土上——其他方塊靜默忽略。
     return null;
   }
-  // 麵包 v1（ROADMAP 668）+ 胡蘿蔔（第二種作物 v1）：純物品，不可放置——靜默忽略。
-  if (selectedBlock() === WHEAT || selectedBlock() === BREAD || selectedBlock() === CARROT) return null;
+  // 麵包 v1（ROADMAP 668）+ 胡蘿蔔（第二種作物 v1）+ 馬鈴薯（第三種作物 v1）：純物品，不可放置——靜默忽略。
+  if (selectedBlock() === WHEAT || selectedBlock() === BREAD || selectedBlock() === CARROT || selectedBlock() === POTATO) return null;
   // 一般放置：在命中方塊的面外側放置。
   const px = target.bx + target.nx, py = target.by + target.ny, pz = target.bz + target.nz;
   // 別把方塊放進自己身體（避免卡死）。
@@ -2255,9 +2268,11 @@ function connect() {
       if (wbPanelVisible()) renderWbPanel();
       if (furnacePanelVisible()) renderFurnacePanel();
     } else if (m.t === "plant_ok") {
-      // 種田 v1 / 水耕農業 v1（ROADMAP 686）/ 第二種作物 v1：依作物種類 + 是否鄰近水源給不同提示。
+      // 種田 v1 / 水耕農業 v1（ROADMAP 686）/ 第二/三種作物 v1：依作物種類 + 是否鄰近水源給不同提示。
       const plantMsg = m.carrot
         ? (m.irrigated ? "💧 水耕！胡蘿蔔將在 30 秒後成熟 🥕" : "已種下胡蘿蔔種子！等 60 秒就成熟 🥕")
+        : m.potato
+        ? (m.irrigated ? "💧 水耕！馬鈴薯將在 60 秒後成熟 🥔" : "已種下馬鈴薯種子！等 120 秒就成熟，收成量大 🥔")
         : (m.irrigated ? "💧 水耕！種子將在 45 秒後成熟 🌾" : "已種下種子！等 90 秒小麥就成熟 🌾");
       showMsg(plantMsg);
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2500);
@@ -3367,6 +3382,8 @@ window.__voxel = {
   FARM_SOIL, FARM_SOIL_SEEDED, WHEAT_MATURE, SEEDS,
   // 第二種作物 v1 常數 QA 用
   CARROT_SEEDED, CARROT_MATURE, CARROT_SEEDS, CARROT,
+  // 第三種作物 v1 常數 QA 用
+  POTATO_SEEDED, POTATO_MATURE, POTATO_SEEDS, POTATO,
   // ── 工作台 3×3 QA 用（ROADMAP 665）──
   WORKBENCH,
   get wbPanelVisible() { return wbPanelVisible(); },

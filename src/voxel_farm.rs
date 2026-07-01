@@ -2,6 +2,8 @@
 //! 水耕農業 v1（ROADMAP 686）：農田土鄰近水源時生長加速（90s→45s）。
 //! 第二種作物 v1：胡蘿蔔——種田系統第一次有兩種作物可選（小麥慢而多用途／胡蘿蔔快而輕巧），
 //! 玩家依當下需求（急著要收成 vs 存糧存種子）第一次能真的「選種什麼」。
+//! 第三種作物 v1：馬鈴薯——慢熟但收成量大（2 顆／次），三種作物第一次湊出快／中／慢
+//! 完整節奏光譜，玩家能依「急著吃」「囤糧」兩種心態真的挑對作物。
 //!
 //! **純邏輯層**：`FarmStore` + 生長計時純函式，確定性、無副作用、全可測。
 //! 鎖 / WS / IO 全在 `voxel_ws.rs`，本模組零 async、零鎖、零 IO。
@@ -9,10 +11,12 @@
 //! 種植流程（依 [`CropKind`] 分岔）：
 //!   FarmSoil(11)  →[Plant seed]→  FarmSoilSeeded(12)  →[~90s / 水耕 ~45s]→  WheatMature(13)
 //!   FarmSoil(11)  →[Plant carrot seed]→  CarrotSeeded(46)  →[~60s / 水耕 ~30s]→  CarrotMature(47)
+//!   FarmSoil(11)  →[Plant potato seed]→  PotatoSeeded(50)  →[~120s / 水耕 ~60s]→  PotatoMature(51)
 //!
 //! 收穫：Break WheatMature → Seeds(14)×1 + Wheat(18)×1 + FarmSoil(11)（得顆粒以合麵包）。
 //!       Break CarrotMature → CarrotSeeds(48)×1 + Carrot(49)×1 + FarmSoil(11)。
-//! 取消種植：Break FarmSoilSeeded/CarrotSeeded → 對應種子×1 + FarmSoil(11)（退還種子）。
+//!       Break PotatoMature → PotatoSeeds(52)×1 + Potato(53)×2 + FarmSoil(11)（量大是特色）。
+//! 取消種植：Break FarmSoilSeeded/CarrotSeeded/PotatoSeeded → 對應種子×1 + FarmSoil(11)（退還種子）。
 //! 麵包：3 Wheat(18) → Bread(19)（2×2 合成格一排）。
 //!
 //! FarmStore **純記憶體**（與世界 delta 行為一致：重啟後農地重置）。
@@ -41,6 +45,14 @@ pub const CARROT_SEEDS_ID: u8 = 48;
 /// 可送給居民當禮物，也是麵包之外第二種食物類贈禮。
 pub const CARROT_ID: u8 = 49;
 
+/// 馬鈴薯種子物品 id（第三種作物 v1；純 inventory 物品，無對應 Block enum）。
+/// 從泥土(2)破壞後額外掉落（泥土仍照舊掉落自身，種子是附加收穫，與胡蘿蔔種子取自草地區隔）。
+pub const POTATO_SEEDS_ID: u8 = 52;
+
+/// 馬鈴薯物品 id（第三種作物 v1；純 inventory 物品，從成熟馬鈴薯(51)收割時掉落 ×2）。
+/// 可送給居民當禮物，也是食物類贈禮之一；慢熟換來的量大收成適合囤糧。
+pub const POTATO_ID: u8 = 53;
+
 /// 幼苗成熟所需秒數（~90 秒 = 1.5 分鐘）。調校讓玩家在一輪遊玩中體驗完整循環。
 pub const GROW_SECS: u64 = 90;
 
@@ -53,6 +65,12 @@ pub const CARROT_GROW_SECS: u64 = 60;
 /// 胡蘿蔔水耕加速後的生長秒數（有水源鄰近時縮短為原本的一半）。
 pub const CARROT_IRRIGATED_GROW_SECS: u64 = 30;
 
+/// 馬鈴薯生長秒數（~120 秒）——三種作物中最慢，但收成量最大，補上「囤糧」節奏。
+pub const POTATO_GROW_SECS: u64 = 120;
+
+/// 馬鈴薯水耕加速後的生長秒數（有水源鄰近時縮短為原本的一半）。
+pub const POTATO_IRRIGATED_GROW_SECS: u64 = 60;
+
 /// 農田土偵測水源的最大曼哈頓距離（X/Z 各 ±4 格、Y 差 ±1 格）。
 pub const FARM_WATER_RANGE: i32 = 4;
 
@@ -61,6 +79,7 @@ pub const FARM_WATER_RANGE: i32 = 4;
 pub enum CropKind {
     Wheat,
     Carrot,
+    Potato,
 }
 
 /// 依作物種類 + 水耕狀態回傳有效生長秒數。
@@ -70,6 +89,8 @@ pub fn effective_grow_secs(kind: CropKind, irrigated: bool) -> u64 {
         (CropKind::Wheat, true) => IRRIGATED_GROW_SECS,
         (CropKind::Carrot, false) => CARROT_GROW_SECS,
         (CropKind::Carrot, true) => CARROT_IRRIGATED_GROW_SECS,
+        (CropKind::Potato, false) => POTATO_GROW_SECS,
+        (CropKind::Potato, true) => POTATO_IRRIGATED_GROW_SECS,
     }
 }
 
@@ -340,6 +361,62 @@ mod tests {
         s.plant(0, 5, 0, 100, CropKind::Carrot);
         let mature = s.mature_plots_irrigated(100 + CARROT_GROW_SECS, |_, _, _| false);
         assert_eq!(mature, vec![((0, 5, 0), CropKind::Carrot)]);
+    }
+
+    // ── 第三種作物 v1：馬鈴薯 ────────────────────────────────────────────────────
+
+    #[test]
+    fn potato_item_ids_unique_and_in_range() {
+        assert_ne!(POTATO_SEEDS_ID, POTATO_ID);
+        assert_ne!(POTATO_SEEDS_ID, SEEDS_ID);
+        assert_ne!(POTATO_SEEDS_ID, CARROT_SEEDS_ID);
+        assert_ne!(POTATO_ID, WHEAT_ID);
+        assert_ne!(POTATO_ID, CARROT_ID);
+        assert_ne!(POTATO_ID, BREAD_ID);
+        assert_eq!(POTATO_SEEDS_ID, 52);
+        assert_eq!(POTATO_ID, 53);
+    }
+
+    #[test]
+    fn potato_grows_slower_than_wheat_and_carrot_both_dry_and_irrigated() {
+        assert!(POTATO_GROW_SECS > GROW_SECS, "馬鈴薯應比小麥慢熟");
+        assert!(POTATO_GROW_SECS > CARROT_GROW_SECS, "馬鈴薯應比胡蘿蔔慢熟");
+        assert!(
+            POTATO_IRRIGATED_GROW_SECS < POTATO_GROW_SECS,
+            "馬鈴薯水耕應比馬鈴薯乾燥快熟"
+        );
+    }
+
+    #[test]
+    fn effective_grow_secs_potato_values() {
+        assert_eq!(effective_grow_secs(CropKind::Potato, false), POTATO_GROW_SECS);
+        assert_eq!(effective_grow_secs(CropKind::Potato, true), POTATO_IRRIGATED_GROW_SECS);
+    }
+
+    #[test]
+    fn potato_plot_matures_at_potato_pace_not_wheat_or_carrot_pace() {
+        let mut s = FarmStore::new();
+        s.plant(0, 5, 0, 0, CropKind::Potato);
+        let mature = s.mature_plots_irrigated(POTATO_GROW_SECS, |_, _, _| false);
+        assert_eq!(mature.len(), 1);
+        assert_eq!(mature[0], ((0, 5, 0), CropKind::Potato));
+        let mut s2 = FarmStore::new();
+        s2.plant(1, 5, 0, 0, CropKind::Potato);
+        assert!(s2.mature_plots_irrigated(POTATO_GROW_SECS - 1, |_, _, _| false).is_empty());
+    }
+
+    #[test]
+    fn mixed_wheat_carrot_potato_plots_each_use_own_pace() {
+        let mut s = FarmStore::new();
+        s.plant(0, 5, 0, 0, CropKind::Wheat);   // 90 秒才熟
+        s.plant(1, 5, 0, 0, CropKind::Carrot);  // 60 秒就熟
+        s.plant(2, 5, 0, 0, CropKind::Potato);  // 120 秒才熟
+        let at_60 = s.mature_plots_irrigated(CARROT_GROW_SECS, |_, _, _| false);
+        assert_eq!(at_60, vec![((1, 5, 0), CropKind::Carrot)]);
+        let at_90 = s.mature_plots_irrigated(GROW_SECS, |_, _, _| false);
+        assert_eq!(at_90.len(), 2); // 小麥 + 胡蘿蔔，馬鈴薯仍未熟
+        let at_120 = s.mature_plots_irrigated(POTATO_GROW_SECS, |_, _, _| false);
+        assert_eq!(at_120.len(), 3); // 三者皆熟
     }
 
     #[test]
