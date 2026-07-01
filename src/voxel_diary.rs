@@ -49,6 +49,11 @@ pub struct DiaryPage {
     pub desire: Option<String>,
     /// 內心反思列表，**最新在前**（seq 大→小）。空列表 = 還沒有可昇華的記憶。
     pub entries: Vec<DiaryEntry>,
+    /// 更早以前、已被記憶 cap 淘汰的舊記憶留下的模糊一句（記憶 v2「整併/壓縮/封存」
+    /// 最小可行版）。`None` = 記憶從未滿載過，沒有任何東西被淡忘。**不含原話**——
+    /// 只是一句去識別化的通用反思，守日記「輸出永不含玩家原話」的隱私鐵律。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub faint_impression: Option<String>,
 }
 
 /// 一段記憶被昇華成的「內心主題」——生命故事級的反思分類。
@@ -65,21 +70,37 @@ enum Theme {
     Other,      // 有意義但未歸類的對話（全部收斂成一條）
 }
 
-/// 把居民的 `MemoryEntry` 列表 + 心願 → 昇華成 `DiaryPage`。
+/// 把居民的 `MemoryEntry` 列表 + 心願 + 淡忘計數 → 昇華成 `DiaryPage`。
 /// `memories` 必須**已是最新在前**（呼叫端自行排序，本函式不改順序）。
+/// `faded_count` 見 [`crate::voxel_memory::VoxelMemory::faded_count`]。
 /// 純函式：確定性、無副作用、可測。
 pub fn format_diary_page(
     resident_id: &str,
     resident_name: &str,
     desire: Option<&str>,
     memories: &[MemoryEntry],
+    faded_count: usize,
 ) -> DiaryPage {
     DiaryPage {
         resident_id: resident_id.to_string(),
         resident_name: resident_name.to_string(),
         desire: desire.map(|s| s.to_string()),
         entries: curate_reflections(memories, MAX_DIARY_ENTRIES),
+        faint_impression: faint_impression_line(faded_count),
     }
+}
+
+/// 淡忘計數 → 一句去識別化的「模糊印象」反思（記憶 v2 最小可行版）。
+/// 0 筆淡忘 → `None`（沒東西可淡忘）；純函式、確定性、可測。
+/// 刻意**不含**任何原話/主題細節——只承認「有些更早的事已經想不真切了」，
+/// 守日記「輸出永不含玩家原話」的隱私鐵律（見本檔檔頭）。
+fn faint_impression_line(faded_count: usize) -> Option<String> {
+    if faded_count == 0 {
+        return None;
+    }
+    Some(format!(
+        "🌫️ 心底還留著 {faded_count} 段更早以前的印象，模糊得已經想不真切是誰、說過什麼了……"
+    ))
 }
 
 /// 把記憶列表（最新在前）昇華＋降噪成內心反思條目（最新在前，最多 `max_entries` 條）。
@@ -300,7 +321,7 @@ mod tests {
             make_entry(2, "阿明", "我討厭隔壁老王這個人"),
             make_entry(1, "小美", "我想在這裡蓋一座觀星塔"),
         ];
-        let page = format_diary_page("vox_res_0", "露娜", None, &memories);
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
         for e in &page.entries {
             // 玩家原話的可識別片段絕不出現。
             assert!(!e.text.contains("1234"), "不可洩漏玩家原話：{}", e.text);
@@ -319,7 +340,7 @@ mod tests {
     #[test]
     fn entries_are_first_person_reflections() {
         let memories = vec![make_entry(1, "旅人", "我想看滿天星斗")];
-        let page = format_diary_page("vox_res_0", "露娜", None, &memories);
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
         assert_eq!(page.entries.len(), 1);
         // 第一人稱、有「我」、是內心獨白。
         assert!(page.entries[0].text.contains("我"), "應是第一人稱反思");
@@ -470,35 +491,59 @@ mod tests {
             make_entry(2, "阿星", "我想看星星"),
             make_entry(1, "小美", "好美的世界"),
         ];
-        let page = format_diary_page("vox_res_0", "露娜", Some("我想蓋一座觀星塔"), &memories);
+        let page = format_diary_page("vox_res_0", "露娜", Some("我想蓋一座觀星塔"), &memories, 0);
         assert_eq!(page.resident_id, "vox_res_0");
         assert_eq!(page.resident_name, "露娜");
         assert_eq!(page.desire.as_deref(), Some("我想蓋一座觀星塔"));
         // 兩種主題（星空、讚美）→ 兩條反思，最新在前。
         assert_eq!(page.entries.len(), 2);
         assert_eq!(page.entries[0].seq, 2);
+        assert!(page.faint_impression.is_none(), "淡忘計數 0 時不該有模糊印象");
     }
 
     #[test]
     fn format_diary_page_no_desire() {
         let memories = vec![make_entry(0, "路人", "我想去看看那片花田")];
-        let page = format_diary_page("vox_res_1", "諾娃", None, &memories);
+        let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0);
         assert!(page.desire.is_none(), "沒心願時 desire 應為 None");
         assert_eq!(page.entries.len(), 1);
     }
 
     #[test]
     fn format_diary_page_empty_memories() {
-        let page = format_diary_page("vox_res_2", "賽勒", Some("我想釣魚"), &[]);
+        let page = format_diary_page("vox_res_2", "賽勒", Some("我想釣魚"), &[], 0);
         assert_eq!(page.entries.len(), 0, "沒記憶時 entries 應為空");
         assert!(page.desire.is_some(), "但仍有心願");
     }
 
     #[test]
     fn format_diary_page_all_empty() {
-        let page = format_diary_page("vox_res_3", "奧瑞", None, &[]);
+        let page = format_diary_page("vox_res_3", "奧瑞", None, &[], 0);
         assert!(page.desire.is_none());
         assert!(page.entries.is_empty());
+    }
+
+    // ── 淡忘計數 → 模糊印象（記憶 v2 最小可行版）───────────────────────────────
+
+    #[test]
+    fn faint_impression_line_none_when_zero() {
+        assert_eq!(faint_impression_line(0), None);
+    }
+
+    #[test]
+    fn faint_impression_line_present_and_privacy_safe_when_nonzero() {
+        let line = faint_impression_line(5).expect("非零淡忘計數應有印象句");
+        assert!(line.contains('5'), "應含淡忘筆數：{line}");
+        // 隱私鐵律：不含玩家原話 / 玩家名 / 主題細節——只是通用反思。
+        assert!(!line.contains('「'), "不該內嵌引號原話：{line}");
+    }
+
+    #[test]
+    fn format_diary_page_surfaces_faint_impression_when_faded() {
+        let memories = vec![make_entry(1, "旅人", "我想看星星")];
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 12);
+        let imp = page.faint_impression.expect("faded_count > 0 應帶出模糊印象");
+        assert!(imp.contains("12"));
     }
 
     #[test]

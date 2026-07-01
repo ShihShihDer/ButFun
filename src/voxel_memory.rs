@@ -60,6 +60,12 @@ pub struct VoxelMemory {
     convos: HashMap<(String, String), VecDeque<DialogueTurn>>,
     /// 長期記憶：key = 居民 id → 該居民累積記憶（front 舊、back 新，capped）。
     long: HashMap<String, VecDeque<MemoryEntry>>,
+    /// 模糊印象計數：key = 居民 id → 累計被 cap 淘汰出 `long` 的舊記憶筆數
+    /// （記憶 v2「整併/壓縮/封存」的最小可行版）。**刻意不存原文**——被淘汰的
+    /// `MemoryEntry.summary` 可能含玩家私下原話，日記系統的隱私鐵律是輸出永不含
+    /// 原話（見 `voxel_diary.rs` 檔頭），因此這裡只記「淡忘了幾段」這個安全信號，
+    /// 由日記層轉成一句去識別化的反思，而非把舊記憶原封不動存到別處再外洩一次。
+    faded_counts: HashMap<String, usize>,
     /// 全域單調序號（下一筆記憶用）。載入時設為「已存在最大 seq + 1」。
     next_seq: u64,
 }
@@ -76,19 +82,26 @@ impl VoxelMemory {
     pub fn from_entries(mut entries: Vec<MemoryEntry>) -> Self {
         entries.sort_by_key(|e| e.seq);
         let mut long: HashMap<String, VecDeque<MemoryEntry>> = HashMap::new();
+        let mut faded_counts: HashMap<String, usize> = HashMap::new();
         let mut max_seq = 0u64;
         for e in entries {
             max_seq = max_seq.max(e.seq);
-            let q = long.entry(e.resident.clone()).or_default();
+            let resident = e.resident.clone();
+            let q = long.entry(resident.clone()).or_default();
             q.push_back(e);
-            // 載入時即守 cap：每位居民只留最新 N 筆（淘汰最舊）。
+            // 載入時即守 cap：每位居民只留最新 N 筆（淘汰最舊）——
+            // jsonl 本身 append-only、從未刪過任何一行，這裡重播整段淘汰史，
+            // 因此「淡忘計數」在重啟後能被精確重建，不必另開持久化格式。
             while q.len() > MAX_MEMORIES_PER_RESIDENT {
-                q.pop_front();
+                if q.pop_front().is_some() {
+                    *faded_counts.entry(resident.clone()).or_insert(0) += 1;
+                }
             }
         }
         Self {
             convos: HashMap::new(),
             long,
+            faded_counts,
             next_seq: max_seq.wrapping_add(1),
         }
     }
@@ -129,7 +142,9 @@ impl VoxelMemory {
         let q = self.long.entry(resident.to_string()).or_default();
         q.push_back(entry.clone());
         while q.len() > MAX_MEMORIES_PER_RESIDENT {
-            q.pop_front();
+            if q.pop_front().is_some() {
+                *self.faded_counts.entry(resident.to_string()).or_insert(0) += 1;
+            }
         }
         entry
     }
@@ -174,6 +189,12 @@ impl VoxelMemory {
     /// 用於心情計算——越多記憶代表與玩家互動越頻繁。
     pub fn memory_count(&self, resident: &str) -> usize {
         self.long.get(resident).map(|q| q.len()).unwrap_or(0)
+    }
+
+    /// 該居民累計被 cap 淘汰出長期記憶的舊記憶筆數（記憶 v2「整併/壓縮/封存」
+    /// 最小可行版的安全信號）。0 = 記憶從未滿載過；純讀取，不改狀態。
+    pub fn faded_count(&self, resident: &str) -> usize {
+        self.faded_counts.get(resident).copied().unwrap_or(0)
     }
 }
 
@@ -371,6 +392,43 @@ mod tests {
         // 記憶體側 cap：超過上限的最舊被淘汰。
         let all = m.recall("vox_res_0", "旅人", 9999);
         assert_eq!(all.len(), MAX_MEMORIES_PER_RESIDENT);
+    }
+
+    // ── 淡忘計數（記憶 v2 最小可行版）───────────────────────────────────────
+
+    #[test]
+    fn faded_count_zero_when_never_evicted() {
+        let mut m = VoxelMemory::new();
+        m.add_memory("vox_res_0", "旅人", "記憶0");
+        assert_eq!(m.faded_count("vox_res_0"), 0);
+        assert_eq!(m.faded_count("vox_res_不存在"), 0);
+    }
+
+    #[test]
+    fn add_memory_eviction_increments_faded_count() {
+        let mut m = VoxelMemory::new();
+        for i in 0..(MAX_MEMORIES_PER_RESIDENT + 3) {
+            m.add_memory("vox_res_0", "旅人", &format!("記憶{i}"));
+        }
+        // 多推 3 筆超過 cap → 3 筆被淘汰。
+        assert_eq!(m.faded_count("vox_res_0"), 3);
+        // 未超載的居民不受影響。
+        assert_eq!(m.faded_count("vox_res_1"), 0);
+    }
+
+    #[test]
+    fn from_entries_replay_matches_runtime_faded_count() {
+        // 一次性重播（重啟載回）算出的淡忘計數，應與逐筆即時淘汰（執行期）完全一致——
+        // 計數不是另存的持久化格式，而是從全量 jsonl 歷史精確重建。
+        let mut runtime = VoxelMemory::new();
+        let mut entries = Vec::new();
+        for i in 0..(MAX_MEMORIES_PER_RESIDENT + 8) {
+            let e = runtime.add_memory("vox_res_0", "旅人", &format!("往事{i}"));
+            entries.push(e);
+        }
+        let replayed = VoxelMemory::from_entries(entries);
+        assert_eq!(runtime.faded_count("vox_res_0"), replayed.faded_count("vox_res_0"));
+        assert_eq!(runtime.faded_count("vox_res_0"), 8);
     }
 
     #[test]
