@@ -190,6 +190,8 @@ struct VoxelResident {
     cheer_target: Option<(f32, f32, String)>,
     /// 打氣冷卻倒數（秒，ROADMAP 679）：歸零後才可再發起打氣。
     cheer_cooldown: f32,
+    /// 互動心情補助倒數（秒，ROADMAP 681）：玩家對話/贈禮時設為正值，倒數歸零前心情提升一格。
+    mood_boost_secs: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -508,6 +510,8 @@ fn init_residents() -> Vec<VoxelResident> {
             // 打氣（ROADMAP 679）：初始冷卻錯開，讓居民穩定後才啟動打氣系統。
             cheer_target: None,
             cheer_cooldown: vcheer::cheer_cooldown_offset(i),
+            // 互動心情補助（ROADMAP 681）：入場無補助。
+            mood_boost_secs: 0.0,
         });
     }
     out
@@ -620,11 +624,19 @@ fn players_snapshot_json() -> String {
         p.values().cloned().collect()
     }; // 玩家讀鎖在此釋放
     // 先讀居民快照（drop）→ 再讀心願（drop）→ 組合成 ResidentView，嚴守循序取鎖、不巢狀。
-    let resident_snaps: Vec<(String, &'static str, f32, f32, f32, f32, String)> = {
+    // 同時收集心情補助快照（ROADMAP 681），供後續 mood_map 計算套用。
+    let (resident_snaps, snapshot_mood_boosts): (
+        Vec<(String, &'static str, f32, f32, f32, f32, String)>,
+        HashMap<String, bool>,
+    ) = {
         let rs = hub().residents.read().unwrap();
-        rs.iter()
+        let snaps = rs
+            .iter()
             .map(|r| (r.id.clone(), r.name, r.body.x, r.body.y, r.body.z, r.yaw, r.say.clone()))
-            .collect()
+            .collect();
+        let boosts: HashMap<String, bool> =
+            rs.iter().map(|r| (r.id.clone(), r.mood_boost_secs > 0.0)).collect();
+        (snaps, boosts)
     }; // 居民讀鎖在此釋放
     // 計算每位居民的心情 emoji（ROADMAP 676）：短鎖讀 bonds → drop → 短鎖讀 memory → drop。
     let resident_id_strs: Vec<String> = (0..RESIDENT_COUNT).map(|i| format!("vox_res_{i}")).collect();
@@ -646,7 +658,13 @@ fn players_snapshot_json() -> String {
             .into_iter()
             .map(|(rid, friends, acq)| {
                 let mems = mem.memory_count(&rid);
-                let tier = voxel_mood::compute_mood(friends, acq, mems);
+                let base_tier = voxel_mood::compute_mood(friends, acq, mems);
+                // ROADMAP 681：補助期間心情提升一格，讓玩家即時看到 emoji 改變。
+                let tier = if snapshot_mood_boosts.get(&rid).copied().unwrap_or(false) {
+                    voxel_mood::boost_mood(base_tier)
+                } else {
+                    base_tier
+                };
                 let emoji = voxel_mood::mood_emoji(tier).to_string();
                 (rid, emoji)
             })
@@ -1184,10 +1202,20 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         des.get_desire(&addr_id).map(|d| d.desire.clone())
                     }; // 心願讀鎖在此釋放
                     // 6b.5) 短鎖讀是否正在孤獨尋伴（ROADMAP 678）——玩家搭話時需致謝送禮。
+                    // 同時讀 seeking_comfort，讀完即釋；寫 mood_boost_secs 在下面獨立短鎖。
                     let was_seeking_comfort: bool = {
                         let res = hub().residents.read().unwrap();
                         res.iter().find(|r| r.id == addr_id).map(|r| r.seeking_comfort).unwrap_or(false)
                     }; // residents 讀鎖在此釋放
+                    // 6b.6) 互動即時提振心情（ROADMAP 681）：玩家對話時立即設補助倒數。
+                    // 短鎖寫 mood_boost_secs 即釋，下一 tick（100ms）廣播更新的 emoji 給前端。
+                    {
+                        let mut res = hub().residents.write().unwrap();
+                        if let Some(r) = res.iter_mut().find(|r| r.id == addr_id) {
+                            r.mood_boost_secs =
+                                r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                        }
+                    } // residents 寫鎖在此釋放
                     // 6c) 立即送「思考中」佔位（私聊單播，不走 AgentBus 冒泡）。
                     let ack = serde_json::json!({
                         "t": "talk",
@@ -1574,12 +1602,15 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 } else {
                     vgift::gift_thanks_line(iname, &name, affinity, pick)
                 };
-                // 8) residents 寫鎖：設 say + say_timer（即釋）。
+                // 8) residents 寫鎖：設 say + say_timer + 心情補助（即釋，ROADMAP 681）。
                 {
                     let mut residents = hub().residents.write().unwrap();
                     if let Some(r) = residents.iter_mut().find(|r| r.id == resident_id) {
                         r.say = thanks.chars().take(50).collect();
                         r.say_timer = SAY_SECS;
+                        // 贈禮帶來更持久的心情補助（比對話長 2 分鐘）。
+                        r.mood_boost_secs =
+                            r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_GIFT);
                     }
                 }
                 // 9) 廣播讓所有人看到居民道謝泡泡。
@@ -2119,6 +2150,11 @@ fn tick_residents(dt: f32) {
                 r.cheer_cooldown -= dt;
             }
 
+            // 心情補助倒數（ROADMAP 681）：互動帶來的暖意隨時間消退。
+            if r.mood_boost_secs > 0.0 {
+                r.mood_boost_secs -= dt;
+            }
+
             // 旁聽搭話冷卻倒數（embodied 靠近說話 v1）：到期後才可再因旁聽搭話。
             if r.overhear_cooldown > 0.0 {
                 r.overhear_cooldown -= dt;
@@ -2241,7 +2277,14 @@ fn tick_residents(dt: f32) {
                 let mems = {
                     hub().memory.read().unwrap().memory_count(&r.id)
                 }; // memory 讀鎖釋放
-                if voxel_mood::compute_mood(friends, acq, mems) == voxel_mood::MoodTier::Lonely {
+                // 心情補助（ROADMAP 681）：補助期間心情提升一格，Lonely 可能因此不再尋伴。
+                let raw_tier = voxel_mood::compute_mood(friends, acq, mems);
+                let effective_tier = if r.mood_boost_secs > 0.0 {
+                    voxel_mood::boost_mood(raw_tier)
+                } else {
+                    raw_tier
+                };
+                if effective_tier == voxel_mood::MoodTier::Lonely {
                     if let Some((d2, px, pz, _)) =
                         nearest_player_with_pos(r.body.x, r.body.z, &player_pts)
                     {
@@ -2631,7 +2674,12 @@ fn tick_residents(dt: f32) {
         let cheer_mood_tiers: Vec<voxel_mood::MoodTier> = cheer_bond_counts
             .into_iter()
             .zip(cheer_mem_counts.iter())
-            .map(|((f, a), mc)| voxel_mood::compute_mood(f, a, *mc))
+            .zip(residents.iter().map(|r| r.mood_boost_secs > 0.0))
+            .map(|(((f, a), mc), boost)| {
+                let tier = voxel_mood::compute_mood(f, a, *mc);
+                // ROADMAP 681：補助期間心情提升一格，影響打氣觸發條件。
+                if boost { voxel_mood::boost_mood(tier) } else { tier }
+            })
             .collect();
 
         // 快照：(idx, id, x, z, cheer_cd, is_saying, has_cheer_target)
@@ -2880,6 +2928,12 @@ fn tick_residents(dt: f32) {
     //           ② 無計畫 → choose_activity（依已完成清單+心願，永不重選蓋過的）→ 採集 or 蓋下一個
     //    say_updates 在 tick_residents 頂層宣告（含過渡/採集/建造台詞），最後一次性套用。
 
+    // ROADMAP 681：批次快照居民心情補助（residents 讀鎖即釋），供建造間隔與打氣共用。
+    let mood_boosts_by_id: HashMap<String, bool> = {
+        let res = hub().residents.read().unwrap();
+        res.iter().map(|r| (r.id.clone(), r.mood_boost_secs > 0.0)).collect()
+    }; // residents 讀鎖在此釋放
+
     // ROADMAP 680：批次計算所有居民心情 → 對應建造間隔（鎖序：bonds 讀即釋 → memory 讀即釋）。
     let build_mood_intervals: HashMap<String, f32> = {
         let all_ids: Vec<String> = (0..RESIDENT_COUNT).map(|j| format!("vox_res_{j}")).collect();
@@ -2896,7 +2950,13 @@ fn tick_residents(dt: f32) {
             .into_iter()
             .zip(bond_counts.into_iter().zip(mem_counts.into_iter()))
             .map(|(rid, ((f, a), mc))| {
-                let tier = voxel_mood::compute_mood(f, a, mc);
+                let base_tier = voxel_mood::compute_mood(f, a, mc);
+                // ROADMAP 681：若有心情補助，建造間隔採提升後的層級（加速）。
+                let tier = if mood_boosts_by_id.get(&rid).copied().unwrap_or(false) {
+                    voxel_mood::boost_mood(base_tier)
+                } else {
+                    base_tier
+                };
                 (rid, voxel_mood::build_interval_secs(tier))
             })
             .collect()
