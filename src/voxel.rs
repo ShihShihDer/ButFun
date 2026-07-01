@@ -69,6 +69,8 @@ pub struct Tree {
 /// ID 20–21：深層礦石（ROADMAP 682）煤礦/鐵礦，生成於地底石層，可採集+放置。
 /// ID 22：鐵錠（ROADMAP 683）熔爐冶煉鐵礦+煤礦所得；精緻金屬建材，可放置可送禮。
 /// ID 23：鐵磚（ROADMAP 684）工作台 4 鐵錠→1 鐵磚；壓縮金屬建材，比鐵錠更光滑。
+/// ID 24–30：流動水（水流動模擬）——來源水 Water=7 是 level 0/無限，24..=30 是流動 level 1..=7
+/// （遞減、離源太遠乾涸）；非實心、碰撞/挖放規則同 Water；id 定義集中在 voxel_water。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Block {
@@ -110,12 +112,44 @@ pub enum Block {
     /// 鐵磚（ROADMAP 684）——工作台合成：4 鐵錠 → 1 鐵磚；
     /// 壓縮金屬建材，比鐵錠更光滑整齊，適合精緻建築立面或裝飾性鋼柱。
     IronBlock = 23,
+    // ── 流動水（水流動模擬）：level 1..=7，離源遞減 ──────────────────────────────
+    // 來源水沿用 Water=7（level 0、無限）；以下 24..=30 是「向外擴散的流動水」。
+    // 非實心、碰撞/挖放同 Water；玩家不可手動放置（伺服器模擬維護的狀態方塊）。
+    /// 流動水 level 1（最強、緊鄰來源/下灌）。
+    WaterFlow1 = 24,
+    /// 流動水 level 2。
+    WaterFlow2 = 25,
+    /// 流動水 level 3。
+    WaterFlow3 = 26,
+    /// 流動水 level 4。
+    WaterFlow4 = 27,
+    /// 流動水 level 5。
+    WaterFlow5 = 28,
+    /// 流動水 level 6。
+    WaterFlow6 = 29,
+    /// 流動水 level 7（最弱、離源最遠；再遠一格就乾涸）。
+    WaterFlow7 = 30,
 }
 
 impl Block {
-    /// 是否為「實心、可站立／會擋路」的方塊（碰撞與面剔除用）。水與空氣不算實心。
+    /// 是否為「實心、可站立／會擋路」的方塊（碰撞與面剔除用）。空氣、來源水、流動水皆非實心。
     pub fn is_solid(self) -> bool {
-        !matches!(self, Block::Air | Block::Water)
+        !matches!(self, Block::Air | Block::Water) && !self.is_flowing_water()
+    }
+
+    /// 是否為「流動水」（level 1..=7，id 24..=30）。來源水 Water 不算流動水（它是無限來源）。
+    /// 碰撞、面剔除、破壞/放置判定都把流動水當「可穿越、不可覆蓋成建材」的水看待。
+    pub fn is_flowing_water(self) -> bool {
+        matches!(
+            self,
+            Block::WaterFlow1 | Block::WaterFlow2 | Block::WaterFlow3 | Block::WaterFlow4
+                | Block::WaterFlow5 | Block::WaterFlow6 | Block::WaterFlow7
+        )
+    }
+
+    /// 是否為「任何水」（來源或流動）——放置驗證用（水格可被覆蓋）。
+    pub fn is_any_water(self) -> bool {
+        matches!(self, Block::Water) || self.is_flowing_water()
     }
 
     /// 由 u8 還原方塊型別（解析客戶端 place 的方塊 id）；越界回 None。
@@ -142,6 +176,13 @@ impl Block {
             21 => Some(Block::IronOre),
             22 => Some(Block::IronIngot),
             23 => Some(Block::IronBlock),
+            24 => Some(Block::WaterFlow1),
+            25 => Some(Block::WaterFlow2),
+            26 => Some(Block::WaterFlow3),
+            27 => Some(Block::WaterFlow4),
+            28 => Some(Block::WaterFlow5),
+            29 => Some(Block::WaterFlow6),
+            30 => Some(Block::WaterFlow7),
             _ => None,
         }
     }
@@ -288,10 +329,9 @@ pub fn can_place(
     if !in_reach(px, py, pz, bx, by, bz) {
         return false;
     }
-    matches!(
-        effective_block_at(world, bx, by, bz),
-        Block::Air | Block::Water
-    )
+    // 目標須為空氣或任何水（來源/流動）——不覆蓋既有實心方塊。
+    let t = effective_block_at(world, bx, by, bz);
+    matches!(t, Block::Air) || t.is_any_water()
 }
 
 // ── 自寫 hash value noise（零外部相依、確定性、可測；不抄外部碼）─────────────────
@@ -592,6 +632,60 @@ mod tests {
         assert!(Block::Grass.is_solid());
         assert!(Block::Stone.is_solid());
         assert!(Block::Wood.is_solid());
+    }
+
+    #[test]
+    fn flowing_water_is_non_solid_water() {
+        // 流動水（24..=30）：非實心、算「任何水」、但不算「來源水」（來源仍只有 Water）。
+        for b in [
+            Block::WaterFlow1, Block::WaterFlow2, Block::WaterFlow3, Block::WaterFlow4,
+            Block::WaterFlow5, Block::WaterFlow6, Block::WaterFlow7,
+        ] {
+            assert!(!b.is_solid(), "流動水應非實心：{b:?}");
+            assert!(b.is_flowing_water(), "應被判為流動水：{b:?}");
+            assert!(b.is_any_water(), "流動水應算任何水：{b:?}");
+            assert!(!b.is_placeable(), "玩家不可手動放置流動水：{b:?}");
+        }
+        // 來源水：是任何水、但不是流動水。
+        assert!(Block::Water.is_any_water());
+        assert!(!Block::Water.is_flowing_water());
+        // 實心方塊都不是水。
+        assert!(!Block::Stone.is_any_water());
+        assert!(!Block::Stone.is_flowing_water());
+    }
+
+    #[test]
+    fn flowing_water_from_u8_roundtrips() {
+        // id 24..=30 ↔ WaterFlow1..=7 往返正確，且與既有方塊 id 不衝突。
+        let pairs = [
+            (24u8, Block::WaterFlow1), (25, Block::WaterFlow2), (26, Block::WaterFlow3),
+            (27, Block::WaterFlow4), (28, Block::WaterFlow5), (29, Block::WaterFlow6),
+            (30, Block::WaterFlow7),
+        ];
+        for (id, b) in pairs {
+            assert_eq!(Block::from_u8(id), Some(b));
+            assert_eq!(b as u8, id);
+        }
+        // 未使用的 id 仍回 None（向後相容、越界安全）。
+        assert_eq!(Block::from_u8(31), None);
+    }
+
+    #[test]
+    fn can_place_on_flowing_water() {
+        // 站乾淨陸地，玩家可把建材放進「流動水格」（同來源水，水可被建材覆蓋）。
+        let z = 0;
+        let x = clear_land_column(z, 3);
+        let h = height_at(x, z);
+        let mut world: WorldDelta = WorldDelta::new();
+        // 在腳邊空氣格放一格流動水（模擬水流過來），驗證仍可在其上放石頭。
+        set_block(&mut world, x, h + 1, z, Block::WaterFlow3);
+        let (px, py, pz) = (x as f32 + 0.5, (h + 1) as f32, z as f32 + 0.5);
+        assert!(
+            can_place(&world, px, py, pz, x, h + 1, z, Block::Stone),
+            "應可在流動水格放建材"
+        );
+        // 但流動水本身仍不可被破壞（非實心）。
+        assert!(!can_break(&world, px, py, pz, x, h + 1, z));
     }
 
     #[test]

@@ -36,6 +36,11 @@ const IRON_ORE = 21; // 鐵礦——更深更稀少，y ≤ 1 的石層有機率
 const IRON_INGOT = 22;
 // 鐵磚 v1（ROADMAP 684）——工作台合成（4 鐵錠 → 1 鐵磚）
 const IRON_BLOCK = 23;
+// 流動水（水流動模擬）——來源水 WATER=7 是 level 0/無限；24..=30 是流動 level 1..=7。
+// 非實心（可穿越、水面渲染同來源水），玩家不可放置（伺服器模擬維護的狀態方塊）。
+const WATER_FLOW_BASE = 24, WATER_FLOW_MAX_LVL = 7;
+// 任一方塊 id 是否為「水」（來源或流動）——渲染與碰撞都把兩者當水看待。
+function isWaterId(b) { return b === WATER || (b >= WATER_FLOW_BASE && b < WATER_FLOW_BASE + WATER_FLOW_MAX_LVL); }
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -196,10 +201,10 @@ function getRaw(wx, wy, wz) {
   return ch[lx + lz * CHUNK + ly * CHUNK * CHUNK];
 }
 
-// 碰撞用：未載入(-1)視為空（不擋路、不卡人）；水與空氣不實心。
+// 碰撞用：未載入(-1)視為空（不擋路、不卡人）；來源水/流動水與空氣皆不實心。
 function solidCollide(wx, wy, wz) {
   const r = getRaw(wx, wy, wz);
-  return r > 0 && r !== WATER; // -1/AIR/WATER → false
+  return r > 0 && !isWaterId(r); // -1/AIR/WATER/流動水 → false
 }
 
 // ── 六面定義（外向法線；用 DoubleSide 材質保險，避免纏繞方向把面剔成黑屏）──────
@@ -212,13 +217,14 @@ const FACES = [
   { n: [0, 0, -1], v: [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]], d: [0, 0, -1] },
 ];
 
-// 不透明面是否該畫：相鄰是空氣或水（看得到）才畫；未載入(-1)當作實心 → 不畫（避免世界邊緣冒出一面牆，等鄰塊串到再補）。
+// 不透明面是否該畫：相鄰是空氣或水（來源/流動，看得到）才畫；未載入(-1)當作實心 → 不畫
+//（避免世界邊緣冒出一面牆，等鄰塊串到再補）。
 function faceVisibleOpaque(nx, ny, nz) {
   const r = getRaw(nx, ny, nz);
   if (r === -1) return false;
-  return r === AIR || r === WATER;
+  return r === AIR || isWaterId(r);
 }
-// 水面只朝空氣畫（露出水面那一片），鄰格未載入時不畫。
+// 水面只朝空氣畫（露出水面那一片）；相鄰是別的水（來源/流動）不畫內面，鄰格未載入時不畫。
 function faceVisibleWater(nx, ny, nz) {
   const r = getRaw(nx, ny, nz);
   return r === AIR;
@@ -246,7 +252,8 @@ function rebuildChunk(key) {
         const b = ch[lx + lz * CHUNK + ly * CHUNK * CHUNK];
         if (b === AIR) continue;
         const wx = baseX + lx, wy = baseY + ly, wz = baseZ + lz;
-        if (b === WATER) {
+        if (isWaterId(b)) {
+          // 來源水與流動水都走半透明水 mesh（簡化：同色；等級差異先不做深淺，求穩+一致）。
           for (const f of FACES) {
             if (!faceVisibleWater(wx + f.d[0], wy + f.d[1], wz + f.d[2])) continue;
             emitFace(wpos, wnorm, null, widx, lx, ly, lz, f, null);
@@ -1294,7 +1301,7 @@ function raycastVoxel(ox, oy, oz, dx, dy, dz) {
   let nx = 0, ny = 0, nz = 0, t = 0;
   for (let guard = 0; guard < 64; guard++) {
     const r = getRaw(bx, by, bz);
-    if (r > 0 && r !== WATER) return { bx, by, bz, nx, ny, nz };
+    if (r > 0 && !isWaterId(r)) return { bx, by, bz, nx, ny, nz }; // 穿過來源/流動水，命中實心才停
     if (tMaxX < tMaxY && tMaxX < tMaxZ) {
       bx += stepX; t = tMaxX; tMaxX += tDeltaX; nx = -stepX; ny = 0; nz = 0;
     } else if (tMaxY < tMaxZ) {
