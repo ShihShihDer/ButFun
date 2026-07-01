@@ -1249,6 +1249,41 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         })
                         .to_string(),
                     ));
+                    // ROADMAP 699：玩家協助居民蓋家——若剛放的方塊正好是某居民建造計畫
+                    // 「下一塊」，判定為玩家幫了忙：彈掉該塊（居民之後 tick 不重放）+
+                    // 道謝泡泡 + 心情補助 + Feed。完工收尾（記蓋過種類/廣播）交給
+                    // tick_residents 第 6 節在下次 tick 自然偵測到 remaining 已空、統一觸發，
+                    // 這裡不重複那段邏輯。
+                    let helped = {
+                        let mut builds = hub().builds.write().unwrap();
+                        builds.try_player_help(x, y, z, b)
+                    }; // builds 寫鎖釋放
+                    if let Some((rid, kind_name)) = helped {
+                        if let Some(plan) = hub().builds.read().unwrap().plans.get(&rid) {
+                            vbuild::append_build(plan);
+                        } // builds 讀鎖釋放
+                        let rname_opt = {
+                            let mut residents = hub().residents.write().unwrap();
+                            residents.iter_mut().find(|r| r.id == rid).map(|r| {
+                                r.say = vbuild::player_help_say_line(&name, &kind_name)
+                                    .chars()
+                                    .take(50)
+                                    .collect();
+                                r.say_timer = SAY_SECS;
+                                r.mood_boost_secs =
+                                    r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                r.name.to_string()
+                            })
+                        }; // residents 寫鎖釋放
+                        if let Some(rname) = rname_opt {
+                            broadcast_players();
+                            vfeed::append_feed(
+                                "玩家幫忙蓋家",
+                                &rname,
+                                &format!("{name}幫{rname}的{kind_name}放了一塊！"),
+                            );
+                        }
+                    }
                 } else {
                     // 放置位置不合法（被搶佔等），退還材料。
                     hub().inventory.write().unwrap().give(&name, b, 1);
