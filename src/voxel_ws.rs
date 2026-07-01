@@ -47,6 +47,7 @@ use crate::voxel_bonds::{self as vbonds, ResidentBonds};
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
+use crate::voxel_gossip as vgossip;
 use crate::voxel_mood;
 use crate::voxel_comfort as vcomfort;
 use crate::voxel_cheer as vcheer;
@@ -3253,6 +3254,29 @@ fn tick_residents(dt: f32) {
                     .add_memory(&visitor_id, &host_name, &social_mem);
                 vmem::append_memory(&entry);
             } // memory 寫鎖釋放
+        }
+        // ROADMAP 694：口耳相傳——老朋友到訪時，主人把自己最近一則見聞轉述給訪客，
+        // 見聞從此進訪客自己的記憶庫（經朋友網絡流通，不再只留在主人腦中）。
+        if rand::random::<f32>() < vgossip::gossip_chance(tier) {
+            let host_id = {
+                let residents = hub().residents.read().unwrap();
+                residents.iter().find(|r| r.name == host_name).map(|r| r.id.clone())
+            }; // residents 讀鎖釋放
+            if let Some(host_id) = host_id {
+                let host_memories = hub().memory.read().unwrap().all_memories_for(&host_id); // drop
+                if let Some(picked) = vgossip::pick_gossip(&host_memories, visitor_name) {
+                    let gossip_text = vgossip::format_gossip(&host_name, &picked.summary);
+                    let heard_before = vgossip::already_knows(
+                        &hub().memory.read().unwrap().recall(&visitor_id, &host_name, vmem::RECALL_LIMIT), // drop
+                        &gossip_text,
+                    );
+                    if !heard_before {
+                        let entry = hub().memory.write().unwrap()
+                            .add_memory(&visitor_id, &host_name, &gossip_text);
+                        vmem::append_memory(&entry);
+                    } // memory 寫鎖釋放
+                }
+            }
         }
         // 依新層級生成問候語 → say_updates（守 say_updates 的「say 空才套」原則）。
         let greeting = vbonds::arrival_line(tier, &host_name, visitor_name, pick);
