@@ -2880,6 +2880,28 @@ fn tick_residents(dt: f32) {
     //           ② 無計畫 → choose_activity（依已完成清單+心願，永不重選蓋過的）→ 採集 or 蓋下一個
     //    say_updates 在 tick_residents 頂層宣告（含過渡/採集/建造台詞），最後一次性套用。
 
+    // ROADMAP 680：批次計算所有居民心情 → 對應建造間隔（鎖序：bonds 讀即釋 → memory 讀即釋）。
+    let build_mood_intervals: HashMap<String, f32> = {
+        let all_ids: Vec<String> = (0..RESIDENT_COUNT).map(|j| format!("vox_res_{j}")).collect();
+        let id_refs: Vec<&str> = all_ids.iter().map(|s| s.as_str()).collect();
+        let bond_counts: Vec<(usize, usize)> = {
+            let bonds = hub().bonds.read().unwrap();
+            all_ids.iter().map(|rid| bonds.bond_counts_for(rid, &id_refs)).collect()
+        }; // bonds 讀鎖釋放
+        let mem_counts: Vec<usize> = {
+            let mem = hub().memory.read().unwrap();
+            all_ids.iter().map(|rid| mem.memory_count(rid)).collect()
+        }; // memory 讀鎖釋放
+        all_ids
+            .into_iter()
+            .zip(bond_counts.into_iter().zip(mem_counts.into_iter()))
+            .map(|(rid, ((f, a), mc))| {
+                let tier = voxel_mood::compute_mood(f, a, mc);
+                (rid, voxel_mood::build_interval_secs(tier))
+            })
+            .collect()
+    };
+
     for (rid, rname, rx, _ry, rz, _ridx) in build_candidates {
         let has_plan = hub().builds.read().unwrap().has_plan(&rid); // drop
 
@@ -2954,7 +2976,9 @@ fn tick_residents(dt: f32) {
                 }
             }
             // 重設 agency tick 等下次（採集中不會再進這裡，見 build_candidate 閘）。
-            reset_build_tick(&rid);
+            // ROADMAP 680：依心情選用對應間隔（Joyful=5s / Lonely=12s，預設 8s）。
+            let interval = *build_mood_intervals.get(&rid).unwrap_or(&BUILD_INTERVAL_SECS);
+            reset_build_tick(&rid, interval);
             continue;
         }
 
@@ -3028,7 +3052,8 @@ fn tick_residents(dt: f32) {
             } // residents 寫鎖釋放
         }
 
-        reset_build_tick(&rid);
+        let interval = *build_mood_intervals.get(&rid).unwrap_or(&BUILD_INTERVAL_SECS);
+        reset_build_tick(&rid, interval);
     }
 
     // 一次性套用說話更新（單獨一把 residents 寫鎖；say_updates 可能為空）。
@@ -3112,10 +3137,11 @@ fn start_build(
 }
 
 /// 重設某居民的 agency tick 倒數（下次再決策／放塊）。
-fn reset_build_tick(rid: &str) {
+/// `interval`：心情決定的建造間隔（由 `voxel_mood::build_interval_secs` 計算）。
+fn reset_build_tick(rid: &str, interval: f32) {
     let mut residents = hub().residents.write().unwrap();
     if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
-        r.build_tick = BUILD_INTERVAL_SECS;
+        r.build_tick = interval;
     }
 }
 

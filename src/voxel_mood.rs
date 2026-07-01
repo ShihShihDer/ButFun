@@ -107,6 +107,18 @@ pub fn spontaneous_line(tier: MoodTier, pick: usize) -> Option<&'static str> {
     Some(pool[pick % pool.len()])
 }
 
+/// 依心情計算居民建造間隔（秒）——心情好能量充沛、建造加速；心情差心不在焉、建造放緩。
+/// 純函式：確定性、零副作用、可測。與 `BUILD_INTERVAL_SECS`（8.0 預設）對稱。
+pub fn build_interval_secs(tier: MoodTier) -> f32 {
+    match tier {
+        MoodTier::Joyful  => 5.0,  // 活力充沛，每 5 秒一塊（預設 8 秒的 62%）
+        MoodTier::Content => 7.0,  // 心情不錯，略快
+        MoodTier::Neutral => 8.0,  // 平靜，維持預設
+        MoodTier::Curious => 9.0,  // 好奇分心，略慢
+        MoodTier::Lonely  => 12.0, // 心不在焉，明顯放緩
+    }
+}
+
 /// 把心情轉成 `SenseInput.mood` 整數值（0–100）。
 /// 替換原先的硬編碼 `70`，讓 LLM 能感知居民當下的情緒狀態。
 pub fn mood_to_sense_value(tier: MoodTier) -> i32 {
@@ -257,6 +269,56 @@ mod tests {
     fn lonely_always_returns_some() {
         for pick in [0, 1, 2] {
             assert!(spontaneous_line(MoodTier::Lonely, pick).is_some());
+        }
+    }
+
+    // ── build_interval_secs（ROADMAP 680）────────────────────────────────────
+
+    #[test]
+    fn build_interval_joyful_fastest() {
+        // Joyful 建造間隔應最短
+        assert!(
+            build_interval_secs(MoodTier::Joyful) < build_interval_secs(MoodTier::Content),
+            "Joyful 應比 Content 快"
+        );
+        assert!(
+            build_interval_secs(MoodTier::Content) < build_interval_secs(MoodTier::Neutral),
+            "Content 應比 Neutral 快"
+        );
+    }
+
+    #[test]
+    fn build_interval_lonely_slowest() {
+        // Lonely 建造間隔應最長
+        assert!(
+            build_interval_secs(MoodTier::Lonely) > build_interval_secs(MoodTier::Curious),
+            "Lonely 應比 Curious 慢"
+        );
+        assert!(
+            build_interval_secs(MoodTier::Curious) > build_interval_secs(MoodTier::Neutral),
+            "Curious 應比 Neutral 慢"
+        );
+    }
+
+    #[test]
+    fn build_interval_neutral_matches_default() {
+        // Neutral 應等於預設 BUILD_INTERVAL_SECS（8.0）
+        assert!(
+            (build_interval_secs(MoodTier::Neutral) - 8.0).abs() < f32::EPSILON,
+            "Neutral 建造間隔應為 8.0"
+        );
+    }
+
+    #[test]
+    fn build_interval_all_positive() {
+        for tier in [
+            MoodTier::Joyful,
+            MoodTier::Content,
+            MoodTier::Neutral,
+            MoodTier::Curious,
+            MoodTier::Lonely,
+        ] {
+            assert!(build_interval_secs(tier) > 0.0, "{tier:?} 建造間隔必須大於零");
         }
     }
 
