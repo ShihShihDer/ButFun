@@ -49,6 +49,8 @@ const PICKAXE_WOOD = 32, PICKAXE_STONE = 33, PICKAXE_IRON = 34;
 const LADDER = 35;
 // 斧頭 v1（ROADMAP 689）——純物品，不可放置；持斧砍木頭/葉片/木板大幅加速
 const AXE_WOOD = 36, AXE_STONE = 37, AXE_IRON = 38;
+// 鏟子 v1（ROADMAP 690）——純物品，不可放置；持鏟挖草地/泥土/沙地/農田大幅加速
+const SHOVEL_WOOD = 39, SHOVEL_STONE = 40, SHOVEL_IRON = 41;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -90,6 +92,10 @@ const COLOR = {
   [AXE_WOOD]:  [0.70, 0.48, 0.22], // 木斧——暖棕，比木鎬淺一階（新磨的木刃）
   [AXE_STONE]: [0.55, 0.52, 0.48], // 石斧——微暖灰，比石鎬偏赭（石刃較粗礦）
   [AXE_IRON]:  [0.82, 0.78, 0.74], // 鐵斧——偏暖銀，比鐵鎬少一分冷藍（寬刃感）
+  // 鏟子 v1（ROADMAP 690）——泥土色系，土木感；比斧頭更飽和偏赭（鏟面是鏟土的顏色）
+  [SHOVEL_WOOD]:  [0.65, 0.45, 0.18], // 木鏟——赭棕，新刻木鏟頭感
+  [SHOVEL_STONE]: [0.50, 0.46, 0.42], // 石鏟——灰赭，石材鏟頭（比石斧偏紅）
+  [SHOVEL_IRON]:  [0.78, 0.80, 0.84], // 鐵鏟——冷銀，鐵製鏟面反光
 };
 
 const DEBUG = location.search.includes("debug");
@@ -1163,7 +1169,7 @@ let target = null;
 // 種田 v1（ROADMAP 659）：加入農田土 + 種子（種子為純物品，特殊 Plant 動作）
 // 快捷欄 21 格：…WORKBENCH FURNACE SMOOTH_STONE WHEAT BREAD COAL_ORE IRON_ORE IRON_INGOT IRON_BLOCK TORCH
 // 鍵盤 1–9 對應前 9 格；其餘以滑鼠/觸控點選
-const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE, WHEAT, BREAD, COAL_ORE, IRON_ORE, IRON_INGOT, IRON_BLOCK, TORCH, PICKAXE_WOOD, PICKAXE_STONE, PICKAXE_IRON, AXE_WOOD, AXE_STONE, AXE_IRON];
+const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE, WHEAT, BREAD, COAL_ORE, IRON_ORE, IRON_INGOT, IRON_BLOCK, TORCH, PICKAXE_WOOD, PICKAXE_STONE, PICKAXE_IRON, AXE_WOOD, AXE_STONE, AXE_IRON, SHOVEL_WOOD, SHOVEL_STONE, SHOVEL_IRON];
 const BLOCK_NAME = {
   [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉",
   [PLANK]: "木板", [STONE_BRICK]: "石磚", [GLASS]: "玻璃",
@@ -1189,6 +1195,8 @@ const BLOCK_NAME = {
   [AXE_WOOD]: "木斧", [AXE_STONE]: "石斧", [AXE_IRON]: "鐵斧",
   // 梯子 v1（ROADMAP 688）
   [LADDER]: "梯子",
+  // 鏟子 v1（ROADMAP 690）
+  [SHOVEL_WOOD]: "木鏟", [SHOVEL_STONE]: "石鏟", [SHOVEL_IRON]: "鐵鏟",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
@@ -1433,6 +1441,17 @@ export function axeBonus(bid) {
   return 1.0; // 空手：基礎速度
 }
 
+// 鏟子加速倍率（持特定鏟對軟土類方塊的速度倍數；ROADMAP 690）。
+// 只對草地/泥土/沙地/農田有效；石/木類方塊回 1.0（鏟子不補硬材）。
+export function shovelBonus(bid) {
+  const softTypes = [GRASS, DIRT, SAND, FARM_SOIL, FARM_SOIL_SEEDED];
+  if (!softTypes.includes(bid)) return 1.0;
+  if ((myInv.get(SHOVEL_IRON) || 0) > 0) return 6.0;   // 鐵鏟：最快
+  if ((myInv.get(SHOVEL_STONE) || 0) > 0) return 4.0;  // 石鏟：快
+  if ((myInv.get(SHOVEL_WOOD) || 0) > 0) return 2.5;   // 木鏟：普通加速
+  return 1.0; // 空手：基礎速度
+}
+
 // 採礦狀態（桌機按住左鍵期間維持）。
 let mining = null; // { x, y, z, bid, progress, total } 或 null
 
@@ -1455,8 +1474,8 @@ function startMining() {
   if (!target || !wsReady) return;
   const bid = getRaw(target.bx, target.by, target.bz);
   const hardness = blockHardness(bid);
-  // 鎬具補石/礦，斧頭補木材，互補不疊加（各自對另一類回 1.0 故乘積正確）
-  const bonus = pickaxeBonus(bid) * axeBonus(bid);
+  // 鎬具補石/礦，斧頭補木材，鏟子補土/沙，三者互補不疊加（各自對其他類回 1.0）
+  const bonus = pickaxeBonus(bid) * axeBonus(bid) * shovelBonus(bid);
   const total = hardness / bonus; // 實際需要幾秒
   mining = { x: target.bx, y: target.by, z: target.bz, bid, progress: 0, total };
   updateMiningBar(0);
@@ -2139,6 +2158,9 @@ const RECIPES_JS = [
   // 斧頭 v1（ROADMAP 689）：砍木加速，和鎬具互補的工具線；剛好 2×2 四格
   { id: "wood_axe",  name: "木斧", inputs: [[WOOD, 3], [PLANK, 1]],  output_block: AXE_WOOD,  out_count: 1 },
   { id: "stone_axe", name: "石斧", inputs: [[STONE, 3], [PLANK, 1]], output_block: AXE_STONE, out_count: 1 },
+  // 鏟子 v1（ROADMAP 690）：挖土/沙/草地加速，完成採集三件套（鎬+斧+鏟）
+  { id: "wood_shovel",  name: "木鏟", inputs: [[WOOD, 1], [PLANK, 1]],  output_block: SHOVEL_WOOD,  out_count: 1 },
+  { id: "stone_shovel", name: "石鏟", inputs: [[STONE, 1], [PLANK, 1]], output_block: SHOVEL_STONE, out_count: 1 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
@@ -2361,6 +2383,8 @@ const WORKBENCH_RECIPES_JS = [
   { id: "iron_pickaxe",   name: "鐵鎬",           inputs: [[IRON_INGOT, 3], [PLANK, 2]], output_block: PICKAXE_IRON, out_count: 1  },
   // 鐵斧（ROADMAP 689）：3 鐵錠 + 2 木板 → 1 鐵斧（5 格，需工作台；砍木材 6×）
   { id: "iron_axe",       name: "鐵斧",           inputs: [[IRON_INGOT, 3], [PLANK, 2]], output_block: AXE_IRON,     out_count: 1  },
+  // 鐵鏟（ROADMAP 690）：2 鐵錠 + 3 木板 → 1 鐵鏟（5 格，需工作台；挖軟土 6×）
+  { id: "iron_shovel",    name: "鐵鏟",           inputs: [[IRON_INGOT, 2], [PLANK, 3]], output_block: SHOVEL_IRON,  out_count: 1  },
 ];
 
 // wbGrid[0..8]：3×3 共 9 格，0 代表空格，非零代表 block_id。
@@ -2808,4 +2832,7 @@ window.__voxel = {
   // ── 斧頭 v1 QA 用（ROADMAP 689）──
   AXE_WOOD, AXE_STONE, AXE_IRON,
   axeBonus,
+  // ── 鏟子 v1 QA 用（ROADMAP 690）──
+  SHOVEL_WOOD, SHOVEL_STONE, SHOVEL_IRON,
+  shovelBonus,
 };

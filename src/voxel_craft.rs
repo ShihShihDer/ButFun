@@ -1,5 +1,5 @@
-//! 乙太方界·合成台 v1 + 工作台 3×3 v1 + 熔爐 v1 + 鎬具 v1 + 斧頭 v1
-//! （ROADMAP 658/665/666/687/689）。
+//! 乙太方界·合成台 v1 + 工作台 3×3 v1 + 熔爐 v1 + 鎬具 v1 + 斧頭 v1 + 鏟子 v1
+//! （ROADMAP 658/665/666/687/689/690）。
 //!
 //! **玩家有感**：挖了木頭可合成更工整的木板（2×2），合出工作台後放置到世界→
 //! 右鍵互動開 3×3 格→合成大量物品或混合配方；合出熔爐→放置→右鍵開冶煉面板→
@@ -8,6 +8,8 @@
 //! 持鎬採石/礦時，前端採礦手感大幅加速——療癒循環再加一圈。
 //! 斧頭 v1（ROADMAP 689）：木斧/石斧（背包 2×2）＋鐵斧（工作台 3×3）合成；
 //! 持斧砍木頭/葉片/木板時前端大幅加速，讓砍樹第一次有「工具感」。
+//! 鏟子 v1（ROADMAP 690）：木鏟/石鏟（背包 2×2）＋鐵鏟（工作台 3×3）合成；
+//! 持鏟挖草地/泥土/沙地/農田時前端大幅加速，完成採集三件套（鎬+斧+鏟）。
 //!
 //! **純邏輯層**：`Recipe` 表 + `find_recipe` + `find_workbench_recipe` +
 //! `find_furnace_recipe` + `find_any_recipe` + `can_craft`，確定性、無副作用、全可測。
@@ -30,6 +32,14 @@ pub const AXE_WOOD_ID: u8 = 36;
 pub const AXE_STONE_ID: u8 = 37;
 /// 鐵斧（ROADMAP 689）——物品 ID 38；砍木材加速 6×，需工作台合成。
 pub const AXE_IRON_ID: u8 = 38;
+
+// ── 鏟子物品 ID（純物品，不可放置於世界，ROADMAP 690）─────────────────────────────
+/// 木鏟（ROADMAP 690）——物品 ID 39；挖草地/泥土/沙地/農田加速 2.5×。
+pub const SHOVEL_WOOD_ID: u8 = 39;
+/// 石鏟（ROADMAP 690）——物品 ID 40；挖軟方塊加速 4×。
+pub const SHOVEL_STONE_ID: u8 = 40;
+/// 鐵鏟（ROADMAP 690）——物品 ID 41；挖軟方塊加速 6×，需工作台合成。
+pub const SHOVEL_IRON_ID: u8 = 41;
 
 use crate::voxel_inventory::InvStore;
 
@@ -142,6 +152,21 @@ pub const RECIPES: &[Recipe] = &[
         output_block: AXE_STONE_ID,
         output_count: 1,
     },
+    // ── 鏟子 v1（ROADMAP 690）：挖草/土/沙/農田加速，完成採集三件套 ─────────────
+    Recipe {
+        id: "wood_shovel",
+        name_zh: "木鏟",
+        inputs: &[(5, 1), (8, 1)],   // 1 木頭 + 1 木板 → 1 木鏟（輕巧配方，2 格填 2×2）
+        output_block: SHOVEL_WOOD_ID,
+        output_count: 1,
+    },
+    Recipe {
+        id: "stone_shovel",
+        name_zh: "石鏟",
+        inputs: &[(3, 1), (8, 1)],   // 1 石頭 + 1 木板 → 1 石鏟（4× 挖軟方塊速度）
+        output_block: SHOVEL_STONE_ID,
+        output_count: 1,
+    },
 ];
 
 /// 工作台 3×3 合成配方（需放置工作台方塊後右鍵開啟面板才能合成）。
@@ -211,6 +236,14 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
         name_zh: "鐵斧",
         inputs: &[(22, 3), (8, 2)], // 3 鐵錠 + 2 木板 → 1 鐵斧（6× 砍木速度）
         output_block: AXE_IRON_ID,
+        output_count: 1,
+    },
+    // ── 鐵鏟（ROADMAP 690）：2 鐵錠 + 3 木板（5 格，需工作台）──────────────────────
+    Recipe {
+        id: "iron_shovel",
+        name_zh: "鐵鏟",
+        inputs: &[(22, 2), (8, 3)], // 2 鐵錠 + 3 木板 → 1 鐵鏟（6× 挖軟方塊速度）
+        output_block: SHOVEL_IRON_ID,
         output_count: 1,
     },
 ];
@@ -361,7 +394,8 @@ mod tests {
 
     #[test]
     fn all_recipes_output_crafted_block_ids() {
-        // 2×2 配方產出 id：8–11、15（工作台）、19（麵包）、31（火把）、32/33（鎬具）、35（梯子）、36/37（斧頭）
+        // 2×2 配方產出 id：8–11、15（工作台）、19（麵包）、31（火把）、
+        //   32/33（鎬具）、35（梯子）、36/37（斧頭）、39/40（鏟子 ROADMAP 690）
         for r in RECIPES {
             let ok = (r.output_block >= 8 && r.output_block <= 11)
                 || r.output_block == 15
@@ -371,16 +405,20 @@ mod tests {
                 || r.output_block == PICKAXE_STONE_ID  // 石鎬（ROADMAP 687）
                 || r.output_block == 35 // 梯子（ROADMAP 688）
                 || r.output_block == AXE_WOOD_ID   // 木斧（ROADMAP 689）
-                || r.output_block == AXE_STONE_ID; // 石斧（ROADMAP 689）
+                || r.output_block == AXE_STONE_ID  // 石斧（ROADMAP 689）
+                || r.output_block == SHOVEL_WOOD_ID  // 木鏟（ROADMAP 690）
+                || r.output_block == SHOVEL_STONE_ID; // 石鏟（ROADMAP 690）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
-        // 3×3 工作台配方產出 id（8~17、23 = IronBlock，34 = 鐵鎬 ROADMAP 687，38 = 鐵斧 ROADMAP 689）
+        // 3×3 工作台配方產出 id
+        //   （8~17、23 = IronBlock，34 = 鐵鎬、38 = 鐵斧、41 = 鐵鏟 ROADMAP 690）
         for r in WORKBENCH_RECIPES {
             let ok = (r.output_block >= 8 && r.output_block <= 17)
                 || r.output_block == 23
-                || r.output_block == PICKAXE_IRON_ID // 鐵鎬（ROADMAP 687）
-                || r.output_block == AXE_IRON_ID;    // 鐵斧（ROADMAP 689）
+                || r.output_block == PICKAXE_IRON_ID  // 鐵鎬（ROADMAP 687）
+                || r.output_block == AXE_IRON_ID      // 鐵斧（ROADMAP 689）
+                || r.output_block == SHOVEL_IRON_ID;  // 鐵鏟（ROADMAP 690）
             assert!(
                 ok,
                 "工作台配方「{}」產出 id={} 超出範圍",
@@ -748,5 +786,47 @@ mod tests {
         assert!(AXE_WOOD_ID > PICKAXE_IRON_ID, "斧頭 id 應高於鎬具最大 id(34)");
         // 不與梯子 block id=35 衝突（36/37/38 均 > 35）
         assert!(AXE_WOOD_ID > 35, "斧頭 id 應高於梯子 block id(35)");
+    }
+
+    // ── 鏟子配方測試（ROADMAP 690）────────────────────────────────────────────
+
+    #[test]
+    fn wood_shovel_recipe_correct() {
+        let r = find_recipe("wood_shovel").unwrap();
+        assert_eq!(r.output_block, SHOVEL_WOOD_ID, "木鏟 id 應為 {}", SHOVEL_WOOD_ID);
+        assert_eq!(r.output_count, 1);
+        // 1 木頭(5) + 1 木板(8)
+        assert!(r.inputs.iter().any(|&(b, c)| b == 5 && c == 1), "需要 1 木頭");
+        assert!(r.inputs.iter().any(|&(b, c)| b == 8 && c == 1), "需要 1 木板");
+    }
+
+    #[test]
+    fn stone_shovel_recipe_correct() {
+        let r = find_recipe("stone_shovel").unwrap();
+        assert_eq!(r.output_block, SHOVEL_STONE_ID, "石鏟 id 應為 {}", SHOVEL_STONE_ID);
+        assert_eq!(r.output_count, 1);
+        assert!(r.inputs.iter().any(|&(b, c)| b == 3 && c == 1), "需要 1 石頭");
+        assert!(r.inputs.iter().any(|&(b, c)| b == 8 && c == 1), "需要 1 木板");
+    }
+
+    #[test]
+    fn iron_shovel_in_workbench_only() {
+        // 鐵鏟在工作台表（5 格材料，工藝精工需工作台）
+        let r = find_workbench_recipe("iron_shovel").unwrap();
+        assert_eq!(r.output_block, SHOVEL_IRON_ID, "鐵鏟 id 應為 {}", SHOVEL_IRON_ID);
+        assert_eq!(r.output_count, 1);
+        assert!(r.inputs.iter().any(|&(b, c)| b == 22 && c == 2), "需要 2 鐵錠");
+        assert!(r.inputs.iter().any(|&(b, c)| b == 8 && c == 3), "需要 3 木板");
+        // 不在 2×2 背包表
+        assert!(find_recipe("iron_shovel").is_none(), "鐵鏟不應在 2×2 背包表");
+    }
+
+    #[test]
+    fn shovel_ids_unique_and_not_conflicting() {
+        // 三種鏟子 id 不重疊、依序增加
+        assert!(SHOVEL_WOOD_ID < SHOVEL_STONE_ID);
+        assert!(SHOVEL_STONE_ID < SHOVEL_IRON_ID);
+        // 不與斧頭衝突（斧頭 36/37/38）
+        assert!(SHOVEL_WOOD_ID > AXE_IRON_ID, "鏟子 id 應高於斧頭最大 id(38)");
     }
 }
