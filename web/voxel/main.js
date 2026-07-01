@@ -1339,6 +1339,90 @@ if (feedEl) {
   if (closeBtn) closeBtn.addEventListener("click", closeFeed);
 }
 
+// ── 居民羅盤（ROADMAP 705）──────────────────────────────────────────────────
+// 居民散居世界四方（653：露娜在原點、諾娃/賽勒/奧瑞各在南/西/東 75 格）之後，
+// 玩家只能憑印象亂走才找得到人。本面板讀伺服器早已廣播的居民即時座標（零新協議），
+// 純前端算出「往哪個方向、還有多遠」，讓散居系統第一次真的方便被使用。
+const compassEl = document.getElementById("compassPanel");
+const compassBodyEl = document.getElementById("compassBody");
+const compassBtnEl = document.getElementById("compassBtn");
+
+/** 世界座標下，從 (px,pz) 望向 (rx,rz) 的方位角（弧度）。
+ * 與本引擎鏡頭朝向慣例同一套定義（`fwd(yaw) = (-sin(yaw), 0, -cos(yaw))`）：
+ * 當 `worldBearing === yaw` 時，目標正好落在玩家正前方。
+ * @returns {number} 方位角（弧度，未正規化）
+ */
+export function worldBearing(px, pz, rx, rz) {
+  return Math.atan2(-(rx - px), -(rz - pz));
+}
+
+/** 目標相對玩家目前朝向（yaw）的螢幕旋轉角度（度，0~359）：
+ * 0 = 正前方（箭頭朝上）、90 = 右方、180 = 正後方、270 = 左方。
+ * 純函式、確定性，供羅盤箭頭 CSS `rotate()` 直接使用。
+ * @returns {number} 0~359 的相對角度
+ */
+export function compassRelativeDeg(px, pz, rx, rz, yaw) {
+  const rel = yaw - worldBearing(px, pz, rx, rz);
+  const deg = (rel * 180 / Math.PI) % 360;
+  return deg < 0 ? deg + 360 : deg;
+}
+
+let compassVisible = false;
+let compassTimer = null;
+
+/** 重新計算並渲染羅盤列表：依所有居民的即時座標算方位＋距離，離玩家近的排前面。 */
+function renderCompassPanel() {
+  if (!compassBodyEl) return;
+  const rows = [...residents.values()].map((ent) => {
+    const p = ent.group.position;
+    const dx = p.x - player.x, dz = p.z - player.z;
+    return {
+      name: ent.lastName,
+      dist: Math.hypot(dx, dz),
+      deg: compassRelativeDeg(player.x, player.z, p.x, p.z, player.yaw),
+    };
+  }).sort((a, b) => a.dist - b.dist);
+  if (rows.length === 0) {
+    compassBodyEl.innerHTML = '<div class="compass-empty">目前沒有居民座標可指引。</div>';
+    return;
+  }
+  compassBodyEl.innerHTML = "";
+  for (const row of rows) {
+    const div = document.createElement("div");
+    div.className = "compass-row";
+    div.innerHTML =
+      '<span class="compass-arrow" style="transform: rotate(' + row.deg.toFixed(0) + 'deg)">↑</span>' +
+      '<span class="compass-name">' + escHtml(row.name) + '</span>' +
+      '<span class="compass-dist">' + Math.round(row.dist) + ' 格</span>';
+    compassBodyEl.appendChild(div);
+  }
+}
+
+/** 開啟居民羅盤面板，開始每 0.3 秒刷新一次方位（面板關閉時停止，不空耗）。 */
+function openCompass() {
+  if (!compassEl) return;
+  compassVisible = true;
+  compassEl.style.display = "flex";
+  renderCompassPanel();
+  if (compassTimer) clearInterval(compassTimer);
+  compassTimer = setInterval(() => { if (compassVisible) renderCompassPanel(); }, 300);
+}
+
+/** 關閉居民羅盤面板。 */
+function closeCompass() {
+  compassVisible = false;
+  if (compassEl) compassEl.style.display = "none";
+  if (compassTimer) { clearInterval(compassTimer); compassTimer = null; }
+}
+
+if (compassBtnEl) compassBtnEl.addEventListener("click", () => {
+  compassVisible ? closeCompass() : openCompass();
+});
+if (compassEl) {
+  const closeBtn = document.getElementById("compassClose");
+  if (closeBtn) closeBtn.addEventListener("click", closeCompass);
+}
+
 // ── 準心選取 + 高亮外框（MCPE 風）──────────────────────────────────────────────
 // 選中方塊的線框外框（略大一點點避免 z-fighting）。對準時顯示、沒對到時隱藏。
 const highlight = new THREE.LineSegments(
@@ -3159,6 +3243,13 @@ window.__voxel = {
   closeFeed() { closeFeed(); },
   get feedVisible() { return feedVisible; },
   renderFeed(ev) { renderFeed(ev); return feedBodyEl && feedBodyEl.innerHTML; },
+  // ── 居民羅盤 QA 用（ROADMAP 705）──
+  openCompass() { return openCompass(); },
+  closeCompass() { closeCompass(); },
+  get compassVisible() { return compassVisible; },
+  renderCompassPanel() { renderCompassPanel(); return compassBodyEl && compassBodyEl.innerHTML; },
+  worldBearing(px, pz, rx, rz) { return worldBearing(px, pz, rx, rz); },
+  compassRelativeDeg(px, pz, rx, rz, yaw) { return compassRelativeDeg(px, pz, rx, rz, yaw); },
   // ── 好感度 QA 用（ROADMAP 656）──
   affinityEmoji(count) { return affinityEmoji(count); },
   get myAffinity() { return Object.fromEntries(myAffinity); },

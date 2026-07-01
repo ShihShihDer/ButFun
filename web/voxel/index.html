@@ -431,6 +431,51 @@
       #diaryWall { top: auto; bottom: 228px; right: 10px; max-height: 55vh; }
     }
 
+    /* ── 居民羅盤（ROADMAP 705）────────────────────────────────────────── */
+    #compassBtn {
+      position: fixed; right: 10px; top: 214px; z-index: 6;
+      background: rgba(20,28,40,0.65); color: #c8b8ff; border: 1px solid rgba(200,184,255,0.3);
+      padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      user-select: none; pointer-events: auto;
+    }
+    #compassBtn:hover { background: rgba(48,36,72,0.75); }
+    #compassPanel {
+      position: fixed; right: 10px; top: 214px; z-index: 20;
+      width: min(260px, 94vw); max-height: 60vh;
+      display: none; flex-direction: column;
+      background: rgba(16,22,34,0.95); color: #eaf2ff; border-radius: 14px;
+      border: 1px solid rgba(200,184,255,0.22); box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      overflow: hidden;
+    }
+    #compassHead {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 9px 13px; background: rgba(200,184,255,0.07); font-size: 14px; font-weight: bold;
+    }
+    #compassTitle { color: #c8b8ff; }
+    #compassClose {
+      cursor: pointer; user-select: none; font-size: 18px; line-height: 1;
+      padding: 2px 8px; border-radius: 8px; background: rgba(255,255,255,0.10);
+    }
+    #compassBody {
+      flex: 1; overflow-y: auto; padding: 10px 13px;
+      display: flex; flex-direction: column; gap: 8px; font-size: 13px;
+    }
+    .compass-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 6px 8px; border-radius: 10px; background: rgba(255,255,255,0.05);
+    }
+    .compass-arrow {
+      display: inline-block; font-size: 18px; width: 22px; text-align: center;
+      transition: transform 0.15s linear;
+    }
+    .compass-name { flex: 1; color: #eaf2ff; }
+    .compass-dist { color: #8ab8d8; font-size: 12px; }
+    .compass-empty { color: #506070; font-size: 12px; font-style: italic; text-align: center; padding: 8px 0; }
+    @media (orientation: portrait) {
+      #compassBtn { top: auto; bottom: 224px; right: 10px; }
+      #compassPanel { top: auto; bottom: 268px; right: 10px; max-height: 45vh; }
+    }
+
     /* ── 成功提示（綠色小吐司）──────────────────────────────────────────── */
     #msg {
       position: fixed; left: 50%; top: 58px; transform: translateX(-50%);
@@ -857,6 +902,15 @@
       <span id="diaryWallClose">✕</span>
     </div>
     <div id="diaryWallBody"></div>
+  </div>
+  <!-- 居民羅盤（ROADMAP 705）：4 位居民散居各地（653），此面板指出各自的方向與距離 -->
+  <div id="compassBtn">🧭 羅盤</div>
+  <div id="compassPanel">
+    <div id="compassHead">
+      <span id="compassTitle">🧭 居民羅盤</span>
+      <span id="compassClose">✕</span>
+    </div>
+    <div id="compassBody"></div>
   </div>
   <!-- 背包 + 合成格面板（ROADMAP 664）-->
   <div id="bagPanel">
