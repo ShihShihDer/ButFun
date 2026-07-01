@@ -31,6 +31,8 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         14 => "種子",
         18 => "小麥",
         19 => "麵包",
+        20 => "煤礦",
+        21 => "鐵礦",
         _ => "物品",
     }
 }
@@ -133,6 +135,8 @@ mod tests {
         assert_eq!(item_name_zh(5), "木頭");
         assert_eq!(item_name_zh(8), "木板");
         assert_eq!(item_name_zh(14), "種子");
+        assert_eq!(item_name_zh(20), "煤礦");
+        assert_eq!(item_name_zh(21), "鐵礦");
     }
 
     #[test]
