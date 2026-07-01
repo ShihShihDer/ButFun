@@ -93,6 +93,14 @@ pub const RECIPES: &[Recipe] = &[
         output_block: 31,
         output_count: 4,
     },
+    // ── 梯子 v1（ROADMAP 688）：3 木板 → 3 梯子（垂直攀爬，深礦上下自如）──────────
+    Recipe {
+        id: "ladder",
+        name_zh: "梯子",
+        inputs: &[(8, 3)],              // 3 木板 → 3 梯子（剛好用掉三格 2×2）
+        output_block: 35,               // Block::Ladder = 35
+        output_count: 3,
+    },
     // ── 鎬具 v1（ROADMAP 687）：採石/採礦更快、療癒循環加深 ─────────────────────
     Recipe {
         id: "wood_pickaxe",
@@ -319,14 +327,15 @@ mod tests {
 
     #[test]
     fn all_recipes_output_crafted_block_ids() {
-        // 2×2 配方產出 id：8–11、15（工作台）、19（麵包）、31（火把）、32/33（鎬具 ROADMAP 687）
+        // 2×2 配方產出 id：8–11、15（工作台）、19（麵包）、31（火把）、32/33（鎬具）、35（梯子）
         for r in RECIPES {
             let ok = (r.output_block >= 8 && r.output_block <= 11)
                 || r.output_block == 15
                 || r.output_block == 19 // 麵包（純物品 id）
                 || r.output_block == 31 // 火把（Torch，ROADMAP 685）
                 || r.output_block == PICKAXE_WOOD_ID   // 木鎬（ROADMAP 687）
-                || r.output_block == PICKAXE_STONE_ID; // 石鎬（ROADMAP 687）
+                || r.output_block == PICKAXE_STONE_ID  // 石鎬（ROADMAP 687）
+                || r.output_block == 35; // 梯子（ROADMAP 688）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
@@ -636,5 +645,29 @@ mod tests {
         assert!(PICKAXE_STONE_ID < PICKAXE_IRON_ID);
         // 不與任何現有方塊衝突（現有已知方塊上限 = Torch=31）
         assert!(PICKAXE_WOOD_ID > 31, "鎬具 id 應高於現有方塊上限(31)");
+    }
+
+    #[test]
+    fn ladder_recipe_in_2x2_bag() {
+        // 梯子 v1（ROADMAP 688）：3 木板 → 3 梯子，在 2×2 背包合成
+        let r = find_recipe("ladder").unwrap();
+        assert_eq!(r.output_block, 35, "梯子 Block id 應為 35");
+        assert_eq!(r.output_count, 3, "3 木板應得 3 梯子");
+        assert_eq!(r.inputs, &[(8, 3)], "梯子配料應為 3 木板(id=8)");
+        // 不在工作台或熔爐表（2×2 足夠）
+        assert!(find_workbench_recipe("ladder").is_none(), "梯子不需工作台");
+        assert!(find_furnace_recipe("ladder").is_none(),   "梯子不需熔爐");
+    }
+
+    #[test]
+    fn ladder_block_is_not_solid() {
+        // 梯子非實心——玩家可穿入並攀爬（ROADMAP 688）
+        use crate::voxel::Block;
+        assert!(!Block::Ladder.is_solid(), "梯子不應為實心（攀爬語意）");
+        assert!(Block::Ladder.is_climbable(), "梯子應為可攀爬");
+        assert!(Block::Ladder.is_placeable(), "梯子應可放置");
+        // 非水
+        assert!(!Block::Ladder.is_any_water());
+        assert!(!Block::Ladder.is_flowing_water());
     }
 }

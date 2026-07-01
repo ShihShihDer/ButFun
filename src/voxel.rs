@@ -133,12 +133,21 @@ pub enum Block {
     /// 火把（ROADMAP 685）——背包 2×2 合成：1 木頭 + 1 煤礦 → 4 火把；
     /// 橘黃燈柱，點亮礦坑黑暗隧道、標記探索路線，也是裝飾性光源方塊。
     Torch = 31,
+    /// 梯子（ROADMAP 688）——背包 2×2 合成：3 木板 → 3 梯子；
+    /// **非實心**——玩家可穿入；站在梯子方格中可垂直攀爬，讓深礦探索能上下自如。
+    /// ID 35（跳過 32/33/34 = 純物品鎬具 ID）。
+    Ladder = 35,
 }
 
 impl Block {
-    /// 是否為「實心、可站立／會擋路」的方塊（碰撞與面剔除用）。空氣、來源水、流動水皆非實心。
+    /// 是否為「實心、可站立／會擋路」的方塊（碰撞與面剔除用）。空氣、來源水、流動水、梯子皆非實心。
     pub fn is_solid(self) -> bool {
-        !matches!(self, Block::Air | Block::Water) && !self.is_flowing_water()
+        !matches!(self, Block::Air | Block::Water | Block::Ladder) && !self.is_flowing_water()
+    }
+
+    /// 是否為「可攀爬」方塊——玩家 AABB 重疊時取消重力、可垂直移動（目前只有梯子）。
+    pub fn is_climbable(self) -> bool {
+        matches!(self, Block::Ladder)
     }
 
     /// 是否為「流動水」（level 1..=7，id 24..=30）。來源水 Water 不算流動水（它是無限來源）。
@@ -188,6 +197,7 @@ impl Block {
             29 => Some(Block::WaterFlow6),
             30 => Some(Block::WaterFlow7),
             31 => Some(Block::Torch),
+            35 => Some(Block::Ladder),
             _ => None,
         }
     }
@@ -201,7 +211,7 @@ impl Block {
             Block::Plank | Block::StoneBrick | Block::Glass | Block::FarmSoil |
             Block::Workbench | Block::Furnace | Block::SmoothStone |
             Block::CoalOre | Block::IronOre | Block::IronIngot | Block::IronBlock |
-            Block::Torch
+            Block::Torch | Block::Ladder
         )
     }
 }
