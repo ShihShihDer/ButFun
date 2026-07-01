@@ -34,6 +34,8 @@ const COAL_ORE = 20; // 煤礦——最淺的礦石，y ≤ 3 的石層有機率
 const IRON_ORE = 21; // 鐵礦——更深更稀少，y ≤ 1 的石層有機率生成
 // 鐵錠 v1（ROADMAP 683）——熔爐冶煉所得（1 鐵礦 + 1 煤礦 → 2 鐵錠）
 const IRON_INGOT = 22;
+// 鐵磚 v1（ROADMAP 684）——工作台合成（4 鐵錠 → 1 鐵磚）
+const IRON_BLOCK = 23;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -61,6 +63,8 @@ const COLOR = {
   [IRON_ORE]:          [0.66, 0.44, 0.28], // 鐵礦——帶鏽橙的石，鐵質感
   // 鐵錠 v1（ROADMAP 683）——閃亮銀灰，精煉金屬感
   [IRON_INGOT]:        [0.76, 0.76, 0.82], // 鐵錠——明亮銀灰，冶煉後的光澤金屬
+  // 鐵磚 v1（ROADMAP 684）——壓縮精煉，比鐵錠更亮更飽和
+  [IRON_BLOCK]:        [0.88, 0.88, 0.94], // 鐵磚——高亮銀白帶藍，光潔金屬塊感
 };
 
 const DEBUG = location.search.includes("debug");
@@ -1128,9 +1132,9 @@ let target = null;
 
 // ── 快捷欄（選要放的方塊型別）+ 背包存量（採集 v1）───────────────────────────
 // 種田 v1（ROADMAP 659）：加入農田土 + 種子（種子為純物品，特殊 Plant 動作）
-// 快捷欄 18 格：…WORKBENCH FURNACE SMOOTH_STONE WHEAT BREAD COAL_ORE IRON_ORE
+// 快捷欄 20 格：…WORKBENCH FURNACE SMOOTH_STONE WHEAT BREAD COAL_ORE IRON_ORE IRON_INGOT IRON_BLOCK
 // 鍵盤 1–9 對應前 9 格；其餘以滑鼠/觸控點選
-const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE, WHEAT, BREAD, COAL_ORE, IRON_ORE, IRON_INGOT];
+const HOTBAR = [GRASS, DIRT, STONE, WOOD, SAND, LEAVES, PLANK, STONE_BRICK, GLASS, FARM_SOIL, SEEDS, WORKBENCH, FURNACE, SMOOTH_STONE, WHEAT, BREAD, COAL_ORE, IRON_ORE, IRON_INGOT, IRON_BLOCK];
 const BLOCK_NAME = {
   [GRASS]: "草", [DIRT]: "土", [STONE]: "石", [WOOD]: "木", [SAND]: "沙", [LEAVES]: "葉",
   [PLANK]: "木板", [STONE_BRICK]: "石磚", [GLASS]: "玻璃",
@@ -1147,6 +1151,8 @@ const BLOCK_NAME = {
   [COAL_ORE]: "煤礦", [IRON_ORE]: "鐵礦",
   // 鐵錠 v1（ROADMAP 683）
   [IRON_INGOT]: "鐵錠",
+  // 鐵磚 v1（ROADMAP 684）
+  [IRON_BLOCK]: "鐵磚",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
@@ -2157,6 +2163,7 @@ const WORKBENCH_RECIPES_JS = [
   { id: "glass_wb",       name: "玻璃（大量）",   inputs: [[SAND, 6]],                output_block: GLASS,       out_count: 8  },
   { id: "stone_wood_mix", name: "混合石磚",       inputs: [[STONE, 3], [PLANK, 3]],   output_block: STONE_BRICK, out_count: 6  },
   { id: "farm_kit",       name: "農耕大包",       inputs: [[DIRT, 4], [WOOD, 2]],     output_block: FARM_SOIL,   out_count: 8  },
+  { id: "iron_block",     name: "鐵磚",           inputs: [[IRON_INGOT, 6]],           output_block: IRON_BLOCK,  out_count: 2  },
 ];
 
 // wbGrid[0..8]：3×3 共 9 格，0 代表空格，非零代表 block_id。
@@ -2587,4 +2594,6 @@ window.__voxel = {
   COAL_ORE, IRON_ORE,
   // ── 鐵錠 v1 QA 用（ROADMAP 683）──
   IRON_INGOT,
+  // ── 鐵磚 v1 QA 用（ROADMAP 684）──
+  IRON_BLOCK,
 };

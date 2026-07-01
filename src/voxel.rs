@@ -68,6 +68,7 @@ pub struct Tree {
 /// ID 18–19：小麥/麵包（純背包物品，voxel_farm）。
 /// ID 20–21：深層礦石（ROADMAP 682）煤礦/鐵礦，生成於地底石層，可採集+放置。
 /// ID 22：鐵錠（ROADMAP 683）熔爐冶煉鐵礦+煤礦所得；精緻金屬建材，可放置可送禮。
+/// ID 23：鐵磚（ROADMAP 684）工作台 4 鐵錠→1 鐵磚；壓縮金屬建材，比鐵錠更光滑。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Block {
@@ -106,6 +107,9 @@ pub enum Block {
     /// 鐵錠（ROADMAP 683）——熔爐冶煉：1 鐵礦 + 1 煤礦 → 2 鐵錠；
     /// 閃亮銀灰金屬建材，採礦→冶煉→建造循環的第一個「精煉」產物。
     IronIngot = 22,
+    /// 鐵磚（ROADMAP 684）——工作台合成：4 鐵錠 → 1 鐵磚；
+    /// 壓縮金屬建材，比鐵錠更光滑整齊，適合精緻建築立面或裝飾性鋼柱。
+    IronBlock = 23,
 }
 
 impl Block {
@@ -137,6 +141,7 @@ impl Block {
             20 => Some(Block::CoalOre),
             21 => Some(Block::IronOre),
             22 => Some(Block::IronIngot),
+            23 => Some(Block::IronBlock),
             _ => None,
         }
     }
@@ -149,7 +154,7 @@ impl Block {
             Block::Dirt | Block::Stone | Block::Sand | Block::Wood | Block::Grass |
             Block::Plank | Block::StoneBrick | Block::Glass | Block::FarmSoil |
             Block::Workbench | Block::Furnace | Block::SmoothStone |
-            Block::CoalOre | Block::IronOre | Block::IronIngot
+            Block::CoalOre | Block::IronOre | Block::IronIngot | Block::IronBlock
         )
     }
 }
@@ -924,6 +929,15 @@ mod tests {
     fn ore_from_u8_roundtrips() {
         assert_eq!(Block::from_u8(20), Some(Block::CoalOre));
         assert_eq!(Block::from_u8(21), Some(Block::IronOre));
+    }
+
+    #[test]
+    fn iron_block_is_solid_and_placeable() {
+        // 鐵磚（ROADMAP 684）：實心、可放置、from_u8 往返正確。
+        assert!(Block::IronBlock.is_solid());
+        assert!(Block::IronBlock.is_placeable());
+        assert_eq!(Block::from_u8(23), Some(Block::IronBlock));
+        assert_eq!(Block::IronBlock as u8, 23);
     }
 
     #[test]

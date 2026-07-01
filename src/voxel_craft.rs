@@ -125,6 +125,13 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
         output_block: 16,
         output_count: 1,
     },
+    Recipe {
+        id: "iron_block",
+        name_zh: "鐵磚",
+        inputs: &[(22, 6)],         // 6 鐵錠 → 2 鐵磚（ROADMAP 684）壓縮精煉金屬建材
+        output_block: 23,
+        output_count: 2,
+    },
 ];
 
 /// 熔爐冶煉配方（需放置熔爐方塊後右鍵開啟冶煉面板才能使用）。
@@ -281,10 +288,11 @@ mod tests {
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
-        // 3×3 工作台配方產出 id（8~17）
+        // 3×3 工作台配方產出 id（8~17 或 23 = IronBlock）
         for r in WORKBENCH_RECIPES {
+            let ok = (r.output_block >= 8 && r.output_block <= 17) || r.output_block == 23;
             assert!(
-                r.output_block >= 8 && r.output_block <= 17,
+                ok,
                 "工作台配方「{}」產出 id={} 超出範圍",
                 r.id, r.output_block
             );
@@ -400,8 +408,9 @@ mod tests {
         store.give("旅人", 2, 10);  // Dirt
         store.give("旅人", 8, 10);  // Plank（工作台 + stone_wood_mix 用）
         store.give("旅人", 18, 10); // Wheat（麵包配方用，WHEAT_ID）
-        store.give("旅人", 20, 5);  // CoalOre（smelt_iron 燃料用）
-        store.give("旅人", 21, 5);  // IronOre（smelt_iron 原料用）
+        store.give("旅人", 20, 10); // CoalOre（smelt_iron 燃料用）
+        store.give("旅人", 21, 10); // IronOre（smelt_iron 原料用）
+        store.give("旅人", 22, 10); // IronIngot（iron_block 配方用，ROADMAP 684）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);
         }
@@ -470,5 +479,37 @@ mod tests {
         // 但不在 2×2 或工作台表
         assert!(find_recipe("smelt_iron").is_none());
         assert!(find_workbench_recipe("smelt_iron").is_none());
+    }
+
+    #[test]
+    fn iron_block_recipe_outputs_correct_block() {
+        // iron_block：6 鐵錠(22) → 2 鐵磚(23)（ROADMAP 684）
+        let r = find_workbench_recipe("iron_block").unwrap();
+        assert_eq!(r.output_block, 23, "鐵磚 id 應為 23（IronBlock）");
+        assert_eq!(r.output_count, 2, "6 鐵錠產出 2 鐵磚");
+        assert!(r.inputs.contains(&(22, 6)), "iron_block 需要 6 鐵錠(22)");
+    }
+
+    #[test]
+    fn iron_block_requires_six_ingots() {
+        let r = find_workbench_recipe("iron_block").unwrap();
+
+        let mut store_5 = InvStore::default();
+        store_5.give("旅人", 22, 5);
+        assert!(!can_craft(r, &store_5, "旅人"), "5 鐵錠不夠合鐵磚");
+
+        let mut store_6 = InvStore::default();
+        store_6.give("旅人", 22, 6);
+        assert!(can_craft(r, &store_6, "旅人"), "6 鐵錠可合 2 鐵磚");
+    }
+
+    #[test]
+    fn iron_block_in_find_any_recipe() {
+        // iron_block 可透過統一查詢找到（工作台配方）
+        assert!(find_any_recipe("iron_block").is_some());
+        assert!(find_workbench_recipe("iron_block").is_some());
+        // 不在 2×2 背包或熔爐表
+        assert!(find_recipe("iron_block").is_none());
+        assert!(find_furnace_recipe("iron_block").is_none());
     }
 }
