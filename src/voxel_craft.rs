@@ -167,6 +167,14 @@ pub const RECIPES: &[Recipe] = &[
         output_block: SHOVEL_STONE_ID,
         output_count: 1,
     },
+    // ── 木門 v1（ROADMAP 693）：4 木板 → 2 門（封閉房間的第一步）──────────────────
+    Recipe {
+        id: "door",
+        name_zh: "木門",
+        inputs: &[(8, 4)],          // 4 木板 → 2 門（填滿 2×2 格）
+        output_block: 43,           // Block::DoorClosed = 43
+        output_count: 2,
+    },
 ];
 
 /// 工作台 3×3 合成配方（需放置工作台方塊後右鍵開啟面板才能合成）。
@@ -415,7 +423,8 @@ mod tests {
                 || r.output_block == AXE_WOOD_ID   // 木斧（ROADMAP 689）
                 || r.output_block == AXE_STONE_ID  // 石斧（ROADMAP 689）
                 || r.output_block == SHOVEL_WOOD_ID  // 木鏟（ROADMAP 690）
-                || r.output_block == SHOVEL_STONE_ID; // 石鏟（ROADMAP 690）
+                || r.output_block == SHOVEL_STONE_ID  // 石鏟（ROADMAP 690）
+                || r.output_block == 43; // 木門（DoorClosed，ROADMAP 693）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
@@ -874,5 +883,42 @@ mod tests {
         // 不在 2×2 背包或熔爐表
         assert!(find_recipe("chest").is_none());
         assert!(find_furnace_recipe("chest").is_none());
+    }
+
+    // ── 木門配方測試（ROADMAP 693）──────────────────────────────────────────────
+
+    #[test]
+    fn door_recipe_in_bag_2x2() {
+        // 木門：4 木板(8) → 2 門(43)，在背包 2×2 格合成
+        let r = find_recipe("door").unwrap();
+        assert_eq!(r.output_block, 43, "木門 block id 應為 43（DoorClosed）");
+        assert_eq!(r.output_count, 2, "4 木板得 2 扇門");
+        assert_eq!(r.inputs, &[(8, 4)], "木門需要 4 木板(id=8)");
+        // 不在工作台表或熔爐表
+        assert!(find_workbench_recipe("door").is_none(), "木門不在工作台表");
+        assert!(find_furnace_recipe("door").is_none(), "木門不在熔爐表");
+    }
+
+    #[test]
+    fn door_craft_requires_four_planks() {
+        let r = find_recipe("door").unwrap();
+
+        let mut store_3 = InvStore::default();
+        store_3.give("旅人", 8, 3); // 只有 3 木板
+        assert!(!can_craft(r, &store_3, "旅人"), "3 木板不夠合木門（需 4）");
+
+        let mut store_4 = InvStore::default();
+        store_4.give("旅人", 8, 4); // 剛好 4 木板
+        assert!(can_craft(r, &store_4, "旅人"), "4 木板可合 2 扇門");
+    }
+
+    #[test]
+    fn door_in_find_any_recipe() {
+        // 木門可透過統一查詢找到（2×2 配方）
+        assert!(find_any_recipe("door").is_some());
+        assert!(find_recipe("door").is_some());
+        // 不在工作台或熔爐表
+        assert!(find_workbench_recipe("door").is_none());
+        assert!(find_furnace_recipe("door").is_none());
     }
 }
