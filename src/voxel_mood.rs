@@ -131,6 +131,26 @@ pub fn mood_to_sense_value(tier: MoodTier) -> i32 {
     }
 }
 
+// ── 互動即時改善心情（ROADMAP 681）────────────────────────────────────────────
+
+/// 對話帶來的心情補助持續時間（秒）：3 分鐘。
+pub const MOOD_BOOST_TALK: f32 = 180.0;
+
+/// 贈禮帶來的心情補助持續時間（秒）：5 分鐘，比對話更持久。
+pub const MOOD_BOOST_GIFT: f32 = 300.0;
+
+/// 心情補助：把心情層級往上提一格（最高 Joyful 不再升）。
+/// 純函式：確定性、零副作用、可測。
+pub fn boost_mood(tier: MoodTier) -> MoodTier {
+    match tier {
+        MoodTier::Lonely  => MoodTier::Curious,  // 寂寞 → 好奇
+        MoodTier::Curious => MoodTier::Neutral,  // 好奇 → 平靜
+        MoodTier::Neutral => MoodTier::Content,  // 平靜 → 開心
+        MoodTier::Content => MoodTier::Content,  // 已是開心，不再升
+        MoodTier::Joyful  => MoodTier::Joyful,   // 頂層不變
+    }
+}
+
 // ── 單元測試 ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -343,5 +363,38 @@ mod tests {
     fn content_line_non_empty() {
         let line = spontaneous_line(MoodTier::Content, 1).unwrap();
         assert!(!line.is_empty());
+    }
+
+    // ── boost_mood（ROADMAP 681）──────────────────────────────────────────────
+
+    #[test]
+    fn boost_mood_lonely_to_curious() {
+        assert_eq!(boost_mood(MoodTier::Lonely), MoodTier::Curious);
+    }
+
+    #[test]
+    fn boost_mood_curious_to_neutral() {
+        assert_eq!(boost_mood(MoodTier::Curious), MoodTier::Neutral);
+    }
+
+    #[test]
+    fn boost_mood_neutral_to_content() {
+        assert_eq!(boost_mood(MoodTier::Neutral), MoodTier::Content);
+    }
+
+    #[test]
+    fn boost_mood_content_stays_content() {
+        assert_eq!(boost_mood(MoodTier::Content), MoodTier::Content);
+    }
+
+    #[test]
+    fn boost_mood_joyful_stays_joyful() {
+        assert_eq!(boost_mood(MoodTier::Joyful), MoodTier::Joyful);
+    }
+
+    #[test]
+    fn boost_constants_positive_and_gift_longer() {
+        assert!(MOOD_BOOST_TALK > 0.0, "對話補助必須正值");
+        assert!(MOOD_BOOST_GIFT > MOOD_BOOST_TALK, "贈禮補助應比對話補助更持久");
     }
 }
