@@ -214,6 +214,9 @@ struct VoxelResident {
     /// 整地任務·走向工地時「連續沒更接近的卡住秒數」：達 vdt::LEVEL_WALK_STALL_SECS →
     /// 就近挪到工地可站處（保證她真的走到、不因貪心尋路卡死而白白逾時放棄）。
     level_walk_stall: f32,
+    /// 跟隨模式（指令→任務 v1 第二刀）：Some(玩家身份鍵, 剩餘秒數) = 正跟著該玩家走；
+    /// None = 沒在跟隨。逾時或被要求「別跟了」即清空，回到平常閒晃/採集/建造。
+    follow: Option<(String, f32)>,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -646,6 +649,8 @@ fn init_residents() -> Vec<VoxelResident> {
             // 整地任務·走向工地卡死偵測（入場無任務）：最佳距離設無限大、卡住 0。
             level_best_d2: f32::MAX,
             level_walk_stall: 0.0,
+            // 跟隨（指令→任務 v1 第二刀）：入場沒被要求跟隨。
+            follow: None,
         });
     }
     out
@@ -1507,6 +1512,17 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     },
                 };
                 let addressed_id: Option<String> = addressed.as_ref().map(|(id, ..)| id.clone());
+                // 短鎖快照：被指名者目前是否正跟著「我」（供下方「別跟了」判斷是否真有跟隨可停）。
+                let addressed_following_me: bool = match &addressed_id {
+                    Some(id) => {
+                        let res = hub().residents.read().unwrap();
+                        res.iter()
+                            .find(|r| &r.id == id)
+                            .and_then(|r| r.follow.as_ref())
+                            .is_some_and(|(who, _)| *who == player_key)
+                    } // residents 讀鎖釋放
+                    None => false,
+                };
 
                 // 6) 被指名者 → 若是「整平這裡」這類整地指令（合理大小）→ 建立整地任務、
                 //    誠實而願意地答應（她現在真的做得到）；否則走既有 LLM 對話路徑。
@@ -1674,6 +1690,74 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             );
                         }
                         // 協調整地指令已處理，跳過 LLM 對話路徑。
+                    } else if vdt::detect_follow_command(&clean) && detect_over_scope(&clean).is_none() {
+                        // 指令→任務 v1 第二刀：「跟我來」——她真的能跟著你走，這是她自己做得到的小事，
+                        // 不用勞動 LLM 判斷。覆蓋原本手邊的事（採集/尋伴/打氣/探訪/整地皆放下）。
+                        {
+                            let mut tasks = hub().directed_tasks.write().unwrap();
+                            tasks.remove(&addr_id);
+                        } // directed_tasks 寫鎖釋放
+                        {
+                            let mut res = hub().residents.write().unwrap();
+                            if let Some(r) = res.iter_mut().find(|r| r.id == addr_id) {
+                                r.gather = None;
+                                r.seeking_comfort = false;
+                                r.cheer_target = None;
+                                r.visiting = None;
+                                r.visit_stay_timer = 0.0;
+                                r.wait_timer = 0.0;
+                                r.follow = Some((player_key.clone(), vdt::FOLLOW_DURATION_SECS));
+                                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                            }
+                        } // residents 寫鎖釋放
+                        let pick = clean.len();
+                        let reply = vdt::follow_accept_line(pick);
+                        let msg = serde_json::json!({
+                            "t": "talk",
+                            "resident_id": &addr_id,
+                            "name": rname,
+                            "reply": &reply,
+                        })
+                        .to_string();
+                        let _ = out_tx.send(Message::Text(msg)).await;
+                        hub().agent_bus.push_decision(
+                            addr_id.clone(),
+                            AgentDecision::new(AgentAction::Idle, reply.clone(), "跟隨"),
+                        );
+                        {
+                            let mut mem = hub().memory.write().unwrap();
+                            mem.record_turn(&player_key, &addr_id, &clean, &reply);
+                        } // 記憶寫鎖釋放
+                    } else if addressed_following_me
+                        && vdt::detect_follow_stop(&clean)
+                        && detect_over_scope(&clean).is_none()
+                    {
+                        // 「別跟了」：只有正在跟隨這位玩家時這句話才走這條路，清掉、回到平常閒晃。
+                        // （沒在跟隨時，同一句話落到下面的 LLM 對話路徑，當普通閒聊處理。）
+                        {
+                            let mut res = hub().residents.write().unwrap();
+                            if let Some(r) = res.iter_mut().find(|r| r.id == addr_id) {
+                                r.follow = None;
+                            }
+                        } // residents 寫鎖釋放
+                        let pick = clean.len();
+                        let reply = vdt::follow_stop_line(pick);
+                        let msg = serde_json::json!({
+                            "t": "talk",
+                            "resident_id": &addr_id,
+                            "name": rname,
+                            "reply": &reply,
+                        })
+                        .to_string();
+                        let _ = out_tx.send(Message::Text(msg)).await;
+                        hub().agent_bus.push_decision(
+                            addr_id.clone(),
+                            AgentDecision::new(AgentAction::Idle, reply.clone(), "停止跟隨"),
+                        );
+                        {
+                            let mut mem = hub().memory.write().unwrap();
+                            mem.record_turn(&player_key, &addr_id, &clean, &reply);
+                        } // 記憶寫鎖釋放
                     } else {
                     // 6a) 短鎖讀記憶 → 組脈絡區塊（B 層精華 + A 層近期記憶 + 本輪對話）→ drop。
                     //     v2 兩層：semantic 精華（身份/目標/偏好/承諾，總是帶上）
@@ -3232,10 +3316,39 @@ fn tick_residents(dt: f32) {
             // 卡住偵測用：記下移動前的水平位置（本 tick 結束再比對位移）。
             let (pre_x, pre_z) = (r.body.x, r.body.z);
 
-            // 指令→任務 v1·整地技能執行：被指派整地的居民先走到工地中心附近，
-            // 抵達後每 tick 排程整地一批（鎖外套用方塊改動）。整地中跳過採集/閒晃/歸巢
-            // （這是「她真的照玩家的話做事」）。優先於採集分支。
-            if let Some(&(cx, cz, radius)) = directed_snaps.get(&r.id) {
+            // 指令→任務 v1 第二刀·跟隨執行：她真的能跟你走。逾時自動結束跟隨（回到平常閒晃）；
+            // 找不到玩家目前位置（例如剛離線）就原地站穩、等下個 tick 或逾時。優先於一切其他分支
+            // ——玩家明確叫她跟，就該立刻聽話，不該被採集/整地/建造打斷。
+            if let Some((requester, mut remaining)) = r.follow.clone() {
+                remaining -= dt;
+                if remaining <= 0.0 {
+                    r.follow = None;
+                    r.target_x = r.home_x;
+                    r.target_z = r.home_z;
+                    if r.say.is_empty() {
+                        let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                        r.say = vdt::follow_timeout_line(pick).chars().take(40).collect();
+                        r.say_timer = SAY_SECS;
+                    }
+                    vr::gravity_step(&world, &mut r.body, dt);
+                } else {
+                    r.follow = Some((requester.clone(), remaining));
+                    if let Some((px, pz, _)) = player_pts.iter().find(|(_, _, n)| *n == requester) {
+                        let (bx, bz) = (r.body.x, r.body.z);
+                        let tx = px - vdt::FOLLOW_OFFSET;
+                        let tz = pz - vdt::FOLLOW_OFFSET;
+                        vr::step_toward(&world, &mut r.body, tx, tz, dt, vr::RES_SPEED * speed_mult);
+                        if let Some(yaw) = vr::yaw_from_move(r.body.x - bx, r.body.z - bz) {
+                            r.yaw = yaw;
+                        }
+                    } else {
+                        vr::gravity_step(&world, &mut r.body, dt);
+                    }
+                }
+                // 指令→任務 v1·整地技能執行：被指派整地的居民先走到工地中心附近，
+                // 抵達後每 tick 排程整地一批（鎖外套用方塊改動）。整地中跳過採集/閒晃/歸巢
+                // （這是「她真的照玩家的話做事」）。優先於採集分支（但仍讓位給上面的跟隨）。
+            } else if let Some(&(cx, cz, radius)) = directed_snaps.get(&r.id) {
                 let center_x = cx as f32 + 0.5;
                 let center_z = cz as f32 + 0.5;
                 let dx = r.body.x - center_x;
@@ -3388,7 +3501,11 @@ fn tick_residents(dt: f32) {
             // 正在導航：朝閒晃/歸巢目標走，且不是在執行採集動作、也不在原地歇息。
             // 採集（gather）有自己的 25 秒逾時處理「走不到資源就放棄」，不該被脫困偵測搶先誤救。
             // 整地任務中不算「純導航」（與採集同理：她在做事，別被脫困偵測誤救打斷任務）。
-            let navigating = r.gather.is_none() && r.wait_timer <= 0.0 && !directed_snaps.contains_key(&r.id);
+            // 跟隨中也不算：跟著玩家走本就目標常變，別被脫困偵測誤判。
+            let navigating = r.gather.is_none()
+                && r.wait_timer <= 0.0
+                && !directed_snaps.contains_key(&r.id)
+                && r.follow.is_none();
             // 幾何困住判定（埋在實心裡或四面爬不出）；只在導航時才需要算。
             let confined = navigating && vr::is_confined(&world, &r.body);
             r.stuck_timer = vr::update_stuck_timer(r.stuck_timer, moved, navigating, confined, dt);
@@ -3414,17 +3531,21 @@ fn tick_residents(dt: f32) {
                 tracing::info!(resident = %r.id, ?how, "voxel 居民卡住 → 脫困/送回");
             }
 
-            // 思考排程（蒐集快照，spawn 留到鎖外）。整地任務中不排程思考（她專心整地）。
+            // 思考排程（蒐集快照，spawn 留到鎖外）。整地任務/跟隨中不排程思考（她專心做那件事）。
             r.think_timer -= dt;
-            if r.think_timer <= 0.0 && !directed_snaps.contains_key(&r.id) {
+            if r.think_timer <= 0.0 && !directed_snaps.contains_key(&r.id) && r.follow.is_none() {
                 r.think_timer = npc_agent_wire::THINK_INTERVAL_SECS;
                 think_jobs.push((r.id.clone(), r.name, r.persona, r.body.x, r.body.z));
             }
 
-            // agency tick 倒數；到期且「沒在採集、沒在整地」時才加入候選（做事中不打斷、交給技能跑完）。
-            // 只收快照，實際放塊 / 決定活動在鎖外執行。
+            // agency tick 倒數；到期且「沒在採集、沒在整地、沒在跟隨」時才加入候選
+            // （做事中不打斷、交給技能跑完）。只收快照，實際放塊 / 決定活動在鎖外執行。
             r.build_tick -= dt;
-            if r.build_tick <= 0.0 && r.gather.is_none() && !directed_snaps.contains_key(&r.id) {
+            if r.build_tick <= 0.0
+                && r.gather.is_none()
+                && !directed_snaps.contains_key(&r.id)
+                && r.follow.is_none()
+            {
                 // 居民 id 格式固定 "vox_res_{i}"，取末位數字當 index。
                 let idx = r.id.trim_start_matches("vox_res_").parse::<usize>().unwrap_or(0);
                 build_candidates.push((

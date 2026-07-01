@@ -136,6 +136,57 @@ pub fn rally_line(name: &str, pick: usize) -> String {
     POOL[pick % POOL.len()].to_string()
 }
 
+// ── 跟隨指令（指令→任務 v1 第二刀：她真的能跟你走，不只整一塊地）────────────────
+
+/// 跟隨最長維持秒數：逾時自動結束跟隨、回家域，避免玩家忘了說「留下」就一路跟一輩子。
+pub const FOLLOW_DURATION_SECS: f32 = 240.0;
+
+/// 跟在玩家身側的固定水平偏移（格）：別完全疊在玩家腳下，站得出一個人的樣子。
+pub const FOLLOW_OFFSET: f32 = 1.2;
+
+/// 「跟我」意圖詞：命中即開始跟隨。刻意收斂——只收「跟我來/走/著」這類明確動作詞組，
+/// 不收單獨「跟我」（會誤觸發「跟我說」「跟我聊聊」這類純聊天請求）。
+const FOLLOW_TOKENS: &[&str] =
+    &["跟我來", "跟我走", "跟著我", "跟着我", "跟上我", "陪我去", "陪我走"];
+
+/// 「別跟了」意圖詞：命中即結束跟隨、回到平常閒晃。
+const FOLLOW_STOP_TOKENS: &[&str] =
+    &["別跟了", "别跟了", "不用跟了", "不用跟著我", "不用跟着我", "留在這裡", "留在这里", "你留下"];
+
+/// 偵測：這句話是否在叫居民「跟我走」。純函式、確定性、可測。
+pub fn detect_follow_command(text: &str) -> bool {
+    FOLLOW_TOKENS.iter().any(|t| text.contains(t))
+}
+
+/// 偵測：這句話是否在叫居民「別跟了」。純函式、確定性、可測。
+pub fn detect_follow_stop(text: &str) -> bool {
+    FOLLOW_STOP_TOKENS.iter().any(|t| text.contains(t))
+}
+
+/// 居民「答應跟隨」的回覆（誠實而願意——這是她真的做得到的小事）。純函式、可測、零 LLM。
+pub fn follow_accept_line(pick: usize) -> String {
+    const POOL: [&str; 4] = [
+        "好呀，我跟著你走～",
+        "沒問題，走吧，我跟上！",
+        "嗯！我跟在你身邊。",
+        "好，我陪你去看看～",
+    ];
+    POOL[pick % POOL.len()].to_string()
+}
+
+/// 居民「應要求停止跟隨」的回覆。純函式、可測、零 LLM。
+pub fn follow_stop_line(pick: usize) -> String {
+    const POOL: [&str; 3] = ["好，我留在這裡～", "了解，我先待著！", "好的，你去忙吧，我在這裡等。"];
+    POOL[pick % POOL.len()].to_string()
+}
+
+/// 跟隨逾時（超過 `FOLLOW_DURATION_SECS` 沒被要求停下）時，居民自己收手的台詞。
+/// 純函式、可測、零 LLM。
+pub fn follow_timeout_line(pick: usize) -> String {
+    const POOL: [&str; 3] = ["我先回去忙自己的事囉，下次再陪你走～", "跟了你好一段路了，我先回家一趟！", "先這樣吧，有需要再叫我～"];
+    POOL[pick % POOL.len()].to_string()
+}
+
 // ── 整地任務資料模型（純資料 + 純方法；hub 只存它、tick 推進它）─────────────────
 
 /// 一個指向某居民的整地任務。中心 (cx,cz)、半徑、目標高度 target_y（該柱最高實心方塊 y），
@@ -484,6 +535,50 @@ mod tests {
         let b = accept_line("露娜", 1);
         assert!(!a.is_empty());
         assert_ne!(a, b, "不同 pick 應可選到不同句");
+    }
+
+    // ── 跟隨指令：該中 / 不誤觸發 ─────────────────────────────────────────────────
+
+    #[test]
+    fn detect_follow_command_catches_follow_intent() {
+        assert!(detect_follow_command("跟我來"));
+        assert!(detect_follow_command("露娜，跟我走"));
+        assert!(detect_follow_command("你可以跟著我嗎"));
+        assert!(detect_follow_command("跟着我"));
+        assert!(detect_follow_command("陪我去那邊看看"));
+    }
+
+    #[test]
+    fn detect_follow_command_ignores_chitchat_and_talk_requests() {
+        // 「跟我說/聊」是要她說話，不是要她跟著走——不該誤觸發。
+        assert!(!detect_follow_command("跟我說說你今天做了什麼"));
+        assert!(!detect_follow_command("可以跟我聊聊天嗎"));
+        assert!(!detect_follow_command("你好呀，今天天氣真好"));
+        assert!(!detect_follow_command(""));
+    }
+
+    #[test]
+    fn detect_follow_stop_catches_stop_intent() {
+        assert!(detect_follow_stop("別跟了"));
+        assert!(detect_follow_stop("好了，不用跟了"));
+        assert!(detect_follow_stop("你留在這裡"));
+    }
+
+    #[test]
+    fn detect_follow_stop_ignores_unrelated_chat() {
+        assert!(!detect_follow_stop("跟我來"));
+        assert!(!detect_follow_stop("你好呀"));
+        assert!(!detect_follow_stop(""));
+    }
+
+    #[test]
+    fn follow_lines_are_nonempty_and_varied() {
+        let a = follow_accept_line(0);
+        let b = follow_accept_line(1);
+        assert!(!a.is_empty());
+        assert_ne!(a, b);
+        assert!(!follow_stop_line(0).is_empty());
+        assert!(!follow_timeout_line(0).is_empty());
     }
 
     // ── DirectedTask 模型 ────────────────────────────────────────────────────────
