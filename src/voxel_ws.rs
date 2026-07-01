@@ -31,7 +31,7 @@ use crate::voxel::{self, Block, ChunkCoord, WorldDelta, BASE_HEIGHT, CHUNK, SEA_
 // 免動 main.rs（本檔是唯一使用者）。偵測整地指令、整地任務模型、整地技能核心全在此。
 #[path = "voxel_directed_task.rs"]
 mod voxel_directed_task;
-use self::voxel_directed_task::{self as vdt, DirectedTask};
+use self::voxel_directed_task::{self as vdt, CoordinatedLevelTask, DirectedTask};
 use crate::voxel_building::{self as vbuild, BuildStore};
 use crate::voxel_skills::{self as vskill, GatherSkill, GoalStore, NextActivity};
 use crate::voxel_desires::{self as vdes, DesireStore};
@@ -450,23 +450,13 @@ fn recipe_knowledge_block(text: &str) -> Option<String> {
 /// - 群組 B：指揮 / 協調其他居民
 /// - 群組 C：城鎮 / 國家規劃
 pub(crate) fn detect_over_scope(text: &str) -> Option<&'static str> {
-    // ── 群組 A：**大規模**整地（整地動詞 + 大範圍暗示詞才算超能力）──
-    // 指令→任務 + 整地技能 v1 起：合理大小的整地（「這裡/這塊」）居民**真的做得到**，
-    // 交給 DirectedTask 去執行、該答應——故不再一律婉拒。只有帶大範圍暗示（100×100/整片…）
-    // 的整地才超出她一個人的能力，續走誠實婉拒。整地動詞涵蓋整平/弄平等同義詞，
-    // 讓「整平一大片」也能被判為超能力（否則會誤放行成小任務）。
-    const TERRA_VERBS: &[&str] = &[
-        "整地", "整平", "推平", "推成平地", "夷平", "剷平", "鏟平", "剷除",
-        "挖平", "弄平", "壓平", "全部推", "全都推", "全部挖", "全都挖",
-    ];
-    const SCALE_HINTS: &[&str] = &[
-        "100", "百格", "大片", "大範圍", "整片", "整塊", "一大片",
-        "一整片", "全部的地", "所有的地", "這一帶", "附近全", "整座", "整個世界",
-    ];
-    // 整地動詞出現、且帶有大範圍暗示 → 大規模整地（超能力，誠實婉拒）。
-    // 只有整地動詞、沒有大範圍暗示 → 合理大小，不算超能力（交給整地任務去做）。
-    let has_terra_verb = TERRA_VERBS.iter().any(|v| text.contains(v));
-    if has_terra_verb && SCALE_HINTS.iter().any(|s| text.contains(s)) {
+    // ── 群組 A：**離譜到連協調也做不到**的整地（世界級）才婉拒 ──
+    // 指令→任務 v1：合理大小的整地（「這裡/這塊」）居民真的做得到 → 交 DirectedTask、該答應。
+    // B 階段（居民↔居民協調）起：大範圍整地（大片/整片/100×100…）也不再婉拒，改由露娜**號召大家
+    // 分工協調整地**（見 voxel_ws 訊息處理的協調分支 + vdt::select_coord_workers）。因此這裡只保留
+    // 「連號召全體也不合理」（整個世界/所有的地/整顆星球…＝ vdt::is_absurd_level）的整地續走婉拒。
+    let has_terra_verb = vdt::detect_level_command(text);
+    if has_terra_verb && vdt::is_absurd_level(text) {
         return Some("大規模整地");
     }
 
@@ -727,6 +717,10 @@ struct VoxelHub {
     /// 玩家對居民下「整平這裡」→ 建立任務指派給她 → tick 推進（走過去→分批整地）。
     /// 純記憶體（重啟後任務消失可接受）；**地形改動走既有 world delta 持久化**。
     directed_tasks: RwLock<HashMap<String, DirectedTask>>,
+    /// 協調整地任務（B 階段·居民↔居民協調）：露娜號召的每一件「大家一起整大片地」。
+    /// 各成員的子區各自是 `directed_tasks` 裡一個普通 DirectedTask；本清單只追蹤整體完成
+    /// （全部成員子任務消失 → 冒「大家一起把這片地整平了！」+ Feed）。純記憶體、重啟消失可接受。
+    coordinated_tasks: RwLock<Vec<CoordinatedLevelTask>>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -822,6 +816,7 @@ fn hub() -> &'static VoxelHub {
             rain_started_flag: RwLock::new(false),
             // 整地任務 v1：啟動空（純記憶體、無需持久化）。
             directed_tasks: RwLock::new(HashMap::new()),
+            coordinated_tasks: RwLock::new(Vec::new()),
             tx,
         }
     })
@@ -1517,9 +1512,16 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 //    誠實而願意地答應（她現在真的做得到）；否則走既有 LLM 對話路徑。
                 //    整地任務條件：命中整地意圖詞 + 非大範圍 + 不落在其他超能力類別（指揮他人/城鎮規劃）。
                 if let Some((addr_id, rname, rpersona)) = addressed.clone() {
-                    let accept_level = vdt::detect_level_command(&clean)
+                    let is_level = vdt::detect_level_command(&clean);
+                    // 合理大小的整地 → 單人任務（A 階段）。
+                    let accept_level = is_level
                         && !vdt::is_oversized_level(&clean)
                         && detect_over_scope(&clean).is_none();
+                    // 大範圍但不離譜的整地 → 號召大家協調整地（B 階段·居民↔居民協調）。
+                    // 只有 is_absurd_level（整個世界…）那種連協調也做不到的才落回 LLM 婉拒路徑。
+                    let coordinated = is_level
+                        && vdt::is_oversized_level(&clean)
+                        && !vdt::is_absurd_level(&clean);
 
                     if accept_level {
                         // 整地中心＝玩家當前位置附近；目標高度＝中心柱現有地表頂。
@@ -1580,6 +1582,98 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             );
                         }
                         // 整地指令已處理，跳過 LLM 對話路徑（但下方旁聽仍照舊讓其他居民「聽到」）。
+                    } else if coordinated {
+                        // 6') 大範圍整地 → 露娜號召大家分工協調整地（居民↔居民協調，朝 100×100 的路）。
+                        //     切成不重疊、鋪滿的子區，一位居民認領一塊；各子區其實就是一個普通
+                        //     DirectedTask，整套「走到工地→分批整地→完成」tick 引擎、就近挪位、持久化全複用。
+                        if let Some((px, pz, _yaw)) = player_snap {
+                            let cx = px.floor() as i32;
+                            let cz = pz.floor() as i32;
+                            // 目標高度＝大片地中心柱現有地表頂（全體整到同一高度）。
+                            let target_y = {
+                                let world = hub().deltas.read().unwrap();
+                                vdt::ground_top(&world, cx, cz)
+                            } // deltas 讀鎖釋放
+                            .unwrap_or_else(|| voxel::height_at(cx, cz));
+                            // 號召：領隊（被指名者）＋ 最近的閒居民，跳過正忙的，最多 COORD_MAX_WORKERS 位。
+                            let busy: std::collections::HashSet<String> = {
+                                hub().directed_tasks.read().unwrap().keys().cloned().collect()
+                            }; // directed_tasks 讀鎖釋放
+                            let candidates: Vec<(String, f32, f32)> = res_snaps
+                                .iter()
+                                .map(|(id, _, _, x, z)| (id.clone(), *x, *z))
+                                .collect();
+                            let workers =
+                                vdt::select_coord_workers(&addr_id, cx, cz, &candidates, &busy);
+                            // 切子區（一位居民一塊，不重疊、剛好鋪滿整片）。
+                            let cells = vdt::partition_sub_cells(cx, cz, workers.len());
+                            // 為每位參與居民建立其子區任務（覆蓋原本手邊的事）。
+                            {
+                                let mut tasks = hub().directed_tasks.write().unwrap();
+                                for (w, (scx, scz)) in workers.iter().zip(cells.iter()) {
+                                    let task = DirectedTask::new(
+                                        w.clone(), player_key.clone(),
+                                        *scx, *scz, vdt::COORD_CELL_RADIUS, target_y,
+                                    );
+                                    tasks.insert(w.clone(), task);
+                                }
+                            } // directed_tasks 寫鎖釋放
+                            // 註冊協調任務（供 tick 偵測「全部子區整完 → 大家一起整平了」）。
+                            hub().coordinated_tasks.write().unwrap().push(
+                                CoordinatedLevelTask::new(player_key.clone(), workers.clone()),
+                            );
+                            // 切換每位參與居民狀態：放下手邊事、朝自己的子區中心出發（短鎖即釋）。
+                            {
+                                let mut res = hub().residents.write().unwrap();
+                                for (w, (scx, scz)) in workers.iter().zip(cells.iter()) {
+                                    if let Some(r) = res.iter_mut().find(|r| &r.id == w) {
+                                        r.gather = None;
+                                        r.seeking_comfort = false;
+                                        r.cheer_target = None;
+                                        r.wait_timer = 0.0;
+                                        r.target_x = *scx as f32 + 0.5;
+                                        r.target_z = *scz as f32 + 0.5;
+                                        r.mood_boost_secs =
+                                            r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                        r.level_best_d2 = f32::MAX;
+                                        r.level_walk_stall = 0.0;
+                                        // 非領隊冒「來了！」泡泡，讓玩家看到多位居民真的響應動起來。
+                                        if w != &addr_id && r.say.is_empty() {
+                                            r.say = "來啦！一起整～".to_string();
+                                            r.say_timer = SAY_SECS;
+                                        }
+                                    }
+                                }
+                            } // residents 寫鎖釋放
+                            // 領隊的號召回覆（單播 + 冒泡 + 記憶 + Feed）。
+                            let pick = (px.to_bits() ^ pz.to_bits()) as usize;
+                            let reply = vdt::rally_line(rname, pick);
+                            let msg = serde_json::json!({
+                                "t": "talk",
+                                "resident_id": &addr_id,
+                                "name": rname,
+                                "reply": &reply,
+                            })
+                            .to_string();
+                            let _ = out_tx.send(Message::Text(msg)).await;
+                            hub().agent_bus.push_decision(
+                                addr_id.clone(),
+                                AgentDecision::new(AgentAction::Idle, reply.clone(), "協調整地"),
+                            );
+                            {
+                                let mut mem = hub().memory.write().unwrap();
+                                mem.record_turn(&player_key, &addr_id, &clean, &reply);
+                            } // 記憶寫鎖釋放
+                            let helper_count = workers.len();
+                            vfeed::append_feed(
+                                "整地",
+                                rname,
+                                &format!(
+                                    "號召了{helper_count}位居民，一起去把{player_key}要的一大片地整平"
+                                ),
+                            );
+                        }
+                        // 協調整地指令已處理，跳過 LLM 對話路徑。
                     } else {
                     // 6a) 短鎖讀記憶 → 組脈絡區塊（B 層精華 + A 層近期記憶 + 本輪對話）→ drop。
                     //     v2 兩層：semantic 精華（身份/目標/偏好/承諾，總是帶上）
@@ -3649,15 +3743,23 @@ fn tick_residents(dt: f32) {
         }
     }
     // ② 已抵達工地的居民：整地一批。
+    // **全域每 tick 總柱數上限**（守 FPS/伺服器 tick）：多位協調居民合計每 tick 處理的柱數
+    // 不超過 vdt::MAX_LEVEL_COLUMNS_PER_TICK——用光就把剩下的居民留到下個 tick（逐步變平、不爆）。
+    let mut cols_budget = vdt::MAX_LEVEL_COLUMNS_PER_TICK;
     for rid in &level_workers {
+        if cols_budget == 0 {
+            break; // 本 tick 總柱數上限用光 → 其餘居民下個 tick 再整。
+        }
         // 讀任務快照（可能已被上面逾時清掉 → None 就跳過）。
         let task_opt = { hub().directed_tasks.read().unwrap().get(rid).cloned() };
         let Some(mut task) = task_opt else { continue };
-        // 算這批要改的方塊 + 新 cursor（deltas 讀鎖即釋）。
+        // 算這批要改的方塊 + 新 cursor（deltas 讀鎖即釋；批量受剩餘全域上限剪裁）。
         let (changes, next_cursor) = {
             let world = hub().deltas.read().unwrap();
-            vdt::level_step(&world, &task)
+            vdt::level_step_capped(&world, &task, cols_budget)
         }; // deltas 讀鎖釋放
+        // 扣掉本位居民這批實際處理的柱數（next_cursor 前進量）。
+        cols_budget = cols_budget.saturating_sub(next_cursor.saturating_sub(task.cursor));
         // 居民當前腳底（安全過濾：別把她自己埋了）。
         let body = {
             let res = hub().residents.read().unwrap();
@@ -3695,6 +3797,39 @@ fn tick_residents(dt: f32) {
             // 過半冒一句進度泡泡（低頻、不洗版）。
             if (45..=55).contains(&pct) {
                 say_updates.push((rid.clone(), "整地中…快一半了～".to_string()));
+            }
+        }
+    }
+
+    // 5b-3) 協調整地整體完成偵測（B 階段·居民↔居民協調）：某件協調任務的所有成員子任務
+    //   都已消失（整完或逾時釋放）→ 這片大地整平了 → 領隊冒「大家一起整平了」+ Feed。
+    //   鎖序：directed_tasks 讀（即釋）→ coordinated_tasks 寫（即釋）；不巢狀、不 await。
+    {
+        // 目前仍在跑的整地任務 id 集合。
+        let active: std::collections::HashSet<String> =
+            { hub().directed_tasks.read().unwrap().keys().cloned().collect() };
+        // 撿出整體完成的協調任務（並從清單移除）。
+        let finished: Vec<CoordinatedLevelTask> = {
+            let mut coords = hub().coordinated_tasks.write().unwrap();
+            let mut done = Vec::new();
+            coords.retain(|c| {
+                if c.all_done(&active) {
+                    done.push(c.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            done
+        }; // coordinated_tasks 寫鎖釋放
+        for c in finished {
+            if let Some(leader) = c.members.first() {
+                let lname = resident_name_of(leader);
+                say_updates.push((
+                    leader.clone(),
+                    "大家一起把這片地整平了！辛苦啦～".to_string(),
+                ));
+                vfeed::append_feed("整地", lname, "和大家齊心，把一大片地整平了！");
             }
         }
     }
@@ -4323,23 +4458,24 @@ mod tests {
 
     #[test]
     fn detect_over_scope_catches_large_terraforming() {
-        // 推平 + 大範圍暗示詞 → 大規模整地
+        // B 階段（居民↔居民協調）起：整地動詞 + **世界級**暗示詞（連號召大家也做不到）→ 大規模整地婉拒。
         assert_eq!(
-            detect_over_scope("你可以幫我把這附近100×100的地全部推平嗎"),
+            detect_over_scope("你可以幫我把整個世界的地全部推平嗎"),
             Some("大規模整地")
         );
         assert_eq!(
-            detect_over_scope("把這一大片全部整地"),
+            detect_over_scope("把所有的地都整平"),
             Some("大規模整地")
         );
         assert_eq!(
-            detect_over_scope("幫我夷平這整片土地"),
+            detect_over_scope("幫我夷平整顆星球"),
             Some("大規模整地")
         );
-        assert_eq!(
-            detect_over_scope("把百格的地剷平"),
-            Some("大規模整地")
-        );
+        // 大範圍但不離譜（100×100/大片/整片）→ 不再婉拒，改導向協調整地 → None（走協調分支）。
+        assert_eq!(detect_over_scope("你可以幫我把這附近100×100的地全部推平嗎"), None);
+        assert_eq!(detect_over_scope("把這一大片全部整地"), None);
+        assert_eq!(detect_over_scope("幫我夷平這整片土地"), None);
+        assert_eq!(detect_over_scope("把百格的地剷平"), None);
         // 指令→任務 + 整地技能 v1 起：合理大小的整地不再算超能力（居民做得到→該答應）。
         // 「這裡/這塊」沒有大範圍暗示 → None（交給 DirectedTask 去整）。
         assert_eq!(detect_over_scope("幫我整地"), None);
@@ -4401,7 +4537,8 @@ mod tests {
     #[test]
     fn over_scope_enforcement_block_has_required_phrases() {
         // 注入區塊：含類別名、含禁用詞列表、含允許的婉拒模板
-        let block = over_scope_enforcement_block("幫我把100格的地全部推平")
+        // B 階段起，只有「連協調也做不到」的世界級整地才婉拒（大範圍改走協調分支）。
+        let block = over_scope_enforcement_block("幫我把整個世界的地全部推平")
             .expect("應產出強制注入文字");
         assert!(block.contains("大規模整地"), "應含類別名：{block}");
         assert!(block.contains("絕對做不到"), "應有硬性否定：{block}");
