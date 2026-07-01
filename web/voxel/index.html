@@ -64,6 +64,19 @@
     }
     #crosshair::before { left: 50%; top: 0; width: 2px; height: 100%; transform: translateX(-50%); }
     #crosshair::after  { top: 50%; left: 0; height: 2px; width: 100%; transform: translateY(-50%); }
+    /* 採礦進度條（ROADMAP 687）——準心正下方，持鎬按住左鍵時出現 */
+    #miningBar {
+      display: none; /* 初始隱藏，採礦中由 JS 顯示 */
+      position: fixed; left: 50%; top: calc(50% + 18px); transform: translateX(-50%);
+      width: 72px; height: 5px; border-radius: 3px;
+      background: rgba(0,0,0,0.55); z-index: 8; pointer-events: none;
+      border: 1px solid rgba(255,255,255,0.25);
+    }
+    #miningBarFill {
+      height: 100%; width: 0%; border-radius: 3px;
+      background: linear-gradient(90deg, #ffd86b, #ff8c30);
+      transition: width 0.05s linear;
+    }
     /* 底部快捷欄：選要放的方塊型別。桌機/手機都顯示。 */
     #hotbar {
       position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 8;
@@ -712,6 +725,8 @@
   <div id="err"></div>
   <div id="msg"></div>
   <div id="crosshair"></div>
+  <!-- 採礦進度條（ROADMAP 687）——準心正下方，持鎬挖掘時由 JS 控制顯示 -->
+  <div id="miningBar"><div id="miningBarFill"></div></div>
   <!-- 快捷欄槽位由 main.js 依方塊型別動態生成 -->
   <div id="hotbar"></div>
   <div id="touch">

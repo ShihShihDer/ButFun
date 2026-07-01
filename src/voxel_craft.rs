@@ -1,14 +1,24 @@
-//! 乙太方界·合成台 v1 + 工作台 3×3 v1 + 熔爐 v1（ROADMAP 658 / 665 / 666）。
+//! 乙太方界·合成台 v1 + 工作台 3×3 v1 + 熔爐 v1 + 鎬具 v1（ROADMAP 658/665/666/687）。
 //!
 //! **玩家有感**：挖了木頭可合成更工整的木板（2×2），合出工作台後放置到世界→
 //! 右鍵互動開 3×3 格→合成大量物品或混合配方；合出熔爐→放置→右鍵開冶煉面板→
 //! 把石頭冶煉成拋光石（獨特建材）——「採集→合成→冶煉→建造」循環更深。
+//! 鎬具 v1（ROADMAP 687）：木鎬/石鎬（背包 2×2）＋鐵鎬（工作台 3×3）合成；
+//! 持鎬採石/礦時，前端採礦手感大幅加速——療癒循環再加一圈。
 //!
 //! **純邏輯層**：`Recipe` 表 + `find_recipe` + `find_workbench_recipe` +
 //! `find_furnace_recipe` + `find_any_recipe` + `can_craft`，確定性、無副作用、全可測。
 //! 鎖 / WS / IO 全在 `voxel_ws.rs`，本模組零 async、零鎖、零 IO。
 //!
 //! **成本鐵律**：零 LLM、零 migration、零新協議欄位（WS "craft" 訊息 additive）。
+
+// ── 鎬具物品 ID（純物品，不可放置於世界，與 Block enum 分開）─────────────────────
+/// 木鎬（ROADMAP 687）——物品 ID 32；不可放置，合成後住在物品欄。
+pub const PICKAXE_WOOD_ID: u8 = 32;
+/// 石鎬（ROADMAP 687）——物品 ID 33。
+pub const PICKAXE_STONE_ID: u8 = 33;
+/// 鐵鎬（ROADMAP 687）——物品 ID 34，需工作台合成。
+pub const PICKAXE_IRON_ID: u8 = 34;
 
 use crate::voxel_inventory::InvStore;
 
@@ -83,6 +93,21 @@ pub const RECIPES: &[Recipe] = &[
         output_block: 31,
         output_count: 4,
     },
+    // ── 鎬具 v1（ROADMAP 687）：採石/採礦更快、療癒循環加深 ─────────────────────
+    Recipe {
+        id: "wood_pickaxe",
+        name_zh: "木鎬",
+        inputs: &[(5, 3), (8, 1)],   // 3 木頭 + 1 木板 → 1 木鎬（剛好放滿 2×2 四格）
+        output_block: PICKAXE_WOOD_ID,
+        output_count: 1,
+    },
+    Recipe {
+        id: "stone_pickaxe",
+        name_zh: "石鎬",
+        inputs: &[(3, 3), (8, 1)],   // 3 石頭 + 1 木板 → 1 石鎬（比木鎬耐用、速度更快）
+        output_block: PICKAXE_STONE_ID,
+        output_count: 1,
+    },
 ];
 
 /// 工作台 3×3 合成配方（需放置工作台方塊後右鍵開啟面板才能合成）。
@@ -138,6 +163,13 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
         inputs: &[(22, 6)],         // 6 鐵錠 → 2 鐵磚（ROADMAP 684）壓縮精煉金屬建材
         output_block: 23,
         output_count: 2,
+    },
+    Recipe {
+        id: "iron_pickaxe",
+        name_zh: "鐵鎬",
+        inputs: &[(22, 3), (8, 2)], // 3 鐵錠 + 2 木板 → 1 鐵鎬（ROADMAP 687；5 格需工作台）
+        output_block: PICKAXE_IRON_ID,
+        output_count: 1,
     },
 ];
 
@@ -287,18 +319,22 @@ mod tests {
 
     #[test]
     fn all_recipes_output_crafted_block_ids() {
-        // 2×2 配方產出 id：8–11、15（工作台）、19（麵包）、31（火把 ROADMAP 685）
+        // 2×2 配方產出 id：8–11、15（工作台）、19（麵包）、31（火把）、32/33（鎬具 ROADMAP 687）
         for r in RECIPES {
             let ok = (r.output_block >= 8 && r.output_block <= 11)
                 || r.output_block == 15
                 || r.output_block == 19 // 麵包（純物品 id）
-                || r.output_block == 31; // 火把（Torch，ROADMAP 685）
+                || r.output_block == 31 // 火把（Torch，ROADMAP 685）
+                || r.output_block == PICKAXE_WOOD_ID   // 木鎬（ROADMAP 687）
+                || r.output_block == PICKAXE_STONE_ID; // 石鎬（ROADMAP 687）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
-        // 3×3 工作台配方產出 id（8~17 或 23 = IronBlock）
+        // 3×3 工作台配方產出 id（8~17、23 = IronBlock，34 = 鐵鎬 ROADMAP 687）
         for r in WORKBENCH_RECIPES {
-            let ok = (r.output_block >= 8 && r.output_block <= 17) || r.output_block == 23;
+            let ok = (r.output_block >= 8 && r.output_block <= 17)
+                || r.output_block == 23
+                || r.output_block == PICKAXE_IRON_ID; // 鐵鎬（ROADMAP 687）
             assert!(
                 ok,
                 "工作台配方「{}」產出 id={} 超出範圍",
@@ -558,5 +594,47 @@ mod tests {
         // 不在工作台或熔爐表
         assert!(find_workbench_recipe("torch").is_none());
         assert!(find_furnace_recipe("torch").is_none());
+    }
+
+    // ── 鎬具配方測試（ROADMAP 687）────────────────────────────────────────────
+
+    #[test]
+    fn wood_pickaxe_recipe_correct() {
+        let r = find_recipe("wood_pickaxe").unwrap();
+        assert_eq!(r.output_block, PICKAXE_WOOD_ID, "木鎬 id 應為 {}", PICKAXE_WOOD_ID);
+        assert_eq!(r.output_count, 1);
+        // 需要 3 木頭(5) + 1 木板(8)，恰好填滿 2×2 四格
+        assert!(r.inputs.iter().any(|&(b, c)| b == 5 && c == 3), "需要 3 木頭");
+        assert!(r.inputs.iter().any(|&(b, c)| b == 8 && c == 1), "需要 1 木板");
+    }
+
+    #[test]
+    fn stone_pickaxe_recipe_correct() {
+        let r = find_recipe("stone_pickaxe").unwrap();
+        assert_eq!(r.output_block, PICKAXE_STONE_ID, "石鎬 id 應為 {}", PICKAXE_STONE_ID);
+        assert_eq!(r.output_count, 1);
+        assert!(r.inputs.iter().any(|&(b, c)| b == 3 && c == 3), "需要 3 石頭");
+        assert!(r.inputs.iter().any(|&(b, c)| b == 8 && c == 1), "需要 1 木板");
+    }
+
+    #[test]
+    fn iron_pickaxe_in_workbench_only() {
+        // 鐵鎬在工作台表（5 格材料，背包 2×2 放不下）
+        let r = find_workbench_recipe("iron_pickaxe").unwrap();
+        assert_eq!(r.output_block, PICKAXE_IRON_ID, "鐵鎬 id 應為 {}", PICKAXE_IRON_ID);
+        assert_eq!(r.output_count, 1);
+        assert!(r.inputs.iter().any(|&(b, c)| b == 22 && c == 3), "需要 3 鐵錠");
+        assert!(r.inputs.iter().any(|&(b, c)| b == 8 && c == 2), "需要 2 木板");
+        // 不在 2×2 背包表
+        assert!(find_recipe("iron_pickaxe").is_none(), "鐵鎬不應在 2×2 背包表");
+    }
+
+    #[test]
+    fn pickaxe_ids_unique_and_sequential() {
+        // 三種鎬的 id 不重疊、依序增加
+        assert!(PICKAXE_WOOD_ID < PICKAXE_STONE_ID);
+        assert!(PICKAXE_STONE_ID < PICKAXE_IRON_ID);
+        // 不與任何現有方塊衝突（現有已知方塊上限 = Torch=31）
+        assert!(PICKAXE_WOOD_ID > 31, "鎬具 id 應高於現有方塊上限(31)");
     }
 }
