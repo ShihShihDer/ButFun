@@ -1587,6 +1587,11 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 // 記錄農地 + 持久化種子消耗（兩者都在鎖外）。
                 hub().farm.write().unwrap().plant(x, y, z, vfarm::now_secs());
                 vinv::append_inv(&seed_e);
+                // 水耕檢查（短讀鎖即釋）。
+                let irrigated = {
+                    let deltas = hub().deltas.read().unwrap();
+                    is_irrigated_in_delta(&deltas, x, y, z)
+                };
                 // 廣播方塊更新 + 送背包更新。
                 broadcast_block(x, y, z, Block::FarmSoilSeeded);
                 let new_seed_cnt = hub().inventory.read().unwrap().count(&name, vfarm::SEEDS_ID);
@@ -1599,7 +1604,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     .to_string(),
                 ));
                 let _ = out_tx.try_send(Message::Text(
-                    serde_json::json!({ "t": "plant_ok", "x": x, "y": y, "z": z }).to_string(),
+                    serde_json::json!({ "t": "plant_ok", "x": x, "y": y, "z": z, "irrigated": irrigated }).to_string(),
                 ));
             }
             // ── 居民贈禮 v1（ROADMAP 660）────────────────────────────────────────
@@ -2027,11 +2032,36 @@ fn tick_water() {
 }
 
 /// 農地成熟 tick——找所有已成熟的幼苗，換成成熟小麥，廣播給所有連線。
-/// 純同步、短鎖即釋（farm 讀鎖 → drop → farm 寫鎖 → drop → delta 寫鎖 → drop → broadcast）。
+/// 判定 (fx,fy,fz) 鄰近（XZ ±WATER_RANGE 格、Y ±1 格）是否有任何水方塊（來源水或流動水）。
+/// 接受 WorldDelta 快照，無鎖、無副作用（水耕農業 v1 ROADMAP 686）。
+fn is_irrigated_in_delta(deltas: &voxel::WorldDelta, fx: i32, fy: i32, fz: i32) -> bool {
+    let r = vfarm::FARM_WATER_RANGE;
+    for dz in -r..=r {
+        for dx in -r..=r {
+            for dy in -1..=1_i32 {
+                if voxel::effective_block_at(deltas, fx + dx, fy + dy, fz + dz).is_any_water() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// 純同步、短鎖即釋（delta 讀鎖 → drop → farm 讀鎖 → drop → farm 寫鎖 → drop → delta 寫鎖 → drop → broadcast）。
+/// 水耕農業 v1（ROADMAP 686）：水源鄰近時生長加速 45s，否則 90s。
 fn tick_farm() {
     let now = vfarm::now_secs();
-    // 先讀鎖取成熟座標清單，馬上釋放。
-    let mature: Vec<(i32, i32, i32)> = hub().farm.read().unwrap().mature_plots(now);
+    // 短讀鎖取 delta 快照用於水耕判斷（每 15s 一次，clone 代價小），馬上釋放。
+    let deltas_snap: voxel::WorldDelta = hub().deltas.read().unwrap().clone();
+    // 短讀鎖取成熟座標（含水耕加速），馬上釋放。
+    let mature: Vec<(i32, i32, i32)> = hub()
+        .farm
+        .read()
+        .unwrap()
+        .mature_plots_irrigated(now, |fx, fy, fz| {
+            is_irrigated_in_delta(&deltas_snap, fx, fy, fz)
+        });
     if mature.is_empty() {
         return;
     }
