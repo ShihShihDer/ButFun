@@ -130,7 +130,7 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
 /// 熔爐冶煉配方（需放置熔爐方塊後右鍵開啟冶煉面板才能使用）。
 ///
 /// 冶煉概念：把原始方塊「精煉」成獨特材料，或比工作台更高效地產出建材。
-/// Block id：Stone=3, Sand=4, Glass=10, SmoothStone=17。
+/// Block id：Stone=3, Sand=4, Glass=10, SmoothStone=17, CoalOre=20, IronOre=21, IronIngot=22。
 pub const FURNACE_RECIPES: &[Recipe] = &[
     Recipe {
         id: "smelt_stone",
@@ -152,6 +152,13 @@ pub const FURNACE_RECIPES: &[Recipe] = &[
         inputs: &[(3, 2)],          // 2 石頭 → 4 石磚（比背包配方 2石→2磚 雙倍產量）
         output_block: 9,
         output_count: 4,
+    },
+    Recipe {
+        id: "smelt_iron",
+        name_zh: "鐵錠",
+        inputs: &[(21, 1), (20, 1)], // 1 鐵礦 + 1 煤礦（煤礦當燃料）→ 2 鐵錠
+        output_block: 22,
+        output_count: 2,
     },
 ];
 
@@ -283,10 +290,11 @@ mod tests {
             );
             assert!(r.output_count > 0, "工作台配方「{}」產出數量應 > 0", r.id);
         }
-        // 熔爐冶煉配方產出 id（8~17）
+        // 熔爐冶煉配方產出 id（8~17 或 22 = IronIngot）
         for r in FURNACE_RECIPES {
+            let ok = (r.output_block >= 8 && r.output_block <= 17) || r.output_block == 22;
             assert!(
-                r.output_block >= 8 && r.output_block <= 17,
+                ok,
                 "熔爐配方「{}」產出 id={} 超出範圍",
                 r.id, r.output_block
             );
@@ -392,6 +400,8 @@ mod tests {
         store.give("旅人", 2, 10);  // Dirt
         store.give("旅人", 8, 10);  // Plank（工作台 + stone_wood_mix 用）
         store.give("旅人", 18, 10); // Wheat（麵包配方用，WHEAT_ID）
+        store.give("旅人", 20, 5);  // CoalOre（smelt_iron 燃料用）
+        store.give("旅人", 21, 5);  // IronOre（smelt_iron 原料用）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);
         }
@@ -423,5 +433,42 @@ mod tests {
             let total: u32 = r.inputs.iter().map(|&(_, c)| c).sum();
             assert!(total > 4, "工作台配方「{}」總材料 {} 不夠大（應 > 4 格）", r.id, total);
         }
+    }
+
+    #[test]
+    fn smelt_iron_outputs_iron_ingot() {
+        // smelt_iron：1 鐵礦(21) + 1 煤礦(20) → 2 鐵錠(22)
+        let r = find_furnace_recipe("smelt_iron").unwrap();
+        assert_eq!(r.output_block, 22, "鐵錠 id 應為 22（IronIngot）");
+        assert_eq!(r.output_count, 2, "應產出 2 個鐵錠");
+        assert!(r.inputs.contains(&(21, 1)), "smelt_iron 需要 1 鐵礦(21)");
+        assert!(r.inputs.contains(&(20, 1)), "smelt_iron 需要 1 煤礦(20)當燃料");
+    }
+
+    #[test]
+    fn smelt_iron_requires_both_ores() {
+        // 只有鐵礦或只有煤礦都不夠
+        let r = find_furnace_recipe("smelt_iron").unwrap();
+        let mut store_iron_only = InvStore::default();
+        store_iron_only.give("旅人", 21, 5); // 有鐵礦但沒煤礦
+        assert!(!can_craft(r, &store_iron_only, "旅人"), "只有鐵礦不夠 smelt_iron");
+
+        let mut store_coal_only = InvStore::default();
+        store_coal_only.give("旅人", 20, 5); // 有煤礦但沒鐵礦
+        assert!(!can_craft(r, &store_coal_only, "旅人"), "只有煤礦不夠 smelt_iron");
+
+        let mut store_both = InvStore::default();
+        store_both.give("旅人", 21, 1);
+        store_both.give("旅人", 20, 1);
+        assert!(can_craft(r, &store_both, "旅人"), "各 1 鐵礦+煤礦可冶煉鐵錠");
+    }
+
+    #[test]
+    fn smelt_iron_in_find_any_recipe() {
+        // smelt_iron 應可透過統一查詢找到
+        assert!(find_any_recipe("smelt_iron").is_some());
+        // 但不在 2×2 或工作台表
+        assert!(find_recipe("smelt_iron").is_none());
+        assert!(find_workbench_recipe("smelt_iron").is_none());
     }
 }

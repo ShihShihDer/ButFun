@@ -282,6 +282,10 @@ fn block_name_zh(id: u8) -> &'static str {
         10 => "玻璃",
         11 => "農田土",
         15 => "工作台",
+        17 => "拋光石",
+        20 => "煤礦",
+        21 => "鐵礦",
+        22 => "鐵錠",
         _ => "材料",
     }
 }
@@ -295,6 +299,8 @@ fn craft_product_keyword(output_block: u8) -> Option<&'static str> {
         10 => Some("玻璃"),
         11 => Some("農田土"),
         15 => Some("工作台"),
+        17 => Some("拋光石"),
+        22 => Some("鐵錠"),
         _ => None,
     }
 }

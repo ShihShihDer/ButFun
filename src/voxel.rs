@@ -67,6 +67,7 @@ pub struct Tree {
 /// ID 15：工作台（ROADMAP 665）玩家合成+放置，互動開 3×3 合成格。
 /// ID 18–19：小麥/麵包（純背包物品，voxel_farm）。
 /// ID 20–21：深層礦石（ROADMAP 682）煤礦/鐵礦，生成於地底石層，可採集+放置。
+/// ID 22：鐵錠（ROADMAP 683）熔爐冶煉鐵礦+煤礦所得；精緻金屬建材，可放置可送禮。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Block {
@@ -102,6 +103,9 @@ pub enum Block {
     /// 鐵礦（ROADMAP 682）——比煤礦更深、更稀少（y ≤ IRON_ORE_DEPTH）；
     /// 採集後同樣可放置，居民收到時會表現出更強烈的好奇心。
     IronOre = 21,
+    /// 鐵錠（ROADMAP 683）——熔爐冶煉：1 鐵礦 + 1 煤礦 → 2 鐵錠；
+    /// 閃亮銀灰金屬建材，採礦→冶煉→建造循環的第一個「精煉」產物。
+    IronIngot = 22,
 }
 
 impl Block {
@@ -132,6 +136,7 @@ impl Block {
             17 => Some(Block::SmoothStone),
             20 => Some(Block::CoalOre),
             21 => Some(Block::IronOre),
+            22 => Some(Block::IronIngot),
             _ => None,
         }
     }
@@ -144,7 +149,7 @@ impl Block {
             Block::Dirt | Block::Stone | Block::Sand | Block::Wood | Block::Grass |
             Block::Plank | Block::StoneBrick | Block::Glass | Block::FarmSoil |
             Block::Workbench | Block::Furnace | Block::SmoothStone |
-            Block::CoalOre | Block::IronOre
+            Block::CoalOre | Block::IronOre | Block::IronIngot
         )
     }
 }
