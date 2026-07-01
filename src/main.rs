@@ -158,6 +158,8 @@ mod voxel_comfort;
 mod voxel_cheer;
 // 乙太方界·箱子儲存 v1：合成箱子→放置→右鍵儲存材料（ROADMAP 692）。
 mod voxel_chest;
+// 乙太方界·居民口耳相傳 v1：老朋友到訪時轉述見聞，記憶經朋友網絡流通（ROADMAP 694）。
+mod voxel_gossip;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
