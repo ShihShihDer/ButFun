@@ -105,6 +105,17 @@ pub fn classify_desire(desire: &str) -> Option<BuildKind> {
     None
 }
 
+/// 一句自主禱告（`npc_pray` 產出）要不要提升成持久渴望（純函式、可測）。
+///
+/// ROADMAP 6「禱告驅動蓋家」：居民每隔一段時間會自主許願（不像玩家聊天的心願，
+/// 每次禱告幾乎都會成功產出一句），若照玩家心願路徑無條件覆蓋，會讓多數只是抒發
+/// 心情的禱告（如「好想有個慶典熱鬧一下」）頻繁蓋掉真正具體的建造心願——因此**只有
+/// 這句禱告本身能分類出具體建物種類時**才值得提升成持久渴望，其餘仍只是浮現又消失
+/// 的一句心願泡泡（不覆蓋、不落地）。
+pub fn prayer_promotable(prayer: &str) -> bool {
+    classify_desire(prayer).is_some()
+}
+
 // ── 建造計畫 ──────────────────────────────────────────────────────────────────
 
 /// 單一待放方塊（世界絕對座標 + 型別）。
@@ -587,6 +598,23 @@ mod tests {
         assert_eq!(classify_desire("我想建一個瞭望台"), Some(BuildKind::Tower));
         // 「水井」應比「井」更優先
         assert_eq!(classify_desire("我想要一口水井"), Some(BuildKind::Well));
+    }
+
+    // ── prayer_promotable（禱告→持久渴望的提升閘）────────────────────────────
+
+    #[test]
+    fn prayer_promotable_true_for_concrete_build_wish() {
+        // 建造 prompt 範例句本身即可分類，理當提升。
+        assert!(prayer_promotable("願農田旁能有水源"));
+        assert!(prayer_promotable("好想蓋一座能眺望遠方的瞭望台"));
+    }
+
+    #[test]
+    fn prayer_promotable_false_for_vague_mood_wish() {
+        // 純抒發心情、沒有具體建物種類，不該提升（避免頻繁蓋掉真正的建造心願）。
+        assert!(!prayer_promotable("好想有個慶典熱鬧一下"));
+        assert!(!prayer_promotable("這一帶夜裡不安全，盼有人守望"));
+        assert!(!prayer_promotable(""));
     }
 
     // ── generate_blocks 方塊數 ────────────────────────────────────────────────

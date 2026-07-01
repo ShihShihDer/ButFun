@@ -3775,11 +3775,19 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
     let resident_desire_note: Option<String> = {
         let des = hub().desires.read().unwrap();
         des.get_desire(&id).map(|d| {
-            format!(
-                "你有個從旅人的話裡種下的心願：「{}」（由「{}」帶給你的啟發）——\
-                這個夢想是你生活的動力，偶爾在心裡默默惦記著它。",
-                d.desire, d.sparked_by
-            )
+            if d.sparked_by == vdes::SELF_SPARK {
+                format!(
+                    "你自己心底浮現過一個念頭：「{}」——\
+                    這個夢想是你生活的動力，偶爾在心裡默默惦記著它。",
+                    d.desire
+                )
+            } else {
+                format!(
+                    "你有個從旅人的話裡種下的心願：「{}」（由「{}」帶給你的啟發）——\
+                    這個夢想是你生活的動力，偶爾在心裡默默惦記著它。",
+                    d.desire, d.sparked_by
+                )
+            }
         })
     }; // 心願讀鎖在此釋放
     // 短鎖讀社交記憶（最近聽到其他居民說了什麼）→ 帶入 world_news 讓居民思考時知道彼此近況。
@@ -3855,6 +3863,17 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
         if crate::npc_agent::should_pray(pray_roll) {
             if let Some(prayer) = crate::npc_agent::npc_pray(&sense, &persona_str).await {
                 crate::npc_agent::append_prayer(&resident_name, &prayer);
+                // ROADMAP 6「禱告從一次性句子變成持久渴望」：這句禱告若能分類出具體
+                // 建物種類（小屋/水井/花圃/瞭望塔），就同步設成居民的當前心願——之後
+                // choose_activity 會真的把它蓋出來，不再只是浮現又消失的一句泡泡。
+                if vbuild::prayer_promotable(&prayer) {
+                    let new_desire = {
+                        let mut des = hub().desires.write().unwrap();
+                        des.set_desire(&id, &prayer, vdes::SELF_SPARK)
+                    }; // 心願寫鎖在此釋放
+                    vdes::append_desire(&new_desire);
+                    vfeed::append_feed("新心願", &new_desire.resident, &new_desire.desire);
+                }
                 // 把心願當「說的話」冒泡（💭 前綴與一般對白區隔）。Idle action 不會打斷閒晃。
                 hub().agent_bus.push_decision(
                     id.clone(),
