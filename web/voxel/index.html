@@ -432,6 +432,17 @@
     }
     #bagBtn:hover { background: rgba(60,50,20,0.75); }
 
+    /* 視角切換鈕（第一/三人稱）：左側，避開右側合成鈕欄與底部搖桿。 */
+    #viewBtn {
+      position: fixed; left: 10px; top: 120px; z-index: 6;
+      background: rgba(20,28,40,0.65); color: #a8d8ff;
+      border: 1px solid rgba(168,216,255,0.3);
+      padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      user-select: none; pointer-events: auto;
+    }
+    #viewBtn:hover { background: rgba(30,45,65,0.8); }
+    @media (orientation: portrait) { #viewBtn { top: 96px; font-size: 12px; padding: 5px 9px; } }
+
     /* ── 背包 + 合成格面板（ROADMAP 664）───────────────────────────────────── */
     #bagPanel {
       position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
@@ -750,6 +761,8 @@
   <button id="wbBtn">🔨 工作台</button>
   <!-- 熔爐開啟鈕（靠近熔爐方塊時顯示，ROADMAP 666）-->
   <button id="furnaceBtn">🔥 熔爐</button>
+  <!-- 視角切換鈕（第一/三人稱；桌機也可按 F5）。文字由 main.js 依模式更新 -->
+  <button id="viewBtn">👁 第一人稱</button>
   <!-- 城鎮動態 Feed（ROADMAP 655）-->
   <div id="feedBtn">🌐 動態</div>
   <div id="feed">
