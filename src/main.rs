@@ -154,6 +154,8 @@ mod voxel_fond_greeting;
 mod voxel_mood;
 // 乙太方界·孤獨尋伴 v1：Lonely 居民主動走向玩家尋求陪伴，玩家搭話後居民送木頭致謝（ROADMAP 678）。
 mod voxel_comfort;
+// 乙太方界·居民互相打氣 v1：Joyful/Content 居民主動走向 Lonely 同伴說暖心話，AI 社群自我支撐（ROADMAP 679）。
+mod voxel_cheer;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環

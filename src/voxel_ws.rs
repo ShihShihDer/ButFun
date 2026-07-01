@@ -49,6 +49,7 @@ use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
 use crate::voxel_mood;
 use crate::voxel_comfort as vcomfort;
+use crate::voxel_cheer as vcheer;
 
 /// 入場時串給玩家的 chunk 半徑（以 chunk 為單位，水平）。3 → 7×7 column。
 const SPAWN_CHUNK_RADIUS: i32 = 3;
@@ -184,6 +185,11 @@ struct VoxelResident {
     seek_comfort_cooldown: f32,
     /// 正在尋伴：已設目標走向玩家，到達後冒求陪泡泡等玩家搭話。
     seeking_comfort: bool,
+    /// 打氣目標（ROADMAP 679）：Some(x, z, lonely_rid) = 正走向某位 Lonely 居民打氣；
+    /// None = 沒有打氣任務。抵達後冒鼓勵泡泡、任務清除。
+    cheer_target: Option<(f32, f32, String)>,
+    /// 打氣冷卻倒數（秒，ROADMAP 679）：歸零後才可再發起打氣。
+    cheer_cooldown: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -499,6 +505,9 @@ fn init_residents() -> Vec<VoxelResident> {
             // 孤獨尋伴（ROADMAP 678）：初始冷卻各自錯開，避免入場後立刻全員搶玩家。
             seek_comfort_cooldown: vcomfort::seek_cooldown_offset(i),
             seeking_comfort: false,
+            // 打氣（ROADMAP 679）：初始冷卻錯開，讓居民穩定後才啟動打氣系統。
+            cheer_target: None,
+            cheer_cooldown: vcheer::cheer_cooldown_offset(i),
         });
     }
     out
@@ -2043,6 +2052,13 @@ fn tick_residents(dt: f32) {
     // 格式：(visitor_name, host_name, is_return)
     let mut visit_events: Vec<(&'static str, String, bool)> = Vec::new();
 
+    // 打氣 v1（ROADMAP 679）到達事件（鎖內偵測，鎖外補記憶+Feed）。
+    // 格式：(happy_id, happy_name, lonely_rid)
+    let mut cheer_arrive_pending: Vec<(String, &'static str, String)> = Vec::new();
+    // 打氣到達完成事件（鎖內處理，鎖外寫記憶+Feed）。
+    // 格式：(happy_id, happy_name, lonely_rid, lonely_name)
+    let mut cheer_arrive_done: Vec<(String, &'static str, String, &'static str)> = Vec::new();
+
     // 居民情誼 v1（ROADMAP 672）：到達/離開事件（鎖內偵測，鎖外更新情誼+生成問候語）。
     // 抵達格式：(visitor_id, visitor_name, host_name)
     let mut bond_arrive_events: Vec<(String, &'static str, String)> = Vec::new();
@@ -2096,6 +2112,11 @@ fn tick_residents(dt: f32) {
             // 孤獨尋伴冷卻倒數（ROADMAP 678）。
             if r.seek_comfort_cooldown > 0.0 {
                 r.seek_comfort_cooldown -= dt;
+            }
+
+            // 打氣冷卻倒數（ROADMAP 679）。
+            if r.cheer_cooldown > 0.0 {
+                r.cheer_cooldown -= dt;
             }
 
             // 旁聽搭話冷卻倒數（embodied 靠近說話 v1）：到期後才可再因旁聽搭話。
@@ -2253,6 +2274,28 @@ fn tick_residents(dt: f32) {
                         r.say = vcomfort::comfort_seek_line(pick).chars().take(40).collect();
                         r.say_timer = SAY_SECS;
                     }
+                }
+            }
+
+            // 打氣走動 v1（ROADMAP 679）：cheer_target 有效時，持續朝 Lonely 同伴走過去；
+            // 抵達後冒打氣泡泡、收集到達事件（鎖外補記憶 + Feed）、清除任務。
+            if let Some((tx, tz, ref lonely_rid)) = r.cheer_target.clone() {
+                // 持續更新移動目標（步步逼近），清除小歇。
+                r.target_x = tx;
+                r.target_z = tz;
+                r.wait_timer = 0.0;
+                // 到達判定（XZ 距離 < CHEER_ARRIVE_DIST 且 say 空）。
+                let dx = r.body.x - tx;
+                let dz = r.body.z - tz;
+                if dx * dx + dz * dz < vcheer::CHEER_ARRIVE_DIST * vcheer::CHEER_ARRIVE_DIST
+                    && r.say.is_empty()
+                {
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    r.say = vcheer::cheer_line(pick).chars().take(40).collect::<String>();
+                    r.say_timer = SAY_SECS;
+                    // 收集到達事件供鎖外 IO（(happy_id, happy_name, lonely_rid)）。
+                    cheer_arrive_pending.push((r.id.clone(), r.name, lonely_rid.clone()));
+                    r.cheer_target = None; // 任務完成，清除目標。
                 }
             }
 
@@ -2543,6 +2586,112 @@ fn tick_residents(dt: f32) {
             residents[j].pending_response = Some((ini_id.clone(), ini_name.to_string(), vrel::RESPONSE_DELAY_SECS));
             social_events.push((ini_id, ini_name.to_string(), tar_id, tar_name.to_string(), safe_line, false));
         }
+
+        // 2d) 打氣到達處理（ROADMAP 679）：把到達事件轉化成 pending_response + 收集記憶/Feed data。
+        // 在 per-resident 迴圈結束後處理，避免雙重 iter_mut 借用衝突。
+        // 格式：(happy_id, happy_name, lonely_rid) → 找到 lonely → 設 pending_response。
+        for (happy_id, happy_name, lonely_rid) in &cheer_arrive_pending {
+            if let Some(lonely) = residents.iter_mut().find(|r| r.id == *lonely_rid) {
+                // 讓 lonely 居民幾秒後冒感謝泡泡（沿用社交回應機制）。
+                lonely.pending_response = Some((
+                    happy_id.clone(),
+                    happy_name.to_string(),
+                    vrel::RESPONSE_DELAY_SECS,
+                ));
+                cheer_arrive_done.push((
+                    happy_id.clone(),
+                    happy_name,
+                    lonely_rid.clone(),
+                    lonely.name,
+                ));
+            }
+        }
+
+        // 2e) 打氣觸發掃描（ROADMAP 679）：找 (Joyful/Content, Lonely) 配對，設 cheer_target。
+        // 批次計算所有居民心情（2 把短鎖，循序即釋，不巢狀），避免迴圈中反覆取鎖。
+        // 鎖序：bonds 讀（即釋）→ memory 讀（即釋）。
+        let all_res_ids_for_cheer: Vec<String> =
+            (0..RESIDENT_COUNT).map(|j| format!("vox_res_{j}")).collect();
+        let all_res_id_refs_cheer: Vec<&str> =
+            all_res_ids_for_cheer.iter().map(|s| s.as_str()).collect();
+        let cheer_bond_counts: Vec<(usize, usize)> = {
+            let bonds = hub().bonds.read().unwrap();
+            all_res_ids_for_cheer
+                .iter()
+                .map(|rid| bonds.bond_counts_for(rid, &all_res_id_refs_cheer))
+                .collect()
+        }; // bonds 讀鎖釋放
+        let cheer_mem_counts: Vec<usize> = {
+            let mem = hub().memory.read().unwrap();
+            all_res_ids_for_cheer
+                .iter()
+                .map(|rid| mem.memory_count(rid))
+                .collect()
+        }; // memory 讀鎖釋放
+        let cheer_mood_tiers: Vec<voxel_mood::MoodTier> = cheer_bond_counts
+            .into_iter()
+            .zip(cheer_mem_counts.iter())
+            .map(|((f, a), mc)| voxel_mood::compute_mood(f, a, *mc))
+            .collect();
+
+        // 快照：(idx, id, x, z, cheer_cd, is_saying, has_cheer_target)
+        let cheer_snaps: Vec<(usize, String, f32, f32, f32, bool, bool)> = residents
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                (
+                    i,
+                    r.id.clone(),
+                    r.body.x,
+                    r.body.z,
+                    r.cheer_cooldown,
+                    !r.say.is_empty(),
+                    r.cheer_target.is_some(),
+                )
+            })
+            .collect();
+
+        let mut cheer_trigger: Option<(usize, f32, f32, String)> = None; // (happy_idx, lx, lz, lonely_id)
+        'cheer_scan: for (hi, href, hx, hz, hcd, h_saying, h_has_target) in &cheer_snaps {
+            // 打氣發起條件：冷卻到期、沒在說話、沒有既有打氣任務、心情 Joyful/Content。
+            if *h_saying || *hcd > 0.0 || *h_has_target {
+                continue;
+            }
+            let h_tier = &cheer_mood_tiers[*hi];
+            if !matches!(
+                h_tier,
+                voxel_mood::MoodTier::Joyful | voxel_mood::MoodTier::Content
+            ) {
+                continue;
+            }
+            for (li, lref, lx, lz, _, l_saying, _) in &cheer_snaps {
+                if hi == li || *l_saying {
+                    continue;
+                }
+                // Lonely 同伴？
+                if cheer_mood_tiers[*li] != voxel_mood::MoodTier::Lonely {
+                    continue;
+                }
+                // 距離內？
+                let dx = hx - lx;
+                let dz = hz - lz;
+                if dx * dx + dz * dz > vcheer::CHEER_RANGE * vcheer::CHEER_RANGE {
+                    continue;
+                }
+                // 機率觸發（低頻，防洗版）。
+                if rand::random::<f32>() < vcheer::CHEER_CHANCE {
+                    cheer_trigger = Some((*hi, *lx, *lz, lref.clone()));
+                    break 'cheer_scan;
+                }
+            }
+        }
+        if let Some((hi, lx, lz, lonely_id)) = cheer_trigger {
+            residents[hi].cheer_target = Some((lx, lz, lonely_id.clone()));
+            residents[hi].cheer_cooldown = vcheer::CHEER_COOLDOWN;
+            // Feed 出發事件（鎖外 IO，稍後在 cheer_arrive_done 外層記）。
+            // 注意：出發時不記 Feed（低調），只在抵達時記一筆（更有感）。
+        }
+
     } // deltas/residents 鎖在此一併釋放
 
     // 3) 廣播最新快照（含居民位置/名字/說的話）。
@@ -2563,6 +2712,31 @@ fn tick_residents(dt: f32) {
             let detail = format!("對{}說：「{}」", listener_name, line.chars().take(30).collect::<String>());
             vfeed::append_feed("鄰里閒聊", speaker_name, &detail);
         }
+    }
+
+    // 4a-c) 打氣到達記憶落地（ROADMAP 679）：打氣者 + 被打氣者各寫一筆記憶、Feed 廣播。
+    // 鎖序：memory 寫（即釋）×2；不巢狀；append-only 不破壞既有資料。
+    for (happy_id, happy_name, lonely_rid, lonely_name) in &cheer_arrive_done {
+        // 打氣者的記憶（去陪伴了某人）。
+        let mem_for_cheerful = vcheer::cheer_memory_for_cheerful(lonely_name);
+        let e1 = {
+            let mut mem = hub().memory.write().unwrap();
+            mem.add_memory(happy_id, lonely_name, &mem_for_cheerful)
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&e1);
+        // 被打氣者的記憶（某人來陪伴我）。
+        let mem_for_lonely = vcheer::cheer_memory_for_lonely(happy_name);
+        let e2 = {
+            let mut mem = hub().memory.write().unwrap();
+            mem.add_memory(lonely_rid, happy_name, &mem_for_lonely)
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&e2);
+        // Feed 廣播（鎖外 IO）。
+        vfeed::append_feed(
+            vcheer::FEED_KIND,
+            happy_name,
+            &format!("走到{lonely_name}身邊，給她送來了一句溫暖的話！"),
+        );
     }
 
     // 4b) 回禮事件落地（ROADMAP 667）：鎖已全釋放；mark → append → 加背包 → 廣播。
