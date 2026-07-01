@@ -27,6 +27,11 @@ use crate::npc_agent_wire::{self, AgentBus};
 use crate::resident_npc::ResidentPersona;
 use crate::state::AppState;
 use crate::voxel::{self, Block, ChunkCoord, WorldDelta, BASE_HEIGHT, CHUNK, SEA_LEVEL};
+// 指令→任務 + 整地技能 v1（純邏輯模組）：以 #[path] 掛成 voxel_ws 的子模組，
+// 免動 main.rs（本檔是唯一使用者）。偵測整地指令、整地任務模型、整地技能核心全在此。
+#[path = "voxel_directed_task.rs"]
+mod voxel_directed_task;
+use self::voxel_directed_task::{self as vdt, DirectedTask};
 use crate::voxel_building::{self as vbuild, BuildStore};
 use crate::voxel_skills::{self as vskill, GatherSkill, GoalStore, NextActivity};
 use crate::voxel_desires::{self as vdes, DesireStore};
@@ -227,6 +232,12 @@ struct ResidentView {
 /// 居民名字池（取自 resident_npc 的近城居民風格名，柔和轉寫式、與主要 NPC 一致）。
 const RESIDENT_NAMES: [&str; RESIDENT_COUNT] = ["露娜", "諾娃", "賽勒", "奧瑞"];
 
+/// 由居民 id（"vox_res_{i}"）取其顯示名（解析失敗 / 越界皆安全退回第一位）。
+fn resident_name_of(rid: &str) -> &'static str {
+    let idx = rid.trim_start_matches("vox_res_").parse::<usize>().unwrap_or(0);
+    RESIDENT_NAMES.get(idx).copied().unwrap_or(RESIDENT_NAMES[0])
+}
+
 /// 依 index 配 persona（讓「人設」字串有變化，純供 LLM 口吻；voxel 不沿用 2D 的閒晃邊界）。
 fn persona_for(i: usize) -> ResidentPersona {
     match i % 4 {
@@ -262,6 +273,7 @@ fn talk_cooldown_ok(elapsed_ms: u64) -> bool {
 pub(crate) fn resident_honesty_guide() -> &'static str {
     "【你的能力與誠實】\
 你確實會做的事：採集草、沙、木頭、石頭、礦石等材料；在自己家附近蓋小型結構（小屋、水井、花圃、瞭望塔）；\
+把旅人腳邊一小塊地整平（合理範圍，像 9×9 格那樣的一小片，你會走過去、削高填低把它弄平）；\
 記得認識的旅人、和人聊天、種田、表達自己的心願。\
 你目前還做不到的事：大規模整地（例如推平一百格乘一百格那樣的工程）、指揮或協調其他居民一起行動、\
 規劃整座城鎮的佈局、把旅人隨口交代的任意指令變成真正的行動去執行。\
@@ -432,23 +444,23 @@ fn recipe_knowledge_block(text: &str) -> Option<String> {
 /// - 群組 B：指揮 / 協調其他居民
 /// - 群組 C：城鎮 / 國家規劃
 pub(crate) fn detect_over_scope(text: &str) -> Option<&'static str> {
-    // ── 群組 A：大規模整地（整地/推平/夷平/剷平 + 大範圍暗示詞）──
+    // ── 群組 A：**大規模**整地（整地動詞 + 大範圍暗示詞才算超能力）──
+    // 指令→任務 + 整地技能 v1 起：合理大小的整地（「這裡/這塊」）居民**真的做得到**，
+    // 交給 DirectedTask 去執行、該答應——故不再一律婉拒。只有帶大範圍暗示（100×100/整片…）
+    // 的整地才超出她一個人的能力，續走誠實婉拒。整地動詞涵蓋整平/弄平等同義詞，
+    // 讓「整平一大片」也能被判為超能力（否則會誤放行成小任務）。
     const TERRA_VERBS: &[&str] = &[
-        "整地", "推平", "推成平地", "夷平", "剷平", "剷除", "挖平",
-        "全部推", "全都推", "全部挖", "全都挖",
+        "整地", "整平", "推平", "推成平地", "夷平", "剷平", "鏟平", "剷除",
+        "挖平", "弄平", "壓平", "全部推", "全都推", "全部挖", "全都挖",
     ];
     const SCALE_HINTS: &[&str] = &[
         "100", "百格", "大片", "大範圍", "整片", "整塊", "一大片",
-        "一整片", "全部的地", "所有的地", "這一帶", "附近全",
+        "一整片", "全部的地", "所有的地", "這一帶", "附近全", "整座", "整個世界",
     ];
-    // 整地動詞出現、且帶有大範圍暗示 → 大規模整地
+    // 整地動詞出現、且帶有大範圍暗示 → 大規模整地（超能力，誠實婉拒）。
+    // 只有整地動詞、沒有大範圍暗示 → 合理大小，不算超能力（交給整地任務去做）。
     let has_terra_verb = TERRA_VERBS.iter().any(|v| text.contains(v));
-    if has_terra_verb {
-        let has_scale = SCALE_HINTS.iter().any(|s| text.contains(s));
-        if has_scale {
-            return Some("大規模整地");
-        }
-        // 即使沒帶數字，只要整地動詞出現（整地/推平等）也視為超能力請求
+    if has_terra_verb && SCALE_HINTS.iter().any(|s| text.contains(s)) {
         return Some("大規模整地");
     }
 
@@ -702,6 +714,10 @@ struct VoxelHub {
     /// 雨剛開始下的一次性旗標（ROADMAP 701）：`tick_farm` 偵測到晴→雨轉換時設 true，
     /// `tick_residents` 讀到後立即清回 false（consume-once），觸發附近居民的雨天反應台詞。
     rain_started_flag: RwLock<bool>,
+    /// 指向任務 v1（指令→任務 + 整地技能）：居民 id → 當前整地任務。
+    /// 玩家對居民下「整平這裡」→ 建立任務指派給她 → tick 推進（走過去→分批整地）。
+    /// 純記憶體（重啟後任務消失可接受）；**地形改動走既有 world delta 持久化**。
+    directed_tasks: RwLock<HashMap<String, DirectedTask>>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -795,6 +811,8 @@ fn hub() -> &'static VoxelHub {
             weather: RwLock::new(false),
             // 雨剛開始旗標：啟動時無雨無旗標。
             rain_started_flag: RwLock::new(false),
+            // 整地任務 v1：啟動空（純記憶體、無需持久化）。
+            directed_tasks: RwLock::new(HashMap::new()),
             tx,
         }
     })
@@ -1486,8 +1504,71 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 };
                 let addressed_id: Option<String> = addressed.as_ref().map(|(id, ..)| id.clone());
 
-                // 6) 被指名者 → 走既有 LLM 對話路徑（記憶/心願/思考中佔位/罐頭後備、世界冒泡）。
+                // 6) 被指名者 → 若是「整平這裡」這類整地指令（合理大小）→ 建立整地任務、
+                //    誠實而願意地答應（她現在真的做得到）；否則走既有 LLM 對話路徑。
+                //    整地任務條件：命中整地意圖詞 + 非大範圍 + 不落在其他超能力類別（指揮他人/城鎮規劃）。
                 if let Some((addr_id, rname, rpersona)) = addressed.clone() {
+                    let accept_level = vdt::detect_level_command(&clean)
+                        && !vdt::is_oversized_level(&clean)
+                        && detect_over_scope(&clean).is_none();
+
+                    if accept_level {
+                        // 整地中心＝玩家當前位置附近；目標高度＝中心柱現有地表頂。
+                        // 注意：player_snap 是 (x, z, yaw)（與步驟 4 定義一致），不是 (x, y, z)。
+                        if let Some((px, pz, _yaw)) = player_snap {
+                            let cx = px.floor() as i32;
+                            let cz = pz.floor() as i32;
+                            let target_y = {
+                                let world = hub().deltas.read().unwrap();
+                                vdt::ground_top(&world, cx, cz)
+                            } // deltas 讀鎖釋放
+                            .unwrap_or_else(|| voxel::height_at(cx, cz));
+                            // 建立任務並指派給這位居民（覆蓋她原本手邊的事）。
+                            let task = DirectedTask::new(
+                                addr_id.clone(), player_key.clone(), cx, cz, vdt::LEVEL_RADIUS, target_y,
+                            );
+                            hub().directed_tasks.write().unwrap().insert(addr_id.clone(), task);
+                            // 切換居民狀態：放下採集/尋伴/打氣，朝工地中心出發（短鎖即釋）。
+                            {
+                                let mut res = hub().residents.write().unwrap();
+                                if let Some(r) = res.iter_mut().find(|r| r.id == addr_id) {
+                                    r.gather = None;
+                                    r.seeking_comfort = false;
+                                    r.cheer_target = None;
+                                    r.wait_timer = 0.0;
+                                    r.target_x = cx as f32 + 0.5;
+                                    r.target_z = cz as f32 + 0.5;
+                                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                }
+                            } // residents 寫鎖釋放
+                            // 誠實而願意的回覆（單播給玩家 + 世界冒泡 + 記憶 + Feed）。
+                            let pick = (px.to_bits() ^ pz.to_bits()) as usize;
+                            let reply = vdt::accept_line(rname, pick);
+                            let msg = serde_json::json!({
+                                "t": "talk",
+                                "resident_id": &addr_id,
+                                "name": rname,
+                                "reply": &reply,
+                            })
+                            .to_string();
+                            let _ = out_tx.send(Message::Text(msg)).await;
+                            hub().agent_bus.push_decision(
+                                addr_id.clone(),
+                                AgentDecision::new(AgentAction::Idle, reply.clone(), "整地任務"),
+                            );
+                            // 記下這次交代（她會記得是你請她整地的）。
+                            {
+                                let mut mem = hub().memory.write().unwrap();
+                                mem.record_turn(&player_key, &addr_id, &clean, &reply);
+                            } // 記憶寫鎖釋放
+                            vfeed::append_feed(
+                                "整地",
+                                rname,
+                                &format!("答應了{player_key}的請求，動身去把一塊地整平"),
+                            );
+                        }
+                        // 整地指令已處理，跳過 LLM 對話路徑（但下方旁聽仍照舊讓其他居民「聽到」）。
+                    } else {
                     // 6a) 短鎖讀記憶 → 組脈絡區塊（B 層精華 + A 層近期記憶 + 本輪對話）→ drop。
                     //     v2 兩層：semantic 精華（身份/目標/偏好/承諾，總是帶上）
                     //             + episodic 近期記憶 + 對話歷史（可被 cap 截斷）。
@@ -1641,6 +1722,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             AgentDecision::new(AgentAction::Idle, reply, "對話"),
                         );
                     });
+                    } // else（非整地指令 → LLM 對話路徑）結束
                 }
 
                 // 7) 旁聽（embodied）：半徑內、非被指名的居民「聽到」。
@@ -2592,6 +2674,14 @@ fn tick_residents(dt: f32) {
             })
             .collect()
     }; // goals 讀鎖釋放
+    // 整地任務 v1：批次快照各居民的整地任務中心/半徑（directed_tasks 讀鎖即釋），
+    // 供 residents 寫鎖那段判斷「該去工地整地、還是照常閒晃」——不與 residents 鎖巢狀。
+    let directed_snaps: HashMap<String, (i32, i32, i32)> = {
+        let tasks = hub().directed_tasks.read().unwrap();
+        tasks.iter().map(|(rid, t)| (rid.clone(), (t.cx, t.cz, t.radius))).collect()
+    }; // directed_tasks 讀鎖釋放
+    // 本 tick 已抵達工地、要整地一批的居民（鎖內收集，鎖外套用方塊改動）。
+    let mut level_workers: Vec<String> = Vec::new();
     // say_updates 提前宣告，過渡台詞與建造台詞共用同一張 Vec，在末尾一次套用。
     let mut say_updates: Vec<(String, String)> = Vec::new();
     {
@@ -2701,14 +2791,17 @@ fn tick_residents(dt: f32) {
         // 2a) 套用決策：MoveTo 夾成本地閒晃目標；say 非空 → 冒泡（其餘 action 不打斷閒晃）。
         for (rid, dec) in &decisions {
             if let Some(r) = residents.iter_mut().find(|r| &r.id == rid) {
-                if let AgentAction::MoveTo { x, y } = dec.action {
-                    let dx = x - r.body.x;
-                    let dz = y - r.body.z;
-                    let d = (dx * dx + dz * dz).sqrt().max(0.001);
-                    let cap = BRAIN_MOVE_CAP.min(d);
-                    r.target_x = r.body.x + dx / d * cap;
-                    r.target_z = r.body.z + dz / d * cap;
-                    r.wait_timer = 0.0;
+                // 整地任務中：不套用 MoveTo（她專心走向工地，別被思考決策拉走）。
+                if !directed_snaps.contains_key(rid) {
+                    if let AgentAction::MoveTo { x, y } = dec.action {
+                        let dx = x - r.body.x;
+                        let dz = y - r.body.z;
+                        let d = (dx * dx + dz * dz).sqrt().max(0.001);
+                        let cap = BRAIN_MOVE_CAP.min(d);
+                        r.target_x = r.body.x + dx / d * cap;
+                        r.target_z = r.body.z + dz / d * cap;
+                        r.wait_timer = 0.0;
+                    }
                 }
                 let say = dec.say.trim();
                 if !say.is_empty() {
@@ -3033,10 +3126,28 @@ fn tick_residents(dt: f32) {
             // 卡住偵測用：記下移動前的水平位置（本 tick 結束再比對位移）。
             let (pre_x, pre_z) = (r.body.x, r.body.z);
 
-            // agency v1·採集技能執行（技能調用骨架：找目標→走過去→動作）。
-            // 若正在採集：朝鎖定的資源走；走到旁邊→排程挖掘（鎖外 set_block）；逾時→放棄。
-            // 採集中時跳過閒晃/歸巢邏輯（這一刀是「她真的在做事」）。
-            if r.gather.is_some() {
+            // 指令→任務 v1·整地技能執行：被指派整地的居民先走到工地中心附近，
+            // 抵達後每 tick 排程整地一批（鎖外套用方塊改動）。整地中跳過採集/閒晃/歸巢
+            // （這是「她真的照玩家的話做事」）。優先於採集分支。
+            if let Some(&(cx, cz, radius)) = directed_snaps.get(&r.id) {
+                let center_x = cx as f32 + 0.5;
+                let center_z = cz as f32 + 0.5;
+                let dx = r.body.x - center_x;
+                let dz = r.body.z - center_z;
+                let arrive = radius as f32 + vdt::LEVEL_ARRIVE_MARGIN;
+                if dx * dx + dz * dz > arrive * arrive {
+                    // 還沒到工地：朝中心走（沿牆滑行、踏階由物理處理）。
+                    let (bx, bz) = (r.body.x, r.body.z);
+                    vr::step_toward(&world, &mut r.body, center_x, center_z, dt, vr::RES_SPEED * speed_mult);
+                    if let Some(yaw) = vr::yaw_from_move(r.body.x - bx, r.body.z - bz) {
+                        r.yaw = yaw;
+                    }
+                } else {
+                    // 已在工地：排程本 tick 整地一批（鎖外套用），原地落重力站穩。
+                    level_workers.push(r.id.clone());
+                    vr::gravity_step(&world, &mut r.body, dt);
+                }
+            } else if r.gather.is_some() {
                 let (tx, ty, tz, reached, timed_out) = {
                     let g = r.gather.as_mut().unwrap();
                     g.timeout -= dt;
@@ -3154,7 +3265,8 @@ fn tick_residents(dt: f32) {
             let moved = ((r.body.x - pre_x).powi(2) + (r.body.z - pre_z).powi(2)).sqrt();
             // 正在導航：朝閒晃/歸巢目標走，且不是在執行採集動作、也不在原地歇息。
             // 採集（gather）有自己的 25 秒逾時處理「走不到資源就放棄」，不該被脫困偵測搶先誤救。
-            let navigating = r.gather.is_none() && r.wait_timer <= 0.0;
+            // 整地任務中不算「純導航」（與採集同理：她在做事，別被脫困偵測誤救打斷任務）。
+            let navigating = r.gather.is_none() && r.wait_timer <= 0.0 && !directed_snaps.contains_key(&r.id);
             // 幾何困住判定（埋在實心裡或四面爬不出）；只在導航時才需要算。
             let confined = navigating && vr::is_confined(&world, &r.body);
             r.stuck_timer = vr::update_stuck_timer(r.stuck_timer, moved, navigating, confined, dt);
@@ -3180,17 +3292,17 @@ fn tick_residents(dt: f32) {
                 tracing::info!(resident = %r.id, ?how, "voxel 居民卡住 → 脫困/送回");
             }
 
-            // 思考排程（蒐集快照，spawn 留到鎖外）。
+            // 思考排程（蒐集快照，spawn 留到鎖外）。整地任務中不排程思考（她專心整地）。
             r.think_timer -= dt;
-            if r.think_timer <= 0.0 {
+            if r.think_timer <= 0.0 && !directed_snaps.contains_key(&r.id) {
                 r.think_timer = npc_agent_wire::THINK_INTERVAL_SECS;
                 think_jobs.push((r.id.clone(), r.name, r.persona, r.body.x, r.body.z));
             }
 
-            // agency tick 倒數；到期且「沒在採集」時才加入候選（採集中不打斷、交給技能跑完）。
+            // agency tick 倒數；到期且「沒在採集、沒在整地」時才加入候選（做事中不打斷、交給技能跑完）。
             // 只收快照，實際放塊 / 決定活動在鎖外執行。
             r.build_tick -= dt;
-            if r.build_tick <= 0.0 && r.gather.is_none() {
+            if r.build_tick <= 0.0 && r.gather.is_none() && !directed_snaps.contains_key(&r.id) {
                 // 居民 id 格式固定 "vox_res_{i}"，取末位數字當 index。
                 let idx = r.id.trim_start_matches("vox_res_").parse::<usize>().unwrap_or(0);
                 build_candidates.push((
@@ -3478,6 +3590,85 @@ fn tick_residents(dt: f32) {
         vfeed::append_feed("採集", rname, &format!("採集了{}", res.display_name()));
         // 冒一句採集泡泡（不打斷其他話）。
         say_updates.push((rid.clone(), format!("採到{}了～", res.display_name())));
+    }
+
+    // 5b-2) 整地任務執行（指令→任務 + 整地技能 v1 收尾）：**她真的照玩家的話做事**。
+    //   ① 先扣所有任務的逾時（走不到/整不完就放棄，避免任務永不釋放）。
+    //   ② 對本 tick 已抵達工地的居民：算這批要改的方塊 → 套用（delta 寫 + 廣播 + 水流 + 持久化）
+    //      → 推進 cursor；整完 → 冒「整好囉」+ Feed。鎖序全短取即釋、不巢狀、不 await（守鐵律）。
+    //   地形改動走既有 world delta 持久化（vbuild::append_world_block），重啟後整過的地還在。
+    {
+        // ① 逾時遞減 + 清逾時任務（短鎖即釋）。
+        let expired: Vec<String> = {
+            let mut tasks = hub().directed_tasks.write().unwrap();
+            for t in tasks.values_mut() {
+                t.deadline -= RESIDENT_DT;
+            }
+            let dead: Vec<String> = tasks
+                .iter()
+                .filter(|(_, t)| t.deadline <= 0.0)
+                .map(|(rid, _)| rid.clone())
+                .collect();
+            for rid in &dead {
+                tasks.remove(rid);
+            }
+            dead
+        }; // directed_tasks 寫鎖釋放
+        for rid in expired {
+            let rname = resident_name_of(&rid);
+            vfeed::append_feed("整地", rname, "這塊地太難整了，我盡力了…");
+            say_updates.push((rid, "唉…這塊地我一個人一時整不太動…".to_string()));
+        }
+    }
+    // ② 已抵達工地的居民：整地一批。
+    for rid in &level_workers {
+        // 讀任務快照（可能已被上面逾時清掉 → None 就跳過）。
+        let task_opt = { hub().directed_tasks.read().unwrap().get(rid).cloned() };
+        let Some(mut task) = task_opt else { continue };
+        // 算這批要改的方塊 + 新 cursor（deltas 讀鎖即釋）。
+        let (changes, next_cursor) = {
+            let world = hub().deltas.read().unwrap();
+            vdt::level_step(&world, &task)
+        }; // deltas 讀鎖釋放
+        // 居民當前腳底（安全過濾：別把她自己埋了）。
+        let body = {
+            let res = hub().residents.read().unwrap();
+            res.iter().find(|r| &r.id == rid).map(|r| (r.body.x, r.body.y, r.body.z))
+        }; // residents 讀鎖釋放
+        for (x, y, z, b) in changes {
+            // 安全：實心填塊若與居民身體重疊 → 跳過（沿用可逃精神，不自埋自困）。
+            if b.is_solid() {
+                if let Some((px, py, pz)) = body {
+                    if vdt::cell_in_body(x, y, z, px, py, pz) {
+                        continue;
+                    }
+                }
+            }
+            {
+                let mut world = hub().deltas.write().unwrap();
+                voxel::set_block(&mut world, x, y, z, b);
+            } // deltas 寫鎖釋放
+            broadcast_block(x, y, z, b);
+            // 水流動：整地削出的缺口/填出的堤都可能改變水路 → 喚醒鄰格重算。
+            enqueue_water_around(x, y, z);
+            // 持久化這次世界改動（重啟後整過的地還在）。
+            vbuild::append_world_block(x, y, z, b as u8);
+        }
+        // 推進 cursor / 收尾。
+        task.cursor = next_cursor;
+        let rname = resident_name_of(rid);
+        if task.is_complete() {
+            hub().directed_tasks.write().unwrap().remove(rid);
+            vfeed::append_feed("整地", rname, "把那塊地整平了！");
+            say_updates.push((rid.clone(), "整好囉！這塊地平坦多了～".to_string()));
+        } else {
+            let pct = task.progress_pct();
+            hub().directed_tasks.write().unwrap().insert(rid.clone(), task);
+            // 過半冒一句進度泡泡（低頻、不洗版）。
+            if (45..=55).contains(&pct) {
+                say_updates.push((rid.clone(), "整地中…快一半了～".to_string()));
+            }
+        }
     }
 
     // 5c) 卡住脫困/送回的 Feed（鎖已釋放）：送回家域是較顯著的事件，記一筆讓玩家看得到；
@@ -4121,15 +4312,11 @@ mod tests {
             detect_over_scope("把百格的地剷平"),
             Some("大規模整地")
         );
-        // 沒有大範圍暗示、但整地動詞本身也算超能力
-        assert_eq!(
-            detect_over_scope("幫我整地"),
-            Some("大規模整地")
-        );
-        assert_eq!(
-            detect_over_scope("推平這塊地"),
-            Some("大規模整地")
-        );
+        // 指令→任務 + 整地技能 v1 起：合理大小的整地不再算超能力（居民做得到→該答應）。
+        // 「這裡/這塊」沒有大範圍暗示 → None（交給 DirectedTask 去整）。
+        assert_eq!(detect_over_scope("幫我整地"), None);
+        assert_eq!(detect_over_scope("推平這塊地"), None);
+        assert_eq!(detect_over_scope("幫我把這裡整平"), None);
     }
 
     #[test]
