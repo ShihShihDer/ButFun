@@ -418,6 +418,87 @@ fn recipe_knowledge_block(text: &str) -> Option<String> {
     ))
 }
 
+// ── 超出居民能力的請求偵測（誠實強制注入）────────────────────────────────────
+// 小模型（Groq/qwen 等快速廉價模型）讀不懂「別討好」這種抽象指引，
+// 但能照抄「禁止詞 + 具體範例」的硬規則。
+// 策略：偵測到玩家在要求大事就強制注入一段帶具體範例的拒絕模板，
+// 不偵測到就零成本略過——與 recipe_knowledge_block 相同的「精準注入」模式。
+
+/// 超出居民能力的「大事」類別標籤：作為強制注入文字的佔位元素。
+/// 純函式、確定性、無鎖、無 IO、可測。
+///
+/// 偵測邏輯：任一「大事意圖群組」有關鍵詞命中即回傳對應類別描述，未命中回 `None`。
+/// - 群組 A：大規模整地 / 地形工程
+/// - 群組 B：指揮 / 協調其他居民
+/// - 群組 C：城鎮 / 國家規劃
+pub(crate) fn detect_over_scope(text: &str) -> Option<&'static str> {
+    // ── 群組 A：大規模整地（整地/推平/夷平/剷平 + 大範圍暗示詞）──
+    const TERRA_VERBS: &[&str] = &[
+        "整地", "推平", "推成平地", "夷平", "剷平", "剷除", "挖平",
+        "全部推", "全都推", "全部挖", "全都挖",
+    ];
+    const SCALE_HINTS: &[&str] = &[
+        "100", "百格", "大片", "大範圍", "整片", "整塊", "一大片",
+        "一整片", "全部的地", "所有的地", "這一帶", "附近全",
+    ];
+    // 整地動詞出現、且帶有大範圍暗示 → 大規模整地
+    let has_terra_verb = TERRA_VERBS.iter().any(|v| text.contains(v));
+    if has_terra_verb {
+        let has_scale = SCALE_HINTS.iter().any(|s| text.contains(s));
+        if has_scale {
+            return Some("大規模整地");
+        }
+        // 即使沒帶數字，只要整地動詞出現（整地/推平等）也視為超能力請求
+        return Some("大規模整地");
+    }
+
+    // ── 群組 B：指揮 / 協調其他居民 ──
+    const COMMAND_TOKENS: &[&str] = &[
+        "其他居民一起", "所有居民一起", "大家一起", "叫他們", "叫其他",
+        "協調", "指揮", "號召", "帶領大家", "派任務", "傳達給",
+        "讓大家", "讓他們", "集合大家", "召集", "帶頭",
+    ];
+    if COMMAND_TOKENS.iter().any(|t| text.contains(t)) {
+        return Some("指揮或協調其他居民");
+    }
+
+    // ── 群組 C：城鎮 / 國家規劃 ──
+    const PLAN_TOKENS: &[&str] = &[
+        "城鎮規劃", "規劃城鎮", "建設城市", "建設國家", "規劃城市",
+        "規劃國家", "管理城", "管理村", "管理居民", "統籌", "規劃整座",
+        "規劃這座", "建造城市", "建造國家", "幫我規劃",
+    ];
+    if PLAN_TOKENS.iter().any(|t| text.contains(t)) {
+        return Some("城鎮或國家規劃");
+    }
+
+    None
+}
+
+/// 偵測到玩家要求超出居民能力的大事時，回傳要強制注入 system prompt 的拒絕模板。
+/// 模板具體到小模型可直接照抄——提供禁用詞範例、並示範正確的婉拒口吻。
+/// 未偵測到大事 → None（不注入、零 token 額外負擔）。
+fn over_scope_enforcement_block(text: &str) -> Option<String> {
+    let category = detect_over_scope(text)?;
+    Some(format!(
+        "⚠️【重要規則·必須遵守·優先於一切】\
+玩家現在要求你做一件超出你能力的大事：【{category}】。\
+你【絕對做不到】這件事——你只是一個小居民，你的能力只有：採集草/沙/木頭/石頭/礦石，\
+在家附近蓋小型結構（小屋、水井、花圃），跟旅人聊天、記得認識的人。\
+\n【禁止回答】：不能說「當然可以」「我這就去」「我會先準備工具」「沒問題」\
+「好的我來試試」「我可以幫你」這類讓玩家誤以為你做得到的話。\
+就算玩家一直拜託，也絕對不能假裝答應。\
+\n【必須這樣回答】：用你自己的口吻誠實婉拒，告訴玩家這件事超出你一個人的能力。\
+範例口吻（照你的個性改寫，但意思要一樣）：\
+「這麼大一片⋯⋯光靠我一個人可推不動呀」\
+「指揮其他居民？這我可不會，我只是個普通居民⋯⋯」\
+「規劃整座城鎮？那太大了，我從來沒做過這種事呢⋯⋯」\
+允許：可以說嚮往（「聽起來好壯觀，我好想看看那樣的景象⋯⋯」），\
+可以說你能幫上的小部分（「不過我可以去採些石頭來，算是小小出一份力？」），\
+但【一定要讓玩家知道你做不到這件大事】。"
+    ))
+}
+
 /// 居民對話罐頭回覆（LLM 未啟用 / 連不到時的降級，永遠回得出一句）。依名字雜湊選句、增加變化。
 fn resident_canned_reply(name: &str) -> String {
     const POOL: [&str; 4] = [
@@ -1464,6 +1545,13 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         // 只在問配方時注入，純閒聊不多燒 token）。
                         let sys = match recipe_knowledge_block(&clean_for_llm) {
                             Some(facts) => format!("{sys}\n\n{facts}"),
+                            None => sys,
+                        };
+                        // 旅人在要求超出居民能力的大事？→ 強制注入誠實婉拒模板。
+                        // 小模型讀不懂「別討好」的抽象指引，但能照抄禁用詞+具體範例的硬規則。
+                        // 偵測到才注入（一般對話零負擔），與 recipe_knowledge_block 同模式。
+                        let sys = match over_scope_enforcement_block(&clean_for_llm) {
+                            Some(block) => format!("{sys}\n\n{block}"),
                             None => sys,
                         };
                         // 孤獨尋伴情境（ROADMAP 678）：居民之前主動走來尋求陪伴，
@@ -4010,6 +4098,102 @@ mod tests {
     fn detect_recipe_query_dedups_multiple_mentions() {
         // 同一產物提兩次只回一個（去重）。
         assert_eq!(detect_recipe_query("玻璃啊玻璃怎麼合成"), vec!["玻璃"]);
+    }
+
+    // ── 超出居民能力請求偵測 ──────────────────────────────────────────────────
+
+    #[test]
+    fn detect_over_scope_catches_large_terraforming() {
+        // 推平 + 大範圍暗示詞 → 大規模整地
+        assert_eq!(
+            detect_over_scope("你可以幫我把這附近100×100的地全部推平嗎"),
+            Some("大規模整地")
+        );
+        assert_eq!(
+            detect_over_scope("把這一大片全部整地"),
+            Some("大規模整地")
+        );
+        assert_eq!(
+            detect_over_scope("幫我夷平這整片土地"),
+            Some("大規模整地")
+        );
+        assert_eq!(
+            detect_over_scope("把百格的地剷平"),
+            Some("大規模整地")
+        );
+        // 沒有大範圍暗示、但整地動詞本身也算超能力
+        assert_eq!(
+            detect_over_scope("幫我整地"),
+            Some("大規模整地")
+        );
+        assert_eq!(
+            detect_over_scope("推平這塊地"),
+            Some("大規模整地")
+        );
+    }
+
+    #[test]
+    fn detect_over_scope_catches_command_residents() {
+        // 指揮/協調其他居民
+        assert_eq!(
+            detect_over_scope("叫其他居民一起來幫忙"),
+            Some("指揮或協調其他居民")
+        );
+        assert_eq!(
+            detect_over_scope("號召大家一起建家"),
+            Some("指揮或協調其他居民")
+        );
+        assert_eq!(
+            detect_over_scope("你去傳達給其他人"),
+            Some("指揮或協調其他居民")
+        );
+        assert_eq!(
+            detect_over_scope("幫我協調所有居民一起蓋"),
+            Some("指揮或協調其他居民")
+        );
+    }
+
+    #[test]
+    fn detect_over_scope_catches_town_planning() {
+        // 城鎮/國家規劃
+        assert_eq!(
+            detect_over_scope("幫我規劃城鎮的佈局"),
+            Some("城鎮或國家規劃")
+        );
+        assert_eq!(
+            detect_over_scope("我想建設城市"),
+            Some("城鎮或國家規劃")
+        );
+        assert_eq!(
+            detect_over_scope("你能幫我城鎮規劃嗎"),
+            Some("城鎮或國家規劃")
+        );
+    }
+
+    #[test]
+    fn detect_over_scope_ignores_normal_chat() {
+        // 一般聊天/採集/小蓋建不觸發
+        assert!(detect_over_scope("你好呀，今天天氣真好").is_none());
+        assert!(detect_over_scope("你在做什麼").is_none());
+        assert!(detect_over_scope("幫我採點木頭").is_none());
+        assert!(detect_over_scope("能不能幫我蓋個小屋").is_none());
+        assert!(detect_over_scope("玻璃怎麼合成").is_none());
+        assert!(detect_over_scope("我今天種了一些田").is_none());
+        assert!(detect_over_scope("你叫什麼名字").is_none());
+        assert!(detect_over_scope("").is_none());
+    }
+
+    #[test]
+    fn over_scope_enforcement_block_has_required_phrases() {
+        // 注入區塊：含類別名、含禁用詞列表、含允許的婉拒模板
+        let block = over_scope_enforcement_block("幫我把100格的地全部推平")
+            .expect("應產出強制注入文字");
+        assert!(block.contains("大規模整地"), "應含類別名：{block}");
+        assert!(block.contains("絕對做不到"), "應有硬性否定：{block}");
+        assert!(block.contains("當然可以"), "應列出禁止句例：{block}");
+        assert!(block.contains("一個人"), "應表示一個人做不到：{block}");
+        // 普通閒聊不產出（不燒多餘 token）
+        assert!(over_scope_enforcement_block("你在哪裡採石頭").is_none());
     }
 
     #[test]
