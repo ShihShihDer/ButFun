@@ -51,6 +51,14 @@ use crate::voxel_mood;
 use crate::voxel_comfort as vcomfort;
 use crate::voxel_cheer as vcheer;
 
+// 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
+// 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
+// 同時讓水流的方塊 id / 演算法有獨立、可測的檔案。核心純函式在 voxel_water.rs，
+// 接線（佇列、tick、廣播、持久化）在本檔，嚴守既有無鎖 await + 短鎖即釋鐵律。
+#[path = "voxel_water.rs"]
+mod voxel_water;
+use voxel_water as vwater;
+
 /// 入場時串給玩家的 chunk 半徑（以 chunk 為單位，水平）。3 → 7×7 column。
 const SPAWN_CHUNK_RADIUS: i32 = 3;
 /// 垂直 chunk 範圍（cy）。0..=1 覆蓋世界 Y 0..31，含所有地形高度。
@@ -572,7 +580,50 @@ struct VoxelHub {
     /// 居民情誼帳本（ROADMAP 672）：拜訪次數累積情誼（陌生→相識→老朋友），持久化跨重啟。
     /// 每次探訪到達時 record_visit → 若升級則 Feed 廣播 + 問候語更換。
     bonds: RwLock<ResidentBonds>,
+    /// 水流動待處理佇列（水流動模擬）：只有「可能變化」的格才排入
+    /// （玩家/居民挖破地形的缺口鄰格、水格自己擴散到的新鄰格），每 tick 只算佇列、
+    /// 穩定的移出——**不整世界每 tick 掃描**（效能鐵律）。
+    /// 內含去重集合避免同格重複排隊。純記憶體：水流狀態本身走 delta 持久化那條路。
+    water_queue: std::sync::Mutex<WaterQueue>,
     tx: broadcast::Sender<Arc<String>>,
+}
+
+/// 水流佇列：待處理座標的 FIFO + 去重集合（同格只排一次，省重複計算）。
+#[derive(Default)]
+struct WaterQueue {
+    pending: std::collections::VecDeque<(i32, i32, i32)>,
+    seen: std::collections::HashSet<(i32, i32, i32)>,
+}
+
+impl WaterQueue {
+    /// 排入一格（已在佇列中則略過）。y<0（地心基岩）不排——水不流進基岩。
+    fn push(&mut self, x: i32, y: i32, z: i32) {
+        if y < 0 {
+            return;
+        }
+        if self.seen.insert((x, y, z)) {
+            self.pending.push_back((x, y, z));
+        }
+    }
+    /// 取出一格（同時移出去重集合，讓它日後可被再次排入）。
+    fn pop(&mut self) -> Option<(i32, i32, i32)> {
+        let c = self.pending.pop_front()?;
+        self.seen.remove(&c);
+        Some(c)
+    }
+    fn len(&self) -> usize {
+        self.pending.len()
+    }
+}
+
+/// 把一格自身 + 其 6 個鄰格排入水流佇列（改動一格後喚醒周圍重算）。
+/// **鐵律**：呼叫端先釋放 delta 等其他鎖，只在此短暫持 water_queue 鎖、不 await。
+fn enqueue_water_around(x: i32, y: i32, z: i32) {
+    let mut q = hub().water_queue.lock().unwrap();
+    q.push(x, y, z);
+    for (dx, dy, dz) in vwater::PROPAGATE_OFFSETS {
+        q.push(x + dx, y + dy, z + dz);
+    }
 }
 
 static HUB: OnceLock<VoxelHub> = OnceLock::new();
@@ -619,6 +670,8 @@ fn hub() -> &'static VoxelHub {
             pending_trades: RwLock::new(HashMap::new()),
             // 居民情誼 v1（ROADMAP 672）：啟動時從 data/voxel_bonds.jsonl 載回情誼記錄。
             bonds: RwLock::new(ResidentBonds::from_entries(vbonds::load_bonds())),
+            // 水流佇列：啟動空；玩家/居民挖破地形時排入缺口鄰格，水才開始流。
+            water_queue: std::sync::Mutex::new(WaterQueue::default()),
             tx,
         }
     })
@@ -1023,6 +1076,9 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 }; // delta 寫鎖在此釋放
                 if broken {
                     broadcast_block(x, y, z, Block::Air);
+                    // 水流動：剛挖出一個空格 → 排入這格 + 鄰格，讓相鄰水體往缺口流過來
+                    //（delta 鎖已釋放，只短暫持 water_queue 鎖，不 await，守鎖紀律）。
+                    enqueue_water_around(x, y, z);
                     // 農地方塊有特殊掉落；其餘實心方塊掉落自身。
                     if target_block.is_solid() {
                         // 種田 v1：農地狀態方塊的特殊掉落規則。
@@ -1118,6 +1174,8 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 if placed {
                     vinv::append_inv(&inv_e); // 放置成功才持久化消耗記錄
                     broadcast_block(x, y, z, block);
+                    // 水流動：放了一塊（可能堵住水路或填掉水格）→ 喚醒鄰格重算流向。
+                    enqueue_water_around(x, y, z);
                     let new_count = hub().inventory.read().unwrap().count(&name, b);
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({
@@ -1873,6 +1931,8 @@ pub fn spawn_residents() {
 }
 
 /// 啟動農地成熟 tick（每 15 秒檢查一次，成熟的幼苗換成成熟小麥並廣播）。
+/// 同時啟動水流動 tick——**刻意在此一併 spawn**，讓 main.rs 免加新的 spawn 呼叫
+///（守「別碰 main.rs」邊界；main 只要照舊呼叫 spawn_farm_tick 一次即可）。
 pub fn spawn_farm_tick() {
     tokio::spawn(async move {
         let _ = hub(); // 觸發 hub 初始化
@@ -1882,6 +1942,85 @@ pub fn spawn_farm_tick() {
             tick_farm();
         }
     });
+    spawn_water_tick();
+}
+
+/// 水流 tick 頻率（秒）：0.5s（2Hz）——水一格一格漫開，像麥塊那樣「看得到在流」，
+/// 又不會太快吃 CPU。每 tick 只處理佇列上限，成本與「正在流的水量」成正比、非世界大小。
+const WATER_TICK_DT: f32 = 0.5;
+/// 單次水流 tick 最多處理幾格（防某次改動炸出巨量佇列拖垮 tick；剩下的下一 tick 續處理）。
+/// 對齊效能鐵律：worst case 每 tick 有界，不會讓伺服器 tick 尖峰。
+const WATER_MAX_PER_TICK: usize = 512;
+
+/// 啟動水流動 tick 迴圈（2Hz）。處理待處理佇列：每格算穩定值 → 有變化才寫 delta +
+/// 廣播 + 持久化 + 喚醒鄰格。空佇列時幾乎零成本（pop 一次就退出）。
+fn spawn_water_tick() {
+    tokio::spawn(async move {
+        let _ = hub();
+        let mut ticker = tokio::time::interval(Duration::from_secs_f32(WATER_TICK_DT));
+        loop {
+            ticker.tick().await;
+            tick_water();
+        }
+    });
+}
+
+/// 一次水流推進：從佇列取至多 WATER_MAX_PER_TICK 格，逐格算穩定方塊。
+///
+/// 鎖紀律（嚴守無鎖 await + 短鎖即釋，比照 tick_farm）：
+/// 1. 短鎖持 water_queue → 取出這批要處理的座標 → drop。
+/// 2. 短鎖持 deltas(read) → 為每格快照鄰域、算穩定值、蒐集「有變化」的 → drop。
+/// 3. 短鎖持 deltas(write) → 套用變化 → drop。
+/// 4. 鎖外：broadcast + 持久化 append + 把受影響鄰格排回佇列（各自短鎖，循序不巢狀）。
+/// 全程無 await、不跨鎖持有，符合居民 agency tick 的同款模式。
+fn tick_water() {
+    // 1) 取這批要處理的座標（短鎖即釋）。
+    let batch: Vec<(i32, i32, i32)> = {
+        let mut q = hub().water_queue.lock().unwrap();
+        let n = q.len().min(WATER_MAX_PER_TICK);
+        (0..n).filter_map(|_| q.pop()).collect()
+    };
+    if batch.is_empty() {
+        return;
+    }
+
+    // 2) 讀鎖快照 → 純計算每格穩定值，蒐集真正有變化的 (x,y,z,新方塊)。
+    let changes: Vec<(i32, i32, i32, Block)> = {
+        let world = hub().deltas.read().unwrap();
+        batch
+            .iter()
+            .filter_map(|&(x, y, z)| {
+                let n = vwater::neighborhood_at(&world, x, y, z);
+                let next = vwater::settled_block(&n);
+                if next != n.here {
+                    Some((x, y, z, next))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }; // deltas 讀鎖釋放
+    if changes.is_empty() {
+        return;
+    }
+
+    // 3) 寫鎖套用全部變化（一次持有、批次寫，不 await）。
+    {
+        let mut world = hub().deltas.write().unwrap();
+        for &(x, y, z, b) in &changes {
+            voxel::set_block(&mut world, x, y, z, b);
+        }
+    } // deltas 寫鎖釋放
+
+    // 4) 鎖外收尾：廣播、持久化、喚醒鄰格。
+    for &(x, y, z, b) in &changes {
+        broadcast_block(x, y, z, b);
+        // 持久化水流狀態變化——與既有「世界方塊差異」走同一條 append-only log
+        //（voxel_resident_blocks.jsonl），重啟後水流結果還在（來源仍會重新流一次收斂）。
+        vbuild::append_world_block(x, y, z, b as u8);
+        // 這格變了 → 它與周圍鄰格可能連鎖變化，排回佇列下輪續算（收斂後自然清空）。
+        enqueue_water_around(x, y, z);
+    }
 }
 
 /// 農地成熟 tick——找所有已成熟的幼苗，換成成熟小麥，廣播給所有連線。
@@ -2857,6 +2996,8 @@ fn tick_residents(dt: f32) {
             voxel::set_block(&mut world, gx, gy, gz, Block::Air);
         } // deltas 寫鎖釋放
         broadcast_block(gx, gy, gz, Block::Air);
+        // 水流動：居民挖出的洞也可能讓水流過來（缺口鄰格排入佇列）。
+        enqueue_water_around(gx, gy, gz);
         // 持久化這次世界改動（重啟後挖的洞還在）。
         vbuild::append_world_block(gx, gy, gz, Block::Air as u8);
         // 入居民小背包（純記憶體）。
@@ -3073,6 +3214,8 @@ fn tick_residents(dt: f32) {
                     voxel::set_block(&mut world, bb.x, bb.y, bb.z, block);
                 } // deltas 寫鎖釋放
                 broadcast_block(bb.x, bb.y, bb.z, block);
+                // 水流動：居民蓋的方塊可能堵住水路（例如在水邊築牆）→ 喚醒鄰格重算。
+                enqueue_water_around(bb.x, bb.y, bb.z);
                 // 持久化這塊（重啟後蓋的東西還在）。
                 vbuild::append_world_block(bb.x, bb.y, bb.z, bb.b);
 
