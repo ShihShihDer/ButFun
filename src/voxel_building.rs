@@ -391,6 +391,27 @@ pub fn build_say_line(kind_name: &str, progress_pct: u32) -> String {
     }
 }
 
+// ── 居民互助蓋家（純函式，零 LLM）──────────────────────────────────────────────
+// ROADMAP 696：老朋友到訪時，若主人正在蓋家，順手幫忙推進一塊——讓情誼（672）不再只停在
+// 問候與八卦（694），第一次外溢成「真的動手互相幫忙」的協力行為，小社會湧現再深一層。
+
+/// 每次老朋友到訪，觸發一次幫忙推進的機率。
+pub const HELP_CHANCE: f32 = 0.4;
+
+/// 判斷這次到訪是否要伸出援手推進主人的建造計畫一塊。
+///
+/// `remaining_before_pop`：主人建造計畫目前還剩幾塊待放（0 = 沒有計畫或已完成）。
+/// 要求至少剩 2 塊才幫忙，確保幫忙後計畫仍未完工——完工收尾（記錄已蓋種類/完工 Feed/
+/// 廣播）只交給 `tick_residents` 第 6 節統一處理一次，本函式的呼叫端不重複那段邏輯。
+pub fn should_help_build(remaining_before_pop: usize, roll: f32) -> bool {
+    remaining_before_pop >= 2 && roll < HELP_CHANCE
+}
+
+/// 幫忙放了一塊後，幫忙者冒出的台詞。
+pub fn help_say_line(helper: &str, kind_name: &str) -> String {
+    format!("看到在蓋{kind_name}，{helper}順手也幫忙放了一塊！")
+}
+
 // ── jsonl 持久化 ──────────────────────────────────────────────────────────────
 
 /// 建造計畫落地路徑（`data/` 已 gitignore）。
@@ -702,6 +723,33 @@ mod tests {
 
         let line99 = build_say_line("瞭望台", 99);
         assert!(line99.contains("蓋好了"), "進度 99 應包含「蓋好了」：{line99}");
+    }
+
+    // ── should_help_build / help_say_line 純函式 ─────────────────────────────
+
+    #[test]
+    fn help_needs_at_least_two_remaining() {
+        // 只剩 1 塊或 0 塊（沒計畫/已完成）：就算擲骰中獎也不該幫忙，避免搶在
+        // tick_residents 完工收尾之前把計畫清空。
+        assert!(!should_help_build(0, 0.0));
+        assert!(!should_help_build(1, 0.0));
+        // 剩 2 塊以上、擲骰命中 → 幫忙。
+        assert!(should_help_build(2, 0.0));
+        assert!(should_help_build(10, 0.39));
+    }
+
+    #[test]
+    fn help_respects_chance_roll() {
+        // 擲骰值 >= HELP_CHANCE 不幫忙（就算剩很多塊）。
+        assert!(!should_help_build(10, HELP_CHANCE));
+        assert!(!should_help_build(10, 0.99));
+    }
+
+    #[test]
+    fn help_say_line_mentions_helper_and_kind() {
+        let line = help_say_line("諾娃", "小木屋");
+        assert!(line.contains("諾娃"), "應提到幫忙者：{line}");
+        assert!(line.contains("小木屋"), "應提到建物種類：{line}");
     }
 
     // ── surface_y 純函式 ──────────────────────────────────────────────────────
