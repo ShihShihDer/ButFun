@@ -25,6 +25,25 @@ pub fn next_raining(raining: bool, roll: f32) -> bool {
     }
 }
 
+// ── 居民雨天反應 v1（ROADMAP 701）─────────────────────────────────────────────
+//
+// 天氣至今只影響農地/天空視覺，AI 居民對「正在下雨」這件事毫無反應——本節補上這條連結：
+// 雨剛開始下的那一刻，附近居民冒一句應景台詞（純展示、零 LLM），世界的天氣第一次也是
+// 居民生活的一部分，不只是背景特效。
+
+/// 雨剛開始下時，居民隨機冒出的應景台詞池（確定性選句，由呼叫端傳 `pick` 索引）。
+const RAIN_STARTED_LINES: [&str; 4] = [
+    "下雨了，我先進屋躲一下～",
+    "咦，這雨來得突然呢！",
+    "淋雨會感冒的，回家避一避比較好。",
+    "下雨天正好，田裡總算不缺水了。",
+];
+
+/// 依 `pick` 選一句雨天反應台詞（`pick % len`，永遠有值、確定性、可測）。
+pub fn rain_started_line(pick: usize) -> &'static str {
+    RAIN_STARTED_LINES[pick % RAIN_STARTED_LINES.len()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,5 +81,26 @@ mod tests {
             let _ = next_raining(true, roll);
             roll += 0.05;
         }
+    }
+
+    // ── rain_started_line（ROADMAP 701）───────────────────────────────────────
+
+    #[test]
+    fn rain_started_line_always_non_empty() {
+        for pick in 0..(RAIN_STARTED_LINES.len() * 3) {
+            assert!(!rain_started_line(pick).is_empty());
+        }
+    }
+
+    #[test]
+    fn rain_started_line_wraps_deterministically() {
+        let len = RAIN_STARTED_LINES.len();
+        assert_eq!(rain_started_line(0), rain_started_line(len));
+        assert_eq!(rain_started_line(1), rain_started_line(len + 1));
+    }
+
+    #[test]
+    fn rain_started_line_deterministic_same_pick_same_line() {
+        assert_eq!(rain_started_line(2), rain_started_line(2));
     }
 }
