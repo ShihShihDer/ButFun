@@ -17,6 +17,10 @@ pub const DESIRE_MAX_CHARS: usize = 40;
 /// 最短有意義心願字元數——太短（如觸發詞本身）視為無意義，略過。
 const DESIRE_MIN_CHARS: usize = 4;
 
+/// `sparked_by` 的自我啟發哨兵值——ROADMAP 6「禱告驅動蓋家」：居民自己的禱告
+/// （非玩家聊天）萌生的心願用這個標記，供顯示/思考 prompt 判斷來源、選用不同措辭。
+pub const SELF_SPARK: &str = "自己";
+
 /// 一筆居民心願（持久化單位）。
 ///
 /// 刻意不寫系統時鐘（對齊本專案避 `SystemTime::now` 慣例）：用 `seq` 當相對先後。
