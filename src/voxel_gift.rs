@@ -54,13 +54,19 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         47 => "成熟胡蘿蔔",
         48 => "胡蘿蔔種子",
         49 => "胡蘿蔔",
+        // 第三種作物 v1（馬鈴薯）：對齊 voxel::Block::PotatoSeeded/PotatoMature
+        // + voxel_farm::POTATO_SEEDS_ID/POTATO_ID。
+        50 => "馬鈴薯幼苗",
+        51 => "成熟馬鈴薯",
+        52 => "馬鈴薯種子",
+        53 => "馬鈴薯",
         _ => "物品",
     }
 }
 
-/// 是否為「食物」類禮物（麵包、胡蘿蔔）——居民會給特別溫暖的回應。
+/// 是否為「食物」類禮物（麵包、胡蘿蔔、馬鈴薯）——居民會給特別溫暖的回應。
 pub fn is_food_gift(block_id: u8) -> bool {
-    block_id == 19 || block_id == 49 // BREAD_ID / CARROT_ID
+    block_id == 19 || block_id == 49 || block_id == 53 // BREAD_ID / CARROT_ID / POTATO_ID
 }
 
 /// 居民道謝台詞（依好感等級選不同句，零 LLM，確定性）。
@@ -272,6 +278,22 @@ mod tests {
     fn is_food_gift_includes_carrot() {
         assert!(is_food_gift(49));  // 胡蘿蔔算食物禮物
         assert!(!is_food_gift(48)); // 胡蘿蔔種子不算食物禮物
+    }
+
+    #[test]
+    fn item_name_potato_ids() {
+        // 第三種作物 v1：對齊 voxel::Block::PotatoSeeded(50)/PotatoMature(51)
+        // + voxel_farm::POTATO_SEEDS_ID(52)/POTATO_ID(53)。
+        assert_eq!(item_name_zh(50), "馬鈴薯幼苗");
+        assert_eq!(item_name_zh(51), "成熟馬鈴薯");
+        assert_eq!(item_name_zh(52), "馬鈴薯種子");
+        assert_eq!(item_name_zh(53), "馬鈴薯");
+    }
+
+    #[test]
+    fn is_food_gift_includes_potato() {
+        assert!(is_food_gift(53));  // 馬鈴薯算食物禮物
+        assert!(!is_food_gift(52)); // 馬鈴薯種子不算食物禮物
     }
 
     #[test]

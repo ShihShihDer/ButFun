@@ -1273,6 +1273,10 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         //   Grass(1)          → 草(1)×1 + 胡蘿蔔種子(48)×1（原掉落不變，額外送種子當第二作物來源）。
                         //   CarrotSeeded(46)  → 農田土(11)×1 + 胡蘿蔔種子(48)×1（取消種植退還）。
                         //   CarrotMature(47)  → 農田土(11)×1 + 胡蘿蔔種子(48)×1 + 胡蘿蔔(49)×1（收割）。
+                        //   第三種作物 v1：
+                        //   Dirt(2)           → 泥土(2)×1 + 馬鈴薯種子(52)×1（原掉落不變，與胡蘿蔔區隔取自泥土非草地）。
+                        //   PotatoSeeded(50)  → 農田土(11)×1 + 馬鈴薯種子(52)×1（取消種植退還）。
+                        //   PotatoMature(51)  → 農田土(11)×1 + 馬鈴薯種子(52)×1 + 馬鈴薯(53)×2（收割；量大是特色）。
                         //   其餘實心方塊     → 自身×1（原行為）。
                         let drops: &[(u8, u32)] = match target_block {
                             Block::Leaves          => &[(vfarm::SEEDS_ID, 1)],
@@ -1282,6 +1286,9 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             Block::Grass           => &[(Block::Grass as u8, 1), (vfarm::CARROT_SEEDS_ID, 1)],
                             Block::CarrotSeeded    => &[(11, 1), (vfarm::CARROT_SEEDS_ID, 1)],
                             Block::CarrotMature    => &[(11, 1), (vfarm::CARROT_SEEDS_ID, 1), (vfarm::CARROT_ID, 1)],
+                            Block::Dirt            => &[(Block::Dirt as u8, 1), (vfarm::POTATO_SEEDS_ID, 1)],
+                            Block::PotatoSeeded    => &[(11, 1), (vfarm::POTATO_SEEDS_ID, 1)],
+                            Block::PotatoMature    => &[(11, 1), (vfarm::POTATO_SEEDS_ID, 1), (vfarm::POTATO_ID, 2)],
                             _ => &[], // 後面用 else 分支處理
                         };
 
@@ -1290,6 +1297,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             target_block,
                             Block::FarmSoilSeeded | Block::WheatMature
                                 | Block::CarrotSeeded | Block::CarrotMature
+                                | Block::PotatoSeeded | Block::PotatoMature
                         ) {
                             hub().farm.write().unwrap().remove(x, y, z);
                         }
@@ -2068,6 +2076,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
             Ok(ClientMsg::Plant { x, y, z, seed }) => {
                 // 種田 v1（ROADMAP 659）：在農田土(11)上種下種子(14) → FarmSoilSeeded(12)。
                 // 第二種作物 v1：`seed` 為胡蘿蔔種子(48) 時改種胡蘿蔔 → CarrotSeeded(46)。
+                // 第三種作物 v1：`seed` 為馬鈴薯種子(52) 時改種馬鈴薯 → PotatoSeeded(50)。
                 // 鎖序：inventory → delta → farm（循序取放，不巢狀，守死鎖鐵律）。
                 let Some((px, py, pz)) = player_pos(my_id) else {
                     continue;
@@ -2087,10 +2096,13 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     ));
                     continue;
                 }
-                // 依 seed 選作物種類（省略/非胡蘿蔔種子一律當小麥，向後相容舊客戶端）。
+                // 依 seed 選作物種類（省略/非胡蘿蔔·馬鈴薯種子一律當小麥，向後相容舊客戶端）。
                 let is_carrot = seed == Some(vfarm::CARROT_SEEDS_ID);
+                let is_potato = seed == Some(vfarm::POTATO_SEEDS_ID);
                 let (seed_id, kind, seeded_block) = if is_carrot {
                     (vfarm::CARROT_SEEDS_ID, vfarm::CropKind::Carrot, Block::CarrotSeeded)
+                } else if is_potato {
+                    (vfarm::POTATO_SEEDS_ID, vfarm::CropKind::Potato, Block::PotatoSeeded)
                 } else {
                     (vfarm::SEEDS_ID, vfarm::CropKind::Wheat, Block::FarmSoilSeeded)
                 };
@@ -2126,7 +2138,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({
                         "t": "plant_ok", "x": x, "y": y, "z": z,
-                        "irrigated": irrigated, "carrot": is_carrot
+                        "irrigated": irrigated, "carrot": is_carrot, "potato": is_potato
                     }).to_string(),
                 ));
             }
@@ -2733,10 +2745,11 @@ fn tick_farm() {
         // 寫鎖清掉農地記錄（避免下輪重複處理）。
         hub().farm.write().unwrap().remove(fx, fy, fz);
         // delta 寫鎖：依作物種類把 Seeded 換成對應 Mature 狀態
-        //（FarmSoilSeeded→WheatMature / CarrotSeeded→CarrotMature，第二種作物 v1）。
+        //（FarmSoilSeeded→WheatMature / CarrotSeeded→CarrotMature / PotatoSeeded→PotatoMature）。
         let mature_block = match kind {
             vfarm::CropKind::Wheat => Block::WheatMature,
             vfarm::CropKind::Carrot => Block::CarrotMature,
+            vfarm::CropKind::Potato => Block::PotatoMature,
         };
         voxel::set_block(&mut hub().deltas.write().unwrap(), fx, fy, fz, mature_block);
         // 廣播方塊更新（所有連線玩家即時看到作物成熟變色）。

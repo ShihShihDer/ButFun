@@ -159,6 +159,12 @@ pub enum Block {
     /// 成熟胡蘿蔔（第二種作物 v1）——可收割；破壞後掉落農田土×1 + 胡蘿蔔種子×1 + 胡蘿蔔×1，
     /// 種田系統第一次有兩種作物可選（小麥慢而多用途／胡蘿蔔快而輕巧）。
     CarrotMature = 47,
+    /// 馬鈴薯幼苗（第三種作物 v1）——農田土種下馬鈴薯種子後的生長狀態，
+    /// ~120 秒（水耕 60 秒）後自動長成成熟馬鈴薯。伺服器維護狀態，玩家不可手動放置。
+    PotatoSeeded = 50,
+    /// 成熟馬鈴薯（第三種作物 v1）——可收割；破壞後掉落農田土×1 + 馬鈴薯種子×1 + 馬鈴薯×2，
+    /// 種田系統第一次有「慢但收成多」的第三種節奏（小麥居中／胡蘿蔔快而輕巧／馬鈴薯慢而量大）。
+    PotatoMature = 51,
 }
 
 impl Block {
@@ -227,6 +233,8 @@ impl Block {
             45 => Some(Block::Bed),
             46 => Some(Block::CarrotSeeded),
             47 => Some(Block::CarrotMature),
+            50 => Some(Block::PotatoSeeded),
+            51 => Some(Block::PotatoMature),
             _ => None,
         }
     }
