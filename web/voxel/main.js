@@ -672,6 +672,7 @@ function openChat(rid, name) {
   }
   chatRid = rid;
   chatTitleEl.textContent = name || "居民";
+  releaseMouse(); // 桌機：開對話要放開滑鼠鎖定，游標才能打字
   chatEl.style.display = "flex";
   // 開定向對話 modal 時收起常駐說話列，避免兩者重疊。
   const sb = document.getElementById("speakBar");
@@ -1384,40 +1385,73 @@ const keys = {};
 addEventListener("keydown", (e) => {
   if (e.target && e.target.tagName === "INPUT") return; // 對話輸入中不觸發移動
   keys[e.code] = true; if (e.code === "Space") e.preventDefault();
+  // 麥塊式快捷鍵：F5 切第一/三人稱、E 開/關背包（開背包會釋放滑鼠鎖定）。
+  if (e.code === "F5") { e.preventDefault(); toggleViewMode(); }
+  if (e.code === "KeyE") {
+    e.preventDefault();
+    if (bagPanelVisible()) closeBagPanel(); else openBagPanel();
+  }
 });
 addEventListener("keyup", (e) => { keys[e.code] = false; });
 
-// 滑鼠：拖曳轉鏡頭；「點一下」（位移很小）＝對準心動作。左鍵破壞、右鍵放置（MCPE 範式）。
+// ── 視角模式 + 俯仰 ─────────────────────────────────────────────────────────
+// camPitch：視線俯仰（0=水平、正=往下看、負=往上看），yaw+pitch 純前端相機視角，
+// 後端玩家只有 yaw（pitch 不上傳、不影響移動/面向）。
 let camPitch = 0.35;
-let dragging = false, lastX = 0, lastY = 0;
-let downX = 0, downY = 0, downBtn = 0, moved = 0;
-const TAP_PX = 6; // 位移小於此視為「點擊」而非拖曳
-renderer.domElement.addEventListener("pointerdown", (e) => {
-  dragging = true; lastX = e.clientX; lastY = e.clientY;
-  downX = e.clientX; downY = e.clientY; downBtn = e.button; moved = 0;
+// 視角模式：'first'=第一人稱（相機在眼睛、藏身體）、'third'=第三人稱（後上方跟隨、看得到身體）。
+// 預設：桌機第一人稱、手機第三人稱（麥塊桌機/MCPE 觸控各自的成熟手感）。
+let viewMode = isTouch ? "third" : "first";
+// 俯仰上下限：第一人稱可近乎正負直視（±83°）；第三人稱維持較窄，避免鏡頭鑽進地面。
+function pitchLimits() { return viewMode === "first" ? [-1.45, 1.45] : [-0.2, 1.3]; }
+function clampPitch() { const [lo, hi] = pitchLimits(); camPitch = Math.max(lo, Math.min(hi, camPitch)); }
+
+// 切換第一/三人稱（F5 或 👁 鈕）：重新夾俯仰到該模式範圍、切身體可見性、更新鈕字。
+function toggleViewMode() {
+  viewMode = (viewMode === "first") ? "third" : "first";
+  clampPitch();
+  bodyMesh.visible = (viewMode !== "first"); // 第一人稱藏自己身體（每幀也會再設一次，冪等）
+  const vb = document.getElementById("viewBtn");
+  if (vb) vb.textContent = (viewMode === "first") ? "👁 第一人稱" : "🧍 第三人稱";
+}
+
+// 桌機滑鼠鎖定（pointer lock）：點畫面進入、Esc 離開（麥塊桌機手感）。
+let pointerLocked = false;
+const MOUSE_SENS = 0.0022;
+// 有面板/對話開著時不進滑鼠鎖定（那些需要游標操作）。
+function anyPanelOpen() {
+  return bagPanelVisible() || wbPanelVisible() || furnacePanelVisible() ||
+         (chatEl && chatEl.style.display === "flex");
+}
+// 釋放滑鼠鎖定（開面板/對話時呼叫，讓游標回來能點格子/打字）。
+function releaseMouse() { if (pointerLocked) { try { document.exitPointerLock(); } catch (e) {} } }
+document.addEventListener("pointerlockchange", () => {
+  pointerLocked = (document.pointerLockElement === renderer.domElement);
 });
-addEventListener("pointerup", (e) => {
-  if (dragging && moved < TAP_PX) {
-    // 點擊：右鍵放；左鍵先看是否點到居民（開對話），否則挖。
-    if (downBtn === 2) {
-      placeAtTarget();
-    } else {
-      const rid = pickResident(e.clientX, e.clientY);
-      if (rid) { const ent = residents.get(rid); openChat(rid, ent && ent.lastName); }
-      else breakAtTarget();
+
+if (!isTouch) {
+  // 桌機：麥塊式滑鼠鎖定視角。沒鎖定時點畫面＝進入視角（此下不當破壞）；
+  // 鎖定中：mousemove 轉 yaw+pitch、左鍵挖/點居民對話、右鍵放置，準心固定螢幕中心。
+  renderer.domElement.addEventListener("mousedown", (e) => {
+    if (!pointerLocked) {
+      if (!anyPanelOpen()) renderer.domElement.requestPointerLock();
+      return;
     }
-  }
-  dragging = false;
-});
-addEventListener("pointermove", (e) => {
-  if (!dragging) return;
-  moved += Math.abs(e.clientX - lastX) + Math.abs(e.clientY - lastY);
-  player.yaw -= (e.clientX - lastX) * 0.005;
-  camPitch = Math.max(-0.2, Math.min(1.3, camPitch + (e.clientY - lastY) * 0.005));
-  lastX = e.clientX; lastY = e.clientY;
-});
-// 右鍵放置：擋掉瀏覽器選單。
-renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
+    if (e.button === 2) { placeAtTarget(); return; }
+    // 鎖定中游標藏在螢幕中心 → 用中心點做居民 raycast / 破壞。
+    const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+    const rid = pickResident(cx, cy);
+    if (rid) { const ent = residents.get(rid); openChat(rid, ent && ent.lastName); }
+    else breakAtTarget();
+  });
+  document.addEventListener("mousemove", (e) => {
+    if (!pointerLocked) return;
+    player.yaw -= e.movementX * MOUSE_SENS;
+    camPitch += e.movementY * MOUSE_SENS; // 滑鼠往下＝往下看（往下 movementY>0 → pitch 增）
+    clampPitch();
+  });
+  // 右鍵放置：擋掉瀏覽器選單。
+  renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
+}
 
 // 觸控搖桿（isTouch 常數已在頁首定義）
 const touchEl = document.getElementById("touch");
@@ -1453,7 +1487,7 @@ if (isTouch) {
       if (t.identifier !== camId) continue;
       camMoved += Math.abs(t.clientX - cx0) + Math.abs(t.clientY - cy0);
       player.yaw -= (t.clientX - cx0) * 0.006;
-      camPitch = Math.max(-0.2, Math.min(1.3, camPitch + (t.clientY - cy0) * 0.006));
+      camPitch += (t.clientY - cy0) * 0.006; clampPitch(); // 夾到目前模式的俯仰範圍
       cx0 = t.clientX; cy0 = t.clientY;
     }
   }, { passive: false });
@@ -1797,7 +1831,8 @@ function update(dt) {
   // visualY：bodyMesh 與鏡頭看向點用此值——踏階時從原地平滑升上去，消除瞬跳閃爍。
   const visualY = player.y - stepSmooth;
 
-  // 玩家身體 + 朝向（用 visualY 避免角色瞬跳一格）
+  // 玩家身體 + 朝向（用 visualY 避免角色瞬跳一格）。第一人稱藏自己身體（相機在眼睛裡）。
+  bodyMesh.visible = (viewMode !== "first");
   bodyMesh.position.set(player.x, visualY + PH / 2, player.z);
   if (dir.lengthSq() > 1e-4) bodyMesh.rotation.y = Math.atan2(dir.x, dir.z);
 
@@ -1808,15 +1843,23 @@ function update(dt) {
   }
   if (myBubble.visible) myBubble.position.set(player.x, visualY + PH + 0.85, player.z);
 
-  // 第三人稱鏡頭跟隨（用 visualY 讓鏡頭也跟著平滑升，不突然跳）
-  const lookTarget = new THREE.Vector3(player.x, visualY + 1.3, player.z);
-  const dist = 6.0, cp = Math.cos(camPitch), sp = Math.sin(camPitch);
-  camera.position.set(
-    lookTarget.x + Math.sin(player.yaw) * dist * cp,
-    lookTarget.y + dist * sp,
-    lookTarget.z + Math.cos(player.yaw) * dist * cp
-  );
-  camera.lookAt(lookTarget);
+  if (viewMode === "first") {
+    // 第一人稱：相機在眼睛高度，朝視線方向（yaw+pitch）看出去。
+    const eye = new THREE.Vector3(player.x, visualY + 1.5, player.z);
+    camera.position.copy(eye);
+    const d = viewDir();
+    camera.lookAt(eye.x + d.x, eye.y + d.y, eye.z + d.z);
+  } else {
+    // 第三人稱鏡頭跟隨（用 visualY 讓鏡頭也跟著平滑升，不突然跳）
+    const lookTarget = new THREE.Vector3(player.x, visualY + 1.3, player.z);
+    const dist = 6.0, cp = Math.cos(camPitch), sp = Math.sin(camPitch);
+    camera.position.set(
+      lookTarget.x + Math.sin(player.yaw) * dist * cp,
+      lookTarget.y + dist * sp,
+      lookTarget.z + Math.cos(player.yaw) * dist * cp
+    );
+    camera.lookAt(lookTarget);
+  }
 
   // 準心對準的方塊（破壞/放置目標）+ 高亮外框。
   updateTarget();
@@ -1893,6 +1936,9 @@ const RECIPES_JS = [
   { id: "stone_brick",  name: "石磚",   inputs: [[STONE, 2]], output_block: STONE_BRICK, out_count: 2 },
   { id: "glass",        name: "玻璃",   inputs: [[SAND, 2]],  output_block: GLASS,       out_count: 1 },
   { id: "till",         name: "農田土", inputs: [[DIRT, 2]],  output_block: FARM_SOIL,   out_count: 2 },
+  // 工作台 v1（ROADMAP 665）：4 木板 → 1 工作台（放滿 2×2 四格）。
+  // 先前缺這條 → 玩家放 4 木板卻合不出工作台（前端配方表和後端 voxel_craft 脫節）。
+  { id: "workbench",    name: "工作台", inputs: [[PLANK, 4]], output_block: WORKBENCH,   out_count: 1 },
   // 麵包 v1（ROADMAP 668）：3 小麥顆粒 → 1 麵包
   { id: "bread",        name: "麵包",   inputs: [[WHEAT, 3]], output_block: BREAD,       out_count: 1 },
 ];
@@ -1910,6 +1956,7 @@ const bagResultEl  = document.getElementById("bagResultSlot");
 
 function openBagPanel() {
   if (!bagPanelEl) return;
+  releaseMouse(); // 桌機：開面板要放開滑鼠鎖定，游標才能點格子
   bagPanelEl.style.display = "flex";
   renderBagPanel();
 }
@@ -2043,6 +2090,15 @@ function renderBagCraftArea() {
       warn.textContent = "材料不足";
       bagResultEl.appendChild(warn);
     }
+  } else {
+    // 沒有配方吻合：格子裡有東西卻湊不成 → 提示「差什麼」，讓玩家知道怎麼放對。
+    const hasItems = bagGrid.some((b) => b !== 0);
+    if (hasItems) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "font-size:10px;color:#c0b090;text-align:center;line-height:1.3";
+      hint.textContent = "這些湊不成配方。試試放滿同一種：2 木→木板、4 木板→工作台";
+      bagResultEl.appendChild(hint);
+    }
   }
 }
 
@@ -2068,6 +2124,13 @@ if (bagClearBtnEl) bagClearBtnEl.addEventListener("pointerdown", (e) => {
   bagPick = 0;
   renderBagPanel();
 });
+
+// 視角切換鈕（👁）：第一/三人稱互換（等同 F5）。初始文字依預設模式設定。
+const viewBtnEl = document.getElementById("viewBtn");
+if (viewBtnEl) {
+  viewBtnEl.textContent = (viewMode === "first") ? "👁 第一人稱" : "🧍 第三人稱";
+  viewBtnEl.addEventListener("click", (e) => { toggleViewMode(); e.stopPropagation(); });
+}
 
 // 背包按鈕（🎒）開關面板。
 const bagBtnEl = document.getElementById("bagBtn");
@@ -2109,6 +2172,7 @@ const wbBtnEl     = document.getElementById("wbBtn");
 
 function openWbPanel() {
   if (!wbPanelEl) return;
+  releaseMouse(); // 桌機：開面板要放開滑鼠鎖定，游標才能拖放材料
   wbPanelEl.style.display = "flex";
   renderWbPanel();
 }
@@ -2285,6 +2349,7 @@ const furnaceRecipeListEl = document.getElementById("furnaceRecipeList");
 
 function openFurnacePanel() {
   if (!furnacePanelEl) return;
+  releaseMouse(); // 桌機：開面板要放開滑鼠鎖定，游標才能點冶煉
   furnacePanelEl.style.display = "flex";
   renderFurnacePanel();
 }
@@ -2396,6 +2461,15 @@ window.__voxel = {
   // ── 踏階平滑 QA 用：讀視覺 Y（平滑後）與補間偏移 ──
   get stepSmooth() { return stepSmooth; },
   get visualY() { return player.y - stepSmooth; },
+  // ── 視角模式 QA 用（滑鼠鎖定視角 + 第一/三人稱切換）──
+  get viewMode() { return viewMode; },
+  get camPitch() { return camPitch; },
+  get pointerLocked() { return pointerLocked; },
+  get bodyVisible() { return bodyMesh.visible; },
+  toggleViewMode() { toggleViewMode(); return viewMode; },
+  setCamPitch(p) { camPitch = p; clampPitch(); return camPitch; },
+  setYaw(y) { player.yaw = y; return player.yaw; },
+  get camPos() { return { x: camera.position.x, y: camera.position.y, z: camera.position.z }; },
   // 乙太方界 AI 居民（QA 用）：數量 + 位置/名字/說的話快照。
   get residentCount() { return residents.size; },
   residentInfo() {
