@@ -2097,12 +2097,13 @@ function renderBagCraftArea() {
       bagResultEl.appendChild(warn);
     }
   } else {
-    // 沒有配方吻合：格子裡有東西卻湊不成 → 提示「差什麼」，讓玩家知道怎麼放對。
+    // 沒有配方吻合：不洩題（維護者「合成應該自己摸索」）——只給「還沒湊對」的模糊訊號，
+    // 讓玩家知道格子有反應、不是壞掉，但確切配方留給自己試 / 問居民（古代智慧口耳相傳）。
     const hasItems = bagGrid.some((b) => b !== 0);
     if (hasItems) {
       const hint = document.createElement("div");
       hint.style.cssText = "font-size:10px;color:#c0b090;text-align:center;line-height:1.3";
-      hint.textContent = "這些湊不成配方。試試放滿同一種：2 木→木板、4 木板→工作台";
+      hint.textContent = "……還湊不出什麼。";
       bagResultEl.appendChild(hint);
     }
   }
