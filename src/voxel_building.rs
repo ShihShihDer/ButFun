@@ -177,6 +177,24 @@ impl BuildStore {
         self.plans.get_mut(resident)
     }
 
+    /// ROADMAP 699：玩家協助居民蓋家。若玩家剛放的方塊（世界座標 + 類型）正好等於
+    /// 某位居民建造計畫「下一塊待放」，判定為玩家幫了忙——彈掉該塊（居民之後 tick
+    /// 不會重放這塊，接著蓋下一塊），回傳 `(resident_id, kind_name)` 供呼叫端道謝。
+    /// 找不到符合的計畫回 `None`（多數放置與任何居民無關，屬正常情形）。
+    pub fn try_player_help(&mut self, x: i32, y: i32, z: i32, b: u8) -> Option<(String, String)> {
+        for (rid, plan) in self.plans.iter_mut() {
+            let is_match = plan
+                .remaining
+                .front()
+                .map_or(false, |front| front.x == x && front.y == y && front.z == z && front.b == b);
+            if is_match {
+                plan.pop_next();
+                return Some((rid.clone(), plan.kind_name.clone()));
+            }
+        }
+        None
+    }
+
     /// 新建並插入計畫；回傳 clone 供呼叫端落地 jsonl。
     pub fn new_plan(
         &mut self,
@@ -410,6 +428,16 @@ pub fn should_help_build(remaining_before_pop: usize, roll: f32) -> bool {
 /// 幫忙放了一塊後，幫忙者冒出的台詞。
 pub fn help_say_line(helper: &str, kind_name: &str) -> String {
     format!("看到在蓋{kind_name}，{helper}順手也幫忙放了一塊！")
+}
+
+// ── 玩家協助居民蓋家（純函式，零 LLM）──────────────────────────────────────────
+// ROADMAP 699：居民互助蓋家（696）讓居民彼此的情誼外溢成動手幫忙，但玩家——那個一路
+// 採礦砍樹合成工具的人——從沒能真正伸手參與居民蓋家。本節接上這個真缺口：玩家在正確的
+// 座標放對方塊，就算幫了居民一把。
+
+/// 居民收到玩家幫忙放塊後，冒出的道謝台詞。
+pub fn player_help_say_line(player_name: &str, kind_name: &str) -> String {
+    format!("謝謝{player_name}幫忙放的這塊，{kind_name}又更接近完工了！")
 }
 
 // ── jsonl 持久化 ──────────────────────────────────────────────────────────────
@@ -749,6 +777,76 @@ mod tests {
     fn help_say_line_mentions_helper_and_kind() {
         let line = help_say_line("諾娃", "小木屋");
         assert!(line.contains("諾娃"), "應提到幫忙者：{line}");
+        assert!(line.contains("小木屋"), "應提到建物種類：{line}");
+    }
+
+    // ── try_player_help 純邏輯（ROADMAP 699）────────────────────────────────────
+
+    fn store_with_plan(resident: &str, kind: BuildKind) -> BuildStore {
+        let mut s = BuildStore::new();
+        s.new_plan(resident, kind, 0, 64, 0);
+        s
+    }
+
+    #[test]
+    fn player_help_pops_matching_front_block() {
+        let mut s = store_with_plan("vox_res_0", BuildKind::House);
+        let front = s.plans["vox_res_0"].remaining.front().cloned().unwrap();
+        let before_len = s.plans["vox_res_0"].remaining.len();
+
+        let result = s.try_player_help(front.x, front.y, front.z, front.b);
+
+        assert_eq!(result, Some(("vox_res_0".to_string(), "小木屋".to_string())));
+        assert_eq!(s.plans["vox_res_0"].remaining.len(), before_len - 1, "應彈掉一塊");
+    }
+
+    #[test]
+    fn player_help_ignores_wrong_position() {
+        let mut s = store_with_plan("vox_res_0", BuildKind::House);
+        let before_len = s.plans["vox_res_0"].remaining.len();
+
+        let result = s.try_player_help(9999, 9999, 9999, Block::Wood as u8);
+
+        assert_eq!(result, None, "座標不符不算幫忙");
+        assert_eq!(s.plans["vox_res_0"].remaining.len(), before_len, "沒有計畫被更動");
+    }
+
+    #[test]
+    fn player_help_ignores_wrong_block_type() {
+        let mut s = store_with_plan("vox_res_0", BuildKind::House);
+        let front = s.plans["vox_res_0"].remaining.front().cloned().unwrap();
+        let before_len = s.plans["vox_res_0"].remaining.len();
+        let wrong_block = if front.b == Block::Stone as u8 { Block::Wood as u8 } else { Block::Stone as u8 };
+
+        let result = s.try_player_help(front.x, front.y, front.z, wrong_block);
+
+        assert_eq!(result, None, "座標對但方塊類型不符不算幫忙");
+        assert_eq!(s.plans["vox_res_0"].remaining.len(), before_len);
+    }
+
+    #[test]
+    fn player_help_no_plans_returns_none() {
+        let mut s = BuildStore::new();
+        assert_eq!(s.try_player_help(0, 64, 0, Block::Wood as u8), None);
+    }
+
+    #[test]
+    fn player_help_picks_correct_resident_among_many() {
+        let mut s = store_with_plan("vox_res_0", BuildKind::House);
+        s.new_plan("vox_res_1", BuildKind::Well, 20, 64, 20);
+        let front1 = s.plans["vox_res_1"].remaining.front().cloned().unwrap();
+
+        let result = s.try_player_help(front1.x, front1.y, front1.z, front1.b);
+
+        assert_eq!(result, Some(("vox_res_1".to_string(), "水井".to_string())));
+        // 另一位居民的計畫不受影響。
+        assert!(!s.plans["vox_res_0"].remaining.is_empty());
+    }
+
+    #[test]
+    fn player_help_say_line_mentions_player_and_kind() {
+        let line = player_help_say_line("小明", "小木屋");
+        assert!(line.contains("小明"), "應提到玩家名：{line}");
         assert!(line.contains("小木屋"), "應提到建物種類：{line}");
     }
 
