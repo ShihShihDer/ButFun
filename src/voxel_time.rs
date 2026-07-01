@@ -46,6 +46,12 @@ impl WorldTime {
         self.elapsed_secs / DAY_DURATION_SECS
     }
 
+    /// 睡覺跳過夜晚（床 v1）：直接把世界時鐘撥到隔天黎明起點（`time_of_day = 0.20`），
+    /// 讓睡覺有實際效果——玩家不必苦等整段黑夜，一覺醒來就是清晨。
+    pub fn skip_to_dawn(&mut self) {
+        self.elapsed_secs = DAY_DURATION_SECS * 0.20;
+    }
+
     /// 根據時刻判斷所在時段。
     pub fn phase(&self) -> TimePhase {
         let t = self.time_of_day();
@@ -98,6 +104,12 @@ pub fn rest_wait_extra(phase: TimePhase) -> f32 {
         TimePhase::Dawn | TimePhase::Dusk => 0.5,
         TimePhase::Day => 0.0,
     }
+}
+
+/// 是否處於「可以睡覺跳過夜晚」的時段（床 v1）：只有深夜/入夜過渡才有意義
+/// （白天/黎明/黃昏睡覺沒有效果，比照 Minecraft 只有夜晚才能睡覺跳過的設計）。純函式、可測。
+pub fn is_sleepable(phase: TimePhase) -> bool {
+    matches!(phase, TimePhase::Night | TimePhase::Evening)
 }
 
 /// 時段轉換時的台詞池——夜間（深夜/入夜）。
@@ -266,5 +278,38 @@ mod tests {
             let _ = transition_phrase(TimePhase::Night, seed);
             let _ = transition_phrase(TimePhase::Dawn, seed);
         }
+    }
+
+    // ── 床 v1：睡覺跳過夜晚純邏輯測試 ───────────────────────────────────────────
+
+    #[test]
+    fn is_sleepable_only_at_night() {
+        // 只有深夜/入夜過渡才「睡得著」；其餘時段（黎明/白晝/黃昏）睡不著。
+        assert!(is_sleepable(TimePhase::Night));
+        assert!(is_sleepable(TimePhase::Evening));
+        assert!(!is_sleepable(TimePhase::Dawn));
+        assert!(!is_sleepable(TimePhase::Day));
+        assert!(!is_sleepable(TimePhase::Dusk));
+    }
+
+    #[test]
+    fn skip_to_dawn_lands_in_dawn_phase() {
+        // 睡覺後時鐘應落在 Dawn 時段起點，且不再是可睡覺的夜晚。
+        let mut t = WorldTime { elapsed_secs: 5.0 }; // 深夜
+        assert!(is_sleepable(t.phase()));
+        t.skip_to_dawn();
+        assert_eq!(t.phase(), TimePhase::Dawn);
+        assert!(!is_sleepable(t.phase()));
+    }
+
+    #[test]
+    fn skip_to_dawn_idempotent_from_any_starting_time() {
+        // 無論睡前時鐘在哪，睡完都落在同一個黎明起點（確定性、可重現）。
+        let mut t1 = WorldTime { elapsed_secs: 1.0 };
+        let mut t2 = WorldTime { elapsed_secs: DAY_DURATION_SECS * 0.95 };
+        t1.skip_to_dawn();
+        t2.skip_to_dawn();
+        assert_eq!(t1.time_of_day(), t2.time_of_day());
+        assert!((t1.time_of_day() - 0.20).abs() < 0.001);
     }
 }

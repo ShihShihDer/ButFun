@@ -175,6 +175,14 @@ pub const RECIPES: &[Recipe] = &[
         output_block: 43,           // Block::DoorClosed = 43
         output_count: 2,
     },
+    // ── 床 v1：3 木板 + 3 葉片（無棉花，葉片當被褥）→ 1 床 ─────────────────────────
+    Recipe {
+        id: "bed",
+        name_zh: "床",
+        inputs: &[(8, 3), (6, 3)],  // 3 木板 + 3 葉片 → 1 床
+        output_block: 45,           // Block::Bed = 45
+        output_count: 1,
+    },
 ];
 
 /// 工作台 3×3 合成配方（需放置工作台方塊後右鍵開啟面板才能合成）。
@@ -351,6 +359,15 @@ mod tests {
     }
 
     #[test]
+    fn find_recipe_bed_in_2x2_list() {
+        // 床配方在 2×2 表——3 木板 + 3 葉片 → 1 床
+        let r = find_recipe("bed").unwrap();
+        assert_eq!(r.output_block, 45, "床 id 應為 45（Block::Bed）");
+        assert_eq!(r.output_count, 1);
+        assert_eq!(r.inputs, &[(8, 3), (6, 3)], "床需要 3 木板 + 3 葉片");
+    }
+
+    #[test]
     fn find_recipe_returns_none_for_unknown() {
         assert!(find_recipe("unknown_xyz").is_none());
         assert!(find_recipe("").is_none());
@@ -424,7 +441,8 @@ mod tests {
                 || r.output_block == AXE_STONE_ID  // 石斧（ROADMAP 689）
                 || r.output_block == SHOVEL_WOOD_ID  // 木鏟（ROADMAP 690）
                 || r.output_block == SHOVEL_STONE_ID  // 石鏟（ROADMAP 690）
-                || r.output_block == 43; // 木門（DoorClosed，ROADMAP 693）
+                || r.output_block == 43  // 木門（DoorClosed，ROADMAP 693）
+                || r.output_block == 45; // 床（Block::Bed）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
@@ -557,6 +575,7 @@ mod tests {
         store.give("旅人", 20, 10); // CoalOre（smelt_iron 燃料用）
         store.give("旅人", 21, 10); // IronOre（smelt_iron 原料用）
         store.give("旅人", 22, 10); // IronIngot（iron_block 配方用，ROADMAP 684）
+        store.give("旅人", 6, 10);  // Leaves（床配方用）
         // 火把配方：1 木頭(5) + 1 煤礦(20) → 4 火把（Wood/CoalOre 已加，數量足夠）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);

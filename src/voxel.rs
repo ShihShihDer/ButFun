@@ -149,6 +149,10 @@ pub enum Block {
     /// **非實心**——玩家可穿入；DDA 仍命中此格（r>0），右鍵再關。
     /// 伺服器維護狀態，玩家不可直接放置。
     DoorOpen = 44,
+    /// 床（床 v1）——背包 2×2 合成：3 木板 + 3 葉片（當被褥）→ 1 床；
+    /// 放置後右鍵互動：夜晚（深夜/入夜）時睡覺跳過黑夜直達隔天黎明，
+    /// 白天睡不著（無效果）。實心方塊，破壞可回收。
+    Bed = 45,
 }
 
 impl Block {
@@ -214,6 +218,7 @@ impl Block {
             42 => Some(Block::Chest),
             43 => Some(Block::DoorClosed),
             44 => Some(Block::DoorOpen),
+            45 => Some(Block::Bed),
             _ => None,
         }
     }
@@ -227,7 +232,7 @@ impl Block {
             Block::Plank | Block::StoneBrick | Block::Glass | Block::FarmSoil |
             Block::Workbench | Block::Furnace | Block::SmoothStone |
             Block::CoalOre | Block::IronOre | Block::IronIngot | Block::IronBlock |
-            Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed
+            Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed | Block::Bed
         )
     }
 }
@@ -828,6 +833,14 @@ mod tests {
         // 空氣仍不可破壞。
         set_block(&mut world, x, h + 1, z, Block::Air);
         assert!(!can_break(&world, px, py, pz, x, h + 1, z), "空氣不可破壞");
+    }
+
+    #[test]
+    fn bed_is_solid_placeable_and_roundtrips() {
+        // 床（id 45）：實心（可站立/會擋路）、可放置、from_u8 正確還原。
+        assert!(Block::Bed.is_solid(), "床應為實心方塊");
+        assert!(Block::Bed.is_placeable(), "床應可放置");
+        assert_eq!(Block::from_u8(45), Some(Block::Bed));
     }
 
     #[test]
