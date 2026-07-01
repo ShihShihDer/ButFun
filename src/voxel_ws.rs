@@ -1369,13 +1369,16 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
 
                 // 6) 被指名者 → 走既有 LLM 對話路徑（記憶/心願/思考中佔位/罐頭後備、世界冒泡）。
                 if let Some((addr_id, rname, rpersona)) = addressed.clone() {
-                    // 6a) 短鎖讀記憶 → 組脈絡區塊（近期對話 + 關於這位玩家的長期記憶）→ drop。
+                    // 6a) 短鎖讀記憶 → 組脈絡區塊（B 層精華 + A 層近期記憶 + 本輪對話）→ drop。
+                    //     v2 兩層：semantic 精華（身份/目標/偏好/承諾，總是帶上）
+                    //             + episodic 近期記憶 + 對話歷史（可被 cap 截斷）。
                     let context = {
                         let mem = hub().memory.read().unwrap();
                         let history = mem.recent_dialogue(&player_key, &addr_id);
-                        let memories = mem.recall(&addr_id, &player_key, vmem::RECALL_LIMIT);
-                        vmem::build_context_block(&history, &memories, &player_key)
-                    }; // 記憶讀鎖在此釋放
+                        let episodic = mem.recall(&addr_id, &player_key, vmem::RECALL_LIMIT);
+                        let semantic = mem.semantic_facts_for(&addr_id, &player_key);
+                        vmem::build_context_block(&history, &episodic, &semantic, &player_key)
+                    }; // 記憶讀鎖在此釋放（不在持鎖中 await，符合死鎖鐵律）
                     // 6b) 短鎖讀居民當前心願 → drop（帶進 prompt 讓居民「帶著夢想說話」）。
                     let current_desire: Option<String> = {
                         let des = hub().desires.read().unwrap();
