@@ -129,10 +129,11 @@ if [ "$ok" != 1 ]; then
 fi
 
 # /healthz 只驗 HTTP 活著，無法偵測「遊戲迴圈 tokio task 靜默炸死」這一型事故。
-# 再跑 WS 冒煙閘：連 /ws → 斷言快照含自身 id → 斷言兩幀 tick 有推進。
+# 再跑 WS 冒煙閘：連 /voxel/ws（2D 已封存、/ws 路由已移除，見 #874）→ 斷言快照含自身 id
+# → 斷言 time_of_day 有推進。
 echo "[deploy] WS 遊戲迴圈冒煙閘…"
 WS_PORT=$(echo "$HEALTH_URL" | sed 's|.*localhost:\([0-9]*\).*|\1|;t;s|.*|3000|')
-WS_URL="ws://localhost:${WS_PORT}/ws"
+WS_URL="ws://localhost:${WS_PORT}/voxel/ws"
 if ! node "$REPO/scripts/e2e/gameloop-smoke.mjs" "$WS_URL"; then
   echo "[deploy] WS 冒煙閘失敗（遊戲迴圈可能已死）→ 回滾。"
   rollback
