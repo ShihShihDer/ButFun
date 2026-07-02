@@ -1791,9 +1791,8 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             let cz = pz.floor() as i32;
                             let target_y = {
                                 let world = hub().deltas.read().unwrap();
-                                vdt::ground_top(&world, cx, cz)
-                            } // deltas 讀鎖釋放
-                            .unwrap_or_else(|| voxel::height_at(cx, cz));
+                                vdt::safe_target_y(&world, cx, cz)
+                            }; // deltas 讀鎖釋放
                             let task = DirectedTask::new_pave(
                                 addr_id.clone(), player_key.clone(),
                                 cx, cz, vdt::PAVE_RADIUS, target_y, mat,
@@ -1820,7 +1819,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             // 誠實而願意的回覆（坦白要先備料；單播 + 冒泡 + 記憶 + Feed）。
                             let mname = vdt::pave_material_name(mat);
                             let pick = (px.to_bits() ^ pz.to_bits()) as usize;
-                            let reply = vdt::pave_accept_line(mname, pick);
+                            let reply = vdt::pave_accept_line(mname, pick, cx, cz);
                             let msg = serde_json::json!({
                                 "t": "talk",
                                 "resident_id": &addr_id,
@@ -1855,9 +1854,8 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             let cz = pz.floor() as i32;
                             let target_y = {
                                 let world = hub().deltas.read().unwrap();
-                                vdt::ground_top(&world, cx, cz)
-                            } // deltas 讀鎖釋放
-                            .unwrap_or_else(|| voxel::height_at(cx, cz));
+                                vdt::safe_target_y(&world, cx, cz)
+                            }; // deltas 讀鎖釋放
                             let busy: std::collections::HashSet<String> = {
                                 hub().directed_tasks.read().unwrap().keys().cloned().collect()
                             }; // directed_tasks 讀鎖釋放
@@ -1882,7 +1880,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             } // directed_tasks 寫鎖釋放
                             hub().coordinated_tasks.write().unwrap().push(
                                 CoordinatedLevelTask::new_pave(
-                                    player_key.clone(), workers.clone(), mat,
+                                    player_key.clone(), workers.clone(), mat, cx, cz,
                                 ),
                             );
                             {
@@ -1910,7 +1908,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             } // residents 寫鎖釋放
                             let mname = vdt::pave_material_name(mat);
                             let pick = (px.to_bits() ^ pz.to_bits()) as usize;
-                            let reply = vdt::pave_rally_line(mname, pick);
+                            let reply = vdt::pave_rally_line(mname, pick, cx, cz);
                             let msg = serde_json::json!({
                                 "t": "talk",
                                 "resident_id": &addr_id,
@@ -1945,9 +1943,8 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             let cz = pz.floor() as i32;
                             let target_y = {
                                 let world = hub().deltas.read().unwrap();
-                                vdt::ground_top(&world, cx, cz)
-                            } // deltas 讀鎖釋放
-                            .unwrap_or_else(|| voxel::height_at(cx, cz));
+                                vdt::safe_target_y(&world, cx, cz)
+                            }; // deltas 讀鎖釋放
                             // 建立任務並指派給這位居民（覆蓋她原本手邊的事）。
                             let task = DirectedTask::new(
                                 addr_id.clone(), player_key.clone(), cx, cz, vdt::LEVEL_RADIUS, target_y,
@@ -1972,7 +1969,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             } // residents 寫鎖釋放
                             // 誠實而願意的回覆（單播給玩家 + 世界冒泡 + 記憶 + Feed）。
                             let pick = (px.to_bits() ^ pz.to_bits()) as usize;
-                            let reply = vdt::accept_line(rname, pick);
+                            let reply = vdt::accept_line(rname, pick, cx, cz);
                             let msg = serde_json::json!({
                                 "t": "talk",
                                 "resident_id": &addr_id,
@@ -2004,12 +2001,11 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         if let Some((px, pz, _yaw)) = player_snap {
                             let cx = px.floor() as i32;
                             let cz = pz.floor() as i32;
-                            // 目標高度＝大片地中心柱現有地表頂（全體整到同一高度）。
+                            // 目標高度＝大片地中心柱現有地表頂（全體整到同一高度），且不低於海平面+1（防淹）。
                             let target_y = {
                                 let world = hub().deltas.read().unwrap();
-                                vdt::ground_top(&world, cx, cz)
-                            } // deltas 讀鎖釋放
-                            .unwrap_or_else(|| voxel::height_at(cx, cz));
+                                vdt::safe_target_y(&world, cx, cz)
+                            }; // deltas 讀鎖釋放
                             // 號召：領隊（被指名者）＋ 最近的閒居民，跳過正忙的，最多 COORD_MAX_WORKERS 位。
                             let busy: std::collections::HashSet<String> = {
                                 hub().directed_tasks.read().unwrap().keys().cloned().collect()
@@ -2035,7 +2031,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             } // directed_tasks 寫鎖釋放
                             // 註冊協調任務（供 tick 偵測「全部子區整完 → 大家一起整平了」）。
                             hub().coordinated_tasks.write().unwrap().push(
-                                CoordinatedLevelTask::new(player_key.clone(), workers.clone()),
+                                CoordinatedLevelTask::new(player_key.clone(), workers.clone(), cx, cz),
                             );
                             // 切換每位參與居民狀態：放下手邊事、朝自己的子區中心出發（短鎖即釋）。
                             {
@@ -2063,7 +2059,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             } // residents 寫鎖釋放
                             // 領隊的號召回覆（單播 + 冒泡 + 記憶 + Feed）。
                             let pick = (px.to_bits() ^ pz.to_bits()) as usize;
-                            let reply = vdt::rally_line(rname, pick);
+                            let reply = vdt::rally_line(rname, pick, cx, cz);
                             let msg = serde_json::json!({
                                 "t": "talk",
                                 "resident_id": &addr_id,
@@ -5090,9 +5086,22 @@ fn tick_residents(dt: f32) {
         task.cursor = next_cursor;
         let rname = resident_name_of(rid);
         if task.is_complete() {
+            // 取 requester 的玩家位置，計算相對方位（短鎖即釋）。
+            let (done_dir, done_steps) = {
+                let players = hub().players.read().unwrap();
+                let req_pos = players.values().find(|p| p.name == task.requester).map(|p| (p.x, p.z));
+                drop(players);
+                if let Some((px, pz)) = req_pos {
+                    vdt::cardinal_direction(px, pz, task.cx as f32, task.cz as f32)
+                } else {
+                    (String::new(), 0)
+                }
+            }; // players 讀鎖已釋放
+            let done_cx = task.cx;
+            let done_cz = task.cz;
             hub().directed_tasks.write().unwrap().remove(rid);
-            vfeed::append_feed("整地", rname, "把那塊地整平了！");
-            say_updates.push((rid.clone(), "整好囉！這塊地平坦多了～".to_string()));
+            vfeed::append_feed("整地", rname, &format!("把（{done_cx},{done_cz}）那塊地整平了！"));
+            say_updates.push((rid.clone(), vdt::level_done_line(&done_dir, done_steps, done_cx, done_cz)));
         } else {
             let pct = task.progress_pct();
             hub().directed_tasks.write().unwrap().insert(rid.clone(), task);
@@ -5127,24 +5136,41 @@ fn tick_residents(dt: f32) {
         for c in finished {
             if let Some(leader) = c.members.first() {
                 let lname = resident_name_of(leader);
+                // 取 requester 的玩家位置，計算相對方位（短鎖即釋）。
+                let (done_dir, done_steps) = {
+                    let players = hub().players.read().unwrap();
+                    let req_pos =
+                        players.values().find(|p| p.name == c.requester).map(|p| (p.x, p.z));
+                    drop(players);
+                    if let Some((px, pz)) = req_pos {
+                        vdt::cardinal_direction(px, pz, c.cx as f32, c.cz as f32)
+                    } else {
+                        (String::new(), 0)
+                    }
+                }; // players 讀鎖已釋放
                 if let Some(mat) = c.pave {
-                    // 協調鋪面完工：領隊冒泡 + Feed 帶材料名。
+                    // 協調鋪面完工：領隊冒泡 + Feed 帶材料名與方位。
                     let mname = vdt::pave_material_name(mat);
                     say_updates.push((
                         leader.clone(),
-                        format!("大家一起把這片{mname}地鋪好了！辛苦啦～"),
+                        vdt::coord_pave_done_line(mname, &done_dir, done_steps, c.cx, c.cz),
                     ));
                     vfeed::append_feed(
                         "鋪面",
                         lname,
-                        &format!("和大家齊心，把一大片地鋪上了{mname}！"),
+                        &format!("和大家齊心，把（{},{}）附近一大片地鋪上了{mname}！", c.cx, c.cz),
                     );
                 } else {
+                    // 協調整地完工：領隊冒泡 + Feed 帶方位。
                     say_updates.push((
                         leader.clone(),
-                        "大家一起把這片地整平了！辛苦啦～".to_string(),
+                        vdt::coord_level_done_line(&done_dir, done_steps, c.cx, c.cz),
                     ));
-                    vfeed::append_feed("整地", lname, "和大家齊心，把一大片地整平了！");
+                    vfeed::append_feed(
+                        "整地",
+                        lname,
+                        &format!("和大家齊心，把（{},{}）附近一大片地整平了！", c.cx, c.cz),
+                    );
                 }
             }
         }
@@ -5947,9 +5973,22 @@ fn pave_worker_tick(
         task.cursor = next_cursor;
         task.deadline = vdt::PAVE_DEADLINE_SECS; // 鋪了一批＝有進展 → 續期
         if task.is_complete() {
+            // 取 requester 的玩家位置，計算相對方位（短鎖即釋）。
+            let (done_dir, done_steps) = {
+                let players = hub().players.read().unwrap();
+                let req_pos = players.values().find(|p| p.name == task.requester).map(|p| (p.x, p.z));
+                drop(players);
+                if let Some((px, pz)) = req_pos {
+                    vdt::cardinal_direction(px, pz, task.cx as f32, task.cz as f32)
+                } else {
+                    (String::new(), 0)
+                }
+            }; // players 讀鎖已釋放
+            let done_cx = task.cx;
+            let done_cz = task.cz;
             hub().directed_tasks.write().unwrap().remove(rid);
-            vfeed::append_feed("鋪面", rname, &format!("把那塊地鋪上{mname}了！"));
-            say_updates.push((rid.to_string(), format!("鋪好囉！整片{mname}地～")));
+            vfeed::append_feed("鋪面", rname, &format!("把（{done_cx},{done_cz}）那塊地鋪上{mname}了！"));
+            say_updates.push((rid.to_string(), vdt::pave_done_line(mname, &done_dir, done_steps, done_cx, done_cz)));
         } else {
             let pct = task.progress_pct();
             hub().directed_tasks.write().unwrap().insert(rid.to_string(), task);
