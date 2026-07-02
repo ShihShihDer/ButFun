@@ -179,6 +179,12 @@ pub fn inventable_wb_recipes() -> impl Iterator<Item = &'static vcraft::Recipe> 
 }
 
 /// 白名單驗證一步：資源在白名單、數量 1..=上限、配方存在且可發明。壞的一律 `None`。
+///
+/// **op 標籤自動修復**（隔離實測 qwen2.5:3b 驅動）：小模型常把 craft／craft_wb 兩張
+/// 清單用反（`craft_wb workbench`），即使重試回饋點名正確原語仍改不動——但這種錯
+/// **意圖無歧義**（配方 id 真實存在、只是掛在另一張表上），機械可判定就直接修正，
+/// 比照 [`resource_from_token`] 收繁中別名的寬容精神。修復只換查表、不放水正確性：
+/// 修成 CraftWb 的步仍受可行性模擬「必須先有工作台」把關；兩張表都查無才拒絕。
 pub fn check_step(s: &PrimStep) -> Option<CheckedStep> {
     match s {
         PrimStep::Gather { resource, count } => {
@@ -188,20 +194,27 @@ pub fn check_step(s: &PrimStep) -> Option<CheckedStep> {
             }
             Some(CheckedStep::Gather { resource: res, count: *count })
         }
-        PrimStep::Craft { recipe } => {
-            let r = vcraft::find_recipe(recipe)?;
+        PrimStep::Craft { recipe } | PrimStep::CraftWb { recipe } => {
+            // 先查「本來那張表」、查無再查另一張（op 標籤自動修復）；
+            // 哪張表命中決定步型——步型決定執行臂與模擬的依賴檢查。
+            let prefer_wb = matches!(s, PrimStep::CraftWb { .. });
+            let (r, is_wb) = if prefer_wb {
+                vcraft::find_workbench_recipe(recipe)
+                    .map(|r| (r, true))
+                    .or_else(|| vcraft::find_recipe(recipe).map(|r| (r, false)))?
+            } else {
+                vcraft::find_recipe(recipe)
+                    .map(|r| (r, false))
+                    .or_else(|| vcraft::find_workbench_recipe(recipe).map(|r| (r, true)))?
+            };
             if !recipe_inventable(r) {
-                return None;
+                return None; // 配料她弄不到（要冶煉/稀有掉落）→ 誠實拒絕
             }
-            Some(CheckedStep::Craft { recipe_id: r.id })
-        }
-        PrimStep::CraftWb { recipe } => {
-            // 只認 3×3 工作台表、且配料全在鏈上（鐵系要冶煉 → 拒絕）。
-            let r = vcraft::find_workbench_recipe(recipe)?;
-            if !recipe_inventable(r) {
-                return None;
-            }
-            Some(CheckedStep::CraftWb { recipe_id: r.id })
+            Some(if is_wb {
+                CheckedStep::CraftWb { recipe_id: r.id }
+            } else {
+                CheckedStep::Craft { recipe_id: r.id }
+            })
         }
         PrimStep::Place { block } => {
             let bid = place_block_from_token(block)?;
@@ -292,7 +305,8 @@ pub fn parse_plan_detailed(raw: &str) -> Result<InventedPlan, String> {
 }
 
 /// 白名單驗證失敗的一步 → 具體的繁中原因（回饋給便宜腦修正用）。
-/// 最重要的兩型：craft/craft_wb 兩張配方清單用反（小模型實測最常犯）。
+/// 註：craft/craft_wb 清單用反已由 [`check_step`] 自動修復、到不了這裡；
+/// 會走到這裡的合成步失敗只剩「兩張表都查無此 id」與「配料弄不到」兩型。
 fn explain_bad_step(s: &PrimStep) -> String {
     match s {
         PrimStep::Gather { resource, count } => {
@@ -304,21 +318,15 @@ fn explain_bad_step(s: &PrimStep) -> String {
                 format!("採集數量 {count} 不在 1~{MAX_GATHER_COUNT} 範圍內")
             }
         }
-        PrimStep::Craft { recipe } => match vcraft::find_recipe(recipe) {
-            Some(_) => format!("配方「{recipe}」的配料你自己弄不到（要冶煉或稀有掉落），不能用"),
-            None if vcraft::find_workbench_recipe(recipe).is_some() => format!(
-                "「{recipe}」是**工作台配方**，要用 craft_wb 做（且必須先有工作台在你旁邊）"
-            ),
-            None => format!("「{recipe}」不在隨身合成配方清單裡"),
-        },
-        PrimStep::CraftWb { recipe } => match vcraft::find_workbench_recipe(recipe) {
-            Some(_) => format!("工作台配方「{recipe}」的配料你自己弄不到（要冶煉或稀有掉落），不能用"),
-            None if vcraft::find_recipe(recipe).is_some() => format!(
-                "「{recipe}」是**隨身 2×2 配方**，要用 craft 做（不需要工作台——\
-                工作台本身就是：craft plank → craft workbench → place）"
-            ),
-            None => format!("「{recipe}」不在工作台配方清單裡"),
-        },
+        PrimStep::Craft { recipe } | PrimStep::CraftWb { recipe } => {
+            if vcraft::find_recipe(recipe).is_some()
+                || vcraft::find_workbench_recipe(recipe).is_some()
+            {
+                format!("配方「{recipe}」的配料你自己弄不到（要冶煉或稀有掉落），不能用")
+            } else {
+                format!("「{recipe}」不在任何一張配方清單裡（隨身與工作台都查無）")
+            }
+        }
         PrimStep::Place { block } => {
             format!("place 只能放 workbench 或 furnace，「{block}」不在白名單")
         }
@@ -1177,34 +1185,53 @@ mod tests {
         // torch 配料要煤礦（居民採不到）→ 不可發明，拒絕。
         let raw = r#"{"name":"做火把","steps":[{"op":"craft","recipe":"torch"}]}"#;
         assert!(parse_plan(raw).is_none());
-        // 3×3 配方用錯原語（craft 只認 2×2 表；glass_wb 要用 craft_wb）→ 拒絕。
-        let raw = r#"{"name":"大量玻璃","steps":[{"op":"craft","recipe":"glass_wb"}]}"#;
-        assert!(parse_plan(raw).is_none());
-        // craft_wb 也只認 3×3 表（2×2 的 glass 不在裡面）→ 拒絕。
-        let raw = r#"{"name":"玻璃","steps":[{"op":"craft_wb","recipe":"glass"}]}"#;
-        assert!(parse_plan(raw).is_none());
         // 鐵鎬要鐵錠（要冶煉，鏈外）→ craft_wb 也不可發明，拒絕。
         let raw = r#"{"name":"鐵鎬","steps":[{"op":"craft_wb","recipe":"iron_pickaxe"}]}"#;
+        assert!(parse_plan(raw).is_none());
+        // 兩張表都查無此 id → 拒絕。
+        let raw = r#"{"name":"亂","steps":[{"op":"craft","recipe":"no_such_recipe"}]}"#;
         assert!(parse_plan(raw).is_none());
     }
 
     #[test]
-    fn parse_detailed_explains_list_confusion() {
-        // 小模型實測最常犯：隨身配方用 craft_wb 做（workbench 在 2×2 清單）——
-        // 詳細原因必須點名「用 craft 做」，腦才修得回來（籠統原因實測修不回來）。
-        let raw = r#"{"name":"做工作台","steps":[{"op":"craft_wb","recipe":"workbench"}]}"#;
-        let err = parse_plan_detailed(raw).unwrap_err();
-        assert!(err.contains("workbench") && err.contains("craft"), "要點名配方與正確原語：{err}");
-        assert!(err.contains("隨身"), "要講明它屬於隨身清單：{err}");
-        // 反向：工作台配方用 craft 做 → 點名「用 craft_wb」。
-        let raw = r#"{"name":"大量玻璃","steps":[{"op":"craft","recipe":"glass_wb"}]}"#;
-        let err = parse_plan_detailed(raw).unwrap_err();
-        assert!(err.contains("glass_wb") && err.contains("craft_wb"), "要點名正確原語：{err}");
-        // 亂配方 id → 講「不在清單」；亂 place token → 講白名單。
+    fn check_step_repairs_op_tag_confusion() {
+        // 小模型實測最常犯（qwen2.5:3b 連重試都改不動）：隨身配方用 craft_wb 做——
+        // 意圖無歧義（配方真實存在、只是掛在另一張表）→ 自動修復成正確步型。
+        let s = PrimStep::CraftWb { recipe: "workbench".into() };
+        assert_eq!(check_step(&s), Some(CheckedStep::Craft { recipe_id: "workbench" }));
+        // 反向：工作台配方用 craft 做 → 修成 CraftWb（模擬仍會驗「先有工作台」）。
+        let s = PrimStep::Craft { recipe: "glass_wb".into() };
+        assert_eq!(check_step(&s), Some(CheckedStep::CraftWb { recipe_id: "glass_wb" }));
+        // 修復後整個計畫可過（含正確依賴）：qwen 實測輸出的計畫形狀（craft_wb workbench）
+        // 修復成 craft workbench 後，只剩缺料問題會由模擬給出具體回饋。
+        let raw = r#"{"name":"收納箱","steps":[
+            {"op":"gather","resource":"wood","count":6},
+            {"op":"craft","recipe":"plank"},{"op":"craft","recipe":"plank"},{"op":"craft","recipe":"plank"},
+            {"op":"craft_wb","recipe":"workbench"},
+            {"op":"place","block":"workbench"},
+            {"op":"craft_wb","recipe":"chest"}]}"#;
+        let plan = parse_plan(raw).expect("op 修復後應可解析");
+        assert!(simulate_plan(&plan.steps, &HashMap::new(), 42, false).is_ok());
+    }
+
+    #[test]
+    fn parse_detailed_gives_specific_reasons() {
+        // 詳細原因是 Voyager 式重試的關鍵回饋：每型失敗都要點得出具體錯處。
+        // 兩張表都查無此 id → 講清「兩張清單都查無」。
         let raw = r#"{"name":"亂","steps":[{"op":"craft_wb","recipe":"no_such"}]}"#;
-        assert!(parse_plan_detailed(raw).unwrap_err().contains("不在工作台配方清單"));
+        assert!(parse_plan_detailed(raw).unwrap_err().contains("不在任何一張配方清單"));
+        // 配料弄不到（火把要煤礦）→ 點名配方與原因。
+        let raw = r#"{"name":"火把","steps":[{"op":"craft","recipe":"torch"}]}"#;
+        let err = parse_plan_detailed(raw).unwrap_err();
+        assert!(err.contains("torch") && err.contains("弄不到"), "要點名配方與原因：{err}");
+        // 亂 place token → 講白名單；亂資源 → 列出合法資源。
         let raw = r#"{"name":"亂","steps":[{"op":"place","block":"chest"}]}"#;
         assert!(parse_plan_detailed(raw).unwrap_err().contains("place 只能放"));
+        let raw = r#"{"name":"亂","steps":[{"op":"gather","resource":"iron","count":2}]}"#;
+        assert!(parse_plan_detailed(raw).unwrap_err().contains("grass / sand / dirt / stone / wood"));
+        // 空步驟/找不到 JSON 也都有具體原因。
+        assert!(parse_plan_detailed("我不知道").unwrap_err().contains("JSON"));
+        assert!(parse_plan_detailed(r#"{"name":"空","steps":[]}"#).unwrap_err().contains("steps"));
         // 好計畫走詳細版仍通過（與 parse_plan 一致）。
         assert!(parse_plan_detailed(glass_plan_json()).is_ok());
     }
