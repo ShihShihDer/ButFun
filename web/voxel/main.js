@@ -3071,8 +3071,10 @@ document.addEventListener("pointerdown", (e) => {
 // 注意：inv_sync 和 inv_update handler 在 WS onmessage 裡，
 //       craft_ok / craft_fail 的刷新邏輯已在 WS handler 那段處理過。
 
-// ── 熔爐面板（ROADMAP 666）──────────────────────────────────────────────────────
-// 與工作台面板並列，但更簡：不需要拖放格，只顯示配方清單，點「冶煉」送 craft message。
+// ── 熔爐面板 v2（ROADMAP 712）──────────────────────────────────────────────────
+// 改成跟背包 2×2 / 工作台 3×3 一致的「拿起→放入格子」格子式互動（原 v1 是按鈕清單，
+// 跟另外兩層合成介面手感不一致；格數取 3——熔爐配方裡最耗格的 smelt_stone
+// 需要「同一種材料×3」湊數量，比清單更貼近玩家已經上手的操作邏輯）。
 const FURNACE_RECIPES_JS = [
   { id: "smelt_stone", name: "拋光石",       inputs: [[STONE, 3]],               output_block: SMOOTH_STONE, out_count: 3 },
   { id: "smelt_glass", name: "玻璃（冶煉）", inputs: [[SAND,  2]],               output_block: GLASS,        out_count: 3 },
@@ -3081,10 +3083,18 @@ const FURNACE_RECIPES_JS = [
   { id: "smelt_iron",  name: "鐵錠",         inputs: [[IRON_ORE, 1], [COAL_ORE, 1]], output_block: IRON_INGOT, out_count: 2 },
 ];
 
-const furnacePanelEl      = document.getElementById("furnacePanel");
-const furnaceBtnEl        = document.getElementById("furnaceBtn");
-const furnaceInvGridEl    = document.getElementById("furnaceInvGrid");
-const furnaceRecipeListEl = document.getElementById("furnaceRecipeList");
+// furnaceGrid[0..2]：3 格輸入，0 代表空格，非零代表 block_id。
+// 3 格而非 2 格：smelt_stone 單一配方就需要 3 顆石頭（同一材料佔滿 3 格才湊得出數量），
+// 熔爐所有配方裡最多材料格數的就是它，故取 3 為格數上限（沿用背包/工作台「格數=最大配方所需」的設計）。
+const furnaceGrid = [0, 0, 0];
+// 目前被「拿起」的 block_id（0 = 沒拿）。
+let furnacePick = 0;
+
+const furnacePanelEl   = document.getElementById("furnacePanel");
+const furnaceBtnEl     = document.getElementById("furnaceBtn");
+const furnaceInvGridEl = document.getElementById("furnaceInvGrid");
+const furnaceGridEl    = document.getElementById("furnaceGrid2");
+const furnaceResultEl  = document.getElementById("furnaceResultSlot");
 
 function openFurnacePanel() {
   if (!furnacePanelEl) return;
@@ -3095,12 +3105,37 @@ function openFurnacePanel() {
 function closeFurnacePanel() {
   if (!furnacePanelEl) return;
   furnacePanelEl.style.display = "none";
+  furnacePick = 0; // 關面板時清除選取
 }
 function furnacePanelVisible() {
   return furnacePanelEl ? furnacePanelEl.style.display === "flex" : false;
 }
 
-/** 渲染熔爐物品欄（只讀，讓玩家知道現有材料）。 */
+/**
+ * matchFurnaceRecipe——無順序配方比對（純函式，確定性，與 matchBagRecipe/matchWbRecipe 同手法）。
+ * 統計 furnaceGrid 裡的材料次數，比對 FURNACE_RECIPES_JS，回傳 {recipe, canCraft} 或 null。
+ */
+function matchFurnaceRecipe() {
+  const gridCounts = new Map();
+  for (const bid of furnaceGrid) {
+    if (bid !== 0) gridCounts.set(bid, (gridCounts.get(bid) || 0) + 1);
+  }
+  if (gridCounts.size === 0) return null;
+  for (const r of FURNACE_RECIPES_JS) {
+    const needed = new Map(r.inputs.map(([b, c]) => [b, c]));
+    if (needed.size !== gridCounts.size) continue;
+    let match = true;
+    for (const [b, c] of needed) {
+      if ((gridCounts.get(b) || 0) !== c) { match = false; break; }
+    }
+    if (!match) continue;
+    const canCraft = r.inputs.every(([b, c]) => (myInv.get(b) || 0) >= c);
+    return { recipe: r, canCraft };
+  }
+  return null;
+}
+
+/** 渲染熔爐物品欄（點選拿起，與背包/工作台一致）。 */
 function renderFurnaceInvGrid() {
   if (!furnaceInvGridEl) return;
   furnaceInvGridEl.innerHTML = "";
@@ -3114,7 +3149,7 @@ function renderFurnaceInvGrid() {
   }
   for (const [bid, cnt] of items) {
     const slot = document.createElement("div");
-    slot.className = "bag-inv-slot";
+    slot.className = "bag-inv-slot" + (furnacePick === bid ? " picked" : "");
     slot.appendChild(makeSwatchEl(bid, "bag-inv-sw"));
     const name = document.createElement("div");
     name.className = "bag-inv-name";
@@ -3123,46 +3158,85 @@ function renderFurnaceInvGrid() {
     cntEl.className = "bag-inv-cnt";
     cntEl.textContent = "×" + cnt;
     slot.appendChild(name); slot.appendChild(cntEl);
+    slot.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      furnacePick = (furnacePick === bid) ? 0 : bid;
+      renderFurnacePanel();
+    });
     furnaceInvGridEl.appendChild(slot);
   }
 }
 
-/** 渲染冶煉配方清單（每張卡含輸入→輸出說明 + 冶煉鈕）。 */
-function renderFurnaceRecipes() {
-  if (!furnaceRecipeListEl) return;
-  furnaceRecipeListEl.innerHTML = "";
-  for (const r of FURNACE_RECIPES_JS) {
-    const canSmelt = r.inputs.every(([b, c]) => (myInv.get(b) || 0) >= c);
-    const card = document.createElement("div");
-    card.className = "furnace-recipe-card" + (canSmelt ? " available" : "");
-    const nameEl = document.createElement("div");
-    nameEl.className = "furnace-recipe-name";
-    nameEl.textContent = r.name;
-    card.appendChild(nameEl);
-    const ioEl = document.createElement("div");
-    ioEl.className = "furnace-recipe-io";
-    const inputStrs = r.inputs.map(([b, c]) => (BLOCK_NAME[b] || "?") + "×" + c);
-    ioEl.textContent = inputStrs.join(" + ") + " → " + (BLOCK_NAME[r.output_block] || "?") + "×" + r.out_count;
-    card.appendChild(ioEl);
-    const btn = document.createElement("button");
-    btn.className = "furnace-smelt-btn";
-    btn.textContent = canSmelt ? "冶煉" : "材料不足";
-    btn.disabled = !canSmelt;
-    btn.addEventListener("pointerdown", (e) => {
+/** 渲染 3 格冶煉格 + 結果格。 */
+function renderFurnaceCraftArea() {
+  if (!furnaceGridEl || !furnaceResultEl) return;
+  furnaceGridEl.innerHTML = "";
+  for (let i = 0; i < 3; i++) {
+    const bid = furnaceGrid[i];
+    const slot = document.createElement("div");
+    slot.className = "furnace-grid-slot" + (bid !== 0 ? " filled" : "");
+    if (bid !== 0) {
+      slot.appendChild(makeSwatchEl(bid, "furnace-grid-sw"));
+      const lbl = document.createElement("div");
+      lbl.className = "furnace-grid-lbl";
+      lbl.textContent = BLOCK_NAME[bid] || "?";
+      slot.appendChild(lbl);
+    }
+    slot.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
-      if (!canSmelt || !wsReady) return;
-      ws.send(JSON.stringify({ t: "craft", recipe_id: r.id }));
+      if (furnacePick !== 0 && bid === 0) {
+        furnaceGrid[i] = furnacePick; furnacePick = 0;
+      } else if (furnacePick !== 0 && bid !== 0) {
+        furnaceGrid[i] = furnacePick; furnacePick = bid;
+      } else if (furnacePick === 0 && bid !== 0) {
+        furnacePick = bid; furnaceGrid[i] = 0;
+      }
+      renderFurnacePanel();
     });
-    card.appendChild(btn);
-    furnaceRecipeListEl.appendChild(card);
+    furnaceGridEl.appendChild(slot);
+  }
+  // 結果格
+  furnaceResultEl.className = "";
+  furnaceResultEl.innerHTML = "";
+  const match = matchFurnaceRecipe();
+  if (match) {
+    const r = match.recipe;
+    furnaceResultEl.classList.add(match.canCraft ? "has-result" : "no-material");
+    furnaceResultEl.appendChild(makeSwatchEl(r.output_block, "bag-res-sw"));
+    const nm = document.createElement("div"); nm.className = "bag-res-name"; nm.textContent = r.name;
+    const ct = document.createElement("div"); ct.className = "bag-res-cnt"; ct.textContent = "×" + r.out_count;
+    furnaceResultEl.appendChild(nm); furnaceResultEl.appendChild(ct);
+    if (!match.canCraft) {
+      const warn = document.createElement("div");
+      warn.style.cssText = "font-size:9px;color:#ff8060;margin-top:2px";
+      warn.textContent = "材料不足";
+      furnaceResultEl.appendChild(warn);
+    }
   }
 }
 
-/** 渲染整個熔爐面板（物品欄 + 配方清單）。 */
+/** 渲染整個熔爐面板（物品欄 + 冶煉格）。 */
 function renderFurnacePanel() {
   renderFurnaceInvGrid();
-  renderFurnaceRecipes();
+  renderFurnaceCraftArea();
 }
+
+// 結果格點擊：送出冶煉請求。
+if (furnaceResultEl) furnaceResultEl.addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  const match = matchFurnaceRecipe();
+  if (!match || !match.canCraft || !wsReady) return;
+  ws.send(JSON.stringify({ t: "craft", recipe_id: match.recipe.id }));
+});
+
+// 清除冶煉格按鈕。
+const furnaceClearBtnEl = document.getElementById("furnaceClearBtn");
+if (furnaceClearBtnEl) furnaceClearBtnEl.addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  furnaceGrid.fill(0);
+  furnacePick = 0;
+  renderFurnacePanel();
+});
 
 // 熔爐 HUD 按鈕（🔥）開閉面板。
 if (furnaceBtnEl) furnaceBtnEl.addEventListener("click", (e) => {
@@ -3402,10 +3476,11 @@ window.__voxel = {
   closeFurnacePanel() { closeFurnacePanel(); },
   renderFurnacePanel() { renderFurnacePanel(); },
   get FURNACE_RECIPES_JS() { return FURNACE_RECIPES_JS; },
-  canSmelt(recipeId) {
-    const r = FURNACE_RECIPES_JS.find(x => x.id === recipeId);
-    return r ? r.inputs.every(([b, c]) => (myInv.get(b) || 0) >= c) : false;
-  },
+  // ── 熔爐冶煉格子化 QA 用（ROADMAP 712）──
+  get furnaceGrid() { return [...furnaceGrid]; },
+  get furnacePick() { return furnacePick; },
+  matchFurnaceRecipe() { return matchFurnaceRecipe(); },
+  setFurnaceGrid(slots) { slots.forEach((v, i) => { if (i < 3) furnaceGrid[i] = v; }); renderFurnacePanel(); },
   // ── 贈禮 v1 QA 介面（ROADMAP 660）──
   giftPickItem(inv) { return giftPickItem(inv); },
   updateGiftBtn() { updateGiftBtn(); },
