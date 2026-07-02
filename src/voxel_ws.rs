@@ -39,6 +39,7 @@ mod voxel_fetch;
 use self::voxel_fetch::{self as vfetch, FetchTask};
 use crate::voxel_building::{self as vbuild, BuildStore};
 use crate::voxel_skills::{self as vskill, GatherSkill, GoalStore, NextActivity};
+use crate::voxel_invent as vinvent;
 use crate::voxel_desires::{self as vdes, DesireStore};
 use crate::voxel_diary;
 use crate::voxel_feed as vfeed;
@@ -234,6 +235,12 @@ struct VoxelResident {
     /// 跑腿採集任務（指令→任務第三刀）：Some = 正在幫玩家採集/交付指定材料；
     /// None = 沒有跑腿任務。與整地/跟隨互斥（接下新任務時彼此清空）。
     fetch: Option<FetchTask>,
+    /// 技能發明/重用執行狀態（真進化第一刀）：Some = 正照原語序列做事
+    /// （採料→合成→驗證）；None = 沒有進行中的發明/重用。deadline 每 tick 遞減。
+    invent_run: Option<vinvent::InventRun>,
+    /// 發明冷卻倒數（秒）：一次發明嘗試（無論成敗）後至少隔這麼久才再請 LLM 想
+    /// ——發明是低頻事件（成本紀律），重用不受此冷卻影響（重用零 LLM）。
+    invent_cooldown: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -691,6 +698,9 @@ fn init_residents() -> Vec<VoxelResident> {
             clique_cooldown: vclique::GATHER_COOLDOWN_SECS + i as f32 * 40.0,
             // 跑腿採集（指令→任務第三刀）：入場沒有任務。
             fetch: None,
+            // 技能發明 v1：入場無進行中的發明；首次冷卻小幅錯開（避免同 tick 全員一起想）。
+            invent_run: None,
+            invent_cooldown: 30.0 + i as f32 * 15.0,
         });
     }
     out
@@ -766,6 +776,15 @@ struct VoxelHub {
     /// 各成員的子區各自是 `directed_tasks` 裡一個普通 DirectedTask；本清單只追蹤整體完成
     /// （全部成員子任務消失 → 冒「大家一起把這片地整平了！」+ Feed）。純記憶體、重啟消失可接受。
     coordinated_tasks: RwLock<Vec<CoordinatedLevelTask>>,
+    /// 居民自己發明的技能庫（真進化第一刀）：個體的、具名的原語序列。
+    /// 持久化到 data/voxel_invented_skills.jsonl（append-only）——重啟後「她仍然會」。
+    invented: RwLock<vinvent::InventedSkillStore>,
+    /// 發明提案匯流排：async 便宜腦任務把「解析+白名單驗證通過」的計畫投回，
+    /// tick 取走、掛到居民身上開始執行（比照 AgentBus 的無鎖交棒模式）。
+    /// 元素：(居民 id, 目標材料 id, 目標材料繁中名, 計畫)。
+    invent_proposals: std::sync::Mutex<Vec<(String, u8, String, vinvent::InventedPlan)>>,
+    /// 發明防重入集合：正在等便宜腦回計畫的居民 id（LLM 可能比冷卻慢，防同人連發）。
+    inventing: std::sync::Mutex<std::collections::HashSet<String>>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -862,6 +881,13 @@ fn hub() -> &'static VoxelHub {
             // 整地任務 v1：啟動空（純記憶體、無需持久化）。
             directed_tasks: RwLock::new(HashMap::new()),
             coordinated_tasks: RwLock::new(Vec::new()),
+            // 技能發明 v1：啟動時從 data/voxel_invented_skills.jsonl 載回各居民已發明的技能
+            // ——重啟後「她仍然會」（進化是持久的）。
+            invented: RwLock::new(vinvent::InventedSkillStore::from_entries(
+                vinvent::load_invented_skills(),
+            )),
+            invent_proposals: std::sync::Mutex::new(Vec::new()),
+            inventing: std::sync::Mutex::new(std::collections::HashSet::new()),
             tx,
         }
     })
@@ -1815,27 +1841,41 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         // 指令→任務第三刀：「幫我採集 N 塊 XX」——她放下手邊的事，去採指定數量，
                         // 湊齊了親自走回你身邊交給你。覆蓋原本手邊的事（整地/跟隨/採集/尋伴/打氣/
                         // 探訪/聚會皆放下，同follow accept 的「答應了就專心做」精神）。
-                        {
-                            let mut tasks = hub().directed_tasks.write().unwrap();
-                            tasks.remove(&addr_id);
-                        } // directed_tasks 寫鎖釋放
-                        {
-                            let mut res = hub().residents.write().unwrap();
-                            if let Some(r) = res.iter_mut().find(|r| r.id == addr_id) {
-                                r.gather = None;
-                                r.seeking_comfort = false;
-                                r.cheer_target = None;
-                                r.visiting = None;
-                                r.visit_stay_timer = 0.0;
-                                r.follow = None;
-                                r.clique_meet = None;
-                                r.wait_timer = 0.0;
-                                r.fetch = Some(FetchTask::new(player_key.clone(), resource, count));
-                                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
-                            }
-                        } // residents 寫鎖釋放
+                        // 共存 gating（跑腿×技能發明，真進化第一刀）：**發明執行中不接跑腿**——
+                        // 她正專心驗證自己的點子，既有任務優先；誠實說明在忙、不假答應。
+                        let busy_inventing = {
+                            let res = hub().residents.read().unwrap();
+                            res.iter()
+                                .find(|r| r.id == addr_id)
+                                .is_some_and(|r| r.invent_run.is_some())
+                        }; // residents 讀鎖釋放
+                        if !busy_inventing {
+                            {
+                                let mut tasks = hub().directed_tasks.write().unwrap();
+                                tasks.remove(&addr_id);
+                            } // directed_tasks 寫鎖釋放
+                            {
+                                let mut res = hub().residents.write().unwrap();
+                                if let Some(r) = res.iter_mut().find(|r| r.id == addr_id) {
+                                    r.gather = None;
+                                    r.seeking_comfort = false;
+                                    r.cheer_target = None;
+                                    r.visiting = None;
+                                    r.visit_stay_timer = 0.0;
+                                    r.follow = None;
+                                    r.clique_meet = None;
+                                    r.wait_timer = 0.0;
+                                    r.fetch = Some(FetchTask::new(player_key.clone(), resource, count));
+                                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                }
+                            } // residents 寫鎖釋放
+                        }
                         let pick = clean.len();
-                        let reply = vfetch::accept_line(resource.display_name(), count, pick);
+                        let reply = if busy_inventing {
+                            "我正在試一個自己想出來的點子，等我試完再幫你採，好嗎？".to_string()
+                        } else {
+                            vfetch::accept_line(resource.display_name(), count, pick)
+                        };
                         let msg = serde_json::json!({
                             "t": "talk",
                             "resident_id": &addr_id,
@@ -1846,17 +1886,23 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         let _ = out_tx.send(Message::Text(msg)).await;
                         hub().agent_bus.push_decision(
                             addr_id.clone(),
-                            AgentDecision::new(AgentAction::Idle, reply.clone(), "跑腿採集"),
+                            AgentDecision::new(
+                                AgentAction::Idle,
+                                reply.clone(),
+                                if busy_inventing { "發明中婉拒跑腿" } else { "跑腿採集" },
+                            ),
                         );
                         {
                             let mut mem = hub().memory.write().unwrap();
                             mem.record_turn(&player_key, &addr_id, &clean, &reply);
                         } // 記憶寫鎖釋放
-                        vfeed::append_feed(
-                            "跑腿",
-                            rname,
-                            &format!("答應了{player_key}的請求，動身去採{count}份{}", resource.display_name()),
-                        );
+                        if !busy_inventing {
+                            vfeed::append_feed(
+                                "跑腿",
+                                rname,
+                                &format!("答應了{player_key}的請求，動身去採{count}份{}", resource.display_name()),
+                            );
+                        }
                     } else {
                     // 6a) 短鎖讀記憶 → 組脈絡區塊（B 層精華 + A 層近期記憶 + 本輪對話）→ drop。
                     //     v2 兩層：semantic 精華（身份/目標/偏好/承諾，總是帶上）
@@ -1923,6 +1969,16 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         let sys = match over_scope_enforcement_block(&clean_for_llm) {
                             Some(block) => format!("{sys}\n\n{block}"),
                             None => sys,
+                        };
+                        // 她自己發明的技能（真進化第一刀）：注入技能名清單——旅人問
+                        // 「你會什麼」時她講得出自己發明的本事（短鎖即釋、不跨 await）。
+                        let sys = {
+                            let names =
+                                { hub().invented.read().unwrap().names_for(&addr_id) };
+                            match vinvent::skills_talk_note(&names) {
+                                Some(note) => format!("{sys}\n\n{note}"),
+                                None => sys,
+                            }
                         };
                         // 孤獨尋伴情境（ROADMAP 678）：居民之前主動走來尋求陪伴，
                         // 旅人終於搭話——引導 LLM 自然地表達感謝與溫暖。
@@ -3184,6 +3240,15 @@ fn tick_residents(dt: f32) {
             // 小圈子聚會冷卻倒數（ROADMAP 711）。
             if r.clique_cooldown > 0.0 {
                 r.clique_cooldown -= dt;
+            }
+
+            // 技能發明冷卻倒數 + 進行中計畫的逾時倒數（真進化第一刀）。
+            // 逾時判定與收尾在 agency 段（advance_invent_run），這裡只負責時間流逝。
+            if r.invent_cooldown > 0.0 {
+                r.invent_cooldown -= dt;
+            }
+            if let Some(run) = &mut r.invent_run {
+                run.deadline -= dt;
             }
             // 聚會逾時放棄：等太久等不到其他成員到齊，就散去、回到平常閒晃。
             if r.clique_meet.is_some() {
@@ -4571,10 +4636,132 @@ fn tick_residents(dt: f32) {
             .collect()
     };
 
+    // 6-0) 技能發明提案交棒（真進化第一刀）：取走便宜腦投回的「解析+驗證通過」計畫，
+    //      掛到居民身上開始執行。短鎖循序（proposals mutex → residents 寫），不巢狀、不 await。
+    let arrived_proposals: Vec<(String, u8, String, vinvent::InventedPlan)> = {
+        let mut props = hub().invent_proposals.lock().unwrap();
+        std::mem::take(&mut *props)
+    }; // proposals mutex 釋放
+    for (prid, goal_block, goal_name, plan) in arrived_proposals {
+        let attached = {
+            let mut residents = hub().residents.write().unwrap();
+            residents.iter_mut().find(|r| r.id == prid).map_or(false, |r| {
+                // 既有任務優先：已有進行中的發明、或正幫玩家跑腿採集（指令→任務第三刀）
+                // 就不掛新計畫——提案作廢（低頻小成本），等她空閒時處境仍在會再想一次。
+                if r.invent_run.is_none() && r.fetch.is_none() {
+                    r.invent_run = Some(vinvent::InventRun::from_plan(
+                        goal_block, &goal_name, &plan, false,
+                    ));
+                    true
+                } else {
+                    false
+                }
+            })
+        }; // residents 寫鎖釋放
+        if attached {
+            let rname = resident_name_of(&prid);
+            tracing::info!(resident = %prid, skill = %plan.name, "技能發明：便宜腦提出計畫，開始驗證執行");
+            say_updates.push((prid, format!("有了！我來試試「{}」…", plan.name)));
+            vfeed::append_feed(
+                "技能發明",
+                rname,
+                &format!("想出了一個點子「{}」（{}），動手試試", plan.name, vinvent::steps_summary(&plan.steps)),
+            );
+        }
+    }
+
     for (rid, rname, rx, _ry, rz, _ridx) in build_candidates {
+        // ── 技能發明/重用執行（優先於一般 agency：她正專心驗證自己的點子）────────
+        // 有進行中的 InventRun → 推進一步（逾時/失敗/成功都在裡面收尾）→ 本輪不做別的。
+        let has_invent_run = {
+            let residents = hub().residents.read().unwrap();
+            residents.iter().find(|r| r.id == rid).map_or(false, |r| r.invent_run.is_some())
+        }; // residents 讀鎖釋放
+        if has_invent_run {
+            advance_invent_run(&rid, rname, rx, rz, &mut say_updates);
+            let interval = *build_mood_intervals.get(&rid).unwrap_or(&BUILD_INTERVAL_SECS);
+            reset_build_tick(&rid, interval);
+            continue;
+        }
+
         let has_plan = hub().builds.read().unwrap().has_plan(&rid); // drop
 
         if !has_plan {
+            // ── 處境偵測（真進化第一刀）：心願提到可合成材料、背包卻沒有 ─────────────
+            // ＝「沒有現成技能可解的處境」。先查**自己的**技能庫（會 → 直接重用，零 LLM
+            // ——這就是進化：她下次不用再想，因為她已經會了）；不會 → 低頻請便宜腦發明。
+            let desire_text: Option<String> = {
+                let des = hub().desires.read().unwrap();
+                des.get_desire(&rid).map(|d| d.desire.clone())
+            }; // desires 讀鎖釋放
+            if let Some(goal) = desire_text.as_deref().and_then(vinvent::detect_missing_material) {
+                let bag_has_goal = {
+                    let inv = hub().res_inv.read().unwrap();
+                    inv.get(&rid).and_then(|b| b.get(&goal.block_id)).copied().unwrap_or(0) >= 1
+                }; // res_inv 讀鎖釋放
+                if !bag_has_goal {
+                    let known: Option<(String, Vec<vinvent::PrimStep>)> = {
+                        let inv = hub().invented.read().unwrap();
+                        inv.find_for(&rid, goal.block_id)
+                            .map(|k| (k.name.clone(), k.steps.clone()))
+                    }; // invented 讀鎖釋放
+                    if let Some((skill_name, raw_steps)) = known {
+                        // ① 她已經會了：載回的序列再過一次存檔白名單（配方表若變動，壞技能
+                        //    自然失效不執行），通過就直接照自己存的技能做——**零 LLM**。
+                        if let Some(steps) = vinvent::check_stored_steps(&raw_steps) {
+                            {
+                                let mut residents = hub().residents.write().unwrap();
+                                if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                                    r.invent_run = Some(vinvent::InventRun {
+                                        goal_block: goal.block_id,
+                                        goal_name: goal.name_zh.to_string(),
+                                        skill_name: skill_name.clone(),
+                                        raw_steps,
+                                        steps,
+                                        step_idx: 0,
+                                        reuse: true,
+                                        deadline: vinvent::RUN_TIMEOUT_SECS,
+                                    });
+                                }
+                            } // residents 寫鎖釋放
+                            tracing::info!(
+                                resident = %rid, skill = %skill_name,
+                                "技能重用：同處境直接用自己發明的技能（零 LLM）"
+                            );
+                            say_updates.push((rid.clone(), vinvent::reuse_line(&skill_name)));
+                            let interval =
+                                *build_mood_intervals.get(&rid).unwrap_or(&BUILD_INTERVAL_SECS);
+                            reset_build_tick(&rid, interval);
+                            continue;
+                        }
+                    } else {
+                        // ② 不會 → 冷卻到才低頻請便宜腦發明（成本紀律；async、不擋 tick）。
+                        //    等腦回計畫的期間，她照常過日子（採集/蓋家），提案回來再開工。
+                        let cooled = {
+                            let residents = hub().residents.read().unwrap();
+                            residents
+                                .iter()
+                                .find(|r| r.id == rid)
+                                .map_or(false, |r| r.invent_cooldown <= 0.0)
+                        }; // residents 讀鎖釋放
+                        if cooled && npc_agent_wire::agents_enabled() {
+                            {
+                                let mut residents = hub().residents.write().unwrap();
+                                if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                                    r.invent_cooldown = vinvent::INVENT_COOLDOWN_SECS;
+                                }
+                            } // residents 寫鎖釋放
+                            spawn_invention(
+                                rid.clone(),
+                                rname,
+                                goal,
+                                desire_text.clone().unwrap_or_default(),
+                            );
+                        }
+                    }
+                }
+            }
+
             // ── 無計畫：挑下一個活動（目標+記憶驅動，不鬼打牆）──────────────────
             // 已完成的建物種類 + 已擴建次數（持久 GoalStore）+ 玩家心願（可選對應建物）+ 已採集次數。
             let (done_kinds, expansion_count) = {
@@ -4797,6 +4984,283 @@ fn start_gather(rid: &str, rx: i32, rz: i32) {
             }
         }
     }
+}
+
+/// 推進一位居民的發明/重用計畫一步（agency tick 到期、且她沒在採集時呼叫）。
+/// 真進化第一刀的**確定性執行引擎**：全程短鎖循序、不巢狀、不 await（守死鎖鐵律）。
+/// - 採集步走既有 GatherSkill 機制（含可逃性判定，永不自困）；
+/// - 合成步 grounded 在真配方表、即時完成；
+/// - 逾時/缺料/合成失敗 → 計畫失敗（記教訓、不存技能）；
+/// - 全步驟完成且後置條件成立（背包真的有目標材料）→ 交給 [`finish_invent_run`] 收尾。
+fn advance_invent_run(
+    rid: &str,
+    rname: &str,
+    rx: i32,
+    rz: i32,
+    say_updates: &mut Vec<(String, String)>,
+) {
+    // 取 run 快照（residents 讀鎖即釋）。
+    let run = {
+        let residents = hub().residents.read().unwrap();
+        residents.iter().find(|r| r.id == rid).and_then(|r| r.invent_run.clone())
+    }; // residents 讀鎖釋放
+    let Some(mut run) = run else { return };
+
+    // 逾時 → 放棄（失敗收尾；deadline 由 tick 每 0.1s 遞減）。
+    if run.is_expired() {
+        finish_invent_run(rid, rname, run, false, say_updates);
+        return;
+    }
+
+    // 步驟推進（可能一次跨多步：後置條件已滿足的採集步直接跳過、合成步即時完成）。
+    let mut guard = 0;
+    loop {
+        guard += 1;
+        if guard > 16 {
+            break; // 防禦性上限（steps ≤ 6，理論到不了；到了就寫回進度等下輪）
+        }
+        let bag: HashMap<u8, u32> = {
+            let inv = hub().res_inv.read().unwrap();
+            inv.get(rid).cloned().unwrap_or_default()
+        }; // res_inv 讀鎖釋放
+        match vinvent::next_action(&run, &bag) {
+            vinvent::StepAction::Advance => {
+                run.step_idx += 1;
+            }
+            vinvent::StepAction::StartGather { resource } => {
+                // 指名採集該資源：找得到 → 設 GatherSkill（走既有安全機制，挖到入背包）；
+                // 附近真的沒有 → 誠實失敗（記教訓），不會為了執行計畫漫遊卡死。
+                let found = {
+                    let world = hub().deltas.read().unwrap();
+                    vskill::find_nearest_resource_of(
+                        &world, rx, rz, vinvent::INVENT_GATHER_RADIUS, resource,
+                    )
+                }; // deltas 讀鎖釋放
+                match found {
+                    Some((tx, ty, tz)) => {
+                        {
+                            let mut residents = hub().residents.write().unwrap();
+                            if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                                r.gather = Some(GatherSkill {
+                                    resource,
+                                    tx,
+                                    ty,
+                                    tz,
+                                    timeout: vskill::GATHER_TIMEOUT_SECS,
+                                });
+                                r.invent_run = Some(run);
+                            }
+                        } // residents 寫鎖釋放
+                        return; // 這輪去採；材料入背包後，下個 agency tick 再推進。
+                    }
+                    None => {
+                        finish_invent_run(rid, rname, run, false, say_updates);
+                        return;
+                    }
+                }
+            }
+            vinvent::StepAction::DoCraft { recipe_id } => {
+                let Some(recipe) = vcraft::find_recipe(recipe_id) else {
+                    finish_invent_run(rid, rname, run, false, say_updates);
+                    return;
+                };
+                let crafted = {
+                    let mut inv = hub().res_inv.write().unwrap();
+                    vinvent::craft_apply(inv.entry(rid.to_string()).or_default(), recipe)
+                }; // res_inv 寫鎖釋放
+                if crafted {
+                    say_updates.push((rid.to_string(), format!("合成出{}了！", recipe.name_zh)));
+                    run.step_idx += 1;
+                } else {
+                    // 照計畫走到這裡卻備料不足（計畫順序排錯了）→ 這次發明失敗、記教訓。
+                    finish_invent_run(rid, rname, run, false, say_updates);
+                    return;
+                }
+            }
+            vinvent::StepAction::Done => {
+                // 最終後置條件驗證：背包**真的**有目標材料，才算「她做出來了」。
+                let met = {
+                    let inv = hub().res_inv.read().unwrap();
+                    inv.get(rid).map_or(false, |b| vinvent::goal_met(b, run.goal_block))
+                }; // res_inv 讀鎖釋放
+                finish_invent_run(rid, rname, run, met, say_updates);
+                return;
+            }
+        }
+    }
+    // 防禦性出口：寫回進度，下輪 agency tick 續跑。
+    let mut residents = hub().residents.write().unwrap();
+    if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+        r.invent_run = Some(run);
+    }
+}
+
+/// 收尾一次發明/重用計畫：清掉居民身上的 run；
+/// - 成功且是**首次發明** → 存成她的具名技能（append-only 持久化）+「我學會了」泡泡
+///   + Feed + 記憶（日記走既有事件管道自然反映）——**維護者看得到的進化時刻**；
+/// - 成功且是**重用** → 重用 Feed/泡泡（熟練、一次到位、零 LLM）；
+/// - 失敗 → 序列不存；首次發明記一次「教訓」進記憶（重用失敗多半是環境暫時問題，不記）。
+fn finish_invent_run(
+    rid: &str,
+    rname: &str,
+    run: vinvent::InventRun,
+    success: bool,
+    say_updates: &mut Vec<(String, String)>,
+) {
+    {
+        let mut residents = hub().residents.write().unwrap();
+        if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+            r.invent_run = None;
+        }
+    } // residents 寫鎖釋放
+    if success {
+        if run.reuse {
+            tracing::info!(resident = %rid, skill = %run.skill_name, "技能重用完成（零 LLM）");
+            say_updates.push((rid.to_string(), format!("{}到手～輕車熟路！", run.goal_name)));
+            vfeed::append_feed(
+                "技能重用",
+                rname,
+                &vinvent::reuse_feed(&run.skill_name, &run.goal_name),
+            );
+        } else {
+            // 首次發明成功 → 存成她自己的技能（個體的、具名的、持久的）。
+            // **正規化成自足技能**：補上「確保配料足夠」的採集步——她發明時背包裡剛好有料
+            // 的話，計畫可能只有合成步；存檔版必須從空背包也能執行（技能是帶著走的本事）。
+            let canonical = vinvent::canonicalize_steps(&run.steps);
+            // 正規化版須過存檔白名單（理論必過；防禦性 fallback 存她原計畫）。
+            let (store_steps, feed_steps) = match vinvent::check_stored_steps(&canonical) {
+                Some(checked) => (canonical, checked),
+                None => (run.raw_steps.clone(), run.steps.clone()),
+            };
+            let rec = {
+                let mut inv = hub().invented.write().unwrap();
+                inv.add(rid, &run.skill_name, run.goal_block, store_steps)
+            }; // invented 寫鎖釋放
+            if let Some(rec) = rec {
+                vinvent::append_invented_skill(&rec);
+            }
+            tracing::info!(resident = %rid, skill = %run.skill_name, "技能發明成功：存入個人技能庫");
+            say_updates.push((rid.to_string(), vinvent::learned_line(&run.skill_name)));
+            vfeed::append_feed(
+                "學會技能",
+                rname,
+                &vinvent::learned_feed(&run.skill_name, &run.goal_name, &feed_steps),
+            );
+            // 寫進她的記憶（add_memory 是既有管道；日記/回想都會自然帶到這件事）。
+            let entry = {
+                let mut mem = hub().memory.write().unwrap();
+                mem.add_memory(
+                    rid,
+                    vdes::SELF_SPARK,
+                    &vinvent::learned_memory(&run.skill_name, &run.goal_name),
+                )
+            }; // memory 寫鎖釋放
+            vmem::append_memory(&entry);
+        }
+    } else {
+        tracing::info!(
+            resident = %rid, skill = %run.skill_name, reuse = run.reuse,
+            "發明/重用計畫未完成（逾時/缺料/合成失敗）"
+        );
+        if !run.reuse {
+            // 失敗的序列不存；記一次教訓（她記得試過、下次換路子）。
+            let entry = {
+                let mut mem = hub().memory.write().unwrap();
+                mem.add_memory(rid, vdes::SELF_SPARK, &vinvent::fail_lesson(&run.goal_name))
+            }; // memory 寫鎖釋放
+            vmem::append_memory(&entry);
+            say_updates.push((rid.to_string(), "唔……這次沒成，再想想。".to_string()));
+        }
+    }
+}
+
+/// 為一位居民發起一次「發明」：無鎖 async 請**便宜腦**（`agent_llm_chat` 思考路由：
+/// ollama→Cerebras→Gemini，**不碰 Groq**——把玩家對話額度留給玩家）提出原語序列計畫。
+/// 解析+白名單驗證通過才投回 `invent_proposals`；腦沒回/輸出不合白名單 → 安靜放棄
+/// （冷卻已在呼叫端設好，絕不 retry 風暴、絕不 panic）。
+/// 設 `BUTFUN_INVENT_FIXED_PLAN` 時改用固定計畫（**僅隔離實測用**，prod 不設）。
+fn spawn_invention(
+    rid: String,
+    rname: &'static str,
+    goal: vinvent::MaterialGoal,
+    desire: String,
+) {
+    // 防重入：這位居民已有一筆發明在等腦回來，就不再發（LLM 可能比冷卻慢）。
+    {
+        let mut inflight = hub().inventing.lock().unwrap();
+        if !inflight.insert(rid.clone()) {
+            return;
+        }
+    } // inventing mutex 釋放
+    // 背包現況快照（短鎖）：讓腦知道她手上已有什麼（計畫可以少採幾步），
+    // 同一份也拿去做「計畫可行性模擬」（提案階段就抓出算術不通的計畫）。
+    let bag_snap: HashMap<u8, u32> = {
+        let inv = hub().res_inv.read().unwrap();
+        inv.get(&rid).cloned().unwrap_or_default()
+    }; // res_inv 讀鎖釋放
+    let bag_note: String = bag_snap
+        .iter()
+        .filter(|(_, c)| **c > 0)
+        .map(|(bid, c)| format!("{}×{}", block_name_zh(*bid), c))
+        .collect::<Vec<_>>()
+        .join("、");
+    tokio::spawn(async move {
+        // 解析 + 白名單 + 可行性模擬 → Ok(計畫) 或 Err(可回饋給腦的繁中原因)。
+        let validate = |raw: &str| -> Result<vinvent::InventedPlan, String> {
+            let plan = vinvent::parse_plan(raw)
+                .ok_or_else(|| "輸出不是只用允許原語的合法 JSON 計畫".to_string())?;
+            vinvent::simulate_plan(&plan.steps, &bag_snap, goal.block_id)?;
+            Ok(plan)
+        };
+        let (sys, user) = vinvent::invention_prompt(rname, &goal, &desire, &bag_note);
+        let (raw, injected) = if let Some(fixed) = vinvent::fixed_plan_env() {
+            // 測試注入（僅隔離實測；日誌標明，方便回報時區分「真腦」與「注入」）。
+            tracing::info!(resident = %rid, "技能發明：使用 BUTFUN_INVENT_FIXED_PLAN 測試注入計畫");
+            (Some(fixed), true)
+        } else {
+            tracing::info!(resident = %rid, goal = %goal.name_zh, "技能發明：請便宜腦（think 路由）提案中…");
+            (crate::npc_chat::agent_llm_chat(&sys, &user).await, false)
+        };
+        let mut accepted: Option<vinvent::InventedPlan> = None;
+        if let Some(raw1) = raw.as_deref() {
+            match validate(raw1) {
+                Ok(p) => accepted = Some(p),
+                Err(reason) => {
+                    tracing::info!(
+                        resident = %rid, reason = %reason,
+                        raw = %raw1.chars().take(200).collect::<String>(),
+                        "技能發明：第一次計畫不可行 → 帶原因請腦修正（僅重試一次）"
+                    );
+                    // Voyager 式迭代精煉：帶失敗原因重試**一次**（成本有界）。測試注入不重試。
+                    if !injected {
+                        let user2 = vinvent::retry_user_prompt(&user, raw1, &reason);
+                        if let Some(raw2) = crate::npc_chat::agent_llm_chat(&sys, &user2).await {
+                            match validate(&raw2) {
+                                Ok(p) => accepted = Some(p),
+                                Err(reason2) => tracing::info!(
+                                    resident = %rid, reason = %reason2,
+                                    raw = %raw2.chars().take(200).collect::<String>(),
+                                    "技能發明：修正後仍不可行 → 本次放棄（冷卻中）"
+                                ),
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            tracing::info!(resident = %rid, "技能發明：腦沒回 → 本次放棄（冷卻中）");
+        }
+        if let Some(plan) = accepted {
+            tracing::info!(resident = %rid, skill = %plan.name, "技能發明：計畫解析+白名單+可行性模擬通過");
+            hub().invent_proposals.lock().unwrap().push((
+                rid.clone(),
+                goal.block_id,
+                goal.name_zh.to_string(),
+                plan,
+            ));
+        }
+        hub().inventing.lock().unwrap().remove(&rid);
+    });
 }
 
 /// 開始蓋一個建物：以「家域中心」為基準、依格位序號散開錨點 → 建計畫 → 動工 Feed + 冒泡。

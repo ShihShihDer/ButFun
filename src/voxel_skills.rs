@@ -327,14 +327,18 @@ pub fn trunk_base(world: &WorldDelta, x: i32, z: i32) -> Option<i32> {
 }
 
 /// 螺旋掃指定半徑環，對每個 (x,z) 呼叫 `pick`；回傳第一個 `Some` 的結果。
-/// 把「從 MIN_RADIUS 起一圈圈往外找最近」的骨架抽出來，木頭/地表兩種找法共用。
+/// 把「由內圈往外找最近」的骨架抽出來，木頭/地表兩種找法共用。
+/// `min_radius`：日常採集傳 [`GATHER_MIN_RADIUS`]（讓居民走幾步、動作看得見）；
+/// 指定型別採集（技能發明）傳 0——目標導向，**站在樹旁就該砍得到眼前那棵**
+/// （實測踩過：重用技能採第二刀料時人已在樹旁，min=4 的盲區讓她「看不見」腳邊的樹）。
 fn spiral_find<T>(
     ox: i32,
     oz: i32,
+    min_radius: i32,
     max_radius: i32,
     mut pick: impl FnMut(i32, i32) -> Option<T>,
 ) -> Option<T> {
-    for r in GATHER_MIN_RADIUS..=max_radius {
+    for r in min_radius.max(0)..=max_radius {
         for dx in -r..=r {
             for dz in -r..=r {
                 // 只走當前半徑的「環」邊界，避免重複掃內圈。
@@ -374,7 +378,7 @@ pub fn find_nearest_resource(
 
     // 第一優先：最近一棵「砍得到」的樹（側向砍最低樹幹塊，近地表、安全可逃）。
     // 先用 surface_block 便宜判斷該柱是不是樹（地表頂為樹冠/樹幹），是才掃樹幹底，避免空地全掃。
-    if let Some(w) = spiral_find(ox, oz, max_radius, |x, z| {
+    if let Some(w) = spiral_find(ox, oz, GATHER_MIN_RADIUS, max_radius, |x, z| {
         let (_, b) = surface_block(world, x, z)?;
         if !matches!(b, Block::Leaves | Block::Wood) {
             return None;
@@ -386,7 +390,7 @@ pub fn find_nearest_resource(
     }
 
     // 退而求其次：最近一塊可採地表方塊（草／沙／泥／石，非水；跳過樹冠擋住的樹柱）。
-    spiral_find(ox, oz, max_radius, |x, z| {
+    spiral_find(ox, oz, GATHER_MIN_RADIUS, max_radius, |x, z| {
         let (y, b) = surface_block(world, x, z)?;
         if matches!(b, Block::Leaves | Block::Wood) {
             return None; // 樹柱已在木頭階段處理（砍不到就不採其地表）
@@ -396,10 +400,12 @@ pub fn find_nearest_resource(
     })
 }
 
-/// 從 (ox,oz) 螺旋向外找最近一個「可採指定型別」的方塊（給「指名要採 XX」的跑腿任務用，
-/// ROADMAP·指令→任務第三刀）。與 [`find_nearest_resource`] 的差別：後者是「就地取材、
-/// 木頭優先」的背景採集找法；本函式是「一定要找到這個特定種類」，沒有優先序，找不到就回 `None`
-/// （呼叫端據此決定放棄或帶著已採到的先回去交差）。純函式（吃 &WorldDelta）、可測。
+/// 從 (ox,oz) 螺旋向外找**指定型別**的最近可採資源（技能發明 v1：發明計畫的採集步驟
+/// 指名要某種材料，例如「去採沙」；跑腿採集·指令→任務第三刀：玩家指名要採 XX）。
+/// 與 [`find_nearest_resource`] 同一套螺旋搜尋與**可逃性保證**（永不挖坑自困），
+/// 只是目標型別固定、沒有優先序。木頭走樹幹判定、地表材料走地表頂判定。
+/// 找不到 → `None`（呼叫端誠實失敗：發明側不會漫遊卡死、跑腿側帶著已採到的先回去交差）。
+/// 純函式（吃 &WorldDelta）、可測。
 pub fn find_nearest_resource_of(
     world: &WorldDelta,
     ox: i32,
@@ -412,7 +418,9 @@ pub fn find_nearest_resource_of(
         foot_fy.map_or(true, |fy| is_escapable_after_dig(world, ox, fy, oz, x, y, z))
     };
     if want == GatherResource::Wood {
-        return spiral_find(ox, oz, max_radius, |x, z| {
+        // 木頭：找最近一棵「砍得到」的樹（側砍最低樹幹塊，近地表、安全可逃）。
+        // min_radius=0：目標導向採集，站在資源旁也找得到（無盲區）。
+        return spiral_find(ox, oz, 0, max_radius, |x, z| {
             let (_, b) = surface_block(world, x, z)?;
             if !matches!(b, Block::Leaves | Block::Wood) {
                 return None;
@@ -421,9 +429,10 @@ pub fn find_nearest_resource_of(
             escapable(x, wy, z).then_some((x, wy, z))
         });
     }
-    spiral_find(ox, oz, max_radius, |x, z| {
+    // 地表材料：找最近一柱「地表頂正是該型別」且挖了可逃的。
+    spiral_find(ox, oz, 0, max_radius, |x, z| {
         let (y, b) = surface_block(world, x, z)?;
-        if GatherResource::from_block(b)? != want {
+        if b != want.block() {
             return None;
         }
         escapable(x, y, z).then_some((x, y, z))
@@ -937,6 +946,62 @@ mod tests {
             None,
             "半徑內完全沒有沙子 → 該老實回 None，不亂猜"
         );
+    }
+
+    // ── find_nearest_resource_of：指定型別採集（技能發明 v1 的採集步驟）──────────
+
+    #[test]
+    fn find_typed_resource_matches_requested_kind() {
+        // 在陸地點附近放一塊 delta 石頭當地表頂 → 指名找石頭應找得到、且座標真是石頭。
+        let world = WorldDelta::new();
+        let (ox, oz) = land_point();
+        let mut w2 = world.clone();
+        let (px, pz) = (ox + GATHER_MIN_RADIUS + 1, oz);
+        let h = height_at(px, pz);
+        voxel::set_block(&mut w2, px, h + 1, pz, Block::Stone);
+        let found = find_nearest_resource_of(&w2, ox, oz, GATHER_MAX_RADIUS, GatherResource::Stone);
+        let (x, y, z) = found.expect("指名石頭應找得到（剛放了一塊）");
+        assert_eq!(voxel::effective_block_at(&w2, x, y, z), Block::Stone, "找到的必須真是石頭");
+    }
+
+    #[test]
+    fn find_typed_wood_targets_trunk() {
+        // 指名木頭 → 目標是「最低樹幹塊」且砍了可逃（與一般採集同一套安全保證）。
+        let world = WorldDelta::new();
+        let (ox, oz, _t) = tree_with_flat_neighbor();
+        let (x, y, z) = find_nearest_resource_of(&world, ox, oz, GATHER_MAX_RADIUS, GatherResource::Wood)
+            .expect("樹旁指名木頭應找得到");
+        assert_eq!(voxel::effective_block_at(&world, x, y, z), Block::Wood);
+        let fy = height_at(ox, oz) + 1;
+        assert!(is_escapable_after_dig(&world, ox, fy, oz, x, y, z), "砍樹不該把自己困住");
+    }
+
+    #[test]
+    fn find_typed_resource_sees_adjacent_target_no_blind_zone() {
+        // 迴歸（實測踩過）：重用技能採第二刀料時，人就站在剛砍過的樹旁——
+        // 指定型別搜尋必須從半徑 0 起找（無 GATHER_MIN_RADIUS 盲區），眼前的資源找得到。
+        let world = WorldDelta::new();
+        let (ox, oz) = land_point();
+        let mut w2 = world.clone();
+        // 在她腳邊 1 格處放一塊石頭（落在日常採集 min=4 的盲區內）。
+        let (px, pz) = (ox + 1, oz);
+        let h = height_at(px, pz);
+        voxel::set_block(&mut w2, px, h + 1, pz, Block::Stone);
+        let found = find_nearest_resource_of(&w2, ox, oz, GATHER_MAX_RADIUS, GatherResource::Stone);
+        assert_eq!(found, Some((px, h + 1, pz)), "腳邊的目標資源不該落在盲區");
+    }
+
+    #[test]
+    fn find_typed_resource_none_when_absent() {
+        // 陸地草原上（掃小半徑）指名找沙——附近沒有沙時應誠實回 None，不亂給座標。
+        let world = WorldDelta::new();
+        let (ox, oz) = land_point();
+        if let Some((x, y, z)) =
+            find_nearest_resource_of(&world, ox, oz, GATHER_MIN_RADIUS + 1, GatherResource::Sand)
+        {
+            // 若真的找到，那座標必須真是沙（型別保證，不誤採別的）。
+            assert_eq!(voxel::effective_block_at(&world, x, y, z), Block::Sand);
+        }
     }
 
     // ── safe_to_dig：採集別把自己挖坑卡住 ────────────────────────────────────
