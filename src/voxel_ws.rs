@@ -5747,8 +5747,9 @@ fn spawn_invention(
     tokio::spawn(async move {
         // 解析 + 白名單 + 可行性模擬 → Ok(計畫) 或 Err(可回饋給腦的繁中原因)。
         let validate = |raw: &str| -> Result<vinvent::InventedPlan, String> {
-            let plan = vinvent::parse_plan(raw)
-                .ok_or_else(|| "輸出不是只用允許原語的合法 JSON 計畫".to_string())?;
+            // 詳細版解析：白名單擋下時回**具體錯處**（哪一步、哪個配方用錯清單）——
+            // 實測小模型拿籠統原因修不回來、拿具體原因才修得回來（Voyager 式回饋）。
+            let plan = vinvent::parse_plan_detailed(raw)?;
             vinvent::simulate_plan(&plan.steps, &bag_snap, goal.block_id, wb_nearby)?;
             Ok(plan)
         };

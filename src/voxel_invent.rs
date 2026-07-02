@@ -255,19 +255,74 @@ pub struct InventedPlan {
 /// 從 LLM 輸出解析計畫：抽出第一個 `{`..最後一個 `}` 的 JSON、serde 解析、白名單驗證。
 /// 任何一步失敗都回 `None`（本次發明放棄、記冷卻），絕不 panic。
 pub fn parse_plan(raw: &str) -> Option<InventedPlan> {
-    let start = raw.find('{')?;
-    let end = raw.rfind('}')?;
+    parse_plan_detailed(raw).ok()
+}
+
+/// [`parse_plan`] 的詳細版：失敗時回**具體的繁中原因**（哪一步、錯在哪）——
+/// Voyager 式重試的關鍵回饋。實測（qwen2.5:3b 真便宜腦）看到小模型把隨身配方用
+/// craft_wb 做（`craft_wb workbench`），籠統的「輸出不合法」讓它修正時瞎猜；
+/// 具體指出「workbench 是隨身配方，要用 craft」才修得回來。純函式、可測。
+pub fn parse_plan_detailed(raw: &str) -> Result<InventedPlan, String> {
+    let start = raw.find('{').ok_or("輸出裡找不到 JSON 物件")?;
+    let end = raw.rfind('}').ok_or("輸出裡找不到 JSON 物件")?;
     if end <= start {
-        return None;
+        return Err("輸出裡找不到 JSON 物件".to_string());
     }
     let json = &raw[start..=end];
-    let plan: RawPlan = serde_json::from_str(json).ok()?;
+    let plan: RawPlan = serde_json::from_str(json).map_err(|_| {
+        "JSON 解析失敗——必須是 {\"name\":\"…\",\"steps\":[…]} 且每步只用允許的原語欄位"
+            .to_string()
+    })?;
     let name: String = plan.name.trim().chars().take(SKILL_NAME_MAX_CHARS).collect();
     if name.is_empty() {
-        return None;
+        return Err("技能名（name）不可為空".to_string());
     }
-    let steps = check_steps(&plan.steps)?;
-    Some(InventedPlan { name, raw_steps: plan.steps, steps })
+    if plan.steps.is_empty() {
+        return Err("steps 不可為空".to_string());
+    }
+    if plan.steps.len() > MAX_STEPS {
+        return Err(format!("步數 {} 超過上限 {MAX_STEPS}", plan.steps.len()));
+    }
+    let steps: Vec<CheckedStep> = plan
+        .steps
+        .iter()
+        .map(|s| check_step(s).ok_or_else(|| explain_bad_step(s)))
+        .collect::<Result<_, _>>()?;
+    Ok(InventedPlan { name, raw_steps: plan.steps, steps })
+}
+
+/// 白名單驗證失敗的一步 → 具體的繁中原因（回饋給便宜腦修正用）。
+/// 最重要的兩型：craft/craft_wb 兩張配方清單用反（小模型實測最常犯）。
+fn explain_bad_step(s: &PrimStep) -> String {
+    match s {
+        PrimStep::Gather { resource, count } => {
+            if resource_from_token(resource).is_none() {
+                format!(
+                    "採集資源「{resource}」不在白名單——只能是 grass / sand / dirt / stone / wood"
+                )
+            } else {
+                format!("採集數量 {count} 不在 1~{MAX_GATHER_COUNT} 範圍內")
+            }
+        }
+        PrimStep::Craft { recipe } => match vcraft::find_recipe(recipe) {
+            Some(_) => format!("配方「{recipe}」的配料你自己弄不到（要冶煉或稀有掉落），不能用"),
+            None if vcraft::find_workbench_recipe(recipe).is_some() => format!(
+                "「{recipe}」是**工作台配方**，要用 craft_wb 做（且必須先有工作台在你旁邊）"
+            ),
+            None => format!("「{recipe}」不在隨身合成配方清單裡"),
+        },
+        PrimStep::CraftWb { recipe } => match vcraft::find_workbench_recipe(recipe) {
+            Some(_) => format!("工作台配方「{recipe}」的配料你自己弄不到（要冶煉或稀有掉落），不能用"),
+            None if vcraft::find_recipe(recipe).is_some() => format!(
+                "「{recipe}」是**隨身 2×2 配方**，要用 craft 做（不需要工作台——\
+                工作台本身就是：craft plank → craft workbench → place）"
+            ),
+            None => format!("「{recipe}」不在工作台配方清單裡"),
+        },
+        PrimStep::Place { block } => {
+            format!("place 只能放 workbench 或 furnace，「{block}」不在白名單")
+        }
+    }
 }
 
 // ── 處境偵測（純函式、確定性、零 LLM）────────────────────────────────────────────
@@ -1131,6 +1186,27 @@ mod tests {
         // 鐵鎬要鐵錠（要冶煉，鏈外）→ craft_wb 也不可發明，拒絕。
         let raw = r#"{"name":"鐵鎬","steps":[{"op":"craft_wb","recipe":"iron_pickaxe"}]}"#;
         assert!(parse_plan(raw).is_none());
+    }
+
+    #[test]
+    fn parse_detailed_explains_list_confusion() {
+        // 小模型實測最常犯：隨身配方用 craft_wb 做（workbench 在 2×2 清單）——
+        // 詳細原因必須點名「用 craft 做」，腦才修得回來（籠統原因實測修不回來）。
+        let raw = r#"{"name":"做工作台","steps":[{"op":"craft_wb","recipe":"workbench"}]}"#;
+        let err = parse_plan_detailed(raw).unwrap_err();
+        assert!(err.contains("workbench") && err.contains("craft"), "要點名配方與正確原語：{err}");
+        assert!(err.contains("隨身"), "要講明它屬於隨身清單：{err}");
+        // 反向：工作台配方用 craft 做 → 點名「用 craft_wb」。
+        let raw = r#"{"name":"大量玻璃","steps":[{"op":"craft","recipe":"glass_wb"}]}"#;
+        let err = parse_plan_detailed(raw).unwrap_err();
+        assert!(err.contains("glass_wb") && err.contains("craft_wb"), "要點名正確原語：{err}");
+        // 亂配方 id → 講「不在清單」；亂 place token → 講白名單。
+        let raw = r#"{"name":"亂","steps":[{"op":"craft_wb","recipe":"no_such"}]}"#;
+        assert!(parse_plan_detailed(raw).unwrap_err().contains("不在工作台配方清單"));
+        let raw = r#"{"name":"亂","steps":[{"op":"place","block":"chest"}]}"#;
+        assert!(parse_plan_detailed(raw).unwrap_err().contains("place 只能放"));
+        // 好計畫走詳細版仍通過（與 parse_plan 一致）。
+        assert!(parse_plan_detailed(glass_plan_json()).is_ok());
     }
 
     #[test]
