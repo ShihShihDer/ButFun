@@ -761,43 +761,54 @@
       display: flex; flex-direction: row; gap: 16px;
     }
     #furnaceInvSection { flex: 1; min-width: 0; }
-    #furnaceSmeltSection { flex-shrink: 0; min-width: 180px; }
+    #furnaceSmeltSection { flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; }
     .furnace-sec-lbl {
       font-size: 11px; color: #a05030; letter-spacing: 0.8px;
       margin-bottom: 8px; text-transform: uppercase;
     }
     #furnaceInvGrid { display: flex; flex-wrap: wrap; gap: 6px; }
-    /* 配方卡片列表 */
-    .furnace-recipe-card {
-      border: 1px solid rgba(232,120,64,0.22); border-radius: 10px;
-      padding: 8px 10px; margin-bottom: 8px;
+    /* 熔爐 2 格輸入（材料+燃料，如 smelt_iron 需鐵礦+煤礦）→ 結果格，
+       手感沿用背包/工作台的「點物品拿起→點格子放入」互動，三層合成語言一致。 */
+    #furnaceCraftRow { display: flex; align-items: center; gap: 10px; }
+    #furnaceGrid2 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+    .furnace-grid-slot {
+      width: 48px; height: 48px; border-radius: 7px;
+      border: 2px solid rgba(255,255,255,0.18);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      cursor: pointer; user-select: none; gap: 2px;
       background: rgba(255,255,255,0.03);
       transition: border-color 0.12s, background 0.12s;
     }
-    .furnace-recipe-card.available {
-      border-color: rgba(232,120,64,0.55);
-      background: rgba(232,120,64,0.07);
+    .furnace-grid-slot.filled { background: rgba(255,255,255,0.09); border-color: rgba(232,120,64,0.45); }
+    .furnace-grid-slot:hover { background: rgba(255,255,255,0.11); }
+    .furnace-grid-sw { width: 24px; height: 24px; border-radius: 4px; }
+    .furnace-grid-lbl { font-size: 9px; color: #e0b890; line-height: 1; }
+    #furnaceCraftArrow { font-size: 22px; color: #a05030; flex-shrink: 0; }
+    #furnaceResultSlot {
+      width: 64px; height: 64px; border-radius: 10px;
+      border: 2px solid rgba(255,255,255,0.12);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 3px; background: rgba(255,255,255,0.03);
+      transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
     }
-    .furnace-recipe-name { font-size: 13px; font-weight: bold; color: #e8c8a0; margin-bottom: 4px; }
-    .furnace-recipe-io {
-      display: flex; align-items: center; gap: 6px;
-      font-size: 12px; color: #8098b0; margin-bottom: 6px;
+    #furnaceResultSlot.has-result {
+      border-color: #e87840; cursor: pointer;
+      box-shadow: 0 0 10px rgba(232,120,64,0.50);
+      background: rgba(232,120,64,0.10);
     }
-    .furnace-recipe-io-arrow { color: #e87840; }
-    .furnace-recipe-mat { color: #a0b8c8; }
-    .furnace-recipe-out { color: #d0e8c0; }
-    .furnace-smelt-btn {
-      width: 100%; padding: 5px 0; border-radius: 7px; border: none; cursor: pointer;
-      font-size: 12px; background: rgba(232,120,64,0.18); color: #e8a060;
-      transition: background 0.12s;
+    #furnaceResultSlot.no-material { border-color: rgba(255,100,60,0.4); }
+    #furnaceClearBtn {
+      margin-top: 4px; padding: 5px 0; border-radius: 8px; border: none;
+      font-size: 11px; background: rgba(255,255,255,0.09); color: #8090a8;
+      cursor: pointer; width: 100%;
     }
-    .furnace-smelt-btn:hover:not(:disabled) { background: rgba(232,120,64,0.35); color: #f0c090; }
-    .furnace-smelt-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #furnaceClearBtn:hover { background: rgba(255,255,255,0.15); color: #cde; }
     #furnaceHint { font-size: 11px; color: #50381a; margin-top: 10px; line-height: 1.5; }
     @media (orientation: portrait) {
       #furnaceBtn { top: auto; bottom: 180px; right: 10px; }
       #furnacePanel { top: auto; transform: translateX(-50%); bottom: 10px; max-height: 75vh; }
       #furnaceBody { flex-direction: column; }
+      #furnaceCraftRow { justify-content: center; }
     }
 
     /* ── 箱子儲存面板（ROADMAP 692）──────────────────────────────────────────── */
@@ -1022,9 +1033,14 @@
         <div id="furnaceInvGrid"></div>
       </div>
       <div id="furnaceSmeltSection">
-        <div class="furnace-sec-lbl">冶煉配方</div>
-        <div id="furnaceRecipeList"></div>
-        <div id="furnaceHint">選擇配方→點「冶煉」→消耗材料得產出；需靠近熔爐方塊</div>
+        <div class="furnace-sec-lbl">冶煉格（3 格無順序）</div>
+        <div id="furnaceCraftRow">
+          <div id="furnaceGrid2"></div>
+          <div id="furnaceCraftArrow">➔</div>
+          <div id="furnaceResultSlot"></div>
+        </div>
+        <button id="furnaceClearBtn">清除冶煉格</button>
+        <div id="furnaceHint">點物品→選中，點格子→放入；湊齊配方→結果格亮起→點結果格→冶煉；需靠近熔爐方塊</div>
       </div>
     </div>
   </div>
