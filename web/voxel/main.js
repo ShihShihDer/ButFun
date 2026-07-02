@@ -2383,6 +2383,9 @@ function connect() {
         updateGiftBtn();
         appendMsg("sys", "📦 " + (m.resident_name || "居民") + "：" + (m.line || ("這是你要的" + iname + "！")));
       }
+    } else if (m.t === "welcome_back") {
+      // 久別重逢摘要 v1（ROADMAP 721）：只有自己看得到，離線期間世界發生的重要事件摘要。
+      if (m.text) appendMsg("sys", m.text);
     } else if (m.t === "build_complete") {
       // 建物完工廣播 v1（ROADMAP 669）：全員可見，世界在長大。
       const who = m.resident || "居民";

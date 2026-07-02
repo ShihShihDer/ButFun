@@ -67,6 +67,7 @@ use crate::voxel_weather as vweather;
 use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
 use crate::voxel_teach as vteach;
+use crate::voxel_welcome as vwelcome;
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -787,6 +788,9 @@ struct VoxelHub {
     invent_proposals: std::sync::Mutex<Vec<(String, u8, String, vinvent::InventedPlan)>>,
     /// 發明防重入集合：正在等便宜腦回計畫的居民 id（LLM 可能比冷卻慢，防同人連發）。
     inventing: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// 久別重逢摘要 v1（ROADMAP 721）：玩家名 → 上次連線的 unix 秒。純記憶體、重啟清空
+    /// （比照 pending_trades 慣例；重啟後首次連線只記錄基準點、不跳摘要，之後正常累積）。
+    last_seen: RwLock<HashMap<String, u64>>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -890,6 +894,8 @@ fn hub() -> &'static VoxelHub {
             )),
             invent_proposals: std::sync::Mutex::new(Vec::new()),
             inventing: std::sync::Mutex::new(std::collections::HashSet::new()),
+            // 久別重逢摘要 v1：啟動空（純記憶體、無需持久化）。
+            last_seen: RwLock::new(HashMap::new()),
             tx,
         }
     })
@@ -1223,6 +1229,26 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
             cleanup(my_id, &writer);
             return;
         }
+    }
+
+    // 久別重逢摘要 v1（ROADMAP 721）：離線夠久 + 期間有值得播報的事 → 私訊一句摘要，
+    // 讓玩家一登入就感受到「世界在我不在時真的繼續活著」，不只是回來後一片死寂。
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let last = { hub().last_seen.read().unwrap().get(&name).copied() }; // 讀鎖釋放
+        if vwelcome::should_show_welcome(last, now) {
+            let events = vfeed::load_recent_feed(vfeed::FEED_LIMIT);
+            let lines = vwelcome::summarize_events(&events, last.unwrap_or(now));
+            if let Some(msg) = vwelcome::format_welcome_message(&lines) {
+                let welcome_back =
+                    serde_json::json!({ "t": "welcome_back", "text": msg }).to_string();
+                let _ = out_tx.send(Message::Text(welcome_back)).await;
+            }
+        }
+        hub().last_seen.write().unwrap().insert(name.clone(), now); // 寫鎖釋放
     }
 
     // 送出生點周邊 chunk。
