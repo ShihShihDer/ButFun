@@ -164,6 +164,8 @@ mod voxel_gossip;
 mod voxel_weather;
 // 乙太方界·居民小圈子聚會 v1：互為老朋友的圈子偶爾相約碰面，小社會第一次被看見「聚在一起」（ROADMAP 711）。
 mod voxel_clique;
+// 乙太方界·居民偶爾小小拌嘴又和好 v1：老朋友到訪偶爾拌幾句嘴又和好，關係第一次有了真實的小摩擦（ROADMAP 715）。
+mod voxel_quarrel;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
