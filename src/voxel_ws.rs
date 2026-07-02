@@ -68,6 +68,7 @@ use crate::voxel_comfort as vcomfort;
 use crate::voxel_cheer as vcheer;
 use crate::voxel_chest as vchest;
 use crate::voxel_sign as vsign;
+use crate::voxel_readsign as vreadsign;
 use crate::voxel_weather as vweather;
 use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
@@ -193,6 +194,8 @@ struct VoxelResident {
     say_timer: f32,
     /// 主動招呼冷卻倒數（秒）：> 0 表示最近招呼過、暫不再冒，避免洗版。
     greet_timer: f32,
+    /// 讀牌冷卻倒數（秒，居民讀牌 v1）：> 0 表示最近念過附近的告示牌，暫不再讀，稀少才有感。
+    read_sign_timer: f32,
     /// 居民↔居民社交冷卻倒數（秒）：> 0 表示最近主動搭話過另一位居民，尚不可再發起。
     social_cooldown: f32,
     /// 另一位居民剛搭話，等這秒數到期後回應（id, 名字, 剩餘秒）。
@@ -756,6 +759,8 @@ fn init_residents() -> Vec<VoxelResident> {
             say: String::new(),
             say_timer: 0.0,
             greet_timer: 0.0,
+            // 讀牌冷卻（居民讀牌 v1）：錯開初始冷卻，避免啟動後短時間全員同時讀同一塊牌。
+            read_sign_timer: 30.0 + i as f32 * 20.0,
             // 錯開初始社交冷卻，避免啟動瞬間全員一起嘗試搭話。
             social_cooldown: i as f32 * 20.0,
             pending_response: None,
@@ -4179,6 +4184,30 @@ fn tick_residents(dt: f32) {
                         r.say_timer = SAY_SECS;
                         r.greet_timer = GREET_COOLDOWN;
                     }
+                }
+            }
+
+            // 讀牌 v1（居民讀牌）：冷卻完、目前沒在說話、非尋伴狀態時，低機率偵測 READ_RANGE 內
+            // 是否有玩家立的告示牌（740）；有的話停下念出牌面 + 依語氣回應一句——玩家親手寫的字
+            // 第一次被 AI 居民「看見」。先擲骰再上鎖（no-sign 世界不白鎖）；短鎖讀 sign store 取
+            // 最近牌面即釋（不巢狀、不持鎖 await），守死鎖鐵律。零 LLM、零持久化。
+            if r.read_sign_timer > 0.0 {
+                r.read_sign_timer -= dt;
+            } else if r.say.is_empty()
+                && !r.seeking_comfort
+                && rand::random::<f32>() < vreadsign::READ_CHANCE_PER_TICK
+            {
+                let nearby = hub()
+                    .sign
+                    .read()
+                    .unwrap()
+                    .nearest_within(r.body.x, r.body.z, vreadsign::READ_RANGE)
+                    .map(|(t, _)| t); // sign 讀鎖在此釋放
+                if let Some(text) = nearby.filter(|t| !t.is_empty()) {
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    r.say = vreadsign::read_sign_line(&text, pick);
+                    r.say_timer = SAY_SECS;
+                    r.read_sign_timer = vreadsign::READ_COOLDOWN;
                 }
             }
 
