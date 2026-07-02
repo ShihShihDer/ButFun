@@ -5697,7 +5697,8 @@ fn finish_invent_run(
     } else {
         tracing::info!(
             resident = %rid, skill = %run.skill_name, reuse = run.reuse,
-            "發明/重用計畫未完成（逾時/缺料/合成失敗）"
+            step = run.step_idx, plan = %vinvent::steps_summary(&run.steps),
+            "發明/重用計畫未完成（逾時/缺料/合成失敗/放不了）——step 指到失敗那一步"
         );
         if !run.reuse {
             // 失敗的序列不存；記一次教訓（她記得試過、下次換路子）。
