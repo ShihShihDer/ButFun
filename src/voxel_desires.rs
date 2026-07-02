@@ -89,6 +89,8 @@ impl DesireStore {
 /// 截至 [`DESIRE_MAX_CHARS`] 字元。找不到觸發詞或片段過短（< [`DESIRE_MIN_CHARS`]）→ `None`。
 pub fn extract_desire(reply: &str) -> Option<String> {
     // 較長 / 更具體的觸發詞排前，避免 "我想要" 被 "我想" 提早截斷。
+    // 口語願望常省略「我」（實測露娜說「真希望有玻璃」「好想要亮晶晶的玻璃」全被漏接、
+    // 維護者自己的說法「真希望有玻璃」也一樣）——補上無主詞的口語觸發詞。
     const TRIGGERS: &[&str] = &[
         "我的夢想是",
         "我的心願是",
@@ -102,6 +104,12 @@ pub fn extract_desire(reply: &str) -> Option<String> {
         "我希望",
         "我打算",
         "我想",
+        "真希望",
+        "好希望",
+        "好想要",
+        "好想",
+        "要是有",
+        "如果能有",
     ];
 
     for trigger in TRIGGERS {
@@ -251,6 +259,22 @@ mod tests {
         // 「我想蓋塔。然後我想做別的。」應只取到第一個句號。
         let r = extract_desire("我想蓋一座塔。然後我想做別的。").unwrap();
         assert!(!r.contains("然後"), "應只取到第一個句尾");
+    }
+
+    #[test]
+    fn extract_desire_catches_colloquial_without_subject() {
+        // 口語願望常省略「我」——露娜實測原句（曾被漏接，真進化驗證卡在這）。
+        let r = extract_desire("露娜，真希望有玻璃啊，好想要亮晶晶的玻璃。").unwrap();
+        assert!(r.contains("玻璃"), "「真希望…」該被抽到: {r}");
+        // 維護者最早的假想句（「我說真希望有玻璃，NPC 聽到會許願嗎」）。
+        let r2 = extract_desire("真希望有玻璃做的窗戶！").unwrap();
+        assert!(r2.contains("玻璃"), "{r2}");
+        // 「好想要…」也是常見口語。
+        let r3 = extract_desire("唉，好想要一張木板做的床呀。").unwrap();
+        assert!(r3.contains("木板"), "{r3}");
+        // 「要是有…」假設句型。
+        let r4 = extract_desire("要是有石磚鋪的路就好了。").unwrap();
+        assert!(r4.contains("石磚"), "{r4}");
     }
 
     // ── DesireStore 純函式測試 ───────────────────────────────────────────────
