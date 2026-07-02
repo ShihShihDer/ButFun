@@ -176,6 +176,11 @@ pub enum Block {
     /// 直徑 1 格、高 1 格的閃亮結晶，是寒冷雪原獨有的珍稀寶物。
     /// 採集後可放置（冰藍裝飾方塊）；送給居民會換來格外驚喜的珍愛反應。
     IceCrystal = 56,
+    /// 冰晶燈（冰晶合成 v1）——背包 2×2 合成：1 冰晶 + 2 玻璃 → 1 冰晶燈。
+    /// 把雪原專程採回的珍稀冰晶封進玻璃，成為一盞泛著冷藍幽光的裝飾燈；
+    /// 純色亮藍方塊（無動態光照，比照火把作法），是雪原遠征最有感的建造回報，
+    /// 蓋冰屋時擺一盞、寒夜裡也有光。可放置、可再破壞回收。
+    IceLantern = 57,
 }
 
 impl Block {
@@ -249,6 +254,7 @@ impl Block {
             54 => Some(Block::Cactus),
             55 => Some(Block::Snow),
             56 => Some(Block::IceCrystal),
+            57 => Some(Block::IceLantern),
             _ => None,
         }
     }
@@ -263,7 +269,7 @@ impl Block {
             Block::Workbench | Block::Furnace | Block::SmoothStone |
             Block::CoalOre | Block::IronOre | Block::IronIngot | Block::IronBlock |
             Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed | Block::Bed |
-            Block::Cactus | Block::Snow | Block::IceCrystal
+            Block::Cactus | Block::Snow | Block::IceCrystal | Block::IceLantern
         )
     }
 }

@@ -183,6 +183,16 @@ pub const RECIPES: &[Recipe] = &[
         output_block: 45,           // Block::Bed = 45
         output_count: 1,
     },
+    // ── 冰晶燈 v1：1 冰晶 + 2 玻璃 → 1 冰晶燈 ─────────────────────────────────────
+    // 把雪原專程採回的稀有冰晶(56)封進玻璃(10)，做成一盞泛著冷藍幽光的裝飾燈(57)。
+    // 冰晶是特殊材料（雪原獨有、稀疏難尋）、玻璃便宜（2 沙一片）＝珍寶當燈芯、玻璃當燈罩。
+    Recipe {
+        id: "ice_lantern",
+        name_zh: "冰晶燈",
+        inputs: &[(56, 1), (10, 2)],  // 1 冰晶 + 2 玻璃 → 1 冰晶燈（3 格，剛好塞進 2×2）
+        output_block: 57,             // Block::IceLantern = 57
+        output_count: 1,
+    },
 ];
 
 /// 工作台 3×3 合成配方（需放置工作台方塊後右鍵開啟面板才能合成）。
@@ -368,6 +378,18 @@ mod tests {
     }
 
     #[test]
+    fn find_recipe_ice_lantern_in_2x2_list() {
+        // 冰晶燈配方在 2×2 表——1 冰晶(56) + 2 玻璃(10) → 1 冰晶燈(57)
+        let r = find_recipe("ice_lantern").unwrap();
+        assert_eq!(r.output_block, 57, "冰晶燈 id 應為 57（Block::IceLantern）");
+        assert_eq!(r.output_count, 1);
+        assert_eq!(r.inputs, &[(56, 1), (10, 2)], "冰晶燈需要 1 冰晶 + 2 玻璃");
+        // 冰晶(56)是特殊燈芯、玻璃(10)是便宜燈罩——特殊材料只需一顆。
+        let crystal = r.inputs.iter().find(|&&(id, _)| id == 56).unwrap();
+        assert_eq!(crystal.1, 1, "稀有冰晶只需 1 顆（雪原珍寶，不該大量消耗）");
+    }
+
+    #[test]
     fn find_recipe_returns_none_for_unknown() {
         assert!(find_recipe("unknown_xyz").is_none());
         assert!(find_recipe("").is_none());
@@ -442,7 +464,8 @@ mod tests {
                 || r.output_block == SHOVEL_WOOD_ID  // 木鏟（ROADMAP 690）
                 || r.output_block == SHOVEL_STONE_ID  // 石鏟（ROADMAP 690）
                 || r.output_block == 43  // 木門（DoorClosed，ROADMAP 693）
-                || r.output_block == 45; // 床（Block::Bed）
+                || r.output_block == 45  // 床（Block::Bed）
+                || r.output_block == 57; // 冰晶燈（Block::IceLantern，冰晶合成 v1）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
@@ -576,6 +599,8 @@ mod tests {
         store.give("旅人", 21, 10); // IronOre（smelt_iron 原料用）
         store.give("旅人", 22, 10); // IronIngot（iron_block 配方用，ROADMAP 684）
         store.give("旅人", 6, 10);  // Leaves（床配方用）
+        store.give("旅人", 10, 10); // Glass（冰晶燈配方用）
+        store.give("旅人", 56, 10); // IceCrystal（冰晶燈配方用）
         // 火把配方：1 木頭(5) + 1 煤礦(20) → 4 火把（Wood/CoalOre 已加，數量足夠）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);
