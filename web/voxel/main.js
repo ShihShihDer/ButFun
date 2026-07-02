@@ -2388,6 +2388,14 @@ function connect() {
       const who = m.resident || "居民";
       const what = m.kind || "建物";
       appendMsg("sys", "🏗️ " + who + " 完成了「" + what + "」的建造！走近去看看吧。");
+    } else if (m.t === "wish_come_true") {
+      // 心願真的成真 v1（ROADMAP 720）：這座建物是某位玩家的話種下的心願，全員可見；
+      // 啟發者本人看到會格外有感（「我隨口說的話，真的被記住、被實現了」）。
+      const who = m.resident || "居民";
+      const what = m.kind || "建物";
+      const player = m.player || "旅人";
+      const mine = player === myName;
+      appendMsg("sys", "🌟 " + who + " 因為" + (mine ? "你" : player) + "的一句話，把「" + what + "」蓋好了！");
     } else if (m.t === "trade_offer") {
       // 居民交易 v1（ROADMAP 670）：收到交易提案，顯示橫幅讓玩家確認。
       showTradeOffer(m);

@@ -64,6 +64,45 @@ pub fn build_complete_msg(resident_name: &str, kind_name: &str) -> String {
     .to_string()
 }
 
+// ── 心願真的成真 v1（ROADMAP 720）──────────────────────────────────────────────
+//
+// 玩家的話種下居民的心願（`voxel_desires`），居民照著心願蓋（`voxel_building`），
+// 但完工那一刻此前只用通用台詞/廣播，從不提「這是因為你」——本節補上指名感謝，
+// 讓「你的互動真的有後果」在心願實現的當下被玩家親眼看見。
+
+/// 心願成真時，居民對啟發者指名感謝的喜悅泡泡（依居民名字雜湊選模板，確定性，≤40 字）。
+pub fn wish_come_true_say(resident_name: &str, kind: BuildKind, player_name: &str) -> String {
+    let idx = resident_name.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize));
+    let pool: &[&str] = &[
+        "{p}，記得你說過的話嗎？我把{k}蓋好了！",
+        "多虧{p}當初那句話，{k}終於蓋成真的了！",
+        "{p}，你的話我一直記著——{k}蓋好啦！",
+        "因為{p}，我才有動力把{k}蓋完，謝謝你！",
+    ];
+    pool[idx % pool.len()]
+        .replace("{p}", player_name)
+        .replace("{k}", kind.display_name())
+        .chars()
+        .take(40)
+        .collect()
+}
+
+/// 心願成真廣播的 WS JSON 字串（broadcast 給所有在線玩家；additive 新欄位，舊前端安全忽略）。
+pub fn wish_come_true_msg(resident_name: &str, kind_name: &str, player_name: &str) -> String {
+    serde_json::json!({
+        "t": "wish_come_true",
+        "resident": resident_name,
+        "kind": kind_name,
+        "player": player_name,
+    })
+    .to_string()
+}
+
+/// 記進啟發者玩家記憶庫的摘要句（居民自己記得「我幫你完成了這件事」，供之後對話回想引用）。
+pub fn wish_come_true_memory(kind_name: &str) -> String {
+    format!("我因為你的一句話，把{kind_name}蓋好了，謝謝你。")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +160,41 @@ mod tests {
         assert_eq!(v["t"], "build_complete");
         assert_eq!(v["resident"], "諾娃");
         assert_eq!(v["kind"], "小木屋");
+    }
+
+    #[test]
+    fn wish_come_true_say_contains_player_and_kind_within_limit() {
+        for kind in [BuildKind::Garden, BuildKind::House, BuildKind::Well, BuildKind::Tower] {
+            let say = wish_come_true_say("露娜", kind, "旅人");
+            assert!(say.contains("旅人"), "應含玩家名：{say}");
+            assert!(say.contains(kind.display_name()), "應含建物名：{say}");
+            assert!(say.chars().count() <= 40, "不超過泡泡上限 40 字：{}", say.chars().count());
+        }
+    }
+
+    #[test]
+    fn wish_come_true_say_all_residents_nonempty() {
+        for name in ["露娜", "諾娃", "賽勒", "奧瑞"] {
+            let say = wish_come_true_say(name, BuildKind::House, "小明");
+            assert!(!say.is_empty());
+            assert!(say.chars().count() <= 40);
+        }
+    }
+
+    #[test]
+    fn wish_come_true_msg_is_valid_json_with_player() {
+        let msg = wish_come_true_msg("露娜", "小木屋", "旅人");
+        let v: serde_json::Value = serde_json::from_str(&msg).expect("應為合法 JSON");
+        assert_eq!(v["t"], "wish_come_true");
+        assert_eq!(v["resident"], "露娜");
+        assert_eq!(v["kind"], "小木屋");
+        assert_eq!(v["player"], "旅人");
+    }
+
+    #[test]
+    fn wish_come_true_memory_contains_kind_and_bounded() {
+        let msg = wish_come_true_memory("瞭望台");
+        assert!(msg.contains("瞭望台"));
+        assert!(msg.chars().count() <= 80, "在 SUMMARY_MAX_CHARS 之內：{}", msg.chars().count());
     }
 }
