@@ -2363,6 +2363,38 @@ mod tests {
     }
 
     #[test]
+    fn expanded_radius_finds_far_wood_old_radius_does_not() {
+        // #972 半徑擴大的核心驗證：樹在舊半徑（28）外、新半徑（56）內時——
+        // 舊半徑找不到（她會誠實失敗），新半徑找得到（她能走遠一點採到）。
+        use crate::voxel_skills::find_nearest_resource_of;
+        const OLD_RADIUS: i32 = 28;
+        let mut world = WorldDelta::new();
+        // 找一個「新半徑內天然無樹」的原點（世界程序生成必有這種區域，如沙漠/海面）。
+        let (ox, oz) = (0..200)
+            .map(|i| (2000 + i * 137, 777))
+            .find(|&(x, z)| {
+                find_nearest_resource_of(&world, x, z, INVENT_GATHER_RADIUS, GatherResource::Wood)
+                    .is_none()
+            })
+            .expect("200 個候選點中應有至少一處無樹區");
+        // 在 40 格外（>28、≤56）放一根樹幹（地表頂 Wood → 樹判定成立）。
+        let (tx, tz) = (ox + 40, oz);
+        let ty = column_top(&world, tx, tz).expect("放樹的柱應有地表") + 1;
+        voxel::set_block(&mut world, tx, ty, tz, Block::Wood);
+        // 舊半徑 28：找不到 → 修前的她只能失敗。
+        assert!(
+            find_nearest_resource_of(&world, ox, oz, OLD_RADIUS, GatherResource::Wood).is_none(),
+            "40 格外的樹在舊半徑 {OLD_RADIUS} 內不應找得到"
+        );
+        // 新半徑 56：找得到，且距離真的超過舊半徑（證明擴大有意義）。
+        let (fx, _, fz) =
+            find_nearest_resource_of(&world, ox, oz, INVENT_GATHER_RADIUS, GatherResource::Wood)
+                .expect("擴大半徑後應找得到 40 格外的樹");
+        let d = (fx - ox).abs().max((fz - oz).abs());
+        assert!(d > OLD_RADIUS && d <= INVENT_GATHER_RADIUS, "找到的距離 {d} 應在 (28, 56] 區間");
+    }
+
+    #[test]
     fn catalog_excludes_backoff_goals() {
         // 驗證退避目標（如 goal_block_id=60 釣竿）被加進 excluded 後目錄就不含它。
         let all = possibility_catalog(&HashSet::new());

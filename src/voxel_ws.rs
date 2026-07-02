@@ -5843,12 +5843,17 @@ fn tick_residents(dt: f32) {
                     } else {
                         // ② 不會 → 冷卻到才低頻請便宜腦發明（成本紀律；async、不擋 tick）。
                         //    等腦回計畫的期間，她照常過日子（採集/蓋家），提案回來再開工。
+                        //    退避檢查（#972）：連敗中的目標不再重發——心願會留到下次好奇心
+                        //    覆蓋成新目標，期間不空燒 LLM（重用路徑不受影響：會的技能不會連敗）。
                         let cooled = {
                             let residents = hub().residents.read().unwrap();
                             residents
                                 .iter()
                                 .find(|r| r.id == rid)
-                                .map_or(false, |r| r.invent_cooldown <= 0.0)
+                                .map_or(false, |r| {
+                                    r.invent_cooldown <= 0.0
+                                        && !r.invent_backoff.contains_key(&goal.block_id)
+                                })
                         }; // residents 讀鎖釋放
                         if cooled && npc_agent_wire::agents_enabled() {
                             {
