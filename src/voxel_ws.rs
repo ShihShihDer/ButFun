@@ -5089,7 +5089,7 @@ fn tick_residents(dt: f32) {
         }
     }
 
-    for (rid, rname, rx, _ry, rz, _ridx) in build_candidates {
+    for (rid, rname, rx, ry, rz, _ridx) in build_candidates {
         // ── 技能發明/重用執行（優先於一般 agency：她正專心驗證自己的點子）────────
         // 有進行中的 InventRun → 推進一步（逾時/失敗/成功都在裡面收尾）→ 本輪不做別的。
         let has_invent_run = {
@@ -5097,7 +5097,7 @@ fn tick_residents(dt: f32) {
             residents.iter().find(|r| r.id == rid).map_or(false, |r| r.invent_run.is_some())
         }; // residents 讀鎖釋放
         if has_invent_run {
-            advance_invent_run(&rid, rname, rx, rz, &mut say_updates);
+            advance_invent_run(&rid, rname, rx, ry, rz, &mut say_updates);
             let interval = *build_mood_intervals.get(&rid).unwrap_or(&BUILD_INTERVAL_SECS);
             reset_build_tick(&rid, interval);
             continue;
@@ -5170,11 +5170,20 @@ fn tick_residents(dt: f32) {
                                     r.invent_cooldown = vinvent::INVENT_COOLDOWN_SECS;
                                 }
                             } // residents 寫鎖釋放
+                            // 世界事實快照（第二刀）：她附近是否已有放置好的工作台——
+                            // 給可行性模擬與 prompt（有就不必再做一個）。deltas 讀鎖即釋。
+                            let wb_nearby = {
+                                let world = hub().deltas.read().unwrap();
+                                vinvent::station_nearby(
+                                    &world, rx, ry, rz, vinvent::WORKBENCH_BLOCK_ID,
+                                )
+                            }; // deltas 讀鎖釋放
                             spawn_invention(
                                 rid.clone(),
                                 rname,
                                 goal,
                                 desire_text.clone().unwrap_or_default(),
+                                wb_nearby,
                             );
                         }
                     }
@@ -5442,15 +5451,19 @@ fn start_gather(rid: &str, rx: i32, rz: i32) {
 }
 
 /// 推進一位居民的發明/重用計畫一步（agency tick 到期、且她沒在採集時呼叫）。
-/// 真進化第一刀的**確定性執行引擎**：全程短鎖循序、不巢狀、不 await（守死鎖鐵律）。
+/// 真進化第一刀＋第二刀的**確定性執行引擎**：全程短鎖循序、不巢狀、不 await（守死鎖鐵律）。
 /// - 採集步走既有 GatherSkill 機制（含可逃性判定，永不自困）；
 /// - 合成步 grounded 在真配方表、即時完成；
-/// - 逾時/缺料/合成失敗 → 計畫失敗（記教訓、不存技能）；
+/// - 放置步（第二刀）：找腳邊合理空位（絕不放自己身體格、放得到才算）→ 扣背包 →
+///   寫世界＋廣播＋持久化（比照居民建造的放置語意）；
+/// - 工作台合成步（第二刀）：先驗「附近真的有已放置的工作台」（她剛放的也算）再套 3×3 配方；
+/// - 逾時/缺料/合成失敗/放不了 → 計畫失敗（記教訓、不存技能）；
 /// - 全步驟完成且後置條件成立（背包真的有目標材料）→ 交給 [`finish_invent_run`] 收尾。
 fn advance_invent_run(
     rid: &str,
     rname: &str,
     rx: i32,
+    ry: i32,
     rz: i32,
     say_updates: &mut Vec<(String, String)>,
 ) {
@@ -5467,18 +5480,25 @@ fn advance_invent_run(
         return;
     }
 
+    // 站點查詢（第二刀）：放置步的後置條件（已有就跳過）與 3×3 的前提都靠它。
+    // 每次呼叫短取 deltas 讀鎖即釋——她這一輪剛放好的工作台，同輪重查馬上看得到。
+    let station_near = |bid: u8| -> bool {
+        let world = hub().deltas.read().unwrap();
+        vinvent::station_nearby(&world, rx, ry, rz, bid)
+    }; // 每次呼叫內取放，不跨步驟持鎖
+
     // 步驟推進（可能一次跨多步：後置條件已滿足的採集步直接跳過、合成步即時完成）。
     let mut guard = 0;
     loop {
         guard += 1;
-        if guard > 16 {
-            break; // 防禦性上限（steps ≤ 6，理論到不了；到了就寫回進度等下輪）
+        if guard > 64 {
+            break; // 防禦性上限（存檔鏈 ≤ 24 步，理論到不了；到了就寫回進度等下輪）
         }
         let bag: HashMap<u8, u32> = {
             let inv = hub().res_inv.read().unwrap();
             inv.get(rid).cloned().unwrap_or_default()
         }; // res_inv 讀鎖釋放
-        match vinvent::next_action(&run, &bag) {
+        match vinvent::next_action(&run, &bag, &station_near) {
             vinvent::StepAction::Advance => {
                 run.step_idx += 1;
             }
@@ -5531,6 +5551,68 @@ fn advance_invent_run(
                     finish_invent_run(rid, rname, run, false, say_updates);
                     return;
                 }
+            }
+            vinvent::StepAction::DoCraftWb { recipe_id } => {
+                // 工作台 3×3 合成（第二刀）：世界前提——附近真的有已放置的工作台
+                // （她這條鏈剛放的也算；被人挖走了就誠實失敗，不隔空合成）。
+                if !station_near(vinvent::WORKBENCH_BLOCK_ID) {
+                    finish_invent_run(rid, rname, run, false, say_updates);
+                    return;
+                }
+                let Some(recipe) = vcraft::find_workbench_recipe(recipe_id) else {
+                    finish_invent_run(rid, rname, run, false, say_updates);
+                    return;
+                };
+                let crafted = {
+                    let mut inv = hub().res_inv.write().unwrap();
+                    vinvent::craft_apply(inv.entry(rid.to_string()).or_default(), recipe)
+                }; // res_inv 寫鎖釋放
+                if crafted {
+                    say_updates.push((
+                        rid.to_string(),
+                        format!("在工作台合成出{}了！", recipe.name_zh),
+                    ));
+                    run.step_idx += 1;
+                } else {
+                    finish_invent_run(rid, rname, run, false, say_updates);
+                    return;
+                }
+            }
+            vinvent::StepAction::DoPlace { block_id } => {
+                // 放置站點（第二刀）：找腳邊合理空位（絕不放自己身體格、目標格必須是
+                // 空氣、伸手可及）→ 扣背包 → 寫世界＋廣播＋持久化（比照居民建造）。
+                let spot = {
+                    let world = hub().deltas.read().unwrap();
+                    vinvent::find_place_spot(&world, rx, ry, rz)
+                }; // deltas 讀鎖釋放
+                let (Some((px, py, pz)), Some(block)) = (spot, Block::from_u8(block_id)) else {
+                    // 腳邊沒有合理放置點（或 id 異常）→ 放不到就不算，誠實失敗。
+                    finish_invent_run(rid, rname, run, false, say_updates);
+                    return;
+                };
+                // 先扣背包（res_inv 寫鎖即釋）；沒貨＝計畫排錯（模擬理應擋住）→ 誠實失敗。
+                let taken = {
+                    let mut inv = hub().res_inv.write().unwrap();
+                    vinvent::take_one(inv.entry(rid.to_string()).or_default(), block_id)
+                }; // res_inv 寫鎖釋放
+                if !taken {
+                    finish_invent_run(rid, rname, run, false, say_updates);
+                    return;
+                }
+                {
+                    let mut world = hub().deltas.write().unwrap();
+                    voxel::set_block(&mut world, px, py, pz, block);
+                } // deltas 寫鎖釋放
+                broadcast_block(px, py, pz, block);
+                // 水流動：放下的方塊可能堵住水路 → 喚醒鄰格重算（同居民建造慣例）。
+                enqueue_water_around(px, py, pz);
+                // 持久化這塊（重啟後她放的工作台還在——重用技能時直接沿用）。
+                vbuild::append_world_block(px, py, pz, block_id);
+                say_updates.push((
+                    rid.to_string(),
+                    vinvent::placed_line(vinvent::material_name(block_id)),
+                ));
+                run.step_idx += 1;
             }
             vinvent::StepAction::Done => {
                 // 最終後置條件驗證：背包**真的**有目標材料，才算「她做出來了」。
@@ -5634,11 +5716,14 @@ fn finish_invent_run(
 /// 解析+白名單驗證通過才投回 `invent_proposals`；腦沒回/輸出不合白名單 → 安靜放棄
 /// （冷卻已在呼叫端設好，絕不 retry 風暴、絕不 panic）。
 /// 設 `BUTFUN_INVENT_FIXED_PLAN` 時改用固定計畫（**僅隔離實測用**，prod 不設）。
+/// `wb_nearby`（第二刀）：她附近是否已有放置好的工作台——世界事實快照，由呼叫端
+/// 查好傳入（prompt 據此告訴腦「不必再做一個」；可行性模擬據此判 3×3 依賴順序）。
 fn spawn_invention(
     rid: String,
     rname: &'static str,
     goal: vinvent::MaterialGoal,
     desire: String,
+    wb_nearby: bool,
 ) {
     // 防重入：這位居民已有一筆發明在等腦回來，就不再發（LLM 可能比冷卻慢）。
     {
@@ -5664,10 +5749,10 @@ fn spawn_invention(
         let validate = |raw: &str| -> Result<vinvent::InventedPlan, String> {
             let plan = vinvent::parse_plan(raw)
                 .ok_or_else(|| "輸出不是只用允許原語的合法 JSON 計畫".to_string())?;
-            vinvent::simulate_plan(&plan.steps, &bag_snap, goal.block_id)?;
+            vinvent::simulate_plan(&plan.steps, &bag_snap, goal.block_id, wb_nearby)?;
             Ok(plan)
         };
-        let (sys, user) = vinvent::invention_prompt(rname, &goal, &desire, &bag_note);
+        let (sys, user) = vinvent::invention_prompt(rname, &goal, &desire, &bag_note, wb_nearby);
         let (raw, injected) = if let Some(fixed) = vinvent::fixed_plan_env() {
             // 測試注入（僅隔離實測；日誌標明，方便回報時區分「真腦」與「注入」）。
             tracing::info!(resident = %rid, "技能發明：使用 BUTFUN_INVENT_FIXED_PLAN 測試注入計畫");
