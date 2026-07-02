@@ -169,6 +169,9 @@ pub enum Block {
     /// 仙人掌（生物群系第一刀）——沙漠群系偶有，程序生成，確定性；直徑 1 格、高 2 格柱。
     /// 採集後可放置；沙漠地表的視覺標誌物，與沙地+無樹合力讓沙漠有地方感。
     Cactus = 54,
+    /// 雪（生物群系第二刀）——雪原群系地表覆蓋（取代草），程序生成，確定性。
+    /// 純白覆雪地表，一眼認出的寒冷地帶；採集後可放置，可當白色建材。
+    Snow = 55,
 }
 
 impl Block {
@@ -240,6 +243,7 @@ impl Block {
             50 => Some(Block::PotatoSeeded),
             51 => Some(Block::PotatoMature),
             54 => Some(Block::Cactus),
+            55 => Some(Block::Snow),
             _ => None,
         }
     }
@@ -254,7 +258,7 @@ impl Block {
             Block::Workbench | Block::Furnace | Block::SmoothStone |
             Block::CoalOre | Block::IronOre | Block::IronIngot | Block::IronBlock |
             Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed | Block::Bed |
-            Block::Cactus
+            Block::Cactus | Block::Snow
         )
     }
 }
@@ -466,6 +470,9 @@ pub enum VoxelBiome {
     Forest,
     /// 沙漠：地表沙、無樹、偶有仙人掌柱。
     Desert,
+    /// 雪原（生物群系第二刀）：地表覆雪（Snow 取代草）、疏落的針葉樹（樹密度同草原）。
+    /// 白雪地表是一眼認出的寒冷地帶，與草原/森林/沙漠並列四大群系。
+    Snow,
 }
 
 /// 生物群系場噪聲種子（大尺度、低頻 → 世界有大塊感，與高度 noise 獨立）。
@@ -499,8 +506,12 @@ pub fn biome_at_voxel(wx: i32, wz: i32) -> VoxelBiome {
         }
     }
     let n = value_noise(wx as f32 / BIOME_SCALE, wz as f32 / BIOME_SCALE, BIOME_SEED);
+    // 生物群系第二刀：從森林高端切出雪原帶（n > 0.78），沙漠/草原邊界不動、
+    // 森林剩 0.65 < n ≤ 0.78（雪原與森林相鄰＝寒林漸變，自然）。
     if n < 0.35 {
         VoxelBiome::Desert
+    } else if n > 0.78 {
+        VoxelBiome::Snow
     } else if n > 0.65 {
         VoxelBiome::Forest
     } else {
@@ -531,6 +542,7 @@ pub fn tree_in_cell(cellx: i32, cellz: i32) -> Option<Tree> {
     let tree_chance = match biome_of_cell(cellx, cellz) {
         VoxelBiome::Forest => 0.95_f32,
         VoxelBiome::Grassland => TREE_CHANCE, // 0.50，現狀不變
+        VoxelBiome::Snow => TREE_CHANCE,      // 0.50，雪原疏落針葉（密度同草原、單棵）
         VoxelBiome::Desert => return None,    // 沙漠無樹
     };
     tree_in_cell_seeded(cellx, cellz, TREE_SEED, tree_chance)
@@ -682,14 +694,15 @@ pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
         return Block::Air;
     }
     if wy == h {
-        // 地表層：近海平面用沙，否則依群系（沙漠=沙、其餘=草）。
+        // 地表層：近海平面用沙，否則依群系（沙漠=沙、雪原=雪、其餘=草）。
         if h <= SEA_LEVEL + 1 {
             return Block::Sand;
         }
-        if biome_at_voxel(wx, wz) == VoxelBiome::Desert {
-            return Block::Sand;
+        match biome_at_voxel(wx, wz) {
+            VoxelBiome::Desert => return Block::Sand,
+            VoxelBiome::Snow => return Block::Snow,
+            _ => return Block::Grass,
         }
-        return Block::Grass;
     }
     // 地表以下：依群系決定上層材質（沙漠=沙取代泥土；其餘=泥土）。
     if wy >= h - 3 {
@@ -1311,23 +1324,27 @@ mod tests {
     }
 
     #[test]
-    fn three_biomes_exist_in_world() {
-        // 掃一片世界，三種群系都必須出現（不是全同一種）。
+    fn four_biomes_exist_in_world() {
+        // 掃一片世界，四種群系都必須出現（生物群系第二刀：新增雪原）。
         let mut has_grassland = false;
         let mut has_forest = false;
         let mut has_desert = false;
-        for x in (-500..=500i32).step_by(20) {
-            for z in (-500..=500i32).step_by(20) {
+        let mut has_snow = false;
+        // 雪原在 noise 高端（>0.78）較稀，掃大一點的範圍確保出現。
+        for x in (-1500..=1500i32).step_by(20) {
+            for z in (-1500..=1500i32).step_by(20) {
                 match biome_at_voxel(x, z) {
                     VoxelBiome::Grassland => has_grassland = true,
                     VoxelBiome::Forest => has_forest = true,
                     VoxelBiome::Desert => has_desert = true,
+                    VoxelBiome::Snow => has_snow = true,
                 }
             }
         }
         assert!(has_grassland, "應找到草原群系");
         assert!(has_forest, "應找到森林群系");
         assert!(has_desert, "應找到沙漠群系");
+        assert!(has_snow, "應找到雪原群系");
     }
 
     #[test]
@@ -1401,7 +1418,7 @@ mod tests {
                         grassland_total += 1;
                         grassland_trees += n_trees;
                     }
-                    VoxelBiome::Desert => {}
+                    VoxelBiome::Desert | VoxelBiome::Snow => {}
                 }
             }
         }
@@ -1534,5 +1551,79 @@ mod tests {
                 assert!(cheb >= 2, "仙人掌不得相鄰 @ ({x1},{z1}) vs ({x2},{z2})");
             }
         }
+    }
+
+    #[test]
+    fn snow_is_solid_placeable_roundtrips() {
+        // 生物群系第二刀：雪方塊實心、可放置、u8 往返一致。
+        assert!(Block::Snow.is_solid(), "雪應為實心");
+        assert!(Block::Snow.is_placeable(), "雪應可放置");
+        assert_eq!(Block::from_u8(55), Some(Block::Snow));
+        assert_eq!(Block::Snow as u8, 55);
+    }
+
+    #[test]
+    fn snow_biome_surface_is_snow_over_dirt() {
+        // 雪原群系的陸地格：地表為雪、其下為泥土（雪只覆蓋最上層，非整柱）。
+        let mut found = false;
+        'outer: for x in (-1500..1500i32).step_by(3) {
+            for z in (-1500..1500i32).step_by(3) {
+                if biome_at_voxel(x, z) == VoxelBiome::Snow {
+                    let h = height_at(x, z);
+                    if h > SEA_LEVEL + 1 {
+                        assert_eq!(
+                            block_at(x, h, z), Block::Snow,
+                            "雪原地表應為雪 @ ({},{})", x, z
+                        );
+                        // 地表下一格為泥土（雪只在最上層）。
+                        assert_eq!(
+                            block_at(x, h - 1, z), Block::Dirt,
+                            "雪原地表下應為泥土 @ ({},{})", x, z
+                        );
+                        found = true;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        assert!(found, "應找到雪原群系的陸地格");
+    }
+
+    #[test]
+    fn snow_surface_only_in_snow_biome() {
+        // 反向不變量：任何地表雪塊（非玩家放置的程序生成）必屬雪原群系。
+        for x in (-1500..1500i32).step_by(7) {
+            for z in (-1500..1500i32).step_by(7) {
+                let h = height_at(x, z);
+                if h > SEA_LEVEL + 1 && block_at(x, h, z) == Block::Snow {
+                    assert_eq!(
+                        biome_at_voxel(x, z), VoxelBiome::Snow,
+                        "地表雪塊只該出現在雪原 @ ({},{})", x, z
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn snow_biome_has_sparse_trees() {
+        // 雪原是有樹群系（疏落針葉，密度同草原），非光禿——掃描範圍內應找得到雪原樹格。
+        let mut found = false;
+        for cx in -200..200i32 {
+            for cz in -200..200i32 {
+                let center_x = cx * TREE_CELL + TREE_CELL / 2;
+                let center_z = cz * TREE_CELL + TREE_CELL / 2;
+                if biome_at_voxel(center_x, center_z) == VoxelBiome::Snow
+                    && tree_in_cell(cx, cz).is_some()
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if found {
+                break;
+            }
+        }
+        assert!(found, "雪原群系應有疏落的樹");
     }
 }
