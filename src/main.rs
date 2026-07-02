@@ -137,6 +137,8 @@ mod voxel_farm;
 mod voxel_gift;
 // 乙太方界·互動有後果——居民回禮 v1：好感度達門檻時居民主動回贈小禮（ROADMAP 667）。
 mod voxel_return_gift;
+// 乙太方界·居民投你所好 v1：回禮時讀你說過的偏好記憶，特地挑一份呼應喜好的禮物（ROADMAP 730）。
+mod voxel_preference;
 // 乙太方界·晝夜循環 v1：世界時鐘純邏輯——一遊戲日 10 分鐘，廣播 time_of_day 給前端更新天空/光照（ROADMAP 661）。
 mod voxel_time;
 // 乙太方界·居民技能庫 v1：目標+記憶驅動 agency——蓋造不重複/有進展、採集技能（技能調用範本）。
