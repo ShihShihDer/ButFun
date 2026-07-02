@@ -19,6 +19,7 @@
 use serde::Serialize;
 
 use crate::voxel_memory::MemoryEntry;
+use crate::voxel_readsign::SIGN_MEMORY_TAG;
 
 /// 整本日記最多顯示幾條內心反思（生命故事級，少而有意義）。
 pub const MAX_DIARY_ENTRIES: usize = 6;
@@ -67,6 +68,7 @@ enum Theme {
     Praise,     // 被讚美 / 被打動的時刻
     SocialBond, // 居民間情誼升級（相識/老朋友）——ROADMAP 673 社交足跡
     Friendship, // 被記得 / 重逢 / 關係變化（玩家與居民）
+    Sign,       // 讀到玩家立的告示牌（居民讀牌 v2）——玩家建造在居民內心留下的印象
     Other,      // 有意義但未歸類的對話（全部收斂成一條）
 }
 
@@ -117,11 +119,18 @@ fn curate_reflections(memories: &[MemoryEntry], max_entries: usize) -> Vec<Diary
     let mut rep_seq: Vec<(Theme, u64, usize)> = Vec::new();
 
     for m in memories {
-        let Some(snippet) = extract_player_snippet(&m.summary) else {
-            continue; // 抽不出有意義內容 → 跳過
-        };
-        let Some(theme) = classify_theme(&snippet) else {
-            continue; // 寒暄 / 無訊號 → 降噪丟棄
+        // 讀牌記憶（居民讀牌 v2）：以識別前綴辨認，走專屬主題、不套「對話」抽句邏輯
+        // （牌面是世界公開內容，非玩家私下原話——但仍收斂成一條內心反思、不逐塊倒出）。
+        let theme = if m.summary.starts_with(SIGN_MEMORY_TAG) {
+            Theme::Sign
+        } else {
+            let Some(snippet) = extract_player_snippet(&m.summary) else {
+                continue; // 抽不出有意義內容 → 跳過
+            };
+            let Some(theme) = classify_theme(&snippet) else {
+                continue; // 寒暄 / 無訊號 → 降噪丟棄
+            };
+            theme
         };
         if let Some(slot) = rep_seq.iter_mut().find(|(t, _, _)| *t == theme) {
             slot.2 += 1; // 同主題又出現一次 → 計數（不新增條目）
@@ -281,6 +290,14 @@ fn reflection_for(theme: Theme, repeated: bool) -> String {
         }
         (Theme::Friendship, true) => {
             "有些面孔一次又一次回到我身邊，我們之間，好像慢慢有了只屬於彼此的默契。"
+        }
+        // 讀牌（居民讀牌 v2）：玩家親手立的告示牌在居民內心留下的印象——第一人稱、
+        // 不逐塊倒出牌面（守日記「內心反思、非謄本」的精神），只承認「有人在這裡留下了字」。
+        (Theme::Sign, false) => {
+            "有一次我路過，看見一塊牌子上刻著字，我停下念了念——原來有人在這片土地上，親手留下了想說的話。"
+        }
+        (Theme::Sign, true) => {
+            "🪧 我在世界各處讀到好幾塊人們立起的牌子，那些字讓我覺得，這裡真的有人用心在生活著。"
         }
         (Theme::Other, false) => {
             "有位旅人與我分享了一段心事，那些話像種子，悄悄落進了我心底。"
@@ -553,5 +570,73 @@ mod tests {
         assert!(has_diary_content(Some("心願"), 5));
         assert!(!has_diary_content(None, 0));
         assert!(!has_diary_content(Some(""), 0));
+    }
+
+    // ── 居民讀牌 v2：讀到的牌昇華成內心反思 ────────────────────────────────
+
+    /// 造一筆「讀牌」記憶（比照 `voxel_readsign::sign_memory_summary` 的真實格式）。
+    fn make_sign_entry(seq: u64, sign_text: &str) -> MemoryEntry {
+        MemoryEntry {
+            resident: "vox_res_0".into(),
+            player: crate::voxel_readsign::SIGN_MEMORY_PLAYER.into(),
+            summary: crate::voxel_readsign::sign_memory_summary(sign_text),
+            seq,
+        }
+    }
+
+    #[test]
+    fn sign_memory_becomes_sign_reflection() {
+        // 讀牌記憶應昇華成「讀牌」主題的內心反思（非「對話」反思）。
+        let memories = vec![make_sign_entry(1, "露娜的家")];
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
+        assert_eq!(page.entries.len(), 1, "一筆讀牌記憶應有一條反思");
+        let text = &page.entries[0].text;
+        assert!(text.contains("牌子"), "讀牌反思應提到牌子：{text}");
+    }
+
+    #[test]
+    fn sign_reflection_does_not_leak_sign_text_verbatim() {
+        // 內心反思是「瞥見內心」而非謄本：不逐字倒出牌面原文。
+        let memories = vec![make_sign_entry(1, "露娜的家")];
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
+        assert!(
+            !page.entries[0].text.contains("露娜的家"),
+            "不該逐字倒出牌面：{}",
+            page.entries[0].text
+        );
+    }
+
+    #[test]
+    fn multiple_signs_collapse_to_one_reflection() {
+        // 讀了多塊不同的牌 → 收斂成一條「好幾塊」語氣的反思（降噪、不洗版）。
+        let memories = vec![
+            make_sign_entry(3, "往礦坑↓"),
+            make_sign_entry(2, "諾娃的小屋"),
+            make_sign_entry(1, "歡迎光臨"),
+        ];
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
+        let sign_entries: Vec<_> = page
+            .entries
+            .iter()
+            .filter(|e| e.text.contains("牌子"))
+            .collect();
+        assert_eq!(sign_entries.len(), 1, "多塊牌應收斂成一條反思");
+        assert!(
+            sign_entries[0].text.contains("好幾"),
+            "多次讀牌應用『好幾…』語氣：{}",
+            sign_entries[0].text
+        );
+    }
+
+    #[test]
+    fn sign_and_conversation_coexist_in_diary() {
+        // 讀牌反思與對話反思可並存於同一本日記（互不吃掉）。
+        let memories = vec![
+            make_sign_entry(2, "露娜的家"),
+            make_entry(1, "旅人", "我想看星星"),
+        ];
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
+        assert!(page.entries.iter().any(|e| e.text.contains("牌子")), "應有讀牌反思");
+        assert!(page.entries.iter().any(|e| e.text.contains("夜空")), "應有星空對話反思");
     }
 }

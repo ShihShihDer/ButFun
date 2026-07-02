@@ -196,6 +196,10 @@ struct VoxelResident {
     greet_timer: f32,
     /// 讀牌冷卻倒數（秒，居民讀牌 v1）：> 0 表示最近念過附近的告示牌，暫不再讀，稀少才有感。
     read_sign_timer: f32,
+    /// 上一塊「寫進記憶」的牌面文字（居民讀牌 v2）：讀到同一塊牌重複念沒關係，但只有
+    /// 讀到**不同於上次**的牌才再寫一筆記憶——避免反覆讀同一塊牌把 episodic 記憶塞滿、
+    /// 擠掉真實玩家的對話記憶。純記憶體、重啟歸零。
+    last_read_sign: Option<String>,
     /// 居民↔居民社交冷卻倒數（秒）：> 0 表示最近主動搭話過另一位居民，尚不可再發起。
     social_cooldown: f32,
     /// 另一位居民剛搭話，等這秒數到期後回應（id, 名字, 剩餘秒）。
@@ -761,6 +765,8 @@ fn init_residents() -> Vec<VoxelResident> {
             greet_timer: 0.0,
             // 讀牌冷卻（居民讀牌 v1）：錯開初始冷卻，避免啟動後短時間全員同時讀同一塊牌。
             read_sign_timer: 30.0 + i as f32 * 20.0,
+            // 尚未讀過任何牌（居民讀牌 v2）。
+            last_read_sign: None,
             // 錯開初始社交冷卻，避免啟動瞬間全員一起嘗試搭話。
             social_cooldown: i as f32 * 20.0,
             pending_response: None,
@@ -4208,6 +4214,21 @@ fn tick_residents(dt: f32) {
                     r.say = vreadsign::read_sign_line(&text, pick);
                     r.say_timer = SAY_SECS;
                     r.read_sign_timer = vreadsign::READ_COOLDOWN;
+                    // 居民讀牌 v2：讀到的牌在心裡留下印象——只有讀到「不同於上次」的牌才寫一筆
+                    // 記憶（避免反覆讀同一塊牌塞滿 episodic）。掛在世界級哨兵鍵下，不污染真實
+                    // 玩家好感；日後翻開居民日記會看到牠對「有人在此留字」的內心反思。
+                    // 短鎖：add_memory 的寫鎖在該語句結束即釋，append_memory 的 IO 在鎖外進行
+                    //（守死鎖鐵律：記憶讀寫不在持鎖中 await）。
+                    if r.last_read_sign.as_deref() != Some(text.as_str()) {
+                        r.last_read_sign = Some(text.clone());
+                        let summary = vreadsign::sign_memory_summary(&text);
+                        let entry = hub()
+                            .memory
+                            .write()
+                            .unwrap()
+                            .add_memory(&r.id, vreadsign::SIGN_MEMORY_PLAYER, &summary);
+                        vmem::append_memory(&entry);
+                    }
                 }
             }
 
