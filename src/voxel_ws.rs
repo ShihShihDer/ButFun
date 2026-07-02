@@ -68,6 +68,7 @@ use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
 use crate::voxel_teach as vteach;
 use crate::voxel_welcome as vwelcome;
+use crate::voxel_resident_trade as vrtrade;
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -4759,12 +4760,50 @@ fn tick_residents(dt: f32) {
             }
         }
 
+        // ROADMAP 723：居民互相以物易物 v1——交易特長系統（670）至今只用在玩家↔居民
+        // 這個方向，本節讓老朋友到訪時，偶爾比照同一套特長分類「順手交換」一次，小社會
+        // 第一次有了內部經濟流動。只在這次到訪沒有觸發互助蓋家/拌嘴/傳授技能時才可能
+        // 發生（同一次到訪只演一齣戲，鏡像既有優先序）。
+        let mut resident_trade_line: Option<String> = None;
+        if vrtrade::should_resident_trade(
+            tier, help_line.is_some(), quarrel_line.is_some(), teach_line.is_some(),
+            rand::random::<f32>(),
+        ) {
+            let host_id = {
+                let residents = hub().residents.read().unwrap();
+                residents.iter().find(|r| r.name == host_name).map(|r| r.id.clone())
+            }; // residents 讀鎖釋放
+            if let Some(host_id) = host_id {
+                if let Some((v_item, h_item)) = vrtrade::trade_pair(&visitor_id, &host_id) {
+                    let v_name = vtrade::item_name_zh(v_item);
+                    let h_name = vtrade::item_name_zh(h_item);
+                    vfeed::append_feed(
+                        vrtrade::FEED_KIND,
+                        visitor_name,
+                        &vrtrade::trade_feed_line(visitor_name, &host_name, v_name, h_name),
+                    );
+                    {
+                        let entry = hub().memory.write().unwrap()
+                            .add_memory(&visitor_id, &host_name, &vrtrade::trade_memory_line(&host_name, v_name, h_name));
+                        vmem::append_memory(&entry);
+                    } // memory 寫鎖釋放
+                    {
+                        let entry = hub().memory.write().unwrap()
+                            .add_memory(&host_id, visitor_name, &vrtrade::trade_memory_line(visitor_name, h_name, v_name));
+                        vmem::append_memory(&entry);
+                    } // memory 寫鎖釋放
+                    resident_trade_line = Some(vrtrade::trade_say_line(&host_name, h_name, pick));
+                }
+            }
+        }
+
         // 依新層級生成問候語 → say_updates（守 say_updates 的「say 空才套」原則）；
         // 若這次到訪順手幫了忙，優先冒幫忙台詞（更有感）；否則若拌了嘴，冒拌嘴台詞；
-        // 否則若學/教了技能，冒傳授台詞；都沒有才落回一般問候語。
+        // 否則若學/教了技能，冒傳授台詞；否則若互相易物，冒易物台詞；都沒有才落回一般問候語。
         let greeting = help_line
             .or(quarrel_line)
             .or(teach_line)
+            .or(resident_trade_line)
             .unwrap_or_else(|| vbonds::arrival_line(tier, &host_name, visitor_name, pick));
         say_updates.push((visitor_id, greeting));
     }

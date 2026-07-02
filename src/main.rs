@@ -171,6 +171,8 @@ mod voxel_quarrel;
 mod voxel_teach;
 // 乙太方界·久別重逢摘要 v1：玩家重連時把離線期間的重要事件彙整成一句私訊（ROADMAP 721）。
 mod voxel_welcome;
+// 乙太方界·居民互相以物易物 v1：交易特長系統（670）第一次接到居民與居民之間，小社會有了內部經濟（ROADMAP 723）。
+mod voxel_resident_trade;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
