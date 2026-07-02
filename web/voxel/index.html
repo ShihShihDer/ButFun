@@ -566,6 +566,16 @@
       #skillsPanel { top: auto; bottom: 348px; right: 10px; max-height: 45vh; }
     }
 
+    /* ── 水下氛圍覆蓋層 v1 ──────────────────────────────────────────────── */
+    /* 相機進水時淡入淡藍色，離水淡出；pointer-events:none 不干擾任何操作。 */
+    #underwaterOverlay {
+      position: fixed; inset: 0; z-index: 3;
+      background: linear-gradient(to bottom, rgba(10,40,120,0.38), rgba(20,80,180,0.22));
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.35s ease;
+    }
+
     /* ── 成功提示（綠色小吐司）──────────────────────────────────────────── */
     #msg {
       position: fixed; left: 50%; top: 58px; transform: translateX(-50%);
@@ -926,6 +936,8 @@
 </head>
 <body>
   <div id="app"></div>
+  <!-- 水下氛圍覆蓋層：相機在水方塊內時顯示淡藍色，JS 控制 opacity -->
+  <div id="underwaterOverlay"></div>
   <div id="hud">載入中…</div>
   <!-- Google 登入帳號 chip（內容由 main.js 依登入態填）-->
   <div id="acct"></div>
