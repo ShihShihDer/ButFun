@@ -32,6 +32,11 @@ use crate::voxel::{self, Block, ChunkCoord, WorldDelta, BASE_HEIGHT, CHUNK, SEA_
 #[path = "voxel_directed_task.rs"]
 mod voxel_directed_task;
 use self::voxel_directed_task::{self as vdt, CoordinatedLevelTask, DirectedTask};
+// 跑腿採集 v1（指令→任務第三刀，純邏輯模組）：同樣以 #[path] 掛成 voxel_ws 的子模組，
+// 免動 main.rs（本檔是唯一使用者）。偵測跑腿指令、任務資料模型、台詞全在此。
+#[path = "voxel_fetch.rs"]
+mod voxel_fetch;
+use self::voxel_fetch::{self as vfetch, FetchTask};
 use crate::voxel_building::{self as vbuild, BuildStore};
 use crate::voxel_skills::{self as vskill, GatherSkill, GoalStore, NextActivity};
 use crate::voxel_desires::{self as vdes, DesireStore};
@@ -226,6 +231,9 @@ struct VoxelResident {
     clique_wait: f32,
     /// 小圈子聚會冷卻倒數（秒，ROADMAP 711）：歸零後才可能再被選入下一場聚會。
     clique_cooldown: f32,
+    /// 跑腿採集任務（指令→任務第三刀）：Some = 正在幫玩家採集/交付指定材料；
+    /// None = 沒有跑腿任務。與整地/跟隨互斥（接下新任務時彼此清空）。
+    fetch: Option<FetchTask>,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -681,6 +689,8 @@ fn init_residents() -> Vec<VoxelResident> {
             clique_meet: None,
             clique_wait: 0.0,
             clique_cooldown: vclique::GATHER_COOLDOWN_SECS + i as f32 * 40.0,
+            // 跑腿採集（指令→任務第三刀）：入場沒有任務。
+            fetch: None,
         });
     }
     out
@@ -1598,6 +1608,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                                 let mut res = hub().residents.write().unwrap();
                                 if let Some(r) = res.iter_mut().find(|r| r.id == addr_id) {
                                     r.gather = None;
+                                    r.fetch = None;
                                     r.seeking_comfort = false;
                                     r.cheer_target = None;
                                     r.wait_timer = 0.0;
@@ -1682,6 +1693,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                                 for (w, (scx, scz)) in workers.iter().zip(cells.iter()) {
                                     if let Some(r) = res.iter_mut().find(|r| &r.id == w) {
                                         r.gather = None;
+                                        r.fetch = None;
                                         r.seeking_comfort = false;
                                         r.cheer_target = None;
                                         r.wait_timer = 0.0;
@@ -1739,6 +1751,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             let mut res = hub().residents.write().unwrap();
                             if let Some(r) = res.iter_mut().find(|r| r.id == addr_id) {
                                 r.gather = None;
+                                r.fetch = None;
                                 r.seeking_comfort = false;
                                 r.cheer_target = None;
                                 r.visiting = None;
@@ -1796,6 +1809,54 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             let mut mem = hub().memory.write().unwrap();
                             mem.record_turn(&player_key, &addr_id, &clean, &reply);
                         } // 記憶寫鎖釋放
+                    } else if let Some((resource, count)) =
+                        vfetch::detect_fetch_command(&clean).filter(|_| detect_over_scope(&clean).is_none())
+                    {
+                        // 指令→任務第三刀：「幫我採集 N 塊 XX」——她放下手邊的事，去採指定數量，
+                        // 湊齊了親自走回你身邊交給你。覆蓋原本手邊的事（整地/跟隨/採集/尋伴/打氣/
+                        // 探訪/聚會皆放下，同follow accept 的「答應了就專心做」精神）。
+                        {
+                            let mut tasks = hub().directed_tasks.write().unwrap();
+                            tasks.remove(&addr_id);
+                        } // directed_tasks 寫鎖釋放
+                        {
+                            let mut res = hub().residents.write().unwrap();
+                            if let Some(r) = res.iter_mut().find(|r| r.id == addr_id) {
+                                r.gather = None;
+                                r.seeking_comfort = false;
+                                r.cheer_target = None;
+                                r.visiting = None;
+                                r.visit_stay_timer = 0.0;
+                                r.follow = None;
+                                r.clique_meet = None;
+                                r.wait_timer = 0.0;
+                                r.fetch = Some(FetchTask::new(player_key.clone(), resource, count));
+                                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                            }
+                        } // residents 寫鎖釋放
+                        let pick = clean.len();
+                        let reply = vfetch::accept_line(resource.display_name(), count, pick);
+                        let msg = serde_json::json!({
+                            "t": "talk",
+                            "resident_id": &addr_id,
+                            "name": rname,
+                            "reply": &reply,
+                        })
+                        .to_string();
+                        let _ = out_tx.send(Message::Text(msg)).await;
+                        hub().agent_bus.push_decision(
+                            addr_id.clone(),
+                            AgentDecision::new(AgentAction::Idle, reply.clone(), "跑腿採集"),
+                        );
+                        {
+                            let mut mem = hub().memory.write().unwrap();
+                            mem.record_turn(&player_key, &addr_id, &clean, &reply);
+                        } // 記憶寫鎖釋放
+                        vfeed::append_feed(
+                            "跑腿",
+                            rname,
+                            &format!("答應了{player_key}的請求，動身去採{count}份{}", resource.display_name()),
+                        );
                     } else {
                     // 6a) 短鎖讀記憶 → 組脈絡區塊（B 層精華 + A 層近期記憶 + 本輪對話）→ drop。
                     //     v2 兩層：semantic 精華（身份/目標/偏好/承諾，總是帶上）
@@ -3055,6 +3116,14 @@ fn tick_residents(dt: f32) {
     // 離開格式：(visitor_id, visitor_name, host_name)
     let mut bond_depart_events: Vec<(String, &'static str, String)> = Vec::new();
 
+    // 跑腿採集 v1（指令→任務第三刀）：還沒鎖定資源目標的居民（鎖內偵測，鎖外找資源指派）。
+    // 格式：(rid, rx, ry, rz, resource)
+    let mut fetch_search_candidates: Vec<(String, i32, i32, i32, vskill::GatherResource)> = Vec::new();
+    // 跑腿採集交付事件（鎖內偵測抵達，鎖外進玩家背包+記憶+Feed+廣播）。
+    // 格式：(rid, rname, requester, resource, delivered, requested)
+    let mut fetch_deliver_events: Vec<(String, &'static str, String, vskill::GatherResource, u32, u32)> =
+        Vec::new();
+
     {
         let world = hub().deltas.read().unwrap();
         let mut residents = hub().residents.write().unwrap();
@@ -3122,6 +3191,30 @@ fn tick_residents(dt: f32) {
                 if r.clique_wait > vclique::GATHER_MAX_WAIT_SECS {
                     r.clique_meet = None;
                     r.clique_wait = 0.0;
+                }
+            }
+
+            // 跑腿採集逾時保險（指令→任務第三刀）：整趟任務（找+走+挖+送）太久沒完成就收工——
+            // 身上已經帶著幾份就強制進入交付階段（帶著現有的先回去交差，誠實不硬撐）；
+            // 一份都沒採到就老實放棄整個任務，不無窮重試。
+            let mut abandon_fetch: Option<vskill::GatherResource> = None;
+            if let Some(fetch) = r.fetch.as_mut() {
+                fetch.deadline -= dt;
+                if fetch.deadline <= 0.0 && fetch.remaining > 0 {
+                    if fetch.carried > 0 {
+                        fetch.remaining = 0;
+                    } else {
+                        abandon_fetch = Some(fetch.resource);
+                    }
+                }
+            }
+            if let Some(resource) = abandon_fetch {
+                r.fetch = None;
+                r.gather = None;
+                if r.say.is_empty() {
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    r.say = vfetch::fail_line(resource.display_name(), pick).chars().take(40).collect();
+                    r.say_timer = SAY_SECS;
                 }
             }
 
@@ -3470,6 +3563,47 @@ fn tick_residents(dt: f32) {
                     level_workers.push(r.id.clone());
                     vr::gravity_step(&world, &mut r.body, dt);
                 }
+                // 跑腿採集 v1（指令→任務第三刀）·交付階段：已採齊（或已逾時強制收工，見上方
+                // 冷卻段），朝下令的玩家走去，抵達就排程交付（鎖外進背包），任務結束。
+            } else if r.fetch.as_ref().is_some_and(|f| f.is_gathering_done()) {
+                let requester = r.fetch.as_ref().unwrap().requester.clone();
+                if let Some((px, pz, _)) = player_pts.iter().find(|(_, _, n)| *n == requester) {
+                    let (px, pz) = (*px, *pz);
+                    let dx = r.body.x - px;
+                    let dz = r.body.z - pz;
+                    if dx * dx + dz * dz <= vfetch::FETCH_DELIVER_REACH * vfetch::FETCH_DELIVER_REACH {
+                        if let Some(task) = r.fetch.take() {
+                            fetch_deliver_events.push((
+                                r.id.clone(), r.name, task.requester, task.resource,
+                                task.carried, task.requested,
+                            ));
+                        }
+                        r.wait_timer = 1.5; // 交付後小歇，別立刻又閒晃走開
+                        vr::gravity_step(&world, &mut r.body, dt);
+                    } else {
+                        let (bx, bz) = (r.body.x, r.body.z);
+                        vr::step_toward(&world, &mut r.body, px, pz, dt, vr::RES_SPEED * speed_mult);
+                        if let Some(yaw) = vr::yaw_from_move(r.body.x - bx, r.body.z - bz) {
+                            r.yaw = yaw;
+                        }
+                    }
+                } else {
+                    // 下令的玩家目前不在線（找不到座標）：原地等待，逾時保險已在冷卻段處理。
+                    vr::gravity_step(&world, &mut r.body, dt);
+                }
+                // 跑腿採集 v1·尚未鎖定資源目標：等鎖外的 fetch_search_candidates 處理完指派，
+                // 原地站穩別亂晃（找到目標後下個 tick 自然落入下方的 r.gather.is_some() 分支）。
+            } else if r.fetch.is_some() && r.gather.is_none() {
+                if let Some(f) = r.fetch.as_ref() {
+                    fetch_search_candidates.push((
+                        r.id.clone(),
+                        r.body.x.floor() as i32,
+                        r.body.y.floor() as i32,
+                        r.body.z.floor() as i32,
+                        f.resource,
+                    ));
+                }
+                vr::gravity_step(&world, &mut r.body, dt);
             } else if r.gather.is_some() {
                 let (tx, ty, tz, reached, timed_out) = {
                     let g = r.gather.as_mut().unwrap();
@@ -3487,9 +3621,16 @@ fn tick_residents(dt: f32) {
                         r.body.z.floor() as i32,
                     );
                     if vskill::is_escapable_after_dig(&world, fx, fy, fz, tx, ty, tz) {
-                        // 排程挖掘 + 採集次數 +1，清掉任務（站定落重力）。
+                        // 排程挖掘（站定落重力）。跑腿任務中的採集算進 fetch 進度，
+                        // 不算進一般備料計數（兩者用途不同：一個是玩家指定的份數，
+                        // 一個是蓋造前的備料配額）。
                         gather_mines.push((r.id.clone(), r.name, tx, ty, tz, res));
-                        r.gathered_since_build = r.gathered_since_build.saturating_add(1);
+                        if let Some(f) = r.fetch.as_mut() {
+                            f.remaining = f.remaining.saturating_sub(1);
+                            f.carried = f.carried.saturating_add(1);
+                        } else {
+                            r.gathered_since_build = r.gathered_since_build.saturating_add(1);
+                        }
                     }
                     // 不安全就放棄這塊（不挖、不計數）；下個 agency tick 重找安全資源。
                     vr::gravity_step(&world, &mut r.body, dt);
@@ -3597,10 +3738,12 @@ fn tick_residents(dt: f32) {
             // 採集（gather）有自己的 25 秒逾時處理「走不到資源就放棄」，不該被脫困偵測搶先誤救。
             // 整地任務中不算「純導航」（與採集同理：她在做事，別被脫困偵測誤救打斷任務）。
             // 跟隨中也不算：跟著玩家走本就目標常變，別被脫困偵測誤判。
+            // 跑腿採集中（指令→任務第三刀）同理：等待被指派下個目標／走去交付都不是「純導航」。
             let navigating = r.gather.is_none()
                 && r.wait_timer <= 0.0
                 && !directed_snaps.contains_key(&r.id)
-                && r.follow.is_none();
+                && r.follow.is_none()
+                && r.fetch.is_none();
             // 幾何困住判定（埋在實心裡或四面爬不出）；只在導航時才需要算。
             let confined = navigating && vr::is_confined(&world, &r.body);
             r.stuck_timer = vr::update_stuck_timer(r.stuck_timer, moved, navigating, confined, dt);
@@ -3626,20 +3769,25 @@ fn tick_residents(dt: f32) {
                 tracing::info!(resident = %r.id, ?how, "voxel 居民卡住 → 脫困/送回");
             }
 
-            // 思考排程（蒐集快照，spawn 留到鎖外）。整地任務/跟隨中不排程思考（她專心做那件事）。
+            // 思考排程（蒐集快照，spawn 留到鎖外）。整地任務/跟隨/跑腿中不排程思考（她專心做那件事）。
             r.think_timer -= dt;
-            if r.think_timer <= 0.0 && !directed_snaps.contains_key(&r.id) && r.follow.is_none() {
+            if r.think_timer <= 0.0
+                && !directed_snaps.contains_key(&r.id)
+                && r.follow.is_none()
+                && r.fetch.is_none()
+            {
                 r.think_timer = npc_agent_wire::THINK_INTERVAL_SECS;
                 think_jobs.push((r.id.clone(), r.name, r.persona, r.body.x, r.body.z));
             }
 
-            // agency tick 倒數；到期且「沒在採集、沒在整地、沒在跟隨」時才加入候選
+            // agency tick 倒數；到期且「沒在採集、沒在整地、沒在跟隨、沒在跑腿」時才加入候選
             // （做事中不打斷、交給技能跑完）。只收快照，實際放塊 / 決定活動在鎖外執行。
             r.build_tick -= dt;
             if r.build_tick <= 0.0
                 && r.gather.is_none()
                 && !directed_snaps.contains_key(&r.id)
                 && r.follow.is_none()
+                && r.fetch.is_none()
             {
                 // 居民 id 格式固定 "vox_res_{i}"，取末位數字當 index。
                 let idx = r.id.trim_start_matches("vox_res_").parse::<usize>().unwrap_or(0);
@@ -4053,6 +4201,92 @@ fn tick_residents(dt: f32) {
         vfeed::append_feed("採集", rname, &format!("採集了{}", res.display_name()));
         // 冒一句採集泡泡（不打斷其他話）。
         say_updates.push((rid.clone(), format!("採到{}了～", res.display_name())));
+    }
+
+    // 5b-1a) 跑腿採集·找下一個目標（指令→任務第三刀收尾）：還沒鎖定資源的居民，
+    //   找一次最近的指定資源；找不到 → 已帶著的份就直接送去交付、否則老實放棄整個任務
+    //   （不無窮重試）。鎖序：deltas 讀（即釋）→ residents 寫（即釋），逐位居民各自短取即釋。
+    for (rid, rx, _ry, rz, resource) in fetch_search_candidates {
+        let found = {
+            let world = hub().deltas.read().unwrap();
+            vskill::find_nearest_resource_of(&world, rx, rz, vskill::GATHER_MAX_RADIUS, resource)
+        }; // deltas 讀鎖釋放
+        let mut residents = hub().residents.write().unwrap();
+        if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+            match found {
+                Some((tx, ty, tz)) => {
+                    r.gather = Some(GatherSkill {
+                        resource,
+                        tx,
+                        ty,
+                        tz,
+                        timeout: vskill::GATHER_TIMEOUT_SECS,
+                    });
+                }
+                None => {
+                    let carried = r.fetch.as_ref().map_or(0, |f| f.carried);
+                    if carried > 0 {
+                        if let Some(f) = r.fetch.as_mut() {
+                            f.remaining = 0; // 帶著已採到的先回去交差
+                        }
+                    } else {
+                        r.fetch = None;
+                        if r.say.is_empty() {
+                            let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                            r.say = vfetch::fail_line(resource.display_name(), pick).chars().take(40).collect();
+                            r.say_timer = SAY_SECS;
+                        }
+                    }
+                }
+            }
+        }
+    } // residents 寫鎖逐次釋放
+
+    // 5b-1b) 跑腿採集·交付落地（指令→任務第三刀收尾）：把居民帶回來的材料真的交到玩家手上。
+    //   鎖序：inventory 寫（即釋）→ memory 寫（即釋）→ broadcast + Feed（鎖外 IO）。
+    for (rid, rname, pname, resource, delivered, requested) in &fetch_deliver_events {
+        if *delivered == 0 {
+            continue; // 一份都沒採到理論上不該走到交付（deadline 分支已過濾），安全跳過。
+        }
+        let bid = resource.block_id();
+        let inv_entry = {
+            hub().inventory.write().unwrap().give(pname, bid, *delivered)
+        }; // inventory 寫鎖釋放
+        vinv::append_inv(&inv_entry);
+        let new_count = hub().inventory.read().unwrap().count(pname, bid);
+        let iname = resource.display_name();
+        let pick = rname.len() + *delivered as usize;
+        let line = vfetch::deliver_line(iname, *requested, *delivered, pick);
+        // 居民記得幫你跑了這趟腿（互動有後果的另一種形式）。
+        let mem_line = format!("幫{pname}跑腿採了{delivered}份{iname}，親手交到了對方手上");
+        let e = {
+            let mut mem = hub().memory.write().unwrap();
+            mem.add_memory(rid, pname, &mem_line)
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&e);
+        let msg = serde_json::json!({
+            "t": "fetch_delivered",
+            "resident_id": rid,
+            "resident_name": rname,
+            "player": pname,
+            "item_id": bid,
+            "item_name": iname,
+            "qty": delivered,
+            "new_count": new_count,
+            "line": line.clone(),
+        })
+        .to_string();
+        let _ = hub().tx.send(std::sync::Arc::new(msg));
+        vfeed::append_feed("跑腿交付", rname, &format!("把{delivered}份{iname}交給了{pname}"));
+        {
+            let mut residents = hub().residents.write().unwrap();
+            if let Some(r) = residents.iter_mut().find(|r| &r.id == rid) {
+                if r.say.is_empty() {
+                    r.say = line.chars().take(40).collect();
+                    r.say_timer = SAY_SECS;
+                }
+            }
+        } // residents 寫鎖釋放
     }
 
     // 5b-2) 整地任務執行（指令→任務 + 整地技能 v1 收尾）：**她真的照玩家的話做事**。
