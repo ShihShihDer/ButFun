@@ -75,6 +75,7 @@ use crate::voxel_quarrel as vquarrel;
 use crate::voxel_teach as vteach;
 use crate::voxel_sleep as vsleep;
 use crate::voxel_bedtime as vbedtime;
+use crate::voxel_morning as vmorning;
 use crate::voxel_welcome as vwelcome;
 use crate::voxel_resident_trade as vrtrade;
 use crate::voxel_milestones::{self as vmiles, MilestoneStore};
@@ -3983,6 +3984,10 @@ fn tick_residents(dt: f32) {
     // 格式：(resident_name, 今天回味的記憶摘要)。
     let mut bedtime_feed: Vec<(&'static str, String)> = Vec::new();
 
+    // 晨間探友 Feed 事件（作息 × 記憶驅動行為·晨間探友 v1，ROADMAP 745）：鎖內醒來時偵測，鎖外記 Feed。
+    // 格式：(resident_name, 昨晚惦記、一早去找的那位居民名字)。
+    let mut morning_feed: Vec<(&'static str, &'static str)> = Vec::new();
+
     // 居民回禮事件（ROADMAP 667）：鎖內偵測，鎖外執行（加入背包 + 廣播）。
     // 格式：(resident_id, resident_name, player_name, block_id, qty, message)
     let mut return_gift_events: Vec<(String, &'static str, String, u8, u32, String)> = Vec::new();
@@ -4042,6 +4047,13 @@ fn tick_residents(dt: f32) {
                 }
             }
         }
+
+        // 晨間探友 v1（ROADMAP 745）：入迴圈前先快照所有居民的名字與家域中心（兩陣列索引對齊），
+        // 供醒來時「讀昨晚反思 → 若惦記到某位居民 → 走去找他」查得到對方家在哪（避免在持 residents
+        // 寫鎖的迴圈裡再借用 residents 讀）。名字與家域在本 tick 內不變，快照安全。
+        let resident_names: Vec<&'static str> = residents.iter().map(|r| r.name).collect();
+        let resident_homes: Vec<(f32, f32)> =
+            residents.iter().map(|r| (r.home_x, r.home_z)).collect();
 
         // 2b) 物理 + 閒晃 + 社交冷卻 + 思考排程。
         for r in residents.iter_mut() {
@@ -4150,6 +4162,40 @@ fn tick_residents(dt: f32) {
                     let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                     r.say = vsleep::wake_line(pick).to_string();
                     r.say_timer = SAY_SECS;
+                    // 晨間探友 v1（ROADMAP 745）：記憶驅動行為——醒來讀昨晚昇華的「睡前反思」記憶
+                    // （744），若那份牽掛裡有另一位居民的名字，今天第一件事就是走去找他（沿用探訪
+                    // 狀態機的抵達／問候／情誼／Feed，零協議改動）。鎖序：memory 短讀鎖即釋、不巢狀；
+                    // Feed 走鎖外 morning_feed。剛醒不會在探訪／聚會中，但仍保守判斷不覆蓋既有意圖。
+                    if r.visiting.is_none()
+                        && r.clique_meet.is_none()
+                        && vmorning::should_seek(true, rand::random::<f32>())
+                    {
+                        // 讀最近一筆睡前反思記憶（744 昇華、掛 REFLECT_MEMORY_PLAYER 標籤，最新在前）。
+                        let reflection = {
+                            let mem = hub().memory.read().unwrap();
+                            mem.all_memories_for(&r.id)
+                                .into_iter()
+                                .find(|e| e.player == vbedtime::REFLECT_MEMORY_PLAYER)
+                                .map(|e| e.summary)
+                        }; // 記憶讀鎖釋放
+                        if let Some(summary) = reflection {
+                            if let Some(idx) =
+                                vmorning::mentioned_resident(&summary, &resident_names, r.name)
+                            {
+                                let friend = resident_names[idx];
+                                let (fx, fz) = resident_homes[idx];
+                                // 動身：把探訪目標設成對方家域，今天第一件事就往那走。
+                                r.visiting = Some((fx, fz, friend.to_string()));
+                                r.visit_stay_timer = 0.0;
+                                r.visit_cooldown = vvisit::VISIT_COOLDOWN_SECS;
+                                r.target_x = fx;
+                                r.target_z = fz;
+                                r.say = vmorning::seek_bubble(friend, pick);
+                                r.say_timer = SAY_SECS;
+                                morning_feed.push((r.name, friend));
+                            }
+                        }
+                    }
                     // 不 continue：醒來後這一 tick 就讓她照常展開新的一天。
                 } else {
                     // 仍是夜裡：安靜睡著，只落重力、不做任何行為。
@@ -5639,6 +5685,13 @@ fn tick_residents(dt: f32) {
     // 記一筆動態，讓沒在線上的玩家回來也讀得到「牠昨晚睡前想著什麼」——記憶昇華進世界的日記牆。
     for (rname, summary) in &bedtime_feed {
         vfeed::append_feed("就寢", rname, &vbedtime::reflect_feed_line(summary));
+    }
+
+    // 5c-4) 晨間探友 Feed（作息 × 記憶驅動行為·晨間探友 v1，ROADMAP 745）：居民醒來讀昨晚的睡前
+    // 反思，若惦記到某位居民就一早去找他，記一筆動態——沒在線上的玩家回來也讀得到「牠一早惦記著誰」，
+    // 昨晚的心事第一次不只被說出來、還真的把居民的腳步帶去了某個地方。
+    for (rname, friend) in &morning_feed {
+        vfeed::append_feed("晨想", rname, &vmorning::seek_feed_line(friend));
     }
 
     // 5d) 探訪 Feed（ROADMAP 671）：抵達 / 返家各一筆，讓離線玩家也知道居民在往來。
