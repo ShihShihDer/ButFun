@@ -79,6 +79,8 @@ const AETHER_ORE = 58;
 const AETHER_LAMP = 59;
 // 垂釣 v1（ROADMAP 734）：釣竿(60)/小魚(61)/乙太魚(62) 皆純物品，住背包不可放置
 const FISHING_ROD = 60, FISH = 61, AETHER_FISH = 62;
+// 烤魚 v1：生魚(61)在熔爐烤成烤魚(63)，居民最愛的美味贈禮（純物品不放置）
+const COOKED_FISH = 63;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -150,6 +152,7 @@ const COLOR = {
   [FISHING_ROD]:    [0.62, 0.44, 0.24], // 釣竿——木褐色（背包圖示用；純物品不放置）
   [FISH]:           [0.70, 0.78, 0.82], // 小魚——銀灰帶青
   [AETHER_FISH]:    [0.40, 0.82, 0.98], // 乙太魚——青藍幽光，呼應乙太礦系
+  [COOKED_FISH]:    [0.80, 0.52, 0.30], // 烤魚——烤成金褐帶焦香的暖棕，一看就是熟食
 };
 
 const DEBUG = location.search.includes("debug");
@@ -1874,7 +1877,7 @@ const BLOCK_NAME = {
   // 乙太礦脈 v1
   [AETHER_ORE]: "乙太礦", [AETHER_LAMP]: "乙太燈",
   // 垂釣 v1（ROADMAP 734）
-  [FISHING_ROD]: "釣竿", [FISH]: "小魚", [AETHER_FISH]: "乙太魚",
+  [FISHING_ROD]: "釣竿", [FISH]: "小魚", [AETHER_FISH]: "乙太魚", [COOKED_FISH]: "烤魚",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -3449,6 +3452,8 @@ const FURNACE_RECIPES_JS = [
   { id: "smelt_brick", name: "石磚（冶煉）", inputs: [[STONE, 2]],               output_block: STONE_BRICK,  out_count: 4 },
   // 鐵錠 v1（ROADMAP 683）：1 鐵礦 + 1 煤礦（燃料）→ 2 鐵錠
   { id: "smelt_iron",  name: "鐵錠",         inputs: [[IRON_ORE, 1], [COAL_ORE, 1]], output_block: IRON_INGOT, out_count: 2 },
+  // 烤魚 v1：1 生小魚 → 1 烤魚（把垂釣漁獲烤成居民最愛的美味贈禮）
+  { id: "smelt_fish",  name: "烤魚",         inputs: [[FISH, 1]],                    output_block: COOKED_FISH, out_count: 1 },
 ];
 
 // furnaceGrid[0..2]：3 格輸入，0 代表空格，非零代表 block_id。

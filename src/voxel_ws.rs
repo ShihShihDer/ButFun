@@ -2726,6 +2726,9 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     vgift::item_wish_thanks_line(rname, iname, &name)
                 } else if vgift::is_treasure_gift(item_id) {
                     vgift::treasure_gift_thanks_line(&name, affinity, pick)
+                } else if item_id == vfish::COOKED_FISH_ID {
+                    // 烤魚是玩家「釣起→烤熟」的一道熱佳餚，用專屬台詞（比一般食物更歡欣）。
+                    vgift::cooked_fish_thanks_line(&name, affinity, pick)
                 } else if vgift::is_food_gift(item_id) {
                     vgift::food_gift_thanks_line(&name, affinity, pick)
                 } else {

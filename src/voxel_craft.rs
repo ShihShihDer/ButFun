@@ -334,6 +334,15 @@ pub const FURNACE_RECIPES: &[Recipe] = &[
         output_block: 22,
         output_count: 2,
     },
+    Recipe {
+        id: "smelt_fish",
+        name_zh: "烤魚",
+        // 1 生小魚（FISH_ID=61）→ 1 烤魚（COOKED_FISH_ID=63）。把垂釣的漁獲送進熔爐
+        // 烤熟，變成居民最愛的美味贈禮，接起「垂釣→烹飪→餽贈」的療癒循環。
+        inputs: &[(61, 1)],
+        output_block: 63,
+        output_count: 1,
+    },
 ];
 
 /// 依 id 找背包配方（2×2，找不到回 None）。
@@ -519,9 +528,11 @@ mod tests {
             );
             assert!(r.output_count > 0, "工作台配方「{}」產出數量應 > 0", r.id);
         }
-        // 熔爐冶煉配方產出 id（8~17 或 22 = IronIngot）
+        // 熔爐冶煉配方產出 id（8~17 建材、22=IronIngot、63=烤魚食物）
         for r in FURNACE_RECIPES {
-            let ok = (r.output_block >= 8 && r.output_block <= 17) || r.output_block == 22;
+            let ok = (r.output_block >= 8 && r.output_block <= 17)
+                || r.output_block == 22
+                || r.output_block == 63;
             assert!(
                 ok,
                 "熔爐配方「{}」產出 id={} 超出範圍",
@@ -568,6 +579,7 @@ mod tests {
         assert!(find_furnace_recipe("smelt_stone").is_some());
         assert!(find_furnace_recipe("smelt_glass").is_some());
         assert!(find_furnace_recipe("smelt_brick").is_some());
+        assert!(find_furnace_recipe("smelt_fish").is_some());
         assert!(find_furnace_recipe("unknown").is_none());
         // 熔爐配方不在背包 / 工作台表
         assert!(find_recipe("smelt_stone").is_none());
@@ -589,6 +601,18 @@ mod tests {
         assert_eq!(r.output_block, 17, "拋光石 id 應為 17（SmoothStone）");
         assert_eq!(r.output_count, 3);
         assert_eq!(r.inputs, &[(3, 3)], "需 3 石頭");
+    }
+
+    #[test]
+    fn smelt_fish_cooks_raw_into_cooked() {
+        // 熔爐把 1 生小魚（61）烤成 1 烤魚（63）——垂釣→烹飪→餽贈循環的中間一環。
+        let r = find_furnace_recipe("smelt_fish").unwrap();
+        assert_eq!(r.inputs, &[(61, 1)], "需 1 生小魚（FISH_ID=61）");
+        assert_eq!(r.output_block, 63, "產出烤魚（COOKED_FISH_ID=63）");
+        assert_eq!(r.output_count, 1);
+        // 烤魚配方只在熔爐表，不在背包 / 工作台表（要放置熔爐才能烤）。
+        assert!(find_recipe("smelt_fish").is_none());
+        assert!(find_workbench_recipe("smelt_fish").is_none());
     }
 
     #[test]
@@ -636,6 +660,7 @@ mod tests {
         store.give("旅人", 10, 10); // Glass（冰晶燈 + 乙太燈配方用）
         store.give("旅人", 56, 10); // IceCrystal（冰晶燈配方用）
         store.give("旅人", 58, 10); // AetherOre（乙太燈配方用，乙太礦脈 v1）
+        store.give("旅人", 61, 10); // FISH（smelt_fish 烤魚配方用，生小魚）
         // 火把配方：1 木頭(5) + 1 煤礦(20) → 4 火把（Wood/CoalOre 已加，數量足夠）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);
