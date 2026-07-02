@@ -9,7 +9,7 @@
 //! 居民**真的走過去、把一塊地剷平/填平到同一高度**，而不再只是誠實地說做不到——
 //! 因為合理大小的整地她現在真的做得到（答應是誠實的，不是空頭支票）。
 
-use crate::voxel::{self, Block, WorldDelta, BASE_HEIGHT};
+use crate::voxel::{self, Block, WorldDelta, BASE_HEIGHT, SEA_LEVEL};
 use crate::voxel_craft as vcraft;
 use crate::voxel_skills::{self as vskill, GatherResource};
 use std::collections::HashMap;
@@ -145,30 +145,28 @@ pub fn is_absurd_level(text: &str) -> bool {
 }
 
 /// 居民「答應整地」的回覆（誠實而願意——她現在真的做得到合理大小）。
-/// 依 `pick` 選句增加變化；口吻溫暖、坦白會花點時間。純函式、可測、零 LLM。
-pub fn accept_line(name: &str, pick: usize) -> String {
-    const POOL: [&str; 4] = [
-        "好，我這就過去把那塊地整平，會花點時間喔～",
-        "交給我吧！我去把那塊地弄平，稍等我一下下～",
-        "沒問題，我這就動身去整那塊地，整完再跟你說！",
-        "好呀，我走過去把它剷平、填平到一樣高，做起來囉～",
-    ];
+/// 帶工地位置（玩家當下腳邊），讓玩家知道工地在哪。純函式、可測、零 LLM。
+pub fn accept_line(name: &str, pick: usize, cx: i32, cz: i32) -> String {
     let _ = name; // 名字保留給未來想帶入口吻用；目前選句不依名字。
-    POOL[pick % POOL.len()].to_string()
+    match pick % 4 {
+        0 => format!("好，就整你腳邊這塊（{cx},{cz}），我過去把它弄平，稍等喔～"),
+        1 => format!("交給我！我去把你現在站的這塊（{cx},{cz}）整平～"),
+        2 => format!("沒問題，你腳邊這塊（{cx},{cz}）我去整！整完再來找你～"),
+        _ => format!("好呀，就這塊（{cx},{cz}），我去剷平填平到一樣高，做起來囉～"),
+    }
 }
 
-/// 居民「號召大家一起整大片地」的回覆（B 階段：誠實＋現在有辦法了）。
+/// 居民「號召大家一起整大片地」的回覆（B 階段：誠實＋現在有辦法了，帶工地中心座標）。
 /// 口吻＝坦白「我一個人不行」＋「我去把大家找來一起動手」，不是婉拒、也不是逞強一個人扛。
 /// 依 `pick` 選句增加變化。純函式、可測、零 LLM。
-pub fn rally_line(name: &str, pick: usize) -> String {
-    const POOL: [&str; 4] = [
-        "這麼大一片，我一個人可不行——我去把大家找來，一起動手！",
-        "哇，這範圍好大！我一個人整不完，我這就去號召大家一起來～",
-        "這片地太大啦，光靠我不夠……等我一下，我去叫夥伴們一起整！",
-        "一個人可搞不定這麼大一片！我去揪大家，一起把它整平～",
-    ];
+pub fn rally_line(name: &str, pick: usize, cx: i32, cz: i32) -> String {
     let _ = name;
-    POOL[pick % POOL.len()].to_string()
+    match pick % 4 {
+        0 => format!("這麼大一片，我一個人可不行——我去把大家找來，大家一起整（{cx},{cz}）附近！"),
+        1 => format!("哇，這範圍好大！我去號召大家，大家到（{cx},{cz}）附近一起動手～"),
+        2 => format!("這片地太大啦，光靠我不夠……等我一下，我去叫夥伴們到（{cx},{cz}）一起整！"),
+        _ => format!("一個人可搞不定！我去揪大家，大家先到（{cx},{cz}）附近，一起把它整平～"),
+    }
 }
 
 // ── 鋪面指令偵測（純函式、確定性、可測、零 LLM）────────────────────────────────
@@ -295,25 +293,23 @@ pub fn craft_toward(bag: &mut HashMap<u8, u32>, mat: Block, need: u32) -> u32 {
     made
 }
 
-/// 居民「答應鋪面」的回覆（誠實而願意＋坦白要先備料）。依 `pick` 選句。純函式、可測。
-pub fn pave_accept_line(mat_name: &str, pick: usize) -> String {
-    let pool: [String; 3] = [
-        format!("好！我先去備{mat_name}，備好就把這塊地鋪起來——要花點時間喔～"),
-        format!("交給我！我先採料合{mat_name}，然後把這裡鋪好，稍等我～"),
-        format!("沒問題，我這就備料，把這塊地鋪成{mat_name}的！"),
-    ];
-    pool[pick % pool.len()].clone()
+/// 居民「答應鋪面」的回覆（誠實而願意＋坦白要先備料，帶工地位置）。依 `pick` 選句。純函式、可測。
+pub fn pave_accept_line(mat_name: &str, pick: usize, cx: i32, cz: i32) -> String {
+    match pick % 3 {
+        0 => format!("好！我先備{mat_name}，備好就把你腳邊（{cx},{cz}）這塊鋪起來——要花點時間喔～"),
+        1 => format!("交給我！我先採料合{mat_name}，然後把（{cx},{cz}）那塊鋪好，稍等我～"),
+        _ => format!("沒問題，我去備料，把你腳邊（{cx},{cz}）鋪成{mat_name}的！"),
+    }
 }
 
-/// 居民「號召大家一起鋪一大片」的回覆（誠實：太大就**先從一塊開始鋪、一塊一塊來**，
+/// 居民「號召大家一起鋪一大片」的回覆（帶工地中心座標；誠實：太大就**先從一塊開始鋪、一塊一塊來**，
 /// 不拒絕也不吹牛——答應的是真做得到的那一塊）。依 `pick` 選句。純函式、可測。
-pub fn pave_rally_line(mat_name: &str, pick: usize) -> String {
-    let pool: [String; 3] = [
-        format!("這麼大一片一口氣鋪不完——我去找大家，先從一塊開始鋪{mat_name}，一塊一塊來！"),
-        format!("哇，這範圍好大！我去號召大家各自備料，先合力鋪好一塊{mat_name}地，再慢慢擴～"),
-        format!("一個人可鋪不了這麼大！我去揪夥伴，大家先從一塊{mat_name}地鋪起，一塊一塊來～"),
-    ];
-    pool[pick % pool.len()].clone()
+pub fn pave_rally_line(mat_name: &str, pick: usize, cx: i32, cz: i32) -> String {
+    match pick % 3 {
+        0 => format!("這麼大一片一口氣鋪不完——我去找大家，先從（{cx},{cz}）附近那塊開始鋪{mat_name}！"),
+        1 => format!("哇，這範圍好大！我去號召大家各自備料，先把（{cx},{cz}）那一塊{mat_name}地鋪好，再慢慢擴～"),
+        _ => format!("一個人可鋪不了這麼大！我去揪夥伴，大家先從（{cx},{cz}）附近那塊{mat_name}地鋪起！"),
+    }
 }
 
 // ── 跟隨指令（指令→任務 v1 第二刀：她真的能跟你走，不只整一塊地）────────────────
@@ -491,20 +487,29 @@ pub fn ground_top(world: &WorldDelta, x: i32, z: i32) -> Option<i32> {
 pub fn level_column(world: &WorldDelta, x: i32, z: i32, target_y: i32) -> Vec<(i32, i32, i32, Block)> {
     let mut out = Vec::new();
 
-    // ① 削平：target_y 之上的實心方塊全挖成空氣。
-    for y in (target_y + 1)..=(target_y + LEVEL_MAX_UP) {
+    // 防淹：臨水柱不低於海平面+1，避免完工後被水漫掉。
+    // 掃描從 target_y 到 SEA_LEVEL 的高度範圍，以應對 target_y 低於水面的情況。
+    let check_top = target_y.max(SEA_LEVEL);
+    let eff_target = if is_water_adjacent_range(world, x, z, target_y, check_top) {
+        target_y.max(SEA_LEVEL + 1)
+    } else {
+        target_y
+    };
+
+    // ① 削平：eff_target 之上的實心方塊全挖成空氣。
+    for y in (eff_target + 1)..=(eff_target + LEVEL_MAX_UP) {
         if voxel::effective_block_at(world, x, y, z).is_solid() {
             out.push((x, y, z, Block::Air));
         }
     }
 
-    // ② 填平：從 target_y 往下，遇到非實心（空氣/水）就填土；碰到既有實心地基就停。
-    let bottom = (target_y - LEVEL_MAX_DOWN).max(0);
-    for y in (bottom..=target_y).rev() {
+    // ② 填平：從 eff_target 往下，遇到非實心（空氣/水）就填土；碰到既有實心地基就停。
+    let bottom = (eff_target - LEVEL_MAX_DOWN).max(0);
+    for y in (bottom..=eff_target).rev() {
         if voxel::effective_block_at(world, x, y, z).is_solid() {
             break; // 到達地基，下面不用再填
         }
-        let fill = if y == target_y { Block::Grass } else { Block::Dirt };
+        let fill = if y == eff_target { Block::Grass } else { Block::Dirt };
         out.push((x, y, z, fill));
     }
 
@@ -559,23 +564,32 @@ pub fn pave_column(
 ) -> Vec<(i32, i32, i32, Block)> {
     let mut out = Vec::new();
 
-    // ① 削平：target_y 之上的實心方塊全挖成空氣（同整地）。
-    for y in (target_y + 1)..=(target_y + LEVEL_MAX_UP) {
+    // 防淹：臨水柱不低於海平面+1，避免完工後被水漫掉。
+    // 掃描從 target_y 到 SEA_LEVEL 的高度範圍，以應對 target_y 低於水面的情況。
+    let check_top = target_y.max(SEA_LEVEL);
+    let eff_target = if is_water_adjacent_range(world, x, z, target_y, check_top) {
+        target_y.max(SEA_LEVEL + 1)
+    } else {
+        target_y
+    };
+
+    // ① 削平：eff_target 之上的實心方塊全挖成空氣（同整地）。
+    for y in (eff_target + 1)..=(eff_target + LEVEL_MAX_UP) {
         if voxel::effective_block_at(world, x, y, z).is_solid() {
             out.push((x, y, z, Block::Air));
         }
     }
 
     // ② 頂面鋪材料：已是目標材料就跳過（省料），否則替換（消耗 1 份材料）。
-    let top_now = voxel::effective_block_at(world, x, target_y, z);
+    let top_now = voxel::effective_block_at(world, x, eff_target, z);
     if top_now != mat {
-        out.push((x, target_y, z, mat));
+        out.push((x, eff_target, z, mat));
     }
 
     // ③ 填平：頂格原本非實心（窪地/水）才需要往下用泥土補地基；碰到既有實心就停。
     if !top_now.is_solid() {
-        let bottom = (target_y - LEVEL_MAX_DOWN).max(0);
-        for y in (bottom..target_y).rev() {
+        let bottom = (eff_target - LEVEL_MAX_DOWN).max(0);
+        for y in (bottom..eff_target).rev() {
             if voxel::effective_block_at(world, x, y, z).is_solid() {
                 break; // 到達地基
             }
@@ -767,16 +781,19 @@ pub struct CoordinatedLevelTask {
     pub members: Vec<String>,
     /// 鋪面材料：`Some(材料)`＝協調**鋪面**（完工台詞/Feed 帶材料名）；`None`＝協調整地。
     pub pave: Option<Block>,
+    /// 協調整地/鋪面的大片地中心世界座標（供完工台詞帶相對方位用）。
+    pub cx: i32,
+    pub cz: i32,
 }
 
 impl CoordinatedLevelTask {
-    pub fn new(requester: String, members: Vec<String>) -> Self {
-        Self { requester, members, pave: None }
+    pub fn new(requester: String, members: Vec<String>, cx: i32, cz: i32) -> Self {
+        Self { requester, members, pave: None, cx, cz }
     }
 
     /// 建一件協調**鋪面**任務（成員各自的子區任務仍是普通 `DirectedTask::new_pave`）。
-    pub fn new_pave(requester: String, members: Vec<String>, mat: Block) -> Self {
-        Self { requester, members, pave: Some(mat) }
+    pub fn new_pave(requester: String, members: Vec<String>, mat: Block, cx: i32, cz: i32) -> Self {
+        Self { requester, members, pave: Some(mat), cx, cz }
     }
 
     /// 是否整體完成：有成員、且所有成員的子任務都已不在 `active`（仍在跑的整地任務 id 集合）中。
@@ -842,6 +859,106 @@ pub fn nearest_site_stand(world: &WorldDelta, px: f32, pz: f32, cx: i32, cz: i32
     (tx as f32 + 0.5, (top + 1) as f32, tz as f32 + 0.5)
 }
 
+// ── 防淹 + 方位輔助（純函式、可測）──────────────────────────────────────────────
+
+/// **防淹安全 target_y**：取中心柱地表頂，且不低於海平面+1（SEA_LEVEL+1）。
+/// 整地/鋪面任務建立時用此函式決定目標高度，確保水邊整地完工後不被水淹沒。
+/// 純函式、可測。
+pub fn safe_target_y(world: &WorldDelta, cx: i32, cz: i32) -> i32 {
+    let raw = ground_top(world, cx, cz).unwrap_or(BASE_HEIGHT);
+    raw.max(SEA_LEVEL + 1)
+}
+
+/// 判斷 (x, z) 柱在指定高度範圍內（`y_min..=y_max`）的四個水平鄰格（x±1, z±1）是否有水方塊。
+/// 防淹邏輯：target_y 可能低於海平面，需掃描從 target_y 到 SEA_LEVEL 的範圍，
+/// 確保水面（5）高度的鄰格水也能被偵測到。純函式、可測。
+pub fn is_water_adjacent_range(world: &WorldDelta, x: i32, z: i32, y_min: i32, y_max: i32) -> bool {
+    let y_min = y_min.min(y_max);
+    let y_max = y_max.max(y_min);
+    for y in y_min..=y_max {
+        let found = [(x + 1, z), (x - 1, z), (x, z + 1), (x, z - 1)]
+            .iter()
+            .any(|&(nx, nz)| voxel::effective_block_at(world, nx, y, nz) == Block::Water);
+        if found {
+            return true;
+        }
+    }
+    false
+}
+
+/// 判斷 (x, z) 柱在高度 y 的四個水平鄰格（x±1, z±1）是否有水方塊。
+/// 用於整地/鋪面的逐柱防淹：臨水柱不削到水面以下，避免完工後被水漫掉。
+/// 純函式、可測。
+pub fn is_water_adjacent(world: &WorldDelta, x: i32, z: i32, y: i32) -> bool {
+    [(x + 1, z), (x - 1, z), (x, z + 1), (x, z - 1)]
+        .iter()
+        .any(|&(nx, nz)| voxel::effective_block_at(world, nx, y, nz) == Block::Water)
+}
+
+/// 兩點之間的方位詞與步數（純水平距離）。
+/// 回傳（方位詞, 步數）：步數 < 3 時方位詞為空字串（"就在腳下"由呼叫端拼）。
+/// 座標系：+X 為東、+Z 為南（與 voxel 世界一致）。純函式、可測。
+pub fn cardinal_direction(from_x: f32, from_z: f32, to_x: f32, to_z: f32) -> (String, i32) {
+    let dx = to_x - from_x;
+    let dz = to_z - from_z;
+    let steps = (dx * dx + dz * dz).sqrt().round() as i32;
+    if steps < 3 {
+        return (String::new(), steps);
+    }
+    // 轉為羅盤方位（0° = 北，順時針）：北=-Z，東=+X，南=+Z，西=-X
+    // atan2(dx, -dz) → 從北（-Z）順時針量的角度
+    let angle_rad = dx.atan2(-dz);
+    let compass = angle_rad.to_degrees().rem_euclid(360.0);
+    let dir = match compass as u32 {
+        338..=360 | 0..=22 => "北",
+        23..=67             => "東北",
+        68..=112            => "東",
+        113..=157           => "東南",
+        158..=202           => "南",
+        203..=247           => "西南",
+        248..=292           => "西",
+        _                   => "西北",
+    };
+    (dir.to_string(), steps)
+}
+
+/// 整地**完工**冒泡台詞（帶工地相對方位）。
+/// `dir` 空字串表示「就在腳下」（步數 < 3）。純函式、可測。
+pub fn level_done_line(dir: &str, steps: i32, cx: i32, cz: i32) -> String {
+    if dir.is_empty() {
+        format!("整好囉！就在你腳邊（{cx},{cz}），現在平平的～")
+    } else {
+        format!("整好囉！就在你{dir}邊約{steps}步（{cx},{cz}）那塊，現在平坦多了～")
+    }
+}
+
+/// 鋪面**完工**冒泡台詞（帶工地相對方位）。純函式、可測。
+pub fn pave_done_line(mat_name: &str, dir: &str, steps: i32, cx: i32, cz: i32) -> String {
+    if dir.is_empty() {
+        format!("鋪好囉！就在你腳邊（{cx},{cz}），整片{mat_name}地～")
+    } else {
+        format!("鋪好囉！就在你{dir}邊約{steps}步（{cx},{cz}）那塊，整片{mat_name}地～")
+    }
+}
+
+/// 協調整地**完工**冒泡台詞（帶工地相對方位）。純函式、可測。
+pub fn coord_level_done_line(dir: &str, steps: i32, cx: i32, cz: i32) -> String {
+    if dir.is_empty() {
+        format!("大家一起把你腳邊這片（{cx},{cz}）整平了！辛苦啦～")
+    } else {
+        format!("大家一起把你{dir}邊約{steps}步（{cx},{cz}）那片整平了！辛苦啦～")
+    }
+}
+
+/// 協調鋪面**完工**冒泡台詞（帶工地相對方位）。純函式、可測。
+pub fn coord_pave_done_line(mat_name: &str, dir: &str, steps: i32, cx: i32, cz: i32) -> String {
+    if dir.is_empty() {
+        format!("大家一起把你腳邊這片{mat_name}地（{cx},{cz}）鋪好了！辛苦啦～")
+    } else {
+        format!("大家一起把你{dir}邊約{steps}步（{cx},{cz}）那片{mat_name}地鋪好了！辛苦啦～")
+    }
+}
+
 // ── 單元測試 ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -889,10 +1006,12 @@ mod tests {
 
     #[test]
     fn accept_line_is_warm_and_varied() {
-        let a = accept_line("露娜", 0);
-        let b = accept_line("露娜", 1);
+        let a = accept_line("露娜", 0, 10, 20);
+        let b = accept_line("露娜", 1, 10, 20);
         assert!(!a.is_empty());
         assert_ne!(a, b, "不同 pick 應可選到不同句");
+        // 回覆應包含工地座標。
+        assert!(a.contains("10") && a.contains("20"), "回覆應含工地座標：{a}");
     }
 
     // ── 跟隨指令：該中 / 不誤觸發 ─────────────────────────────────────────────────
@@ -1208,12 +1327,14 @@ mod tests {
 
     #[test]
     fn rally_line_is_a_call_not_a_refusal() {
-        let a = rally_line("露娜", 0);
-        let b = rally_line("露娜", 1);
+        let a = rally_line("露娜", 0, 30, 40);
+        let b = rally_line("露娜", 1, 30, 40);
         assert!(!a.is_empty());
         assert_ne!(a, b, "不同 pick 應可選到不同句");
         // 是「號召大家一起」的口吻（含關鍵字），不是「做不到」的婉拒。
-        assert!(rally_line("露娜", 0).contains("大家") || rally_line("露娜", 0).contains("夥伴"));
+        assert!(rally_line("露娜", 0, 30, 40).contains("大家") || rally_line("露娜", 0, 30, 40).contains("夥伴"));
+        // 回覆應包含工地座標。
+        assert!(a.contains("30") && a.contains("40"), "rally 回覆應含工地座標：{a}");
     }
 
     #[test]
@@ -1292,6 +1413,7 @@ mod tests {
         let task = CoordinatedLevelTask::new(
             "濕濕的".into(),
             vec!["vox_res_0".into(), "vox_res_1".into()],
+            0, 0,
         );
         // 兩位都還在跑 → 未完成。
         let mut active: std::collections::HashSet<String> =
@@ -1652,15 +1774,17 @@ mod tests {
 
     #[test]
     fn pave_lines_are_honest_and_varied() {
-        let a = pave_accept_line("石磚", 0);
-        let b = pave_accept_line("石磚", 1);
+        let a = pave_accept_line("石磚", 0, 50, 60);
+        let b = pave_accept_line("石磚", 1, 50, 60);
         assert!(a.contains("石磚"));
         assert_ne!(a, b);
-        // 號召句要傳達「先從一塊開始、一塊一塊來」的誠實態度（不拒絕也不吹牛）。
+        // 回覆應包含工地座標。
+        assert!(a.contains("50") && a.contains("60"), "pave_accept 回覆應含工地座標：{a}");
+        // 號召句要傳達工地位置（帶座標）且提到材料。
         for pick in 0..3 {
-            let r = pave_rally_line("石磚", pick);
-            assert!(r.contains("石磚"));
-            assert!(r.contains("一塊"), "號召句應提到先從一塊開始：{r}");
+            let r = pave_rally_line("石磚", pick, 50, 60);
+            assert!(r.contains("石磚"), "號召句應含材料名：{r}");
+            assert!(r.contains("50") && r.contains("60"), "號召句應含工地座標：{r}");
         }
     }
 
@@ -1670,10 +1794,13 @@ mod tests {
             "濕濕的".into(),
             vec!["vox_res_0".into()],
             Block::StoneBrick,
+            10, 20,
         );
         assert_eq!(t.pave, Some(Block::StoneBrick));
+        assert_eq!(t.cx, 10);
+        assert_eq!(t.cz, 20);
         // 既有整地建構子不帶材料（零回歸）。
-        assert_eq!(CoordinatedLevelTask::new("p".into(), vec![]).pave, None);
+        assert_eq!(CoordinatedLevelTask::new("p".into(), vec![], 0, 0).pave, None);
     }
 
     #[test]
@@ -1697,5 +1824,68 @@ mod tests {
             total_processed <= MAX_LEVEL_COLUMNS_PER_TICK,
             "每 tick 合計柱數不得超過全域上限"
         );
+    }
+
+    // ── 防淹 + 方位：新純函式測試 ───────────────────────────────────────────────────
+
+    #[test]
+    fn safe_target_y_respects_sea_level() {
+        let mut world = WorldDelta::new();
+        // 在水線以下造一根低柱（頂在 y=3，低於 SEA_LEVEL=5）→ safe_target_y 應回 SEA_LEVEL+1=6。
+        make_solid_column(&mut world, 700, 700, 3);
+        assert_eq!(safe_target_y(&world, 700, 700), SEA_LEVEL + 1);
+        // 陸地（頂在 y=10，高於海平面）→ 原值不動。
+        make_solid_column(&mut world, 710, 710, 10);
+        assert_eq!(safe_target_y(&world, 710, 710), 10);
+    }
+
+    #[test]
+    fn is_water_adjacent_detects_water_neighbors() {
+        let mut world = WorldDelta::new();
+        // 在 (100,5,100) 放水 → (99,5,100)、(101,5,100) 應被偵測為臨水。
+        voxel::set_block(&mut world, 100, 5, 100, Block::Water);
+        assert!(is_water_adjacent(&world, 99, 100, 5));
+        assert!(is_water_adjacent(&world, 101, 100, 5));
+        assert!(is_water_adjacent(&world, 100, 99, 5));
+        assert!(is_water_adjacent(&world, 100, 101, 5));
+        // 不臨水的柱 → false。
+        assert!(!is_water_adjacent(&world, 200, 200, 5));
+    }
+
+    #[test]
+    fn cardinal_direction_returns_correct_directions() {
+        // 正北（from 在南、to 在北）: from (0,10) to (0,0) → 北（-Z 方向）
+        let (dir, steps) = cardinal_direction(0.0, 10.0, 0.0, 0.0);
+        assert_eq!(dir, "北", "正北應回北：{dir}");
+        assert_eq!(steps, 10);
+        // 正東: from (0,0) to (10,0)（+X 方向）
+        let (dir, _) = cardinal_direction(0.0, 0.0, 10.0, 0.0);
+        assert_eq!(dir, "東", "正東應回東：{dir}");
+        // 正南: from (0,0) to (0,10)（+Z 方向）
+        let (dir, _) = cardinal_direction(0.0, 0.0, 0.0, 10.0);
+        assert_eq!(dir, "南", "正南應回南：{dir}");
+        // 正西: from (10,0) to (0,0)（-X 方向）
+        let (dir, _) = cardinal_direction(10.0, 0.0, 0.0, 0.0);
+        assert_eq!(dir, "西", "正西應回西：{dir}");
+        // 近距離（< 3步）→ 空字串
+        let (dir, _) = cardinal_direction(0.0, 0.0, 1.0, 1.0);
+        assert_eq!(dir, "", "距離太近應回空字串");
+    }
+
+    #[test]
+    fn level_column_waterside_does_not_go_below_sea_level() {
+        let mut world = WorldDelta::new();
+        // 在相鄰格放水（y=SEA_LEVEL），要整的柱頂在 3（低於海平面），target=3。
+        // 結果：eff_target 應被提到 SEA_LEVEL+1=6，完工後柱頂不在水線以下。
+        make_solid_column(&mut world, 800, 800, 3);
+        voxel::set_block(&mut world, 801, SEA_LEVEL, 800, Block::Water);
+        let target = 3; // 低於 SEA_LEVEL，但有鄰水
+        let changes = level_column(&world, 800, 800, target);
+        let mut w2 = world.clone();
+        for (x, y, z, b) in changes {
+            voxel::set_block(&mut w2, x, y, z, b);
+        }
+        let top = ground_top(&w2, 800, 800).unwrap();
+        assert!(top >= SEA_LEVEL + 1, "臨水柱整地後地表不應低於 SEA_LEVEL+1，got {top}");
     }
 }
