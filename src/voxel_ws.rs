@@ -64,6 +64,7 @@ use crate::voxel_cheer as vcheer;
 use crate::voxel_chest as vchest;
 use crate::voxel_weather as vweather;
 use crate::voxel_clique as vclique;
+use crate::voxel_quarrel as vquarrel;
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -4516,10 +4517,36 @@ fn tick_residents(dt: f32) {
                 }
             }
         }
+        // ROADMAP 715：居民偶爾小小拌嘴又和好 v1——情誼帳本（672）一路只漲不跌、老朋友到訪
+        // 不是溫馨問候就是互助蓋家（696）或口耳相傳（694），關係永遠一片和樂；本節補上
+        // PLAN_ETHERVOX「熟識/幫過/吵過」裡唯獨從未實作的「吵過」，讓小社會更真實有溫度。
+        // 只在這次到訪沒有觸發互助蓋家時才可能拌嘴，同一次到訪只演一齣戲。
+        let mut quarrel_line: Option<String> = None;
+        if vquarrel::should_quarrel(tier, help_line.is_some(), rand::random::<f32>()) {
+            vfeed::append_feed(vquarrel::FEED_KIND, visitor_name, &vquarrel::quarrel_feed_line(visitor_name, &host_name, pick));
+            let host_id = {
+                let residents = hub().residents.read().unwrap();
+                residents.iter().find(|r| r.name == host_name).map(|r| r.id.clone())
+            }; // residents 讀鎖釋放
+            {
+                let entry = hub().memory.write().unwrap()
+                    .add_memory(&visitor_id, &host_name, &vquarrel::quarrel_memory_line_visitor(&host_name, pick));
+                vmem::append_memory(&entry);
+            } // memory 寫鎖釋放
+            if let Some(host_id) = host_id {
+                let entry = hub().memory.write().unwrap()
+                    .add_memory(&host_id, visitor_name, &vquarrel::quarrel_memory_line_host(visitor_name, pick));
+                vmem::append_memory(&entry);
+            } // memory 寫鎖釋放
+            quarrel_line = Some(vquarrel::quarrel_say_line(&host_name, pick));
+        }
 
         // 依新層級生成問候語 → say_updates（守 say_updates 的「say 空才套」原則）；
-        // 若這次到訪順手幫了忙，優先冒幫忙台詞（更有感），蓋過一般問候語。
-        let greeting = help_line.unwrap_or_else(|| vbonds::arrival_line(tier, &host_name, visitor_name, pick));
+        // 若這次到訪順手幫了忙，優先冒幫忙台詞（更有感）；否則若拌了嘴，冒拌嘴台詞；
+        // 都沒有才落回一般問候語。
+        let greeting = help_line
+            .or(quarrel_line)
+            .unwrap_or_else(|| vbonds::arrival_line(tier, &host_name, visitor_name, pick));
         say_updates.push((visitor_id, greeting));
     }
     // 離開事件：讀當前層級（bonds 讀鎖）→ 生成告別語 → say_updates。
