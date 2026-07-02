@@ -2375,13 +2375,26 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     hub().memory.write().unwrap().add_memory(&resident_id, &name, &mem2)
                 };
                 vmem::append_memory(&entry2);
+                // 5b) 送對禮物 v1（ROADMAP 722）：這位居民是否正懷抱一句「送這個物品就能實現」的
+                // 非建造類心願（desires 讀鎖即釋，不與其他鎖巢狀）？建造類心願交給蓋家系統的
+                // 心願成真（720），這裡刻意不搶。
+                let item_wish_hit: bool = {
+                    let desires = hub().desires.read().unwrap();
+                    desires.get_desire(&resident_id).is_some_and(|d| {
+                        !d.fulfilled
+                            && vbuild::classify_desire(&d.desire).is_none()
+                            && vgift::classify_item_desire(&d.desire) == Some(item_id)
+                    })
+                };
                 // 6) 讀好感度（memory 讀鎖即釋）。
                 let affinity = {
                     hub().memory.read().unwrap().affinity_count(&name, &resident_id)
                 };
-                // 7) 組道謝台詞（純函式，無鎖）——麵包(BREAD_ID=19)走食物專屬更歡欣的句池。
+                // 7) 組道謝台詞（純函式，無鎖）——心願送到 > 食物(BREAD_ID=19) > 一般禮物。
                 let pick = (vfarm::now_secs() as usize).wrapping_add(item_id as usize);
-                let thanks = if vgift::is_food_gift(item_id) {
+                let thanks = if item_wish_hit {
+                    vgift::item_wish_thanks_line(rname, iname, &name)
+                } else if vgift::is_food_gift(item_id) {
                     vgift::food_gift_thanks_line(&name, affinity, pick)
                 } else {
                     vgift::gift_thanks_line(iname, &name, affinity, pick)
@@ -2422,6 +2435,27 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     rname,
                     &format!("{name}送了{iname}給{rname}"),
                 );
+                // 12) 送對禮物 v1（ROADMAP 722）：心願送到了——標記已實現（desires 寫鎖即釋，
+                // 落地 jsonl 沿用既有 append-only 慣例）+ 額外記憶 + 全員廣播 + Feed。
+                if item_wish_hit {
+                    let marked = {
+                        hub().desires.write().unwrap().mark_fulfilled(&resident_id)
+                    };
+                    if let Some(entry) = marked {
+                        vdes::append_desire(&entry);
+                    }
+                    let wish_mem = vgift::item_wish_memory(iname);
+                    let entry3 = {
+                        hub().memory.write().unwrap().add_memory(&resident_id, &name, &wish_mem)
+                    };
+                    vmem::append_memory(&entry3);
+                    let _ = hub().tx.send(std::sync::Arc::new(vgift::item_wish_msg(rname, iname, &name)));
+                    vfeed::append_feed(
+                        "心願送到了",
+                        rname,
+                        &format!("{name}送來了{rname}一直想要的{iname}"),
+                    );
+                }
             }
 
             // ── 居民交易 v1（ROADMAP 670）────────────────────────────────────────

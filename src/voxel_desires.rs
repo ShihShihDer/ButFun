@@ -34,6 +34,11 @@ pub struct ResidentDesire {
     pub sparked_by: String,
     /// 單調遞增序號（越大越新）；從 jsonl 還原時用來保留「最新那筆」。
     pub seq: u64,
+    /// 送對禮物 v1（ROADMAP 722）：這句心願是否已被玩家送禮實現過。
+    /// 一次性旗標，避免同一句話反覆觸發「心願送到了」特別反應。
+    /// `#[serde(default)]` 向後相容舊 jsonl（舊記錄一律視為未實現）。
+    #[serde(default)]
+    pub fulfilled: bool,
 }
 
 /// 居民心願 store：每位居民最多一個「當前心願」（後者覆蓋前者）。
@@ -71,6 +76,7 @@ impl DesireStore {
             desire: desire.to_string(),
             sparked_by: sparked_by.to_string(),
             seq: self.next_seq,
+            fulfilled: false,
         };
         self.next_seq = self.next_seq.wrapping_add(1);
         self.desires.insert(resident.to_string(), entry.clone());
@@ -80,6 +86,23 @@ impl DesireStore {
     /// 取居民的當前心願（`None` = 尚未有任何心願）。
     pub fn get_desire(&self, resident: &str) -> Option<&ResidentDesire> {
         self.desires.get(resident)
+    }
+
+    /// 把居民「當前」心願標記為已實現（送對禮物 v1，ROADMAP 722）：保留原本的心願文字/
+    /// 啟發者，只把 `fulfilled` 翻成 `true`、seq 遞增成最新一筆，讓 `from_entries` 重啟後
+    /// 仍保留這個已實現狀態（沿用既有 append-only 慣例，不需另開持久化格式）。
+    /// 居民尚無心願，或這句心願早已標記過 → 回 `None`（呼叫端不必落地）。
+    pub fn mark_fulfilled(&mut self, resident: &str) -> Option<ResidentDesire> {
+        let current = self.desires.get(resident)?;
+        if current.fulfilled {
+            return None;
+        }
+        let mut entry = current.clone();
+        entry.fulfilled = true;
+        entry.seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        self.desires.insert(resident.to_string(), entry.clone());
+        Some(entry)
     }
 }
 
@@ -150,6 +173,7 @@ pub fn append_desire(entry: &ResidentDesire) {
         desire: sanitize_field(&entry.desire),
         sparked_by: sanitize_field(&entry.sparked_by),
         seq: entry.seq,
+        fulfilled: entry.fulfilled,
     };
     if safe.desire.is_empty() {
         return; // 空心願不落地
@@ -317,18 +341,21 @@ mod tests {
                 desire: "舊願望".into(),
                 sparked_by: "a".into(),
                 seq: 0,
+                fulfilled: false,
             },
             ResidentDesire {
                 resident: "vox_res_0".into(),
                 desire: "新願望".into(),
                 sparked_by: "b".into(),
                 seq: 5,
+                fulfilled: false,
             },
             ResidentDesire {
                 resident: "vox_res_1".into(),
                 desire: "另一個".into(),
                 sparked_by: "c".into(),
                 seq: 3,
+                fulfilled: false,
             },
         ];
         let s = DesireStore::from_entries(entries);
@@ -344,6 +371,7 @@ mod tests {
             desire: "v".into(),
             sparked_by: "p".into(),
             seq: 100,
+            fulfilled: false,
         }];
         let mut s = DesireStore::from_entries(entries);
         let e = s.set_desire("r", "新的", "p2");
@@ -363,12 +391,14 @@ mod tests {
             desire: "我想蓋一座塔".into(),
             sparked_by: "旅人".into(),
             seq: 1,
+            fulfilled: false,
         };
         let e2 = ResidentDesire {
             resident: "vox_res_0".into(),
             desire: "我想種花田".into(),
             sparked_by: "小美".into(),
             seq: 2,
+            fulfilled: false,
         };
         if let Ok(l) = serde_json::to_string(&e1) {
             write_line(pstr, &l);
@@ -397,6 +427,7 @@ mod tests {
             desire: "v".into(),
             sparked_by: "p".into(),
             seq: 0,
+            fulfilled: false,
         };
         if let Ok(l) = serde_json::to_string(&e) {
             write_line(pstr, &l);
@@ -404,5 +435,60 @@ mod tests {
         let loaded = read_lines(pstr);
         assert_eq!(loaded.len(), 1, "壞行應略過，只讀回合法一筆");
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── 送對禮物 v1（ROADMAP 722）：fulfilled 旗標 + mark_fulfilled ───────────────────
+
+    #[test]
+    fn new_desire_defaults_unfulfilled() {
+        let mut s = DesireStore::new();
+        let e = s.set_desire("vox_res_0", "我想要一塊麵包", "旅人");
+        assert!(!e.fulfilled, "新心願預設未實現");
+    }
+
+    #[test]
+    fn mark_fulfilled_flips_flag_and_bumps_seq() {
+        let mut s = DesireStore::new();
+        let e1 = s.set_desire("vox_res_0", "我想要一塊麵包", "旅人");
+        let e2 = s.mark_fulfilled("vox_res_0").expect("應回傳更新後的 entry");
+        assert!(e2.fulfilled, "標記後應為已實現");
+        assert!(e2.seq > e1.seq, "標記後 seq 應遞增成最新一筆");
+        assert_eq!(e2.desire, "我想要一塊麵包", "心願文字應保留原樣");
+        assert!(s.get_desire("vox_res_0").unwrap().fulfilled);
+    }
+
+    #[test]
+    fn mark_fulfilled_no_desire_returns_none() {
+        let mut s = DesireStore::new();
+        assert!(s.mark_fulfilled("vox_res_0").is_none(), "尚無心願應回 None");
+    }
+
+    #[test]
+    fn mark_fulfilled_twice_returns_none_second_time() {
+        let mut s = DesireStore::new();
+        s.set_desire("vox_res_0", "我想要一塊麵包", "旅人");
+        assert!(s.mark_fulfilled("vox_res_0").is_some(), "第一次應成功標記");
+        assert!(
+            s.mark_fulfilled("vox_res_0").is_none(),
+            "已標記過的心願再次標記應回 None，避免重複觸發"
+        );
+    }
+
+    #[test]
+    fn fulfilled_defaults_false_when_missing_from_old_jsonl() {
+        // 舊 jsonl 沒有 fulfilled 欄位 → serde(default) 應安全還原成 false。
+        let old_json = r#"{"resident":"vox_res_0","desire":"舊願望","sparked_by":"旅人","seq":1}"#;
+        let e: ResidentDesire = serde_json::from_str(old_json).expect("舊格式應能還原");
+        assert!(!e.fulfilled, "缺欄位應預設 false");
+    }
+
+    #[test]
+    fn new_desire_after_fulfillment_resets_flag() {
+        // 之後說出新的一句話覆蓋心願時，新的一筆不該繼承前一句的 fulfilled=true。
+        let mut s = DesireStore::new();
+        s.set_desire("vox_res_0", "我想要一塊麵包", "旅人");
+        s.mark_fulfilled("vox_res_0");
+        let e = s.set_desire("vox_res_0", "我想要玻璃", "旅人");
+        assert!(!e.fulfilled, "新心願應重新從未實現開始");
     }
 }
