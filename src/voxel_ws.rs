@@ -4792,7 +4792,7 @@ fn tick_residents(dt: f32) {
                             .add_memory(&host_id, visitor_name, &vrtrade::trade_memory_line(visitor_name, h_name, v_name));
                         vmem::append_memory(&entry);
                     } // memory 寫鎖釋放
-                    resident_trade_line = Some(vrtrade::trade_say_line(&host_name, v_name, pick));
+                    resident_trade_line = Some(vrtrade::trade_say_line(&host_name, h_name, pick));
                 }
             }
         }
