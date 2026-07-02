@@ -221,6 +221,23 @@ mod tests {
     }
 
     #[test]
+    fn water_never_erodes_resident_built_structure_blocks() {
+        // 蓋家鬼打牆調查結論（b）：水流**不會**沖掉居民蓋的建物方塊——
+        // 水井/花圃/小屋的框架是 Stone/Wood（實心，被水包圍也原樣不變），
+        // 井中心的 Water 是**來源**（永不乾涸、不被覆蓋）。故完工偵測不會因水而失真。
+        // 這裡把「四面全是水的建物方塊」都釘死：驗證任一種建材都不被水侵蝕。
+        for b in [Block::Stone, Block::Wood, Block::Grass, Block::Leaves] {
+            let surrounded = nb(b, Block::Water, Block::Water,
+                                [Block::Water, Block::Water, Block::Water, Block::Water]);
+            assert_eq!(settled_block(&surrounded), b, "建材 {:?} 被水包圍仍不被侵蝕", b);
+        }
+        // 井中心的來源水四面被流動水包圍，也維持來源（不被降級/沖走）。
+        let l3 = Block::from_u8(flow_id(3)).unwrap();
+        let well_center = nb(Block::Water, Block::Air, Block::Stone, [l3, l3, l3, l3]);
+        assert_eq!(settled_block(&well_center), Block::Water, "井心來源水不被流動水覆蓋");
+    }
+
+    #[test]
     fn air_next_to_source_becomes_level_1() {
         // 空氣格挨著來源水（水平），應成 level 1（0+1）。
         let n = nb(Block::Air, Block::Air, Block::Stone,

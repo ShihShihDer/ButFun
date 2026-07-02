@@ -462,7 +462,18 @@ pub struct GoalRecord {
     /// `#[serde(default)]` 對舊資料向後相容（舊行沒有這欄，一律視為 `false`＝首次完成）。
     #[serde(default)]
     pub expansion: bool,
+    /// 這筆是否為「純錨點」記錄（蓋家鬼打牆補漏）：某種建物早已完成、但同一座又完工一次時落地，
+    /// **只為了讓重啟後仍記得此錨點**擋重蓋。`from_entries` 對這種記錄只登記 `built_anchors`，
+    /// **不**進 `done`、**不**加擴建額度、**不**動小屋座標——純粹是「地上有這座」的持久事實。
+    /// `#[serde(default)]` 向後相容（舊行沒有這欄，一律 `false`）。
+    #[serde(default)]
+    pub anchor_only: bool,
 }
+
+/// 一座「已完成的建物」的身分：種類 + 錨點座標。用來機制性擋掉「同一格同一種重蓋」。
+/// 錨點由 [`build_offset`] 決定、對同一位居民同一序號是確定的，故同一座建物永遠對應同一組
+/// `(kind, x, y, z)`——記住它就能永久否決重蓋，不必每 tick 掃結構、也不怕水把方塊沖掉。
+type BuiltAnchor = (String, i32, i32, i32);
 
 /// 每居民「已完成建物種類」集合 store。讓 `choose_activity` 永不重選蓋過的種類。
 #[derive(Default)]
@@ -474,6 +485,12 @@ pub struct GoalStore {
     /// resident id → 已擴建次數（見 [`MAX_EXPANSIONS`]）。擴建記錄不進 `done`（種類早就在裡面了），
     /// 只在這裡累計次數，避免無止盡擴建。
     expansions: HashMap<String, u32>,
+    /// resident id → 已完工建物的 `(kind, x, y, z)` 清單。**蓋家鬼打牆根治的核心持久 flag**：
+    /// 任何一座建物一旦完工就永久登記，之後 `start_build` 前查 [`GoalStore::anchor_built`]——
+    /// 同一格同一種直接否決重蓋。這讓「不重複」不再倚賴每 tick 重推 `done_kinds`/
+    /// `expansion_count`（那組讀值一旦因重啟／競態而短暫失真，就會鬼打牆）；改為「地上已經有
+    /// 這座 → 就不再蓋」的硬事實，機制性杜絕水邊水井／花圃無限重蓋。
+    built_anchors: HashMap<String, Vec<BuiltAnchor>>,
     next_seq: u64,
 }
 
@@ -488,6 +505,15 @@ impl GoalStore {
         for e in entries {
             if e.seq >= s.next_seq {
                 s.next_seq = e.seq.wrapping_add(1);
+            }
+            // 蓋家鬼打牆根治：不論首建/擴建/純錨點，只要帶座標就登記進 built_anchors。
+            // 這是重啟後仍記得「這格這種已經蓋好」的硬事實，start_build 前查它擋重蓋。
+            if let (Some(x), Some(y), Some(z)) = (e.x, e.y, e.z) {
+                s.record_anchor(&e.resident, &e.kind, (x, y, z));
+            }
+            // 純錨點記錄只為保存錨點事實——不進 done、不加擴建額度、不動小屋座標。
+            if e.anchor_only {
+                continue;
             }
             if e.expansion {
                 // 擴建不進 done 集合（種類早已在裡面）、也不覆蓋小屋座標
@@ -506,6 +532,25 @@ impl GoalStore {
             }
         }
         s
+    }
+
+    /// 登記「這位居民在這個錨點蓋好了這種建物」（去重）。內部工具，供還原／完工共用。
+    fn record_anchor(&mut self, resident: &str, kind: &str, loc: (i32, i32, i32)) {
+        let entry: BuiltAnchor = (kind.to_string(), loc.0, loc.1, loc.2);
+        let v = self.built_anchors.entry(resident.to_string()).or_default();
+        if !v.contains(&entry) {
+            v.push(entry);
+        }
+    }
+
+    /// 這位居民是否已在**這個確切錨點**蓋好過**這種**建物。
+    /// **蓋家鬼打牆的機制性閘門**：`start_build` 動工前必查——地上已經有這座，就別再蓋。
+    /// 錨點由 [`build_offset`] 確定性決定，故同一序號永遠指向同一格，查得準、擋得死。
+    pub fn anchor_built(&self, resident: &str, kind: BuildKind, loc: (i32, i32, i32)) -> bool {
+        let target: BuiltAnchor = (kind.as_str().to_string(), loc.0, loc.1, loc.2);
+        self.built_anchors
+            .get(resident)
+            .map_or(false, |v| v.contains(&target))
     }
 
     /// 此居民是否已蓋過該種建物。
@@ -544,6 +589,8 @@ impl GoalStore {
         if kind == BuildKind::House {
             self.houses.insert(resident.to_string(), loc);
         }
+        // 蓋家鬼打牆根治：登記錨點，之後 start_build 查 anchor_built 擋同格重蓋。
+        self.record_anchor(resident, kind.as_str(), loc);
         let rec = GoalRecord {
             resident: resident.to_string(),
             kind: kind.as_str().to_string(),
@@ -552,9 +599,29 @@ impl GoalStore {
             y: Some(loc.1),
             z: Some(loc.2),
             expansion: false,
+            anchor_only: false,
         };
         self.next_seq = self.next_seq.wrapping_add(1);
         Some(rec)
+    }
+
+    /// 蓋家鬼打牆補漏：某種建物早已完成（`mark_done` 回 None），但同一座又完工了一次——
+    /// 就地登記錨點並回一筆**純錨點** GoalRecord 供落地，讓重啟後仍記得此錨點擋重蓋。
+    /// 這筆不進 done、不加擴建額度，純粹保存「地上有這座」的事實（見 `GoalRecord::anchor_only`）。
+    pub fn anchor_only_record(&mut self, resident: &str, kind: BuildKind, loc: (i32, i32, i32)) -> GoalRecord {
+        self.record_anchor(resident, kind.as_str(), loc);
+        let rec = GoalRecord {
+            resident: resident.to_string(),
+            kind: kind.as_str().to_string(),
+            seq: self.next_seq,
+            x: Some(loc.0),
+            y: Some(loc.1),
+            z: Some(loc.2),
+            expansion: false,
+            anchor_only: true,
+        };
+        self.next_seq = self.next_seq.wrapping_add(1);
+        rec
     }
 
     /// 標記某居民擴建完成了一座（種類早已蓋過，這是追加的第 2 座）；回傳新 record 供
@@ -567,6 +634,8 @@ impl GoalStore {
         loc: (i32, i32, i32),
     ) -> GoalRecord {
         *self.expansions.entry(resident.to_string()).or_insert(0) += 1;
+        // 蓋家鬼打牆根治：擴建也登記錨點，擋「同格擴建無限重蓋」。
+        self.record_anchor(resident, kind.as_str(), loc);
         let rec = GoalRecord {
             resident: resident.to_string(),
             kind: kind.as_str().to_string(),
@@ -575,6 +644,7 @@ impl GoalStore {
             y: Some(loc.1),
             z: Some(loc.2),
             expansion: true,
+            anchor_only: false,
         };
         self.next_seq = self.next_seq.wrapping_add(1);
         rec
@@ -1325,10 +1395,10 @@ mod tests {
     #[test]
     fn goal_store_from_entries_restores() {
         let entries = vec![
-            GoalRecord { resident: "r".into(), kind: "garden".into(), seq: 0, x: Some(1), y: Some(2), z: Some(3), expansion: false },
-            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 1, x: Some(10), y: Some(20), z: Some(30), expansion: false },
+            GoalRecord { resident: "r".into(), kind: "garden".into(), seq: 0, x: Some(1), y: Some(2), z: Some(3), expansion: false, anchor_only: false },
+            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 1, x: Some(10), y: Some(20), z: Some(30), expansion: false, anchor_only: false },
             // 重複行：去重。
-            GoalRecord { resident: "r".into(), kind: "garden".into(), seq: 2, x: Some(1), y: Some(2), z: Some(3), expansion: false },
+            GoalRecord { resident: "r".into(), kind: "garden".into(), seq: 2, x: Some(1), y: Some(2), z: Some(3), expansion: false, anchor_only: false },
         ];
         let s = GoalStore::from_entries(entries);
         assert!(s.is_done("r", BuildKind::Garden));
@@ -1344,7 +1414,7 @@ mod tests {
     fn goal_store_from_entries_tolerates_missing_location() {
         // 舊資料沒有 x/y/z 欄位（serde default → None）：不應 panic，house_of 安全回 None。
         let entries = vec![
-            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 0, x: None, y: None, z: None, expansion: false },
+            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 0, x: None, y: None, z: None, expansion: false, anchor_only: false },
         ];
         let s = GoalStore::from_entries(entries);
         assert!(s.is_done("r", BuildKind::House));
@@ -1384,15 +1454,89 @@ mod tests {
     #[test]
     fn goal_store_from_entries_restores_expansion_count_and_keeps_original_house() {
         let entries = vec![
-            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 0, x: Some(10), y: Some(20), z: Some(30), expansion: false },
+            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 0, x: Some(10), y: Some(20), z: Some(30), expansion: false, anchor_only: false },
             // 擴建的第 2 間小屋：不應覆蓋原本的小屋座標（夜間歸巢遮蔽要認原屋）。
-            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 1, x: Some(99), y: Some(99), z: Some(99), expansion: true },
+            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 1, x: Some(99), y: Some(99), z: Some(99), expansion: true, anchor_only: false },
         ];
         let s = GoalStore::from_entries(entries);
         assert_eq!(s.expansion_count("r"), 1);
         assert_eq!(s.house_of("r"), Some((10, 20, 30)), "擴建記錄不應覆蓋原屋座標");
         // 擴建記錄不重複算進 done_count（done_count 只看基礎種類，這裡只有 1 種 house）。
         assert_eq!(s.done_count("r"), 1);
+    }
+
+    // ── 蓋家鬼打牆根治：anchor_built 持久 flag 擋同格重蓋 ─────────────────────
+
+    #[test]
+    fn anchor_built_blocks_same_spot_same_kind_after_mark_done() {
+        let mut s = GoalStore::new();
+        // 沒蓋過 → 未登記。
+        assert!(!s.anchor_built("r", BuildKind::Well, (5, 8, 9)));
+        // 首建完工 → 登記該錨點。
+        s.mark_done("r", BuildKind::Well, (5, 8, 9));
+        assert!(s.anchor_built("r", BuildKind::Well, (5, 8, 9)), "完工後同格同種應被擋");
+        // 不同格、不同種、不同居民都不受影響（只擋確切那一座）。
+        assert!(!s.anchor_built("r", BuildKind::Well, (6, 8, 9)), "不同格不擋");
+        assert!(!s.anchor_built("r", BuildKind::Garden, (5, 8, 9)), "不同種不擋");
+        assert!(!s.anchor_built("other", BuildKind::Well, (5, 8, 9)), "別的居民不擋");
+    }
+
+    #[test]
+    fn anchor_built_blocks_expansion_rebuild_at_same_anchor() {
+        // 真實鬼打牆情境：賽勒的花圃擴建一次次落在同一格 (-67,11,8) → 完工後應被擋，
+        // 不再無限重蓋（就算 expansion_count 因重啟／競態短暫失真也擋得住）。
+        let mut s = GoalStore::new();
+        s.mark_expansion("vox_res_2", BuildKind::Garden, (-67, 11, 8));
+        assert!(
+            s.anchor_built("vox_res_2", BuildKind::Garden, (-67, 11, 8)),
+            "擴建完工後同格花圃應被機制性擋掉，杜絕鬼打牆"
+        );
+    }
+
+    #[test]
+    fn from_entries_restores_anchor_flags_survives_restart() {
+        // 重啟情境：從 jsonl 載回後，已完工的錨點仍被記得 → 不會重蓋（不倚賴 done/count 重推）。
+        let entries = vec![
+            GoalRecord { resident: "vox_res_1".into(), kind: "well".into(), seq: 12, x: Some(-17), y: Some(4), z: Some(87), expansion: false, anchor_only: false },
+            GoalRecord { resident: "vox_res_1".into(), kind: "well".into(), seq: 16, x: Some(-14), y: Some(5), z: Some(74), expansion: true, anchor_only: false },
+        ];
+        let s = GoalStore::from_entries(entries);
+        // 兩個曾完工的水井錨點都被記得（首建 + 擴建）。
+        assert!(s.anchor_built("vox_res_1", BuildKind::Well, (-17, 4, 87)), "重啟後首建錨點仍擋");
+        assert!(s.anchor_built("vox_res_1", BuildKind::Well, (-14, 5, 74)), "重啟後擴建錨點仍擋");
+        // 沒完工過的新錨點不擋（正常還能蓋新的）。
+        assert!(!s.anchor_built("vox_res_1", BuildKind::Well, (0, 0, 0)));
+    }
+
+    #[test]
+    fn anchor_only_record_survives_restart_without_inflating_done_or_expansion() {
+        // res_1 水井鬼打牆的補漏：well 早已在 done，同一座 (-17,4,87) 又完工一次 →
+        // mark_done 回 None，改落「純錨點」記錄。重啟後：錨點記得（擋重蓋）、done/擴建數不受污染。
+        let mut s = GoalStore::new();
+        s.mark_done("vox_res_1", BuildKind::Well, (5, 5, 5)); // 首建在別處
+        let ar = s.anchor_only_record("vox_res_1", BuildKind::Well, (-17, 4, 87));
+        assert!(ar.anchor_only, "應為純錨點記錄");
+        assert!(!ar.expansion, "純錨點不是擴建");
+        // 就地已擋。
+        assert!(s.anchor_built("vox_res_1", BuildKind::Well, (-17, 4, 87)));
+        // 重啟：把兩筆載回。
+        let first = GoalRecord { resident: "vox_res_1".into(), kind: "well".into(), seq: 0, x: Some(5), y: Some(5), z: Some(5), expansion: false, anchor_only: false };
+        let s2 = GoalStore::from_entries(vec![first, ar]);
+        assert!(s2.anchor_built("vox_res_1", BuildKind::Well, (-17, 4, 87)), "重啟後純錨點仍擋");
+        assert_eq!(s2.done_count("vox_res_1"), 1, "純錨點不增 done");
+        assert_eq!(s2.expansion_count("vox_res_1"), 0, "純錨點不增擴建額度");
+    }
+
+    #[test]
+    fn from_entries_ignores_legacy_records_without_coords() {
+        // 向後相容：舊資料沒有 x/y/z（None）→ 不登記錨點、不 panic，done_kinds 照常還原。
+        let entries = vec![
+            GoalRecord { resident: "r".into(), kind: "tower".into(), seq: 0, x: None, y: None, z: None, expansion: false, anchor_only: false },
+        ];
+        let s = GoalStore::from_entries(entries);
+        assert_eq!(s.done_count("r"), 1, "舊記錄仍算進 done");
+        // 沒座標的舊記錄不會誤登記任何錨點（查任何座標都 false）。
+        assert!(!s.anchor_built("r", BuildKind::Tower, (0, 0, 0)));
     }
 
     #[test]
@@ -1402,8 +1546,8 @@ mod tests {
         let path = dir.join("voxel_goals.jsonl");
         let _ = std::fs::remove_file(&path);
         let pstr = path.to_str().unwrap();
-        let r1 = GoalRecord { resident: "vox_res_0".into(), kind: "garden".into(), seq: 0, x: Some(1), y: Some(2), z: Some(3), expansion: false };
-        let r2 = GoalRecord { resident: "vox_res_0".into(), kind: "house".into(), seq: 1, x: Some(10), y: Some(20), z: Some(30), expansion: false };
+        let r1 = GoalRecord { resident: "vox_res_0".into(), kind: "garden".into(), seq: 0, x: Some(1), y: Some(2), z: Some(3), expansion: false, anchor_only: false };
+        let r2 = GoalRecord { resident: "vox_res_0".into(), kind: "house".into(), seq: 1, x: Some(10), y: Some(20), z: Some(30), expansion: false, anchor_only: false };
         write_line(pstr, &serde_json::to_string(&r1).unwrap());
         write_line(pstr, &serde_json::to_string(&r2).unwrap());
         let loaded = read_lines(pstr);
