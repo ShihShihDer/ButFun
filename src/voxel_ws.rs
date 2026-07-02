@@ -3029,6 +3029,36 @@ pub async fn voxel_relations_handler() -> axum::response::Response {
         .unwrap()
 }
 
+/// 乙太方界·居民技能簿（ROADMAP 719）：回傳每位居民已發明／學會的技能名清單。
+///
+/// 技能發明（716）與傳授（717）一路都靠 Feed 一次性文字曝光（「露娜教了我『燒
+/// 玻璃』這招！」），播報一過就沒了——玩家從沒有任何管道能回頭查「這座小社會
+/// 現在誰會什麼」，這份資料只活在 `InventedSkillStore` 裡，從未攤開給人看過。
+/// 跟 708 交情網同一手法：讓早已存在的系統第一次被看見，而不是新造一套技能
+/// 系統；本端點純讀取、零副作用。
+pub async fn voxel_skills_handler() -> axum::response::Response {
+    use axum::http::header;
+    let rows: Vec<serde_json::Value> = {
+        // 短讀鎖一次性快照 4 位居民的技能清單 → 立即釋放，不與其他鎖巢狀。
+        let invented = hub().invented.read().unwrap();
+        (0..RESIDENT_COUNT)
+            .map(|i| {
+                let rid = format!("vox_res_{i}");
+                serde_json::json!({
+                    "name": resident_name_of(&rid),
+                    "skills": invented.names_for(&rid),
+                })
+            })
+            .collect()
+    };
+    let body = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into());
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
 /// 一次居民世界推進：套用上輪思考的決策 → 物理/閒晃 → 社交互動 → 廣播 → 排程新一輪思考。
 fn tick_residents(dt: f32) {
     // 0) 推進世界時鐘（短鎖即釋，不巢狀）。晝夜循環 v1。

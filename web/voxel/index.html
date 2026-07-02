@@ -519,6 +519,52 @@
       #relationsPanel { top: auto; bottom: 308px; right: 10px; max-height: 45vh; }
     }
 
+    /* ── 居民技能簿（ROADMAP 719）────────────────────────────────────────── */
+    #skillsBtn {
+      position: fixed; right: 10px; top: 298px; z-index: 6;
+      background: rgba(20,28,40,0.65); color: #7de0c8; border: 1px solid rgba(125,224,200,0.3);
+      padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      user-select: none; pointer-events: auto;
+    }
+    #skillsBtn:hover { background: rgba(20,60,52,0.75); }
+    #skillsPanel {
+      position: fixed; right: 10px; top: 298px; z-index: 20;
+      width: min(280px, 94vw); max-height: 60vh;
+      display: none; flex-direction: column;
+      background: rgba(16,22,34,0.95); color: #eaf2ff; border-radius: 14px;
+      border: 1px solid rgba(125,224,200,0.22); box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      overflow: hidden;
+    }
+    #skillsHead {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 9px 13px; background: rgba(125,224,200,0.07); font-size: 14px; font-weight: bold;
+    }
+    #skillsTitle { color: #7de0c8; }
+    #skillsClose {
+      cursor: pointer; user-select: none; font-size: 18px; line-height: 1;
+      padding: 2px 8px; border-radius: 8px; background: rgba(255,255,255,0.10);
+    }
+    #skillsBody {
+      flex: 1; overflow-y: auto; padding: 10px 13px;
+      display: flex; flex-direction: column; gap: 10px; font-size: 13px;
+    }
+    .skills-row {
+      display: flex; flex-direction: column; gap: 5px;
+      padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,0.05);
+    }
+    .skills-name { font-weight: bold; color: #7de0c8; }
+    .skills-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+    .skills-chip {
+      background: rgba(125,224,200,0.14); color: #d4f5ec; border: 1px solid rgba(125,224,200,0.28);
+      border-radius: 8px; padding: 2px 8px; font-size: 12px;
+    }
+    .skills-none { color: #506070; font-size: 12px; font-style: italic; }
+    .skills-empty { color: #506070; font-size: 12px; font-style: italic; text-align: center; padding: 8px 0; }
+    @media (orientation: portrait) {
+      #skillsBtn { top: auto; bottom: 304px; right: 10px; }
+      #skillsPanel { top: auto; bottom: 348px; right: 10px; max-height: 45vh; }
+    }
+
     /* ── 成功提示（綠色小吐司）──────────────────────────────────────────── */
     #msg {
       position: fixed; left: 50%; top: 58px; transform: translateX(-50%);
@@ -974,6 +1020,15 @@
       <span id="relationsClose">✕</span>
     </div>
     <div id="relationsBody"></div>
+  </div>
+  <!-- 居民技能簿（ROADMAP 719）：真進化（716）+ 傳授（717）只靠 Feed 一次性播報，此面板讓玩家第一次能回頭查「誰會什麼」 -->
+  <div id="skillsBtn">🧠 技能</div>
+  <div id="skillsPanel">
+    <div id="skillsHead">
+      <span id="skillsTitle">🧠 居民技能簿</span>
+      <span id="skillsClose">✕</span>
+    </div>
+    <div id="skillsBody"></div>
   </div>
   <!-- 背包 + 合成格面板（ROADMAP 664）-->
   <div id="bagPanel">
