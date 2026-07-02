@@ -132,16 +132,21 @@ impl SignStore {
     /// 找 XZ 平面上距 (x, z) 最近、且水平距離在 `range`（方塊）內的告示牌文字
     /// （供居民「讀牌」偵測附近牌子）。回傳 (牌面文字, 水平平方距離)。純查詢、無副作用。
     /// 牌子稀疏（玩家手動立，數量少），全掃成本可忽略。座標取方塊中心 +0.5 比對。
-    pub fn nearest_within(&self, x: f32, z: f32, range: f32) -> Option<(String, f32)> {
+    /// 找 `range` 內最近的一塊牌，回傳 `(牌子中心 x, 牌子中心 z, 牌面文字, 平方距離)`。
+    /// 帶座標是為了居民讀牌 v3「重返心中的牌子」——讀到印象深刻的牌子時得記下它在哪，
+    /// 日後才走得回去。無牌在範圍內回 None。
+    pub fn nearest_within_xz(&self, x: f32, z: f32, range: f32) -> Option<(f32, f32, String, f32)> {
         let r2 = range * range;
-        let mut best: Option<(String, f32)> = None;
+        let mut best: Option<(f32, f32, String, f32)> = None;
         for (k, text) in &self.signs {
             let Some((sx, _sy, sz)) = parse_key(k) else { continue };
-            let dx = sx as f32 + 0.5 - x;
-            let dz = sz as f32 + 0.5 - z;
+            let cx = sx as f32 + 0.5;
+            let cz = sz as f32 + 0.5;
+            let dx = cx - x;
+            let dz = cz - z;
             let d2 = dx * dx + dz * dz;
-            if d2 <= r2 && best.as_ref().is_none_or(|(_, bd)| d2 < *bd) {
-                best = Some((text.clone(), d2));
+            if d2 <= r2 && best.as_ref().is_none_or(|(_, _, _, bd)| d2 < *bd) {
+                best = Some((cx, cz, text.clone(), d2));
             }
         }
         best
@@ -279,10 +284,13 @@ mod tests {
         store.set("10,4,10", "遠牌".to_string());
         store.set("2,4,2", "近牌".to_string());
         // 站在 (2.5, 2.5)：近牌在腳下、遠牌 ~11 格外。範圍 3 只找得到近牌。
-        let hit = store.nearest_within(2.5, 2.5, 3.0);
-        assert_eq!(hit.map(|(t, _)| t), Some("近牌".to_string()));
+        let hit = store.nearest_within_xz(2.5, 2.5, 3.0);
+        assert_eq!(hit.as_ref().map(|(_, _, t, _)| t.clone()), Some("近牌".to_string()));
+        // 回傳的座標應為牌子中心（2,2 → 2.5, 2.5）。
+        let (cx, cz, _, _) = hit.unwrap();
+        assert_eq!((cx, cz), (2.5, 2.5));
         // 站得離兩牌都很遠：範圍內沒牌。
-        assert!(store.nearest_within(50.0, 50.0, 3.0).is_none());
+        assert!(store.nearest_within_xz(50.0, 50.0, 3.0).is_none());
     }
 
     #[test]
@@ -291,6 +299,9 @@ mod tests {
         store.set("0,4,0", "A".to_string());
         store.set("4,4,0", "B".to_string());
         // 站在 (3.6, 0.5)：離 B(4.5,0.5) 比離 A(0.5,0.5) 近。
-        assert_eq!(store.nearest_within(3.6, 0.5, 8.0).map(|(t, _)| t), Some("B".to_string()));
+        assert_eq!(
+            store.nearest_within_xz(3.6, 0.5, 8.0).map(|(_, _, t, _)| t),
+            Some("B".to_string())
+        );
     }
 }

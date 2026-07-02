@@ -103,6 +103,77 @@ pub fn read_sign_line(sign_text: &str, pick: usize) -> String {
     line.chars().take(40).collect()
 }
 
+// ── 居民「重返念念不忘的告示牌」v3（ROADMAP 743）─────────────────────────────────────
+//
+// **核心信念的關鍵一步**：v2 讓讀過的牌寫進居民記憶，但那筆記憶只躺在日記裡——居民的
+// **去向**沒有因此改變。v3 讓記憶第一次**驅動移動**：居民讀到一塊讓牠印象深刻的牌子時，
+// 把牌子的位置記在心裡當作「心中的地標」；日後閒暇時偶爾會**放下手邊的閒晃、特地走回**
+// 那塊牌子前駐足，再念一次、留下一筆「我又回來看看」的記憶。玩家親手立的牌子，第一次真的
+// **改變了 AI 居民走去哪裡**——這正是「記憶要驅動行為，不只聊天」的最小可見證明。
+//
+// **成本紀律**：零 LLM（純規則決策 + 確定性選句）、零持久化（心中地標純記憶體、重啟歸零）、
+// 搭既有 `say` 泡泡／記憶／Feed 管線。長冷卻 + 極低機率 + 距離上限，稀少才有感、不洗版、
+// 不長途尋路卡死（純函式層界定所有門檻，鎖 / 尋路 / 副作用留在 `voxel_ws.rs`）。
+
+/// 重返冷卻（秒，純記憶體）：一次朝聖後至少隔這麼久才可能再啟程——稀少才有感。
+pub const PILGRIMAGE_COOLDOWN: f32 = 900.0;
+/// 閒置時每個合格 tick 啟程朝聖的機率（10Hz 下 0.003 ≈ 平均數十秒才偶發，且要過冷卻）。
+pub const PILGRIMAGE_CHANCE_PER_TICK: f32 = 0.003;
+/// 走到牌子這麼近（方塊，XZ）即算「抵達」，停下駐足、念一句。
+pub const PILGRIMAGE_ARRIVE_DIST: f32 = 2.5;
+/// 朝聖逾時（秒）：啟程後走這麼久還沒抵達（被地形擋住等）就放棄，設冷卻，不無限走。
+pub const PILGRIMAGE_TIMEOUT: f32 = 60.0;
+/// 朝聖距離上限（方塊）：只重返這個半徑內的牌子——太遠的不去，避免長途尋路卡死。
+pub const PILGRIMAGE_MAX_RANGE: f32 = 48.0;
+
+/// 是否此刻該啟程重返心中的牌子（純決策、確定性、可測）。
+/// - `has_cherished`：心裡是否記著一塊牌子。
+/// - `idle_free`：目前是否閒置自由（沒在採集/跑腿/探訪/打氣/聚會/跟隨/發明/睡覺）。
+/// - `cooldown`：重返冷卻剩餘秒（> 0 不啟程）。
+/// - `say_empty`：目前沒在說話（別打斷正在冒的泡泡）。
+/// - `roll`：本 tick 擲出的 [0,1) 亂數。
+pub fn should_pilgrimage(
+    has_cherished: bool,
+    idle_free: bool,
+    cooldown: f32,
+    say_empty: bool,
+    roll: f32,
+) -> bool {
+    has_cherished && idle_free && cooldown <= 0.0 && say_empty && roll < PILGRIMAGE_CHANCE_PER_TICK
+}
+
+/// 心中地標的距離是否適合朝聖：在上限內、又不是已經站在牌子腳下（純函式、可測）。
+/// `d2` 是居民到牌子的平方水平距離。太近（已在牌前）不必特地走；太遠不去（防卡死）。
+pub fn pilgrimage_worth_going(d2: f32) -> bool {
+    d2 > PILGRIMAGE_ARRIVE_DIST * PILGRIMAGE_ARRIVE_DIST
+        && d2 <= PILGRIMAGE_MAX_RANGE * PILGRIMAGE_MAX_RANGE
+}
+
+/// 抵達心中的牌子時冒的泡泡台詞。`quote` 是 [`display_quote`] 產出的（已含引號、已截短）
+/// 牌面引文。保證非空、≤ 40 字元（泡泡框上限）。
+pub fn revisit_sign_line(quote: &str, pick: usize) -> String {
+    const TAILS: [&str; 3] = [
+        "……還是忍不住又走回來看看。",
+        "，我又回來讀了一遍。",
+        "，總會想起這裡寫著的字。",
+    ];
+    let tail = TAILS[pick % TAILS.len()];
+    let line = format!("{quote}{tail}");
+    line.chars().take(40).collect()
+}
+
+/// 把「重返一塊念念不忘的牌子」昇華成一筆記憶摘要（確定性、可測）。
+/// 沿用 [`SIGN_MEMORY_TAG`] 前綴——日記端據此仍歸為「讀牌」主題，讓這份「又回來看看」的
+/// 心情併入居民對「有人在此留字」的內心反思，而非污染玩家對話記憶。
+pub fn revisit_memory_summary(quote: &str) -> String {
+    format!("{SIGN_MEMORY_TAG}（又特地走回來看）{quote}")
+}
+
+/// 重返的 Feed 動態文案（第三人稱，供動態列顯示）。`quote` 為 `display_quote` 引文。
+pub fn revisit_feed_line(quote: &str) -> String {
+    format!("特地走回去，又看了一遍那塊牌子{quote}")
+}
+
 // ── 單元測試 ─────────────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
@@ -192,5 +263,75 @@ mod tests {
     #[test]
     fn sign_memory_summary_deterministic() {
         assert_eq!(sign_memory_summary("往礦坑↓"), sign_memory_summary("往礦坑↓"));
+    }
+
+    // ── 重返念念不忘的牌子 v3 ────────────────────────────────────────────────────────
+
+    #[test]
+    fn should_pilgrimage_needs_all_conditions() {
+        // 全條件齊 + roll 過門檻 → 啟程。
+        assert!(should_pilgrimage(true, true, 0.0, true, 0.0));
+        // 心裡沒牌 → 不啟程。
+        assert!(!should_pilgrimage(false, true, 0.0, true, 0.0));
+        // 忙著別的事（非閒置自由）→ 不啟程。
+        assert!(!should_pilgrimage(true, false, 0.0, true, 0.0));
+        // 冷卻中 → 不啟程。
+        assert!(!should_pilgrimage(true, true, 10.0, true, 0.0));
+        // 正在說話 → 不打斷。
+        assert!(!should_pilgrimage(true, true, 0.0, false, 0.0));
+        // roll 高於門檻 → 這 tick 不啟程。
+        assert!(!should_pilgrimage(true, true, 0.0, true, PILGRIMAGE_CHANCE_PER_TICK + 0.01));
+    }
+
+    #[test]
+    fn pilgrimage_worth_going_bounds() {
+        // 已站在牌前（很近）→ 不必特地走。
+        assert!(!pilgrimage_worth_going(0.0));
+        assert!(!pilgrimage_worth_going(PILGRIMAGE_ARRIVE_DIST * PILGRIMAGE_ARRIVE_DIST));
+        // 合理距離 → 值得走。
+        assert!(pilgrimage_worth_going(100.0));
+        // 恰好在上限內 → 值得走；超過上限 → 太遠不去（防卡死）。
+        assert!(pilgrimage_worth_going(PILGRIMAGE_MAX_RANGE * PILGRIMAGE_MAX_RANGE - 1.0));
+        assert!(!pilgrimage_worth_going(PILGRIMAGE_MAX_RANGE * PILGRIMAGE_MAX_RANGE + 1.0));
+    }
+
+    #[test]
+    fn revisit_sign_line_nonempty_within_cap_and_quotes() {
+        let quote = display_quote("露娜的家");
+        for pick in 0..9 {
+            let line = revisit_sign_line(&quote, pick);
+            assert!(!line.is_empty(), "台詞不得為空");
+            assert!(line.chars().count() <= 40, "泡泡框上限 40 字元: {line}");
+            assert!(line.contains("「露娜的家」"), "應念出牌面引文: {line}");
+        }
+        // 超長引文（已被 display_quote 截短）+ 尾巴仍不破框。
+        let long = display_quote(&"字".repeat(READ_QUOTE_CHARS + 20));
+        assert!(revisit_sign_line(&long, 0).chars().count() <= 40);
+    }
+
+    #[test]
+    fn revisit_sign_line_deterministic_and_varies() {
+        let q = display_quote("往礦坑↓");
+        assert_eq!(revisit_sign_line(&q, 3), revisit_sign_line(&q, 3));
+        assert_ne!(revisit_sign_line(&q, 0), revisit_sign_line(&q, 1));
+    }
+
+    #[test]
+    fn revisit_memory_summary_tagged_for_diary() {
+        // 沿用讀牌前綴 → 日記端仍歸為「讀牌」主題（Theme::Sign）。
+        let s = revisit_memory_summary(&display_quote("露娜的家"));
+        assert!(s.starts_with(SIGN_MEMORY_TAG), "應以讀牌前綴開頭供日記辨識: {s}");
+        assert!(s.contains("「露娜的家」"), "應含引號牌面: {s}");
+        // 確定性。
+        assert_eq!(
+            revisit_memory_summary(&display_quote("露娜的家")),
+            revisit_memory_summary(&display_quote("露娜的家"))
+        );
+    }
+
+    #[test]
+    fn revisit_feed_line_contains_quote() {
+        let line = revisit_feed_line(&display_quote("往礦坑↓"));
+        assert!(line.contains("「往礦坑↓」"), "Feed 文案應含牌面引文: {line}");
     }
 }
