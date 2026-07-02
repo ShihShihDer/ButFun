@@ -49,6 +49,7 @@ use crate::voxel_memory::{self as vmem, VoxelMemory};
 use crate::voxel_farm::{self as vfarm, FarmStore};
 use crate::voxel_gift as vgift;
 use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
+use crate::voxel_preference as vpref;
 use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
 use crate::voxel_residents::{self as vr, Body};
@@ -3757,9 +3758,18 @@ fn tick_residents(dt: f32) {
                     // 名字空白 = 訪客（無持久身份），跳過。
                     let is_logged_in = !nearest_name.is_empty();
                     if in_reach && is_logged_in {
-                        // 一次性短鎖讀好感度（不 await）。
-                        let affinity = {
-                            hub().memory.read().unwrap().affinity_count(nearest_name, &r.id)
+                        // 一次性短鎖讀好感度 + 這位玩家在她心裡的「偏好」記憶（同一把讀鎖、不巢狀）。
+                        // 投你所好 v1（ROADMAP 731）：把她記得的偏好事實內容撈出，鎖外再映射成禮物。
+                        let (affinity, pref_gift) = {
+                            let mem = hub().memory.read().unwrap();
+                            let aff = mem.affinity_count(nearest_name, &r.id);
+                            let prefs: Vec<String> = mem
+                                .semantic_facts_for(&r.id, nearest_name)
+                                .into_iter()
+                                .filter(|f| f.category == vmem::FactCategory::Preference)
+                                .map(|f| f.content)
+                                .collect();
+                            (aff, vpref::gift_for_preference(&prefs))
                         }; // memory 讀鎖在此釋放
                         // 一次性短鎖讀「已送過？」（不 await）。
                         let already = {
@@ -3773,7 +3783,16 @@ fn tick_residents(dt: f32) {
                                 let inv = hub().res_inv.read().unwrap();
                                 inv.get(&r.id).and_then(vret::pick_from_stock)
                             }; // res_inv 讀鎖在此釋放
-                            let (bid, qty, msg) = if let Some((bid, qty)) = from_stock {
+                            // 選禮優先序：① 投你所好（她記得你說過的偏好，最有魔法）→
+                            // ② 她親手採到的（728）→ ③ 憑空的木頭/種子（667）。
+                            let (bid, qty, msg) = if let Some((bid, qty, theme)) = pref_gift {
+                                let iname = vgift::item_name_zh(bid);
+                                (
+                                    bid,
+                                    qty,
+                                    vpref::preference_gift_message(r.name, nearest_name, theme, iname),
+                                )
+                            } else if let Some((bid, qty)) = from_stock {
                                 let iname = vgift::item_name_zh(bid);
                                 (
                                     bid,
