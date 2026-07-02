@@ -5745,13 +5745,11 @@ fn spawn_invention(
         .collect::<Vec<_>>()
         .join("、");
     tokio::spawn(async move {
-        // 解析 + 白名單 + 可行性模擬 → Ok(計畫) 或 Err(可回饋給腦的繁中原因)。
+        // 解析 + 白名單 + 正規化 + 可行性模擬 → Ok(計畫) 或 Err(可回饋給腦的繁中原因)。
         let validate = |raw: &str| -> Result<vinvent::InventedPlan, String> {
-            // 詳細版解析：白名單擋下時回**具體錯處**（哪一步、哪個配方用錯清單）——
-            // 實測小模型拿籠統原因修不回來、拿具體原因才修得回來（Voyager 式回饋）。
-            let plan = vinvent::parse_plan_detailed(raw)?;
-            vinvent::simulate_plan(&plan.steps, &bag_snap, goal.block_id, wb_nearby)?;
-            Ok(plan)
+            // 提案接受管線（見 accept_proposal）：腦出**結構**（選對配方、排對依賴、
+            // 取名字），引擎補**算術**（確定性備料）；失敗回具體錯處（Voyager 式回饋）。
+            vinvent::accept_proposal(raw, &bag_snap, goal.block_id, wb_nearby)
         };
         let (sys, user) = vinvent::invention_prompt(rname, &goal, &desire, &bag_note, wb_nearby);
         let (raw, injected) = if let Some(fixed) = vinvent::fixed_plan_env() {

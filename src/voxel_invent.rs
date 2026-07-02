@@ -333,6 +333,30 @@ fn explain_bad_step(s: &PrimStep) -> String {
     }
 }
 
+/// **提案接受管線**（發明流程的單一入口）：解析＋op 修復 → **數量閉包正規化** → 模擬把關。
+///
+/// 為什麼正規化搬到提案階段（隔離實測 qwen2.5:3b 驅動）：便宜腦挑得對目標配方、
+/// 排得對依賴順序（合工作台→放置→3×3），但**配料數量算不動**——箱子要木板×8、
+/// 工作台又吃掉×4，該合 3 次木板它只合 1 次；模擬回饋點名缺料，一次有界重試仍
+/// 算不對。這正是 [`canonicalize_steps`]（存檔時本來就在做的「補備料步」）機械可解
+/// 的問題：把同一套正規化提前到提案階段，讓她的計畫**結構**（腦的貢獻：選對配方、
+/// 排對依賴、取名字）配上引擎的**算術**（確定性補料）。模擬仍是最後防線——正規化
+/// 後跑不到目標（腦選錯配方/沒做目標物）照樣拒絕、回饋、重試。純函式、可測。
+pub fn accept_proposal(
+    raw: &str,
+    bag: &HashMap<u8, u32>,
+    goal_block: u8,
+    wb_nearby: bool,
+) -> Result<InventedPlan, String> {
+    let plan = parse_plan_detailed(raw)?;
+    // 正規化成自足鏈（從空背包/沒工作台也可行）；步數用存檔上限（正規化會變長，仍有界）。
+    let canon = canonicalize_steps(&plan.steps);
+    let steps = check_stored_steps(&canon)
+        .ok_or_else(|| format!("補上備料步後步數超過上限 {MAX_STORED_STEPS}，計畫太迂迴"))?;
+    simulate_plan(&steps, bag, goal_block, wb_nearby)?;
+    Ok(InventedPlan { name: plan.name, raw_steps: canon, steps })
+}
+
 // ── 處境偵測（純函式、確定性、零 LLM）────────────────────────────────────────────
 
 /// 一個「想要卻沒有的材料」目標。
@@ -1191,6 +1215,43 @@ mod tests {
         // 兩張表都查無此 id → 拒絕。
         let raw = r#"{"name":"亂","steps":[{"op":"craft","recipe":"no_such_recipe"}]}"#;
         assert!(parse_plan(raw).is_none());
+    }
+
+    #[test]
+    fn accept_proposal_repairs_weak_brain_arithmetic() {
+        // qwen2.5:3b 第四輪實測原樣輸出（重試版）：結構全對（採木→合板→合工作台→
+        // 放置→3×3 合箱子）、數量全錯（箱子要木板×8+工作台×4=該合 3 次板，它只合 1 次）
+        // ——提案階段正規化要機械補足，讓這個計畫直接可行。
+        let raw = r#"{"name":"箱子合成器修正版","steps":[
+            {"op":"gather","resource":"wood","count":8},
+            {"op":"craft","recipe":"plank"},
+            {"op":"craft_wb","recipe":"workbench"},
+            {"op":"place","block":"workbench"},
+            {"op":"craft_wb","recipe":"chest"}]}"#;
+        let plan = accept_proposal(raw, &HashMap::new(), 42, false)
+            .expect("結構對、數量錯的弱腦計畫應被正規化接受");
+        // 正規化後從空背包模擬可達目標（存檔語意一致）。
+        assert!(simulate_plan(&plan.steps, &HashMap::new(), 42, false).is_ok());
+        // 正規化版本身就是存下來的 raw_steps（存檔＝執行＝提案，單一事實）。
+        assert!(check_stored_steps(&plan.raw_steps).is_some());
+        // 引擎補了木板備料：craft plank 至少 3 次（工作台 4＋箱子 8＝12 板，一次合 4）。
+        let plank_crafts = plan
+            .raw_steps
+            .iter()
+            .filter(|s| matches!(s, PrimStep::Craft { recipe } if recipe == "plank"))
+            .count();
+        assert!(plank_crafts >= 3, "應補足 3 次合板，實得 {plank_crafts}");
+        // 模擬把關仍在：計畫根本沒做目標物 → 照樣拒絕（腦選錯配方救不了）。
+        let raw = r#"{"name":"只做工作台","steps":[
+            {"op":"gather","resource":"wood","count":2},
+            {"op":"craft","recipe":"plank"},
+            {"op":"craft","recipe":"workbench"}]}"#;
+        let err = accept_proposal(raw, &HashMap::new(), 42, false).unwrap_err();
+        assert!(err.contains("箱子"), "要點名缺目標材料：{err}");
+        // 解析失敗的具體原因也照樣傳出。
+        assert!(accept_proposal("嗯我想想", &HashMap::new(), 42, false)
+            .unwrap_err()
+            .contains("JSON"));
     }
 
     #[test]
