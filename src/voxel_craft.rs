@@ -183,6 +183,15 @@ pub const RECIPES: &[Recipe] = &[
         output_block: 45,           // Block::Bed = 45
         output_count: 1,
     },
+    // ── 釣竿 v1（垂釣 v1，ROADMAP 734）：3 木板 → 1 釣竿（輕巧配方，背包 2×2 即可）───────
+    // 沒有繩線材料，就用木板削竿代替；便宜好上手＝垂釣這條療癒支線一開始就伸手可得。
+    Recipe {
+        id: "fishing_rod",
+        name_zh: "釣竿",
+        inputs: &[(8, 3)],            // 3 木板 → 1 釣竿
+        output_block: crate::voxel_fishing::FISHING_ROD_ID, // 60（純物品，不可放置）
+        output_count: 1,
+    },
     // ── 冰晶燈 v1：1 冰晶 + 2 玻璃 → 1 冰晶燈 ─────────────────────────────────────
     // 把雪原專程採回的稀有冰晶(56)封進玻璃(10)，做成一盞泛著冷藍幽光的裝飾燈(57)。
     // 冰晶是特殊材料（雪原獨有、稀疏難尋）、玻璃便宜（2 沙一片）＝珍寶當燈芯、玻璃當燈罩。
@@ -488,7 +497,8 @@ mod tests {
                 || r.output_block == SHOVEL_STONE_ID  // 石鏟（ROADMAP 690）
                 || r.output_block == 43  // 木門（DoorClosed，ROADMAP 693）
                 || r.output_block == 45  // 床（Block::Bed）
-                || r.output_block == 57; // 冰晶燈（Block::IceLantern，冰晶合成 v1）
+                || r.output_block == 57 // 冰晶燈（Block::IceLantern，冰晶合成 v1）
+                || r.output_block == crate::voxel_fishing::FISHING_ROD_ID; // 釣竿（垂釣 v1，純物品 id=60）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }

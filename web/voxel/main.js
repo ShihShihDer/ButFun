@@ -77,6 +77,8 @@ const ICE_LANTERN = 57;
 const AETHER_ORE = 58;
 // 乙太燈 v1（乙太礦脈）——工作台 3×3：1 乙太礦 + 4 玻璃 → 1 乙太燈；散發清冷青藍光的高階光源（真實動態光照）
 const AETHER_LAMP = 59;
+// 垂釣 v1（ROADMAP 734）：釣竿(60)/小魚(61)/乙太魚(62) 皆純物品，住背包不可放置
+const FISHING_ROD = 60, FISH = 61, AETHER_FISH = 62;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -145,6 +147,9 @@ const COLOR = {
   // 乙太礦脈 v1
   [AETHER_ORE]:     [0.28, 0.62, 0.78], // 乙太礦——深青藍寶礦，埋在最深灰石層裡的一脈幽光
   [AETHER_LAMP]:    [0.55, 0.90, 1.00], // 乙太燈——高亮清冷青藍，散發真實動態光照的高階明燈
+  [FISHING_ROD]:    [0.62, 0.44, 0.24], // 釣竿——木褐色（背包圖示用；純物品不放置）
+  [FISH]:           [0.70, 0.78, 0.82], // 小魚——銀灰帶青
+  [AETHER_FISH]:    [0.40, 0.82, 0.98], // 乙太魚——青藍幽光，呼應乙太礦系
 };
 
 const DEBUG = location.search.includes("debug");
@@ -1868,8 +1873,14 @@ const BLOCK_NAME = {
   [ICE_LANTERN]: "冰晶燈",
   // 乙太礦脈 v1
   [AETHER_ORE]: "乙太礦", [AETHER_LAMP]: "乙太燈",
+  // 垂釣 v1（ROADMAP 734）
+  [FISHING_ROD]: "釣竿", [FISH]: "小魚", [AETHER_FISH]: "乙太魚",
 };
 let selectedSlot = 0; // HOTBAR 索引
+// 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
+// 此旗標只讓「同一個放置動作」在拋竿／收竿之間切換，並驅動上鉤提示。
+let fishPending = false;
+let fishBiteTimer = null; // 上鉤提示的客戶端計時器（純 UX，伺服器仍是唯一時機裁判）
 const hotbarEl = document.getElementById("hotbar");
 // 本地材料存量（block_id → count）；由 inv_sync / inv_update 伺服器訊息維護。
 const myInv = new Map();
@@ -2252,6 +2263,20 @@ function placeAtTarget() {
     ws.send(JSON.stringify({ t: "sleep_in_bed", x: target.bx, y: target.by, z: target.bz }));
     return null;
   }
+  // 垂釣 v1（ROADMAP 734）：手持釣竿時，放置動作＝拋竿／收竿。
+  //   已有一竿在水裡 → 收竿（伺服器判時機：太早會被退回，繼續等）。
+  //   還沒拋 → 對準水面才拋竿（非水面靜默忽略）。
+  if (selectedBlock() === FISHING_ROD) {
+    if (fishPending) {
+      ws.send(JSON.stringify({ t: "fish_reel" }));
+      return null;
+    }
+    // 複用既有 isWaterId（來源水＋流動水 24~30，與後端 is_water_block 一致；非水面靜默忽略）。
+    if (isWaterId(getRaw(target.bx, target.by, target.bz))) {
+      ws.send(JSON.stringify({ t: "fish_cast", x: target.bx, y: target.by, z: target.bz }));
+    }
+    return null;
+  }
   // 種子的特殊種植動作：目標是農田土本身（不偏移到面外側）。
   // 第二種作物 v1：胡蘿蔔種子選中時種下胡蘿蔔；第三種作物 v1：馬鈴薯種子選中時種下馬鈴薯，
   // 皆附帶 seed 欄位讓伺服器分辨作物種類。
@@ -2266,8 +2291,9 @@ function placeAtTarget() {
     // 種子只能種在農田土上——其他方塊靜默忽略。
     return null;
   }
-  // 麵包 v1（ROADMAP 668）+ 胡蘿蔔（第二種作物 v1）+ 馬鈴薯（第三種作物 v1）：純物品，不可放置——靜默忽略。
-  if (selectedBlock() === WHEAT || selectedBlock() === BREAD || selectedBlock() === CARROT || selectedBlock() === POTATO) return null;
+  // 麵包 v1（ROADMAP 668）+ 胡蘿蔔（第二種作物 v1）+ 馬鈴薯（第三種作物 v1）+ 漁獲（垂釣 v1）：純物品，不可放置——靜默忽略。
+  if (selectedBlock() === WHEAT || selectedBlock() === BREAD || selectedBlock() === CARROT || selectedBlock() === POTATO
+      || selectedBlock() === FISH || selectedBlock() === AETHER_FISH) return null;
   // 一般放置：在命中方塊的面外側放置。
   const px = target.bx + target.nx, py = target.by + target.ny, pz = target.bz + target.nz;
   // 別把方塊放進自己身體（避免卡死）。
@@ -2637,13 +2663,43 @@ function connect() {
       // 床 v1：白天/黎明/黃昏睡不著。
       showErr(m.reason || "睡不著");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "fish_cast_ok") {
+      // 垂釣 v1（ROADMAP 734）：拋竿成功——浮標入水，等 m.wait 秒後提示上鉤（純 UX，伺服器裁定時機）。
+      fishPending = true;
+      showMsg(m.hint || "🎣 拋竿了，靜候魚兒上鉤…");
+      if (fishBiteTimer) clearTimeout(fishBiteTimer);
+      fishBiteTimer = setTimeout(() => {
+        if (fishPending) showMsg("❗ 浮標一沉——有動靜！收竿！");
+      }, Math.max(0, (m.wait || 4)) * 1000);
+    } else if (m.t === "fish_too_early") {
+      // 垂釣 v1：收竿太早，魚還沒上鉤——這竿保留，繼續等。
+      showMsg(m.hint || "浮標還穩穩地浮著，再等一會兒…");
+    } else if (m.t === "fish_catch") {
+      // 垂釣 v1：釣起漁獲！背包已由 inv_update 更新；此處只揭曉。
+      fishPending = false;
+      if (fishBiteTimer) { clearTimeout(fishBiteTimer); fishBiteTimer = null; }
+      showMsg(m.line || ("🎣 釣到了 " + (m.item_name || "魚") + "！"));
+      updateGiftBtn();
+    } else if (m.t === "fish_fail") {
+      // 垂釣 v1：拋竿/收竿失敗（沒釣竿、非水面、太遠、還沒拋竿等）。
+      fishPending = false;
+      if (fishBiteTimer) { clearTimeout(fishBiteTimer); fishBiteTimer = null; }
+      showErr(m.reason || "沒法釣魚");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "milestone_unlocked") {
       // 玩家里程碑 v1（ROADMAP 724）：只有自己看得到的私人慶祝提示；若面板剛好開著同步刷新。
       showMsg((m.icon || "🏅") + " 成就達成：" + (m.name_zh || "里程碑") + "！");
       if (milesVisible) refreshMilestones();
     }
   };
-  ws.onclose = () => { wsReady = false; showErr("連線中斷，重新連線中…"); setTimeout(connect, 1500); };
+  ws.onclose = () => {
+    wsReady = false;
+    // 垂釣 v1：斷線時伺服器已清掉進行中的拋竿，前端旗標同步歸零，避免重連後卡在「以為還在釣」。
+    fishPending = false;
+    if (fishBiteTimer) { clearTimeout(fishBiteTimer); fishBiteTimer = null; }
+    showErr("連線中斷，重新連線中…");
+    setTimeout(connect, 1500);
+  };
   ws.onerror = () => { showErr("連線錯誤"); };
 }
 connect();

@@ -45,6 +45,7 @@ pub const MILESTONES: &[MilestoneDef] = &[
     MilestoneDef { id: "first_trade", name_zh: "初次交易", desc_zh: "與居民完成第一筆以物易物", icon: "⇌" },
     MilestoneDef { id: "first_bond",  name_zh: "初次熟識", desc_zh: "和一位居民混熟了", icon: "💛" },
     MilestoneDef { id: "first_sleep", name_zh: "初次安眠", desc_zh: "在床上一覺睡到天亮", icon: "🛌" },
+    MilestoneDef { id: "first_fish",  name_zh: "初次垂釣", desc_zh: "在水邊釣起第一尾魚", icon: "🎣" },
 ];
 
 /// 查表確認是否為已知里程碑 id（守 store 資料乾淨，未知 id 不寫入）。
