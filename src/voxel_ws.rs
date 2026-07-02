@@ -48,6 +48,7 @@ use crate::voxel_inventory::{self as vinv, InvStore};
 use crate::voxel_memory::{self as vmem, VoxelMemory};
 use crate::voxel_farm::{self as vfarm, FarmStore};
 use crate::voxel_gift as vgift;
+use crate::voxel_keepsake as vkeep;
 use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
 use crate::voxel_preference as vpref;
 use crate::voxel_overhear as vh;
@@ -2463,15 +2464,15 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 let Some((px, pz)) = player_pos else {
                     continue;
                 };
-                // 2) 短鎖取居民快照（residents 讀鎖即釋）。
-                let res_snap: Option<(&'static str, f32, f32)> = {
+                // 2) 短鎖取居民快照（residents 讀鎖即釋）。y 供紀念物 v1（732）找腳邊空位用。
+                let res_snap: Option<(&'static str, f32, f32, f32)> = {
                     let residents = hub().residents.read().unwrap();
                     residents
                         .iter()
                         .find(|r| r.id == resident_id)
-                        .map(|r| (r.name, r.body.x, r.body.z))
+                        .map(|r| (r.name, r.body.x, r.body.y, r.body.z))
                 };
-                let Some((rname, rx, rz)) = res_snap else {
+                let Some((rname, rx, ry, rz)) = res_snap else {
                     continue; // 找不到居民
                 };
                 // 3) 驗觸及範圍（水平 XZ）。
@@ -2579,6 +2580,48 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     rname,
                     &format!("{name}送了{iname}給{rname}"),
                 );
+                // 11b) 你送的心意，她擺了出來 v1（ROADMAP 732）：可展示的餽贈化為紀念物，
+                // 由居民真的擺進世界（記憶→改變世界佈局，因玩家善意而生、後果永久可見）。
+                // 鎖序：deltas 讀（找空位，即釋）→ deltas 寫（set_block，即釋）→ 廣播 →
+                // memory 寫（即釋）→ 持久化/Feed（鎖外 IO），全程短鎖循序、不巢狀，守死鎖鐵律。
+                if let Some(keep_id) = vkeep::keepsake_block(item_id) {
+                    // 找居民腳邊一個合理空位（沿用居民放置的 find_place_spot：絕不放身體格、
+                    // 目標格必須空氣、伸手可及；環格填滿就 None＝誠實不擺、天然防洗版）。
+                    let spot = {
+                        let world = hub().deltas.read().unwrap();
+                        vinvent::find_place_spot(
+                            &world,
+                            rx.floor() as i32,
+                            ry.floor() as i32,
+                            rz.floor() as i32,
+                        )
+                    }; // deltas 讀鎖釋放
+                    if let (Some((kx, ky, kz)), Some(block)) =
+                        (spot, Block::from_u8(keep_id))
+                    {
+                        {
+                            let mut world = hub().deltas.write().unwrap();
+                            voxel::set_block(&mut world, kx, ky, kz, block);
+                        } // deltas 寫鎖釋放
+                        broadcast_block(kx, ky, kz, block);
+                        // 放下的方塊可能堵住水路 → 喚醒鄰格重算（同居民建造慣例）。
+                        enqueue_water_around(kx, ky, kz);
+                        // 持久化這塊紀念物（重啟後你送的心意仍留在世界裡）。
+                        vbuild::append_world_block(kx, ky, kz, keep_id);
+                        let kname = vkeep::keepsake_name(keep_id);
+                        // 居民記得「我把旅人送的東西擺出來了」→ 供日記（650）昇華成生命故事。
+                        let mem = vkeep::keepsake_memory_line(&name, kname, pick);
+                        let entry = {
+                            hub().memory.write().unwrap().add_memory(&resident_id, &name, &mem)
+                        };
+                        vmem::append_memory(&entry);
+                        vfeed::append_feed(
+                            vkeep::FEED_KIND,
+                            rname,
+                            &vkeep::keepsake_feed_line(rname, &name, kname),
+                        );
+                    }
+                }
                 // 12) 送對禮物 v1（ROADMAP 722）：心願送到了——標記已實現（desires 寫鎖即釋，
                 // 落地 jsonl 沿用既有 append-only 慣例）+ 額外記憶 + 全員廣播 + Feed。
                 if item_wish_hit {

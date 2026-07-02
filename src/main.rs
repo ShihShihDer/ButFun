@@ -177,6 +177,7 @@ mod voxel_welcome;
 mod voxel_resident_trade;
 // 乙太方界·玩家里程碑 v1：把玩家自己的療癒循環第一次做成可回頭翻閱的成就徽章（ROADMAP 724）。
 mod voxel_milestones;
+mod voxel_keepsake; // ROADMAP 732 你送的心意她擺了出來·玩家餽贈化為紀念物擺進世界
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
