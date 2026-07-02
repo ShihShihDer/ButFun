@@ -1,13 +1,16 @@
-//! 乙太方界·居民讀牌 v1 —— 居民路過玩家立的告示牌（ROADMAP 740）時，偶爾停下腳步、
-//! 念出牌上的字並回應一句。
+//! 乙太方界·居民讀牌 —— 居民路過玩家立的告示牌（ROADMAP 740）時，偶爾停下腳步、
+//! 念出牌上的字並回應一句（v1）；讀到的牌**還會在居民心裡留下印象**（v2）。
 //!
-//! **核心信念**：玩家的建造要有後果——你親手寫下的字，世界裡的 AI 居民真的會「看見」。
-//! 告示牌（740）本來是死的：文字浮在牌上，只有玩家彼此讀得到。這一刀讓居民也讀得懂——
-//! 你在自家門口立一塊「露娜的家」，路過的居民會抬頭念出來、輕輕感嘆一句；你在礦坑口插
-//! 一塊「往礦坑↓」，居民讀到會意識到那是路標。人類寫的字，第一次被 AI 居民「注意到」。
+//! **核心信念**：玩家的建造要有後果——你親手寫下的字，世界裡的 AI 居民真的會「看見」，
+//! 而且**記得**。告示牌（740）本來是死的：文字浮在牌上，只有玩家彼此讀得到。
+//! v1 讓居民也讀得懂——你在自家門口立一塊「露娜的家」，路過的居民會抬頭念出來、
+//! 輕輕感嘆一句；你在礦坑口插一塊「往礦坑↓」，居民讀到會意識到那是路標。
+//! **v2 再推一步**：居民讀過的牌**寫進牠的長期記憶**，日後翻開牠的日記（ROADMAP 5
+//! 生命故事），會看到牠對「有人在這片土地上留下想說的話」的內心反思——你親手立的牌子，
+//! 第一次在 AI 居民的內在生活裡留下一頁。
 //!
-//! **成本紀律**：零 LLM、零持久化、零新協議欄位——純規則式分類 + 確定性選句，搭既有 `say`
-//! 泡泡廣播（前端無需改一行）。低頻 + 長冷卻，稀少才有感、不洗版。
+//! **成本紀律**：零 LLM——念牌純規則式分類 + 確定性選句，記憶摘要純字串拼接；搭既有 `say`
+//! 泡泡廣播與既有記憶/日記管線（前端無需改一行）。低頻 + 長冷卻，稀少才有感、不洗版。
 //!
 //! **純邏輯層**：零 async、零鎖、零 IO；確定性純函式，窮舉可測。
 //! 鎖 / 距離掃描 / 副作用在 `voxel_ws.rs`（短鎖即釋、不巢狀、守死鎖鐵律）。
@@ -20,6 +23,24 @@ pub const READ_COOLDOWN: f32 = 240.0;
 pub const READ_CHANCE_PER_TICK: f32 = 0.03;
 /// 泡泡裡最多展示幾個牌面字元（過長截斷加「…」，避免泡泡超框）。
 pub const READ_QUOTE_CHARS: usize = 14;
+
+/// 居民讀牌記憶的識別前綴（居民讀牌 v2）：把「讀到某塊告示牌」寫進居民記憶時，
+/// 摘要一律以此開頭，讓日記（`voxel_diary`）能一眼認出這是「讀牌」而非「對話」記憶，
+/// 昇華成正確的內心反思。確定性字面標記、零 LLM。
+pub const SIGN_MEMORY_TAG: &str = "🪧讀到告示牌";
+
+/// 讀牌記憶掛在哪個「玩家身份鍵」下（居民讀牌 v2）：告示牌不記作者，故用這個
+/// 世界級哨兵鍵，讓讀牌記憶**不污染任何真實玩家**的好感/對話上下文，只在**日記**
+/// （跨玩家彙整居民所有記憶）裡浮現。刻意用不會與真實玩家鍵相撞的字面。
+pub const SIGN_MEMORY_PLAYER: &str = "__voxel_world_sign__";
+
+/// 把「讀到一塊告示牌」昇華成一筆記憶摘要（居民讀牌 v2）。確定性、可測。
+///
+/// 格式＝[`SIGN_MEMORY_TAG`] + 截短後的引號牌面（複用 [`display_quote`] 的截斷規則，
+/// 界定長度、避免超長牌面塞爆記憶）。日記端以 `SIGN_MEMORY_TAG` 前綴辨識。
+pub fn sign_memory_summary(sign_text: &str) -> String {
+    format!("{SIGN_MEMORY_TAG}{}", display_quote(sign_text))
+}
 
 /// 牌面內容粗分類（確定性、無副作用）：決定居民念完後回應的語氣。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,5 +165,32 @@ mod tests {
         let a = read_sign_line("歡迎光臨", 0);
         let b = read_sign_line("歡迎光臨", 1);
         assert_ne!(a, b, "不同 pick 應輪替到不同台詞");
+    }
+
+    #[test]
+    fn sign_memory_summary_tagged_and_quotes_text() {
+        // 記憶摘要應帶識別前綴 + 引號牌面（供日記辨識為「讀牌」記憶）。
+        let s = sign_memory_summary("露娜的家");
+        assert!(s.starts_with(SIGN_MEMORY_TAG), "應以識別前綴開頭: {s}");
+        assert!(s.contains("「露娜的家」"), "應含引號牌面原文: {s}");
+    }
+
+    #[test]
+    fn sign_memory_summary_truncates_long_text() {
+        // 超長牌面在記憶摘要裡也被截短（複用 display_quote 規則），不塞爆記憶。
+        let long: String = "字".repeat(READ_QUOTE_CHARS + 10);
+        let s = sign_memory_summary(&long);
+        assert!(s.starts_with(SIGN_MEMORY_TAG));
+        assert!(s.ends_with("…」"), "超長牌面記憶摘要應以省略號結尾: {s}");
+        assert_eq!(
+            s.chars().filter(|&c| c == '字').count(),
+            READ_QUOTE_CHARS,
+            "展示字元數應等於上限"
+        );
+    }
+
+    #[test]
+    fn sign_memory_summary_deterministic() {
+        assert_eq!(sign_memory_summary("往礦坑↓"), sign_memory_summary("往礦坑↓"));
     }
 }
