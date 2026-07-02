@@ -58,6 +58,7 @@ use crate::voxel_comfort as vcomfort;
 use crate::voxel_cheer as vcheer;
 use crate::voxel_chest as vchest;
 use crate::voxel_weather as vweather;
+use crate::voxel_clique as vclique;
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -217,6 +218,14 @@ struct VoxelResident {
     /// 跟隨模式（指令→任務 v1 第二刀）：Some(玩家身份鍵, 剩餘秒數) = 正跟著該玩家走；
     /// None = 沒在跟隨。逾時或被要求「別跟了」即清空，回到平常閒晃/採集/建造。
     follow: Option<(String, f32)>,
+    /// 小圈子聚會（ROADMAP 711）：Some(聚會點 x, z, session_tag) = 正前往/等待與圈子碰面；
+    /// None = 沒有聚會任務。`session_tag` 是同組全體成員 id 排序後的串接，供辨識同一場聚會。
+    clique_meet: Option<(f32, f32, String)>,
+    /// 聚會等待秒數（自被指派起累計，ROADMAP 711）：超過 `GATHER_MAX_WAIT_SECS`
+    /// 仍等不到其他成員到齊 → 放棄、各自散去（防某成員被地形卡住拖累整組永遠卡住）。
+    clique_wait: f32,
+    /// 小圈子聚會冷卻倒數（秒，ROADMAP 711）：歸零後才可能再被選入下一場聚會。
+    clique_cooldown: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -651,6 +660,11 @@ fn init_residents() -> Vec<VoxelResident> {
             level_walk_stall: 0.0,
             // 跟隨（指令→任務 v1 第二刀）：入場沒被要求跟隨。
             follow: None,
+            // 小圈子聚會（ROADMAP 711）：入場無聚會任務；初始冷卻長且錯開，
+            // 讓交情先自然累積到老朋友門檻後才有機會被選中（比照探訪的穩定期考量）。
+            clique_meet: None,
+            clique_wait: 0.0,
+            clique_cooldown: vclique::GATHER_COOLDOWN_SECS + i as f32 * 40.0,
         });
     }
     out
@@ -3015,6 +3029,10 @@ fn tick_residents(dt: f32) {
     // 格式：(happy_id, happy_name, lonely_rid, lonely_name)
     let mut cheer_arrive_done: Vec<(String, &'static str, String, &'static str)> = Vec::new();
 
+    // 小圈子聚會 v1（ROADMAP 711）全員抵達事件（鎖內偵測，鎖外寫記憶+Feed）。
+    // 格式：members = 這場聚會的 (居民 id, 居民名字) 列表。
+    let mut clique_fire_events: Vec<Vec<(String, &'static str)>> = Vec::new();
+
     // 居民情誼 v1（ROADMAP 672）：到達/離開事件（鎖內偵測，鎖外更新情誼+生成問候語）。
     // 抵達格式：(visitor_id, visitor_name, host_name)
     let mut bond_arrive_events: Vec<(String, &'static str, String)> = Vec::new();
@@ -3076,6 +3094,19 @@ fn tick_residents(dt: f32) {
             // 打氣冷卻倒數（ROADMAP 679）。
             if r.cheer_cooldown > 0.0 {
                 r.cheer_cooldown -= dt;
+            }
+
+            // 小圈子聚會冷卻倒數（ROADMAP 711）。
+            if r.clique_cooldown > 0.0 {
+                r.clique_cooldown -= dt;
+            }
+            // 聚會逾時放棄：等太久等不到其他成員到齊，就散去、回到平常閒晃。
+            if r.clique_meet.is_some() {
+                r.clique_wait += dt;
+                if r.clique_wait > vclique::GATHER_MAX_WAIT_SECS {
+                    r.clique_meet = None;
+                    r.clique_wait = 0.0;
+                }
             }
 
             // 心情補助倒數（ROADMAP 681）：互動帶來的暖意隨時間消退。
@@ -3510,20 +3541,27 @@ fn tick_residents(dt: f32) {
                     // → 以小屋為閒晃中心（緊靠自家），取代原本的家域出生點。
                     // ROADMAP 701：白天下雨時也比照夜間歸巢，居民第一次會為了避雨回家。
                     let sheltering = r.visiting.is_none()
+                        && r.clique_meet.is_none()
                         && vr::should_shelter(is_night, raining, house_locations.contains_key(&r.id));
                     // 探訪中：以目的地為閒晃中心（讓居民在鄰居家附近自然走動）；
+                    // 聚會中（ROADMAP 711）：以聚會點為中心，讓一群人看起來聚在一塊；
                     // 夜間遮蔽：以自己蓋的小屋為中心；否則：以自己家域中心為基準（正常行為）。
                     let (center_x, center_z) = if let Some((vx, vz, _)) = &r.visiting {
                         (*vx, *vz)
+                    } else if let Some((gx, gz, _)) = &r.clique_meet {
+                        (*gx, *gz)
                     } else if sheltering {
                         let (hx, _hy, hz) = house_locations[&r.id];
                         (hx as f32 + 0.5, hz as f32 + 0.5)
                     } else {
                         (r.home_x, r.home_z)
                     };
-                    // 探訪中用探訪範圍；夜間遮蔽用更小的遮蔽半徑（緊靠自家）；否則用家域半徑（正常行為）。
+                    // 探訪中用探訪範圍；聚會中用更小的聚會範圍（不散開）；
+                    // 夜間遮蔽用更小的遮蔽半徑（緊靠自家）；否則用家域半徑（正常行為）。
                     let wander_r = if r.visiting.is_some() {
                         vvisit::VISIT_WANDER_RADIUS
+                    } else if r.clique_meet.is_some() {
+                        vclique::GATHER_WANDER_RADIUS
                     } else if sheltering {
                         vr::SHELTER_WANDER_RADIUS
                     } else {
@@ -3700,8 +3738,8 @@ fn tick_residents(dt: f32) {
             })
             .collect();
 
-        // 快照：(idx, id, x, z, cheer_cd, is_saying, has_cheer_target)
-        let cheer_snaps: Vec<(usize, String, f32, f32, f32, bool, bool)> = residents
+        // 快照：(idx, id, x, z, cheer_cd, is_saying, has_cheer_target, has_clique_meet)
+        let cheer_snaps: Vec<(usize, String, f32, f32, f32, bool, bool, bool)> = residents
             .iter()
             .enumerate()
             .map(|(i, r)| {
@@ -3713,14 +3751,15 @@ fn tick_residents(dt: f32) {
                     r.cheer_cooldown,
                     !r.say.is_empty(),
                     r.cheer_target.is_some(),
+                    r.clique_meet.is_some(),
                 )
             })
             .collect();
 
         let mut cheer_trigger: Option<(usize, f32, f32, String)> = None; // (happy_idx, lx, lz, lonely_id)
-        'cheer_scan: for (hi, href, hx, hz, hcd, h_saying, h_has_target) in &cheer_snaps {
-            // 打氣發起條件：冷卻到期、沒在說話、沒有既有打氣任務、心情 Joyful/Content。
-            if *h_saying || *hcd > 0.0 || *h_has_target {
+        'cheer_scan: for (hi, href, hx, hz, hcd, h_saying, h_has_target, h_gathering) in &cheer_snaps {
+            // 打氣發起條件：冷卻到期、沒在說話、沒有既有打氣任務、沒在小圈子聚會中、心情 Joyful/Content。
+            if *h_saying || *hcd > 0.0 || *h_has_target || *h_gathering {
                 continue;
             }
             let h_tier = &cheer_mood_tiers[*hi];
@@ -3730,8 +3769,8 @@ fn tick_residents(dt: f32) {
             ) {
                 continue;
             }
-            for (li, lref, lx, lz, _, l_saying, _) in &cheer_snaps {
-                if hi == li || *l_saying {
+            for (li, lref, lx, lz, _, l_saying, _, l_gathering) in &cheer_snaps {
+                if hi == li || *l_saying || *l_gathering {
                     continue;
                 }
                 // Lonely 同伴？
@@ -3756,6 +3795,107 @@ fn tick_residents(dt: f32) {
             residents[hi].cheer_cooldown = vcheer::CHEER_COOLDOWN;
             // Feed 出發事件（鎖外 IO，稍後在 cheer_arrive_done 外層記）。
             // 注意：出發時不記 Feed（低調），只在抵達時記一筆（更有感）。
+        }
+
+        // 2f) 小圈子聚會觸發掃描（ROADMAP 711）：找互為老朋友的圈子，偶爾相約碰面。
+        // 鎖序：bonds 讀（即釋），不與其他鎖巢狀。居民數極少，全兩兩查詢零效能疑慮。
+        let all_res_ids_for_gather: Vec<String> =
+            (0..RESIDENT_COUNT).map(|j| format!("vox_res_{j}")).collect();
+        let tier_matrix: HashMap<(String, String), vbonds::BondTier> = {
+            let bonds = hub().bonds.read().unwrap();
+            let mut m = HashMap::new();
+            for a in &all_res_ids_for_gather {
+                for b in &all_res_ids_for_gather {
+                    if a != b {
+                        m.insert((a.clone(), b.clone()), bonds.tier_of(a, b));
+                    }
+                }
+            }
+            m
+        }; // bonds 讀鎖釋放
+        let cliques = vclique::find_friend_cliques(&all_res_ids_for_gather, |a, b| {
+            *tier_matrix.get(&(a.to_string(), b.to_string())).unwrap_or(&vbonds::BondTier::Stranger)
+        });
+        if !cliques.is_empty() {
+            // 只挑第一個（最大）圈子；圈子成員皆閒（無其他任務、冷卻已到期）才考慮觸發。
+            let group = &cliques[0];
+            let ready = group.iter().all(|gid| {
+                residents.iter().find(|r| &r.id == gid).is_some_and(|r| {
+                    r.clique_meet.is_none()
+                        && r.cheer_target.is_none()
+                        && r.visiting.is_none()
+                        && r.follow.is_none()
+                        && r.say.is_empty()
+                        && r.clique_cooldown <= 0.0
+                        && !directed_snaps.contains_key(gid)
+                })
+            });
+            if ready && rand::random::<f32>() < vclique::GATHER_CHANCE {
+                // 聚會點固定用圈子裡 id 最小那位的家域（純函式排序過的 group[0]）。
+                let host_id = group[0].clone();
+                let (gx, gz) = residents
+                    .iter()
+                    .find(|r| r.id == host_id)
+                    .map(|r| (r.home_x, r.home_z))
+                    .unwrap_or((0.0, 0.0));
+                let tag = vclique::session_tag(group);
+                for gid in group {
+                    if let Some(r) = residents.iter_mut().find(|r| &r.id == gid) {
+                        r.clique_meet = Some((gx, gz, tag.clone()));
+                        r.clique_wait = 0.0;
+                        r.clique_cooldown = vclique::GATHER_COOLDOWN_SECS;
+                        r.target_x = gx;
+                        r.target_z = gz;
+                    }
+                }
+                // 出發不記 Feed（比照打氣，低調；抵達才有感）。
+            }
+        }
+
+        // 2g) 小圈子聚會抵達判定（ROADMAP 711）：同場聚會全員都已站在聚會點附近 → 觸發。
+        // 一個 tick 只處理一組觸發，避免複雜度；未到齊的組別留到下個 tick 再檢查。
+        {
+            use std::collections::BTreeMap;
+            let mut by_tag: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+            for (i, r) in residents.iter().enumerate() {
+                if let Some((_, _, tag)) = &r.clique_meet {
+                    by_tag.entry(tag.clone()).or_default().push(i);
+                }
+            }
+            for (tag, idxs) in &by_tag {
+                let expected = tag.split('+').count();
+                if idxs.len() < expected {
+                    continue; // 還有成員半途放棄逾時，這組已不完整，等它整組自然清空。
+                }
+                let all_here = idxs.iter().all(|&i| {
+                    let r = &residents[i];
+                    if let Some((gx, gz, _)) = &r.clique_meet {
+                        let dx = r.body.x - gx;
+                        let dz = r.body.z - gz;
+                        (dx * dx + dz * dz).sqrt() < vclique::GATHER_ARRIVE_DIST
+                    } else {
+                        false
+                    }
+                });
+                if all_here {
+                    let members: Vec<(String, &'static str)> = idxs
+                        .iter()
+                        .map(|&i| (residents[i].id.clone(), residents[i].name))
+                        .collect();
+                    for &i in idxs {
+                        let pick = ((residents[i].body.x as u32).wrapping_add(residents[i].body.z as u32)) as usize;
+                        residents[i].clique_meet = None;
+                        residents[i].clique_wait = 0.0;
+                        residents[i].wait_timer = residents[i].wait_timer.max(4.0); // 站著聊一會兒，不馬上散去
+                        if residents[i].say.is_empty() {
+                            residents[i].say = vclique::gather_line(pick).to_string();
+                            residents[i].say_timer = SAY_SECS;
+                        }
+                    }
+                    clique_fire_events.push(members);
+                    break; // 一個 tick 只觸發一組。
+                }
+            }
         }
 
     } // deltas/residents 鎖在此一併釋放
@@ -3802,6 +3942,31 @@ fn tick_residents(dt: f32) {
             vcheer::FEED_KIND,
             happy_name,
             &format!("走到{lonely_name}身邊，給她送來了一句溫暖的話！"),
+        );
+    }
+
+    // 4a-d) 小圈子聚會全員到齊落地（ROADMAP 711）：每位成員各寫一筆記憶（提及其他成員），
+    // 廣播一則 Feed（提及全體成員名字）。鎖序：memory 寫（即釋）× 成員數；不巢狀。
+    for members in &clique_fire_events {
+        let all_names: Vec<&str> = members.iter().map(|(_, n)| *n).collect();
+        for (id, name) in members {
+            let others: Vec<&str> = all_names.iter().copied().filter(|n| *n != *name).collect();
+            if others.is_empty() {
+                continue;
+            }
+            let mem_line = vclique::gather_memory_line(&others);
+            // 記憶結構的「player」欄位借用其他成員之一（沿用打氣/回禮同樣的重用手法），
+            // 文字本身已完整提及所有其他成員名字。
+            let e = {
+                let mut mem = hub().memory.write().unwrap();
+                mem.add_memory(id, others[0], &mem_line)
+            }; // memory 寫鎖釋放
+            vmem::append_memory(&e);
+        }
+        vfeed::append_feed(
+            vclique::FEED_KIND,
+            all_names[0],
+            &format!("和{}難得聚在一起，說說笑笑", all_names[1..].join("、")),
         );
     }
 
@@ -4204,13 +4369,14 @@ fn tick_residents(dt: f32) {
                 NextActivity::Wander => {
                     // 全部蓋完：探訪鄰居 v1（ROADMAP 671）——偶爾出發拜訪另一位居民。
                     // 探訪冷卻 + 確定性觸發（不需改動鎖，下面在 residents 寫鎖段套用）。
-                    let (is_visiting, visit_cooldown) = {
+                    let (is_visiting, is_gathering, visit_cooldown) = {
                         let residents = hub().residents.read().unwrap();
                         residents.iter().find(|r| r.id == rid)
-                            .map_or((false, 0.0), |r| (r.visiting.is_some(), r.visit_cooldown))
+                            .map_or((false, false, 0.0), |r| (r.visiting.is_some(), r.clique_meet.is_some(), r.visit_cooldown))
                     }; // residents 讀鎖釋放
 
-                    if !is_visiting && vvisit::should_visit(true, visit_cooldown, rand::random::<f32>()) {
+                    // 小圈子聚會（ROADMAP 711）優先：正在前往/等待聚會時，別讓探訪蓋掉目標。
+                    if !is_visiting && !is_gathering && vvisit::should_visit(true, visit_cooldown, rand::random::<f32>()) {
                         // 挑目標居民（確定性：用居民位置 bits 避免每幀不同）。
                         let pick = ((rx as u32).wrapping_add(rz as u32)) as usize;
                         let my_idx = rid.trim_start_matches("vox_res_").parse::<usize>().unwrap_or(0);
@@ -4241,8 +4407,8 @@ fn tick_residents(dt: f32) {
                                 &format!("動身去拜訪{host}！"),
                             );
                         }
-                    } else if !is_visiting {
-                        // 不探訪：偶爾散心採集（低頻、不洗版），否則純閒晃。
+                    } else if !is_visiting && !is_gathering {
+                        // 不探訪、不在聚會：偶爾散心採集（低頻、不洗版），否則純閒晃。
                         if rand::random::<f32>() < IDLE_GATHER_CHANCE {
                             start_gather(&rid, rx, rz);
                         }

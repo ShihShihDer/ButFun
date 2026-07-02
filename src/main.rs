@@ -162,6 +162,8 @@ mod voxel_chest;
 mod voxel_gossip;
 // 乙太方界·下雨天氣 v1：機率式晴/雨切換，下雨時農地視同水耕（ROADMAP 700）。
 mod voxel_weather;
+// 乙太方界·居民小圈子聚會 v1：互為老朋友的圈子偶爾相約碰面，小社會第一次被看見「聚在一起」（ROADMAP 711）。
+mod voxel_clique;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
