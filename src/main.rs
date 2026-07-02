@@ -169,6 +169,8 @@ mod voxel_clique;
 // 乙太方界·居民偶爾小小拌嘴又和好 v1：老朋友到訪偶爾拌幾句嘴又和好，關係第一次有了真實的小摩擦（ROADMAP 715）。
 mod voxel_quarrel;
 mod voxel_teach;
+// 乙太方界·久別重逢摘要 v1：玩家重連時把離線期間的重要事件彙整成一句私訊（ROADMAP 721）。
+mod voxel_welcome;
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
