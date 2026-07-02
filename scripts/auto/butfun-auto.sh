@@ -40,6 +40,26 @@ log(){ echo "[auto $(date '+%H:%M')] $*"; }
 exec 9>/tmp/butfun-auto.lock
 flock -n 9 || { log "上一輪還在跑，本輪讓位"; exit 0; }
 
+# ── session 窗守衛：5 小時窗快滿就安靜跳過本輪，等窗重置 ──────────────────────
+# 撞窗的代價不是量（量沒少）而是「在跑的 agent 斷頭 + 迴圈每 2 分空轉報錯」（2026-07-02 F5
+# 第二刀 agent 半路被打斷實測）。statusline-expo.sh 會把 five_hour.used_percentage 快取到
+# five_hour_pct（格式：pct reset_epoch cached_at）。≥ 門檻且重置在未來 → 本輪直接睡掉。
+FIVE_HOUR_GUARD_PCT="${BUTFUN_FIVE_HOUR_GUARD_PCT:-92}"
+fh_line="$(cat "$STATE/five_hour_pct" 2>/dev/null || true)"
+if [ -n "$fh_line" ]; then
+  fh_pct="$(echo "$fh_line" | awk '{print $1}')"
+  fh_reset="$(echo "$fh_line" | awk '{print $2}')"
+  fh_ts="$(echo "$fh_line" | awk '{print $3}')"
+  fh_now="$(date +%s)"
+  # 快取要新鮮（<3h，5h 窗內才有意義）且重置時刻在未來才擋。
+  if [ -n "$fh_pct" ] && [ "$(( fh_now - ${fh_ts:-0} ))" -lt 10800 ] && [ "${fh_reset:-0}" -gt "$fh_now" ]; then
+    if awk "BEGIN{exit !(${fh_pct}+0 >= ${FIVE_HOUR_GUARD_PCT}+0)}" 2>/dev/null; then
+      log "⏸ 5小時窗 ${fh_pct}% ≥ ${FIVE_HOUR_GUARD_PCT}%，跳過本輪等窗重置（$(date -d "@$fh_reset" '+%H:%M' 2>/dev/null)）——避免 agent 斷頭"
+      exit 0
+    fi
+  fi
+fi
+
 # ── 預算守衛：優先真實週額度%，退回 $ 代理 ──────────────────────
 over_budget=""; budget_reason=""
 pct_line="$(cat "$STATE/seven_day_pct" 2>/dev/null || true)"
