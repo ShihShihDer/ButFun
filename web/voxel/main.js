@@ -2399,6 +2399,14 @@ function connect() {
       const player = m.player || "旅人";
       const mine = player === myName;
       appendMsg("sys", "🌟 " + who + " 因為" + (mine ? "你" : player) + "的一句話，把「" + what + "」蓋好了！");
+    } else if (m.t === "item_wish_fulfilled") {
+      // 送對禮物 v1（ROADMAP 722）：玩家送來的禮物正好是居民一直想要的東西，全員可見；
+      // 送禮的當事人本人看到會格外有感（「我隨口送的東西，真的是她想要的」）。
+      const who = m.resident || "居民";
+      const item = m.item || "物品";
+      const player = m.player || "旅人";
+      const mine = player === myName;
+      appendMsg("sys", "🎁 " + (mine ? "你" : player) + "送來的" + item + "，正是" + who + "一直想要的！");
     } else if (m.t === "trade_offer") {
       // 居民交易 v1（ROADMAP 670）：收到交易提案，顯示橫幅讓玩家確認。
       showTradeOffer(m);

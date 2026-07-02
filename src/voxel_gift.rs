@@ -149,6 +149,80 @@ pub fn food_gift_thanks_line(player_name: &str, affinity: usize, pick: usize) ->
     }
 }
 
+// ── 送對禮物 v1（ROADMAP 722）───────────────────────────────────────────────────
+//
+// 居民的心願（`voxel_desires`）此前只有兩種下場：分類成建物種類、被蓋家系統實現（720），
+// 或者從沒被分類成功、永遠只是聊天/日記裡的一句裝飾文字，玩家隨口說出的具體物件渴望
+// （「好想要一塊麵包」「要是有玻璃就好了」）從沒有任何管道能被滿足。
+// 本節補上：當送來的禮物「正好」是心願裡提到的具體物品時，觸發比一般道謝更驚喜的反應。
+
+/// 依心願文字規則辨認「玩家送這個具體物品就能實現」的渴望（零 LLM、確定性、可測）。
+/// 刻意只收錄跟蓋家系統（`voxel_building::classify_desire`）語意不重疊的具體物品關鍵詞
+/// （不含「家」「花」「井」「塔」等建造觸發詞）；呼叫端應先確認 `classify_desire` 沒命中
+/// 才查這裡，避免建造類心願與物品心願搶同一句話。
+pub fn classify_item_desire(desire: &str) -> Option<u8> {
+    const CANDIDATES: &[(&str, u8)] = &[
+        ("麵包", 19),
+        ("鐵鏟", 41),
+        ("鏟子", 41),
+        ("鐵斧", 38),
+        ("斧頭", 38),
+        ("鐵鎬", 34),
+        ("鎬子", 34),
+        ("鐵錠", 22),
+        ("鐵磚", 23),
+        ("玻璃", 10),
+        ("火把", 31),
+        ("梯子", 35),
+        ("箱子", 42),
+        ("木門", 43),
+        ("木板", 8),
+        ("石磚", 9),
+        ("胡蘿蔔", 49),
+        ("馬鈴薯", 53),
+        ("小麥", 18),
+    ];
+    for (kw, id) in CANDIDATES {
+        if desire.contains(kw) {
+            return Some(*id);
+        }
+    }
+    None
+}
+
+/// 心願送到的那一刻，居民對送禮者格外驚喜的道謝台詞（依居民名字雜湊選模板，確定性，≤40 字）。
+pub fn item_wish_thanks_line(resident_name: &str, item_name: &str, player_name: &str) -> String {
+    let idx = resident_name.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize));
+    let pool: &[&str] = &[
+        "{p}！這正是我一直想要的{i}，你怎麼知道！",
+        "{p}，我的心願成真了——謝謝你的{i}！",
+        "{i}！{p}，你把我念念不忘的東西帶來了！",
+        "我一直盼著{i}，{p}你真的送來了，太謝謝你！",
+    ];
+    pool[idx % pool.len()]
+        .replace("{p}", player_name)
+        .replace("{i}", item_name)
+        .chars()
+        .take(40)
+        .collect()
+}
+
+/// 記進送禮者記憶庫的摘要句（居民記得「你把我想要的東西送給我了」，供之後對話回想引用）。
+pub fn item_wish_memory(item_name: &str) -> String {
+    format!("我一直想要{item_name}，你把它送給我了，我的心願成真了。")
+}
+
+/// 心願送到廣播的 WS JSON 字串（broadcast 給所有在線玩家；新事件類型，舊前端安全忽略）。
+pub fn item_wish_msg(resident_name: &str, item_name: &str, player_name: &str) -> String {
+    serde_json::json!({
+        "t": "item_wish_fulfilled",
+        "resident": resident_name,
+        "item": item_name,
+        "player": player_name,
+    })
+    .to_string()
+}
+
 // ── 測試 ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -313,5 +387,67 @@ mod tests {
     fn food_gift_thanks_friend_contains_name() {
         let s = food_gift_thanks_line("小星", 5, 0);
         assert!(s.contains("小星"), "友人等級應含玩家名");
+    }
+
+    // ── 送對禮物 v1（ROADMAP 722）───────────────────────────────────────────────
+
+    #[test]
+    fn classify_item_desire_matches_known_keywords() {
+        assert_eq!(classify_item_desire("好想要一塊麵包"), Some(19));
+        assert_eq!(classify_item_desire("要是有玻璃就好了"), Some(10));
+        assert_eq!(classify_item_desire("唉，好想要一張木板做的床呀"), Some(8));
+        assert_eq!(classify_item_desire("我想要一把鐵鏟"), Some(41));
+        assert_eq!(classify_item_desire("真希望有火把"), Some(31));
+        assert_eq!(classify_item_desire("我想要馬鈴薯"), Some(53));
+    }
+
+    #[test]
+    fn classify_item_desire_none_when_no_keyword() {
+        assert!(classify_item_desire("我想蓋一座塔").is_none());
+        assert!(classify_item_desire("你好呀，今天天氣真好").is_none());
+        assert!(classify_item_desire("").is_none());
+    }
+
+    #[test]
+    fn classify_item_desire_does_not_overlap_build_keywords() {
+        // 確保物品關鍵詞不會誤撞蓋家系統的建造觸發詞（避免同句被兩套系統搶）。
+        use crate::voxel_building::classify_desire;
+        let item_keywords = [
+            "麵包", "鐵鏟", "鏟子", "鐵斧", "斧頭", "鐵鎬", "鎬子", "鐵錠", "鐵磚",
+            "玻璃", "火把", "梯子", "箱子", "木門", "木板", "石磚", "胡蘿蔔", "馬鈴薯", "小麥",
+        ];
+        for kw in item_keywords {
+            assert!(
+                classify_desire(kw).is_none(),
+                "物品關鍵詞「{kw}」不應被蓋家系統誤判為建造心願"
+            );
+        }
+    }
+
+    #[test]
+    fn item_wish_thanks_line_contains_item_and_player_within_limit() {
+        for name in ["露娜", "諾娃", "賽勒", "奧瑞"] {
+            let s = item_wish_thanks_line(name, "麵包", "旅人");
+            assert!(s.contains("麵包"), "{name} 台詞應含物品名: {s}");
+            assert!(s.contains("旅人"), "{name} 台詞應含玩家名: {s}");
+            assert!(s.chars().count() <= 40, "台詞不超過40字：{}", s.chars().count());
+            assert!(!s.contains("{p}") && !s.contains("{i}"), "不應留下未替換的佔位符: {s}");
+        }
+    }
+
+    #[test]
+    fn item_wish_memory_contains_item_name() {
+        let s = item_wish_memory("玻璃");
+        assert!(s.contains("玻璃"));
+    }
+
+    #[test]
+    fn item_wish_msg_is_valid_json_with_fields() {
+        let msg = item_wish_msg("露娜", "麵包", "旅人");
+        let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(v["t"], "item_wish_fulfilled");
+        assert_eq!(v["resident"], "露娜");
+        assert_eq!(v["item"], "麵包");
+        assert_eq!(v["player"], "旅人");
     }
 }
