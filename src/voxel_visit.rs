@@ -8,7 +8,21 @@
 //! - 只有「已蓋完所有建物」的居民才會發起探訪（有了家才有餘力社交）。
 //! - 探訪冷卻長（預設 5 分鐘），稀少才有感——頻繁就平淡了。
 //! - 純程式化台詞（零 LLM、確定性、可測），不燒額度。
+//! - **目標挑選看情誼（ROADMAP 671 深化）**：老朋友明顯更常被造訪、陌生人仍有機會——
+//!   關係第一次真的**影響**行為，而不只是被行為單向記錄，讓小圈子更容易自己滾出來。
 //! - 鎖 / WS / IO 全在 `voxel_ws.rs`，本模組零 async、零鎖、零 IO。
+
+use crate::voxel_bonds::BondTier;
+
+/// 依情誼層級決定探訪目標的相對權重：老朋友明顯優先，但陌生人/相識仍保留機會
+/// （關係要能從零開始累積，不能被完全鎖死只拜訪老朋友）。純函式、確定性。
+pub fn tier_weight(tier: BondTier) -> usize {
+    match tier {
+        BondTier::Stranger => 1,
+        BondTier::Acquaintance => 3,
+        BondTier::Friend => 6,
+    }
+}
 
 /// 每 agency tick，「全蓋完 + 冷卻到期」時觸發探訪的機率。
 /// 0.008 ≈ 在冷卻到期後平均 12.5 秒才開始一次（`agency tick` 每 ~1 秒一次）。
@@ -32,26 +46,44 @@ pub fn should_visit(all_built: bool, visit_cooldown: f32, roll: f32) -> bool {
 }
 
 /// 從鄰居陣列中挑一個目標（確定性，使用外部傳入的 `pick` 避免 random）。
+/// **依情誼加權**：老朋友被選中的機率明顯較高，但陌生人/相識仍有機會被造訪
+/// （不然關係永遠沒機會從零開始，小圈子也就長不出新成員）。
 ///
 /// `my_idx`：自己在居民陣列中的索引（用來排除自己）。
-/// `homes`：所有居民的 (home_x, home_z, name)，含自己。
+/// `homes`：所有居民的 (home_x, home_z, name)，含自己，索引需與 `tiers` 對齊。
+/// `tiers`：`homes` 對應索引「自己 → 該居民」的情誼層級（自己那格不使用，值任意）。
+///   長度不足時，缺的視為 `Stranger`（保守退化，不 panic）。
 /// `pick`：確定性選擇值（呼叫端可用位置 bits 等穩定值提供）。
 /// 沒有其他居民時回 `None`。
 pub fn pick_destination<'a>(
     my_idx: usize,
     homes: &'a [(f32, f32, &'a str)],
+    tiers: &[BondTier],
     pick: usize,
 ) -> Option<(f32, f32, &'a str)> {
-    let others: Vec<(f32, f32, &str)> = homes
+    let others: Vec<(f32, f32, &str, BondTier)> = homes
         .iter()
         .enumerate()
         .filter(|(i, _)| *i != my_idx)
-        .map(|(_, &r)| r)
+        .map(|(i, &(x, z, n))| {
+            let tier = tiers.get(i).copied().unwrap_or(BondTier::Stranger);
+            (x, z, n, tier)
+        })
         .collect();
     if others.is_empty() {
         return None;
     }
-    Some(others[pick % others.len()])
+    let total: usize = others.iter().map(|(_, _, _, t)| tier_weight(*t)).sum();
+    let mut r = pick % total.max(1);
+    for &(x, z, n, t) in &others {
+        let w = tier_weight(t);
+        if r < w {
+            return Some((x, z, n));
+        }
+        r -= w;
+    }
+    // 理論上加總後不會落到這裡（浮點/取模皆為整數確定性運算），保底回最後一位。
+    others.last().map(|&(x, z, n, _)| (x, z, n))
 }
 
 /// 居民抵達鄰居家時說的台詞（確定性純函式，依居民名字選句）。
@@ -125,14 +157,15 @@ mod tests {
         assert!(should_visit(true, -1.0, 0.0));
     }
 
-    // ── pick_destination ─────────────────────────────────────────────────────
+    // ── pick_destination（皆用全 Stranger 情誼＝與加權前行為等價，鎖住不回歸） ──────
 
     #[test]
     fn pick_destination_skips_self() {
         let homes = [(0.0, 0.0, "露娜"), (0.0, 75.0, "諾娃"), (-75.0, 0.0, "賽勒"), (75.0, 0.0, "奧瑞")];
+        let tiers = [BondTier::Stranger; 4];
         // 居民 0（露娜）選目標，結果不會是露娜自己
         for pick in 0..12 {
-            let r = pick_destination(0, &homes, pick);
+            let r = pick_destination(0, &homes, &tiers, pick);
             assert!(r.is_some());
             assert_ne!(r.unwrap().2, "露娜");
         }
@@ -141,24 +174,26 @@ mod tests {
     #[test]
     fn pick_destination_none_when_alone() {
         let homes = [(0.0, 0.0, "露娜")];
-        assert!(pick_destination(0, &homes, 0).is_none());
+        assert!(pick_destination(0, &homes, &[BondTier::Stranger], 0).is_none());
     }
 
     #[test]
     fn pick_destination_deterministic() {
         let homes = [(0.0, 0.0, "露娜"), (0.0, 75.0, "諾娃"), (-75.0, 0.0, "賽勒"), (75.0, 0.0, "奧瑞")];
+        let tiers = [BondTier::Stranger; 4];
         // 同 my_idx + 同 pick → 同結果（確定性）
-        let a = pick_destination(1, &homes, 5);
-        let b = pick_destination(1, &homes, 5);
+        let a = pick_destination(1, &homes, &tiers, 5);
+        let b = pick_destination(1, &homes, &tiers, 5);
         assert_eq!(a, b);
     }
 
     #[test]
     fn pick_destination_covers_all_others() {
         let homes = [(0.0, 0.0, "露娜"), (0.0, 75.0, "諾娃"), (-75.0, 0.0, "賽勒"), (75.0, 0.0, "奧瑞")];
+        let tiers = [BondTier::Stranger; 4];
         // 居民 0 探訪時，應能選到 3 位鄰居中每一位
         let results: std::collections::HashSet<&str> = (0..3)
-            .map(|pick| pick_destination(0, &homes, pick).unwrap().2)
+            .map(|pick| pick_destination(0, &homes, &tiers, pick).unwrap().2)
             .collect();
         assert_eq!(results.len(), 3, "應能選到 3 位不同鄰居");
     }
@@ -167,8 +202,50 @@ mod tests {
     fn pick_destination_out_of_bounds_idx_still_safe() {
         let homes = [(0.0, 0.0, "露娜"), (0.0, 75.0, "諾娃")];
         // my_idx 超出陣列（呼叫端保護用，但不應 panic）
-        let r = pick_destination(99, &homes, 0);
+        let r = pick_destination(99, &homes, &[BondTier::Stranger; 2], 0);
         assert!(r.is_some()); // 99 不等於 0 或 1，全部都是鄰居
+    }
+
+    #[test]
+    fn pick_destination_tiers_shorter_than_homes_defaults_to_stranger() {
+        // tiers 長度不足（呼叫端快照與 homes 略有落差時的保護）：缺的視為 Stranger，不 panic。
+        let homes = [(0.0, 0.0, "露娜"), (0.0, 75.0, "諾娃"), (-75.0, 0.0, "賽勒")];
+        let r = pick_destination(0, &homes, &[], 0);
+        assert!(r.is_some());
+    }
+
+    // ── pick_destination 情誼加權（本切片新行為：關係影響探訪目標） ────────────────
+
+    #[test]
+    fn tier_weight_friend_beats_acquaintance_beats_stranger() {
+        assert!(tier_weight(BondTier::Friend) > tier_weight(BondTier::Acquaintance));
+        assert!(tier_weight(BondTier::Acquaintance) > tier_weight(BondTier::Stranger));
+        assert!(tier_weight(BondTier::Stranger) >= 1, "陌生人仍要有非零機會，關係才可能從零開始");
+    }
+
+    #[test]
+    fn pick_destination_prefers_friend_over_stranger() {
+        // 自己(0)＋一位陌生人(1)＋一位老朋友(2)：老朋友的權重應明顯佔多數。
+        let homes = [(0.0, 0.0, "露娜"), (10.0, 0.0, "諾娃"), (20.0, 0.0, "賽勒")];
+        let tiers = [BondTier::Stranger, BondTier::Stranger, BondTier::Friend];
+        let total = tier_weight(BondTier::Stranger) + tier_weight(BondTier::Friend);
+        let friend_picks = (0..total)
+            .filter(|&pick| pick_destination(0, &homes, &tiers, pick).unwrap().2 == "賽勒")
+            .count();
+        // 老朋友權重 6 / (1+6) 應遠多於陌生人的 1 / 7。
+        assert_eq!(friend_picks, tier_weight(BondTier::Friend));
+        assert!(friend_picks * 2 > total, "老朋友應佔明顯多數的探訪機率");
+    }
+
+    #[test]
+    fn pick_destination_weighted_still_covers_stranger_sometimes() {
+        // 陌生人權重非零：掃過完整週期，陌生人仍會被選到（關係不會被鎖死永遠拜訪同一人）。
+        let homes = [(0.0, 0.0, "露娜"), (10.0, 0.0, "諾娃"), (20.0, 0.0, "賽勒")];
+        let tiers = [BondTier::Stranger, BondTier::Stranger, BondTier::Friend];
+        let total = tier_weight(BondTier::Stranger) + tier_weight(BondTier::Friend);
+        let hit_stranger = (0..total)
+            .any(|pick| pick_destination(0, &homes, &tiers, pick).unwrap().2 == "諾娃");
+        assert!(hit_stranger, "陌生人仍要偶爾被選到");
     }
 
     // ── arrival_say ──────────────────────────────────────────────────────────
@@ -224,8 +301,9 @@ mod tests {
     fn pick_destination_two_residents_always_picks_other() {
         // 只有 2 位居民：my_idx=0 → 唯一結果是索引 1。
         let homes = [(0.0_f32, 0.0_f32, "露娜"), (50.0, 50.0, "諾娃")];
+        let tiers = [BondTier::Stranger; 2];
         for pick in 0..5 {
-            let r = pick_destination(0, &homes, pick).unwrap();
+            let r = pick_destination(0, &homes, &tiers, pick).unwrap();
             assert_eq!(r.2, "諾娃");
         }
     }

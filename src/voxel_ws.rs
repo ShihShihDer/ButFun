@@ -4906,7 +4906,13 @@ fn tick_residents(dt: f32) {
                         }; // residents 讀鎖釋放
                         let homes_ref: Vec<(f32, f32, &str)> = homes_snap
                             .iter().map(|(x, z, n)| (*x, *z, n.as_str())).collect();
-                        if let Some((tx, tz, host_name)) = vvisit::pick_destination(my_idx, &homes_ref, pick) {
+                        // 情誼加權（ROADMAP 671 深化）：老朋友更常被造訪，關係第一次真的
+                        // 影響探訪目標，非只被行為單向記錄（residents 鎖已釋放，另取 bonds 短鎖，不巢狀）。
+                        let tiers: Vec<vbonds::BondTier> = {
+                            let bonds = hub().bonds.read().unwrap();
+                            homes_snap.iter().map(|(_, _, n)| bonds.tier_of(rname, n)).collect()
+                        }; // bonds 讀鎖釋放
+                        if let Some((tx, tz, host_name)) = vvisit::pick_destination(my_idx, &homes_ref, &tiers, pick) {
                             let host = host_name.to_string();
                             {
                                 let mut residents = hub().residents.write().unwrap();
