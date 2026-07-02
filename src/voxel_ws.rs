@@ -256,6 +256,22 @@ fn resident_name_of(rid: &str) -> &'static str {
     RESIDENT_NAMES.get(idx).copied().unwrap_or(RESIDENT_NAMES[0])
 }
 
+/// 依居民 id 查詢牠與所有其他居民的情誼計數（Friend/Acquaintance 各幾位）。
+///
+/// **情誼帳本以居民「顯示名」為鍵**（`record_visit`/`bond_arrive_events` 一路都是傳
+/// `r.name` 如「露娜」「諾娃」），過去多處誤把 `vox_res_{i}` id 直接傳進
+/// `bonds.bond_counts_for`/`tier_of`，鍵值不一致導致查詢永遠落空——已互為老朋友的
+/// 居民在心情計算、關係面板、聚會偵測裡全部被誤判成陌生人（ROADMAP 713 修復）。
+/// 這裡統一把 id 轉成名字再查，往後任何呼叫端都不會再誤用。
+fn resident_bond_counts(bonds: &ResidentBonds, rid: &str) -> (usize, usize) {
+    bonds.bond_counts_for(resident_name_of(rid), &RESIDENT_NAMES)
+}
+
+/// 依兩個居民 id 查詢彼此的情誼層級（見 `resident_bond_counts` 說明，同一個鍵值 bug）。
+fn resident_tier_of(bonds: &ResidentBonds, id_a: &str, id_b: &str) -> vbonds::BondTier {
+    bonds.tier_of(resident_name_of(id_a), resident_name_of(id_b))
+}
+
 /// 依 index 配 persona（讓「人設」字串有變化，純供 LLM 口吻；voxel 不沿用 2D 的閒晃邊界）。
 fn persona_for(i: usize) -> ResidentPersona {
     match i % 4 {
@@ -872,7 +888,7 @@ fn players_snapshot_json() -> String {
         let counts: Vec<(String, usize, usize)> = resident_ids
             .iter()
             .map(|&rid| {
-                let (f, a) = bonds.bond_counts_for(rid, &resident_ids);
+                let (f, a) = resident_bond_counts(&bonds, rid);
                 (rid.to_string(), f, a)
             })
             .collect();
@@ -2875,12 +2891,12 @@ pub async fn voxel_relations_handler() -> axum::response::Response {
             for j in (i + 1)..RESIDENT_COUNT {
                 let id_a = format!("vox_res_{i}");
                 let id_b = format!("vox_res_{j}");
-                let tier = bonds.tier_of(&id_a, &id_b);
+                let tier = resident_tier_of(&bonds, &id_a, &id_b);
                 out.push(serde_json::json!({
                     "a": resident_name_of(&id_a),
                     "b": resident_name_of(&id_b),
                     "tier": vbonds::tier_key(tier),
-                    "visits": bonds.visit_count(&id_a, &id_b),
+                    "visits": bonds.visit_count(resident_name_of(&id_a), resident_name_of(&id_b)),
                 }));
             }
         }
@@ -3226,12 +3242,9 @@ fn tick_residents(dt: f32) {
                 }
             } else if r.seek_comfort_cooldown <= 0.0 && r.say.is_empty() {
                 // 觸發尋伴：只有 Lonely 心情才走。
-                let all_ids: Vec<String> =
-                    (0..RESIDENT_COUNT).map(|j| format!("vox_res_{j}")).collect();
-                let all_id_refs: Vec<&str> = all_ids.iter().map(|s| s.as_str()).collect();
                 let (friends, acq) = {
                     let bonds = hub().bonds.read().unwrap();
-                    bonds.bond_counts_for(&r.id, &all_id_refs)
+                    resident_bond_counts(&bonds, &r.id)
                 }; // bonds 讀鎖釋放
                 let mems = {
                     hub().memory.read().unwrap().memory_count(&r.id)
@@ -3350,12 +3363,9 @@ fn tick_residents(dt: f32) {
             // 心情自語 v1（ROADMAP 677）：冷卻到期且 say 為空時，依心情自發冒一句台詞。
             // 鎖序：bonds 讀（即釋）→ memory 讀（即釋），不巢狀，不持鎖 await。
             if r.say.is_empty() && r.mood_say_cooldown <= 0.0 {
-                let all_ids: Vec<String> =
-                    (0..RESIDENT_COUNT).map(|j| format!("vox_res_{j}")).collect();
-                let all_id_refs: Vec<&str> = all_ids.iter().map(|s| s.as_str()).collect();
                 let (friends, acq) = {
                     let bonds = hub().bonds.read().unwrap();
-                    bonds.bond_counts_for(&r.id, &all_id_refs)
+                    resident_bond_counts(&bonds, &r.id)
                 }; // bonds 讀鎖釋放
                 let mems = {
                     hub().memory.read().unwrap().memory_count(&r.id)
@@ -3711,13 +3721,11 @@ fn tick_residents(dt: f32) {
         // 鎖序：bonds 讀（即釋）→ memory 讀（即釋）。
         let all_res_ids_for_cheer: Vec<String> =
             (0..RESIDENT_COUNT).map(|j| format!("vox_res_{j}")).collect();
-        let all_res_id_refs_cheer: Vec<&str> =
-            all_res_ids_for_cheer.iter().map(|s| s.as_str()).collect();
         let cheer_bond_counts: Vec<(usize, usize)> = {
             let bonds = hub().bonds.read().unwrap();
             all_res_ids_for_cheer
                 .iter()
-                .map(|rid| bonds.bond_counts_for(rid, &all_res_id_refs_cheer))
+                .map(|rid| resident_bond_counts(&bonds, rid))
                 .collect()
         }; // bonds 讀鎖釋放
         let cheer_mem_counts: Vec<usize> = {
@@ -3807,7 +3815,7 @@ fn tick_residents(dt: f32) {
             for a in &all_res_ids_for_gather {
                 for b in &all_res_ids_for_gather {
                     if a != b {
-                        m.insert((a.clone(), b.clone()), bonds.tier_of(a, b));
+                        m.insert((a.clone(), b.clone()), resident_tier_of(&bonds, a, b));
                     }
                 }
             }
@@ -4305,10 +4313,9 @@ fn tick_residents(dt: f32) {
     // ROADMAP 680：批次計算所有居民心情 → 對應建造間隔（鎖序：bonds 讀即釋 → memory 讀即釋）。
     let build_mood_intervals: HashMap<String, f32> = {
         let all_ids: Vec<String> = (0..RESIDENT_COUNT).map(|j| format!("vox_res_{j}")).collect();
-        let id_refs: Vec<&str> = all_ids.iter().map(|s| s.as_str()).collect();
         let bond_counts: Vec<(usize, usize)> = {
             let bonds = hub().bonds.read().unwrap();
-            all_ids.iter().map(|rid| bonds.bond_counts_for(rid, &id_refs)).collect()
+            all_ids.iter().map(|rid| resident_bond_counts(&bonds, rid)).collect()
         }; // bonds 讀鎖釋放
         let mem_counts: Vec<usize> = {
             let mem = hub().memory.read().unwrap();
@@ -4671,11 +4678,9 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
     }; // social 讀鎖在此釋放
     // 短鎖讀情誼+記憶，計算居民心情（ROADMAP 676）——循序取鎖，不巢狀。
     let (mood_sense_value, mood_note): (i32, String) = {
-        let all_ids: Vec<String> = (0..RESIDENT_COUNT).map(|i| format!("vox_res_{i}")).collect();
-        let all_id_refs: Vec<&str> = all_ids.iter().map(|s| s.as_str()).collect();
         let (friends, acq) = {
             let bonds = hub().bonds.read().unwrap();
-            bonds.bond_counts_for(&id, &all_id_refs)
+            resident_bond_counts(&bonds, &id)
         }; // bonds 讀鎖釋放
         let mems = {
             let mem = hub().memory.read().unwrap();
@@ -4759,6 +4764,48 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 情誼帳本鍵值一致性（ROADMAP 713 修復）────────────────────────────
+    // 情誼帳本以居民「顯示名」記帳（record_visit 呼叫慣例皆傳 r.name），過去多處
+    // 誤把 id 直接傳進 bond_counts_for/tier_of，鍵值不一致導致查詢永遠落空——
+    // 已是老朋友的居民在心情計算/關係面板/聚會偵測裡全部被誤判成陌生人。
+    // 這裡釘住修復後的 resident_bond_counts/resident_tier_of helper 行為正確，
+    // 且證明「直接用 id 查」（舊 bug 行為）確實查不到，兩者是不同鍵。
+
+    #[test]
+    fn resident_bond_counts_finds_visits_recorded_by_name() {
+        let mut bonds = ResidentBonds::new();
+        // 累積到相識門檻（3 次），用名字記帳——模擬 bond_arrive_events 的真實呼叫方式。
+        for _ in 0..vbonds::ACQUAINTANCE_VISITS {
+            bonds.record_visit("露娜", "諾娃");
+        }
+        // id 轉名字後查詢，應該看得到剛剛記的這段情誼。
+        let (friends, acq) = resident_bond_counts(&bonds, "vox_res_0"); // 露娜
+        assert_eq!((friends, acq), (0, 1), "露娜與諾娃應為 1 位相識");
+        let (friends_b, acq_b) = resident_bond_counts(&bonds, "vox_res_1"); // 諾娃
+        assert_eq!((friends_b, acq_b), (0, 1), "情誼對稱，諾娃視角亦同");
+    }
+
+    #[test]
+    fn resident_bond_counts_direct_id_lookup_would_miss_it() {
+        // 對照組：驗證帳本確實用名字為鍵——直接拿 id 字串查（舊 bug 的行為）查不到任何情誼，
+        // 證明 resident_bond_counts 的「id→名字轉換」才是修復的關鍵，而非巧合過關。
+        let mut bonds = ResidentBonds::new();
+        bonds.record_visit("露娜", "諾娃");
+        let (friends, acq) = bonds.bond_counts_for("vox_res_0", &["vox_res_0", "vox_res_1"]);
+        assert_eq!((friends, acq), (0, 0), "用 id 當鍵查詢應查無資料（與名字鍵不同）");
+    }
+
+    #[test]
+    fn resident_tier_of_finds_friend_tier_recorded_by_name() {
+        let mut bonds = ResidentBonds::new();
+        for _ in 0..vbonds::FRIEND_VISITS {
+            bonds.record_visit("賽勒", "奧瑞");
+        }
+        // vox_res_2=賽勒、vox_res_3=奧瑞（見 RESIDENT_NAMES 順序）。
+        let tier = resident_tier_of(&bonds, "vox_res_2", "vox_res_3");
+        assert_eq!(tier, vbonds::BondTier::Friend, "應能查到老朋友層級，供聚會/面板使用");
+    }
 
     // ── 問居民學配方 ─────────────────────────────────────────────
     #[test]
