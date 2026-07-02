@@ -53,6 +53,12 @@ pub const POTATO_SEEDS_ID: u8 = 52;
 /// 可送給居民當禮物，也是食物類贈禮之一；慢熟換來的量大收成適合囤糧。
 pub const POTATO_ID: u8 = 53;
 
+/// 烤地薯物品 id（烤地薯 v1；純 inventory 物品，住背包不可放置）。
+/// 把生馬鈴薯(53)放進熔爐烤成的熱騰騰佳餚，居民最愛的美味贈禮——把種田的收成
+/// 也接上「採集→烹飪→餽贈」的療癒循環（比照烤魚 63 之於垂釣）。
+/// 由熔爐配方 `smelt_potato`（生馬鈴薯→烤地薯）產出。id 64 是 63(烤魚)之後首個空號。
+pub const BAKED_POTATO_ID: u8 = 64;
+
 /// 幼苗成熟所需秒數（~90 秒 = 1.5 分鐘）。調校讓玩家在一輪遊玩中體驗完整循環。
 pub const GROW_SECS: u64 = 90;
 
@@ -375,6 +381,17 @@ mod tests {
         assert_ne!(POTATO_ID, BREAD_ID);
         assert_eq!(POTATO_SEEDS_ID, 52);
         assert_eq!(POTATO_ID, 53);
+    }
+
+    #[test]
+    fn baked_potato_id_unique_and_after_cooked_fish() {
+        // 烤地薯 v1：id 64，接在烤魚(63)之後首個空號；不撞任何農作/種子 id。
+        assert_eq!(BAKED_POTATO_ID, 64);
+        assert_ne!(BAKED_POTATO_ID, POTATO_ID); // 生馬鈴薯 vs 烤地薯是兩件不同物品
+        assert_ne!(BAKED_POTATO_ID, POTATO_SEEDS_ID);
+        assert_ne!(BAKED_POTATO_ID, BREAD_ID);
+        assert_ne!(BAKED_POTATO_ID, CARROT_ID);
+        assert!(BAKED_POTATO_ID > 63, "應排在烤魚(63)之後");
     }
 
     #[test]
