@@ -276,7 +276,51 @@ function updateRain(dt) {
 // 方塊用 Lambert + 頂點色（每方塊上色），對光反應但靠半球光保底不黑。
 // DoubleSide：切片① 求穩，避免任一面纏繞方向算錯被背面剔除成破洞/黑屏（perf 微讓步，之後可收回 FrontSide）。
 const opaqueMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
-const waterMat = new THREE.MeshLambertMaterial({ color: 0x2f6fd0, transparent: true, opacity: 0.55, side: THREE.DoubleSide });
+
+// ── 水體視覺升級 v1 ──────────────────────────────────────────────────────────
+// 水 mesh 走頂點色（vertexColors: true），以便依流動等級染不同深淺。
+// 來源水（WATER）：深藍不透明感；流動水 level 越高越淺色、更透明——一眼看出流向。
+// 水面微動感：onBeforeCompile 注入 GLSL，頂面頂點依 time uniform 做輕微正弦波動。
+// 水下氛圍：相機進入水方塊時，#underwaterOverlay 淡藍覆蓋層出現（CSS 即可、零 draw call）。
+
+// 全域 time uniform——每幀在 update() 更新，共用給水面 shader。
+const waterTime = { value: 0.0 };
+
+// 水面動感 shader 注入：頂面頂點（normal.y > 0.9）沿 Y 軸輕微正弦偏移。
+// 振幅 0.04 格，週期約 2.5 秒，水平位置也做微小 XZ offset 讓波紋更自然。
+function makeWaterMat() {
+  const mat = new THREE.MeshLambertMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.60,
+    side: THREE.DoubleSide,
+  });
+  // 避免 Three.js 快取到沒有 uTime uniform 的 program（每個水材質唯一 cache key）。
+  mat.customProgramCacheKey = () => "butfun-water-wave-v1";
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = waterTime;
+    // 在 vertex shader 最前面宣告 uniform
+    shader.vertexShader = "uniform float uTime;\n" + shader.vertexShader;
+    // 在 #include <begin_vertex> 之後插入波動邏輯。
+    // Three.js Lambert vertex shader 在 begin_vertex 時已有 position（attribute）
+    // 和 objectNormal（已 decode 的法線），transformed 就是 begin_vertex 所建的工作座標。
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <begin_vertex>",
+      `#include <begin_vertex>
+      // 水面微動感：只對頂面（objectNormal.y > 0.9）的頂點做 Y 軸正弦偏移
+      if (objectNormal.y > 0.9) {
+        float wave = sin(position.x * 1.8 + uTime * 2.5) * 0.030
+                   + sin(position.z * 1.6 + uTime * 1.9 + 1.2) * 0.025;
+        transformed.y += wave;
+      }
+      `
+    );
+    // 記住 shader reference（uniforms 已含 uTime 指標，自動跟著 waterTime.value 更新）
+    mat.userData.shader = shader;
+  };
+  return mat;
+}
+const waterMat = makeWaterMat();
 
 // ── 火把發光 v1（ROADMAP 691）─────────────────────────────────────────────────
 // 火把（block 31）放置後向周遭散發暖橘光；手持火把時鏡頭附近同樣有光。
@@ -420,7 +464,7 @@ function rebuildChunk(key) {
   if (!ch) return;
 
   const pos = [], norm = [], col = [], idx = [];
-  const wpos = [], wnorm = [], widx = [];
+  const wpos = [], wnorm = [], wcol = [], widx = [];
   const baseX = cx * CHUNK, baseY = cy * CHUNK, baseZ = cz * CHUNK;
 
   for (let ly = 0; ly < CHUNK; ly++) {
@@ -437,18 +481,18 @@ function rebuildChunk(key) {
             const nb = getRaw(wx + f.d[0], wy + f.d[1], wz + f.d[2]);
             if (f.n[1] === 1) {
               // 頂面：上方空氣才露出水面，畫在 topH（矮水面一眼看得出在漫）。
-              if (nb === AIR) emitWaterFace(wpos, wnorm, widx, lx, ly, lz, f, topH, topH);
+              if (nb === AIR) emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, topH, topH, b);
             } else if (f.n[1] === -1) {
               // 底面：下方空氣才畫（避免內面）。
-              if (nb === AIR) emitWaterFace(wpos, wnorm, widx, lx, ly, lz, f, 0, 0);
+              if (nb === AIR) emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, 0, 0, b);
             } else {
               // 側面：鄰空氣→整片側牆(0..topH)；鄰為較矮的水→畫階梯落差牆(鄰topH..topH)，
               // 讓「越流越低」的水階在側面也看得出來，不是兩塊水之間破洞。
               if (nb === AIR) {
-                emitWaterFace(wpos, wnorm, widx, lx, ly, lz, f, topH, 0);
+                emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, topH, 0, b);
               } else if (isWaterId(nb)) {
                 const nH = waterTopH(nb);
-                if (nH < topH - 1e-3) emitWaterFace(wpos, wnorm, widx, lx, ly, lz, f, topH, nH);
+                if (nH < topH - 1e-3) emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, topH, nH, b);
               }
             }
           }
@@ -479,6 +523,7 @@ function rebuildChunk(key) {
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.Float32BufferAttribute(wpos, 3));
     g.setAttribute("normal", new THREE.Float32BufferAttribute(wnorm, 3));
+    g.setAttribute("color", new THREE.Float32BufferAttribute(wcol, 3));
     g.setIndex(widx);
     const m = new THREE.Mesh(g, waterMat);
     m.position.set(baseX, baseY, baseZ);
@@ -505,16 +550,56 @@ function waterTopH(b) {
   const lvl = b - WATER_FLOW_BASE + 1;      // 1..7（越大＝離源越遠＝越矮）
   return Math.max(0.12, 1.0 - lvl * 0.11);  // level1≈0.89 … level7≈0.23
 }
+
+// 水體顏色：依流動等級深淺——來源水深藍，level 越高越淺越透明（一眼看出流向）。
+// 回傳 [r, g, b]（0..1 線性），由 emitWaterFace 注入頂點色。
+function waterColor(b) {
+  if (b === WATER) return [0.13, 0.38, 0.80];   // 來源水：飽和深藍
+  const lvl = b - WATER_FLOW_BASE + 1;            // 1..7
+  const t = lvl / WATER_FLOW_MAX_LVL;             // 0..1（越大=越遠=越淡）
+  // 從深藍（0.13,0.40,0.82）漸變到淺藍白（0.50,0.72,0.95）
+  const r = 0.13 + t * (0.50 - 0.13);
+  const g = 0.40 + t * (0.72 - 0.40);
+  const bv = 0.82 + t * (0.95 - 0.82);
+  return [r, g, bv];
+}
+
 // 推一個水面（4 頂點、2 三角）：頂邊在 yTop、底邊在 yBot（側面藉此畫出階梯落差牆）。
-function emitWaterFace(pos, norm, idx, lx, ly, lz, f, yTop, yBot) {
+// wcol：水頂點色陣列；blockId：水方塊 id（決定深淺色）。
+function emitWaterFace(pos, norm, col, idx, lx, ly, lz, f, yTop, yBot, blockId) {
   const start = pos.length / 3;
+  const c = waterColor(blockId);
   for (const v of f.v) {
     const y = v[1] === 1 ? yTop : yBot;
     pos.push(lx + v[0], ly + y, lz + v[2]);
     norm.push(f.n[0], f.n[1], f.n[2]);
+    col.push(c[0], c[1], c[2]);
   }
   idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
 }
+
+// ── 水下氛圍 v1 ──────────────────────────────────────────────────────────────
+// 相機進入水方塊 → #underwaterOverlay（淡藍色覆蓋層）淡入；離水即淡出。
+// 零 Three.js draw call，只改 DOM 元素 opacity。
+const _underwaterEl = document.getElementById("underwaterOverlay");
+let _isUnderwater = false;
+function updateUnderwaterAtmosphere() {
+  const cx = Math.floor(camera.position.x);
+  const cy = Math.floor(camera.position.y);
+  const cz = Math.floor(camera.position.z);
+  const blockAtCamera = getRaw(cx, cy, cz);
+  const underwater = isWaterId(blockAtCamera);
+  if (underwater !== _isUnderwater) {
+    _isUnderwater = underwater;
+    if (_underwaterEl) {
+      _underwaterEl.style.opacity = underwater ? "1" : "0";
+    }
+    // 水下微霧：略縮短 Three.js fog，回到地面立即還原（與 overlay 獨立，確保霧效無論如何生效）
+    scene.fog.near = underwater ? 6 : 40;
+    scene.fog.far  = underwater ? 18 : 120;
+  }
+}
+// ── end 水下氛圍 v1 ───────────────────────────────────────────────────────────
 
 // 把一個 chunk 連同鄰塊標記為待重建（鄰塊也要重算面剔除）。
 function markDirty(cx, cy, cz) {
@@ -2671,6 +2756,12 @@ function update(dt) {
     _torchRefreshTimer = 2.0;
     updateNearbyTorchLights();
   }
+
+  // 水體視覺升級 v1：累積 time uniform 驅動水面波動 shader。
+  waterTime.value += dt;
+
+  // 水下氛圍：相機所在方塊是否為水（每幀一次 getRaw 查詢，成本極低）。
+  updateUnderwaterAtmosphere();
 
   updateRain(dt);
   streamChunks(dt);
