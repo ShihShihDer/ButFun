@@ -66,6 +66,9 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         57 => "冰晶燈",
         58 => "乙太礦",
         59 => "乙太燈",
+        60 => "釣竿",
+        61 => "小魚",
+        62 => "乙太魚",
         _ => "物品",
     }
 }
@@ -99,9 +102,10 @@ pub fn treasure_gift_thanks_line(player_name: &str, affinity: usize, pick: usize
     }
 }
 
-/// 是否為「食物」類禮物（麵包、胡蘿蔔、馬鈴薯）——居民會給特別溫暖的回應。
+/// 是否為「食物」類禮物（麵包、胡蘿蔔、馬鈴薯、小魚、乙太魚）——居民會給特別溫暖的回應。
 pub fn is_food_gift(block_id: u8) -> bool {
-    block_id == 19 || block_id == 49 || block_id == 53 // BREAD_ID / CARROT_ID / POTATO_ID
+    // BREAD_ID / CARROT_ID / POTATO_ID / FISH_ID / AETHER_FISH_ID
+    block_id == 19 || block_id == 49 || block_id == 53 || block_id == 61 || block_id == 62
 }
 
 /// 居民道謝台詞（依好感等級選不同句，零 LLM，確定性）。
@@ -403,6 +407,17 @@ mod tests {
     fn is_food_gift_includes_potato() {
         assert!(is_food_gift(53));  // 馬鈴薯算食物禮物
         assert!(!is_food_gift(52)); // 馬鈴薯種子不算食物禮物
+    }
+
+    #[test]
+    fn item_name_and_food_gift_include_fish() {
+        // 垂釣 v1（ROADMAP 734）：釣竿(60)/小魚(61)/乙太魚(62)。
+        assert_eq!(item_name_zh(60), "釣竿");
+        assert_eq!(item_name_zh(61), "小魚");
+        assert_eq!(item_name_zh(62), "乙太魚");
+        assert!(is_food_gift(61), "小魚算食物禮物");
+        assert!(is_food_gift(62), "乙太魚算食物禮物");
+        assert!(!is_food_gift(60), "釣竿是工具、非食物");
     }
 
     #[test]

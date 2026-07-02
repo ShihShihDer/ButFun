@@ -49,6 +49,7 @@ use crate::voxel_memory::{self as vmem, VoxelMemory};
 use crate::voxel_farm::{self as vfarm, FarmStore};
 use crate::voxel_gift as vgift;
 use crate::voxel_keepsake as vkeep;
+use crate::voxel_fishing as vfish;
 use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
 use crate::voxel_preference as vpref;
 use crate::voxel_overhear as vh;
@@ -823,6 +824,9 @@ struct VoxelHub {
     /// 待確認的交易提案（純記憶體，無需持久化）。
     /// 鍵=居民 id，值=(提案, 到期 unix 秒)；居民同時只對一個提案；30 秒內未接受自動過期。
     pending_trades: RwLock<HashMap<String, (TradeOffer, u64)>>,
+    /// 垂釣 v1（ROADMAP 734）：玩家進行中的拋竿（純記憶體，無需持久化，重啟即散）。
+    /// 鍵=玩家 id，值=(上鉤 unix 秒, 水體 x, y, z)；一人同時只掛一竿；收竿或斷線清除。
+    pending_fish: RwLock<HashMap<String, (u64, i32, i32, i32)>>,
     /// 居民情誼帳本（ROADMAP 672）：拜訪次數累積情誼（陌生→相識→老朋友），持久化跨重啟。
     /// 每次探訪到達時 record_visit → 若升級則 Feed 廣播 + 問候語更換。
     bonds: RwLock<ResidentBonds>,
@@ -974,6 +978,8 @@ fn hub() -> &'static VoxelHub {
             last_phase: std::sync::Mutex::new(TimePhase::Day),
             // 居民交易 v1：純記憶體，重啟清空（提案是即時的，無需持久化）。
             pending_trades: RwLock::new(HashMap::new()),
+            // 垂釣 v1（ROADMAP 734）：進行中的拋竿純記憶體，重啟清空。
+            pending_fish: RwLock::new(HashMap::new()),
             // 居民情誼 v1（ROADMAP 672）：啟動時從 data/voxel_bonds.jsonl 載回情誼記錄。
             bonds: RwLock::new(ResidentBonds::from_entries(vbonds::load_bonds())),
             // 啟動時從 data/voxel_chests.jsonl 載回箱子存量（重啟後仍保留儲存物品）。
@@ -1156,6 +1162,13 @@ enum ClientMsg {
     /// 白天/黎明/黃昏睡不著，伺服器回 `sleep_fail`；成功則廣播新時鐘給所有人（`sleep_ok` 單播）。
     #[serde(rename = "sleep_in_bed")]
     SleepInBed { x: i32, y: i32, z: i32 },
+    /// 垂釣 v1（ROADMAP 734）：手持釣竿對準水面拋竿；(x,y,z) 是瞄準的水體方塊。
+    /// 伺服器驗手持釣竿 + 目標是水 + 觸及範圍內 → 記下上鉤時刻（3~7 秒後），回 `fish_cast_ok`。
+    #[serde(rename = "fish_cast")]
+    FishCast { x: i32, y: i32, z: i32 },
+    /// 垂釣 v1：收竿。太早（魚未上鉤）回 `fish_too_early`（保留這竿）；時機到才釣起漁獲。
+    #[serde(rename = "fish_reel")]
+    FishReel,
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -3134,12 +3147,102 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 try_unlock_milestone(&name, "first_sleep", &out_tx);
             }
 
+            // ── 垂釣 v1（ROADMAP 734）：拋竿 ──────────────────────────────────────
+            Ok(ClientMsg::FishCast { x, y, z }) => {
+                let Some((px, py, pz)) = player_pos(my_id) else { continue; };
+                // 1) 手上要有釣竿（inventory 讀鎖即釋）。
+                let has_rod = hub().inventory.read().unwrap().count(&name, vfish::FISHING_ROD_ID) >= 1;
+                if !has_rod {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "fish_fail", "reason": "你手上沒有釣竿——先用木板做一支吧。"
+                    }).to_string())).await;
+                    continue;
+                }
+                // 2) 觸及範圍內（沿用互動統一 reach，和客戶端瞄準一致；設計觸及見 vfish::FISH_REACH）。
+                if !voxel::in_reach(px, py, pz, x, y, z) { continue; }
+                // 3) 目標要是水面（來源水或流動水）——delta 讀鎖快照即釋。
+                let target_blk = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
+                if !vfish::is_water_block(target_blk as u8) {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "fish_fail", "reason": "要對準水面才能拋竿喔。"
+                    }).to_string())).await;
+                    continue;
+                }
+                // 4) 已經有一竿在水裡就別重拋（pending_fish 讀鎖即釋）。
+                if hub().pending_fish.read().unwrap().contains_key(&name) {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "fish_fail", "reason": "你的釣線已經在水裡了。"
+                    }).to_string())).await;
+                    continue;
+                }
+                // 5) 記下上鉤時刻（3~7 秒後，隨機有變化），存進 pending（寫鎖即釋）。
+                let now = vfarm::now_secs();
+                let roll = now
+                    .wrapping_add(x.unsigned_abs() as u64)
+                    .wrapping_add(y.unsigned_abs() as u64)
+                    .wrapping_add(z.unsigned_abs() as u64)
+                    .wrapping_add(name.len() as u64);
+                let wait = vfish::bite_secs(roll);
+                let ready_at = now + wait;
+                {
+                    hub().pending_fish.write().unwrap().insert(name.clone(), (ready_at, x, y, z));
+                }
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "fish_cast_ok", "wait": wait, "hint": vfish::cast_hint()
+                }).to_string())).await;
+            }
+
+            // ── 垂釣 v1（ROADMAP 734）：收竿 ──────────────────────────────────────
+            Ok(ClientMsg::FishReel) => {
+                let now = vfarm::now_secs();
+                // 1) 取這竿的上鉤時刻（pending_fish 讀鎖即釋）。
+                let pending = hub().pending_fish.read().unwrap().get(&name).copied();
+                let Some((ready_at, fx, _fy, fz)) = pending else {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "fish_fail", "reason": "你還沒拋竿呢。"
+                    }).to_string())).await;
+                    continue;
+                };
+                // 2) 太早收竿——魚還沒上鉤，保留這竿讓玩家再等。
+                if now < ready_at {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "fish_too_early", "hint": vfish::too_early_hint()
+                    }).to_string())).await;
+                    continue;
+                }
+                // 3) 時機到——移除這竿（寫鎖即釋），釣起漁獲。
+                { hub().pending_fish.write().unwrap().remove(&name); }
+                let catch_roll = now
+                    .wrapping_add(fx.unsigned_abs() as u64)
+                    .wrapping_add(fz.unsigned_abs() as u64);
+                let fish_id = vfish::pick_catch(catch_roll);
+                // 4) 漁獲進背包（inventory 寫鎖即釋 → append_inv → inv_update 單播）。
+                let entry = hub().inventory.write().unwrap().give(&name, fish_id, 1);
+                vinv::append_inv(&entry);
+                let nc = hub().inventory.read().unwrap().count(&name, fish_id);
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "inv_update", "block_id": fish_id, "count": nc
+                }).to_string())).await;
+                // 5) 世界動態 feed（不在場的人回來也讀得到）+ 收竿揭曉單播。
+                vfeed::append_feed("垂釣", &name, &vfish::catch_feed_line(&name, fish_id));
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "fish_catch",
+                    "item_id": fish_id,
+                    "item_name": vfish::fish_name_zh(fish_id),
+                    "line": vfish::catch_self_line(fish_id),
+                }).to_string())).await;
+                // 玩家里程碑 v1（ROADMAP 724）：人生第一次在水邊釣起魚。
+                try_unlock_milestone(&name, "first_fish", &out_tx);
+            }
+
             // 重複 Join 或壞訊息：忽略。
             _ => {}
         }
     }
 
     // 收攤：移除玩家、廣播、收掉任務。
+    // 垂釣 v1：清掉這位玩家進行中的拋竿（純記憶體，斷線即散）。
+    { hub().pending_fish.write().unwrap().remove(&name); }
     forward.abort();
     cleanup(my_id, &writer);
     broadcast_players();
