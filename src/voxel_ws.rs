@@ -156,6 +156,10 @@ const RECALL_CHANCE_PER_TICK: f32 = 0.002;
 const MOOD_SAY_COOLDOWN: f32 = 120.0;
 /// 居民建造頻率：每隔這麼多秒放一塊方塊（慢節奏，讓玩家能目睹過程）。
 const BUILD_INTERVAL_SECS: f32 = 8.0;
+/// 建物完工後的建造冷卻（秒）：任一建物蓋好後這麼久內同居民不動工新建物。
+/// 頻率保險：即使持久 flag 因故失效，也不會連發完工洗版 Feed（每座至少隔這麼久）。
+/// 5 分鐘＝比正常建造間隔長得多、又不至於讓「正常一座接一座蓋」感覺卡頓。
+const BUILD_COOLDOWN_SECS: f32 = 300.0;
 /// 居民每蓋一個建物前要先採集幾次（備料感、「她真的在做事」）。
 const GATHER_QUOTA: u32 = 2;
 /// 全部建物蓋完後，閒置時每個 agency tick 觸發一次「散心採集」的機率（低頻、不洗版）。
@@ -191,6 +195,10 @@ struct VoxelResident {
     pending_response: Option<(String, String, f32)>,
     /// 建造 tick 倒數（秒）：降到 0 時嘗試放一塊或啟動新計畫；錯開避免同 tick 全員觸發。
     build_tick: f32,
+    /// 建造冷卻倒數（秒，蓋家鬼打牆頻率保險）：任一建物完工後設為 [`BUILD_COOLDOWN_SECS`]，
+    /// > 0 時不進建造決策（不動工新建物），純採集/社交/閒晃。這是最後一道保險——即使
+    /// 持久 flag 因故失效，同居民也不會在短時間內連發完工洗版 Feed（每座至少隔數分鐘）。
+    build_cooldown: f32,
     /// 記憶回想泡泡冷卻（秒）：> 0 表示最近剛回想過，尚不可再觸發（稀少才有感）。
     recall_cooldown: f32,
     /// 旁聽搭話冷卻（秒，embodied 靠近說話 v1）：> 0 表示最近因旁聽搭過一句，
@@ -732,6 +740,8 @@ fn init_residents() -> Vec<VoxelResident> {
             pending_response: None,
             // 錯開建造 tick，讓 4 位居民不同 tick 檢查（BUILD_INTERVAL_SECS / 4 * i 間距）。
             build_tick: BUILD_INTERVAL_SECS * 0.5 + i as f32 * (BUILD_INTERVAL_SECS / 4.0),
+            // 啟動時無建造冷卻（可立即照持久 flag 決定要不要蓋）。
+            build_cooldown: 0.0,
             // 錯開首次回想冷卻，避免啟動後短時間全員同時觸發（前 60 秒不回想）。
             recall_cooldown: 60.0 + i as f32 * 30.0,
             // 旁聽搭話冷卻：初始 0，可立即因旁聽搭話（之後由 should_chime_in 套冷卻）。
@@ -4197,10 +4207,16 @@ fn tick_residents(dt: f32) {
                 think_jobs.push((r.id.clone(), r.name, r.persona, r.body.x, r.body.z));
             }
 
-            // agency tick 倒數；到期且「沒在採集、沒在整地、沒在跟隨、沒在跑腿」時才加入候選
-            // （做事中不打斷、交給技能跑完）。只收快照，實際放塊 / 決定活動在鎖外執行。
+            // 建造冷卻倒數（蓋家鬼打牆頻率保險）：剛完工的居民這段時間不動工新建物。
+            if r.build_cooldown > 0.0 {
+                r.build_cooldown -= dt;
+            }
+
+            // agency tick 倒數；到期且「沒在採集、沒在整地、沒在跟隨、沒在跑腿、沒在建造冷卻」時
+            // 才加入候選（做事中不打斷、交給技能跑完）。只收快照，實際放塊 / 決定活動在鎖外執行。
             r.build_tick -= dt;
             if r.build_tick <= 0.0
+                && r.build_cooldown <= 0.0
                 && r.gather.is_none()
                 && !directed_snaps.contains_key(&r.id)
                 && r.follow.is_none()
@@ -5417,12 +5433,26 @@ fn tick_residents(dt: f32) {
                 }
             } else if let Some(kind) = vbuild::BuildKind::from_str(&kind_str) {
                 // 記下「這位居民蓋過這種建物」→ 之後永不重蓋（不鬼打牆）+ 持久化。
-                let rec = {
+                // `mark_done` 首次完成該種時登記錨點並回一筆 GoalRecord；若這種早已完成（回 None），
+                // 改呼叫 `anchor_only_record` **就地登記這座的錨點並回一筆純錨點記錄**落地——
+                // 讓重啟後仍記得此錨點擋重蓋（這正是 res_1 水井連續「完工」數十次的洞）。
+                let (rec, anchor_rec) = {
                     let mut goals = hub().goals.write().unwrap();
-                    goals.mark_done(&rid, kind, plan_anchor)
+                    let r = goals.mark_done(&rid, kind, plan_anchor);
+                    let ar = if r.is_none() {
+                        Some(goals.anchor_only_record(&rid, kind, plan_anchor))
+                    } else {
+                        None
+                    };
+                    (r, ar)
                 }; // goals 寫鎖釋放
                 if let Some(rec) = rec {
                     vskill::append_goal(&rec);
+                } else if let Some(ar) = anchor_rec {
+                    // 蓋家鬼打牆補漏：這種早已在 done（不落新完成記錄），但這一座真的完工了——
+                    // 持久化它的錨點，否則同格會被一蓋再蓋、永遠逃過 anchor_built 封鎖
+                    // （這正是 res_1 水井連續「完工」數十次的洞）。
+                    vskill::append_goal(&ar);
                 }
             }
             // 完工 Feed（每個建物只發一次，不洗版）。
@@ -5454,11 +5484,13 @@ fn tick_residents(dt: f32) {
                     }
                 }
             }
-            // 蓋完一個 → 重置採集計數，下一輪先採料再蓋下一種（有進展感）。
+            // 蓋完一個 → 重置採集計數，下一輪先採料再蓋下一種（有進展感）；
+            // 並開建造冷卻（蓋家鬼打牆頻率保險）：這段時間內不動工新建物，完工事件不洗版。
             {
                 let mut residents = hub().residents.write().unwrap();
                 if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
                     r.gathered_since_build = 0;
+                    r.build_cooldown = BUILD_COOLDOWN_SECS;
                 }
             } // residents 寫鎖釋放
         }
@@ -5890,6 +5922,12 @@ fn start_build(
     let bx = hx.floor() as i32 + ox;
     let bz = hz.floor() as i32 + oz;
     let by = vbuild::surface_y(bx, bz);
+    // 蓋家鬼打牆根治（機制性硬閘）：這個確切錨點若已完工過這種建物，直接不動工。
+    // 這是「地上已有這座 → 就不再蓋」的硬事實，不倚賴 done_kinds/expansion_count 每 tick 重推
+    // （那組讀值一旦因重啟／競態短暫失真就會鬼打牆）；水把井裡的水沖走也不會讓它誤判「還沒蓋」。
+    if hub().goals.read().unwrap().anchor_built(rid, kind, (bx, by, bz)) {
+        return;
+    }
     let plan = {
         let mut builds = hub().builds.write().unwrap();
         if builds.has_plan(rid) {
