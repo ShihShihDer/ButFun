@@ -179,6 +179,7 @@ mod voxel_resident_trade;
 mod voxel_milestones;
 mod voxel_keepsake; // ROADMAP 732 你送的心意她擺了出來·玩家餽贈化為紀念物擺進世界
 mod voxel_fishing; // ROADMAP 734 垂釣 v1·對準水面拋竿等待收竿，釣起小魚/稀有乙太魚
+mod voxel_grove; // ROADMAP 738 植樹造林 v1·砍葉得樹苗→種在土地上→靜候長成一株樹，可再生木材
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環

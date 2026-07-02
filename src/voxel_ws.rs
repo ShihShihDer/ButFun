@@ -47,6 +47,7 @@ use crate::voxel_craft as vcraft;
 use crate::voxel_inventory::{self as vinv, InvStore};
 use crate::voxel_memory::{self as vmem, VoxelMemory};
 use crate::voxel_farm::{self as vfarm, FarmStore};
+use crate::voxel_grove::{self as vgrove, GroveStore};
 use crate::voxel_gift as vgift;
 use crate::voxel_keepsake as vkeep;
 use crate::voxel_fishing as vfish;
@@ -831,6 +832,9 @@ struct VoxelHub {
     /// 農地 store（種田 v1·純記憶體；重啟後農地重置，與世界 delta 行為一致）。
     /// 記錄哪些格子種下了幼苗、何時種的，每 15 秒 tick 一次成熟檢查。
     farm: RwLock<FarmStore>,
+    /// 樹苗 store（植樹造林 v1·ROADMAP 738·純記憶體；重啟後種下的樹苗重置，已長成的樹是 delta 方塊會持久）。
+    /// 記錄哪些格子種下了樹苗、何時種的，每 15 秒 tick（`tick_grove`）一次成熟檢查。
+    grove: RwLock<GroveStore>,
     /// 居民回禮已送記錄（ROADMAP 667）：每對（居民, 玩家）一生只送一次。
     /// 持久化到 data/voxel_return_gifts.jsonl。
     return_gifts: RwLock<ReturnGiftStore>,
@@ -987,6 +991,7 @@ fn hub() -> &'static VoxelHub {
             inventory: RwLock::new(InvStore::from_entries(vinv::load_inventory())),
             // 農地 store 純記憶體（與世界 delta 一致：重啟後農地重置，玩家重新種即可）。
             farm: RwLock::new(FarmStore::new()),
+            grove: RwLock::new(GroveStore::new()),
             // 啟動時從 data/voxel_return_gifts.jsonl 載回已回贈紀錄（重啟後仍記得送過）。
             return_gifts: RwLock::new(ReturnGiftStore::from_entries(vret::load_return_gifts())),
             // 世界時鐘：從白天（time_of_day ≈ 0.42）開始，讓玩家一進遊戲就是白天。
@@ -1530,6 +1535,12 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             hub().farm.write().unwrap().remove(x, y, z);
                         }
 
+                        // 植樹造林 v1（ROADMAP 738）：挖掉還沒長成的樹苗 → 清掉 grove 記錄
+                        //（避免下輪 tick_grove 在空格憑空長樹）。樹苗走一般實心掉落分支退還自身(65)。
+                        if matches!(target_block, Block::Sapling) {
+                            hub().grove.write().unwrap().remove(x, y, z);
+                        }
+
                         // 箱子 v1（ROADMAP 692）：破壞箱子前先把箱內物品歸還破壞者，
                         // 再掉落箱子方塊本身——守「不讓材料憑空消失」鐵律。
                         if matches!(target_block, Block::Chest) {
@@ -1596,6 +1607,27 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                                 .to_string(),
                             ));
                         }
+
+                        // 植樹造林 v1（ROADMAP 738）：砍天然樹葉（Leaves）除了原本掉種子，
+                        // 還有 SAPLING_DROP_CHANCE（~1/3）機率額外掉一株樹苗——這是玩家發現植樹
+                        // 玩法、取得可再生木材的入口。機率骰在此呼叫端取真隨機（比照垂釣稀有度慣例），
+                        // 純函式常數照樣可測。掉落是「附加」的，不影響原種子掉落，向後相容。
+                        if matches!(target_block, Block::Leaves)
+                            && rand::random::<f32>() < vgrove::SAPLING_DROP_CHANCE
+                        {
+                            let sid = vgrove::SAPLING_ID;
+                            let entry = hub().inventory.write().unwrap().give(&name, sid, 1);
+                            vinv::append_inv(&entry);
+                            let new_count = hub().inventory.read().unwrap().count(&name, sid);
+                            let _ = out_tx.try_send(Message::Text(
+                                serde_json::json!({
+                                    "t": "inv_update",
+                                    "block_id": sid,
+                                    "count": new_count
+                                })
+                                .to_string(),
+                            ));
+                        }
                     }
                 }
             }
@@ -1611,6 +1643,25 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 let Some((px, py, pz)) = player_pos(my_id) else {
                     continue;
                 };
+                // 植樹造林 v1（ROADMAP 738）：樹苗只能種在「土地」上（草/土/沙/雪/農田土），
+                // 不能種在石頭/木頭/空中——樹要從地面長。先驗證腳下那格，不合格就早退退提示，
+                // 不白白消耗樹苗。（短讀鎖取腳下方塊即釋，不與後續 inventory/delta 鎖巢狀。）
+                if block == Block::Sapling {
+                    let ground = {
+                        let deltas = hub().deltas.read().unwrap();
+                        voxel::effective_block_at(&deltas, x, y - 1, z) as u8
+                    };
+                    if !vgrove::is_plantable_ground(ground) {
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({
+                                "t": "plant_fail",
+                                "reason": "樹苗要種在土地上"
+                            })
+                            .to_string(),
+                        ));
+                        continue;
+                    }
+                }
                 // 步驟1：嘗試消耗材料（inventory 寫鎖，立即釋放）。
                 let inv_entry = {
                     hub().inventory.write().unwrap().take(&name, b, 1)
@@ -1637,6 +1688,11 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     // 玩家里程碑 v1（ROADMAP 724）：人生第一次成功放下方塊。
                     try_unlock_milestone(&name, "first_place", &out_tx);
                     broadcast_block(x, y, z, block);
+                    // 植樹造林 v1（ROADMAP 738）：剛種下的樹苗記進 grove store，
+                    // 由 `tick_grove`（15 秒節拍）計時，約 150 秒後長成一株樹。
+                    if block == Block::Sapling {
+                        hub().grove.write().unwrap().plant(x, y, z, vfarm::now_secs());
+                    }
                     // 水流動：放了一塊（可能堵住水路或填掉水格）→ 喚醒鄰格重算流向。
                     enqueue_water_around(x, y, z);
                     let new_count = hub().inventory.read().unwrap().count(&name, b);
@@ -3298,6 +3354,7 @@ pub fn spawn_farm_tick() {
         loop {
             ticker.tick().await;
             tick_farm();
+            tick_grove(); // 植樹造林 v1（ROADMAP 738）：同節拍檢查樹苗是否長成。
         }
     });
     spawn_water_tick();
@@ -3440,6 +3497,45 @@ fn tick_farm() {
         voxel::set_block(&mut hub().deltas.write().unwrap(), fx, fy, fz, mature_block);
         // 廣播方塊更新（所有連線玩家即時看到作物成熟變色）。
         broadcast_block(fx, fy, fz, mature_block);
+    }
+}
+
+/// 植樹造林 v1（ROADMAP 738）：樹苗成熟 tick（併入 `spawn_farm_tick` 的 15 秒節拍，
+/// 不另開 tick 迴圈）。長成的樹苗 → 用純函式 `grown_tree_blocks` 展開成樹幹＋樹冠 delta 並廣播。
+///
+/// 鎖紀律（嚴守短鎖即釋、不巢狀、不持鎖 await/IO，比照 `tick_farm`）：
+///  ① grove 讀鎖取成熟座標 → 釋。② 每株：grove 寫鎖清記錄 → 釋。
+///  ③ delta 讀鎖 clone 快照（判斷哪些格是空氣、只往空氣長樹，不覆蓋玩家既有建物）→ 釋。
+///  ④ 逐格 delta 寫鎖設方塊 → 釋 + 廣播。全程循序、不巢狀。
+///
+/// **非破壞性**：除了樹苗底座本身（換成樹幹）外，只在「目前是空氣」的格子長出樹幹／樹冠，
+/// 絕不覆蓋玩家蓋的房子或天然地形——守資料安全精神。
+fn tick_grove() {
+    let now = vfarm::now_secs();
+    // ① grove 讀鎖取成熟座標，馬上釋放。
+    let mature: Vec<(i32, i32, i32)> = hub().grove.read().unwrap().mature_saplings(now);
+    if mature.is_empty() {
+        return;
+    }
+    for (sx, sy, sz) in mature {
+        // ② 寫鎖清掉樹苗記錄（避免下輪重複長樹）。
+        hub().grove.write().unwrap().remove(sx, sy, sz);
+        // ③ 短讀鎖 clone delta 快照供「只往空氣長樹」判斷，馬上釋放。
+        let snap: voxel::WorldDelta = hub().deltas.read().unwrap().clone();
+        // ④ 逐格展開樹幹／樹冠。
+        for (tx, ty, tz, gb) in vgrove::grown_tree_blocks(sx, sy, sz) {
+            let block = match gb {
+                vgrove::GroveBlock::Trunk => Block::Wood,
+                vgrove::GroveBlock::Leaf => Block::Leaves,
+            };
+            let is_base = tx == sx && ty == sy && tz == sz;
+            // 底座（樹苗原位）一定換成樹幹；其餘只在目前是空氣時長出，不覆蓋既有方塊。
+            if !is_base && voxel::effective_block_at(&snap, tx, ty, tz) != Block::Air {
+                continue;
+            }
+            voxel::set_block(&mut hub().deltas.write().unwrap(), tx, ty, tz, block);
+            broadcast_block(tx, ty, tz, block);
+        }
     }
 }
 

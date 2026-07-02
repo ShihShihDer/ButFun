@@ -190,6 +190,11 @@ pub enum Block {
     /// 把世界最深處採回的乙太礦封進玻璃燈罩，成為一盞散發清冷青藍光的明燈——
     /// 比火把更亮更冷的高階光源，是深掘地心後最有感的建造回報。可放置、可再破壞回收。
     AetherLamp = 59,
+    /// 樹苗（植樹造林 v1，ROADMAP 738）——砍天然樹葉有機率掉落，可種在土地（草/土/沙/雪/農田土）上，
+    /// 約 150 秒後自己長成一株麥塊風的小樹（樹幹＋樹冠）。天然樹是有限地形資源，樹苗是玩家第一個
+    /// **可再生的木材來源**，也讓空地／沙漠能被綠化成自己種的森林。可放置（種下）、可再破壞回收樹苗。
+    /// id 65：既是背包物品也是世界方塊（沿用「可放置方塊 item_id == block_id」慣例）。
+    Sapling = 65,
 }
 
 impl Block {
@@ -266,6 +271,7 @@ impl Block {
             57 => Some(Block::IceLantern),
             58 => Some(Block::AetherOre),
             59 => Some(Block::AetherLamp),
+            65 => Some(Block::Sapling),
             _ => None,
         }
     }
@@ -281,7 +287,7 @@ impl Block {
             Block::CoalOre | Block::IronOre | Block::IronIngot | Block::IronBlock |
             Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed | Block::Bed |
             Block::Cactus | Block::Snow | Block::IceCrystal | Block::IceLantern |
-            Block::AetherOre | Block::AetherLamp
+            Block::AetherOre | Block::AetherLamp | Block::Sapling
         )
     }
 }
@@ -954,6 +960,17 @@ mod tests {
         assert!(Block::AetherLamp.is_solid());
         assert!(Block::AetherOre.is_placeable());
         assert!(Block::AetherLamp.is_placeable());
+    }
+
+    #[test]
+    fn sapling_roundtrips_and_is_placeable_solid() {
+        // 植樹造林 v1（ROADMAP 738）：樹苗 id 65 雙向對映、可種下（可放置）、實心（渲染成方塊）。
+        assert_eq!(Block::from_u8(65), Some(Block::Sapling));
+        assert_eq!(Block::Sapling as u8, 65);
+        assert!(Block::Sapling.is_placeable(), "樹苗應可種下（放置）");
+        assert!(Block::Sapling.is_solid(), "樹苗渲染成方塊、有碰撞");
+        // id 65 不撞任何既有方塊（既有 enum ≤59）。
+        assert!(Block::from_u8(60).is_none() && Block::from_u8(64).is_none());
     }
 
     #[test]
