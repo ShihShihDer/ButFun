@@ -505,7 +505,10 @@ pub(crate) fn detect_over_scope(text: &str) -> Option<&'static str> {
     // B 階段（居民↔居民協調）起：大範圍整地（大片/整片/100×100…）也不再婉拒，改由露娜**號召大家
     // 分工協調整地**（見 voxel_ws 訊息處理的協調分支 + vdt::select_coord_workers）。因此這裡只保留
     // 「連號召全體也不合理」（整個世界/所有的地/整顆星球…＝ vdt::is_absurd_level）的整地續走婉拒。
-    let has_terra_verb = vdt::detect_level_command(text);
+    // 鋪面（C 階段）同理：合理大小單人鋪、大範圍協調鋪，只有世界級（整個世界鋪成石磚…）
+    // 連協調也做不到 → 續走婉拒。
+    let has_terra_verb =
+        vdt::detect_level_command(text) || vdt::detect_pave_command(text).is_some();
     if has_terra_verb && vdt::is_absurd_level(text) {
         return Some("大規模整地");
     }
@@ -1733,7 +1736,19 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 //    誠實而願意地答應（她現在真的做得到）；否則走既有 LLM 對話路徑。
                 //    整地任務條件：命中整地意圖詞 + 非大範圍 + 不落在其他超能力類別（指揮他人/城鎮規劃）。
                 if let Some((addr_id, rname, rpersona)) = addressed.clone() {
-                    let is_level = vdt::detect_level_command(&clean);
+                    // 鋪面（C 階段）先於整地判斷：鋪面句必帶材料名、整地句不帶，兩者互斥；
+                    // 「整平然後鋪成石磚」這類複合句走鋪面（鋪面本就內含整平）。
+                    let pave_mat = vdt::detect_pave_command(&clean);
+                    // 合理大小的鋪面 → 單人任務（她備料→合成→鋪，說到做到）。
+                    let accept_pave = pave_mat.is_some()
+                        && !vdt::is_oversized_level(&clean)
+                        && detect_over_scope(&clean).is_none();
+                    // 大範圍但不離譜的鋪面（一大片/100×100…）→ 號召大家協調鋪面：
+                    // 誠實「先從一塊開始鋪」，並真的開工鋪上限大小的一塊（不拒絕、不吹牛）。
+                    let coordinated_pave = pave_mat.is_some()
+                        && vdt::is_oversized_level(&clean)
+                        && !vdt::is_absurd_level(&clean);
+                    let is_level = pave_mat.is_none() && vdt::detect_level_command(&clean);
                     // 合理大小的整地 → 單人任務（A 階段）。
                     let accept_level = is_level
                         && !vdt::is_oversized_level(&clean)
@@ -1744,7 +1759,162 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         && vdt::is_oversized_level(&clean)
                         && !vdt::is_absurd_level(&clean);
 
-                    if accept_level {
+                    if accept_pave {
+                        // 6-C) 單人鋪面：中心＝玩家腳邊、目標高度＝中心柱地表頂（同整地），
+                        //      但頂面用指定材料、材料誠實從她的採集背包扣（不夠→先備料）。
+                        if let Some((px, pz, _yaw)) = player_snap {
+                            let mat = pave_mat.unwrap(); // accept_pave 已保證 Some
+                            let cx = px.floor() as i32;
+                            let cz = pz.floor() as i32;
+                            let target_y = {
+                                let world = hub().deltas.read().unwrap();
+                                vdt::ground_top(&world, cx, cz)
+                            } // deltas 讀鎖釋放
+                            .unwrap_or_else(|| voxel::height_at(cx, cz));
+                            let task = DirectedTask::new_pave(
+                                addr_id.clone(), player_key.clone(),
+                                cx, cz, vdt::PAVE_RADIUS, target_y, mat,
+                            );
+                            hub().directed_tasks.write().unwrap().insert(addr_id.clone(), task);
+                            // 切換居民狀態：放下手邊事，朝工地中心出發（短鎖即釋；同整地）。
+                            {
+                                let mut res = hub().residents.write().unwrap();
+                                if let Some(r) = res.iter_mut().find(|r| r.id == addr_id) {
+                                    r.gather = None;
+                                    r.fetch = None;
+                                    r.follow = None;
+                                    r.seeking_comfort = false;
+                                    r.cheer_target = None;
+                                    r.wait_timer = 0.0;
+                                    r.target_x = cx as f32 + 0.5;
+                                    r.target_z = cz as f32 + 0.5;
+                                    r.mood_boost_secs =
+                                        r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                    r.level_best_d2 = f32::MAX;
+                                    r.level_walk_stall = 0.0;
+                                }
+                            } // residents 寫鎖釋放
+                            // 誠實而願意的回覆（坦白要先備料；單播 + 冒泡 + 記憶 + Feed）。
+                            let mname = vdt::pave_material_name(mat);
+                            let pick = (px.to_bits() ^ pz.to_bits()) as usize;
+                            let reply = vdt::pave_accept_line(mname, pick);
+                            let msg = serde_json::json!({
+                                "t": "talk",
+                                "resident_id": &addr_id,
+                                "name": rname,
+                                "reply": &reply,
+                            })
+                            .to_string();
+                            let _ = out_tx.send(Message::Text(msg)).await;
+                            hub().agent_bus.push_decision(
+                                addr_id.clone(),
+                                AgentDecision::new(AgentAction::Idle, reply.clone(), "鋪面任務"),
+                            );
+                            {
+                                let mut mem = hub().memory.write().unwrap();
+                                mem.record_turn(&player_key, &addr_id, &clean, &reply);
+                            } // 記憶寫鎖釋放
+                            vfeed::append_feed(
+                                "鋪面",
+                                rname,
+                                &format!("答應了{player_key}的請求，動身備料，要把一塊地鋪成{mname}"),
+                            );
+                        }
+                        // 鋪面指令已處理，跳過 LLM 對話路徑。
+                    } else if coordinated_pave {
+                        // 6-C') 大範圍鋪面 → 號召大家分工：誠實「先從一塊開始鋪」，
+                        //       真的開工鋪「協調上限大小」的一塊（做得到的部分先做）。
+                        //       切子區/挑人/子任務全複用協調整地那套，只是子區半徑小一號
+                        //       （每柱都吃材料）、子任務是 new_pave、各人自備料自鋪自己那塊。
+                        if let Some((px, pz, _yaw)) = player_snap {
+                            let mat = pave_mat.unwrap(); // coordinated_pave 已保證 Some
+                            let cx = px.floor() as i32;
+                            let cz = pz.floor() as i32;
+                            let target_y = {
+                                let world = hub().deltas.read().unwrap();
+                                vdt::ground_top(&world, cx, cz)
+                            } // deltas 讀鎖釋放
+                            .unwrap_or_else(|| voxel::height_at(cx, cz));
+                            let busy: std::collections::HashSet<String> = {
+                                hub().directed_tasks.read().unwrap().keys().cloned().collect()
+                            }; // directed_tasks 讀鎖釋放
+                            let candidates: Vec<(String, f32, f32)> = res_snaps
+                                .iter()
+                                .map(|(id, _, _, x, z)| (id.clone(), *x, *z))
+                                .collect();
+                            let workers =
+                                vdt::select_coord_workers(&addr_id, cx, cz, &candidates, &busy);
+                            let cells = vdt::partition_sub_cells_r(
+                                cx, cz, workers.len(), vdt::PAVE_COORD_CELL_RADIUS,
+                            );
+                            {
+                                let mut tasks = hub().directed_tasks.write().unwrap();
+                                for (w, (scx, scz)) in workers.iter().zip(cells.iter()) {
+                                    let task = DirectedTask::new_pave(
+                                        w.clone(), player_key.clone(),
+                                        *scx, *scz, vdt::PAVE_COORD_CELL_RADIUS, target_y, mat,
+                                    );
+                                    tasks.insert(w.clone(), task);
+                                }
+                            } // directed_tasks 寫鎖釋放
+                            hub().coordinated_tasks.write().unwrap().push(
+                                CoordinatedLevelTask::new_pave(
+                                    player_key.clone(), workers.clone(), mat,
+                                ),
+                            );
+                            {
+                                let mut res = hub().residents.write().unwrap();
+                                for (w, (scx, scz)) in workers.iter().zip(cells.iter()) {
+                                    if let Some(r) = res.iter_mut().find(|r| &r.id == w) {
+                                        r.gather = None;
+                                        r.fetch = None;
+                                        r.follow = None;
+                                        r.seeking_comfort = false;
+                                        r.cheer_target = None;
+                                        r.wait_timer = 0.0;
+                                        r.target_x = *scx as f32 + 0.5;
+                                        r.target_z = *scz as f32 + 0.5;
+                                        r.mood_boost_secs =
+                                            r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                        r.level_best_d2 = f32::MAX;
+                                        r.level_walk_stall = 0.0;
+                                        if w != &addr_id && r.say.is_empty() {
+                                            r.say = "來啦！一起鋪～".to_string();
+                                            r.say_timer = SAY_SECS;
+                                        }
+                                    }
+                                }
+                            } // residents 寫鎖釋放
+                            let mname = vdt::pave_material_name(mat);
+                            let pick = (px.to_bits() ^ pz.to_bits()) as usize;
+                            let reply = vdt::pave_rally_line(mname, pick);
+                            let msg = serde_json::json!({
+                                "t": "talk",
+                                "resident_id": &addr_id,
+                                "name": rname,
+                                "reply": &reply,
+                            })
+                            .to_string();
+                            let _ = out_tx.send(Message::Text(msg)).await;
+                            hub().agent_bus.push_decision(
+                                addr_id.clone(),
+                                AgentDecision::new(AgentAction::Idle, reply.clone(), "協調鋪面"),
+                            );
+                            {
+                                let mut mem = hub().memory.write().unwrap();
+                                mem.record_turn(&player_key, &addr_id, &clean, &reply);
+                            } // 記憶寫鎖釋放
+                            let helper_count = workers.len();
+                            vfeed::append_feed(
+                                "鋪面",
+                                rname,
+                                &format!(
+                                    "號召了{helper_count}位居民，各自備料，先從一塊開始把{player_key}要的{mname}地鋪起來"
+                                ),
+                            );
+                        }
+                        // 協調鋪面指令已處理，跳過 LLM 對話路徑。
+                    } else if accept_level {
                         // 整地中心＝玩家當前位置附近；目標高度＝中心柱現有地表頂。
                         // 注意：player_snap 是 (x, z, yaw)（與步驟 4 定義一致），不是 (x, y, z)。
                         if let Some((px, pz, _yaw)) = player_snap {
@@ -3376,11 +3546,16 @@ fn tick_residents(dt: f32) {
             })
             .collect()
     }; // goals 讀鎖釋放
-    // 整地任務 v1：批次快照各居民的整地任務中心/半徑（directed_tasks 讀鎖即釋），
-    // 供 residents 寫鎖那段判斷「該去工地整地、還是照常閒晃」——不與 residents 鎖巢狀。
-    let directed_snaps: HashMap<String, (i32, i32, i32)> = {
+    // 整地/鋪面任務：批次快照各居民的任務中心/半徑/是否鋪面（directed_tasks 讀鎖即釋），
+    // 供 residents 寫鎖那段判斷「該去工地施工、還是照常閒晃」——不與 residents 鎖巢狀。
+    // 鋪面任務（is_pave=true）備料中（r.gather 有值）會讓位給採集分支：她先去採原料，
+    // 採完（gather 清空）自然走回工地繼續鋪。
+    let directed_snaps: HashMap<String, (i32, i32, i32, bool)> = {
         let tasks = hub().directed_tasks.read().unwrap();
-        tasks.iter().map(|(rid, t)| (rid.clone(), (t.cx, t.cz, t.radius))).collect()
+        tasks
+            .iter()
+            .map(|(rid, t)| (rid.clone(), (t.cx, t.cz, t.radius, t.pave.is_some())))
+            .collect()
     }; // directed_tasks 讀鎖釋放
     // 本 tick 已抵達工地、要整地一批的居民（鎖內收集，鎖外套用方塊改動）。
     let mut level_workers: Vec<String> = Vec::new();
@@ -3943,10 +4118,15 @@ fn tick_residents(dt: f32) {
                         vr::gravity_step(&world, &mut r.body, dt);
                     }
                 }
-                // 指令→任務 v1·整地技能執行：被指派整地的居民先走到工地中心附近，
-                // 抵達後每 tick 排程整地一批（鎖外套用方塊改動）。整地中跳過採集/閒晃/歸巢
-                // （這是「她真的照玩家的話做事」）。優先於採集分支（但仍讓位給上面的跟隨）。
-            } else if let Some(&(cx, cz, radius)) = directed_snaps.get(&r.id) {
+                // 指令→任務·整地/鋪面技能執行：被指派的居民先走到工地中心附近，
+                // 抵達後每 tick 排程施工一批（鎖外套用方塊改動）。施工中跳過閒晃/歸巢
+                // （這是「她真的照玩家的話做事」）。優先於採集分支（但仍讓位給上面的跟隨）；
+                // **例外**：鋪面備料中（is_pave 且 gather 有值）→ 讓位給下方採集分支，
+                // 她先去把原料挖回小背包，採完自然回工地續鋪（誠實備料，不隔空變料）。
+            } else if let Some(&(cx, cz, radius, _)) = directed_snaps
+                .get(&r.id)
+                .filter(|&&(_, _, _, is_pave)| !is_pave || r.gather.is_none())
+            {
                 let center_x = cx as f32 + 0.5;
                 let center_z = cz as f32 + 0.5;
                 let dx = r.body.x - center_x;
@@ -4714,26 +4894,32 @@ fn tick_residents(dt: f32) {
     //      → 推進 cursor；整完 → 冒「整好囉」+ Feed。鎖序全短取即釋、不巢狀、不 await（守鐵律）。
     //   地形改動走既有 world delta 持久化（vbuild::append_world_block），重啟後整過的地還在。
     {
-        // ① 逾時遞減 + 清逾時任務（短鎖即釋）。
-        let expired: Vec<String> = {
+        // ① 逾時遞減 + 清逾時任務（短鎖即釋）。鋪面任務的 deadline 是「無進展門檻」
+        //    （有挖到料/合成/鋪一批都會續期，見 pave_worker_tick），到期＝真的卡死。
+        let expired: Vec<(String, bool)> = {
             let mut tasks = hub().directed_tasks.write().unwrap();
             for t in tasks.values_mut() {
                 t.deadline -= RESIDENT_DT;
             }
-            let dead: Vec<String> = tasks
+            let dead: Vec<(String, bool)> = tasks
                 .iter()
                 .filter(|(_, t)| t.deadline <= 0.0)
-                .map(|(rid, _)| rid.clone())
+                .map(|(rid, t)| (rid.clone(), t.pave.is_some()))
                 .collect();
-            for rid in &dead {
+            for (rid, _) in &dead {
                 tasks.remove(rid);
             }
             dead
         }; // directed_tasks 寫鎖釋放
-        for rid in expired {
+        for (rid, was_pave) in expired {
             let rname = resident_name_of(&rid);
-            vfeed::append_feed("整地", rname, "這塊地太難整了，我盡力了…");
-            say_updates.push((rid, "唉…這塊地我一個人一時整不太動…".to_string()));
+            if was_pave {
+                vfeed::append_feed("鋪面", rname, "這片地鋪到一半卡住了，我盡力了…");
+                say_updates.push((rid, "唉…這片地一時鋪不下去了…".to_string()));
+            } else {
+                vfeed::append_feed("整地", rname, "這塊地太難整了，我盡力了…");
+                say_updates.push((rid, "唉…這塊地我一個人一時整不太動…".to_string()));
+            }
         }
     }
     // ② 已抵達工地的居民：整地一批。
@@ -4747,6 +4933,12 @@ fn tick_residents(dt: f32) {
         // 讀任務快照（可能已被上面逾時清掉 → None 就跳過）。
         let task_opt = { hub().directed_tasks.read().unwrap().get(rid).cloned() };
         let Some(mut task) = task_opt else { continue };
+        // 鋪面任務走自己的推進器（備料/合成/礦井/誠實扣料），整地續走下方原路（零回歸）。
+        if task.pave.is_some() {
+            let used = pave_worker_tick(rid, task, cols_budget, &mut say_updates);
+            cols_budget = cols_budget.saturating_sub(used);
+            continue;
+        }
         // 算這批要改的方塊 + 新 cursor（deltas 讀鎖即釋；批量受剩餘全域上限剪裁）。
         let (changes, next_cursor) = {
             let world = hub().deltas.read().unwrap();
@@ -4819,11 +5011,25 @@ fn tick_residents(dt: f32) {
         for c in finished {
             if let Some(leader) = c.members.first() {
                 let lname = resident_name_of(leader);
-                say_updates.push((
-                    leader.clone(),
-                    "大家一起把這片地整平了！辛苦啦～".to_string(),
-                ));
-                vfeed::append_feed("整地", lname, "和大家齊心，把一大片地整平了！");
+                if let Some(mat) = c.pave {
+                    // 協調鋪面完工：領隊冒泡 + Feed 帶材料名。
+                    let mname = vdt::pave_material_name(mat);
+                    say_updates.push((
+                        leader.clone(),
+                        format!("大家一起把這片{mname}地鋪好了！辛苦啦～"),
+                    ));
+                    vfeed::append_feed(
+                        "鋪面",
+                        lname,
+                        &format!("和大家齊心，把一大片地鋪上了{mname}！"),
+                    );
+                } else {
+                    say_updates.push((
+                        leader.clone(),
+                        "大家一起把這片地整平了！辛苦啦～".to_string(),
+                    ));
+                    vfeed::append_feed("整地", lname, "和大家齊心，把一大片地整平了！");
+                }
             }
         }
     }
@@ -5484,6 +5690,227 @@ fn tick_residents(dt: f32) {
 }
 
 // ── agency v1 輔助（全在 tick_residents 鎖釋放後呼叫；各短鎖即釋、不巢狀、不 await）──────
+
+/// 鋪面任務·單居民單 tick 推進（她已抵達工地時由 tick_residents 的施工段呼叫）。
+/// 順序：① 礦井進行中 → 清幾格、挖出的實心方塊誠實入她的小背包；
+///      ② 乾跑算「這批要改什麼、要吃幾份材料」；③ 背包原料就地合成到夠（2×2 基本配方）；
+///      ④ 夠料 → **誠實扣料** + 套世界 + 推進 cursor（同整地的套用迴圈與安全過濾）；
+///      ⑤ 缺料 → 找地表原料設採集技能（她走去挖、回來續鋪）；
+///      ⑥ 地表沒有且原料在土石層 → 開一口階梯礦井（走得回地面、不自困）；
+///      ⑦ 都補不上 → 誠實停工（鋪到哪算哪、Feed+冒泡說清楚，不吹牛）。
+/// 有進展（挖井/備料變動/鋪一批）就把 deadline 續期——鋪面的逾時是「無進展門檻」。
+/// 鎖紀律同整地：全部短取即釋、循序不巢狀、不 await。回傳本 tick 消耗的全域柱數預算。
+fn pave_worker_tick(
+    rid: &str,
+    mut task: DirectedTask,
+    cols_budget: usize,
+    say_updates: &mut Vec<(String, String)>,
+) -> usize {
+    let Some(mat) = task.pave else { return 0 }; // 防禦性：呼叫端已保證是鋪面任務
+    let mid = mat as u8;
+    let rname = resident_name_of(rid);
+    let mname = vdt::pave_material_name(mat);
+    let Some(prov) = vdt::pave_provision(mat) else {
+        // 支援表外材料（理論到不了：detect 端只認支援材料）→ 誠實放棄。
+        hub().directed_tasks.write().unwrap().remove(rid);
+        vfeed::append_feed("鋪面", rname, &format!("{mname}我備不出來，只好作罷…"));
+        say_updates.push((rid.to_string(), format!("抱歉，{mname}我真的備不出來…")));
+        return 0;
+    };
+
+    // ① 礦井進行中：清幾格；挖到的實心方塊（石頭/泥土…）誠實歸她的小背包。
+    if let Some(q) = task.quarry.clone() {
+        if q.is_done() {
+            task.quarry = None; // 這口井挖完了 → 同 tick 接著查料/合成/鋪
+        } else {
+            let (cells, next_idx) = {
+                let world = hub().deltas.read().unwrap();
+                vdt::quarry_step(&world, &q, vdt::QUARRY_CELLS_PER_STEP)
+            }; // deltas 讀鎖釋放
+            let body = {
+                let res = hub().residents.read().unwrap();
+                res.iter().find(|r| r.id == rid).map(|r| (r.body.x, r.body.y, r.body.z))
+            }; // residents 讀鎖釋放
+            for (x, y, z, prev) in cells {
+                // 安全：不動與她身體重疊的格（站在井口旁作業，永不自挖站位）。
+                if let Some((px, py, pz)) = body {
+                    if vdt::cell_in_body(x, y, z, px, py, pz) {
+                        continue;
+                    }
+                }
+                {
+                    let mut world = hub().deltas.write().unwrap();
+                    voxel::set_block(&mut world, x, y, z, Block::Air);
+                } // deltas 寫鎖釋放
+                broadcast_block(x, y, z, Block::Air);
+                // 水流動：挖穿水脈讓水流進坑道是誠實的物理 → 喚醒鄰格重算。
+                enqueue_water_around(x, y, z);
+                vbuild::append_world_block(x, y, z, Block::Air as u8);
+                {
+                    let mut inv = hub().res_inv.write().unwrap();
+                    *inv.entry(rid.to_string()).or_default().entry(prev as u8).or_insert(0) += 1;
+                } // res_inv 寫鎖釋放
+            }
+            task.quarry = Some(vdt::QuarryDig { cells: q.cells, idx: next_idx });
+            task.deadline = vdt::PAVE_DEADLINE_SECS; // 挖井＝有進展 → 續期
+            hub().directed_tasks.write().unwrap().insert(rid.to_string(), task);
+            return 1; // 礦井一批（幾個單格）保守記 1 柱預算
+        }
+    }
+
+    // ② 乾跑：這批（受剩餘全域上限剪裁）要改哪些方塊、要吃幾份材料。
+    let (changes, next_cursor, need) = {
+        let world = hub().deltas.read().unwrap();
+        vdt::pave_step_capped(&world, &task, cols_budget)
+    }; // deltas 讀鎖釋放
+
+    // ③ 背包原料就地合成到夠 + 讀存量（res_inv 短鎖一次做完）。
+    let raw_id = prov.raw.block_id();
+    let (crafted, have_mat, prov_sum) = {
+        let mut inv = hub().res_inv.write().unwrap();
+        let bag = inv.entry(rid.to_string()).or_default();
+        let crafted = vdt::craft_toward(bag, mat, need);
+        let have_mat = bag.get(&mid).copied().unwrap_or(0);
+        let raw = bag.get(&raw_id).copied().unwrap_or(0);
+        (crafted, have_mat, have_mat + raw)
+    }; // res_inv 寫鎖釋放
+    if crafted > 0 {
+        say_updates.push((rid.to_string(), format!("合成出{crafted}份{mname}了！")));
+    }
+    // 備料總量有變動（採到料/礦井入袋/合成轉換）＝有進展 → 續期（防慢工被誤殺）。
+    if prov_sum != task.prov_seen {
+        task.prov_seen = prov_sum;
+        task.deadline = vdt::PAVE_DEADLINE_SECS;
+    }
+
+    if have_mat >= need {
+        // ④ 夠料：先誠實扣掉這批要用的份數，再套世界（同整地的套用迴圈與安全過濾）。
+        {
+            let mut inv = hub().res_inv.write().unwrap();
+            let bag = inv.entry(rid.to_string()).or_default();
+            let cur = bag.get(&mid).copied().unwrap_or(0);
+            bag.insert(mid, cur.saturating_sub(need));
+        } // res_inv 寫鎖釋放
+        let body = {
+            let res = hub().residents.read().unwrap();
+            res.iter().find(|r| r.id == rid).map(|r| (r.body.x, r.body.y, r.body.z))
+        }; // residents 讀鎖釋放
+        let advanced = next_cursor.saturating_sub(task.cursor);
+        for (x, y, z, b) in changes {
+            if b.is_solid() {
+                if let Some((px, py, pz)) = body {
+                    if vdt::cell_in_body(x, y, z, px, py, pz) {
+                        continue; // 不把自己埋進材料裡（沿用可逃精神）
+                    }
+                }
+            }
+            {
+                let mut world = hub().deltas.write().unwrap();
+                voxel::set_block(&mut world, x, y, z, b);
+            } // deltas 寫鎖釋放
+            broadcast_block(x, y, z, b);
+            enqueue_water_around(x, y, z);
+            vbuild::append_world_block(x, y, z, b as u8);
+        }
+        task.cursor = next_cursor;
+        task.deadline = vdt::PAVE_DEADLINE_SECS; // 鋪了一批＝有進展 → 續期
+        if task.is_complete() {
+            hub().directed_tasks.write().unwrap().remove(rid);
+            vfeed::append_feed("鋪面", rname, &format!("把那塊地鋪上{mname}了！"));
+            say_updates.push((rid.to_string(), format!("鋪好囉！整片{mname}地～")));
+        } else {
+            let pct = task.progress_pct();
+            hub().directed_tasks.write().unwrap().insert(rid.to_string(), task);
+            // 過半冒一句進度泡泡（低頻、不洗版；同整地節奏）。
+            if (45..=55).contains(&pct) {
+                say_updates.push((rid.to_string(), "鋪地中…快一半了～".to_string()));
+            }
+        }
+        return advanced;
+    }
+
+    // ⑤ 缺料：找最近的地表原料（樹/沙/裸露的石頭…）→ 設採集技能（走去挖，挖完自然回工地）。
+    let (rx, rz) = {
+        let res = hub().residents.read().unwrap();
+        res.iter()
+            .find(|r| r.id == rid)
+            .map(|r| (r.body.x.floor() as i32, r.body.z.floor() as i32))
+            .unwrap_or((task.cx, task.cz))
+    }; // residents 讀鎖釋放
+    let found = {
+        let world = hub().deltas.read().unwrap();
+        vskill::find_nearest_resource_of(&world, rx, rz, vskill::GATHER_MAX_RADIUS, prov.raw)
+    }; // deltas 讀鎖釋放
+    if let Some((tx, ty, tz)) = found {
+        {
+            let mut res = hub().residents.write().unwrap();
+            if let Some(r) = res.iter_mut().find(|r| r.id == rid) {
+                r.gather = Some(GatherSkill {
+                    resource: prov.raw,
+                    tx,
+                    ty,
+                    tz,
+                    timeout: vskill::GATHER_TIMEOUT_SECS,
+                });
+                // 重置「走向工地卡死」偵測：採集來回會拉開距離，回程別被誤判卡住而瞬移。
+                r.level_best_d2 = f32::MAX;
+                r.level_walk_stall = 0.0;
+            }
+        } // residents 寫鎖釋放
+        hub().directed_tasks.write().unwrap().insert(rid.to_string(), task);
+        return 0;
+    }
+    // ⑥ 地表沒有、原料埋在土石層（石頭/泥土）→ 開一口階梯礦井（重用 staircase_well 範本：
+    //    邊挖邊留階、永遠走得回地面、不自困；井口在她東側一格、每口井往 +z 錯開）。
+    if prov.quarryable && task.wells_dug < vdt::QUARRY_MAX_WELLS {
+        let q = {
+            let world = hub().deltas.read().unwrap();
+            vdt::plan_quarry(&world, rx, rz, task.wells_dug)
+        }; // deltas 讀鎖釋放
+        if task.wells_dug == 0 {
+            // 第一口井記一筆 Feed（低頻；後續的井不洗版）。
+            vfeed::append_feed(
+                "鋪面",
+                rname,
+                &format!("開挖階梯礦井備{}，要合{mname}用", prov.raw.display_name()),
+            );
+            say_updates.push((
+                rid.to_string(),
+                format!("我挖個階梯坑取{}～", prov.raw.display_name()),
+            ));
+        }
+        task.wells_dug += 1;
+        task.quarry = Some(q);
+        task.deadline = vdt::PAVE_DEADLINE_SECS;
+        hub().directed_tasks.write().unwrap().insert(rid.to_string(), task);
+        return 0;
+    }
+    // ⑦ 誠實停工：原料真的補不上——鋪到哪算哪、說清楚（不是拒絕、也不是吹牛）。
+    let done_some = task.cursor > 0;
+    hub().directed_tasks.write().unwrap().remove(rid);
+    if done_some {
+        vfeed::append_feed(
+            "鋪面",
+            rname,
+            &format!("{}補不上了，這片{mname}地先鋪到這裡", prov.raw.display_name()),
+        );
+        say_updates.push((
+            rid.to_string(),
+            format!("{}不夠了…我先鋪到這裡，之後再補！", prov.raw.display_name()),
+        ));
+    } else {
+        vfeed::append_feed(
+            "鋪面",
+            rname,
+            &format!("附近採不到{}，鋪{mname}地只好作罷", prov.raw.display_name()),
+        );
+        say_updates.push((
+            rid.to_string(),
+            format!("附近採不到{}，這次鋪不成了…", prov.raw.display_name()),
+        ));
+    }
+    0
+}
 
 /// 開始一次採集任務：以 (rx,rz) 為原點找最近資源 → 設居民的 gather 技能狀態。
 /// 找不到資源（罕見）→ 視為已備料（gathered=配額），下個 agency tick 直接蓋，避免卡死。
