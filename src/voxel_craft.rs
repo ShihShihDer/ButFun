@@ -280,6 +280,16 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
         output_block: 42,    // Block::Chest = 42
         output_count: 1,
     },
+    // ── 乙太燈 v1（乙太礦脈 v1）：1 乙太礦 + 4 玻璃 → 1 乙太燈 ───────────────────────
+    // 把世界最深處挖回的珍稀乙太礦(58)封進四片玻璃(10)燈罩，做成一盞散發清冷青藍光的明燈(59)。
+    // 5 格材料超出 2×2、且用到最難尋的礦——放進「精工合成」的工作台層，配得上它的稀有。
+    Recipe {
+        id: "aether_lamp",
+        name_zh: "乙太燈",
+        inputs: &[(58, 1), (10, 4)],  // 1 乙太礦 + 4 玻璃 → 1 乙太燈
+        output_block: 59,             // Block::AetherLamp = 59
+        output_count: 1,
+    },
 ];
 
 /// 熔爐冶煉配方（需放置熔爐方塊後右鍵開啟冶煉面板才能使用）。
@@ -390,6 +400,19 @@ mod tests {
     }
 
     #[test]
+    fn find_recipe_aether_lamp_in_workbench_list() {
+        // 乙太燈是「精工合成」：走工作台 3×3、不在背包 2×2 表。
+        assert!(find_recipe("aether_lamp").is_none(), "乙太燈不該在背包配方表");
+        let r = find_workbench_recipe("aether_lamp").unwrap();
+        assert_eq!(r.output_block, 59, "乙太燈 id 應為 59（Block::AetherLamp）");
+        assert_eq!(r.output_count, 1);
+        assert_eq!(r.inputs, &[(58, 1), (10, 4)], "乙太燈需要 1 乙太礦 + 4 玻璃");
+        // 乙太礦(58)是世界最稀有的礦——只需一顆當燈芯，不該大量消耗。
+        let ore = r.inputs.iter().find(|&&(id, _)| id == 58).unwrap();
+        assert_eq!(ore.1, 1, "稀有乙太礦只需 1 顆（世界最深珍寶，不該大量消耗）");
+    }
+
+    #[test]
     fn find_recipe_returns_none_for_unknown() {
         assert!(find_recipe("unknown_xyz").is_none());
         assert!(find_recipe("").is_none());
@@ -477,7 +500,8 @@ mod tests {
                 || r.output_block == PICKAXE_IRON_ID  // 鐵鎬（ROADMAP 687）
                 || r.output_block == AXE_IRON_ID      // 鐵斧（ROADMAP 689）
                 || r.output_block == SHOVEL_IRON_ID   // 鐵鏟（ROADMAP 690）
-                || r.output_block == 42;               // 箱子（ROADMAP 692）
+                || r.output_block == 42                // 箱子（ROADMAP 692）
+                || r.output_block == 59;               // 乙太燈（Block::AetherLamp，乙太礦脈 v1）
             assert!(
                 ok,
                 "工作台配方「{}」產出 id={} 超出範圍",
@@ -599,8 +623,9 @@ mod tests {
         store.give("旅人", 21, 10); // IronOre（smelt_iron 原料用）
         store.give("旅人", 22, 10); // IronIngot（iron_block 配方用，ROADMAP 684）
         store.give("旅人", 6, 10);  // Leaves（床配方用）
-        store.give("旅人", 10, 10); // Glass（冰晶燈配方用）
+        store.give("旅人", 10, 10); // Glass（冰晶燈 + 乙太燈配方用）
         store.give("旅人", 56, 10); // IceCrystal（冰晶燈配方用）
+        store.give("旅人", 58, 10); // AetherOre（乙太燈配方用，乙太礦脈 v1）
         // 火把配方：1 木頭(5) + 1 煤礦(20) → 4 火把（Wood/CoalOre 已加，數量足夠）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);
