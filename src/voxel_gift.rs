@@ -69,6 +69,7 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         60 => "釣竿",
         61 => "小魚",
         62 => "乙太魚",
+        63 => "烤魚",
         _ => "物品",
     }
 }
@@ -102,10 +103,39 @@ pub fn treasure_gift_thanks_line(player_name: &str, affinity: usize, pick: usize
     }
 }
 
-/// 是否為「食物」類禮物（麵包、胡蘿蔔、馬鈴薯、小魚、乙太魚）——居民會給特別溫暖的回應。
+/// 是否為「食物」類禮物（麵包、胡蘿蔔、馬鈴薯、小魚、乙太魚、烤魚）——居民會給特別溫暖的回應。
 pub fn is_food_gift(block_id: u8) -> bool {
-    // BREAD_ID / CARROT_ID / POTATO_ID / FISH_ID / AETHER_FISH_ID
-    block_id == 19 || block_id == 49 || block_id == 53 || block_id == 61 || block_id == 62
+    // BREAD_ID / CARROT_ID / POTATO_ID / FISH_ID / AETHER_FISH_ID / COOKED_FISH_ID
+    block_id == 19 || block_id == 49 || block_id == 53
+        || block_id == 61 || block_id == 62 || block_id == 63
+}
+
+/// 烤魚（COOKED_FISH_ID=63）專屬道謝台詞——比一般食物禮物更歡欣，因為那是玩家親手
+/// 「釣起→烤熟」的一道熱騰騰佳餚，居民聞到香氣就眼睛一亮。呼叫時機：`item_id == 63`。
+/// `pick` 同其他道謝函式：由呼叫端提供，確定性不走 random。
+pub fn cooked_fish_thanks_line(player_name: &str, affinity: usize, pick: usize) -> String {
+    if affinity == 0 || player_name.is_empty() {
+        let pool: &[&str] = &[
+            "哇……是烤魚嗎？好香！你特地烤給我的？謝謝你！",
+            "熱騰騰的烤魚！我從沒吃過這麼香的，謝謝你！",
+            "烤魚耶！你連釣帶烤都是為了我嗎？我好感動。",
+        ];
+        pool[pick % pool.len()].to_string()
+    } else if affinity <= 2 {
+        let pool: &[&str] = &[
+            "{name}，你把釣來的魚烤好帶給我了！香氣一路飄過來，謝謝你。",
+            "{name}！這烤魚外酥內嫩，你的手藝好棒，我要慢慢享用。",
+            "哇，{name}親手烤的魚！我一聞到就餓了，謝謝你這麼用心。",
+        ];
+        pool[pick % pool.len()].replace("{name}", player_name)
+    } else {
+        let pool: &[&str] = &[
+            "{name}，你總是記得我最愛吃魚……這尾烤魚我會細細品嚐，謝謝你。",
+            "每次{name}來都帶著暖意——這次是你親手烤的魚，我真的好幸福。",
+            "{name}！從水邊釣起、在爐上烤熟的一尾魚，這份心意我都收下了，謝謝你。",
+        ];
+        pool[pick % pool.len()].replace("{name}", player_name)
+    }
 }
 
 /// 居民道謝台詞（依好感等級選不同句，零 LLM，確定性）。
@@ -418,6 +448,33 @@ mod tests {
         assert!(is_food_gift(61), "小魚算食物禮物");
         assert!(is_food_gift(62), "乙太魚算食物禮物");
         assert!(!is_food_gift(60), "釣竿是工具、非食物");
+    }
+
+    #[test]
+    fn item_name_and_food_gift_include_cooked_fish() {
+        // 烤魚 v1：生魚(61)在熔爐烤成烤魚(63)，是居民最愛的美味贈禮。
+        assert_eq!(item_name_zh(63), "烤魚");
+        assert!(is_food_gift(63), "烤魚算食物禮物");
+    }
+
+    #[test]
+    fn cooked_fish_thanks_non_empty_no_placeholders() {
+        // 所有好感等級、多個 pick 值，不得有未替換的 {name}/{item}，且都提到「魚」。
+        for affinity in [0, 1, 2, 3, 5] {
+            for pick in 0..4 {
+                let s = cooked_fish_thanks_line("旅人", affinity, pick);
+                assert!(!s.is_empty(), "affinity={affinity} pick={pick} 回空");
+                assert!(!s.contains("{name}"), "affinity={affinity} pick={pick} 未替換 name");
+                assert!(!s.contains("{item}"), "affinity={affinity} pick={pick} 出現 item 佔位");
+                assert!(s.contains("魚"), "affinity={affinity} pick={pick} 烤魚道謝該提到魚");
+            }
+        }
+    }
+
+    #[test]
+    fn cooked_fish_thanks_friend_contains_name() {
+        let s = cooked_fish_thanks_line("小星", 5, 0);
+        assert!(s.contains("小星"), "友人等級應含玩家名");
     }
 
     #[test]

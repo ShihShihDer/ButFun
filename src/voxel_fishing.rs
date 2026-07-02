@@ -26,6 +26,9 @@ pub const FISHING_ROD_ID: u8 = 60;
 pub const FISH_ID: u8 = 61;
 /// 乙太魚物品 ID——稀有漁獲，通體青藍幽光的乙太方界原生魚，可珍藏/餽贈。
 pub const AETHER_FISH_ID: u8 = 62;
+/// 烤魚物品 ID——把生的小魚放進熔爐烤出的噴香佳餚，居民最愛的美味贈禮。
+/// 純物品（住背包不可放置），由熔爐配方 `smelt_fish`（生魚→烤魚）產出。
+pub const COOKED_FISH_ID: u8 = 63;
 
 /// 上鉤等待秒數的下界（收竿最快也要等這麼久）。
 pub const BITE_MIN_SECS: u64 = 3;
@@ -66,6 +69,7 @@ pub fn fish_name_zh(id: u8) -> &'static str {
         FISHING_ROD_ID => "釣竿",
         FISH_ID => "小魚",
         AETHER_FISH_ID => "乙太魚",
+        COOKED_FISH_ID => "烤魚",
         _ => "漁獲",
     }
 }
@@ -159,6 +163,7 @@ mod tests {
     fn names_and_lines_are_grounded() {
         assert_eq!(fish_name_zh(FISH_ID), "小魚");
         assert_eq!(fish_name_zh(AETHER_FISH_ID), "乙太魚");
+        assert_eq!(fish_name_zh(COOKED_FISH_ID), "烤魚");
         assert_eq!(fish_name_zh(FISHING_ROD_ID), "釣竿");
         // 稀有與普通漁獲的自述與 feed 台詞要分岔、且點名漁獲/玩家。
         assert!(catch_self_line(AETHER_FISH_ID).contains("乙太魚"));
@@ -170,8 +175,8 @@ mod tests {
 
     #[test]
     fn item_ids_do_not_collide() {
-        // 釣魚三件物品 id 互不相同，且都在既有方塊 id（≤59）之上（避免撞方塊 enum）。
-        let ids = [FISHING_ROD_ID, FISH_ID, AETHER_FISH_ID];
+        // 釣魚四件物品 id 互不相同，且都在既有方塊 id（≤59）之上（避免撞方塊 enum）。
+        let ids = [FISHING_ROD_ID, FISH_ID, AETHER_FISH_ID, COOKED_FISH_ID];
         for (i, a) in ids.iter().enumerate() {
             assert!(*a >= 60, "釣魚物品 id {a} 應 ≥60，避開既有方塊");
             for b in &ids[i + 1..] {
