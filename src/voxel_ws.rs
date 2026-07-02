@@ -281,6 +281,18 @@ struct VoxelResident {
     /// 睡著時停下一切閒晃／社交／採集／建造、名牌旁顯示 💤，天亮（離開夜間時段）才醒。
     /// 記憶體前置、不持久化、零 migration（重啟後大不了當晚重睡一次，無資料風險）。
     asleep: bool,
+    /// 心中念念不忘的告示牌（居民讀牌 v3，ROADMAP 743）：Some(牌子中心 x, z, 引文) =
+    /// 讀到一塊讓牠印象深刻的牌子後記下的「心中地標」；閒暇時偶爾據此重返。純記憶體、重啟歸零。
+    cherished_sign: Option<(f32, f32, String)>,
+    /// 正在重返心中的牌子（讀牌 v3）：Some(目標 x, z, 引文) = 正朝那塊牌子走；抵達後駐足念一句、
+    /// 寫一筆「又回來看看」記憶、清空。None = 沒在朝聖。
+    pilgrimage: Option<(f32, f32, String)>,
+    /// 朝聖逾時倒數（秒，讀牌 v3）：啟程時設 [`vreadsign::PILGRIMAGE_TIMEOUT`]；未抵達時遞減，
+    /// 歸零仍沒到（地形擋路等）即放棄，避免無限走。
+    pilgrimage_timer: f32,
+    /// 重返冷卻倒數（秒，讀牌 v3）：一次朝聖（抵達或放棄）後設為 [`vreadsign::PILGRIMAGE_COOLDOWN`]，
+    /// 歸零前不再啟程——稀少才有感、不洗版。各居民初始錯開。
+    pilgrimage_cooldown: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -821,6 +833,12 @@ fn init_residents() -> Vec<VoxelResident> {
             invent_backoff: HashMap::new(),
             // 出生時醒著；入睡由夜間作息迴圈決定（ROADMAP 739）。
             asleep: false,
+            // 重返心中的牌子（讀牌 v3，ROADMAP 743）：入場心裡還沒記著任何牌、沒在朝聖；
+            // 首次重返冷卻長且錯開（前數分鐘不朝聖，讓居民先讀到牌、心裡有地標再說）。
+            cherished_sign: None,
+            pilgrimage: None,
+            pilgrimage_timer: 0.0,
+            pilgrimage_cooldown: 180.0 + i as f32 * 60.0,
         });
     }
     out
@@ -3956,6 +3974,10 @@ fn tick_residents(dt: f32) {
     // 卡住脫困/送回事件（鎖內偵測、鎖外記 Feed）。格式：(resident_name, 脫困結果)。
     let mut rescue_events: Vec<(&'static str, vr::Rescue)> = Vec::new();
 
+    // 重返心中的牌子 Feed 事件（讀牌 v3，ROADMAP 743）：鎖內偵測抵達，鎖外記 Feed。
+    // 格式：(resident_name, 牌面引文)。
+    let mut pilgrimage_feed: Vec<(&'static str, String)> = Vec::new();
+
     // 居民回禮事件（ROADMAP 667）：鎖內偵測，鎖外執行（加入背包 + 廣播）。
     // 格式：(resident_id, resident_name, player_name, block_id, qty, message)
     let mut return_gift_events: Vec<(String, &'static str, String, u8, u32, String)> = Vec::new();
@@ -4207,9 +4229,8 @@ fn tick_residents(dt: f32) {
                     .sign
                     .read()
                     .unwrap()
-                    .nearest_within(r.body.x, r.body.z, vreadsign::READ_RANGE)
-                    .map(|(t, _)| t); // sign 讀鎖在此釋放
-                if let Some(text) = nearby.filter(|t| !t.is_empty()) {
+                    .nearest_within_xz(r.body.x, r.body.z, vreadsign::READ_RANGE); // sign 讀鎖在此釋放
+                if let Some((sx, sz, text, _)) = nearby.filter(|(_, _, t, _)| !t.is_empty()) {
                     let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                     r.say = vreadsign::read_sign_line(&text, pick);
                     r.say_timer = SAY_SECS;
@@ -4228,6 +4249,10 @@ fn tick_residents(dt: f32) {
                             .unwrap()
                             .add_memory(&r.id, vreadsign::SIGN_MEMORY_PLAYER, &summary);
                         vmem::append_memory(&entry);
+                        // 居民讀牌 v3（ROADMAP 743）：把這塊「不同於上次」的牌記成心中的地標，
+                        // 日後閒暇時偶爾會特地走回來駐足——讀牌記憶第一次改變居民的去向。
+                        // 存已截短的引文（display_quote），供重返時泡泡/記憶/Feed 直接引用。
+                        r.cherished_sign = Some((sx, sz, vreadsign::display_quote(&text)));
                     }
                 }
             }
@@ -4346,6 +4371,79 @@ fn tick_residents(dt: f32) {
                     // 收集到達事件供鎖外 IO（(happy_id, happy_name, lonely_rid)）。
                     cheer_arrive_pending.push((r.id.clone(), r.name, lonely_rid.clone()));
                     r.cheer_target = None; // 任務完成，清除目標。
+                }
+            }
+
+            // 重返心中的牌子 v3（ROADMAP 743）：讀牌記憶第一次改變居民的去向。
+            // 冷卻遞減；正在朝聖時持續朝牌子走、抵達即駐足念一句、逾時則放棄。
+            // 鎖序：memory 寫（短鎖即釋，比照 v2），Feed 走鎖外 pilgrimage_feed，不巢狀、不持鎖 await。
+            if r.pilgrimage_cooldown > 0.0 {
+                r.pilgrimage_cooldown -= dt;
+            }
+            if let Some((tx, tz, quote)) = r.pilgrimage.clone() {
+                // 持續朝牌子走、清小歇（步步逼近，讓玩家看得到她專程走過來）。
+                r.target_x = tx;
+                r.target_z = tz;
+                r.wait_timer = 0.0;
+                let dx = r.body.x - tx;
+                let dz = r.body.z - tz;
+                let arrived = dx * dx + dz * dz
+                    < vreadsign::PILGRIMAGE_ARRIVE_DIST * vreadsign::PILGRIMAGE_ARRIVE_DIST;
+                if arrived {
+                    // 抵達且沒在說話：駐足念一句、寫「又回來看看」記憶、Feed 一則，收工設冷卻。
+                    // 若正巧在說別的話，就先按住位置等 say 清空（不遞減逾時，避免站在牌前反被逾時放棄）。
+                    if r.say.is_empty() {
+                        let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                        r.say = vreadsign::revisit_sign_line(&quote, pick);
+                        r.say_timer = SAY_SECS;
+                        let summary = vreadsign::revisit_memory_summary(&quote);
+                        let entry = hub()
+                            .memory
+                            .write()
+                            .unwrap()
+                            .add_memory(&r.id, vreadsign::SIGN_MEMORY_PLAYER, &summary);
+                        vmem::append_memory(&entry);
+                        pilgrimage_feed.push((r.name, quote.clone()));
+                        r.pilgrimage = None;
+                        r.pilgrimage_cooldown = vreadsign::PILGRIMAGE_COOLDOWN;
+                    }
+                } else {
+                    // 還在路上：遞減逾時；走太久（地形擋路等）沒到就放棄，設冷卻，不無限走。
+                    r.pilgrimage_timer -= dt;
+                    if r.pilgrimage_timer <= 0.0 {
+                        r.pilgrimage = None;
+                        r.pilgrimage_cooldown = vreadsign::PILGRIMAGE_COOLDOWN;
+                    }
+                }
+            } else {
+                // 尚未在朝聖：閒置自由 + 冷卻到 + 心中有牌 + 過機率門檻 → 啟程重返。
+                // 「閒置自由」＝沒在採集/跑腿/探訪/打氣/尋伴/聚會/跟隨/發明/睡覺（不搶正事）。
+                let idle_free = r.gather.is_none()
+                    && r.fetch.is_none()
+                    && r.visiting.is_none()
+                    && r.cheer_target.is_none()
+                    && !r.seeking_comfort
+                    && r.clique_meet.is_none()
+                    && r.follow.is_none()
+                    && r.invent_run.is_none()
+                    && !r.asleep;
+                if vreadsign::should_pilgrimage(
+                    r.cherished_sign.is_some(),
+                    idle_free,
+                    r.pilgrimage_cooldown,
+                    r.say.is_empty(),
+                    rand::random::<f32>(),
+                ) {
+                    if let Some((sx, sz, quote)) = r.cherished_sign.clone() {
+                        // 只重返合理距離內、又不是已站腳下的牌子（太遠不去、防長途尋路卡死）。
+                        let dx = r.body.x - sx;
+                        let dz = r.body.z - sz;
+                        if vreadsign::pilgrimage_worth_going(dx * dx + dz * dz) {
+                            r.pilgrimage = Some((sx, sz, quote));
+                            r.pilgrimage_timer = vreadsign::PILGRIMAGE_TIMEOUT;
+                            r.wait_timer = 0.0;
+                        }
+                    }
                 }
             }
 
@@ -5479,6 +5577,12 @@ fn tick_residents(dt: f32) {
         if how == vr::Rescue::SentHome {
             vfeed::append_feed("脫困", rname, "卡住了，回到家域重新開始");
         }
+    }
+
+    // 5c-2) 重返心中的牌子 Feed（讀牌 v3，ROADMAP 743）：居民專程走回一塊念念不忘的牌子前
+    // 駐足時記一筆動態，讓沒在現場的玩家也看得到「我立的牌子把她引了回來」。
+    for (rname, quote) in &pilgrimage_feed {
+        vfeed::append_feed("重返", rname, &vreadsign::revisit_feed_line(quote));
     }
 
     // 5d) 探訪 Feed（ROADMAP 671）：抵達 / 返家各一筆，讓離線玩家也知道居民在往來。
