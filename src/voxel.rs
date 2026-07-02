@@ -181,6 +181,15 @@ pub enum Block {
     /// 純色亮藍方塊（無動態光照，比照火把作法），是雪原遠征最有感的建造回報，
     /// 蓋冰屋時擺一盞、寒夜裡也有光。可放置、可再破壞回收。
     IceLantern = 57,
+    /// 乙太礦（乙太礦脈 v1）——世界最深層（y ≤ AETHER_ORE_DEPTH，緊貼地心基岩）極稀有生成、
+    /// 程序生成、確定性。這片方塊天地以「乙太」為名，而乙太礦正是它埋得最深、最難尋的招牌珍寶：
+    /// 一路挖到底才可能遇上一脈泛著青藍幽光的礦。採集後可放置（發光裝飾方塊），
+    /// 也是精工合成乙太燈的核心材料。
+    AetherOre = 58,
+    /// 乙太燈（乙太礦脈 v1）——工作台 3×3 合成：1 乙太礦 + 4 玻璃 → 1 乙太燈。
+    /// 把世界最深處採回的乙太礦封進玻璃燈罩，成為一盞散發清冷青藍光的明燈——
+    /// 比火把更亮更冷的高階光源，是深掘地心後最有感的建造回報。可放置、可再破壞回收。
+    AetherLamp = 59,
 }
 
 impl Block {
@@ -255,6 +264,8 @@ impl Block {
             55 => Some(Block::Snow),
             56 => Some(Block::IceCrystal),
             57 => Some(Block::IceLantern),
+            58 => Some(Block::AetherOre),
+            59 => Some(Block::AetherLamp),
             _ => None,
         }
     }
@@ -269,7 +280,8 @@ impl Block {
             Block::Workbench | Block::Furnace | Block::SmoothStone |
             Block::CoalOre | Block::IronOre | Block::IronIngot | Block::IronBlock |
             Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed | Block::Bed |
-            Block::Cactus | Block::Snow | Block::IceCrystal | Block::IceLantern
+            Block::Cactus | Block::Snow | Block::IceCrystal | Block::IceLantern |
+            Block::AetherOre | Block::AetherLamp
         )
     }
 }
@@ -420,6 +432,11 @@ pub const IRON_ORE_DEPTH: i32 = 1;
 pub const COAL_ORE_DENSITY: f32 = 0.020;
 /// 鐵礦在合格石層中的每格生成機率（1%，比煤礦稀少）。
 pub const IRON_ORE_DENSITY: f32 = 0.010;
+/// 乙太礦最高出現深度（y ≤ 此值且屬石頭層才生成）——只在最深的地心層（緊貼 y<0 基岩），
+/// 比鐵礦（y≤1）更深、必須一路挖到世界底才可能遇上。
+pub const AETHER_ORE_DEPTH: i32 = 0;
+/// 乙太礦在合格石層中的每格生成機率（0.6%，比鐵礦（1%）更稀少——全世界最難尋的礦脈）。
+pub const AETHER_ORE_DENSITY: f32 = 0.006;
 
 /// 三維確定性雜湊→[0,1)，用於礦石生成。獨立 seed 讓煤礦/鐵礦分佈不重疊。
 #[inline]
@@ -772,13 +789,17 @@ pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
         }
         return Block::Dirt;
     }
-    // 深層礦石（ROADMAP 682）：距地表足夠深的石頭層有機率含礦。
-    // 兩種礦石使用不同 seed，分佈互不重疊。
+    // 深層礦石（ROADMAP 682 / 乙太礦脈 v1）：距地表足夠深的石頭層有機率含礦。
+    // 三種礦石使用不同 seed，分佈互不重疊；查詢順序 煤→鐵→乙太，愈深愈稀有。
     if wy <= COAL_ORE_DEPTH && ore_hash3(wx, wy, wz, 0xdead_beef) < COAL_ORE_DENSITY {
         return Block::CoalOre;
     }
     if wy <= IRON_ORE_DEPTH && ore_hash3(wx, wy, wz, 0xcafe_1234) < IRON_ORE_DENSITY {
         return Block::IronOre;
+    }
+    // 乙太礦：只在最深的地心層（y ≤ 0）、最稀有；一路挖到世界底才可能遇上這脈青藍寶礦。
+    if wy <= AETHER_ORE_DEPTH && ore_hash3(wx, wy, wz, 0xae74_0e55) < AETHER_ORE_DENSITY {
+        return Block::AetherOre;
     }
     Block::Stone
 }
@@ -885,8 +906,11 @@ mod tests {
         // 地表是草、其下是土、再下是石、其上是空氣。
         assert_eq!(block_at(x, h, z), Block::Grass);
         assert_eq!(block_at(x, h - 1, z), Block::Dirt);
-        // 深層石層可能含礦石（ROADMAP 682）。
-        assert!(matches!(block_at(x, h - 8, z), Block::Stone | Block::CoalOre | Block::IronOre));
+        // 深層石層可能含礦石（ROADMAP 682 煤/鐵；乙太礦脈 v1 乙太礦只在 y≤0 最深層）。
+        assert!(matches!(
+            block_at(x, h - 8, z),
+            Block::Stone | Block::CoalOre | Block::IronOre | Block::AetherOre
+        ));
         assert_eq!(block_at(x, h + 1, z), Block::Air);
         // 負 y 座標一律石頭（ROADMAP 682 礦石只在 y≥0 層生成）。
         assert_eq!(block_at(x, -5, z), Block::Stone);
@@ -915,6 +939,64 @@ mod tests {
         assert!(Block::Grass.is_solid());
         assert!(Block::Stone.is_solid());
         assert!(Block::Wood.is_solid());
+    }
+
+    // ── 乙太礦脈 v1（乙太礦/乙太燈）測試 ──────────────────────────────────────────
+    #[test]
+    fn aether_blocks_roundtrip_and_flags() {
+        // id ↔ enum 雙向對應。
+        assert_eq!(Block::from_u8(58), Some(Block::AetherOre));
+        assert_eq!(Block::from_u8(59), Some(Block::AetherLamp));
+        assert_eq!(Block::AetherOre as u8, 58);
+        assert_eq!(Block::AetherLamp as u8, 59);
+        // 兩者皆實心、可放置（採集回收＋合成產物都能擺進世界）。
+        assert!(Block::AetherOre.is_solid());
+        assert!(Block::AetherLamp.is_solid());
+        assert!(Block::AetherOre.is_placeable());
+        assert!(Block::AetherLamp.is_placeable());
+    }
+
+    #[test]
+    fn aether_ore_is_rarest_and_deepest() {
+        // 常數關係：乙太礦比鐵礦更深（層數更低）、比鐵礦更稀（機率更小）。
+        assert!(AETHER_ORE_DEPTH < IRON_ORE_DEPTH, "乙太礦應比鐵礦更深");
+        assert!(IRON_ORE_DEPTH < COAL_ORE_DEPTH, "鐵礦應比煤礦更深");
+        assert!(AETHER_ORE_DENSITY < IRON_ORE_DENSITY, "乙太礦應比鐵礦更稀有");
+        assert!(IRON_ORE_DENSITY < COAL_ORE_DENSITY, "鐵礦應比煤礦更稀有");
+    }
+
+    #[test]
+    fn aether_ore_only_in_deepest_layer() {
+        // 掃描一片區域，凡是乙太礦者，其 y 必 ≤ AETHER_ORE_DEPTH（絕不出現在較淺的石層）。
+        for x in 0..80 {
+            for z in 0..80 {
+                let h = height_at(x, z);
+                for y in 1..h {
+                    if block_at(x, y, z) == Block::AetherOre {
+                        assert!(
+                            y <= AETHER_ORE_DEPTH,
+                            "乙太礦不該出現在 y={y}（> AETHER_ORE_DEPTH={AETHER_ORE_DEPTH}）"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn aether_ore_actually_generates() {
+        // 掃描夠大的最深層（y=0），應找得到至少一脈乙太礦（證明生成邏輯有效、非死碼）。
+        let mut found = false;
+        'outer: for x in -150..150 {
+            for z in -150..150 {
+                // 只在 y=0 落在石層（h-3 > 0）的柱子上查，避開淺地表把 y=0 當泥土。
+                if height_at(x, z) > 3 && block_at(x, 0, z) == Block::AetherOre {
+                    found = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(found, "300×300 的最深層應找得到至少一格乙太礦");
     }
 
     #[test]

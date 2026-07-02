@@ -73,6 +73,10 @@ const SNOW = 55;
 const ICE_CRYSTAL = 56;
 // 冰晶燈 v1（冰晶合成）——背包 2×2：1 冰晶 + 2 玻璃 → 1 冰晶燈；泛冷藍幽光的裝飾燈，蓋冰屋的建造回報
 const ICE_LANTERN = 57;
+// 乙太礦 v1（乙太礦脈）——世界最深層（y≤0）極稀有生成，青藍寶礦；採集後可放置，合成乙太燈的核心材料
+const AETHER_ORE = 58;
+// 乙太燈 v1（乙太礦脈）——工作台 3×3：1 乙太礦 + 4 玻璃 → 1 乙太燈；散發清冷青藍光的高階光源（真實動態光照）
+const AETHER_LAMP = 59;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -138,6 +142,9 @@ const COLOR = {
   [ICE_CRYSTAL]:    [0.55, 0.82, 0.95], // 冰晶——飽和冰藍，在雪白地表上一眼認出的閃亮珍寶
   // 冰晶燈 v1（冰晶合成）——比冰晶更亮更泛白的冷藍幽光，像封在玻璃裡發光的冰
   [ICE_LANTERN]:    [0.70, 0.92, 1.00], // 冰晶燈——高亮冷藍白，泛著幽光的裝飾燈（比照火把純亮色作法）
+  // 乙太礦脈 v1
+  [AETHER_ORE]:     [0.28, 0.62, 0.78], // 乙太礦——深青藍寶礦，埋在最深灰石層裡的一脈幽光
+  [AETHER_LAMP]:    [0.55, 0.90, 1.00], // 乙太燈——高亮清冷青藍，散發真實動態光照的高階明燈
 };
 
 const DEBUG = location.search.includes("debug");
@@ -337,32 +344,41 @@ function makeWaterMat() {
 }
 const waterMat = makeWaterMat();
 
-// ── 火把發光 v1（ROADMAP 691）─────────────────────────────────────────────────
-// 火把（block 31）放置後向周遭散發暖橘光；手持火把時鏡頭附近同樣有光。
-// 純前端、零後端、零協議、零 migration、零 LLM。
+// ── 火把/發光方塊 v1（ROADMAP 691 + 乙太礦脈 v1）───────────────────────────────
+// 發光方塊（火把 31＝暖橘光、乙太燈 59＝清冷青藍光）放置後向周遭散發光；
+// 手持發光方塊時鏡頭附近同樣有光。純前端、零後端、零協議、零 migration、零 LLM。
 
-// 追蹤世界中所有已知火把座標（key="wx,wy,wz" → {wx,wy,wz}）。
+const TORCH_LIGHT_COLOR = 0xff8820;      // 火把——暖橘黃（比火把顏色稍橘，光感更暖）
+const AETHER_LIGHT_COLOR = 0x66ccff;     // 乙太燈——清冷青藍（比火把冷、辨識度高）
+
+/** 此方塊是否為「發光方塊」（會被登記進光源池）。 */
+function isLightBlock(b) { return b === TORCH || b === AETHER_LAMP; }
+/** 發光方塊的光色（不同方塊不同色調）。 */
+function lightColorFor(b) { return b === AETHER_LAMP ? AETHER_LIGHT_COLOR : TORCH_LIGHT_COLOR; }
+
+// 追蹤世界中所有已知發光方塊座標（key="wx,wy,wz" → {wx,wy,wz,color}）。
 const torchPositions = new Map();
 function torchKey(wx, wy, wz) { return wx + "," + wy + "," + wz; }
-function registerTorchBlock(wx, wy, wz) {
-  torchPositions.set(torchKey(wx, wy, wz), { wx, wy, wz });
+function registerTorchBlock(wx, wy, wz, color = TORCH_LIGHT_COLOR) {
+  torchPositions.set(torchKey(wx, wy, wz), { wx, wy, wz, color });
 }
 function unregisterTorchBlock(wx, wy, wz) {
   torchPositions.delete(torchKey(wx, wy, wz));
 }
-/** 掃描整個 chunk 找火把並登記（chunk 載入時呼叫，讓重連後既有火把也有光）。 */
+/** 掃描整個 chunk 找發光方塊並登記（chunk 載入時呼叫，讓重連後既有光源也有光）。 */
 function scanChunkForTorches(cx, cy, cz) {
   const ch = chunks.get(ckey(cx, cy, cz));
   if (!ch) return;
   const bx = cx * CHUNK, by = cy * CHUNK, bz = cz * CHUNK;
   for (let ly = 0; ly < CHUNK; ly++)
     for (let lz = 0; lz < CHUNK; lz++)
-      for (let lx = 0; lx < CHUNK; lx++)
-        if (ch[lx + lz * CHUNK + ly * CHUNK * CHUNK] === TORCH)
-          registerTorchBlock(bx + lx, by + ly, bz + lz);
+      for (let lx = 0; lx < CHUNK; lx++) {
+        const b = ch[lx + lz * CHUNK + ly * CHUNK * CHUNK];
+        if (isLightBlock(b))
+          registerTorchBlock(bx + lx, by + ly, bz + lz, lightColorFor(b));
+      }
 }
 
-const TORCH_LIGHT_COLOR = 0xff8820;     // 暖橘黃（比火把顏色稍橘，光感更暖）
 const TORCH_LIGHT_INTENSITY = 2.5;      // 亮度（影響照亮半徑內的方塊面）
 const TORCH_LIGHT_DIST = 10;            // 光照衰減半徑（方塊單位）
 const MAX_TORCH_POOL = 6;               // 效能上限：同時啟用的近旁火把光數量
@@ -394,9 +410,9 @@ function updateNearbyTorchLights() {
   }
   const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z;
   const sorted = [];
-  for (const { wx, wy, wz } of torchPositions.values()) {
+  for (const { wx, wy, wz, color } of torchPositions.values()) {
     const dx = wx + 0.5 - cx, dy = wy + 0.5 - cy, dz = wz + 0.5 - cz;
-    sorted.push({ wx, wy, wz, d2: dx * dx + dy * dy + dz * dz });
+    sorted.push({ wx, wy, wz, color, d2: dx * dx + dy * dy + dz * dz });
   }
   sorted.sort((a, b) => a.d2 - b.d2);
   for (let i = 0; i < torchLightPool.length; i++) {
@@ -404,6 +420,7 @@ function updateNearbyTorchLights() {
     if (i < sorted.length) {
       const t = sorted[i];
       pl.position.set(t.wx + 0.5, t.wy + 0.5, t.wz + 0.5);
+      pl.color.setHex(t.color || TORCH_LIGHT_COLOR); // 依方塊種類上色（火把暖橘／乙太燈青藍）
       pl.intensity = TORCH_LIGHT_INTENSITY;
       pl.visible = true;
     } else {
@@ -1849,6 +1866,8 @@ const BLOCK_NAME = {
   [CACTUS]: "仙人掌", [SNOW]: "雪", [ICE_CRYSTAL]: "冰晶",
   // 冰晶燈 v1（冰晶合成）
   [ICE_LANTERN]: "冰晶燈",
+  // 乙太礦脈 v1
+  [AETHER_ORE]: "乙太礦", [AETHER_LAMP]: "乙太燈",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
@@ -2068,10 +2087,10 @@ function setLocalBlock(wx, wy, wz, b) {
   if (!ch) return; // 該 chunk 還沒載入——之後串流會帶正確（含 delta）的版本。
   const lx = wx - cx * CHUNK, ly = wy - cy * CHUNK, lz = wz - cz * CHUNK;
   const old = ch[lx + lz * CHUNK + ly * CHUNK * CHUNK];
-  // 火把發光 v1：放火把→登記；破壞火把→移除登記（讓光源池即時更新）。
-  if (old === TORCH) unregisterTorchBlock(wx, wy, wz);
+  // 發光方塊 v1：放發光方塊→登記；破壞→移除登記（讓光源池即時更新；火把暖橘／乙太燈青藍）。
+  if (isLightBlock(old)) unregisterTorchBlock(wx, wy, wz);
   ch[lx + lz * CHUNK + ly * CHUNK * CHUNK] = b;
-  if (b === TORCH) registerTorchBlock(wx, wy, wz);
+  if (isLightBlock(b)) registerTorchBlock(wx, wy, wz, lightColorFor(b));
   markDirty(cx, cy, cz); // markDirty 只標該 chunk + 6 鄰塊
 }
 
@@ -2098,12 +2117,14 @@ const BLOCK_HARDNESS = {
   [DOOR_OPEN]:   0.8,  // 木門（開）——同材質，可破壞
   [BED]: 0.6,  // 床——布料+木架，輕鬆打破
   [ICE_CRYSTAL]: 1.2,  // 冰晶——結晶偏脆但需點時間敲下，比礦石快、比石頭稍慢
+  [AETHER_ORE]: 2.8,   // 乙太礦——世界最硬最深的礦，比煤/鐵礦更耐敲（需鎬加速）
+  [AETHER_LAMP]: 0.3,  // 乙太燈——玻璃燈罩，輕鬆敲下回收
 };
 function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
 
 // 鎬具加速倍率（持特定鎬對石/礦類方塊的速度倍數）。
 function pickaxeBonus(bid) {
-  const stoneTypes = [STONE, STONE_BRICK, SMOOTH_STONE, COAL_ORE, IRON_ORE, IRON_BLOCK, IRON_INGOT, WORKBENCH, FURNACE];
+  const stoneTypes = [STONE, STONE_BRICK, SMOOTH_STONE, COAL_ORE, IRON_ORE, IRON_BLOCK, IRON_INGOT, WORKBENCH, FURNACE, AETHER_ORE];
   if (!stoneTypes.includes(bid)) return 1.0;
   if ((myInv.get(PICKAXE_IRON) || 0) > 0) return 6.0;   // 鐵鎬：最快
   if ((myInv.get(PICKAXE_STONE) || 0) > 0) return 4.0;  // 石鎬：快
@@ -2831,10 +2852,12 @@ function update(dt) {
   // 採礦手感 v1（ROADMAP 687）：桌機按住左鍵期間每幀推進挖掘進度。
   if (!isTouch) tickMining(dt);
 
-  // 火把發光 v1（ROADMAP 691）：手持火把時在鏡頭附近亮暖橘光。
-  const holdingTorch = selectedBlock() === TORCH && (myInv.get(TORCH) || 0) > 0;
-  if (holdingTorch) {
+  // 發光方塊 v1（ROADMAP 691 + 乙太礦脈 v1）：手持發光方塊時在鏡頭附近亮對應色光。
+  const heldSel = selectedBlock();
+  const holdingLight = isLightBlock(heldSel) && (myInv.get(heldSel) || 0) > 0;
+  if (holdingLight) {
     heldTorchLight.position.copy(camera.position);
+    heldTorchLight.color.setHex(lightColorFor(heldSel)); // 火把暖橘／乙太燈青藍
     heldTorchLight.intensity = 1.8;
     heldTorchLight.visible = true;
   } else {
@@ -3183,6 +3206,8 @@ const WORKBENCH_RECIPES_JS = [
   { id: "iron_shovel",    name: "鐵鏟",           inputs: [[IRON_INGOT, 2], [PLANK, 3]], output_block: SHOVEL_IRON,  out_count: 1  },
   // 箱子 v1（ROADMAP 692）：8 木板 → 1 箱子（8 格，需工作台；放置後儲物）
   { id: "chest",          name: "箱子",           inputs: [[PLANK, 8]],                  output_block: CHEST,        out_count: 1  },
+  // 乙太燈 v1（乙太礦脈）：1 乙太礦 + 4 玻璃 → 1 乙太燈（5 格，需工作台；散發真實青藍光）
+  { id: "aether_lamp",    name: "乙太燈",         inputs: [[AETHER_ORE, 1], [GLASS, 4]], output_block: AETHER_LAMP,  out_count: 1  },
 ];
 
 // wbGrid[0..8]：3×3 共 9 格，0 代表空格，非零代表 block_id。
