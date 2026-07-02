@@ -104,7 +104,7 @@ const check = (ok, label) => {
   check(paved, `地表真的變石磚：範圍內收到 ${siteBricks()}/49 柱石磚放置廣播`);
 
   let fa = await feed();
-  const kinds = (k, re) => fa.filter((e) => e.kind === k && re.test(e.text || e.detail || JSON.stringify(e)));
+  const kinds = (k, re) => fa.filter((e) => e.kind === k && re.test(e.detail || JSON.stringify(e)));
   check(kinds("鋪面", /答應|備料/).length > 0, "Feed：答應+備料");
   check(kinds("鋪面", /礦井/).length > 0, "Feed：開挖階梯礦井備石頭（誠實備料證據）");
   const doneA = await waitFor(async () => {
