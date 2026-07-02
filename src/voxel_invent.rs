@@ -53,7 +53,13 @@ pub const RUN_TIMEOUT_SECS: f32 = 480.0;
 pub const INVENT_COOLDOWN_SECS: f32 = 300.0;
 /// 發明用採集的搜尋半徑（格）：比日常採集（16）大——她在「為了目標特地找材料」，
 /// 值得走遠一點；仍有界，找不到就誠實失敗（記教訓），不會無限漫遊。
-pub const INVENT_GATHER_RADIUS: i32 = 28;
+/// 56 格：群系更新後樹可能被劃到較遠處，給她走得到的空間。
+pub const INVENT_GATHER_RADIUS: i32 = 56;
+
+/// 同一發明目標連敗幾次後進退避（防「同一釣竿試了又試」的鬼打牆迴圈）。
+pub const INVENT_BACKOFF_THRESHOLD: u8 = 2;
+/// 退避持續時間（秒）：2 小時內好奇心不再挑這個目標，重啟歸零可接受。
+pub const INVENT_BACKOFF_SECS: f32 = 7200.0;
 
 // ── 原語（primitives）：居民已有的原子能力，正名為可組合的白名單 ────────────────
 //
@@ -1265,6 +1271,26 @@ pub fn nothing_new_line() -> &'static str {
     "最近沒什麼新東西想試呢～我會的已經不少啦"
 }
 
+/// 退避：資源採不到、發明卡住時的 Feed 行（「這附近找不到木頭呢…」）。
+/// `goal_name`：目標材料名；`missing_resource`：找不到的資源名（可為空）。
+pub fn backoff_no_resource_feed(goal_name: &str, missing_resource: &str) -> String {
+    if missing_resource.is_empty() {
+        format!("試了幾次，{goal_name}這次做不出來，先放一放")
+    } else {
+        format!("這附近找不到{missing_resource}呢…{goal_name}先擱著，改天再試")
+    }
+}
+
+/// 退避：換目標冒泡（「釣竿太難了，先試試別的」）。
+pub fn backoff_switch_line(goal_name: &str) -> String {
+    format!("{goal_name}太難了，先試試別的～")
+}
+
+/// 退避：換目標的 Feed 行。
+pub fn backoff_switch_feed(goal_name: &str) -> String {
+    format!("連試 {INVENT_BACKOFF_THRESHOLD} 次都沒成功，暫時不再試{goal_name}，換個方向探索")
+}
+
 /// 測試注入口（**僅供隔離實測**）：設 `BUTFUN_INVENT_FIXED_PLAN` 時，發明流程改用
 /// 這串固定 JSON 當作「LLM 的輸出」——當測試環境打不到思考腦時，用來驗證
 /// 「執行→驗證→存→重用」的確定性鏈。prod 不設此變數，永遠走真便宜腦。
@@ -2297,5 +2323,59 @@ mod tests {
         assert!(curiosity_feed("梯子").contains("好奇心"));
         assert!(curiosity_memory("梯子").contains("沒有人教我"));
         assert!(!nothing_new_line().is_empty());
+    }
+
+    // ── 退避台詞（#972 防鬼打牆）────────────────────────────────────────────────
+
+    #[test]
+    fn backoff_texts_mention_goal_and_resource() {
+        // 資源找不到時 Feed 帶資源名。
+        let f = backoff_no_resource_feed("釣竿", "木頭");
+        assert!(f.contains("木頭"), "應提及缺少的資源：{f}");
+        assert!(f.contains("釣竿"), "應提及目標：{f}");
+        // 資源名空時退化為不提資源的版本。
+        let f2 = backoff_no_resource_feed("釣竿", "");
+        assert!(f2.contains("釣竿"), "應提及目標：{f2}");
+        assert!(!f2.is_empty());
+        // 換目標冒泡/Feed 帶目標名。
+        assert!(backoff_switch_line("釣竿").contains("釣竿"));
+        assert!(backoff_switch_feed("釣竿").contains("釣竿"));
+        // Feed 帶門檻數，呼應「連試 N 次」。
+        assert!(backoff_switch_feed("釣竿").contains(&INVENT_BACKOFF_THRESHOLD.to_string()));
+    }
+
+    #[test]
+    fn backoff_constants_are_sane() {
+        // 門檻 ≥ 2（至少讓她試兩次，不過度敏感）。
+        assert!(INVENT_BACKOFF_THRESHOLD >= 2);
+        // 退避時間 ≥ 1 小時（讓她有足夠時間換方向探索，不是秒回頭再撞）。
+        assert!(INVENT_BACKOFF_SECS >= 3600.0);
+    }
+
+    #[test]
+    fn gather_radius_is_larger_than_default() {
+        // 發明採集半徑應大於日常採集半徑，讓她能找到較遠的資源。
+        use crate::voxel_skills::GATHER_MAX_RADIUS;
+        assert!(
+            INVENT_GATHER_RADIUS > GATHER_MAX_RADIUS,
+            "發明採集半徑 {INVENT_GATHER_RADIUS} 應大於日常半徑 {GATHER_MAX_RADIUS}"
+        );
+    }
+
+    #[test]
+    fn catalog_excludes_backoff_goals() {
+        // 驗證退避目標（如 goal_block_id=60 釣竿）被加進 excluded 後目錄就不含它。
+        let all = possibility_catalog(&HashSet::new());
+        // 找一個目錄裡有的 id 來模擬「目前退避中」。
+        if let Some(backoff_goal) = all.first() {
+            let bid = backoff_goal.block_id;
+            let mut excluded = HashSet::new();
+            excluded.insert(bid);
+            let filtered = possibility_catalog(&excluded);
+            assert!(
+                filtered.iter().all(|g| g.block_id != bid),
+                "退避目標 {bid} 應從目錄排除"
+            );
+        }
     }
 }
