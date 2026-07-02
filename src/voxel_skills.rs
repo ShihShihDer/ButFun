@@ -396,6 +396,40 @@ pub fn find_nearest_resource(
     })
 }
 
+/// 從 (ox,oz) 螺旋向外找最近一個「可採指定型別」的方塊（給「指名要採 XX」的跑腿任務用，
+/// ROADMAP·指令→任務第三刀）。與 [`find_nearest_resource`] 的差別：後者是「就地取材、
+/// 木頭優先」的背景採集找法；本函式是「一定要找到這個特定種類」，沒有優先序，找不到就回 `None`
+/// （呼叫端據此決定放棄或帶著已採到的先回去交差）。純函式（吃 &WorldDelta）、可測。
+pub fn find_nearest_resource_of(
+    world: &WorldDelta,
+    ox: i32,
+    oz: i32,
+    max_radius: i32,
+    want: GatherResource,
+) -> Option<(i32, i32, i32)> {
+    let foot_fy = surface_block(world, ox, oz).map(|(y, _)| y + 1);
+    let escapable = |x: i32, y: i32, z: i32| {
+        foot_fy.map_or(true, |fy| is_escapable_after_dig(world, ox, fy, oz, x, y, z))
+    };
+    if want == GatherResource::Wood {
+        return spiral_find(ox, oz, max_radius, |x, z| {
+            let (_, b) = surface_block(world, x, z)?;
+            if !matches!(b, Block::Leaves | Block::Wood) {
+                return None;
+            }
+            let wy = trunk_base(world, x, z)?;
+            escapable(x, wy, z).then_some((x, wy, z))
+        });
+    }
+    spiral_find(ox, oz, max_radius, |x, z| {
+        let (y, b) = surface_block(world, x, z)?;
+        if GatherResource::from_block(b)? != want {
+            return None;
+        }
+        escapable(x, y, z).then_some((x, y, z))
+    })
+}
+
 // ── 已完成目標 store（持久化：不重複的記憶土壤）──────────────────────────────
 
 /// 一筆「居民完成了某建物」記錄（jsonl 落地單位）。
@@ -856,6 +890,53 @@ mod tests {
             find_nearest_resource(&world, ox, oz, GATHER_MAX_RADIUS).expect("陸地應有可採資源");
         // 不論回木頭或地表材料，型別都與該座標方塊一致（同源、可實際挖到）。
         assert_eq!(voxel::effective_block_at(&world, x, y, z), res.block());
+    }
+
+    // ── find_nearest_resource_of：指名要採特定型別（跑腿採集用）────────────────────
+
+    #[test]
+    fn find_nearest_resource_of_wood_finds_tree() {
+        let world = WorldDelta::new();
+        let (ox, oz, t) = tree_with_flat_neighbor();
+        let (x, y, z) = find_nearest_resource_of(&world, ox, oz, GATHER_MAX_RADIUS, GatherResource::Wood)
+            .expect("指名木頭應找得到樹");
+        assert_eq!((x, z), (t.tx, t.tz));
+        assert_eq!(voxel::effective_block_at(&world, x, y, z), Block::Wood);
+    }
+
+    #[test]
+    fn find_nearest_resource_of_matches_requested_kind_only() {
+        let world = WorldDelta::new();
+        let (ox, oz) = land_point();
+        for want in [GatherResource::Grass, GatherResource::Sand, GatherResource::Dirt, GatherResource::Stone] {
+            if let Some((x, y, z)) = find_nearest_resource_of(&world, ox, oz, GATHER_MAX_RADIUS, want) {
+                assert_eq!(
+                    GatherResource::from_block(voxel::effective_block_at(&world, x, y, z)),
+                    Some(want),
+                    "找到的方塊型別應恰好等於指名要的型別"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn find_nearest_resource_of_none_when_kind_absent_in_range() {
+        // 造一片只有石頭地表的小世界（陸地點附近全填石頭），指名要沙子理應找不到。
+        let mut world = WorldDelta::new();
+        let (ox, oz) = land_point();
+        for dx in -(GATHER_MAX_RADIUS + 2)..=(GATHER_MAX_RADIUS + 2) {
+            for dz in -(GATHER_MAX_RADIUS + 2)..=(GATHER_MAX_RADIUS + 2) {
+                let (x, z) = (ox + dx, oz + dz);
+                let h = height_at(x, z);
+                voxel::set_block(&mut world, x, h, z, Block::Stone);
+                voxel::set_block(&mut world, x, h + 1, z, Block::Air);
+            }
+        }
+        assert_eq!(
+            find_nearest_resource_of(&world, ox, oz, GATHER_MAX_RADIUS, GatherResource::Sand),
+            None,
+            "半徑內完全沒有沙子 → 該老實回 None，不亂猜"
+        );
     }
 
     // ── safe_to_dig：採集別把自己挖坑卡住 ────────────────────────────────────
