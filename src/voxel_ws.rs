@@ -257,6 +257,10 @@ struct VoxelResident {
     /// 發明冷卻倒數（秒）：一次發明嘗試（無論成敗）後至少隔這麼久才再請 LLM 想
     /// ——發明是低頻事件（成本紀律），重用不受此冷卻影響（重用零 LLM）。
     invent_cooldown: f32,
+    /// 好奇心計時（秒，北極星第三刀）：歸零＋閒置＋過機率門檻 → 從可能性目錄挑一樣
+    /// 她還不會的，自發種下心願（sparked_by=好奇心）交給發明引擎——
+    /// **不用玩家 push 她也會自己成長**。每位獨立、比例式錯開。
+    curiosity_timer: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -785,6 +789,9 @@ fn init_residents() -> Vec<VoxelResident> {
             // 技能發明 v1：入場無進行中的發明；首次冷卻小幅錯開（避免同 tick 全員一起想）。
             invent_run: None,
             invent_cooldown: 30.0 + i as f32 * 15.0,
+            // 好奇心（第三刀）：首次計時比例式錯開；測試模式（BUTFUN_CURIOSITY_SECS）
+            // 縮短基準時錯開間距同步縮短，隔離實測等得到全鏈。
+            curiosity_timer: vinvent::curiosity_interval_for(i, vinvent::curiosity_base_secs()),
         });
     }
     out
@@ -3852,6 +3859,11 @@ fn tick_residents(dt: f32) {
             if let Some(run) = &mut r.invent_run {
                 run.deadline -= dt;
             }
+            // 好奇心計時倒數（北極星第三刀）：觸發與種心願在 agency 段（build 候選迴圈），
+            // 這裡只負責時間流逝。
+            if r.curiosity_timer > 0.0 {
+                r.curiosity_timer -= dt;
+            }
             // 聚會逾時放棄：等太久等不到其他成員到齊，就散去、回到平常閒晃。
             if r.clique_meet.is_some() {
                 r.clique_wait += dt;
@@ -5519,6 +5531,93 @@ fn tick_residents(dt: f32) {
         let has_plan = hub().builds.read().unwrap().has_plan(&rid); // drop
 
         if !has_plan {
+            // ── 好奇心自主學習（北極星第三刀）：閒置＋計時到期＋機率門檻 → 從可能性
+            //    目錄挑一樣她還不會的，自發種下心願（sparked_by=好奇心）——緊接著下方的
+            //    處境偵測立刻接手（心願含材料→發明→存技能），**不用玩家 push 也會成長**。
+            //    成本紀律：好奇本身零 LLM；發明照舊走冷卻＋防重入；目錄空也零 LLM。
+            let (curio_due, invent_cd) = {
+                let residents = hub().residents.read().unwrap();
+                residents
+                    .iter()
+                    .find(|r| r.id == rid)
+                    .map_or((false, 1.0), |r| (r.curiosity_timer <= 0.0, r.invent_cooldown))
+            }; // residents 讀鎖釋放
+            // 閒置事實：invent_run=None（上方已 continue）、fetch=None（候選條件已排除）、
+            // 建造計畫=無（本分支）；只剩發明冷卻要問她本人。
+            if curio_due && vinvent::curiosity_idle(false, false, has_plan, invent_cd) {
+                // 無論這次有沒有真的好奇，計時都重置（低頻紀律：每週期至多想一次）。
+                {
+                    let mut residents = hub().residents.write().unwrap();
+                    if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                        r.curiosity_timer = vinvent::curiosity_base_secs();
+                    }
+                } // residents 寫鎖釋放
+                // 玩家親口種下、還沒實現的心願不打擾（先惦記玩家的願，好奇心讓路）。
+                let player_wish_pending = {
+                    let des = hub().desires.read().unwrap();
+                    des.get_desire(&rid).map_or(false, |d| {
+                        !d.fulfilled
+                            && d.sparked_by != vdes::SELF_SPARK
+                            && d.sparked_by != vdes::CURIOSITY_SPARK
+                    })
+                }; // desires 讀鎖釋放
+                if !player_wish_pending && vinvent::curiosity_gate(rand::random()) {
+                    // 排除清單＝技能庫已會的目標 ∪ 背包已有的產物（有了就不必好奇）。
+                    let mut excluded = {
+                        let inv = hub().invented.read().unwrap();
+                        inv.known_goals_for(&rid)
+                    }; // invented 讀鎖釋放
+                    {
+                        let bags = hub().res_inv.read().unwrap();
+                        if let Some(bag) = bags.get(&rid) {
+                            excluded
+                                .extend(bag.iter().filter(|(_, c)| **c > 0).map(|(b, _)| *b));
+                        }
+                    } // res_inv 讀鎖釋放
+                    let catalog = vinvent::possibility_catalog(&excluded);
+                    // 確定性種子：她此刻的位置 bits——同居民不同時刻挑到不同樣、可重現。
+                    let seed = (rx as i64 as u64) ^ ((rz as i64 as u64) << 20);
+                    match vinvent::curiosity_pick(&catalog, seed) {
+                        Some(goal) => {
+                            let new_desire = {
+                                let mut des = hub().desires.write().unwrap();
+                                des.set_desire(
+                                    &rid,
+                                    &vinvent::curiosity_desire_text(goal.name_zh),
+                                    vdes::CURIOSITY_SPARK,
+                                )
+                            }; // desires 寫鎖釋放
+                            vdes::append_desire(&new_desire);
+                            vfeed::append_feed(
+                                "好奇心",
+                                rname,
+                                &vinvent::curiosity_feed(goal.name_zh),
+                            );
+                            // 寫進記憶（日記走既有事件管道自然反映這段自主探索）。
+                            let entry = {
+                                let mut mem = hub().memory.write().unwrap();
+                                mem.add_memory(
+                                    &rid,
+                                    vdes::CURIOSITY_SPARK,
+                                    &vinvent::curiosity_memory(goal.name_zh),
+                                )
+                            }; // memory 寫鎖釋放
+                            vmem::append_memory(&entry);
+                            say_updates.push((rid.clone(), vinvent::curiosity_line(goal.name_zh)));
+                            tracing::info!(
+                                resident = %rid, goal = %goal.name_zh,
+                                "好奇心：自發種下想做的東西（發明引擎接手）"
+                            );
+                        }
+                        None => {
+                            // 能學的她全會了：冒個泡就好——**零 LLM**。
+                            say_updates
+                                .push((rid.clone(), vinvent::nothing_new_line().to_string()));
+                        }
+                    }
+                }
+            }
+
             // ── 處境偵測（真進化第一刀）：心願提到可合成材料、背包卻沒有 ─────────────
             // ＝「沒有現成技能可解的處境」。先查**自己的**技能庫（會 → 直接重用，零 LLM
             // ——這就是進化：她下次不用再想，因為她已經會了）；不會 → 低頻請便宜腦發明。
@@ -5616,7 +5715,10 @@ fn tick_residents(dt: f32) {
                 match des.get_desire(&rid) {
                     Some(d) => (
                         vbuild::classify_desire(&d.desire),
-                        (d.sparked_by != vdes::SELF_SPARK).then(|| d.sparked_by.clone()),
+                        // 自我啟發（禱告）與好奇心都不是真人玩家——完工不指名感謝。
+                        (d.sparked_by != vdes::SELF_SPARK
+                            && d.sparked_by != vdes::CURIOSITY_SPARK)
+                            .then(|| d.sparked_by.clone()),
                     ),
                     None => (None, None),
                 }
@@ -6558,7 +6660,12 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
     let resident_desire_note: Option<String> = {
         let des = hub().desires.read().unwrap();
         des.get_desire(&id).map(|d| {
-            if d.sparked_by == vdes::SELF_SPARK {
+            if d.sparked_by == vdes::CURIOSITY_SPARK {
+                format!(
+                    "你最近自己起了好奇心：「{}」——沒有人教你，你正想自己摸索著做出來。",
+                    d.desire
+                )
+            } else if d.sparked_by == vdes::SELF_SPARK {
                 format!(
                     "你自己心底浮現過一個念頭：「{}」——\
                     這個夢想是你生活的動力，偶爾在心裡默默惦記著它。",
@@ -6573,6 +6680,13 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
             }
         })
     }; // 心願讀鎖在此釋放
+    // 可能性目錄（好奇心第三刀）：把「世界上做得出、她還不會」的知識注入自主思考／
+    // 許願 prompt——心願腦不再對配方世界一無所知，許的願自然往「做得到的東西」靠。
+    // **只在 think/pray 路徑**（talk 不注入——省 token、不影響對話）。
+    let catalog_note: Option<String> = {
+        let inv = hub().invented.read().unwrap();
+        vinvent::catalog_note(&vinvent::possibility_catalog(&inv.known_goals_for(&id)))
+    }; // invented 讀鎖釋放
     // 短鎖讀社交記憶（最近聽到其他居民說了什麼）→ 帶入 world_news 讓居民思考時知道彼此近況。
     let social_note: String = {
         let soc = hub().social.read().unwrap();
@@ -6607,6 +6721,9 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
             parts.push(format!("你記得：{recall_note}。"));
         }
         if let Some(note) = resident_desire_note {
+            parts.push(note);
+        }
+        if let Some(note) = catalog_note {
             parts.push(note);
         }
         if !social_note.is_empty() {
