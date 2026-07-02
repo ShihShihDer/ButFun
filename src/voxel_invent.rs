@@ -506,6 +506,16 @@ impl InventedSkillStore {
             .map(|k| k.name.clone())
             .collect()
     }
+
+    /// `teacher` 是否有一個 `student` 還不會的技能——可教（ROADMAP 717）。
+    /// 依技能庫既有順序找第一筆符合的（決定性、非隨機）；教哪一筆、教誰由此決定，
+    /// 呼叫端只負責機率門檻與台詞。
+    pub fn teachable(&self, teacher: &str, student: &str) -> Option<&InventedSkillRecord> {
+        self.skills
+            .iter()
+            .filter(|k| k.resident == teacher)
+            .find(|k| self.find_for(student, k.goal_block).is_none())
+    }
 }
 
 // ── jsonl 持久化（append-only，比照 voxel_goals/voxel_memory 慣例）────────────────
@@ -1038,6 +1048,32 @@ mod tests {
         assert_eq!(k.name, "燒玻璃");
         // 載回的步驟仍過白名單 → 可直接重用執行（零 LLM）。
         assert!(check_steps(&k.steps).is_some());
+    }
+
+    // ── teachable：可教技能查詢（ROADMAP 717 用）────────────────────────────────
+
+    #[test]
+    fn teachable_finds_skill_teacher_has_and_student_lacks() {
+        let mut s = InventedSkillStore::new();
+        let plan = parse_plan(glass_plan_json()).unwrap();
+        s.add("vox_res_0", &plan.name, 10, plan.raw_steps).unwrap();
+        let k = s.teachable("vox_res_0", "vox_res_1").expect("露娜會、諾娃不會 → 可教");
+        assert_eq!(k.name, "燒玻璃");
+    }
+
+    #[test]
+    fn teachable_none_when_student_already_knows() {
+        let mut s = InventedSkillStore::new();
+        let plan = parse_plan(glass_plan_json()).unwrap();
+        s.add("vox_res_0", &plan.name, 10, plan.raw_steps.clone()).unwrap();
+        s.add("vox_res_1", "自己的燒玻璃法", 10, plan.raw_steps).unwrap();
+        assert!(s.teachable("vox_res_0", "vox_res_1").is_none(), "兩人都會就沒什麼好教的");
+    }
+
+    #[test]
+    fn teachable_none_when_teacher_knows_nothing() {
+        let s = InventedSkillStore::new();
+        assert!(s.teachable("vox_res_0", "vox_res_1").is_none());
     }
 
     #[test]

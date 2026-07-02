@@ -66,6 +66,7 @@ use crate::voxel_chest as vchest;
 use crate::voxel_weather as vweather;
 use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
+use crate::voxel_teach as vteach;
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -4606,11 +4607,74 @@ fn tick_residents(dt: f32) {
             quarrel_line = Some(vquarrel::quarrel_say_line(&host_name, pick));
         }
 
+        // ROADMAP 717：居民互相傳授技能 v1——技能發明（716／#944）讓居民各自「自己」
+        // 學會技能，卻只鎖在發明者本人身上；本節讓老朋友到訪時，偶爾把已學會的技能
+        // 教給還不會的對方，本事第一次能像見聞（694）一樣在朋友網絡裡流通。只在這次
+        // 到訪沒有觸發互助蓋家或拌嘴時才可能傳授，同一次到訪只演一齣戲；教誰哪個技能
+        // 由 InventedSkillStore::teachable 查表決定（host 教 visitor 優先，host 沒有
+        // 可教的才看 visitor 教不教得了 host）。
+        let mut teach_line: Option<String> = None;
+        if vteach::should_teach(tier, help_line.is_some(), quarrel_line.is_some(), rand::random::<f32>()) {
+            let host_id = {
+                let residents = hub().residents.read().unwrap();
+                residents.iter().find(|r| r.name == host_name).map(|r| r.id.clone())
+            }; // residents 讀鎖釋放
+            if let Some(host_id) = host_id {
+                let taught = {
+                    let store = hub().invented.read().unwrap();
+                    store
+                        .teachable(&host_id, &visitor_id)
+                        .map(|r| (host_id.clone(), host_name.clone(), visitor_id.clone(), visitor_name.to_string(), r.clone()))
+                        .or_else(|| {
+                            store.teachable(&visitor_id, &host_id).map(|r| {
+                                (visitor_id.clone(), visitor_name.to_string(), host_id.clone(), host_name.clone(), r.clone())
+                            })
+                        })
+                }; // invented 讀鎖釋放
+                if let Some((teacher_id, teacher_name, student_id, student_name, skill)) = taught {
+                    let learned = {
+                        let mut store = hub().invented.write().unwrap();
+                        store.add(&student_id, &skill.name, skill.goal_block, skill.steps.clone())
+                    }; // invented 寫鎖釋放
+                    if let Some(rec) = learned {
+                        vinvent::append_invented_skill(&rec);
+                        vfeed::append_feed(
+                            vteach::FEED_KIND,
+                            &teacher_name,
+                            &vteach::teach_feed_line(&teacher_name, &student_name, &skill.name, pick),
+                        );
+                        {
+                            let entry = hub().memory.write().unwrap().add_memory(
+                                &teacher_id,
+                                &student_name,
+                                &vteach::teach_memory_line_teacher(&student_name, &skill.name),
+                            );
+                            vmem::append_memory(&entry);
+                        } // memory 寫鎖釋放
+                        {
+                            let entry = hub().memory.write().unwrap().add_memory(
+                                &student_id,
+                                &teacher_name,
+                                &vteach::teach_memory_line_student(&teacher_name, &skill.name),
+                            );
+                            vmem::append_memory(&entry);
+                        } // memory 寫鎖釋放
+                        teach_line = Some(if teacher_id == host_id {
+                            vteach::teach_say_line_as_student(&teacher_name, &skill.name, pick)
+                        } else {
+                            vteach::teach_say_line_as_teacher(&student_name, &skill.name, pick)
+                        });
+                    }
+                }
+            }
+        }
+
         // 依新層級生成問候語 → say_updates（守 say_updates 的「say 空才套」原則）；
         // 若這次到訪順手幫了忙，優先冒幫忙台詞（更有感）；否則若拌了嘴，冒拌嘴台詞；
-        // 都沒有才落回一般問候語。
+        // 否則若學/教了技能，冒傳授台詞；都沒有才落回一般問候語。
         let greeting = help_line
             .or(quarrel_line)
+            .or(teach_line)
             .unwrap_or_else(|| vbonds::arrival_line(tier, &host_name, visitor_name, pick));
         say_updates.push((visitor_id, greeting));
     }
