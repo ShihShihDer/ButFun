@@ -383,10 +383,20 @@ const MATERIAL_KEYWORDS: [(&str, u8); 6] = [
 
 /// 偵測：這句心願是否提到某個「可合成材料」。命中回目標，否則 `None`。
 /// 純函式、確定性、可測——一般心願（想要小屋/水井）不會誤觸發。
+///
+/// **好奇心第三刀擴充**：先查手工關鍵詞表，查無再掃**可發明配方的產物名**——
+/// 好奇心種下的心願（梯子/木鎬/釣竿…）與玩家順口提到的都接得住，
+/// 單一事實源在配方表：新配方上桌自動被涵蓋，不再手動同步關鍵詞。
+/// 不可發明的產物（火把要煤礦、床要葉片）仍誠實不觸發。
 pub fn detect_missing_material(desire: &str) -> Option<MaterialGoal> {
     for (kw, bid) in MATERIAL_KEYWORDS {
         if desire.contains(kw) {
             return Some(MaterialGoal { block_id: bid, name_zh: material_name(bid) });
+        }
+    }
+    for r in inventable_recipes().chain(inventable_wb_recipes()) {
+        if desire.contains(r.name_zh) {
+            return Some(MaterialGoal { block_id: r.output_block, name_zh: r.name_zh });
         }
     }
     None
@@ -895,6 +905,16 @@ impl InventedSkillStore {
         Some(rec)
     }
 
+    /// 這位居民已會技能的**目標材料 id 集合**（好奇心第三刀：可能性目錄
+    /// 「排掉她已會的」用——會了的東西不再列進「世界上還能學什麼」）。
+    pub fn known_goals_for(&self, resident: &str) -> HashSet<u8> {
+        self.skills
+            .iter()
+            .filter(|k| k.resident == resident)
+            .map(|k| k.goal_block)
+            .collect()
+    }
+
     /// 這位居民已學會的技能名清單（對話時可以自豪地講出來）。
     pub fn names_for(&self, resident: &str) -> Vec<String> {
         self.skills
@@ -1121,6 +1141,128 @@ pub fn skills_talk_note(names: &[String]) -> Option<String> {
         "你還有自己發明的技能：{list}——這是你自己從基礎動作組合出來、親手驗證過的本事，\
         旅人問起你會什麼時，可以自豪地提到它。"
     ))
+}
+
+// ── 好奇心自主學習（北極星第三刀）──────────────────────────────────────────────
+//
+// 維護者實測回饋：「不 push 他好像無法學習？進化那個好像還沒成功？」——發明引擎
+// 技術上成功過，但**有機自發幾乎不會發生**：(1) 心願腦對配方世界一無所知，許的願
+// 全是詩意句、不含可合成材料；(2) 發明觸發＝心願含可合成材料，條件幾乎不自然成立；
+// (3) 她們整天忙採集蓋家。本段補上兩塊拼圖，讓她們**不用玩家 push 也會自己成長**：
+//
+// 1. **可能性目錄**（知識，不是技能包）：世界上「做得出的東西」清單，注入自主思考／
+//    許願 prompt——引導她許「做得到的願」。會不會做仍要她自己發明（存進技能庫才算會）。
+// 2. **好奇心迴圈**：閒置居民低頻（每位獨立計時＋機率門檻）自發「想試做一樣新東西」，
+//    直接種下含材料名的心願（sparked_by=好奇心）→ 既有發明引擎自然接手。
+//
+// 全部純函式；鎖／計時遞減／Feed／廣播在 voxel_ws 呼叫端。
+
+/// 好奇心週期基準（秒）：每位居民獨立倒數，到期＋閒置＋過機率門檻才「好奇一下」。
+/// 12 分鐘＝夠低頻（發明本身另有 [`INVENT_COOLDOWN_SECS`] 冷卻與防重入），成本有界。
+pub const CURIOSITY_INTERVAL_SECS: f32 = 720.0;
+/// 好奇心機率門檻：計時到期時擲一次亂數，小於此值才真的好奇——
+/// 不機械準點，平均約每 1~2 個週期好奇一次，更像生活。
+pub const CURIOSITY_CHANCE: f64 = 0.6;
+/// 可能性目錄注入 prompt 時最多列幾樣（防 prompt 膨脹；好奇心挑選仍看整份目錄）。
+pub const CATALOG_NOTE_MAX_ITEMS: usize = 10;
+
+/// 好奇心週期（秒）：預設 [`CURIOSITY_INTERVAL_SECS`]；隔離實測可設
+/// `BUTFUN_CURIOSITY_SECS` 縮短觀察全鏈（prod 不設，走預設低頻）。
+pub fn curiosity_base_secs() -> f32 {
+    std::env::var("BUTFUN_CURIOSITY_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|v| *v > 0.0)
+        .unwrap_or(CURIOSITY_INTERVAL_SECS)
+}
+
+/// 第 `idx` 位居民的好奇心計時初值：基準 × (1 + idx×0.25)——全員錯開、不同 tick
+/// 一起好奇；**比例式**錯開讓測試模式縮短基準時錯開間距同步縮短。純函式、可測。
+pub fn curiosity_interval_for(idx: usize, base: f32) -> f32 {
+    base * (1.0 + idx as f32 * 0.25)
+}
+
+/// 機率門檻判定（比照 `npc_agent::should_pray` 把亂數來源分離出去，邊界可測）。
+pub fn curiosity_gate(roll: f64) -> bool {
+    roll < CURIOSITY_CHANCE
+}
+
+/// 好奇心的閒置判定：沒在發明／跑腿、沒有進行中的建造計畫、發明不在冷卻——
+/// 這種時候起好奇才不打斷正事，也保證發明引擎接手時立刻能動。純函式、可測。
+pub fn curiosity_idle(
+    has_invent_run: bool,
+    has_fetch: bool,
+    has_build_plan: bool,
+    invent_cooldown: f32,
+) -> bool {
+    !has_invent_run && !has_fetch && !has_build_plan && invent_cooldown <= 0.0
+}
+
+/// **可能性目錄**（知識，不是技能包）：世界上「她真的有路子自己做出來」的東西——
+/// 兩張配方表中**可發明**配方的產物，去重、排掉 `excluded`（技能庫已會的目標；
+/// 呼叫端也可把「背包已有的」併進來——有了就不必好奇）。
+/// 確定性（照配方表順序）、純函式、可測。會不會做仍要她自己發明。
+pub fn possibility_catalog(excluded: &HashSet<u8>) -> Vec<MaterialGoal> {
+    let mut seen: HashSet<u8> = HashSet::new();
+    let mut out = Vec::new();
+    for r in inventable_recipes().chain(inventable_wb_recipes()) {
+        if excluded.contains(&r.output_block) || !seen.insert(r.output_block) {
+            continue;
+        }
+        out.push(MaterialGoal { block_id: r.output_block, name_zh: r.name_zh });
+    }
+    out
+}
+
+/// 目錄 → 自主思考／許願 prompt 的「世界可能性」注入段。目錄空（能學的全會了）
+/// 回 `None`（不注入、不多花 token）。**只進 think/pray 路徑，不進 talk**（成本紀律）。
+pub fn catalog_note(catalog: &[MaterialGoal]) -> Option<String> {
+    if catalog.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> =
+        catalog.iter().take(CATALOG_NOTE_MAX_ITEMS).map(|g| g.name_zh).collect();
+    Some(format!(
+        "聽說這個世界上做得出這些東西（你還不會做）：{}。\
+        你若有嚮往，可以許個「想要某樣東西」的願——之後你會自己想辦法把它做出來。",
+        names.join("、")
+    ))
+}
+
+/// 從目錄**確定性**挑一樣（seed 取模；呼叫端用位置 bits 等當種子，錯開又可重現）。
+/// 目錄空回 `None`（她全會了）。
+pub fn curiosity_pick(catalog: &[MaterialGoal], seed: u64) -> Option<MaterialGoal> {
+    if catalog.is_empty() {
+        None
+    } else {
+        Some(catalog[(seed % catalog.len() as u64) as usize])
+    }
+}
+
+/// 好奇心種下的自發心願文字——**保證含材料名**，[`detect_missing_material`]
+/// 一定接得住（round-trip 由測試釘住），發明引擎自然接手。
+pub fn curiosity_desire_text(name: &str) -> String {
+    format!("好想自己做出一個{name}試試")
+}
+
+/// 好奇心冒泡（她自言自語——玩家看得到她在自主探索）。
+pub fn curiosity_line(name: &str) -> String {
+    format!("咦…聽說世界上做得出{name}？好想自己試試！")
+}
+
+/// 好奇心 Feed 詳情（玩家回來能讀到「她自己起了好奇心」）。
+pub fn curiosity_feed(name: &str) -> String {
+    format!("對{name}起了好奇心，想自己摸索著做出來")
+}
+
+/// 好奇心寫進記憶（日記走既有事件管道自然反映）。
+pub fn curiosity_memory(name: &str) -> String {
+    format!("我對{name}起了好奇心——沒有人教我，我想自己摸索著做出來")
+}
+
+/// 目錄空（能學的全學會了）時的冒泡——**零 LLM**，不打腦。
+pub fn nothing_new_line() -> &'static str {
+    "最近沒什麼新東西想試呢～我會的已經不少啦"
 }
 
 /// 測試注入口（**僅供隔離實測**）：設 `BUTFUN_INVENT_FIXED_PLAN` 時，發明流程改用
@@ -2022,5 +2164,138 @@ mod tests {
         assert!(s.contains("在工作台合成熔爐"), "{s}");
         // 放置冒泡台詞。
         assert!(placed_line("工作台").contains("工作台"));
+    }
+
+    // ── 好奇心自主學習（北極星第三刀）────────────────────────────────────────
+
+    #[test]
+    fn possibility_catalog_lists_inventables_and_dedups() {
+        let cat = possibility_catalog(&HashSet::new());
+        let ids: Vec<u8> = cat.iter().map(|g| g.block_id).collect();
+        // 可發明鏈上的代表都在：木板(8)、梯子(35)、熔爐(16)、箱子(42)、釣竿(60)。
+        for want in [8u8, 35, 16, 42, 60] {
+            assert!(ids.contains(&want), "目錄應含 id {want}：{ids:?}");
+        }
+        // 不可發明的誠實不列：火把(31 要煤礦)、床(45 要葉片)、鐵鎬、冰晶燈(57)、麵包(19)。
+        for bad in [31u8, 45, vcraft::PICKAXE_IRON_ID, 57, 19] {
+            assert!(!ids.contains(&bad), "id {bad} 她備不了料，不該進目錄");
+        }
+        // 去重：同產物（木板 8 同時是 2×2 與 3×3 產物）只列一次。
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), ids.len(), "目錄不得有重複產物");
+    }
+
+    #[test]
+    fn possibility_catalog_excludes_known() {
+        // 她已會做木板(8)與玻璃(10) → 目錄排掉這兩樣（知識隨著會的變多而變短）。
+        let known: HashSet<u8> = [8u8, 10].into_iter().collect();
+        let cat = possibility_catalog(&known);
+        assert!(cat.iter().all(|g| g.block_id != 8 && g.block_id != 10));
+        // 沒排掉的仍在。
+        assert!(cat.iter().any(|g| g.block_id == 42), "箱子還沒會，應仍在目錄");
+    }
+
+    #[test]
+    fn curiosity_desire_roundtrips_through_detection() {
+        // 全鏈關鍵不變量：對目錄裡**每一樣**，好奇心種下的心願文字必被
+        // detect_missing_material 接住、且目標 id 一致——發明引擎保證接得了手。
+        for g in possibility_catalog(&HashSet::new()) {
+            let desire = curiosity_desire_text(g.name_zh);
+            let hit = detect_missing_material(&desire)
+                .unwrap_or_else(|| panic!("「{desire}」應被偵測到"));
+            assert_eq!(hit.block_id, g.block_id, "「{}」偵測到的 id 應一致", g.name_zh);
+        }
+    }
+
+    #[test]
+    fn detect_missing_material_dynamic_covers_new_products() {
+        // 動態擴充：手工關鍵詞表沒有的可發明產物（梯子/木鎬/釣竿）也接得住。
+        assert_eq!(detect_missing_material("好想要一把梯子").map(|g| g.block_id), Some(35));
+        assert_eq!(
+            detect_missing_material("要是有木鎬就好了").map(|g| g.block_id),
+            Some(vcraft::PICKAXE_WOOD_ID)
+        );
+        assert_eq!(detect_missing_material("我想要釣竿去釣魚").map(|g| g.block_id), Some(60));
+        // 不可發明的仍誠實不觸發（火把要煤礦——她備不了料，別種死願）。
+        assert!(detect_missing_material("好想要火把").is_none());
+        // 一般詩意心願照舊不誤觸發。
+        assert!(detect_missing_material("願市集的水果攤永遠新鮮").is_none());
+    }
+
+    #[test]
+    fn curiosity_pick_is_deterministic() {
+        let cat = possibility_catalog(&HashSet::new());
+        // 同種子同結果（可重現）；不同種子可覆蓋整份目錄。
+        assert_eq!(curiosity_pick(&cat, 7), curiosity_pick(&cat, 7));
+        assert_eq!(
+            curiosity_pick(&cat, 3).map(|g| g.block_id),
+            Some(cat[3 % cat.len()].block_id)
+        );
+        // 空目錄（全會了）→ None，呼叫端冒「沒新東西想試」泡泡、零 LLM。
+        assert!(curiosity_pick(&[], 42).is_none());
+    }
+
+    #[test]
+    fn curiosity_idle_requires_truly_free() {
+        assert!(curiosity_idle(false, false, false, 0.0), "全閒＋冷卻到 → 可好奇");
+        assert!(curiosity_idle(false, false, false, -3.0));
+        assert!(!curiosity_idle(true, false, false, 0.0), "發明中不好奇");
+        assert!(!curiosity_idle(false, true, false, 0.0), "跑腿中不好奇");
+        assert!(!curiosity_idle(false, false, true, 0.0), "建造中不好奇");
+        assert!(!curiosity_idle(false, false, false, 10.0), "發明冷卻中不好奇");
+    }
+
+    #[test]
+    fn curiosity_gate_threshold() {
+        assert!(curiosity_gate(0.0));
+        assert!(curiosity_gate(CURIOSITY_CHANCE - 0.01));
+        assert!(!curiosity_gate(CURIOSITY_CHANCE), "等於門檻不過（嚴格小於）");
+        assert!(!curiosity_gate(1.0));
+    }
+
+    #[test]
+    fn curiosity_intervals_stagger_and_scale() {
+        // 錯開：後面的居民初值更大（不同 tick 全員一起好奇）。
+        let base = CURIOSITY_INTERVAL_SECS;
+        assert_eq!(curiosity_interval_for(0, base), base);
+        assert!(curiosity_interval_for(1, base) > curiosity_interval_for(0, base));
+        // 比例式：測試模式縮短基準時，錯開間距同步縮短（整條鏈可在測試內等到）。
+        let fast = curiosity_interval_for(3, 20.0);
+        assert!(fast < 60.0, "縮短基準後第 4 位也應在一分鐘內就緒：{fast}");
+    }
+
+    #[test]
+    fn catalog_note_injects_names_and_caps() {
+        let cat = possibility_catalog(&HashSet::new());
+        let note = catalog_note(&cat).expect("目錄非空應有注入段");
+        assert!(note.contains("你還不會做"), "{note}");
+        assert!(note.contains(cat[0].name_zh), "至少列出第一樣：{note}");
+        // 上限：最多列 CATALOG_NOTE_MAX_ITEMS 樣（數「、」分隔數）。
+        let listed = note.matches('、').count() + 1;
+        assert!(listed <= CATALOG_NOTE_MAX_ITEMS, "列了 {listed} 樣，超過上限");
+        // 目錄空（全會了）→ 不注入、不花 token。
+        assert!(catalog_note(&[]).is_none());
+    }
+
+    #[test]
+    fn known_goals_for_collects_per_resident() {
+        let mut store = InventedSkillStore::new();
+        store.add("vox_res_0", "燒玻璃", 10, vec![]);
+        store.add("vox_res_0", "合木板", 8, vec![]);
+        store.add("vox_res_1", "造箱子", 42, vec![]);
+        let known = store.known_goals_for("vox_res_0");
+        assert_eq!(known, [10u8, 8].into_iter().collect::<HashSet<u8>>());
+        assert_eq!(store.known_goals_for("vox_res_2"), HashSet::new(), "沒學過＝空集合");
+    }
+
+    #[test]
+    fn curiosity_texts_mention_goal_and_are_nonempty() {
+        assert!(curiosity_desire_text("梯子").contains("梯子"));
+        assert!(curiosity_line("梯子").contains("梯子"));
+        assert!(curiosity_feed("梯子").contains("好奇心"));
+        assert!(curiosity_memory("梯子").contains("沒有人教我"));
+        assert!(!nothing_new_line().is_empty());
     }
 }
