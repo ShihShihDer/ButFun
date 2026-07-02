@@ -74,6 +74,7 @@ use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
 use crate::voxel_teach as vteach;
 use crate::voxel_sleep as vsleep;
+use crate::voxel_bedtime as vbedtime;
 use crate::voxel_welcome as vwelcome;
 use crate::voxel_resident_trade as vrtrade;
 use crate::voxel_milestones::{self as vmiles, MilestoneStore};
@@ -3978,6 +3979,10 @@ fn tick_residents(dt: f32) {
     // 格式：(resident_name, 牌面引文)。
     let mut pilgrimage_feed: Vec<(&'static str, String)> = Vec::new();
 
+    // 就寢反思 Feed 事件（作息·就寢反思 v1，ROADMAP 744）：鎖內入睡時偵測，鎖外記 Feed。
+    // 格式：(resident_name, 今天回味的記憶摘要)。
+    let mut bedtime_feed: Vec<(&'static str, String)> = Vec::new();
+
     // 居民回禮事件（ROADMAP 667）：鎖內偵測，鎖外執行（加入背包 + 廣播）。
     // 格式：(resident_id, resident_name, player_name, block_id, qty, message)
     let mut return_gift_events: Vec<(String, &'static str, String, u8, u32, String)> = Vec::new();
@@ -4810,8 +4815,53 @@ fn tick_residents(dt: f32) {
                         r.target_z = r.body.z;
                         if r.say.is_empty() {
                             let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                            r.say = vsleep::fall_asleep_line(pick).to_string();
-                            r.say_timer = SAY_SECS;
+                            // 就寢反思 v1（ROADMAP 744）：入睡時回味今天最有感的一件事——冒個人化
+                            // 反思泡泡、把反思昇華成「睡前反思」記憶、並記一筆動態供離線玩家回讀。
+                            // 鎖序：memory 讀→drop→memory 寫（短鎖循序即釋，比照讀牌 v3），
+                            // Feed 走鎖外 bedtime_feed，不巢狀、不持鎖 await。過機率門檻時才回味，
+                            // 否則（或無可回味的記憶）退回通用睡前語。
+                            let mut reflected = false;
+                            if vbedtime::should_reflect(true, rand::random::<f32>()) {
+                                // 短鎖讀近況記憶 → 挑今天最值得回味的一筆（跳過自己昨晚的反思）→ 即釋。
+                                let salient = {
+                                    let mem = hub().memory.read().unwrap();
+                                    let recent = mem.all_memories_for(&r.id); // 最新在前
+                                    let window: Vec<&vmem::MemoryEntry> = recent
+                                        .iter()
+                                        .filter(|e| e.player != vbedtime::REFLECT_MEMORY_PLAYER)
+                                        .take(vbedtime::RECENT_WINDOW)
+                                        .collect();
+                                    let ranked: Vec<(bool, u64)> = window
+                                        .iter()
+                                        .map(|e| {
+                                            let persistent = matches!(
+                                                vmem::classify_importance(&e.summary),
+                                                vmem::Importance::Persistent(_)
+                                            );
+                                            (persistent, e.seq)
+                                        })
+                                        .collect();
+                                    vbedtime::most_memorable(&ranked)
+                                        .map(|i| window[i].summary.clone())
+                                }; // 記憶讀鎖在此釋放
+                                if let Some(summary) = salient {
+                                    r.say = vbedtime::reflect_bubble(&summary, pick);
+                                    r.say_timer = SAY_SECS;
+                                    // 昇華成「睡前反思」記憶（短寫鎖即釋、不巢狀、不持鎖 await）。
+                                    let entry = hub().memory.write().unwrap().add_memory(
+                                        &r.id,
+                                        vbedtime::REFLECT_MEMORY_PLAYER,
+                                        &vbedtime::reflect_memory_summary(&summary),
+                                    );
+                                    vmem::append_memory(&entry);
+                                    bedtime_feed.push((r.name, summary));
+                                    reflected = true;
+                                }
+                            }
+                            if !reflected {
+                                r.say = vsleep::fall_asleep_line(pick).to_string();
+                                r.say_timer = SAY_SECS;
+                            }
                         }
                     } else {
                         let (wcx, wcz) = vr::wander_center(
@@ -5583,6 +5633,12 @@ fn tick_residents(dt: f32) {
     // 駐足時記一筆動態，讓沒在現場的玩家也看得到「我立的牌子把她引了回來」。
     for (rname, quote) in &pilgrimage_feed {
         vfeed::append_feed("重返", rname, &vreadsign::revisit_feed_line(quote));
+    }
+
+    // 5c-3) 就寢反思 Feed（作息·就寢反思 v1，ROADMAP 744）：居民入睡前回味今天最有感的一件事，
+    // 記一筆動態，讓沒在線上的玩家回來也讀得到「牠昨晚睡前想著什麼」——記憶昇華進世界的日記牆。
+    for (rname, summary) in &bedtime_feed {
+        vfeed::append_feed("就寢", rname, &vbedtime::reflect_feed_line(summary));
     }
 
     // 5d) 探訪 Feed（ROADMAP 671）：抵達 / 返家各一筆，讓離線玩家也知道居民在往來。
