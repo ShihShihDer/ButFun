@@ -474,10 +474,18 @@ const BIOME_SEED: u32 = SEED ^ 0x_B104_EB14;
 const BIOME_SCALE: f32 = 192.0;
 /// 出生錨點附近強制草原的半徑（格）。讓出生點永遠有草有樹。
 pub const BIOME_SPAWN_RADIUS: i32 = 40;
+/// 森林第二棵樹的種子（與第一棵 TREE_SEED 分流，兩棵樹分佈互不相關）。
+const TREE2_SEED: u32 = TREE_SEED ^ 0x_4444_4444;
+/// 森林格長「第二棵樹」的機率門檻（只有森林群系擲這顆骰；密度 2–3 倍的來源）。
+const TREE2_FOREST_CHANCE: f32 = 0.85;
 /// 仙人掌噪聲種子（沙漠群系隨機柱，與樹/地形獨立）。
 const CACTUS_SEED: u32 = SEED ^ 0x_CA_C7_AC_7E;
-/// 仙人掌生成機率門檻（per-column hash < 此值才長）。約 8% 的沙漠地表格有仙人掌。
-const CACTUS_CHANCE: f32 = 0.08;
+/// 仙人掌格邊長（比照樹的格設計：每格至多一株、株位落格內側 →
+/// 相鄰兩株至少隔 3 格，永遠是孤立小柱，不會連成綠牆）。
+const CACTUS_CELL: i32 = 5;
+/// 一格長出仙人掌的機率門檻（per-cell hash < 此值才長）。
+/// 約 30% 的沙漠格有一株 → 視覺上「偶有」、稀疏點綴。
+const CACTUS_CHANCE: f32 = 0.30;
 
 /// 世界座標 → 生物群系。確定性純函式，同座標永遠同群系。
 /// 出生保護圈（BIOME_SPAWN_RADIUS 內）強制草原，確保玩家出生有樹有草。
@@ -516,23 +524,49 @@ pub fn height_at(wx: i32, wz: i32) -> i32 {
 
 /// 某格 (cellx,cellz) 是否長樹；長的話回傳該樹（已驗證地表為草、在保護圈外）。
 /// 純函式、確定性（同格永遠同結果）、可測。是「樹是地形一部分」的單一真相來源。
-/// 樹機率依群系：森林 0.75（密）、草原 0.50（疏，現狀）、沙漠 0.0（無）。
+/// 樹機率依群系：森林 0.95 + 第二棵樹 0.85（每格可長兩棵→實測密度約草原 2.5–3 倍）、
+/// 草原 0.50（疏，現狀，單棵）、沙漠 0.0（無）。
 pub fn tree_in_cell(cellx: i32, cellz: i32) -> Option<Tree> {
     // 以格中心世界座標查群系，決定本格的樹機率門檻。
-    let center_x = cellx * TREE_CELL + TREE_CELL / 2;
-    let center_z = cellz * TREE_CELL + TREE_CELL / 2;
-    let tree_chance = match biome_at_voxel(center_x, center_z) {
-        VoxelBiome::Forest => 0.75_f32,
+    let tree_chance = match biome_of_cell(cellx, cellz) {
+        VoxelBiome::Forest => 0.95_f32,
         VoxelBiome::Grassland => TREE_CHANCE, // 0.50，現狀不變
         VoxelBiome::Desert => return None,    // 沙漠無樹
     };
+    tree_in_cell_seeded(cellx, cellz, TREE_SEED, tree_chance)
+}
+
+/// 森林群系的「第二棵樹」：森林每格可長兩棵（密度 2–3 倍的來源），
+/// 草原/沙漠無第二棵。與第一棵同柱時略過（避免同柱雙樹幹疊在一起）。
+pub fn tree2_in_cell(cellx: i32, cellz: i32) -> Option<Tree> {
+    if biome_of_cell(cellx, cellz) != VoxelBiome::Forest {
+        return None;
+    }
+    let t2 = tree_in_cell_seeded(cellx, cellz, TREE2_SEED, TREE2_FOREST_CHANCE)?;
+    if let Some(t1) = tree_in_cell(cellx, cellz) {
+        if t1.tx == t2.tx && t1.tz == t2.tz {
+            return None;
+        }
+    }
+    Some(t2)
+}
+
+/// 樹格 (cellx,cellz) 的群系（以格中心世界座標查）。樹的密度/有無由此決定。
+#[inline]
+fn biome_of_cell(cellx: i32, cellz: i32) -> VoxelBiome {
+    biome_at_voxel(cellx * TREE_CELL + TREE_CELL / 2, cellz * TREE_CELL + TREE_CELL / 2)
+}
+
+/// 以指定 seed 在某格擲一棵樹（共用邏輯：擲骰、落點、保護圈、草地檢查、樹幹高度）。
+/// 純函式、確定性；第一棵樹（TREE_SEED）與森林第二棵（TREE2_SEED）都走這裡。
+fn tree_in_cell_seeded(cellx: i32, cellz: i32, seed: u32, chance: f32) -> Option<Tree> {
     // 以格座標 hash 擲骰：是否長樹。
-    if hash2(cellx, cellz, TREE_SEED) >= tree_chance {
+    if hash2(cellx, cellz, seed) >= chance {
         return None;
     }
     // 樹幹落在格內側（offset 1..=5 of 本格 0..=6），確保半徑 1 樹冠不跨格。
-    let ox = (1 + (hash2(cellx, cellz, TREE_SEED ^ 0x_1111_1111) * 5.0) as i32).clamp(1, 5);
-    let oz = (1 + (hash2(cellx, cellz, TREE_SEED ^ 0x_2222_2222) * 5.0) as i32).clamp(1, 5);
+    let ox = (1 + (hash2(cellx, cellz, seed ^ 0x_1111_1111) * 5.0) as i32).clamp(1, 5);
+    let oz = (1 + (hash2(cellx, cellz, seed ^ 0x_2222_2222) * 5.0) as i32).clamp(1, 5);
     let tx = cellx * TREE_CELL + ox;
     let tz = cellz * TREE_CELL + oz;
     // 出生保護圈：任一錨點半徑內不長樹（免擋出生／歸巢點）。
@@ -549,15 +583,30 @@ pub fn tree_in_cell(cellx: i32, cellz: i32) -> Option<Tree> {
     }
     // 樹幹高度 TREE_MIN_TRUNK..=TREE_MAX_TRUNK。
     let span = (TREE_MAX_TRUNK - TREE_MIN_TRUNK + 1) as f32;
-    let trunk = (TREE_MIN_TRUNK + (hash2(cellx, cellz, TREE_SEED ^ 0x_3333_3333) * span) as i32)
+    let trunk = (TREE_MIN_TRUNK + (hash2(cellx, cellz, seed ^ 0x_3333_3333) * span) as i32)
         .clamp(TREE_MIN_TRUNK, TREE_MAX_TRUNK);
     Some(Tree { tx, tz, base_h, trunk })
 }
 
 /// 樹的方塊查詢：某世界座標若落在「所屬格的樹」的樹幹或樹冠上，回 `Wood`/`Leaves`，否則 `None`。
-/// 樹冠半徑 1 不跨格 → 只需查 (wx,wz) 自己這格的樹，O(1)。純函式、可測。
+/// 樹冠半徑 1 不跨格 → 只需查 (wx,wz) 自己這格的樹（森林至多兩棵），O(1)。純函式、可測。
 fn tree_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
-    let tree = tree_in_cell(wx.div_euclid(TREE_CELL), wz.div_euclid(TREE_CELL))?;
+    let (cellx, cellz) = (wx.div_euclid(TREE_CELL), wz.div_euclid(TREE_CELL));
+    if let Some(t) = tree_in_cell(cellx, cellz) {
+        if let Some(b) = tree_block_hit(&t, wx, wy, wz) {
+            return Some(b);
+        }
+    }
+    if let Some(t) = tree2_in_cell(cellx, cellz) {
+        if let Some(b) = tree_block_hit(&t, wx, wy, wz) {
+            return Some(b);
+        }
+    }
+    None
+}
+
+/// 單棵樹的方塊命中判定（樹幹柱 + 兩層 3×3 樹冠環 + 頂蓋十字）。
+fn tree_block_hit(tree: &Tree, wx: i32, wy: i32, wz: i32) -> Option<Block> {
     let top = tree.base_h + tree.trunk; // 樹幹最高一格的 y
     let (dx, dz) = (wx - tree.tx, wz - tree.tz);
     // 樹幹：本柱、地表之上到 top。
@@ -575,19 +624,31 @@ fn tree_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
     None
 }
 
-/// 仙人掌方塊查詢：沙漠群系地表上方 1–2 格偶有仙人掌柱，確定性。
-/// 只在沙漠、只在高於海平面的沙地表、per-column hash < CACTUS_CHANCE 才長。
+/// 仙人掌方塊查詢：沙漠群系地表上方 1–2 格偶有「孤立」仙人掌柱，確定性。
+/// 比照樹的格設計：世界切成 CACTUS_CELL×CACTUS_CELL 的格、每格至多一株、
+/// 株位落在格內側（offset 1..=3 of 0..=4）→ 相鄰兩株必隔 ≥3 格，永不連成綠牆。
 fn cactus_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
-    if biome_at_voxel(wx, wz) != VoxelBiome::Desert {
+    let cellx = wx.div_euclid(CACTUS_CELL);
+    let cellz = wz.div_euclid(CACTUS_CELL);
+    // 以格座標 hash 擲骰：本格是否有一株。
+    if hash2(cellx, cellz, CACTUS_SEED) >= CACTUS_CHANCE {
         return None;
     }
-    let h = height_at(wx, wz);
+    // 株位落在格內側，確保跨格株距 ≥3、本柱查詢 O(1)（只查自己這格）。
+    let ox = (1 + (hash2(cellx, cellz, CACTUS_SEED ^ 0x_5555_5555) * 3.0) as i32).clamp(1, 3);
+    let oz = (1 + (hash2(cellx, cellz, CACTUS_SEED ^ 0x_6666_6666) * 3.0) as i32).clamp(1, 3);
+    let tx = cellx * CACTUS_CELL + ox;
+    let tz = cellz * CACTUS_CELL + oz;
+    if wx != tx || wz != tz {
+        return None;
+    }
+    // 只在沙漠群系（以株位查，同株永遠同判定）。
+    if biome_at_voxel(tx, tz) != VoxelBiome::Desert {
+        return None;
+    }
     // 非水邊的沙地才長仙人掌（水邊本就是沙，但仙人掌視覺上不搭）。
+    let h = height_at(tx, tz);
     if h <= SEA_LEVEL + 1 {
-        return None;
-    }
-    // per-column 機率門檻（約 8% 的沙漠陸地格有仙人掌）。
-    if hash2(wx, wz, CACTUS_SEED) >= CACTUS_CHANCE {
         return None;
     }
     // 仙人掌高 2 格（地表上方第 1、2 格）。
@@ -1036,7 +1097,7 @@ mod tests {
     #[test]
     fn tree_density_is_reasonable() {
         // 密度合理：一大片地表上的樹數既不為 0（找得到）也不過密（別擋路）。
-        // ── 注意：密度現在依群系而異（森林 0.75 > 草原 0.50 > 沙漠 0.0）；
+        // ── 注意：密度現在依群系而異（森林 0.95 > 草原 0.50 > 沙漠 0.0）；
         // 整體統計仍落在合理區間（掃 -20..20 格，混合群系，實際約 30..1200 棵）。
         let mut trees = 0u32;
         let (lo, hi) = (-20, 20); // 41×41 格 = 1681 柱
@@ -1085,10 +1146,10 @@ mod tests {
     #[test]
     fn tree_canopy_never_crosses_cell() {
         // 設計不變量：半徑 1 樹冠永不跨格 → block_at 只查自己這格即可（O(1)）。
-        // 驗證每棵樹的樹幹落點都在格內側（offset 1..=5 of 0..=6）。
+        // 驗證每棵樹（含森林第二棵）的樹幹落點都在格內側（offset 1..=5 of 0..=6）。
         for cx in -30..30 {
             for cz in -30..30 {
-                if let Some(t) = tree_in_cell(cx, cz) {
+                for t in [tree_in_cell(cx, cz), tree2_in_cell(cx, cz)].into_iter().flatten() {
                     let ox = t.tx - cx * TREE_CELL;
                     let oz = t.tz - cz * TREE_CELL;
                     assert!((1..=5).contains(&ox) && (1..=5).contains(&oz),
@@ -1317,7 +1378,8 @@ mod tests {
 
     #[test]
     fn forest_has_higher_tree_density_than_grassland() {
-        // 森林群系的樹密度顯著高於草原群系。
+        // 森林群系的樹密度應為草原的 2 倍以上（規格：2–3 倍）。
+        // 計「棵數」（含森林第二棵樹），不是「有樹的格數」——密度倍率才量得準。
         let mut forest_trees = 0u32;
         let mut forest_total = 0u32;
         let mut grassland_trees = 0u32;
@@ -1328,15 +1390,16 @@ mod tests {
                 let wx = cx * TREE_CELL + TREE_CELL / 2;
                 let wz = cz * TREE_CELL + TREE_CELL / 2;
                 let biome = biome_at_voxel(wx, wz);
-                let has_tree = tree_in_cell(cx, cz).is_some();
+                let n_trees = tree_in_cell(cx, cz).is_some() as u32
+                    + tree2_in_cell(cx, cz).is_some() as u32;
                 match biome {
                     VoxelBiome::Forest => {
                         forest_total += 1;
-                        if has_tree { forest_trees += 1; }
+                        forest_trees += n_trees;
                     }
                     VoxelBiome::Grassland => {
                         grassland_total += 1;
-                        if has_tree { grassland_trees += 1; }
+                        grassland_trees += n_trees;
                     }
                     VoxelBiome::Desert => {}
                 }
@@ -1346,15 +1409,44 @@ mod tests {
             let forest_ratio = forest_trees as f32 / forest_total as f32;
             let grassland_ratio = grassland_trees as f32 / grassland_total as f32;
             assert!(
-                forest_ratio > grassland_ratio,
-                "森林樹密度({:.2})應高於草原({:.2})", forest_ratio, grassland_ratio
+                forest_ratio >= grassland_ratio * 2.0,
+                "森林樹密度({forest_ratio:.3} 棵/格)應為草原({grassland_ratio:.3} 棵/格)的 2 倍以上"
             );
         }
     }
 
     #[test]
+    fn tree2_only_in_forest_and_deterministic() {
+        // 森林第二棵樹：只在森林群系出現、確定性、且不與第一棵同柱。
+        let mut found_tree2 = false;
+        for cx in -80..80i32 {
+            for cz in -80..80i32 {
+                let t2 = tree2_in_cell(cx, cz);
+                assert_eq!(t2, tree2_in_cell(cx, cz), "tree2 應為確定性 @ cell({cx},{cz})");
+                if let Some(t2) = t2 {
+                    let center_x = cx * TREE_CELL + TREE_CELL / 2;
+                    let center_z = cz * TREE_CELL + TREE_CELL / 2;
+                    assert_eq!(
+                        biome_at_voxel(center_x, center_z),
+                        VoxelBiome::Forest,
+                        "第二棵樹只該出現在森林 @ cell({cx},{cz})"
+                    );
+                    if let Some(t1) = tree_in_cell(cx, cz) {
+                        assert!(
+                            (t1.tx, t1.tz) != (t2.tx, t2.tz),
+                            "兩棵樹不得同柱 @ cell({cx},{cz})"
+                        );
+                    }
+                    found_tree2 = true;
+                }
+            }
+        }
+        assert!(found_tree2, "掃描範圍內應找得到森林第二棵樹");
+    }
+
+    #[test]
     fn desert_has_no_tree_cells() {
-        // 沙漠群系的格不長樹（tree_in_cell 永遠 None）。
+        // 沙漠群系的格不長樹（tree_in_cell / tree2_in_cell 永遠 None）。
         // 用格中心座標查群系，與 tree_in_cell 內部邏輯一致（避免邊界對不齊的誤判）。
         for cx in -80..80i32 {
             for cz in -80..80i32 {
@@ -1364,6 +1456,10 @@ mod tests {
                     assert!(
                         tree_in_cell(cx, cz).is_none(),
                         "沙漠格不應長樹 @ cell({},{})", cx, cz
+                    );
+                    assert!(
+                        tree2_in_cell(cx, cz).is_none(),
+                        "沙漠格不應長第二棵樹 @ cell({},{})", cx, cz
                     );
                 }
             }
@@ -1415,5 +1511,28 @@ mod tests {
         assert!(Block::Cactus.is_placeable(), "仙人掌應可放置");
         assert_eq!(Block::from_u8(54), Some(Block::Cactus));
         assert_eq!(Block::Cactus as u8, 54);
+    }
+
+    #[test]
+    fn cacti_are_isolated_columns() {
+        // 設計不變量：仙人掌是「孤立小柱」——任兩株水平距離（Chebyshev）≥ 2，
+        // 永不相鄰連成綠牆（格內側落點保證跨格株距 ≥3；同格只一株）。
+        let mut columns: Vec<(i32, i32)> = Vec::new();
+        for x in -400..400i32 {
+            for z in -400..400i32 {
+                let h = height_at(x, z);
+                if h > SEA_LEVEL + 1 && block_at(x, h + 1, z) == Block::Cactus {
+                    columns.push((x, z));
+                }
+            }
+        }
+        assert!(!columns.is_empty(), "掃描範圍內應找得到仙人掌柱");
+        // 兩兩檢查相鄰（排序後只需比對附近的即可，但柱數不多、直接兩兩比）。
+        for (i, &(x1, z1)) in columns.iter().enumerate() {
+            for &(x2, z2) in &columns[i + 1..] {
+                let cheb = (x1 - x2).abs().max((z1 - z2).abs());
+                assert!(cheb >= 2, "仙人掌不得相鄰 @ ({x1},{z1}) vs ({x2},{z2})");
+            }
+        }
     }
 }
