@@ -83,6 +83,9 @@ const FISHING_ROD = 60, FISH = 61, AETHER_FISH = 62;
 const COOKED_FISH = 63;
 // 烤地薯 v1：生馬鈴薯(53)在熔爐烤成烤地薯(64)，居民最愛的美味贈禮（純物品不放置）
 const BAKED_POTATO = 64;
+// 植樹造林 v1（ROADMAP 738）——砍天然樹葉有機率掉樹苗(65)，種在土地上約 150 秒長成一株樹。
+// 樹苗既是背包物品也是可放置方塊（item_id == block_id），是玩家第一個可再生木材來源。
+const SAPLING = 65;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -156,6 +159,8 @@ const COLOR = {
   [AETHER_FISH]:    [0.40, 0.82, 0.98], // 乙太魚——青藍幽光，呼應乙太礦系
   [COOKED_FISH]:    [0.80, 0.52, 0.30], // 烤魚——烤成金褐帶焦香的暖棕，一看就是熟食
   [BAKED_POTATO]:   [0.72, 0.55, 0.32], // 烤地薯——烤到焦香的暖土褐，比生馬鈴薯更深更熟
+  // 植樹造林 v1（ROADMAP 738）——嫩黃綠，比草地/樹葉更亮更嫩，一眼認出是剛種下的小苗
+  [SAPLING]:        [0.52, 0.74, 0.30], // 樹苗——鮮嫩黃綠，抽芽中的幼苗感
 };
 
 const DEBUG = location.search.includes("debug");
@@ -1882,6 +1887,8 @@ const BLOCK_NAME = {
   // 垂釣 v1（ROADMAP 734）
   [FISHING_ROD]: "釣竿", [FISH]: "小魚", [AETHER_FISH]: "乙太魚", [COOKED_FISH]: "烤魚",
   [BAKED_POTATO]: "烤地薯",
+  // 植樹造林 v1（ROADMAP 738）
+  [SAPLING]: "樹苗",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -2137,6 +2144,7 @@ const BLOCK_HARDNESS = {
   [ICE_CRYSTAL]: 1.2,  // 冰晶——結晶偏脆但需點時間敲下，比礦石快、比石頭稍慢
   [AETHER_ORE]: 2.8,   // 乙太礦——世界最硬最深的礦，比煤/鐵礦更耐敲（需鎬加速）
   [AETHER_LAMP]: 0.3,  // 乙太燈——玻璃燈罩，輕鬆敲下回收
+  [SAPLING]: 0.2,      // 樹苗——嫩苗一敲即落（比照作物幼苗），輕鬆回收重種
 };
 function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
 
