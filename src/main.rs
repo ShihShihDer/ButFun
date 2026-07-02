@@ -499,6 +499,8 @@ async fn main() {
         .route("/voxel/affinity", get(voxel_ws::voxel_affinity_handler))
         // 乙太方界·居民交情網（ROADMAP 708）：居民彼此兩兩情誼層級 JSON，讓小社會被玩家看見。
         .route("/voxel/relations", get(voxel_ws::voxel_relations_handler))
+        // 乙太方界·居民技能簿（ROADMAP 719）：每位居民已發明/學會的技能名清單 JSON。
+        .route("/voxel/skills", get(voxel_ws::voxel_skills_handler))
         // 其餘路徑（game.js、assets、wasm…）交給靜態前端（web/）。game.js 維持可
         // 快取——它的 URL 帶內容雜湊，內容一變 URL 就變，CF/瀏覽器自然抓新版。
         .fallback_service(ServeDir::new("web"))

@@ -1517,6 +1517,80 @@ if (relationsEl) {
   if (closeBtn) closeBtn.addEventListener("click", closeRelations);
 }
 
+// ── 居民技能簿（ROADMAP 719）────────────────────────────────────────────────
+// 技能發明（716）+ 傳授（717）至今只透過稍縱即逝的 Feed 文字曝光（「露娜教了我
+// 『燒玻璃』這招！」播報一過就沒了），玩家從沒有任何管道能回頭查「這座小社會
+// 現在誰會什麼」——這份資料只活在伺服器 `InventedSkillStore` 裡。跟 708 交情網
+// 同一手法：讓早已存在的系統第一次被看見，而不是新造一套技能系統。
+const skillsEl = document.getElementById("skillsPanel");
+const skillsBodyEl = document.getElementById("skillsBody");
+const skillsBtnEl = document.getElementById("skillsBtn");
+
+/** 重新渲染技能簿列表。
+ * @param {Array<{name:string, skills:string[]}>} rows
+ */
+function renderSkillsPanel(rows) {
+  if (!skillsBodyEl) return;
+  if (!rows || rows.length === 0) {
+    skillsBodyEl.innerHTML = '<div class="skills-empty">目前沒有技能資料。</div>';
+    return;
+  }
+  skillsBodyEl.innerHTML = "";
+  for (const row of rows) {
+    const div = document.createElement("div");
+    div.className = "skills-row";
+    const skills = row.skills || [];
+    const chips = skills.length > 0
+      ? '<div class="skills-chips">' +
+        skills.map((s) => '<span class="skills-chip">' + escHtml(s) + '</span>').join("") +
+        '</div>'
+      : '<div class="skills-none">尚未發明任何技能</div>';
+    div.innerHTML = '<span class="skills-name">' + escHtml(row.name) + '</span>' + chips;
+    skillsBodyEl.appendChild(div);
+  }
+}
+
+/** 向後端抓最新技能資料並重新渲染。 */
+async function refreshSkills() {
+  if (!skillsBodyEl) return;
+  try {
+    const resp = await fetch("/voxel/skills");
+    if (!resp.ok) throw new Error("skills fetch failed: " + resp.status);
+    const rows = await resp.json();
+    renderSkillsPanel(rows);
+  } catch (err) {
+    skillsBodyEl.innerHTML = '<div class="skills-empty">無法讀取技能資料。</div>';
+  }
+}
+
+let skillsVisible = false;
+let skillsRefreshTimer = null;
+
+/** 開啟居民技能簿面板（技能發明頻率低，30 秒刷新一次足夠，面板關閉時停止刷新）。 */
+function openSkills() {
+  if (!skillsEl) return;
+  skillsVisible = true;
+  skillsEl.style.display = "flex";
+  refreshSkills();
+  if (skillsRefreshTimer) clearInterval(skillsRefreshTimer);
+  skillsRefreshTimer = setInterval(() => { if (skillsVisible) refreshSkills(); }, 30_000);
+}
+
+/** 關閉居民技能簿面板。 */
+function closeSkills() {
+  skillsVisible = false;
+  if (skillsEl) skillsEl.style.display = "none";
+  if (skillsRefreshTimer) { clearInterval(skillsRefreshTimer); skillsRefreshTimer = null; }
+}
+
+if (skillsBtnEl) skillsBtnEl.addEventListener("click", () => {
+  skillsVisible ? closeSkills() : openSkills();
+});
+if (skillsEl) {
+  const closeBtn = document.getElementById("skillsClose");
+  if (closeBtn) closeBtn.addEventListener("click", closeSkills);
+}
+
 // ── 準心選取 + 高亮外框（MCPE 風）──────────────────────────────────────────────
 // 選中方塊的線框外框（略大一點點避免 z-fighting）。對準時顯示、沒對到時隱藏。
 const highlight = new THREE.LineSegments(
@@ -3442,6 +3516,12 @@ window.__voxel = {
   refreshRelations() { return refreshRelations(); },
   renderRelationsPanel(rows) { renderRelationsPanel(rows); return relationsBodyEl && relationsBodyEl.innerHTML; },
   sortRelationRows(rows) { return sortRelationRows(rows); },
+  // ── 居民技能簿 QA 用（ROADMAP 719）──
+  openSkills() { return openSkills(); },
+  closeSkills() { closeSkills(); },
+  get skillsVisible() { return skillsVisible; },
+  refreshSkills() { return refreshSkills(); },
+  renderSkillsPanel(rows) { renderSkillsPanel(rows); return skillsBodyEl && skillsBodyEl.innerHTML; },
   // ── 好感度 QA 用（ROADMAP 656）──
   affinityEmoji(count) { return affinityEmoji(count); },
   get myAffinity() { return Object.fromEntries(myAffinity); },
