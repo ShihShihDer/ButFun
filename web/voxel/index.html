@@ -576,6 +576,50 @@
       transition: opacity 0.35s ease;
     }
 
+    /* ── 玩家里程碑（ROADMAP 724）────────────────────────────────────────── */
+    #milestonesBtn {
+      position: fixed; right: 10px; top: 340px; z-index: 6;
+      background: rgba(40,32,14,0.65); color: #ffd479; border: 1px solid rgba(255,212,121,0.3);
+      padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      user-select: none; pointer-events: auto;
+    }
+    #milestonesBtn:hover { background: rgba(70,54,14,0.75); }
+    #milestonesPanel {
+      position: fixed; right: 10px; top: 340px; z-index: 20;
+      width: min(280px, 94vw); max-height: 60vh;
+      display: none; flex-direction: column;
+      background: rgba(16,22,34,0.95); color: #eaf2ff; border-radius: 14px;
+      border: 1px solid rgba(255,212,121,0.22); box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      overflow: hidden;
+    }
+    #milestonesHead {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 9px 13px; background: rgba(255,212,121,0.07); font-size: 14px; font-weight: bold;
+    }
+    #milestonesTitle { color: #ffd479; }
+    #milestonesClose {
+      cursor: pointer; user-select: none; font-size: 18px; line-height: 1;
+      padding: 2px 8px; border-radius: 8px; background: rgba(255,255,255,0.10);
+    }
+    #milestonesBody {
+      flex: 1; overflow-y: auto; padding: 10px 13px;
+      display: flex; flex-direction: column; gap: 8px; font-size: 13px;
+    }
+    .miles-progress { color: #ffd479; font-weight: bold; text-align: center; padding: 2px 0 4px; }
+    .miles-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 7px 9px; border-radius: 10px; background: rgba(255,255,255,0.05);
+    }
+    .miles-row.miles-locked { opacity: 0.4; filter: grayscale(1); }
+    .miles-icon { font-size: 20px; width: 26px; text-align: center; }
+    .miles-text { display: flex; flex-direction: column; }
+    .miles-name { font-weight: bold; color: #eaf2ff; }
+    .miles-desc { color: #9fb0c0; font-size: 12px; }
+    @media (orientation: portrait) {
+      #milestonesBtn { top: auto; bottom: 344px; right: 10px; }
+      #milestonesPanel { top: auto; bottom: 388px; right: 10px; max-height: 45vh; }
+    }
+
     /* ── 成功提示（綠色小吐司）──────────────────────────────────────────── */
     #msg {
       position: fixed; left: 50%; top: 58px; transform: translateX(-50%);
@@ -1042,6 +1086,15 @@
       <span id="skillsClose">✕</span>
     </div>
     <div id="skillsBody"></div>
+  </div>
+  <!-- 玩家里程碑（ROADMAP 724）：居民有技能簿/交情網可回頭翻閱，此面板讓玩家自己的療癒循環也能回頭看看走了多遠 -->
+  <div id="milestonesBtn">🏅 成就</div>
+  <div id="milestonesPanel">
+    <div id="milestonesHead">
+      <span id="milestonesTitle">🏅 里程碑</span>
+      <span id="milestonesClose">✕</span>
+    </div>
+    <div id="milestonesBody"></div>
   </div>
   <!-- 背包 + 合成格面板（ROADMAP 664）-->
   <div id="bagPanel">

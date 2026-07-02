@@ -69,6 +69,7 @@ use crate::voxel_quarrel as vquarrel;
 use crate::voxel_teach as vteach;
 use crate::voxel_welcome as vwelcome;
 use crate::voxel_resident_trade as vrtrade;
+use crate::voxel_milestones::{self as vmiles, MilestoneStore};
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -855,6 +856,9 @@ struct VoxelHub {
     /// 久別重逢摘要 v1（ROADMAP 721）：玩家名 → 上次連線的 unix 秒。純記憶體、重啟清空
     /// （比照 pending_trades 慣例；重啟後首次連線只記錄基準點、不跳摘要，之後正常累積）。
     last_seen: RwLock<HashMap<String, u64>>,
+    /// 玩家里程碑 v1（ROADMAP 724）：玩家自己的療癒循環第一次做成可回頭翻閱的成就徽章。
+    /// 持久化到 data/voxel_milestones.jsonl（append-only，重啟後徽章仍在）。
+    milestones: RwLock<MilestoneStore>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -893,6 +897,33 @@ fn enqueue_water_around(x: i32, y: i32, z: i32) {
     q.push(x, y, z);
     for (dx, dy, dz) in vwater::PROPAGATE_OFFSETS {
         q.push(x + dx, y + dy, z + dz);
+    }
+}
+
+/// 玩家里程碑 v1（ROADMAP 724）：「初次熟識」門檻，沿用前端 656 好感度指示燈
+/// （`affinityEmoji`：count<=2 淡藍心／count>=3 金心=友人）同一道門檻，兩邊視覺語言一致。
+const FRIEND_AFFINITY_THRESHOLD: usize = 3;
+
+/// 玩家里程碑 v1（ROADMAP 724）：嘗試解鎖一枚成就徽章；若這次才第一次達成，
+/// 落地持久化 + 單播 `milestone_unlocked` 慶祝訊息給該玩家自己（不廣播全員，是私人旅程）。
+/// **鎖紀律**：milestones 寫鎖短取即釋，append/送訊息都在鎖外，不巢狀、不持鎖 await。
+fn try_unlock_milestone(player: &str, id: &str, out_tx: &mpsc::Sender<Message>) {
+    let newly = { hub().milestones.write().unwrap().unlock(player, id) }; // milestones 寫鎖釋放
+    if !newly {
+        return;
+    }
+    vmiles::append_milestone(&vmiles::MilestoneEntry { player: player.to_string(), id: id.to_string() });
+    if let Some(def) = vmiles::MILESTONES.iter().find(|m| m.id == id) {
+        let _ = out_tx.try_send(Message::Text(
+            serde_json::json!({
+                "t": "milestone_unlocked",
+                "id": def.id,
+                "name_zh": def.name_zh,
+                "desc_zh": def.desc_zh,
+                "icon": def.icon,
+            })
+            .to_string(),
+        ));
     }
 }
 
@@ -960,6 +991,8 @@ fn hub() -> &'static VoxelHub {
             inventing: std::sync::Mutex::new(std::collections::HashSet::new()),
             // 久別重逢摘要 v1：啟動空（純記憶體、無需持久化）。
             last_seen: RwLock::new(HashMap::new()),
+            // 啟動時從 data/voxel_milestones.jsonl 載回玩家已達成的成就徽章（重啟後仍記得）。
+            milestones: RwLock::new(MilestoneStore::from_entries(vmiles::load_milestones())),
             tx,
         }
     })
@@ -1407,6 +1440,8 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     }
                 }; // delta 寫鎖在此釋放
                 if broken {
+                    // 玩家里程碑 v1（ROADMAP 724）：人生第一次成功挖出方塊。
+                    try_unlock_milestone(&name, "first_mine", &out_tx);
                     broadcast_block(x, y, z, Block::Air);
                     // 水流動：剛挖出一個空格 → 排入這格 + 鄰格，讓相鄰水體往缺口流過來
                     //（delta 鎖已釋放，只短暫持 water_queue 鎖，不 await，守鎖紀律）。
@@ -1564,6 +1599,8 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 }; // delta 寫鎖在此釋放
                 if placed {
                     vinv::append_inv(&inv_e); // 放置成功才持久化消耗記錄
+                    // 玩家里程碑 v1（ROADMAP 724）：人生第一次成功放下方塊。
+                    try_unlock_milestone(&name, "first_place", &out_tx);
                     broadcast_block(x, y, z, block);
                     // 水流動：放了一塊（可能堵住水路或填掉水格）→ 喚醒鄰格重算流向。
                     enqueue_water_around(x, y, z);
@@ -2331,6 +2368,8 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                                 "out_count": recipe.output_count
                             }).to_string(),
                         ));
+                        // 玩家里程碑 v1（ROADMAP 724）：人生第一次成功合成出成品。
+                        try_unlock_milestone(&name, "first_craft", &out_tx);
                     } else {
                         let _ = out_tx.try_send(Message::Text(
                             serde_json::json!({
@@ -2410,6 +2449,8 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         "irrigated": irrigated, "carrot": is_carrot, "potato": is_potato
                     }).to_string(),
                 ));
+                // 玩家里程碑 v1（ROADMAP 724）：人生第一次種下種子。
+                try_unlock_milestone(&name, "first_farm", &out_tx);
             }
             // ── 居民贈禮 v1（ROADMAP 660）────────────────────────────────────────
             Ok(ClientMsg::Gift { resident_id, item_id }) => {
@@ -2523,6 +2564,12 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     "affinity": affinity,
                 }).to_string();
                 let _ = out_tx.send(Message::Text(ok_msg)).await;
+                // 玩家里程碑 v1（ROADMAP 724）：人生第一次送禮 + 若與這位居民已到「友人」門檻
+                // （沿用前端 656 好感度指示燈 count>=3 = 金心的同一道門檻），順便解鎖「初次熟識」。
+                try_unlock_milestone(&name, "first_gift", &out_tx);
+                if affinity >= FRIEND_AFFINITY_THRESHOLD {
+                    try_unlock_milestone(&name, "first_bond", &out_tx);
+                }
                 // 11) Feed：記錄贈禮事件（鎖外 IO）。
                 vfeed::append_feed(
                     "贈禮",
@@ -2730,6 +2777,8 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     "gave_count": offer.want_count,
                 }).to_string();
                 let _ = out_tx.send(Message::Text(done_msg)).await;
+                // 玩家里程碑 v1（ROADMAP 724）：人生第一次與居民完成以物易物。
+                try_unlock_milestone(&name, "first_trade", &out_tx);
                 // 11) Feed（鎖外 IO）。
                 vfeed::append_feed(
                     "交易",
@@ -2865,6 +2914,8 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 vfeed::append_feed("睡覺", &name, "睡了一覺，天亮了！");
                 let msg = serde_json::json!({ "t": "sleep_ok" }).to_string();
                 let _ = out_tx.send(Message::Text(msg)).await;
+                // 玩家里程碑 v1（ROADMAP 724）：人生第一次在床上睡到天亮。
+                try_unlock_milestone(&name, "first_sleep", &out_tx);
             }
 
             // 重複 Join 或壞訊息：忽略。
@@ -3201,6 +3252,41 @@ pub async fn voxel_skills_handler() -> axum::response::Response {
                 serde_json::json!({
                     "name": resident_name_of(&rid),
                     "skills": invented.names_for(&rid),
+                })
+            })
+            .collect()
+    };
+    let body = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into());
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
+/// 乙太方界·玩家里程碑（ROADMAP 724）：回傳全部里程碑定義 + 這位玩家各自是否已達成。
+///
+/// 居民有技能簿（719）、交情網（708）可回頭翻閱自己的成長，玩家的療癒循環
+/// （採集→合成→蓋造→種田→贈禮→交易→熟識→安眠）至今卻沒有任何一處能讓玩家
+/// 自己回頭看看「我走了多遠」。本端點純讀取、零副作用，`?player=` 缺省時
+/// 全部里程碑一律回「未達成」（前端知道要先問玩家名再開面板）。
+pub async fn voxel_milestones_handler(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    use axum::http::header;
+    let player_name = params.get("player").map(|s| s.as_str()).unwrap_or("").trim().to_string();
+    let rows: Vec<serde_json::Value> = {
+        // 短讀鎖一次性快照這位玩家已達成的里程碑集合 → 立即釋放，不與其他鎖巢狀。
+        let store = hub().milestones.read().unwrap();
+        vmiles::MILESTONES
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "id": m.id,
+                    "name_zh": m.name_zh,
+                    "desc_zh": m.desc_zh,
+                    "icon": m.icon,
+                    "earned": !player_name.is_empty() && store.has(&player_name, m.id),
                 })
             })
             .collect()
