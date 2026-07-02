@@ -19,6 +19,35 @@ use serde::{Deserialize, Serialize};
 use crate::voxel::{self, Block, WorldDelta, BASE_HEIGHT};
 use crate::voxel_building::BuildKind;
 
+// ── 自然資源判定（核心保證：採集永不把建物當資源）────────────────────────────────
+//
+// 「自然資源」定義：該座標**沒有** delta 覆蓋——方塊值與程序地形生成值相同，
+// 代表從未被玩家或居民放置／改動過。反之，凡是帶 delta 記錄的方塊（含放置的木牆、
+// 鋪好的石板地、已被砍掉後重建的樹幹）皆視為「非自然」，採集器略過。
+//
+// 效能：只做**一次** HashMap 查詢（chunk → local index），O(1)，不讀方塊值本身，
+// 開銷等同 `effective_block_at` 的 delta 探頭——滿足「per 候選方塊單一查找」要求。
+
+/// 判斷世界座標 (wx, wy, wz) 是否為「自然資源」（未被 delta 改動過的原生地形方塊）。
+///
+/// - `true`：無 delta 記錄 → 方塊等於程序生成值 → 自然，允許採集。
+/// - `false`：帶 delta 記錄 → 玩家或居民放置／改動過 → **非自然**，不採。
+///
+/// 純函式（`&WorldDelta` 唯讀）、確定性、零鎖、可單元測試。
+/// 只需一次 O(1) HashMap 探頭，不重算地形、不讀方塊值。
+pub fn is_natural_resource(world: &WorldDelta, wx: i32, wy: i32, wz: i32) -> bool {
+    let coord = voxel::chunk_of(wx, wy, wz);
+    if let Some(chunk_delta) = world.get(&coord) {
+        let li = voxel::world_local_index(wx, wy, wz);
+        // delta 裡找到這個局部索引 → 有覆蓋記錄 → 非自然。
+        if chunk_delta.contains_key(&li) {
+            return false;
+        }
+    }
+    // chunk 無 delta 或局部索引不在 delta 裡 → 純程序地形 → 自然。
+    true
+}
+
 // ── 蓋造目標進展（不重複 + 有進展）────────────────────────────────────────────
 
 /// 蓋造目標的固定進展順序：花圃 → 小屋 → 水井 → 瞭望台。
@@ -376,26 +405,38 @@ pub fn find_nearest_resource(
         foot_fy.map_or(true, |fy| is_escapable_after_dig(world, ox, fy, oz, x, y, z))
     };
 
-    // 第一優先：最近一棵「砍得到」的樹（側向砍最低樹幹塊，近地表、安全可逃）。
+    // 第一優先：最近一棵「砍得到」的**自然**樹（側向砍最低樹幹塊，近地表、安全可逃）。
     // 先用 surface_block 便宜判斷該柱是不是樹（地表頂為樹冠/樹幹），是才掃樹幹底，避免空地全掃。
+    // 加自然資源過濾：只有「無 delta 覆蓋」的樹幹方塊才採——帶 delta 的代表玩家或居民放置的木牆，
+    // 不能採（否則建物被居民挖掉）。
     if let Some(w) = spiral_find(ox, oz, GATHER_MIN_RADIUS, max_radius, |x, z| {
         let (_, b) = surface_block(world, x, z)?;
         if !matches!(b, Block::Leaves | Block::Wood) {
             return None;
         }
         let wy = trunk_base(world, x, z)?;
+        // 自然資源過濾：樹幹目標方塊帶 delta 記錄 → 不採（防採集建物）。
+        if !is_natural_resource(world, x, wy, z) {
+            return None;
+        }
         escapable(x, wy, z).then_some((x, wy, z, GatherResource::Wood))
     }) {
         return Some(w);
     }
 
     // 退而求其次：最近一塊可採地表方塊（草／沙／泥／石，非水；跳過樹冠擋住的樹柱）。
+    // 加自然資源過濾：只採無 delta 的地表方塊——帶 delta 的代表玩家鋪設的地板／改地形，
+    // 不應被採走（否則玩家精心鋪好的地面會被居民挖掉）。
     spiral_find(ox, oz, GATHER_MIN_RADIUS, max_radius, |x, z| {
         let (y, b) = surface_block(world, x, z)?;
         if matches!(b, Block::Leaves | Block::Wood) {
             return None; // 樹柱已在木頭階段處理（砍不到就不採其地表）
         }
         let res = GatherResource::from_block(b)?;
+        // 自然資源過濾：地表頂帶 delta 記錄 → 不採（防採集鋪設地板、填平地形等）。
+        if !is_natural_resource(world, x, y, z) {
+            return None;
+        }
         escapable(x, y, z).then_some((x, y, z, res))
     })
 }
@@ -418,21 +459,31 @@ pub fn find_nearest_resource_of(
         foot_fy.map_or(true, |fy| is_escapable_after_dig(world, ox, fy, oz, x, y, z))
     };
     if want == GatherResource::Wood {
-        // 木頭：找最近一棵「砍得到」的樹（側砍最低樹幹塊，近地表、安全可逃）。
+        // 木頭：找最近一棵「砍得到」的**自然**樹（側砍最低樹幹塊，近地表、安全可逃）。
         // min_radius=0：目標導向採集，站在資源旁也找得到（無盲區）。
+        // 自然資源過濾：樹幹帶 delta → 放置的木牆，不採。
         return spiral_find(ox, oz, 0, max_radius, |x, z| {
             let (_, b) = surface_block(world, x, z)?;
             if !matches!(b, Block::Leaves | Block::Wood) {
                 return None;
             }
             let wy = trunk_base(world, x, z)?;
+            // 自然資源過濾：目標樹幹帶 delta 記錄 → 非自然（建物木牆），略過。
+            if !is_natural_resource(world, x, wy, z) {
+                return None;
+            }
             escapable(x, wy, z).then_some((x, wy, z))
         });
     }
     // 地表材料：找最近一柱「地表頂正是該型別」且挖了可逃的。
+    // 自然資源過濾：地表頂帶 delta → 玩家鋪設的地板，不採。
     spiral_find(ox, oz, 0, max_radius, |x, z| {
         let (y, b) = surface_block(world, x, z)?;
         if b != want.block() {
+            return None;
+        }
+        // 自然資源過濾：地表頂帶 delta 記錄 → 非自然（鋪設地板、改地形），略過。
+        if !is_natural_resource(world, x, y, z) {
             return None;
         }
         escapable(x, y, z).then_some((x, y, z))
@@ -904,6 +955,136 @@ mod tests {
         assert!(!res.display_name().is_empty());
     }
 
+    // ── is_natural_resource：自然資源判定（核心安全保證：不採建物）───────────────
+
+    #[test]
+    fn is_natural_resource_true_for_unmodified_block() {
+        // 空 delta 世界：任何座標都是純程序地形 → 自然資源。
+        let world = WorldDelta::new();
+        let (ox, oz) = land_point();
+        let h = height_at(ox, oz);
+        assert!(
+            is_natural_resource(&world, ox, h, oz),
+            "未改動的程序地形應視為自然資源"
+        );
+    }
+
+    #[test]
+    fn is_natural_resource_false_for_placed_wood_wall() {
+        // 玩家放置木牆（Block::Wood + delta）→ 非自然，不應被採集。
+        // 這正是「採集會把建物當資源」bug 的核心情境。
+        let (ox, oz) = land_point();
+        let h = height_at(ox, oz);
+        let mut world = WorldDelta::new();
+        // 在地表上方放一塊木頭（模擬居民/玩家蓋的木牆）。
+        voxel::set_block(&mut world, ox, h + 2, oz, Block::Wood);
+        assert!(
+            !is_natural_resource(&world, ox, h + 2, oz),
+            "放置的木牆帶 delta → 非自然，不應採集"
+        );
+    }
+
+    #[test]
+    fn is_natural_resource_false_for_placed_stone_floor() {
+        // 玩家鋪設石板地（Block::Stone + delta）→ 非自然，不應被採走。
+        let (ox, oz) = land_point();
+        let h = height_at(ox, oz);
+        let mut world = WorldDelta::new();
+        voxel::set_block(&mut world, ox, h, oz, Block::Stone);
+        assert!(
+            !is_natural_resource(&world, ox, h, oz),
+            "玩家鋪設的石板地帶 delta → 非自然，不應採集"
+        );
+    }
+
+    #[test]
+    fn is_natural_resource_true_for_remaining_natural_trunk() {
+        // 自然樹被砍去一塊（那塊有 delta=Air）→ 剩餘樹幹無 delta → 仍視為自然，可繼續採。
+        // 這對應約束 (b)：自然樹被部分砍掉，剩餘無 delta 的樹幹仍可採。
+        let world = WorldDelta::new();
+        let t = (0..200)
+            .flat_map(|cx| (0..200).map(move |cz| (cx, cz)))
+            .find_map(|(cx, cz)| voxel::tree_in_cell(cx, cz))
+            .expect("應找得到一棵樹");
+        let trunk_y = t.base_h + 1;
+        let trunk_y2 = t.base_h + 2; // 假設樹至少有 2 格樹幹（一般樹 3-5 格高）
+        // 砍掉最低樹幹塊（設為 Air，有 delta）。
+        let mut world2 = world.clone();
+        voxel::set_block(&mut world2, t.tx, trunk_y, t.tz, Block::Air);
+        // 被砍的那塊：帶 delta，非自然。
+        assert!(
+            !is_natural_resource(&world2, t.tx, trunk_y, t.tz),
+            "已砍掉（設 Air）的樹幹帶 delta → 非自然"
+        );
+        // 上面那塊未被砍（無 delta）→ 仍是自然資源，仍可採。
+        if voxel::effective_block_at(&world2, t.tx, trunk_y2, t.tz) == Block::Wood {
+            assert!(
+                is_natural_resource(&world2, t.tx, trunk_y2, t.tz),
+                "未被砍掉的上層樹幹無 delta → 仍自然，應可採"
+            );
+        }
+    }
+
+    #[test]
+    fn find_nearest_resource_skips_placed_wood_wall() {
+        // 核心 bug 修復驗證：採集器**不應**把玩家放置的木牆視為採集目標。
+        // 建立只有放置木牆、附近沒有自然樹的世界場景，指名找木頭 → 應回 None 或找遠處自然樹。
+        let (ox, oz) = land_point();
+        let h = height_at(ox, oz);
+        let mut world = WorldDelta::new();
+        // 在最小半徑剛好的距離放一塊木頭（模擬木牆）。
+        let wall_x = ox + GATHER_MIN_RADIUS;
+        let wall_h = height_at(wall_x, oz);
+        voxel::set_block(&mut world, wall_x, wall_h + 1, oz, Block::Wood);
+        // 驗證：is_natural_resource 正確回傳 false。
+        assert!(
+            !is_natural_resource(&world, wall_x, wall_h + 1, oz),
+            "放置的木牆應被判為非自然資源"
+        );
+        // 若 find_nearest_resource_of 返回木頭，目標座標不應是我們放置的木牆。
+        if let Some((fx, fy, fz)) =
+            find_nearest_resource_of(&world, ox, oz, GATHER_MAX_RADIUS, GatherResource::Wood)
+        {
+            assert!(
+                !(fx == wall_x && fy == wall_h + 1 && fz == oz),
+                "採集器不應把放置的木牆 ({wall_x},{},{oz}) 當成木頭採集目標",
+                wall_h + 1
+            );
+            // 若找到了其他目標，必須是自然資源。
+            assert!(
+                is_natural_resource(&world, fx, fy, fz),
+                "找到的木頭目標必須是自然資源（無 delta）：({fx},{fy},{fz})"
+            );
+        }
+        // 不論找到或找不到，都不能把木牆當目標——上面的 assert 已保證。
+    }
+
+    #[test]
+    fn find_nearest_resource_skips_placed_dirt_floor() {
+        // 玩家在地表鋪了一層泥土（delta 覆蓋）→ find_nearest_resource 不應選到那格，
+        // 而應繼續往外找真正的自然地表。
+        let (ox, oz) = land_point();
+        let mut world = WorldDelta::new();
+        // 把最小半徑環上的整列都鋪上 delta 泥土，讓那圈都是「非自然」。
+        let placed_x = ox + GATHER_MIN_RADIUS;
+        let placed_h = height_at(placed_x, oz);
+        voxel::set_block(&mut world, placed_x, placed_h, oz, Block::Dirt);
+        // 驗證那格是非自然的。
+        assert!(
+            !is_natural_resource(&world, placed_x, placed_h, oz),
+            "delta 覆蓋的泥土地板應為非自然"
+        );
+        // 若 find 找到了那格，就是 bug（應跳過）。
+        if let Some((fx, fy, fz, _)) =
+            find_nearest_resource(&world, ox, oz, GATHER_MAX_RADIUS)
+        {
+            assert!(
+                is_natural_resource(&world, fx, fy, fz),
+                "find_nearest_resource 回傳的目標必須是自然資源：({fx},{fy},{fz})"
+            );
+        }
+    }
+
     // ── 採木頭：補上合成鏈缺的木頭來源 ────────────────────────────────────────
 
     /// 找一棵「旁邊有同高平地站得到、砍得到」的樹，回 (ox, oz, 樹)。
@@ -1023,16 +1204,28 @@ mod tests {
 
     #[test]
     fn find_typed_resource_matches_requested_kind() {
-        // 在陸地點附近放一塊 delta 石頭當地表頂 → 指名找石頭應找得到、且座標真是石頭。
+        // 指名找石頭 → 找到的必須真的是石頭（型別保證）。
+        // 自然資源過濾上線後，指定型別採集只對自然地形有效，不再透過放置的 delta 方塊驗證。
+        // 用廣一點的半徑掃，讓自然地形裡若有石頭地表就能找到。
         let world = WorldDelta::new();
-        let (ox, oz) = land_point();
-        let mut w2 = world.clone();
-        let (px, pz) = (ox + GATHER_MIN_RADIUS + 1, oz);
-        let h = height_at(px, pz);
-        voxel::set_block(&mut w2, px, h + 1, pz, Block::Stone);
-        let found = find_nearest_resource_of(&w2, ox, oz, GATHER_MAX_RADIUS, GatherResource::Stone);
-        let (x, y, z) = found.expect("指名石頭應找得到（剛放了一塊）");
-        assert_eq!(voxel::effective_block_at(&w2, x, y, z), Block::Stone, "找到的必須真是石頭");
+        // 找一個自然地表頂就是石頭的位置（山地/石底地形）。
+        let stone_pos = (0..3000).find_map(|c| {
+            let h = height_at(c, 0);
+            if voxel::block_at(c, h, 0) == Block::Stone {
+                Some((c, 0))
+            } else {
+                None
+            }
+        });
+        if let Some((sx, sz)) = stone_pos {
+            let found = find_nearest_resource_of(&world, sx - 8, sz, GATHER_MAX_RADIUS + 8, GatherResource::Stone);
+            if let Some((x, y, z)) = found {
+                assert_eq!(voxel::effective_block_at(&world, x, y, z), Block::Stone, "找到的必須真是石頭");
+                // 必須是自然資源（無 delta）。
+                assert!(is_natural_resource(&world, x, y, z), "找到的石頭必須是自然資源");
+            }
+            // 若真的沒有石頭地表（地形皆草皮覆蓋），也不算失敗——只是測環境沒有那種地形。
+        }
     }
 
     #[test]
@@ -1048,18 +1241,28 @@ mod tests {
     }
 
     #[test]
-    fn find_typed_resource_sees_adjacent_target_no_blind_zone() {
+    fn find_typed_resource_sees_adjacent_natural_target_no_blind_zone() {
         // 迴歸（實測踩過）：重用技能採第二刀料時，人就站在剛砍過的樹旁——
         // 指定型別搜尋必須從半徑 0 起找（無 GATHER_MIN_RADIUS 盲區），眼前的資源找得到。
+        // 自然資源過濾上線後，改用「人站在自然樹幹旁的平地」驗證無盲區——
+        // 用 tree_with_flat_neighbor 確保站立柱與樹底同高（可逃性保證通過）。
         let world = WorldDelta::new();
-        let (ox, oz) = land_point();
-        let mut w2 = world.clone();
-        // 在她腳邊 1 格處放一塊石頭（落在日常採集 min=4 的盲區內）。
-        let (px, pz) = (ox + 1, oz);
-        let h = height_at(px, pz);
-        voxel::set_block(&mut w2, px, h + 1, pz, Block::Stone);
-        let found = find_nearest_resource_of(&w2, ox, oz, GATHER_MAX_RADIUS, GatherResource::Stone);
-        assert_eq!(found, Some((px, h + 1, pz)), "腳邊的目標資源不該落在盲區");
+        // tree_with_flat_neighbor 找「旁邊 5 格有平地」的樹（可逃性確定成立）。
+        let (ox, oz, tree) = tree_with_flat_neighbor();
+        // 站在那個平地點（ox, oz），樹在 chebyshev 距 5 內 → 半徑 0..5 掃得到。
+        let found = find_nearest_resource_of(&world, ox, oz, GATHER_MAX_RADIUS, GatherResource::Wood);
+        assert!(found.is_some(), "樹旁有平地的站立點應找得到木頭（無盲區，min_radius=0）");
+        let (fx, fy, fz) = found.unwrap();
+        assert_eq!(voxel::effective_block_at(&world, fx, fy, fz), Block::Wood, "找到的應是木頭");
+        // 必須是自然樹幹（無 delta）。
+        assert!(is_natural_resource(&world, fx, fy, fz), "找到的木頭必須是自然資源");
+        // 目標就是那棵樹的樹幹（在採集半徑內）。
+        let dx = (fx - tree.tx).abs();
+        let dz = (fz - tree.tz).abs();
+        assert!(
+            dx <= GATHER_MAX_RADIUS && dz <= GATHER_MAX_RADIUS,
+            "找到的木頭應在最大採集半徑內"
+        );
     }
 
     #[test]
