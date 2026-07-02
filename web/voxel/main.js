@@ -65,6 +65,8 @@ const CARROT_SEEDS = 48, CARROT = 49;
 // 馬鈴薯幼苗/成熟馬鈴薯為伺服器狀態方塊；種子/收成為純物品，從泥土(DIRT)破壞額外掉落種子（與胡蘿蔔取自草地區隔）。
 const POTATO_SEEDED = 50, POTATO_MATURE = 51;
 const POTATO_SEEDS = 52, POTATO = 53;
+// 仙人掌 v1（生物群系第一刀）——沙漠群系程序生成，2格高；採集後可放置
+const CACTUS = 54;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -123,6 +125,8 @@ const COLOR = {
   // 第三種作物 v1（馬鈴薯）——土黃偏棕，與小麥金黃、胡蘿蔔橘都能一眼分辨
   [POTATO_SEEDED]: [0.32, 0.30, 0.18], // 馬鈴薯幼苗——暗土黃，埋在土裡的感覺
   [POTATO_MATURE]:  [0.78, 0.64, 0.38], // 成熟馬鈴薯——土黃偏棕，可收割
+  // 生物群系第一刀
+  [CACTUS]:         [0.25, 0.58, 0.22], // 仙人掌——飽和深綠，沙漠中一眼認出
 };
 
 const DEBUG = location.search.includes("debug");

@@ -905,11 +905,12 @@ mod tests {
 
     #[test]
     fn find_nearest_resource_of_wood_finds_tree() {
+        // 驗證「指名木頭找得到木頭方塊」即可；不再比對精確座標——
+        // 生物群系引入後森林密度提高，半徑內可能有更近的樹，只要返回 Wood 即正確。
         let world = WorldDelta::new();
-        let (ox, oz, t) = tree_with_flat_neighbor();
+        let (ox, oz, _t) = tree_with_flat_neighbor();
         let (x, y, z) = find_nearest_resource_of(&world, ox, oz, GATHER_MAX_RADIUS, GatherResource::Wood)
             .expect("指名木頭應找得到樹");
-        assert_eq!((x, z), (t.tx, t.tz));
         assert_eq!(voxel::effective_block_at(&world, x, y, z), Block::Wood);
     }
 

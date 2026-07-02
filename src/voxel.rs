@@ -72,6 +72,7 @@ pub struct Tree {
 /// ID 24–30：流動水（水流動模擬）——來源水 Water=7 是 level 0/無限，24..=30 是流動 level 1..=7
 /// （遞減、離源太遠乾涸）；非實心、碰撞/挖放規則同 Water；id 定義集中在 voxel_water。
 /// ID 31：火把（ROADMAP 685）背包 2×2：1 木+1 煤礦→4 火把；橘黃燈柱，礦坑標記/裝飾用。
+/// ID 54：仙人掌（生物群系第一刀）沙漠群系程序生成，2格高柱狀，可採集+放置。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Block {
@@ -165,6 +166,9 @@ pub enum Block {
     /// 成熟馬鈴薯（第三種作物 v1）——可收割；破壞後掉落農田土×1 + 馬鈴薯種子×1 + 馬鈴薯×2，
     /// 種田系統第一次有「慢但收成多」的第三種節奏（小麥居中／胡蘿蔔快而輕巧／馬鈴薯慢而量大）。
     PotatoMature = 51,
+    /// 仙人掌（生物群系第一刀）——沙漠群系偶有，程序生成，確定性；直徑 1 格、高 2 格柱。
+    /// 採集後可放置；沙漠地表的視覺標誌物，與沙地+無樹合力讓沙漠有地方感。
+    Cactus = 54,
 }
 
 impl Block {
@@ -235,6 +239,7 @@ impl Block {
             47 => Some(Block::CarrotMature),
             50 => Some(Block::PotatoSeeded),
             51 => Some(Block::PotatoMature),
+            54 => Some(Block::Cactus),
             _ => None,
         }
     }
@@ -248,7 +253,8 @@ impl Block {
             Block::Plank | Block::StoneBrick | Block::Glass | Block::FarmSoil |
             Block::Workbench | Block::Furnace | Block::SmoothStone |
             Block::CoalOre | Block::IronOre | Block::IronIngot | Block::IronBlock |
-            Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed | Block::Bed
+            Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed | Block::Bed |
+            Block::Cactus
         )
     }
 }
@@ -449,6 +455,51 @@ fn value_noise(x: f32, z: f32, seed: u32) -> f32 {
     nx0 + (nx1 - nx0) * sz
 }
 
+// ── 生物群系（生物群系第一刀）────────────────────────────────────────────────
+
+/// 乙太方界生物群系。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VoxelBiome {
+    /// 草原（現狀）：草地+疏樹，出生地預設。
+    Grassland,
+    /// 森林：草地+密樹（樹機率 1.5×）。
+    Forest,
+    /// 沙漠：地表沙、無樹、偶有仙人掌柱。
+    Desert,
+}
+
+/// 生物群系場噪聲種子（大尺度、低頻 → 世界有大塊感，與高度 noise 獨立）。
+const BIOME_SEED: u32 = SEED ^ 0x_B104_EB14;
+/// 生物群系噪聲頻率：比高度 noise 低 4× → 群系邊界平緩（~200 格一個群系）。
+const BIOME_SCALE: f32 = 192.0;
+/// 出生錨點附近強制草原的半徑（格）。讓出生點永遠有草有樹。
+pub const BIOME_SPAWN_RADIUS: i32 = 40;
+/// 仙人掌噪聲種子（沙漠群系隨機柱，與樹/地形獨立）。
+const CACTUS_SEED: u32 = SEED ^ 0x_CA_C7_AC_7E;
+/// 仙人掌生成機率門檻（per-column hash < 此值才長）。約 8% 的沙漠地表格有仙人掌。
+const CACTUS_CHANCE: f32 = 0.08;
+
+/// 世界座標 → 生物群系。確定性純函式，同座標永遠同群系。
+/// 出生保護圈（BIOME_SPAWN_RADIUS 內）強制草原，確保玩家出生有樹有草。
+pub fn biome_at_voxel(wx: i32, wz: i32) -> VoxelBiome {
+    // 出生錨點附近強制草原（平方比較，無 sqrt）。
+    for (ax, az) in SPAWN_ANCHORS {
+        let ddx = wx - ax;
+        let ddz = wz - az;
+        if ddx * ddx + ddz * ddz <= BIOME_SPAWN_RADIUS * BIOME_SPAWN_RADIUS {
+            return VoxelBiome::Grassland;
+        }
+    }
+    let n = value_noise(wx as f32 / BIOME_SCALE, wz as f32 / BIOME_SCALE, BIOME_SEED);
+    if n < 0.35 {
+        VoxelBiome::Desert
+    } else if n > 0.65 {
+        VoxelBiome::Forest
+    } else {
+        VoxelBiome::Grassland
+    }
+}
+
 /// 地表高度（世界方塊 Y）：多 octave value noise 疊加。確定性 → 同 (wx,wz) 永遠同高度。
 pub fn height_at(wx: i32, wz: i32) -> i32 {
     let x = wx as f32;
@@ -465,9 +516,18 @@ pub fn height_at(wx: i32, wz: i32) -> i32 {
 
 /// 某格 (cellx,cellz) 是否長樹；長的話回傳該樹（已驗證地表為草、在保護圈外）。
 /// 純函式、確定性（同格永遠同結果）、可測。是「樹是地形一部分」的單一真相來源。
+/// 樹機率依群系：森林 0.75（密）、草原 0.50（疏，現狀）、沙漠 0.0（無）。
 pub fn tree_in_cell(cellx: i32, cellz: i32) -> Option<Tree> {
+    // 以格中心世界座標查群系，決定本格的樹機率門檻。
+    let center_x = cellx * TREE_CELL + TREE_CELL / 2;
+    let center_z = cellz * TREE_CELL + TREE_CELL / 2;
+    let tree_chance = match biome_at_voxel(center_x, center_z) {
+        VoxelBiome::Forest => 0.75_f32,
+        VoxelBiome::Grassland => TREE_CHANCE, // 0.50，現狀不變
+        VoxelBiome::Desert => return None,    // 沙漠無樹
+    };
     // 以格座標 hash 擲骰：是否長樹。
-    if hash2(cellx, cellz, TREE_SEED) >= TREE_CHANCE {
+    if hash2(cellx, cellz, TREE_SEED) >= tree_chance {
         return None;
     }
     // 樹幹落在格內側（offset 1..=5 of 本格 0..=6），確保半徑 1 樹冠不跨格。
@@ -515,6 +575,29 @@ fn tree_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
     None
 }
 
+/// 仙人掌方塊查詢：沙漠群系地表上方 1–2 格偶有仙人掌柱，確定性。
+/// 只在沙漠、只在高於海平面的沙地表、per-column hash < CACTUS_CHANCE 才長。
+fn cactus_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
+    if biome_at_voxel(wx, wz) != VoxelBiome::Desert {
+        return None;
+    }
+    let h = height_at(wx, wz);
+    // 非水邊的沙地才長仙人掌（水邊本就是沙，但仙人掌視覺上不搭）。
+    if h <= SEA_LEVEL + 1 {
+        return None;
+    }
+    // per-column 機率門檻（約 8% 的沙漠陸地格有仙人掌）。
+    if hash2(wx, wz, CACTUS_SEED) >= CACTUS_CHANCE {
+        return None;
+    }
+    // 仙人掌高 2 格（地表上方第 1、2 格）。
+    if wy == h + 1 || wy == h + 2 {
+        Some(Block::Cactus)
+    } else {
+        None
+    }
+}
+
 /// 任一世界座標的方塊（確定性程序生成）。這是「無狀態世界」的核心查詢。
 pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
     // 地心一律基岩石頭（避免從世界底掉出去；本輪只生成 y>=0 的 chunk）。
@@ -531,17 +614,27 @@ pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
         if let Some(tb) = tree_block_at(wx, wy, wz) {
             return tb;
         }
+        // 沙漠群系：偶有仙人掌柱（地表上方 1–2 格）。
+        if let Some(cb) = cactus_block_at(wx, wy, wz) {
+            return cb;
+        }
         return Block::Air;
     }
     if wy == h {
-        // 地表層：近海平面用沙，否則草。
+        // 地表層：近海平面用沙，否則依群系（沙漠=沙、其餘=草）。
         if h <= SEA_LEVEL + 1 {
+            return Block::Sand;
+        }
+        if biome_at_voxel(wx, wz) == VoxelBiome::Desert {
             return Block::Sand;
         }
         return Block::Grass;
     }
-    // 地表以下：上面幾層土，再下石頭。
+    // 地表以下：依群系決定上層材質（沙漠=沙取代泥土；其餘=泥土）。
     if wy >= h - 3 {
+        if biome_at_voxel(wx, wz) == VoxelBiome::Desert {
+            return Block::Sand;
+        }
         return Block::Dirt;
     }
     // 深層礦石（ROADMAP 682）：距地表足夠深的石頭層有機率含礦。
@@ -943,6 +1036,8 @@ mod tests {
     #[test]
     fn tree_density_is_reasonable() {
         // 密度合理：一大片地表上的樹數既不為 0（找得到）也不過密（別擋路）。
+        // ── 注意：密度現在依群系而異（森林 0.75 > 草原 0.50 > 沙漠 0.0）；
+        // 整體統計仍落在合理區間（掃 -20..20 格，混合群系，實際約 30..1200 棵）。
         let mut trees = 0u32;
         let (lo, hi) = (-20, 20); // 41×41 格 = 1681 柱
         for cx in lo..hi {
@@ -952,7 +1047,7 @@ mod tests {
                 }
             }
         }
-        // 41×41=1681 格、約半數擲中、再被「草地+保護圈」過濾 → 落在寬鬆合理區間。
+        // 寬鬆區間：草原 + 森林格都有樹，沙漠格一棵沒有，整體合理。
         assert!(trees > 30, "樹太稀疏（找不到木頭）：trees={trees}");
         assert!(trees < 1200, "樹太密集（擋路）：trees={trees}");
     }
@@ -1142,5 +1237,183 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── 生物群系（生物群系第一刀）────────────────────────────────────────────────
+
+    #[test]
+    fn biome_at_voxel_is_deterministic() {
+        // 同座標永遠同結果。
+        for &(x, z) in &[(0, 0), (100, -50), (-999, 777), (500, 500)] {
+            assert_eq!(biome_at_voxel(x, z), biome_at_voxel(x, z));
+        }
+    }
+
+    #[test]
+    fn three_biomes_exist_in_world() {
+        // 掃一片世界，三種群系都必須出現（不是全同一種）。
+        let mut has_grassland = false;
+        let mut has_forest = false;
+        let mut has_desert = false;
+        for x in (-500..=500i32).step_by(20) {
+            for z in (-500..=500i32).step_by(20) {
+                match biome_at_voxel(x, z) {
+                    VoxelBiome::Grassland => has_grassland = true,
+                    VoxelBiome::Forest => has_forest = true,
+                    VoxelBiome::Desert => has_desert = true,
+                }
+            }
+        }
+        assert!(has_grassland, "應找到草原群系");
+        assert!(has_forest, "應找到森林群系");
+        assert!(has_desert, "應找到沙漠群系");
+    }
+
+    #[test]
+    fn spawn_area_is_always_grassland() {
+        // 出生點附近（半徑 BIOME_SPAWN_RADIUS 內核心點）一律草原。
+        for (ax, az) in SPAWN_ANCHORS {
+            for dx in -5..=5i32 {
+                for dz in -5..=5i32 {
+                    assert_eq!(
+                        biome_at_voxel(ax + dx * 3, az + dz * 3),
+                        VoxelBiome::Grassland,
+                        "出生保護圈應為草原 @ ({},{})", ax + dx * 3, az + dz * 3
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn desert_surface_is_sand_no_trees() {
+        // 沙漠群系地表為沙、無木塊（沙漠無樹）。
+        let mut found = false;
+        'outer: for x in -500..500i32 {
+            for z in -500..500i32 {
+                if biome_at_voxel(x, z) == VoxelBiome::Desert {
+                    let h = height_at(x, z);
+                    if h > SEA_LEVEL + 1 {
+                        assert_eq!(
+                            block_at(x, h, z), Block::Sand,
+                            "沙漠地表應為沙 @ ({},{})", x, z
+                        );
+                        // 沙漠地表上方多格不應有木塊。
+                        for dy in 1..=6 {
+                            let b = block_at(x, h + dy, z);
+                            assert!(
+                                b != Block::Wood && b != Block::Leaves,
+                                "沙漠不應有樹 @ ({},{},{})", x, h + dy, z
+                            );
+                        }
+                        found = true;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        assert!(found, "應找到沙漠群系的陸地格");
+    }
+
+    #[test]
+    fn forest_has_higher_tree_density_than_grassland() {
+        // 森林群系的樹密度顯著高於草原群系。
+        let mut forest_trees = 0u32;
+        let mut forest_total = 0u32;
+        let mut grassland_trees = 0u32;
+        let mut grassland_total = 0u32;
+        for cx in -80..80i32 {
+            for cz in -80..80i32 {
+                // 格中心座標查群系，與 tree_in_cell 內部一致。
+                let wx = cx * TREE_CELL + TREE_CELL / 2;
+                let wz = cz * TREE_CELL + TREE_CELL / 2;
+                let biome = biome_at_voxel(wx, wz);
+                let has_tree = tree_in_cell(cx, cz).is_some();
+                match biome {
+                    VoxelBiome::Forest => {
+                        forest_total += 1;
+                        if has_tree { forest_trees += 1; }
+                    }
+                    VoxelBiome::Grassland => {
+                        grassland_total += 1;
+                        if has_tree { grassland_trees += 1; }
+                    }
+                    VoxelBiome::Desert => {}
+                }
+            }
+        }
+        if forest_total > 10 && grassland_total > 10 {
+            let forest_ratio = forest_trees as f32 / forest_total as f32;
+            let grassland_ratio = grassland_trees as f32 / grassland_total as f32;
+            assert!(
+                forest_ratio > grassland_ratio,
+                "森林樹密度({:.2})應高於草原({:.2})", forest_ratio, grassland_ratio
+            );
+        }
+    }
+
+    #[test]
+    fn desert_has_no_tree_cells() {
+        // 沙漠群系的格不長樹（tree_in_cell 永遠 None）。
+        // 用格中心座標查群系，與 tree_in_cell 內部邏輯一致（避免邊界對不齊的誤判）。
+        for cx in -80..80i32 {
+            for cz in -80..80i32 {
+                let center_x = cx * TREE_CELL + TREE_CELL / 2;
+                let center_z = cz * TREE_CELL + TREE_CELL / 2;
+                if biome_at_voxel(center_x, center_z) == VoxelBiome::Desert {
+                    assert!(
+                        tree_in_cell(cx, cz).is_none(),
+                        "沙漠格不應長樹 @ cell({},{})", cx, cz
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn desert_has_cacti() {
+        // 沙漠群系中應能找到仙人掌方塊。
+        let mut found = false;
+        'outer: for x in -500..500i32 {
+            for z in -500..500i32 {
+                if biome_at_voxel(x, z) == VoxelBiome::Desert {
+                    let h = height_at(x, z);
+                    if h > SEA_LEVEL + 1 {
+                        for dy in 1..=2 {
+                            if block_at(x, h + dy, z) == Block::Cactus {
+                                found = true;
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(found, "沙漠群系中應能找到仙人掌");
+    }
+
+    #[test]
+    fn cactus_only_in_desert() {
+        // 仙人掌只生在沙漠，非沙漠群系不得出現。
+        for x in -100..100i32 {
+            let h = height_at(x, 0);
+            for dy in 1..=3 {
+                let b = block_at(x, h + dy, 0);
+                if b == Block::Cactus {
+                    assert_eq!(
+                        biome_at_voxel(x, 0), VoxelBiome::Desert,
+                        "仙人掌只能在沙漠 @ ({}, {})", x, h + dy
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cactus_is_solid_placeable_roundtrips() {
+        assert!(Block::Cactus.is_solid(), "仙人掌應為實心");
+        assert!(Block::Cactus.is_placeable(), "仙人掌應可放置");
+        assert_eq!(Block::from_u8(54), Some(Block::Cactus));
+        assert_eq!(Block::Cactus as u8, 54);
     }
 }
