@@ -162,6 +162,8 @@ mod voxel_comfort;
 mod voxel_cheer;
 // 乙太方界·箱子儲存 v1：合成箱子→放置→右鍵儲存材料（ROADMAP 692）。
 mod voxel_chest;
+// 乙太方界·告示牌 v1：合成告示牌→放置→右鍵寫短字，浮在牌上人人看得見（ROADMAP 740）。
+mod voxel_sign;
 // 乙太方界·居民口耳相傳 v1：老朋友到訪時轉述見聞，記憶經朋友網絡流通（ROADMAP 694）。
 mod voxel_gossip;
 // 乙太方界·下雨天氣 v1：機率式晴/雨切換，下雨時農地視同水耕（ROADMAP 700）。

@@ -67,6 +67,7 @@ use crate::voxel_mood;
 use crate::voxel_comfort as vcomfort;
 use crate::voxel_cheer as vcheer;
 use crate::voxel_chest as vchest;
+use crate::voxel_sign as vsign;
 use crate::voxel_weather as vweather;
 use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
@@ -861,6 +862,9 @@ struct VoxelHub {
     /// 箱子儲存 store（ROADMAP 692）：世界座標 → 方塊 id → 數量。
     /// 持久化到 data/voxel_chests.jsonl；多人共用同一箱子（序列化 RwLock 解決競爭）。
     chest: RwLock<vchest::ChestStore>,
+    /// 告示牌文字 store（ROADMAP 740）：世界座標 → 一行短字。
+    /// 持久化到 data/voxel_signs.jsonl；文字浮在牌上、所有人看得見（序列化 RwLock 解決競爭）。
+    sign: RwLock<vsign::SignStore>,
     /// 水流動待處理佇列（水流動模擬）：只有「可能變化」的格才排入
     /// （玩家/居民挖破地形的缺口鄰格、水格自己擴散到的新鄰格），每 tick 只算佇列、
     /// 穩定的移出——**不整世界每 tick 掃描**（效能鐵律）。
@@ -1013,6 +1017,8 @@ fn hub() -> &'static VoxelHub {
             bonds: RwLock::new(ResidentBonds::from_entries(vbonds::load_bonds())),
             // 啟動時從 data/voxel_chests.jsonl 載回箱子存量（重啟後仍保留儲存物品）。
             chest: RwLock::new(vchest::ChestStore::from_entries(vchest::load_chests())),
+            // 啟動時從 data/voxel_signs.jsonl 載回告示牌文字（重啟後牌面仍在）。
+            sign: RwLock::new(vsign::SignStore::from_entries(vsign::load_signs())),
             // 水流佇列：啟動空；玩家/居民挖破地形時排入缺口鄰格，水才開始流。
             water_queue: std::sync::Mutex::new(WaterQueue::default()),
             // 天氣：啟動時永遠從晴天開始，之後靠 tick_farm 的機率擲骰自然演變。
@@ -1192,6 +1198,10 @@ enum ClientMsg {
     ChestPut { x: i32, y: i32, z: i32, item_id: u8, count: u32 },
     /// 箱子 v1：從箱子取出 `count` 個 `item_id` 到背包（ROADMAP 692）。
     ChestTake { x: i32, y: i32, z: i32, item_id: u8, count: u32 },
+    /// 告示牌 v1：寫／改寫目標告示牌的文字（ROADMAP 740）。伺服器驗 reach + 目標為
+    /// Sign(66) 後清洗文字、存檔並廣播 `sign` 給所有人。空字串＝清空牌面。
+    #[serde(rename = "sign_set")]
+    SignSet { x: i32, y: i32, z: i32, text: String },
     /// 木門 v1：右鍵切換目標門的開/關狀態（ROADMAP 693）。
     /// DoorClosed(43)→DoorOpen(44) 或 DoorOpen(44)→DoorClosed(43)；伺服器驗 reach 後廣播。
     #[serde(rename = "toggle_door")]
@@ -1260,6 +1270,15 @@ fn pack_chunks_msg(columns: &[(i32, i32)]) -> String {
 fn broadcast_block(x: i32, y: i32, z: i32, b: Block) {
     let msg = Arc::new(
         serde_json::json!({ "t": "block", "x": x, "y": y, "z": z, "b": b as u8 }).to_string(),
+    );
+    let _ = hub().tx.send(msg);
+}
+
+/// 廣播一面告示牌的文字變化（寫字/清空/破壞後）給所有連線（ROADMAP 740）。
+/// `text` 空字串代表牌面被清空/牌子被破壞，前端據此移除該座標的浮字。
+fn broadcast_sign(x: i32, y: i32, z: i32, text: &str) {
+    let msg = Arc::new(
+        serde_json::json!({ "t": "sign", "x": x, "y": y, "z": z, "text": text }).to_string(),
     );
     let _ = hub().tx.send(msg);
 }
@@ -1384,6 +1403,27 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
         }
     }
 
+    // 告示牌 v1（ROADMAP 740）：連線時一次送出世界上所有告示牌的文字，
+    // 讓前端立刻把浮字掛回牌上（牌面文字是每個人都看得見的世界狀態，非私有面板）。
+    {
+        let all = hub().sign.read().unwrap().all();
+        let signs: Vec<serde_json::Value> = all
+            .iter()
+            .filter_map(|(pos, text)| {
+                let mut it = pos.split(',');
+                let sx = it.next()?.parse::<i32>().ok()?;
+                let sy = it.next()?.parse::<i32>().ok()?;
+                let sz = it.next()?.parse::<i32>().ok()?;
+                Some(serde_json::json!({ "x": sx, "y": sy, "z": sz, "text": text }))
+            })
+            .collect();
+        let sign_sync = serde_json::json!({ "t": "sign_sync", "signs": signs }).to_string();
+        if out_tx.send(Message::Text(sign_sync)).await.is_err() {
+            cleanup(my_id, &writer);
+            return;
+        }
+    }
+
     // 久別重逢摘要 v1（ROADMAP 721）：離線夠久 + 期間有值得播報的事 → 私訊一句摘要，
     // 讓玩家一登入就感受到「世界在我不在時真的繼續活著」，不只是回來後一片死寂。
     {
@@ -1502,6 +1542,14 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     // 水流動：剛挖出一個空格 → 排入這格 + 鄰格，讓相鄰水體往缺口流過來
                     //（delta 鎖已釋放，只短暫持 water_queue 鎖，不 await，守鎖紀律）。
                     enqueue_water_around(x, y, z);
+                    // 告示牌 v1（ROADMAP 740）：破壞告示牌時清掉牌面文字，不留孤兒浮字。
+                    // 牌子方塊本身走後面「其餘實心方塊掉落自身」的通用路徑歸還背包（不在此 continue）。
+                    if matches!(target_block, Block::Sign) {
+                        if let Some(ev) = hub().sign.write().unwrap().clear(&vsign::pos_key(x, y, z)) {
+                            vsign::append_sign(&ev);
+                            broadcast_sign(x, y, z, "");
+                        }
+                    }
                     // 木門（開）v1（ROADMAP 693）：非實心但可破壞 → 退還木門（關）。
                     if matches!(target_block, Block::DoorOpen) {
                         let bid = Block::DoorClosed as u8; // 43
@@ -3198,6 +3246,22 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({ "t": "chest_view", "x": x, "y": y, "z": z, "items": items }).to_string(),
                 ));
+            }
+
+            // ── 告示牌 v1（ROADMAP 740）：寫／改寫牌面文字 ────────────────────────────────
+            // 鎖序：delta 讀（驗方塊/reach）→ 釋 → sign 寫（存字）→ 釋 → 鎖外 IO + 廣播；
+            // 循序不巢狀，守 prod-deadlock 鐵律。
+            Ok(ClientMsg::SignSet { x, y, z, text }) => {
+                let Some((px, py, pz)) = player_pos(my_id) else { continue; };
+                let target = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
+                if !matches!(target, Block::Sign) { continue; }
+                if !voxel::can_break(&hub().deltas.read().unwrap(), px, py, pz, x, y, z) { continue; }
+                // 清洗玩家輸入（去控制字元、截長度）；空字串＝清空牌面。
+                let clean = vsign::sanitize_text(&text);
+                let ev = hub().sign.write().unwrap().set(&vsign::pos_key(x, y, z), clean.clone());
+                vsign::append_sign(&ev);
+                // 廣播給所有人（含自己），前端據此更新／移除該座標的浮字。
+                broadcast_sign(x, y, z, &clean);
             }
 
             // 木門 v1（ROADMAP 693）：右鍵切換門的開/關狀態。

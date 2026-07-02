@@ -86,6 +86,9 @@ const BAKED_POTATO = 64;
 // 植樹造林 v1（ROADMAP 738）——砍天然樹葉有機率掉樹苗(65)，種在土地上約 150 秒長成一株樹。
 // 樹苗既是背包物品也是可放置方塊（item_id == block_id），是玩家第一個可再生木材來源。
 const SAPLING = 65;
+// 告示牌 v1（ROADMAP 740）——2 木板合成，放置後右鍵寫一行短字，浮在牌上人人看得見。
+// 既是背包物品也是可放置方塊（item_id == block_id）。
+const SIGN = 66;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -161,6 +164,7 @@ const COLOR = {
   [BAKED_POTATO]:   [0.72, 0.55, 0.32], // 烤地薯——烤到焦香的暖土褐，比生馬鈴薯更深更熟
   // 植樹造林 v1（ROADMAP 738）——嫩黃綠，比草地/樹葉更亮更嫩，一眼認出是剛種下的小苗
   [SAPLING]:        [0.52, 0.74, 0.30], // 樹苗——鮮嫩黃綠，抽芽中的幼苗感
+  [SIGN]:           [0.62, 0.44, 0.25], // 告示牌——溫潤木牌棕（比木板稍深），一看就是塊立起來的木牌
 };
 
 const DEBUG = location.search.includes("debug");
@@ -742,6 +746,71 @@ function setSpriteText(sprite, text, bubble) {
   if (sprite.material.map) sprite.material.map.dispose();
   sprite.material.map = fresh.material.map;
   sprite.material.needsUpdate = true;
+}
+
+// ── 告示牌 v1（ROADMAP 740）：牌面文字浮在世界裡，所有人看得見 ─────────────────────
+// 文字內容以座標鍵記於 signTexts，實體 sprite 記於 signSprites（掛在世界固定位置，非跟人）。
+const signTexts = new Map();   // "x,y,z" -> 文字
+const signSprites = new Map(); // "x,y,z" -> THREE.Sprite
+
+// 把一段文字切成最多 max 行、每行 per 字（用 Array.from 正確處理中日文等多位元組字）。
+function wrapSignLines(text, per, max) {
+  const chars = Array.from(text);
+  const lines = [];
+  for (let i = 0; i < chars.length && lines.length < max; i += per) {
+    lines.push(chars.slice(i, i + per).join(""));
+  }
+  if (lines.length === 0) lines.push("");
+  return lines;
+}
+
+// 產生一塊木牌樣式的文字 sprite（比名牌寬、可容兩行，深木底＋暖白字，一看就是塊牌子）。
+function makeSignSprite(text) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256; canvas.height = 96;
+  const ctx = canvas.getContext("2d");
+  // 木牌底 + 邊框（純畫，不用外部素材）。
+  ctx.fillStyle = "rgba(120,84,48,0.96)";
+  ctx.fillRect(8, 12, 240, 72);
+  ctx.lineWidth = 4; ctx.strokeStyle = "rgba(70,46,24,0.96)";
+  ctx.strokeRect(8, 12, 240, 72);
+  // 文字（最多兩行、每行約 12 字；置中）。
+  ctx.font = "bold 26px system-ui, sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = "#fdf3e0";
+  const lines = wrapSignLines(text, 12, 2);
+  const lh = 30, startY = 48 - (lines.length - 1) * lh / 2;
+  lines.forEach((ln, i) => ctx.fillText(ln, 128, startY + i * lh));
+  const tex = new THREE.CanvasTexture(canvas); tex.anisotropy = 4;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: true }));
+  sprite.scale.set(2.0, 0.75, 1);
+  return sprite;
+}
+
+// 套用一面牌子的文字（新增/改字/清除）。text 空字串＝移除牌面浮字（牌子被破壞或清空）。
+function applySign(x, y, z, text) {
+  const key = x + "," + y + "," + z;
+  const clean = (text || "").trim();
+  const old = signSprites.get(key);
+  if (!clean) {
+    signTexts.delete(key);
+    if (old) { scene.remove(old); if (old.material.map) old.material.map.dispose(); old.material.dispose(); signSprites.delete(key); }
+    return;
+  }
+  signTexts.set(key, clean);
+  if (old) {
+    // 改字：換掉貼圖即可，不重建 sprite。
+    const fresh = makeSignSprite(clean);
+    if (old.material.map) old.material.map.dispose();
+    old.material.map = fresh.material.map;
+    old.material.needsUpdate = true;
+  } else {
+    const sprite = makeSignSprite(clean);
+    // 浮在牌子方塊正上方一點，讀起來像立在牌上。
+    sprite.position.set(x + 0.5, y + 1.05, z + 0.5);
+    scene.add(sprite);
+    signSprites.set(key, sprite);
+  }
 }
 
 // ── embodied 靠近說話 v1：自己頭上的對話泡泡（本地驅動，說話立即冒、計時消失）─────
@@ -1889,6 +1958,8 @@ const BLOCK_NAME = {
   [BAKED_POTATO]: "烤地薯",
   // 植樹造林 v1（ROADMAP 738）
   [SAPLING]: "樹苗",
+  // 告示牌 v1（ROADMAP 740）
+  [SIGN]: "告示牌",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -2145,6 +2216,7 @@ const BLOCK_HARDNESS = {
   [AETHER_ORE]: 2.8,   // 乙太礦——世界最硬最深的礦，比煤/鐵礦更耐敲（需鎬加速）
   [AETHER_LAMP]: 0.3,  // 乙太燈——玻璃燈罩，輕鬆敲下回收
   [SAPLING]: 0.2,      // 樹苗——嫩苗一敲即落（比照作物幼苗），輕鬆回收重種
+  [SIGN]: 0.5,         // 告示牌——一塊木牌，輕鬆敲下回收（文字一併消失）
 };
 function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
 
@@ -2273,6 +2345,11 @@ function placeAtTarget() {
     ws.send(JSON.stringify({ t: "toggle_door", x: target.bx, y: target.by, z: target.bz }));
     return null;
   }
+  // 告示牌互動（ROADMAP 740）：右鍵對準既有告示牌 → 跳出輸入框編輯牌面文字。
+  if (getRaw(target.bx, target.by, target.bz) === SIGN) {
+    promptSignEdit(target.bx, target.by, target.bz, false);
+    return null;
+  }
   // 床互動：右鍵對準床 → 傳送 sleep_in_bed，夜晚時伺服器把時鐘撥到隔天黎明。
   if (getRaw(target.bx, target.by, target.bz) === BED) {
     ws.send(JSON.stringify({ t: "sleep_in_bed", x: target.bx, y: target.by, z: target.bz }));
@@ -2315,7 +2392,22 @@ function placeAtTarget() {
   if (px === Math.floor(player.x) && pz === Math.floor(player.z) &&
       (py === Math.floor(player.y) || py === Math.floor(player.y + 1))) return null;
   ws.send(JSON.stringify({ t: "place", x: px, y: py, z: pz, b: selectedBlock() }));
+  // 告示牌 v1（ROADMAP 740）：剛放下一塊新牌子 → 立刻讓玩家寫上文字。
+  // place 與 sign_set 走同一條 socket、伺服器循序處理，故 sign_set 到達時牌子已立好。
+  if (selectedBlock() === SIGN) {
+    promptSignEdit(px, py, pz, true);
+  }
   return { x: px, y: py, z: pz };
+}
+
+// 告示牌 v1（ROADMAP 740）：跳出輸入框讓玩家寫／改牌面文字，送 sign_set 給伺服器。
+// isNew=true 時預設空白（剛放下的新牌）；否則帶入目前牌面文字供編輯。取消（null）不送。
+function promptSignEdit(x, y, z, isNew) {
+  const key = x + "," + y + "," + z;
+  const cur = isNew ? "" : (signTexts.get(key) || "");
+  const input = window.prompt("告示牌文字（最多 30 字，留空可清除）：", cur);
+  if (input === null) return;
+  ws.send(JSON.stringify({ t: "sign_set", x, y, z, text: input }));
 }
 
 // ── 輸入 ───────────────────────────────────────────────────────────────────
@@ -2670,6 +2762,12 @@ function connect() {
       // 箱子操作失敗（數量不足等）。
       showErr(m.reason || "箱子操作失敗");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "sign_sync") {
+      // 告示牌 v1（ROADMAP 740）：連線時一次收到世界上所有牌面文字，全部掛上。
+      for (const s of (m.signs || [])) applySign(s.x, s.y, s.z, s.text || "");
+    } else if (m.t === "sign") {
+      // 告示牌 v1：某面牌子的文字變了（寫字/清空/破壞）——單面更新。
+      applySign(m.x, m.y, m.z, m.text || "");
     } else if (m.t === "sleep_ok") {
       // 床 v1：睡覺成功——時鐘已跳到黎明（time_of_day 隨下一份 players 快照自動更新天色）。
       showMsg("😴 睡了一覺，天亮了！");
@@ -3045,6 +3143,8 @@ const RECIPES_JS = [
   { id: "bed", name: "床", inputs: [[PLANK, 3], [LEAVES, 3]], output_block: BED, out_count: 1 },
   // 冰晶燈 v1（冰晶合成）：1 冰晶 + 2 玻璃 → 1 冰晶燈（雪原遠征的建造回報）
   { id: "ice_lantern", name: "冰晶燈", inputs: [[ICE_CRYSTAL, 1], [GLASS, 2]], output_block: ICE_LANTERN, out_count: 1 },
+  // 告示牌 v1（ROADMAP 740）：2 木板 → 1 告示牌（唯一多重集，避開 4 木板＝工作台/木門的遮蔽）
+  { id: "sign", name: "告示牌", inputs: [[PLANK, 2]], output_block: SIGN, out_count: 1 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
@@ -3979,4 +4079,10 @@ window.__voxel = {
   DOOR_CLOSED, DOOR_OPEN,
   // ── 床 v1 QA 用 ──
   BED,
+  // ── 告示牌 v1 QA 用（ROADMAP 740）──
+  SIGN,
+  applySign(x, y, z, text) { applySign(x, y, z, text); },
+  get signTexts() { return Object.fromEntries(signTexts); },
+  get signSpriteCount() { return signSprites.size; },
+  wrapSignLines(text, per, max) { return wrapSignLines(text, per, max); },
 };
