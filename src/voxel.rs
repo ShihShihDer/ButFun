@@ -195,6 +195,11 @@ pub enum Block {
     /// **可再生的木材來源**，也讓空地／沙漠能被綠化成自己種的森林。可放置（種下）、可再破壞回收樹苗。
     /// id 65：既是背包物品也是世界方塊（沿用「可放置方塊 item_id == block_id」慣例）。
     Sapling = 65,
+    /// 告示牌（告示牌 v1，ROADMAP 740）——背包 2×2 合成：3 木板 → 1 告示牌；放置後右鍵互動
+    /// 寫上一行短字（如「露娜的家」「往礦坑↓」），文字浮在牌子上、所有人都看得見，讓玩家能親手
+    /// 命名、標記、導覽自己的基地。實心方塊、可放置、破壞回收（文字一併清除）。
+    /// id 66：既是背包物品也是世界方塊（沿用「可放置方塊 item_id == block_id」慣例）。
+    Sign = 66,
 }
 
 impl Block {
@@ -272,6 +277,7 @@ impl Block {
             58 => Some(Block::AetherOre),
             59 => Some(Block::AetherLamp),
             65 => Some(Block::Sapling),
+            66 => Some(Block::Sign),
             _ => None,
         }
     }
@@ -287,7 +293,7 @@ impl Block {
             Block::CoalOre | Block::IronOre | Block::IronIngot | Block::IronBlock |
             Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed | Block::Bed |
             Block::Cactus | Block::Snow | Block::IceCrystal | Block::IceLantern |
-            Block::AetherOre | Block::AetherLamp | Block::Sapling
+            Block::AetherOre | Block::AetherLamp | Block::Sapling | Block::Sign
         )
     }
 }

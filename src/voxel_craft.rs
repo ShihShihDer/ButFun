@@ -202,6 +202,16 @@ pub const RECIPES: &[Recipe] = &[
         output_block: 57,             // Block::IceLantern = 57
         output_count: 1,
     },
+    // ── 告示牌 v1（ROADMAP 740）：2 木板 → 1 告示牌（輕巧配方，背包 2×2 即可）──────────────
+    // 便宜好上手＝立牌標記基地這件事一開始就伸手可得；放置後右鍵寫字。
+    // 用 2 木板的唯一多重集（避開 4 木板＝工作台/木門、3 木板＝梯子等既有配方的遮蔽）。
+    Recipe {
+        id: "sign",
+        name_zh: "告示牌",
+        inputs: &[(8, 2)],            // 2 木板 → 1 告示牌
+        output_block: 66,             // Block::Sign = 66
+        output_count: 1,
+    },
 ];
 
 /// 工作台 3×3 合成配方（需放置工作台方塊後右鍵開啟面板才能合成）。
@@ -517,6 +527,7 @@ mod tests {
                 || r.output_block == 43  // 木門（DoorClosed，ROADMAP 693）
                 || r.output_block == 45  // 床（Block::Bed）
                 || r.output_block == 57 // 冰晶燈（Block::IceLantern，冰晶合成 v1）
+                || r.output_block == 66 // 告示牌（Block::Sign，告示牌 v1 ROADMAP 740）
                 || r.output_block == crate::voxel_fishing::FISHING_ROD_ID; // 釣竿（垂釣 v1，純物品 id=60）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
