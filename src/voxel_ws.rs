@@ -554,6 +554,69 @@ fn over_scope_enforcement_block(text: &str) -> Option<String> {
     ))
 }
 
+// ── 願望漏斗（維護者親測痛點：「我說真希望有玻璃，NPC 聽到就記下」）────────────
+// 心願原本只從**居民的 LLM 回覆**抽（extract_desire(&reply)）——玩家親口說願望時，
+// 小模型常閃躲、不複述願望句 → 心願種不上，全看措辭運氣（實測引導 3 次失敗 2 輪）。
+// 修法：玩家對居民說話時，對**玩家原文**跑同一套 extract_desire——抽到就直接種進
+// 被指名居民的心願（sparked_by=玩家名），不再依賴她的回覆。她的回覆抽到的仍照舊
+// （兩來源並存；同一輪玩家直說優先——該輪略過回覆萃取，避免她隨口一句「我想…」
+// 馬上蓋掉玩家親口的願望）。寒暄不觸發（extract_desire 觸發詞 + 最短長度雙重把關）。
+
+/// 玩家親口許願被種上時，注入 system prompt 的情境提示——讓她的回覆脈絡「知道」
+/// 旅人剛許了願，自然回應「我記下了 / 我也想要」而不是無感。純函式、可測、零 LLM。
+fn player_wish_prompt_note(desire: &str) -> String {
+    format!(
+        "[情境提示] 旅人剛剛親口許了一個願望：「{desire}」。這個願望已經留在你心裡、\
+        成為你現在的心願了——請在回覆中自然地呼應它（例如告訴旅人你把這個願望記下了、\
+        或說你也很想要它），不要無視這個願望。"
+    )
+}
+
+// ── 技能問答強制注入（真進化補強：她被問「你會什麼」要講得出親手發明的技能）────
+// #944 已在對話 prompt 常駐注入技能名清單（vinvent::skills_talk_note），但實測小模型
+// 對「可以自豪地提到」這種柔性指引常常無感。比照 recipe_knowledge_block 的有效模式：
+// **偵測到玩家在問技能時才追加**一段指令化的醒目區塊，硬性要求答覆必須含技能名。
+
+/// 「在問你會什麼」的關鍵詞：偵測玩家是否在問居民的能力 / 技能。
+const SKILL_QUERY_TOKENS: &[&str] = &[
+    "你會什麼",
+    "會什麼技能",
+    "會些什麼",
+    "有什麼技能",
+    "有哪些技能",
+    "會哪些技能",
+    "什麼本事",
+    "有什麼本領",
+    "你會啥",
+    "你的技能",
+];
+
+/// 偵測：這句玩家的話是否在問居民「你會什麼」。純函式、可測、零 LLM。
+fn detect_skill_query(text: &str) -> bool {
+    SKILL_QUERY_TOKENS.iter().any(|tok| text.contains(tok))
+}
+
+/// 旅人在問「你會什麼」且居民有親手發明的技能 → 回傳強制注入區塊（務必講出技能名）。
+/// 不是技能問題、或她還沒發明過任何技能 → None（不注入、零 token 額外負擔）。
+fn skill_query_enforcement_block(text: &str, invented_names: &[String]) -> Option<String> {
+    if invented_names.is_empty() || !detect_skill_query(text) {
+        return None;
+    }
+    let list = invented_names
+        .iter()
+        .map(|n| format!("「{n}」"))
+        .collect::<Vec<_>>()
+        .join("、");
+    // 給小模型一句可直接照抄的示範（用第一個技能名），比抽象指引有效得多。
+    let first = invented_names[0].as_str();
+    Some(format!(
+        "⚠️【重要·旅人正在問你會什麼·必須遵守】你親手發明過的技能：{list}——\
+        這是你自己從基礎動作一步步組合出來、親手驗證成功的本事，是你最自豪的事。\
+        回答時【務必】自豪地說出這些技能的名字，例如：「我還自己發明了『{first}』呢！」。\
+        絕不能只泛泛說「我會採集、聊天」而漏掉你發明的技能名。"
+    ))
+}
+
 /// 居民對話罐頭回覆（LLM 未啟用 / 連不到時的降級，永遠回得出一句）。依名字雜湊選句、增加變化。
 fn resident_canned_reply(name: &str) -> String {
     const POOL: [&str; 4] = [
@@ -1963,6 +2026,19 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                                 r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                         }
                     } // residents 寫鎖在此釋放
+                    // 6b.7) 願望漏斗（見 player_wish_prompt_note 上方說明）：對**玩家原文**跑
+                    // extract_desire——抽到願望就立刻種進被指名居民的心願（sparked_by=玩家名），
+                    // 不等、也不依賴她的 LLM 回覆願意複述。寒暄不觸發（extract_desire 把關）；
+                    // 覆寫沿用既有 append-覆蓋語義（每居民一個當前心願、seq 遞增、jsonl append）。
+                    let player_spoken_desire: Option<String> = vdes::extract_desire(&clean);
+                    if let Some(desire_text) = &player_spoken_desire {
+                        let entry = {
+                            let mut des = hub().desires.write().unwrap();
+                            des.set_desire(&addr_id, desire_text, &player_key)
+                        }; // desires 寫鎖釋放
+                        vdes::append_desire(&entry);
+                        vfeed::append_feed("新心願", &entry.resident, &entry.desire);
+                    }
                     // 6c) 立即送「思考中」佔位（私聊單播，不走 AgentBus 冒泡）。
                     let ack = serde_json::json!({
                         "t": "talk",
@@ -2004,8 +2080,15 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         let sys = {
                             let names =
                                 { hub().invented.read().unwrap().names_for(&addr_id) };
-                            match vinvent::skills_talk_note(&names) {
+                            let sys = match vinvent::skills_talk_note(&names) {
                                 Some(note) => format!("{sys}\n\n{note}"),
+                                None => sys,
+                            };
+                            // 被明確問「你會什麼」→ 追加指令化醒目區塊（比照配方問答的
+                            // detect+注入有效模式）——常駐柔性清單小模型常無感，實測要
+                            // 偵測到問題再硬性要求，她才真的講得出發明技能名。
+                            match skill_query_enforcement_block(&clean_for_llm, &names) {
+                                Some(block) => format!("{sys}\n\n{block}"),
                                 None => sys,
                             }
                         };
@@ -2015,6 +2098,12 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             format!("{sys}\n\n[情境提示] 你剛才因為心情寂寞主動走到旅人面前、希望有人陪你說說話。現在旅人終於開口了——請在回覆中帶著感激與溫暖，說你心情好多了。")
                         } else {
                             sys
+                        };
+                        // 願望漏斗：玩家這句話剛親口許願、且已種進她的心願（6b.7）→
+                        // 讓回覆脈絡知道這件事，她會自然回應「我記下了 / 我也想要」而不是無感。
+                        let sys = match player_spoken_desire.as_deref() {
+                            Some(d) => format!("{sys}\n\n{}", player_wish_prompt_note(d)),
+                            None => sys,
                         };
                         let reply: String = match tokio::time::timeout(
                             Duration::from_secs(TALK_LLM_TIMEOUT_SECS),
@@ -2045,13 +2134,17 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             vmem::append_memory(&entry);
                         }
                         // 心願萃取（記憶驅動行為 v1）：回覆浮現「我想…」→ 更新心願並落地。
-                        if let Some(desire_text) = vdes::extract_desire(&reply) {
-                            let new_desire = {
-                                let mut des = hub().desires.write().unwrap();
-                                des.set_desire(&addr_id, &desire_text, &pkey)
-                            }; // 心願寫鎖在此釋放
-                            vdes::append_desire(&new_desire);
-                            vfeed::append_feed("新心願", &new_desire.resident, &new_desire.desire);
+                        // 願望漏斗：這一輪玩家已親口許願種上（6b.7）→ 略過回覆萃取（玩家直說
+                        // 優先，避免她隨口一句「我想…」馬上蓋掉玩家親口的願望）；下一輪照舊。
+                        if player_spoken_desire.is_none() {
+                            if let Some(desire_text) = vdes::extract_desire(&reply) {
+                                let new_desire = {
+                                    let mut des = hub().desires.write().unwrap();
+                                    des.set_desire(&addr_id, &desire_text, &pkey)
+                                }; // 心願寫鎖在此釋放
+                                vdes::append_desire(&new_desire);
+                                vfeed::append_feed("新心願", &new_desire.resident, &new_desire.desire);
+                            }
                         }
                         // 孤獨尋伴致謝 + 贈木頭（ROADMAP 678）：清除尋伴狀態、給 1 木頭、通知前端。
                         // 鎖序：residents 寫（即釋）→ inventory 寫（即釋）；不持鎖 await。
@@ -5917,6 +6010,66 @@ mod tests {
         assert!(block.contains("一個人"), "應表示一個人做不到：{block}");
         // 普通閒聊不產出（不燒多餘 token）
         assert!(over_scope_enforcement_block("你在哪裡採石頭").is_none());
+    }
+
+    // ── 願望漏斗：玩家親口的願望直接種進被指名居民的心願 ─────────────────────
+
+    #[test]
+    fn player_speech_seeds_desire_with_player_as_sparker() {
+        // 玩家原文（維護者實測原句）→ extract_desire 抽得到 → 種進被指名居民，
+        // sparked_by=玩家名——完全不依賴她的 LLM 回覆願不願意複述。
+        let clean = "露娜，真希望有玻璃啊";
+        let desire = vdes::extract_desire(clean).expect("玩家親口的願望該被抽到");
+        assert!(desire.contains("玻璃"), "{desire}");
+        let mut store = DesireStore::new();
+        let entry = store.set_desire("vox_res_0", &desire, "旅人小明");
+        assert_eq!(entry.sparked_by, "旅人小明", "啟發者應是玩家本人");
+        let got = store.get_desire("vox_res_0").expect("心願應立刻種上");
+        assert!(got.desire.contains("玻璃"), "心願應含玻璃：{}", got.desire);
+    }
+
+    #[test]
+    fn greeting_does_not_seed_desire() {
+        // 寒暄不觸發（extract_desire 觸發詞 + 最短長度把關）→ 6b.7 不會種心願。
+        assert!(vdes::extract_desire("你好呀，露娜！今天天氣真好").is_none());
+        assert!(vdes::extract_desire("嗨！最近過得如何？").is_none());
+        assert!(vdes::extract_desire("謝謝你幫我採木頭").is_none());
+    }
+
+    #[test]
+    fn player_wish_prompt_note_mentions_wish_and_acknowledgement() {
+        // 注入的情境提示要含願望原文 + 引導「記下了」的呼應，讓她不無感。
+        let note = player_wish_prompt_note("真希望有玻璃");
+        assert!(note.contains("真希望有玻璃"), "應含願望原文：{note}");
+        assert!(note.contains("記下"), "應引導回應「記下了」：{note}");
+        assert!(note.contains("不要無視"), "應硬性要求不可無感：{note}");
+    }
+
+    // ── 技能問答強制注入：被問「你會什麼」講得出發明技能 ─────────────────────
+
+    #[test]
+    fn skill_query_enforcement_block_contains_skill_names() {
+        let names = vec!["燒玻璃".to_string(), "疊石成磚".to_string()];
+        let block = skill_query_enforcement_block("你會什麼技能呀？", &names)
+            .expect("問技能且有發明技能 → 應強制注入");
+        assert!(block.contains("「燒玻璃」"), "應含第一個技能名：{block}");
+        assert!(block.contains("「疊石成磚」"), "應含第二個技能名：{block}");
+        assert!(block.contains("務必"), "應指令化硬性要求：{block}");
+        assert!(block.contains("『燒玻璃』"), "應含可照抄的示範句：{block}");
+    }
+
+    #[test]
+    fn skill_query_enforcement_block_none_when_not_asked_or_no_skill() {
+        let names = vec!["燒玻璃".to_string()];
+        // 沒發明過技能 → 不注入（就算在問）。
+        assert!(skill_query_enforcement_block("你會什麼", &[]).is_none());
+        // 一般閒聊 → 不注入（省 token）。
+        assert!(skill_query_enforcement_block("今天天氣真好", &names).is_none());
+        assert!(skill_query_enforcement_block("你在做什麼", &names).is_none());
+        // 各種問法都該被偵測到。
+        assert!(skill_query_enforcement_block("你會些什麼呢", &names).is_some());
+        assert!(skill_query_enforcement_block("妳有什麼本事", &names).is_some());
+        assert!(skill_query_enforcement_block("你有哪些技能", &names).is_some());
     }
 
     #[test]
