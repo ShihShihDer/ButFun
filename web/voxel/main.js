@@ -67,6 +67,8 @@ const POTATO_SEEDED = 50, POTATO_MATURE = 51;
 const POTATO_SEEDS = 52, POTATO = 53;
 // 仙人掌 v1（生物群系第一刀）——沙漠群系程序生成，2格高；採集後可放置
 const CACTUS = 54;
+// 雪 v1（生物群系第二刀）——雪原群系地表覆蓋（取代草）；採集後可放置，白色建材
+const SNOW = 55;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -127,6 +129,8 @@ const COLOR = {
   [POTATO_MATURE]:  [0.78, 0.64, 0.38], // 成熟馬鈴薯——土黃偏棕，可收割
   // 生物群系第一刀
   [CACTUS]:         [0.25, 0.58, 0.22], // 仙人掌——飽和深綠，沙漠中一眼認出
+  // 生物群系第二刀
+  [SNOW]:           [0.94, 0.96, 0.99], // 雪——近純白帶極淡藍，一眼認出的覆雪地表
 };
 
 const DEBUG = location.search.includes("debug");
@@ -1834,6 +1838,8 @@ const BLOCK_NAME = {
   // 第三種作物 v1
   [POTATO_SEEDED]: "馬鈴薯幼苗", [POTATO_MATURE]: "成熟馬鈴薯",
   [POTATO_SEEDS]: "馬鈴薯種子", [POTATO]: "馬鈴薯",
+  // 生物群系第一刀/第二刀
+  [CACTUS]: "仙人掌", [SNOW]: "雪",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
