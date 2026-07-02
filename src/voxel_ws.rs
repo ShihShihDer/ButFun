@@ -71,6 +71,7 @@ use crate::voxel_weather as vweather;
 use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
 use crate::voxel_teach as vteach;
+use crate::voxel_sleep as vsleep;
 use crate::voxel_welcome as vwelcome;
 use crate::voxel_resident_trade as vrtrade;
 use crate::voxel_milestones::{self as vmiles, MilestoneStore};
@@ -262,6 +263,10 @@ struct VoxelResident {
     /// 她還不會的，自發種下心願（sparked_by=好奇心）交給發明引擎——
     /// **不用玩家 push 她也會自己成長**。每位獨立、比例式錯開。
     curiosity_timer: f32,
+    /// 是否正在睡覺（日夜作息·睡覺 v1，ROADMAP 739）：深夜回到自家附近會躺下睡著，
+    /// 睡著時停下一切閒晃／社交／採集／建造、名牌旁顯示 💤，天亮（離開夜間時段）才醒。
+    /// 記憶體前置、不持久化、零 migration（重啟後大不了當晚重睡一次，無資料風險）。
+    asleep: bool,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -793,6 +798,8 @@ fn init_residents() -> Vec<VoxelResident> {
             // 好奇心（第三刀）：首次計時比例式錯開；測試模式（BUTFUN_CURIOSITY_SECS）
             // 縮短基準時錯開間距同步縮短，隔離實測等得到全鏈。
             curiosity_timer: vinvent::curiosity_interval_for(i, vinvent::curiosity_base_secs()),
+            // 出生時醒著；入睡由夜間作息迴圈決定（ROADMAP 739）。
+            asleep: false,
         });
     }
     out
@@ -1040,8 +1047,10 @@ fn players_snapshot_json() -> String {
     }; // 玩家讀鎖在此釋放
     // 先讀居民快照（drop）→ 再讀心願（drop）→ 組合成 ResidentView，嚴守循序取鎖、不巢狀。
     // 同時收集心情補助快照（ROADMAP 681），供後續 mood_map 計算套用。
-    let (resident_snaps, snapshot_mood_boosts): (
+    // 同時收集睡眠快照（ROADMAP 739）：睡著的居民名牌旁改顯示 💤，蓋過一般心情 emoji。
+    let (resident_snaps, snapshot_mood_boosts, snapshot_asleep): (
         Vec<(String, &'static str, f32, f32, f32, f32, String)>,
+        HashMap<String, bool>,
         HashMap<String, bool>,
     ) = {
         let rs = hub().residents.read().unwrap();
@@ -1051,7 +1060,9 @@ fn players_snapshot_json() -> String {
             .collect();
         let boosts: HashMap<String, bool> =
             rs.iter().map(|r| (r.id.clone(), r.mood_boost_secs > 0.0)).collect();
-        (snaps, boosts)
+        let asleep: HashMap<String, bool> =
+            rs.iter().map(|r| (r.id.clone(), r.asleep)).collect();
+        (snaps, boosts, asleep)
     }; // 居民讀鎖在此釋放
     // 計算每位居民的心情 emoji（ROADMAP 676）：短鎖讀 bonds → drop → 短鎖讀 memory → drop。
     let resident_id_strs: Vec<String> = (0..RESIDENT_COUNT).map(|i| format!("vox_res_{i}")).collect();
@@ -1080,7 +1091,12 @@ fn players_snapshot_json() -> String {
                 } else {
                     base_tier
                 };
-                let emoji = voxel_mood::mood_emoji(tier).to_string();
+                // 睡覺 v1（739）：睡著時名牌旁顯示 💤，蓋過心情 emoji（一眼看出「這位在睡」）。
+                let emoji = if snapshot_asleep.get(&rid).copied().unwrap_or(false) {
+                    vsleep::SLEEP_MOOD_EMOJI.to_string()
+                } else {
+                    voxel_mood::mood_emoji(tier).to_string()
+                };
                 (rid, emoji)
             })
             .collect()
@@ -3738,6 +3754,10 @@ fn tick_residents(dt: f32) {
     let speed_mult = vt::wander_mult(phase);
     let extra_wait = vt::rest_wait_extra(phase);
     let is_night = vt::is_sleepable(phase);
+    // 深夜（入夜過渡之後的正夜）才是居民真正躺下睡覺的時段（ROADMAP 739）：
+    // Evening 仍有夜生活、只縮小活動；到 Night 才就寢。醒來則沿用 is_night 判定
+    // （只要離開夜間系列＝天色轉亮就起床）。
+    let is_deep_night = matches!(phase, TimePhase::Night);
     // 下雨天氣（700）接上居民行為（ROADMAP 701）：短讀鎖取目前是否下雨。
     let raining = *hub().weather.read().unwrap();
     // 雨剛開始的一次性旗標：consume-once（讀到就清回 false），供下方觸發居民雨天反應台詞。
@@ -4001,6 +4021,25 @@ fn tick_residents(dt: f32) {
             // 旁聽搭話冷卻倒數（embodied 靠近說話 v1）：到期後才可再因旁聽搭話。
             if r.overhear_cooldown > 0.0 {
                 r.overhear_cooldown -= dt;
+            }
+
+            // 日夜作息·睡覺 v1（ROADMAP 739）：睡著中的居民只做兩件事——天亮就醒、
+            // 否則安靜地待在家落重力躺著，跳過本 tick 一切社交／採集／建造／閒晃。
+            // （入睡的判定在下方閒晃區塊「抵達自家」時觸發。）
+            if r.asleep {
+                if vsleep::should_wake(is_night, r.asleep) {
+                    // 天色轉亮 → 醒來：睡飽神清氣爽（心情提升一格）、冒一句愉快早安。
+                    r.asleep = false;
+                    r.mood_boost_secs = r.mood_boost_secs.max(vsleep::WAKE_MOOD_BOOST_SECS);
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    r.say = vsleep::wake_line(pick).to_string();
+                    r.say_timer = SAY_SECS;
+                    // 不 continue：醒來後這一 tick 就讓她照常展開新的一天。
+                } else {
+                    // 仍是夜裡：安靜睡著，只落重力、不做任何行為。
+                    vr::gravity_step(&world, &mut r.body, dt);
+                    continue;
+                }
             }
 
             // 待回應倒數：另一位居民搭話後，延遲幾秒再自然回應（零 LLM、程式化台詞）。
@@ -4532,16 +4571,34 @@ fn tick_residents(dt: f32) {
                     } else {
                         vr::HOME_RADIUS
                     };
-                    let (wcx, wcz) = vr::wander_center(
-                        r.body.x, r.body.z,
-                        center_x, center_z,
-                        wander_r,
-                    );
-                    let (tx, tz) = vr::wander_target(wcx, wcz, angle, radius);
-                    r.target_x = tx;
-                    r.target_z = tz;
-                    // 日夜作息 v1：夜間額外多停一段（extra_wait），讓居民在原地駐足更久。
-                    r.wait_timer = 1.0 + rand::random::<f32>() * 3.0 + extra_wait;
+                    // 日夜作息·睡覺 v1（ROADMAP 739）：深夜已回到自家附近的遮蔽居民，
+                    // 抵達閒晃點時偶爾就此躺下睡覺——不再挑新閒晃點，改成安靜靜止（下一 tick
+                    // 起由上方睡眠 gate 接管，只落重力、跳過一切行為，直到天亮才醒）。
+                    let near_home = vsleep::near_home_center(r.body.x, r.body.z, center_x, center_z);
+                    if vsleep::should_fall_asleep(
+                        is_deep_night, sheltering, near_home, r.asleep, rand::random::<f32>(),
+                    ) {
+                        r.asleep = true;
+                        // 就地睡下：目標設在腳邊、清掉閒晃意圖。
+                        r.target_x = r.body.x;
+                        r.target_z = r.body.z;
+                        if r.say.is_empty() {
+                            let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                            r.say = vsleep::fall_asleep_line(pick).to_string();
+                            r.say_timer = SAY_SECS;
+                        }
+                    } else {
+                        let (wcx, wcz) = vr::wander_center(
+                            r.body.x, r.body.z,
+                            center_x, center_z,
+                            wander_r,
+                        );
+                        let (tx, tz) = vr::wander_target(wcx, wcz, angle, radius);
+                        r.target_x = tx;
+                        r.target_z = tz;
+                        // 日夜作息 v1：夜間額外多停一段（extra_wait），讓居民在原地駐足更久。
+                        r.wait_timer = 1.0 + rand::random::<f32>() * 3.0 + extra_wait;
+                    }
                 }
             }
 
@@ -4623,22 +4680,23 @@ fn tick_residents(dt: f32) {
         }
 
         // 2c) 社交發起掃描：每 tick 最多一對居民發起對話（低頻、有冷卻、不干擾物理主迴圈）。
-        // 先收集快照（idx, id, name, x, z, social_cooldown, is_saying）避免借用衝突。
-        let snaps: Vec<(usize, String, &'static str, f32, f32, f32, bool)> =
+        // 先收集快照（idx, id, name, x, z, social_cooldown, is_saying, asleep）避免借用衝突。
+        // 睡覺 v1（739）：睡著的居民不發起也不被搭話（別讓她在夢裡開口）。
+        let snaps: Vec<(usize, String, &'static str, f32, f32, f32, bool, bool)> =
             residents.iter().enumerate().map(|(i, r)| {
-                (i, r.id.clone(), r.name, r.body.x, r.body.z, r.social_cooldown, !r.say.is_empty())
+                (i, r.id.clone(), r.name, r.body.x, r.body.z, r.social_cooldown, !r.say.is_empty(), r.asleep)
             }).collect();
 
         let mut init_pair: Option<(usize, usize)> = None;
         'scan: for i in 0..snaps.len() {
-            // 發起者：冷卻到期、目前沒在說話。
-            if snaps[i].6 || snaps[i].5 > 0.0 {
+            // 發起者：冷卻到期、目前沒在說話、沒睡著。
+            if snaps[i].6 || snaps[i].5 > 0.0 || snaps[i].7 {
                 continue;
             }
             for j in 0..snaps.len() {
                 if i == j { continue; }
-                // 目標：沒在說話（避免打斷對方）、且在範圍內。
-                if snaps[j].6 { continue; }
+                // 目標：沒在說話（避免打斷對方）、沒睡著、且在範圍內。
+                if snaps[j].6 || snaps[j].7 { continue; }
                 if !vrel::pair_within_range(snaps[i].3, snaps[i].4, snaps[j].3, snaps[j].4, vrel::SOCIAL_RANGE) {
                     continue;
                 }
