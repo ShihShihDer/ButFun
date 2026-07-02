@@ -263,6 +263,12 @@ struct VoxelResident {
     /// 她還不會的，自發種下心願（sparked_by=好奇心）交給發明引擎——
     /// **不用玩家 push 她也會自己成長**。每位獨立、比例式錯開。
     curiosity_timer: f32,
+    /// 發明失敗計數（記憶體，重啟歸零）：key = goal_block_id，value = 連敗次數。
+    /// 達 [`vinvent::INVENT_BACKOFF_THRESHOLD`] 次 → 啟動退避計時、好奇心不再挑這個目標。
+    invent_fail_counts: HashMap<u8, u8>,
+    /// 發明退避計時（秒，記憶體，重啟歸零）：key = goal_block_id，value = 剩餘退避秒數。
+    /// > 0 時好奇心的目錄排除此 goal_block、不種下心願；歸零後恢復可試。
+    invent_backoff: HashMap<u8, f32>,
     /// 是否正在睡覺（日夜作息·睡覺 v1，ROADMAP 739）：深夜回到自家附近會躺下睡著，
     /// 睡著時停下一切閒晃／社交／採集／建造、名牌旁顯示 💤，天亮（離開夜間時段）才醒。
     /// 記憶體前置、不持久化、零 migration（重啟後大不了當晚重睡一次，無資料風險）。
@@ -798,6 +804,9 @@ fn init_residents() -> Vec<VoxelResident> {
             // 好奇心（第三刀）：首次計時比例式錯開；測試模式（BUTFUN_CURIOSITY_SECS）
             // 縮短基準時錯開間距同步縮短，隔離實測等得到全鏈。
             curiosity_timer: vinvent::curiosity_interval_for(i, vinvent::curiosity_base_secs()),
+            // 退避（#972 防鬼打牆）：記憶體，重啟歸零，初始全空。
+            invent_fail_counts: HashMap::new(),
+            invent_backoff: HashMap::new(),
             // 出生時醒著；入睡由夜間作息迴圈決定（ROADMAP 739）。
             asleep: false,
         });
@@ -3980,6 +3989,11 @@ fn tick_residents(dt: f32) {
             if r.curiosity_timer > 0.0 {
                 r.curiosity_timer -= dt;
             }
+            // 退避計時倒數（#972 防鬼打牆）：到期的目標移除，好奇心下輪可再試。
+            r.invent_backoff.retain(|_, secs| {
+                *secs -= dt;
+                *secs > 0.0
+            });
             // 聚會逾時放棄：等太久等不到其他成員到齊，就散去、回到平常閒晃。
             if r.clique_meet.is_some() {
                 r.clique_wait += dt;
@@ -5716,7 +5730,7 @@ fn tick_residents(dt: f32) {
                     })
                 }; // desires 讀鎖釋放
                 if !player_wish_pending && vinvent::curiosity_gate(rand::random()) {
-                    // 排除清單＝技能庫已會的目標 ∪ 背包已有的產物（有了就不必好奇）。
+                    // 排除清單＝技能庫已會的目標 ∪ 背包已有的產物 ∪ 退避中的目標。
                     let mut excluded = {
                         let inv = hub().invented.read().unwrap();
                         inv.known_goals_for(&rid)
@@ -5728,6 +5742,13 @@ fn tick_residents(dt: f32) {
                                 .extend(bag.iter().filter(|(_, c)| **c > 0).map(|(b, _)| *b));
                         }
                     } // res_inv 讀鎖釋放
+                    // 退避中的目標：這位居民連敗 N 次的目標暫時跳過，讓她換個方向探索。
+                    {
+                        let residents = hub().residents.read().unwrap();
+                        if let Some(r) = residents.iter().find(|r| r.id == rid) {
+                            excluded.extend(r.invent_backoff.keys().copied());
+                        }
+                    } // residents 讀鎖釋放
                     let catalog = vinvent::possibility_catalog(&excluded);
                     // 確定性種子：她此刻的位置 bits——同居民不同時刻挑到不同樣、可重現。
                     let seed = (rx as i64 as u64) ^ ((rz as i64 as u64) << 20);
@@ -6448,6 +6469,14 @@ fn advance_invent_run(
                         return; // 這輪去採；材料入背包後，下個 agency tick 再推進。
                     }
                     None => {
+                        // 擴大半徑後仍找不到資源 → 快速誠實失敗（別等逾時）。
+                        // Feed 一句有人味的「這附近找不到…」，比沉默更有感。
+                        let res_name = resource.display_name();
+                        vfeed::append_feed(
+                            "採集受阻",
+                            rname,
+                            &vinvent::backoff_no_resource_feed(&run.goal_name, res_name),
+                        );
                         finish_invent_run(rid, rname, run, false, say_updates);
                         return;
                     }
@@ -6626,7 +6655,41 @@ fn finish_invent_run(
                 mem.add_memory(rid, vdes::SELF_SPARK, &vinvent::fail_lesson(&run.goal_name))
             }; // memory 寫鎖釋放
             vmem::append_memory(&entry);
-            say_updates.push((rid.to_string(), "唔……這次沒成，再想想。".to_string()));
+
+            // 退避計數（#972 防鬼打牆）：連敗 N 次同一目標 → 進退避、換方向探索。
+            let entered_backoff = {
+                let mut residents = hub().residents.write().unwrap();
+                if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                    let count = r.invent_fail_counts.entry(run.goal_block).or_insert(0);
+                    *count += 1;
+                    if *count >= vinvent::INVENT_BACKOFF_THRESHOLD {
+                        *count = 0; // 重置計數，退避到期後可重試
+                        r.invent_backoff
+                            .insert(run.goal_block, vinvent::INVENT_BACKOFF_SECS);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }; // residents 寫鎖釋放
+
+            if entered_backoff {
+                // 進退避：Feed 一句有人味的，並冒泡提示換目標。
+                vfeed::append_feed(
+                    "發明退避",
+                    rname,
+                    &vinvent::backoff_switch_feed(&run.goal_name),
+                );
+                say_updates.push((rid.to_string(), vinvent::backoff_switch_line(&run.goal_name)));
+                tracing::info!(
+                    resident = %rid, goal = %run.goal_name,
+                    "好奇心退避：連敗達門檻，暫停嘗試此目標"
+                );
+            } else {
+                say_updates.push((rid.to_string(), "唔……這次沒成，再想想。".to_string()));
+            }
         }
     }
 }
