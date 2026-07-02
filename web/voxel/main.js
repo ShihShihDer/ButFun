@@ -69,6 +69,8 @@ const POTATO_SEEDS = 52, POTATO = 53;
 const CACTUS = 54;
 // 雪 v1（生物群系第二刀）——雪原群系地表覆蓋（取代草）；採集後可放置，白色建材
 const SNOW = 55;
+// 冰晶 v1（雪原冰晶採集）——雪原群系地表稀疏珍寶，1格高；採集後可放置，送居民有珍愛反應
+const ICE_CRYSTAL = 56;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -131,6 +133,7 @@ const COLOR = {
   [CACTUS]:         [0.25, 0.58, 0.22], // 仙人掌——飽和深綠，沙漠中一眼認出
   // 生物群系第二刀
   [SNOW]:           [0.94, 0.96, 0.99], // 雪——近純白帶極淡藍，一眼認出的覆雪地表
+  [ICE_CRYSTAL]:    [0.55, 0.82, 0.95], // 冰晶——飽和冰藍，在雪白地表上一眼認出的閃亮珍寶
 };
 
 const DEBUG = location.search.includes("debug");
@@ -1839,7 +1842,7 @@ const BLOCK_NAME = {
   [POTATO_SEEDED]: "馬鈴薯幼苗", [POTATO_MATURE]: "成熟馬鈴薯",
   [POTATO_SEEDS]: "馬鈴薯種子", [POTATO]: "馬鈴薯",
   // 生物群系第一刀/第二刀
-  [CACTUS]: "仙人掌", [SNOW]: "雪",
+  [CACTUS]: "仙人掌", [SNOW]: "雪", [ICE_CRYSTAL]: "冰晶",
 };
 let selectedSlot = 0; // HOTBAR 索引
 const hotbarEl = document.getElementById("hotbar");
@@ -2088,6 +2091,7 @@ const BLOCK_HARDNESS = {
   [DOOR_CLOSED]: 0.8,  // 木門（關）——木製，輕鬆打破
   [DOOR_OPEN]:   0.8,  // 木門（開）——同材質，可破壞
   [BED]: 0.6,  // 床——布料+木架，輕鬆打破
+  [ICE_CRYSTAL]: 1.2,  // 冰晶——結晶偏脆但需點時間敲下，比礦石快、比石頭稍慢
 };
 function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
 

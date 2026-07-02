@@ -2529,6 +2529,8 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 let pick = (vfarm::now_secs() as usize).wrapping_add(item_id as usize);
                 let thanks = if item_wish_hit {
                     vgift::item_wish_thanks_line(rname, iname, &name)
+                } else if vgift::is_treasure_gift(item_id) {
+                    vgift::treasure_gift_thanks_line(&name, affinity, pick)
                 } else if vgift::is_food_gift(item_id) {
                     vgift::food_gift_thanks_line(&name, affinity, pick)
                 } else {
