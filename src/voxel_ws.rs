@@ -4889,9 +4889,17 @@ fn tick_residents(dt: f32) {
                 let goals = hub().goals.read().unwrap();
                 (goals.done_kinds(&rid), goals.expansion_count(&rid))
             }; // goals 讀鎖釋放
-            let desired_kind: Option<vbuild::BuildKind> = {
+            // 心願真的成真 v1（ROADMAP 720）：連同「誰種下這個心願」一起讀出——只有真人玩家
+            // 的話（非居民自我啟發 `SELF_SPARK`）種下的心願，蓋成真時才指名感謝那位玩家。
+            let (desired_kind, desired_by): (Option<vbuild::BuildKind>, Option<String>) = {
                 let des = hub().desires.read().unwrap();
-                des.get_desire(&rid).and_then(|d| vbuild::classify_desire(&d.desire))
+                match des.get_desire(&rid) {
+                    Some(d) => (
+                        vbuild::classify_desire(&d.desire),
+                        (d.sparked_by != vdes::SELF_SPARK).then(|| d.sparked_by.clone()),
+                    ),
+                    None => (None, None),
+                }
             }; // desires 讀鎖釋放
             let gathered = {
                 let residents = hub().residents.read().unwrap();
@@ -4905,15 +4913,18 @@ fn tick_residents(dt: f32) {
                 NextActivity::Build(kind) => {
                     // 建造位置以「家域中心」為基準、依已蓋數量散開（不疊在舊建物上）。
                     let done_count = done_kinds.len();
-                    start_build(&rid, rname, kind, done_count, &mut say_updates, false);
+                    // 只有這座建物真的是心願所指的種類，才把啟發者記進計畫（供完工時指名感謝）。
+                    let inspired_by = if desired_kind == Some(kind) { desired_by.clone() } else { None };
+                    start_build(&rid, rname, kind, done_count, &mut say_updates, false, inspired_by);
                 }
                 NextActivity::Expand(kind) => {
                     // 擴建 v1：基礎四種都蓋完了，但這位居民仍懷著具體渴望（哪怕對應種類早蓋過）——
                     // 此前這份渴望會被 `next_build_goal` 直接忽略，永遠石沉大海；現在用
                     // `build_offset` 原本就多留的兩個格位（見 MAX_EXPANSIONS）再蓋一座，
                     // 讓「你的話真的有後果」延伸到擴建，不再是空頭支票。
+                    // 擴建不指名感謝（同一份心願只在首次蓋成時感謝一次，避免無限次重複記功）。
                     let expand_seq = vskill::BUILD_PROGRESSION.len() + expansion_count as usize;
-                    start_build(&rid, rname, kind, expand_seq, &mut say_updates, true);
+                    start_build(&rid, rname, kind, expand_seq, &mut say_updates, true, None);
                 }
                 NextActivity::Wander => {
                     // 全部蓋完：探訪鄰居 v1（ROADMAP 671）——偶爾出發拜訪另一位居民。
@@ -4978,7 +4989,7 @@ fn tick_residents(dt: f32) {
         }
 
         // ── 有計畫：彈下一塊放置 + 持久化 + 進度冒泡 ──────────────────────────
-        let (next_block, kind_name, kind_str, progress_pct, plan_done, plan_anchor, plan_expansion) = {
+        let (next_block, kind_name, kind_str, progress_pct, plan_done, plan_anchor, plan_expansion, plan_inspired_by) = {
             let mut builds = hub().builds.write().unwrap();
             if let Some(plan) = builds.get_plan_mut(&rid) {
                 let bb = plan.pop_next();
@@ -4988,9 +4999,10 @@ fn tick_residents(dt: f32) {
                 let done = plan.is_done();
                 let anchor = (plan.cx, plan.cy, plan.cz);
                 let exp = plan.expansion;
-                (bb, kn, ks, pct, done, anchor, exp)
+                let inspired = plan.inspired_by.clone();
+                (bb, kn, ks, pct, done, anchor, exp, inspired)
             } else {
-                (None, String::new(), String::new(), 100, true, (0, 0, 0), false)
+                (None, String::new(), String::new(), 100, true, (0, 0, 0), false, None)
             }
         }; // builds 寫鎖釋放
 
@@ -5053,7 +5065,25 @@ fn tick_residents(dt: f32) {
             // 完工廣播：WS 廣播給所有在線玩家（看得到「世界在長大」），慶賀泡泡同步排入 say_updates。
             let _ = hub().tx.send(std::sync::Arc::new(vannounce::build_complete_msg(&rname, &kind_name)));
             if let Some(kind) = vbuild::BuildKind::from_str(&kind_str) {
-                say_updates.push((rid.clone(), vannounce::build_complete_say(&rname, kind)));
+                match &plan_inspired_by {
+                    // 心願真的成真 v1（ROADMAP 720）：這座建物是某位玩家的話種下的心願，
+                    // 不用通用完工台詞，改指名感謝——「你的話真的有後果」的證據時刻。
+                    Some(player) => {
+                        say_updates.push((rid.clone(), vannounce::wish_come_true_say(&rname, kind, player)));
+                        let _ = hub().tx.send(std::sync::Arc::new(vannounce::wish_come_true_msg(
+                            &rname, &kind_name, player,
+                        )));
+                        vfeed::append_feed("心願成真", &rname, &format!("因為{player}的話，蓋好了{kind_name}"));
+                        let entry = {
+                            let mut mem = hub().memory.write().unwrap();
+                            mem.add_memory(&rid, player, &vannounce::wish_come_true_memory(&kind_name))
+                        }; // memory 寫鎖釋放
+                        vmem::append_memory(&entry);
+                    }
+                    None => {
+                        say_updates.push((rid.clone(), vannounce::build_complete_say(&rname, kind)));
+                    }
+                }
             }
             // 蓋完一個 → 重置採集計數，下一輪先採料再蓋下一種（有進展感）。
             {
@@ -5401,6 +5431,7 @@ fn start_build(
     offset_seq: usize,
     say_updates: &mut Vec<(String, String)>,
     is_expansion: bool,
+    inspired_by: Option<String>,
 ) {
     let (ox, oz) = vskill::build_offset(offset_seq);
     let (hx, hz) = {
@@ -5419,7 +5450,7 @@ fn start_build(
         if builds.has_plan(rid) {
             None // double-check 並發安全
         } else {
-            Some(builds.new_plan(rid, kind, bx, by, bz, is_expansion))
+            Some(builds.new_plan(rid, kind, bx, by, bz, is_expansion, inspired_by))
         }
     }; // builds 寫鎖釋放
     if let Some(p) = plan {
