@@ -1677,6 +1677,73 @@ if (skillsEl) {
   if (closeBtn) closeBtn.addEventListener("click", closeSkills);
 }
 
+// ── 玩家里程碑（ROADMAP 724）──────────────────────────────────────────────────
+// 居民有技能簿（719）、交情網（708）可回頭翻閱自己的成長，玩家的療癒循環
+// （採集→合成→蓋造→種田→贈禮→交易→熟識→安眠）至今卻沒有任何一處能回頭看看
+// 「我走了多遠」。本面板純讀取既有 `/voxel/milestones` 資料，達成瞬間另由
+// `milestone_unlocked` WS 訊息觸發慶祝提示（見下方 handler）。
+const milesEl = document.getElementById("milestonesPanel");
+const milesBodyEl = document.getElementById("milestonesBody");
+const milesBtnEl = document.getElementById("milestonesBtn");
+
+/** 重新渲染里程碑清單。
+ * @param {Array<{id:string,name_zh:string,desc_zh:string,icon:string,earned:boolean}>} rows
+ */
+function renderMilestonesPanel(rows) {
+  if (!milesBodyEl) return;
+  if (!rows || rows.length === 0) {
+    milesBodyEl.innerHTML = '<div class="skills-empty">目前沒有里程碑資料。</div>';
+    return;
+  }
+  const earnedCount = rows.filter((r) => r.earned).length;
+  let html = '<div class="miles-progress">已達成 ' + earnedCount + ' / ' + rows.length + '</div>';
+  for (const row of rows) {
+    html += '<div class="miles-row' + (row.earned ? ' miles-earned' : ' miles-locked') + '">' +
+      '<span class="miles-icon">' + escHtml(row.icon || "🏅") + '</span>' +
+      '<span class="miles-text"><span class="miles-name">' + escHtml(row.name_zh) + '</span>' +
+      '<span class="miles-desc">' + escHtml(row.desc_zh) + '</span></span>' +
+      '</div>';
+  }
+  milesBodyEl.innerHTML = html;
+}
+
+/** 向後端抓這位玩家最新的里程碑達成狀態並重新渲染。 */
+async function refreshMilestones() {
+  if (!milesBodyEl) return;
+  try {
+    const resp = await fetch(`/voxel/milestones?player=${encodeURIComponent(myName)}`);
+    if (!resp.ok) throw new Error("milestones fetch failed: " + resp.status);
+    const rows = await resp.json();
+    renderMilestonesPanel(rows);
+  } catch (err) {
+    milesBodyEl.innerHTML = '<div class="skills-empty">無法讀取里程碑資料。</div>';
+  }
+}
+
+let milesVisible = false;
+
+/** 開啟玩家里程碑面板（低頻資料，開啟時抓一次即可，不必背景輪詢）。 */
+function openMilestones() {
+  if (!milesEl) return;
+  milesVisible = true;
+  milesEl.style.display = "flex";
+  refreshMilestones();
+}
+
+/** 關閉玩家里程碑面板。 */
+function closeMilestones() {
+  milesVisible = false;
+  if (milesEl) milesEl.style.display = "none";
+}
+
+if (milesBtnEl) milesBtnEl.addEventListener("click", () => {
+  milesVisible ? closeMilestones() : openMilestones();
+});
+if (milesEl) {
+  const closeBtn = document.getElementById("milestonesClose");
+  if (closeBtn) closeBtn.addEventListener("click", closeMilestones);
+}
+
 // ── 準心選取 + 高亮外框（MCPE 風）──────────────────────────────────────────────
 // 選中方塊的線框外框（略大一點點避免 z-fighting）。對準時顯示、沒對到時隱藏。
 const highlight = new THREE.LineSegments(
@@ -2529,6 +2596,10 @@ function connect() {
       // 床 v1：白天/黎明/黃昏睡不著。
       showErr(m.reason || "睡不著");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "milestone_unlocked") {
+      // 玩家里程碑 v1（ROADMAP 724）：只有自己看得到的私人慶祝提示；若面板剛好開著同步刷新。
+      showMsg((m.icon || "🏅") + " 成就達成：" + (m.name_zh || "里程碑") + "！");
+      if (milesVisible) refreshMilestones();
     }
   };
   ws.onclose = () => { wsReady = false; showErr("連線中斷，重新連線中…"); setTimeout(connect, 1500); };
@@ -3633,6 +3704,12 @@ window.__voxel = {
   get skillsVisible() { return skillsVisible; },
   refreshSkills() { return refreshSkills(); },
   renderSkillsPanel(rows) { renderSkillsPanel(rows); return skillsBodyEl && skillsBodyEl.innerHTML; },
+  // ── 玩家里程碑 QA 用（ROADMAP 724）──
+  openMilestones() { return openMilestones(); },
+  closeMilestones() { closeMilestones(); },
+  get milestonesVisible() { return milesVisible; },
+  refreshMilestones() { return refreshMilestones(); },
+  renderMilestonesPanel(rows) { renderMilestonesPanel(rows); return milesBodyEl && milesBodyEl.innerHTML; },
   // ── 好感度 QA 用（ROADMAP 656）──
   affinityEmoji(count) { return affinityEmoji(count); },
   get myAffinity() { return Object.fromEntries(myAffinity); },
