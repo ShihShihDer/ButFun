@@ -3158,7 +3158,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     }).to_string())).await;
                     continue;
                 }
-                // 2) 觸及範圍內（沿用互動統一 reach，和客戶端瞄準一致；設計觸及見 vfish::FISH_REACH）。
+                // 2) 觸及範圍內（沿用互動統一 reach，和客戶端瞄準一致；垂釣本就隔岸拋線）。
                 if !voxel::in_reach(px, py, pz, x, y, z) { continue; }
                 // 3) 目標要是水面（來源水或流動水）——delta 讀鎖快照即釋。
                 let target_blk = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
@@ -3176,13 +3176,9 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                     continue;
                 }
                 // 5) 記下上鉤時刻（3~7 秒後，隨機有變化），存進 pending（寫鎖即釋）。
+                // roll 走真隨機（同專案其他機率骰慣例），避免玩家用時間/座標精算上鉤時機。
                 let now = vfarm::now_secs();
-                let roll = now
-                    .wrapping_add(x.unsigned_abs() as u64)
-                    .wrapping_add(y.unsigned_abs() as u64)
-                    .wrapping_add(z.unsigned_abs() as u64)
-                    .wrapping_add(name.len() as u64);
-                let wait = vfish::bite_secs(roll);
+                let wait = vfish::bite_secs(rand::random::<u64>());
                 let ready_at = now + wait;
                 {
                     hub().pending_fish.write().unwrap().insert(name.clone(), (ready_at, x, y, z));
@@ -3197,7 +3193,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 let now = vfarm::now_secs();
                 // 1) 取這竿的上鉤時刻（pending_fish 讀鎖即釋）。
                 let pending = hub().pending_fish.read().unwrap().get(&name).copied();
-                let Some((ready_at, fx, _fy, fz)) = pending else {
+                let Some((ready_at, _fx, _fy, _fz)) = pending else {
                     let _ = out_tx.send(Message::Text(serde_json::json!({
                         "t": "fish_fail", "reason": "你還沒拋竿呢。"
                     }).to_string())).await;
@@ -3212,10 +3208,8 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 }
                 // 3) 時機到——移除這竿（寫鎖即釋），釣起漁獲。
                 { hub().pending_fish.write().unwrap().remove(&name); }
-                let catch_roll = now
-                    .wrapping_add(fx.unsigned_abs() as u64)
-                    .wrapping_add(fz.unsigned_abs() as u64);
-                let fish_id = vfish::pick_catch(catch_roll);
+                // 稀有度走真隨機（同專案慣例），玩家無法用收竿時機精算穩定釣起稀有魚。
+                let fish_id = vfish::pick_catch(rand::random::<u64>());
                 // 4) 漁獲進背包（inventory 寫鎖即釋 → append_inv → inv_update 單播）。
                 let entry = hub().inventory.write().unwrap().give(&name, fish_id, 1);
                 vinv::append_inv(&entry);
