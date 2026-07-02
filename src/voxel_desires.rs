@@ -21,6 +21,11 @@ const DESIRE_MIN_CHARS: usize = 4;
 /// （非玩家聊天）萌生的心願用這個標記，供顯示/思考 prompt 判斷來源、選用不同措辭。
 pub const SELF_SPARK: &str = "自己";
 
+/// `sparked_by` 的好奇心哨兵值——北極星第三刀「好奇心自主學習」：好奇心迴圈自發
+/// 種下的心願用這個標記（非玩家、非禱告），供顯示/思考 prompt 判斷來源、
+/// 且蓋家完工的「指名感謝玩家」邏輯知道這不是一位真人玩家。
+pub const CURIOSITY_SPARK: &str = "好奇心";
+
 /// 一筆居民心願（持久化單位）。
 ///
 /// 刻意不寫系統時鐘（對齊本專案避 `SystemTime::now` 慣例）：用 `seq` 當相對先後。
