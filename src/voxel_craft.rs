@@ -343,6 +343,16 @@ pub const FURNACE_RECIPES: &[Recipe] = &[
         output_block: 63,
         output_count: 1,
     },
+    Recipe {
+        id: "smelt_potato",
+        name_zh: "烤地薯",
+        // 1 生馬鈴薯（POTATO_ID=53）→ 1 烤地薯（BAKED_POTATO_ID=64）。把種田的收成
+        // 送進熔爐烤熟，變成居民最愛的美味贈禮，讓「種田→烹飪→餽贈」也連成一圈
+        // （比照 smelt_fish 之於垂釣）。
+        inputs: &[(53, 1)],
+        output_block: 64,
+        output_count: 1,
+    },
 ];
 
 /// 依 id 找背包配方（2×2，找不到回 None）。
@@ -528,11 +538,12 @@ mod tests {
             );
             assert!(r.output_count > 0, "工作台配方「{}」產出數量應 > 0", r.id);
         }
-        // 熔爐冶煉配方產出 id（8~17 建材、22=IronIngot、63=烤魚食物）
+        // 熔爐冶煉配方產出 id（8~17 建材、22=IronIngot、63=烤魚、64=烤地薯 食物）
         for r in FURNACE_RECIPES {
             let ok = (r.output_block >= 8 && r.output_block <= 17)
                 || r.output_block == 22
-                || r.output_block == 63;
+                || r.output_block == 63
+                || r.output_block == 64;
             assert!(
                 ok,
                 "熔爐配方「{}」產出 id={} 超出範圍",
@@ -616,6 +627,19 @@ mod tests {
     }
 
     #[test]
+    fn smelt_potato_bakes_raw_into_baked() {
+        // 熔爐把 1 生馬鈴薯（53）烤成 1 烤地薯（64）——種田→烹飪→餽贈循環的中間一環。
+        let r = find_furnace_recipe("smelt_potato").unwrap();
+        assert_eq!(r.inputs, &[(53, 1)], "需 1 生馬鈴薯（POTATO_ID=53）");
+        assert_eq!(r.output_block, 64, "產出烤地薯（BAKED_POTATO_ID=64）");
+        assert_eq!(r.output_count, 1);
+        // 烤地薯配方只在熔爐表，不在背包 / 工作台表（要放置熔爐才能烤）。
+        assert!(find_recipe("smelt_potato").is_none());
+        assert!(find_workbench_recipe("smelt_potato").is_none());
+        assert!(find_any_recipe("smelt_potato").is_some());
+    }
+
+    #[test]
     fn smelt_glass_better_yield_than_bag() {
         // 熔爐 2沙→3玻璃（1.5:1）> 背包 2沙→1玻璃（0.5:1）
         let furnace = find_furnace_recipe("smelt_glass").unwrap();
@@ -661,6 +685,7 @@ mod tests {
         store.give("旅人", 56, 10); // IceCrystal（冰晶燈配方用）
         store.give("旅人", 58, 10); // AetherOre（乙太燈配方用，乙太礦脈 v1）
         store.give("旅人", 61, 10); // FISH（smelt_fish 烤魚配方用，生小魚）
+        store.give("旅人", 53, 10); // POTATO（smelt_potato 烤地薯配方用，生馬鈴薯）
         // 火把配方：1 木頭(5) + 1 煤礦(20) → 4 火把（Wood/CoalOre 已加，數量足夠）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);
