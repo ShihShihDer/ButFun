@@ -3766,9 +3766,25 @@ fn tick_residents(dt: f32) {
                             hub().return_gifts.read().unwrap().already_given(&r.id, nearest_name)
                         }; // return_gifts 讀鎖在此釋放
                         if vret::should_return_gift(affinity, already) {
-                            let (bid, qty) = vret::pick_return_gift(&r.id);
-                            let iname = vret::return_item_name(bid);
-                            let msg = vret::return_gift_message(r.name, nearest_name, iname);
+                            // 回禮 v2（ROADMAP 728）：優先送她「親手採集到的東西」——短鎖讀她的
+                            // 採集背包，挑她採得最多的那種材料（不扣減：只反映不消耗，避免干擾她的
+                            // 發明湊料）。背包空 → 回退到 667 憑空的木頭/種子選項。
+                            let from_stock = {
+                                let inv = hub().res_inv.read().unwrap();
+                                inv.get(&r.id).and_then(vret::pick_from_stock)
+                            }; // res_inv 讀鎖在此釋放
+                            let (bid, qty, msg) = if let Some((bid, qty)) = from_stock {
+                                let iname = vgift::item_name_zh(bid);
+                                (
+                                    bid,
+                                    qty,
+                                    vret::return_gift_message_gathered(r.name, nearest_name, iname),
+                                )
+                            } else {
+                                let (bid, qty) = vret::pick_return_gift(&r.id);
+                                let iname = vret::return_item_name(bid);
+                                (bid, qty, vret::return_gift_message(r.name, nearest_name, iname))
+                            };
                             r.say = msg.chars().take(40).collect();
                             r.say_timer = SAY_SECS;
                             return_gift_events.push((
@@ -4480,7 +4496,9 @@ fn tick_residents(dt: f32) {
         vinv::append_inv(&inv_entry);
         // 廣播回禮事件（所有人收到；前端依 player 是否為自己決定是否顯示 toast）。
         let new_count = hub().inventory.read().unwrap().count(pname, *bid);
-        let iname = vret::return_item_name(*bid);
+        // 回禮 v2：物品名走 item_name_zh，涵蓋她採集背包裡的任意方塊（煤/冰晶…），
+        // 對木頭/種子的回退選項也給出相同字串，broadcast 與 Feed 一致。
+        let iname = vgift::item_name_zh(*bid);
         let msg = serde_json::json!({
             "t": "return_gift",
             "resident_id": rid,

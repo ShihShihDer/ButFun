@@ -9,7 +9,7 @@
 //! - 純邏輯層（無 hub / 鎖 / async），由 voxel_ws.rs 包進鎖後呼叫。
 //! - 持久化到 data/voxel_return_gifts.jsonl（append-only，重啟後仍記得送過）。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +40,50 @@ pub fn return_item_name(block_id: u8) -> &'static str {
 pub fn pick_return_gift(resident_id: &str) -> (u8, u32) {
     let idx = resident_id.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize));
     RETURN_GIFT_OPTIONS[idx % RETURN_GIFT_OPTIONS.len()]
+}
+
+/// 回禮 v2（ROADMAP 728）送出的份量上限——她只勻出一點點，不掏空自己的採集背包。
+pub const RETURN_GIFT_GATHERED_CAP: u32 = 2;
+
+/// 從居民**自己的採集背包**挑一份回禮（純函式、可測）——回禮 v2「她親手採到的東西」。
+///
+/// 核心信念延伸：667 的回禮送的是憑空的木頭/種子，玩家完全看不見居民這陣子「真的在做的事」
+/// （她的採集背包 `res_inv` 至今只餵她自己的發明/合成，玩家沒有任何管道享受到她的勞動成果）。
+/// 本函式讓回禮改為**反映她背包裡真的有的東西**——她採得最多的那種材料（她最投入的成果），
+/// 最多 [`RETURN_GIFT_GATHERED_CAP`] 份。她若跋涉遠方採到珍寶（如冰晶），也可能就這樣分給你。
+///
+/// 挑選規則（確定性、可測）：數量最多者優先；同量時 `block_id` 小者優先（穩定排序）。
+/// 忽略 Air（0）與數量為 0 的項。背包空 / 無有效項 → `None`（呼叫端回退到 667 的憑空選項）。
+///
+/// **刻意不扣減背包**：比照 667 本就不從任何來源扣料；且採集背包同時餵著居民正在湊料的
+/// 發明/合成計畫（`voxel_invent`），扣減會打亂她的目標——回禮只「反映」不「消耗」。
+pub fn pick_from_stock(bag: &HashMap<u8, u32>) -> Option<(u8, u32)> {
+    bag.iter()
+        .filter(|&(&b, &q)| b != 0 && q > 0)
+        .max_by(|&(ba, qa), &(bb, qb)| qa.cmp(qb).then_with(|| bb.cmp(ba)))
+        .map(|(&b, &q)| (b, q.min(RETURN_GIFT_GATHERED_CAP)))
+}
+
+/// 回禮 v2 的道謝台詞——強調「這是我親手採到的」，讓玩家感受到禮物來自居民真實的勞動。
+/// 確定性（依居民 ID 挑模板），零 LLM，字元 ≤ 40 剛好在泡泡框內。
+pub fn return_gift_message_gathered(
+    resident_name: &str,
+    player_name: &str,
+    item_name: &str,
+) -> String {
+    let idx = resident_name.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize));
+    let pool: &[&str] = &[
+        "{p}，這{i}是我親手採到的，送你。",
+        "{p}，我採到的{i}，分你一點，收下吧！",
+        "{p}，這是我自己採的{i}，給你留個念想。",
+        "{p}，我親手挖到的{i}，想第一個分給你。",
+    ];
+    pool[idx % pool.len()]
+        .replace("{p}", player_name)
+        .replace("{i}", item_name)
+        .chars()
+        .take(40)
+        .collect()
 }
 
 /// 回禮台詞（溫暖、帶名字，字元 ≤ 40 剛好在泡泡框內）。
@@ -223,6 +267,62 @@ mod tests {
         assert_eq!(return_item_name(5), "木頭");
         assert_eq!(return_item_name(14), "種子");
         assert_eq!(return_item_name(99), "小禮", "未知 id 退回「小禮」保守降級");
+    }
+
+    // ── 回禮 v2（ROADMAP 728）：pick_from_stock 純函式測試 ────────────────────────
+    #[test]
+    fn pick_from_stock_empty_is_none() {
+        let bag: HashMap<u8, u32> = HashMap::new();
+        assert_eq!(pick_from_stock(&bag), None, "空背包沒得送");
+    }
+
+    #[test]
+    fn pick_from_stock_ignores_air_and_zero() {
+        let mut bag = HashMap::new();
+        bag.insert(0u8, 99u32); // Air 不算
+        bag.insert(3u8, 0u32); // 數量 0 不算
+        assert_eq!(pick_from_stock(&bag), None, "只有 Air 與 0 量 → 無得送");
+    }
+
+    #[test]
+    fn pick_from_stock_picks_most_gathered() {
+        let mut bag = HashMap::new();
+        bag.insert(5u8, 1u32); // 木頭 ×1
+        bag.insert(20u8, 7u32); // 煤礦 ×7（採得最多）
+        bag.insert(3u8, 3u32); // 石頭 ×3
+        // 送採得最多的煤礦，但份量夾在上限。
+        assert_eq!(pick_from_stock(&bag), Some((20, RETURN_GIFT_GATHERED_CAP)));
+    }
+
+    #[test]
+    fn pick_from_stock_caps_quantity() {
+        let mut bag = HashMap::new();
+        bag.insert(56u8, 1u32); // 冰晶 ×1（少於上限 → 有幾送幾）
+        assert_eq!(pick_from_stock(&bag), Some((56, 1)), "存量少於上限時照存量送");
+    }
+
+    #[test]
+    fn pick_from_stock_tie_breaks_by_smaller_id() {
+        let mut bag = HashMap::new();
+        bag.insert(20u8, 4u32);
+        bag.insert(3u8, 4u32); // 同量 → block_id 小者（石頭 3）優先
+        assert_eq!(pick_from_stock(&bag), Some((3, RETURN_GIFT_GATHERED_CAP)));
+    }
+
+    #[test]
+    fn gathered_message_mentions_hand_picked() {
+        for i in 0..8 {
+            let rid = format!("vox_res_{i}");
+            let msg = return_gift_message_gathered(&rid, "旅人", "煤礦");
+            assert!(!msg.is_empty(), "{rid} 台詞不應空白");
+            assert!(msg.chars().count() <= 40, "{rid} 台詞超過 40 字");
+            assert!(msg.contains("旅人"), "{rid} 應帶玩家名");
+            assert!(msg.contains("煤礦"), "{rid} 應帶物品名");
+            assert!(
+                msg.contains("採") || msg.contains("挖"),
+                "{rid} 應強調親手採集：{msg}"
+            );
+        }
     }
 
     #[test]
