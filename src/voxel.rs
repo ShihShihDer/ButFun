@@ -172,6 +172,10 @@ pub enum Block {
     /// 雪（生物群系第二刀）——雪原群系地表覆蓋（取代草），程序生成，確定性。
     /// 純白覆雪地表，一眼認出的寒冷地帶；採集後可放置，可當白色建材。
     Snow = 55,
+    /// 冰晶簇（雪原冰晶採集 v1）——雪原群系地表偶有、程序生成、確定性；
+    /// 直徑 1 格、高 1 格的閃亮結晶，是寒冷雪原獨有的珍稀寶物。
+    /// 採集後可放置（冰藍裝飾方塊）；送給居民會換來格外驚喜的珍愛反應。
+    IceCrystal = 56,
 }
 
 impl Block {
@@ -244,6 +248,7 @@ impl Block {
             51 => Some(Block::PotatoMature),
             54 => Some(Block::Cactus),
             55 => Some(Block::Snow),
+            56 => Some(Block::IceCrystal),
             _ => None,
         }
     }
@@ -258,7 +263,7 @@ impl Block {
             Block::Workbench | Block::Furnace | Block::SmoothStone |
             Block::CoalOre | Block::IronOre | Block::IronIngot | Block::IronBlock |
             Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed | Block::Bed |
-            Block::Cactus | Block::Snow
+            Block::Cactus | Block::Snow | Block::IceCrystal
         )
     }
 }
@@ -494,6 +499,16 @@ const CACTUS_CELL: i32 = 5;
 /// 約 30% 的沙漠格有一株 → 視覺上「偶有」、稀疏點綴。
 const CACTUS_CHANCE: f32 = 0.30;
 
+/// 冰晶噪聲種子（雪原群系隨機結晶，與樹/地形/仙人掌獨立）。
+const ICE_SEED: u32 = SEED ^ 0x_1CE_C_A57;
+/// 冰晶格邊長（比照仙人掌的格設計：每格至多一株、株位落格內側 →
+/// 相鄰兩株至少隔 3 格，永遠是孤立小結晶，不會連成冰牆）。
+/// 用比仙人掌更大的格（7）讓冰晶更稀有——它是雪原的珍寶，不該遍地都是。
+const ICE_CELL: i32 = 7;
+/// 一格長出冰晶的機率門檻（per-cell hash < 此值才長）。
+/// 約 18% 的雪原格有一株 → 比仙人掌更稀疏，符合「珍稀寶物」定位。
+const ICE_CHANCE: f32 = 0.18;
+
 /// 世界座標 → 生物群系。確定性純函式，同座標永遠同群系。
 /// 出生保護圈（BIOME_SPAWN_RADIUS 內）強制草原，確保玩家出生有樹有草。
 pub fn biome_at_voxel(wx: i32, wz: i32) -> VoxelBiome {
@@ -671,6 +686,42 @@ fn cactus_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
     }
 }
 
+/// 雪原群系地表偶有的冰晶簇（雪原冰晶採集 v1）。
+/// 比照仙人掌的格設計：世界切成 ICE_CELL×ICE_CELL 的格、每格至多一株、
+/// 株位落格內側（offset 1..=3 of 0..=6）→ 相鄰兩株必隔 ≥3 格，永不連成冰牆。
+/// 只在雪原、非水邊；高 1 格（地表上方第 1 格）。
+fn ice_crystal_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
+    let cellx = wx.div_euclid(ICE_CELL);
+    let cellz = wz.div_euclid(ICE_CELL);
+    // 以格座標 hash 擲骰：本格是否有一株。
+    if hash2(cellx, cellz, ICE_SEED) >= ICE_CHANCE {
+        return None;
+    }
+    // 株位落在格內側，確保跨格株距 ≥3、本柱查詢 O(1)（只查自己這格）。
+    let ox = (1 + (hash2(cellx, cellz, ICE_SEED ^ 0x_7777_7777) * 3.0) as i32).clamp(1, 3);
+    let oz = (1 + (hash2(cellx, cellz, ICE_SEED ^ 0x_8888_8888) * 3.0) as i32).clamp(1, 3);
+    let tx = cellx * ICE_CELL + ox;
+    let tz = cellz * ICE_CELL + oz;
+    if wx != tx || wz != tz {
+        return None;
+    }
+    // 只在雪原群系（以株位查，同株永遠同判定）。
+    if biome_at_voxel(tx, tz) != VoxelBiome::Snow {
+        return None;
+    }
+    // 非水邊的雪地才長冰晶（近海平面是沙、視覺上不搭）。
+    let h = height_at(tx, tz);
+    if h <= SEA_LEVEL + 1 {
+        return None;
+    }
+    // 冰晶高 1 格（地表上方第 1 格）——小巧珍稀，不像仙人掌那樣成柱。
+    if wy == h + 1 {
+        Some(Block::IceCrystal)
+    } else {
+        None
+    }
+}
+
 /// 任一世界座標的方塊（確定性程序生成）。這是「無狀態世界」的核心查詢。
 pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
     // 地心一律基岩石頭（避免從世界底掉出去；本輪只生成 y>=0 的 chunk）。
@@ -690,6 +741,10 @@ pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
         // 沙漠群系：偶有仙人掌柱（地表上方 1–2 格）。
         if let Some(cb) = cactus_block_at(wx, wy, wz) {
             return cb;
+        }
+        // 雪原群系：偶有冰晶簇（地表上方第 1 格）。
+        if let Some(ib) = ice_crystal_block_at(wx, wy, wz) {
+            return ib;
         }
         return Block::Air;
     }
@@ -1560,6 +1615,86 @@ mod tests {
         assert!(Block::Snow.is_placeable(), "雪應可放置");
         assert_eq!(Block::from_u8(55), Some(Block::Snow));
         assert_eq!(Block::Snow as u8, 55);
+    }
+
+    #[test]
+    fn ice_crystal_is_solid_placeable_roundtrips() {
+        // 雪原冰晶採集 v1：冰晶方塊實心、可放置、u8 往返一致。
+        assert!(Block::IceCrystal.is_solid(), "冰晶應為實心");
+        assert!(Block::IceCrystal.is_placeable(), "冰晶應可放置");
+        assert_eq!(Block::from_u8(56), Some(Block::IceCrystal));
+        assert_eq!(Block::IceCrystal as u8, 56);
+    }
+
+    #[test]
+    fn snow_biome_has_ice_crystals() {
+        // 雪原群系中應能找到冰晶方塊（地表上方第 1 格）。
+        let mut found = false;
+        'outer: for x in -800..800i32 {
+            for z in -800..800i32 {
+                if biome_at_voxel(x, z) == VoxelBiome::Snow {
+                    let h = height_at(x, z);
+                    if h > SEA_LEVEL + 1 && block_at(x, h + 1, z) == Block::IceCrystal {
+                        found = true;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        assert!(found, "雪原群系中應能找到冰晶");
+    }
+
+    #[test]
+    fn ice_crystal_only_in_snow() {
+        // 冰晶只生在雪原，非雪原群系不得出現。
+        for x in -600..600i32 {
+            for z in (-600..600i32).step_by(37) {
+                let h = height_at(x, z);
+                for dy in 1..=2 {
+                    if block_at(x, h + dy, z) == Block::IceCrystal {
+                        assert_eq!(
+                            biome_at_voxel(x, z), VoxelBiome::Snow,
+                            "冰晶只能在雪原 @ ({}, {})", x, z
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ice_crystals_are_isolated() {
+        // 設計不變量：冰晶是「孤立小結晶」——任兩株水平距離（Chebyshev）≥ 2，
+        // 永不相鄰連成冰牆（格內側落點保證跨格株距 ≥3；同格只一株）。
+        let mut crystals: Vec<(i32, i32)> = Vec::new();
+        for x in -400..400i32 {
+            for z in -400..400i32 {
+                let h = height_at(x, z);
+                if h > SEA_LEVEL + 1 && block_at(x, h + 1, z) == Block::IceCrystal {
+                    crystals.push((x, z));
+                }
+            }
+        }
+        assert!(!crystals.is_empty(), "掃描範圍內應找得到冰晶");
+        for (i, &(x1, z1)) in crystals.iter().enumerate() {
+            for &(x2, z2) in &crystals[i + 1..] {
+                let cheb = (x1 - x2).abs().max((z1 - z2).abs());
+                assert!(cheb >= 2, "冰晶不得相鄰 @ ({x1},{z1}) vs ({x2},{z2})");
+            }
+        }
+    }
+
+    #[test]
+    fn ice_crystal_generation_is_deterministic() {
+        // 同座標重複查詢永遠同結果（無狀態世界的核心不變量）。
+        for x in [-333, -50, 0, 77, 512] {
+            for z in [-421, -12, 5, 199, 640] {
+                let h = height_at(x, z);
+                let a = block_at(x, h + 1, z);
+                let b = block_at(x, h + 1, z);
+                assert_eq!(a, b, "冰晶生成應確定性 @ ({x},{z})");
+            }
+        }
     }
 
     #[test]

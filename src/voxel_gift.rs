@@ -60,7 +60,39 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         51 => "成熟馬鈴薯",
         52 => "馬鈴薯種子",
         53 => "馬鈴薯",
+        54 => "仙人掌",
+        55 => "雪",
+        56 => "冰晶",
         _ => "物品",
+    }
+}
+
+/// 是否為「雪原珍寶」類禮物——目前只有冰晶（56）。
+/// 冰晶是雪原群系獨有、稀疏難尋的結晶，居民收到會有格外驚喜的珍愛反應。
+pub fn is_treasure_gift(block_id: u8) -> bool {
+    block_id == 56 // ICE_CRYSTAL（對齊 voxel::Block::IceCrystal）
+}
+
+/// 居民收到「雪原珍寶」（冰晶）時的珍愛道謝台詞（零 LLM，確定性）。
+///
+/// 比一般道謝更驚喜、更珍視——這是玩家跋涉到寒冷雪原才採得到的稀罕寶物。
+/// `pick` 由呼叫端提供（unix 秒 % 句池長度），確定性輪替。
+/// `player_name` 空字串 = 訪客模式，回不帶名字的句池。
+pub fn treasure_gift_thanks_line(player_name: &str, affinity: usize, pick: usize) -> String {
+    if affinity == 0 || player_name.is_empty() {
+        let pool: &[&str] = &[
+            "哇……這是雪原的冰晶嗎？好美，謝謝你！",
+            "冰晶！我聽說過這種寶物，卻是第一次親眼看到，謝謝你。",
+            "這麼閃亮的冰晶……你特地為我從雪原帶回來的嗎？",
+        ];
+        pool[pick % pool.len()].to_string()
+    } else {
+        let pool: &[&str] = &[
+            "{name}！你竟然為我跑到雪原採了冰晶……我會一輩子珍藏它。",
+            "{name}，這冰晶在陽光下閃著寒光，好珍貴——謝謝你想著我。",
+            "能收到{name}帶回來的雪原冰晶，我覺得自己是最幸福的人。",
+        ];
+        pool[pick % pool.len()].replace("{name}", player_name)
     }
 }
 
@@ -387,6 +419,53 @@ mod tests {
     fn food_gift_thanks_friend_contains_name() {
         let s = food_gift_thanks_line("小星", 5, 0);
         assert!(s.contains("小星"), "友人等級應含玩家名");
+    }
+
+    // ── 雪原冰晶採集 v1 ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_treasure_gift_only_ice_crystal() {
+        assert!(is_treasure_gift(56), "冰晶應為雪原珍寶");
+        // 其餘常見禮物都不是珍寶（食物/建材/礦石）。
+        for id in [19u8, 49, 53, 8, 9, 10, 20, 21, 54, 55] {
+            assert!(!is_treasure_gift(id), "id={id} 不應被判為珍寶");
+        }
+    }
+
+    #[test]
+    fn item_name_ice_crystal() {
+        assert_eq!(item_name_zh(56), "冰晶");
+        assert_eq!(item_name_zh(54), "仙人掌");
+        assert_eq!(item_name_zh(55), "雪");
+    }
+
+    #[test]
+    fn treasure_gift_thanks_non_empty_no_placeholders() {
+        // 所有好感等級、多個 pick、含訪客（空名）都不得留下未替換佔位或回空。
+        for name in ["旅人", ""] {
+            for affinity in [0, 1, 2, 3, 5] {
+                for pick in 0..4 {
+                    let s = treasure_gift_thanks_line(name, affinity, pick);
+                    assert!(!s.is_empty(), "name={name} affinity={affinity} pick={pick} 回空");
+                    assert!(!s.contains("{name}"), "name={name} affinity={affinity} pick={pick} 未替換 name");
+                    assert!(s.contains("冰晶"), "珍寶道謝應提到冰晶");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn treasure_gift_thanks_friend_contains_name() {
+        let s = treasure_gift_thanks_line("小星", 5, 0);
+        assert!(s.contains("小星"), "友人等級應含玩家名");
+    }
+
+    #[test]
+    fn treasure_gift_thanks_stranger_no_name_when_empty() {
+        // 訪客（空名）不得把空字串塞進句子留下突兀空缺，且不含 {name}。
+        let s = treasure_gift_thanks_line("", 0, 1);
+        assert!(!s.contains("{name}"), "訪客句不應有佔位");
+        assert!(!s.is_empty());
     }
 
     // ── 送對禮物 v1（ROADMAP 722）───────────────────────────────────────────────
