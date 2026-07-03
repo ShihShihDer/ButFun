@@ -4848,6 +4848,9 @@ fn tick_residents(dt: f32) {
     // 自我印象 v1（ROADMAP 770）：鎖內偵測「居民閒下來、回望自己昇華出一句自我印象」（泡泡已於鎖內設好），
     // 鎖外統一補一則城鎮動態 Feed（第三人稱旁白，已是純模板、無記憶原文）。
     let mut self_image_feeds: Vec<(&'static str, String)> = Vec::new();
+    // 自我印象 v2（ROADMAP 771）：鎖內偵測「居民回望自己、且此刻心中沒有心願」→ 讓這份自我理解
+    // 化為一個呼應自己的自發心願（鎖外套用，守鎖序）。格式：(居民 id, 居民顯示名, 心願字串)。
+    let mut self_aspiration_sparks: Vec<(String, &'static str, &'static str)> = Vec::new();
 
     // 就寢反思 Feed 事件（作息·就寢反思 v1，ROADMAP 744）：鎖內入睡時偵測，鎖外記 Feed。
     // 格式：(resident_name, 今天回味的記憶摘要)。
@@ -5865,6 +5868,14 @@ fn tick_residents(dt: f32) {
                     r.say_timer = SAY_SECS;
                     if let Some(feed) = vself::self_image_feed_line(&mems) {
                         self_image_feeds.push((r.name, feed));
+                    }
+                    // 自我印象 v2（ROADMAP 771）：她回望這一路、認出「我是個怎樣的人」的這一刻，
+                    // 若能落到一個具體的建造念頭（蓋東西的人→再蓋間屋、離不開泥土的人→再開畦花圃…），
+                    // 就把這份自我理解**化成一個呼應自己的自發心願**——鎖外檢查她此刻確實沒有心願、
+                    // 再種上（不搶玩家親口許的願、守鎖序），讓她接下來真的動手去追尋。記憶第一次不只
+                    // 被說出、還推著她的腳步去做——「記憶→行為」的直接體現。
+                    if let Some(desire) = vself::self_sparked_desire(&mems) {
+                        self_aspiration_sparks.push((r.id.clone(), r.name, desire));
                     }
                     r.self_image_cooldown = vself::SPEAK_COOLDOWN; // 說過了，久久才再回望一次。
                 } else {
@@ -7554,6 +7565,30 @@ fn tick_residents(dt: f32) {
     // 自己」——記憶昇華進世界的日記牆。鎖外純 IO、不巢狀、守死鎖鐵律；文字已是純模板、無記憶原文。
     for (rname, detail) in &self_image_feeds {
         vfeed::append_feed("自省", rname, detail);
+    }
+
+    // 5c-2h) 自我印象驅動自發追尋（自我印象 v2，ROADMAP 771·PLAN_ETHERVOX 核心信念「記憶要驅動
+    // 行為、不只聊天」）：居民回望自己、認出「我是個怎樣的人」的那一刻（泡泡已於鎖內設好），若那份
+    // 自我理解能落到一個具體的建造念頭，就把它化成一個呼應自己的自發心願——鎖外套用，守鎖序（不在
+    // residents 寫鎖內再取 desires 鎖，避免鎖序倒置）。**只在她此刻確實沒有任何心願時才種**（get_desire
+    // 為 None 或已實現）——絕不覆蓋玩家親口許的願（心願是珍貴的）。種上後她的既有建造管線會真的把它
+    // 蓋出來：自認「最愛蓋東西的人」會自發再蓋間屋、「離不開泥土的人」會再開畦花圃——記憶第一次不只
+    // 被說出、還推著她的腳步去做。鎖外純短鎖 IO、不巢狀、守死鎖鐵律。
+    for (rid, rname, desire) in &self_aspiration_sparks {
+        // 此刻確實沒有進行中的心願才種（讀鎖即釋）。
+        let vacant = {
+            let des = hub().desires.read().unwrap();
+            des.get_desire(rid).is_none_or(|d| d.fulfilled)
+        };
+        if !vacant {
+            continue;
+        }
+        let new_desire = {
+            let mut des = hub().desires.write().unwrap();
+            des.set_desire(rid, desire, vdes::SELF_SPARK)
+        }; // 心願寫鎖在此釋放
+        vdes::append_desire(&new_desire);
+        vfeed::append_feed("新心願", rname, &new_desire.desire);
     }
 
     // 5c-3) 就寢反思 Feed（作息·就寢反思 v1，ROADMAP 744）：居民入睡前回味今天最有感的一件事，
