@@ -11,7 +11,7 @@ use std::collections::{HashMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
-use crate::voxel::{block_at, Block, BASE_HEIGHT};
+use crate::voxel::{biome_at_voxel, block_at, Block, VoxelBiome, BASE_HEIGHT};
 
 // ── 建物類型 ──────────────────────────────────────────────────────────────────
 
@@ -229,7 +229,10 @@ impl BuildStore {
         expansion: bool,
         inspired_by: Option<String>,
     ) -> BuildPlan {
-        let blocks = generate_blocks(kind, cx, cy, cz);
+        // 建築風格依「居民 + 群系（由錨點座標查）+ 錨點座標」確定性決定，讓每間都不同。
+        let biome = biome_at_voxel(cx, cz);
+        let style = BuildStyle::for_resident(resident, biome, cx, cz);
+        let blocks = generate_blocks(kind, cx, cy, cz, &style);
         let total = blocks.len() as u32;
         let plan = BuildPlan {
             resident: resident.to_string(),
@@ -304,10 +307,131 @@ pub fn build_anchor_offset(resident_idx: usize) -> (i32, i32) {
     }
 }
 
+// ── 建築風格：讓同種建物「依居民/群系」各有不同（純函式，確定性，可測）─────────
+//
+// 建築創作第一刀：此前 `generate_blocks` 對同一 `BuildKind` 永遠吐出一模一樣的方盒——
+// 誰蓋幾次都是複製貼上。本層把「牆材質／屋頂形狀材質／尺寸／裝飾」抽成一份由
+// 「**誰蓋的（居民 id）＋在哪個群系＋錨點座標**」確定性決定的 [`BuildStyle`]，
+// 讓露娜的木屋、諾娃的石頂屋、沙漠居民的沙屋一眼看得出是不同人蓋的不同房子。
+//
+// **確定性鐵律**：同居民同錨點永遠算出同一份風格（可測、重啟一致、不會這次木下次石）；
+// 風格在 `new_plan` 建計畫時算一次、烘進 `remaining` 方塊清單（jsonl 落地的是實際方塊，
+// 之後重啟直接 replay，不重算風格）→ 與 `try_player_help` 的逐塊比對完全相容。
+
+/// 門口點綴（每家不同的小細節；皆放在正面外側一格，不動地基/不與牆體重疊）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Decor {
+    /// 無點綴（素樸）。
+    None,
+    /// 門口一盞火把（暖光）。
+    Torch,
+    /// 門口一畦花圃（草地 + 葉片）。
+    Flowerbed,
+    /// 門口一根柱（兩格高，牆材質）。
+    Pillar,
+}
+
+/// 一座建物的樣式（由居民/群系/座標確定性決定）。純資料、無 IO。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BuildStyle {
+    /// 牆體主建材（依群系：森林木、沙漠沙、雪原拋石/雪…）。
+    pub wall: Block,
+    /// 屋頂建材（石/木/葉/拋石）。
+    pub roof: Block,
+    /// 地板建材（由牆材質衍生）。
+    pub floor: Block,
+    /// 尖頂：平頂上再疊一層縮小的方塊，成斜頂感。
+    pub peaked: bool,
+    /// 側牆是否開玻璃窗。
+    pub windows: bool,
+    /// 牆高（層數，2 或 3）。
+    pub wall_h: i32,
+    /// 佔地範圍（相對中心，含界）；x_min/z_min 固定 -1，x_max/z_max 由尺寸決定。
+    pub x_max: i32,
+    pub z_max: i32,
+    /// 門口點綴。
+    pub decor: Decor,
+}
+
+impl BuildStyle {
+    pub const X_MIN: i32 = -1;
+    pub const Z_MIN: i32 = -1;
+
+    /// 依「居民 id + 群系 + 錨點座標」確定性推導一份樣式（同輸入永遠同輸出）。
+    pub fn for_resident(resident: &str, biome: VoxelBiome, cx: i32, cz: i32) -> BuildStyle {
+        let h = style_hash(resident, cx, cz);
+        let wall = wall_palette(biome)[(h & 1) as usize];
+        let roof = ROOF_PALETTE[((h >> 1) & 0b11) as usize];
+        let peaked = (h >> 3) & 1 == 1;
+        let windows = (h >> 4) & 1 == 1;
+        let wall_h = 2 + ((h >> 5) & 1) as i32; // 2 或 3 層
+        // 佔地：3×3 / 4×3 / 3×4 / 4×4（小變化，別太大顆拖效能）。
+        let (x_max, z_max) = match (h >> 6) & 0b11 {
+            0 => (1, 1),
+            1 => (2, 1),
+            2 => (1, 2),
+            _ => (2, 2),
+        };
+        let decor = match (h >> 8) & 0b11 {
+            0 => Decor::None,
+            1 => Decor::Torch,
+            2 => Decor::Flowerbed,
+            _ => Decor::Pillar,
+        };
+        // 地板由牆材質衍生（木系→木板、沙→沙、其餘→拋石），保持質感一致。
+        let floor = match wall {
+            Block::Wood | Block::Plank => Block::Plank,
+            Block::Sand => Block::Sand,
+            _ => Block::SmoothStone,
+        };
+        BuildStyle { wall, roof, floor, peaked, windows, wall_h, x_max, z_max, decor }
+    }
+}
+
+/// 依「居民 id + 錨點座標」算出的穩定 64-bit 雜湊（FNV-1a）。
+/// 純函式：居民 id 與座標都穩定 → 同居民同錨點永遠同雜湊（重啟一致）。
+fn style_hash(resident: &str, cx: i32, cz: i32) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV offset basis
+    let mut mix = |b: u8| {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3); // FNV prime
+    };
+    for b in resident.bytes() {
+        mix(b);
+    }
+    for v in [cx, cz] {
+        for b in v.to_le_bytes() {
+            mix(b);
+        }
+    }
+    // 雪崩混合（splitmix64 finalizer）：讓各 bit 去相關——否則相近輸入（如 vox_res_0/1/2
+    // 只差最後一個位元組）的低位 bit 容易撞在一起，害「牆材質」等只吃 1 bit 的維度失去變化。
+    h ^= h >> 30;
+    h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    h ^= h >> 27;
+    h = h.wrapping_mul(0x94d0_49bb_1331_11eb);
+    h ^= h >> 31;
+    h
+}
+
+/// 群系決定牆材質的兩個候選（再由雜湊選一，讓同群系兩位居民仍可能不同）。
+fn wall_palette(biome: VoxelBiome) -> [Block; 2] {
+    match biome {
+        VoxelBiome::Forest => [Block::Wood, Block::Plank],
+        VoxelBiome::Grassland => [Block::Wood, Block::StoneBrick],
+        VoxelBiome::Desert => [Block::Sand, Block::SmoothStone],
+        VoxelBiome::Snow => [Block::SmoothStone, Block::Snow],
+    }
+}
+
+/// 屋頂材質候選（4 選 1）。
+const ROOF_PALETTE: [Block; 4] = [Block::Stone, Block::Wood, Block::Leaves, Block::SmoothStone];
+
 // ── 建物方塊生成（純函式，可測）────────────────────────────────────────────────
 
 /// 生成建物的方塊清單（從底層往上，讓 tick 逐塊放置時玩家看到「由下往上長出」）。
-fn generate_blocks(kind: BuildKind, cx: i32, cy: i32, cz: i32) -> Vec<BuildBlock> {
+/// `style`：由 [`BuildStyle::for_resident`] 依居民/群系確定性決定，讓每間都不同。
+fn generate_blocks(kind: BuildKind, cx: i32, cy: i32, cz: i32, style: &BuildStyle) -> Vec<BuildBlock> {
     let mut out = Vec::new();
 
     let add = |out: &mut Vec<BuildBlock>, x: i32, y: i32, z: i32, b: Block| {
@@ -316,32 +440,70 @@ fn generate_blocks(kind: BuildKind, cx: i32, cy: i32, cz: i32) -> Vec<BuildBlock
 
     match kind {
         BuildKind::House => {
-            // 地板（cy-1 層，3×3 Wood）——替換地表方塊讓地基清晰
-            for dx in -1i32..=1 {
-                for dz in -1i32..=1 {
-                    add(&mut out, cx + dx, cy - 1, cz + dz, Block::Wood);
+            let s = style;
+            let (x0, x1) = (BuildStyle::X_MIN, s.x_max);
+            let (z0, z1) = (BuildStyle::Z_MIN, s.z_max);
+            // 地板（cy-1 層，實心填滿佔地，style.floor）——替換地表讓地基清晰。
+            for x in x0..=x1 {
+                for z in z0..=z1 {
+                    add(&mut out, cx + x, cy - 1, cz + z, s.floor);
                 }
             }
-            // 牆壁 2 層（只邊框，中心空，Wood）；正面中央（dx=0,dz=1）兩層疊放木門，
-            // 讓小木屋第一次真的「能被打開」——不再是封死的裝飾殼（ROADMAP·門洞 v1）。
-            for layer in 0..2 {
+            // 牆壁 wall_h 層（只邊框，中心空，style.wall）；正面中央（x=0, z=z_max）下兩層
+            // 疊放木門讓家「能被打開」（ROADMAP·門洞 v1）；side 牆中點依 windows 開玻璃窗。
+            let front_z = z1;
+            for layer in 0..s.wall_h {
                 let y = cy + layer;
-                for dx in -1i32..=1 {
-                    for dz in -1i32..=1 {
-                        if dx.abs() == 1 || dz.abs() == 1 {
-                            let b = if dx == 0 && dz == 1 { Block::DoorClosed } else { Block::Wood };
-                            add(&mut out, cx + dx, y, cz + dz, b);
+                for x in x0..=x1 {
+                    for z in z0..=z1 {
+                        let border = x == x0 || x == x1 || z == z0 || z == z1;
+                        if !border {
+                            continue;
                         }
+                        // 門：正面中央下兩層。
+                        if x == 0 && z == front_z && layer < 2 {
+                            add(&mut out, cx + x, y, cz + z, Block::DoorClosed);
+                            continue;
+                        }
+                        // 窗：側牆中點（z=0、x 在左右牆），第 1 層，且開窗。
+                        if s.windows && layer == 1 && z == 0 && (x == x0 || x == x1) {
+                            add(&mut out, cx + x, y, cz + z, Block::Glass);
+                            continue;
+                        }
+                        add(&mut out, cx + x, y, cz + z, s.wall);
                     }
                 }
             }
-            // 屋頂（cy+2 層，3×3 Stone 實心）
-            for dx in -1i32..=1 {
-                for dz in -1i32..=1 {
-                    add(&mut out, cx + dx, cy + 2, cz + dz, Block::Stone);
+            // 屋頂（cy+wall_h 層，實心填滿，style.roof）。
+            let roof_y = cy + s.wall_h;
+            for x in x0..=x1 {
+                for z in z0..=z1 {
+                    add(&mut out, cx + x, roof_y, cz + z, s.roof);
                 }
             }
-            // 共 9 + 8 + 8 + 9 = 34 塊
+            // 尖頂：再疊一層縮小的方塊（斜頂感）。3×3 → 單塊小尖；更大 → 一小條脊。
+            if s.peaked {
+                for x in (x0 + 1)..=(x1 - 1) {
+                    for z in (z0 + 1)..=(z1 - 1) {
+                        add(&mut out, cx + x, roof_y + 1, cz + z, s.roof);
+                    }
+                }
+            }
+            // 門口點綴（正面外一格，不動地基/不與牆重疊；每家不同的小細節）。
+            let dz = front_z + 1;
+            match s.decor {
+                Decor::None => {}
+                Decor::Torch => add(&mut out, cx - 1, cy, cz + dz, Block::Torch),
+                Decor::Flowerbed => {
+                    add(&mut out, cx, cy - 1, cz + dz, Block::Grass);
+                    add(&mut out, cx, cy, cz + dz, Block::Leaves);
+                }
+                Decor::Pillar => {
+                    for layer in 0..2 {
+                        add(&mut out, cx + 1, cy + layer, cz + dz, s.wall);
+                    }
+                }
+            }
         }
 
         BuildKind::Well => {
@@ -363,57 +525,62 @@ fn generate_blocks(kind: BuildKind, cx: i32, cy: i32, cz: i32) -> Vec<BuildBlock
                     }
                 }
             }
-            // 四角頂柱（Wood，作為井架感）
+            // 四角頂柱（井架感）——材質依居民/群系（style.wall），讓各家水井的井架不同。
             for &(dx, dz) in &[(-1i32, -1i32), (-1, 1), (1, -1), (1, 1)] {
-                add(&mut out, cx + dx, cy + 1, cz + dz, Block::Wood);
+                add(&mut out, cx + dx, cy + 1, cz + dz, style.wall);
             }
             // 共 8 + 1 + 8 + 4 = 21 塊
         }
 
         BuildKind::Tower => {
+            // 塔身材質依居民/群系（style.wall），塔頂依 style.roof；地基維持 Stone（穩固）。
+            // 塔身高 4 或 5 層（style.peaked 再拔高一層），讓各家瞭望台高矮不同。
+            let body_h = if style.peaked { 5 } else { 4 };
             // 地基（cy-1 層，3×3 Stone 實心）
             for dx in -1i32..=1 {
                 for dz in -1i32..=1 {
                     add(&mut out, cx + dx, cy - 1, cz + dz, Block::Stone);
                 }
             }
-            // 塔身 4 層（只邊框，Stone，中心可穿行）
-            for layer in 0..4 {
+            // 塔身（只邊框，style.wall，中心可穿行）
+            for layer in 0..body_h {
                 let y = cy + layer;
                 for dx in -1i32..=1 {
                     for dz in -1i32..=1 {
                         if dx.abs() == 1 || dz.abs() == 1 {
-                            add(&mut out, cx + dx, y, cz + dz, Block::Stone);
+                            add(&mut out, cx + dx, y, cz + dz, style.wall);
                         }
                     }
                 }
             }
-            // 瞭望台頂（cy+4 層，3×3 Stone 實心）
+            // 瞭望台頂（cy+body_h 層，3×3 style.roof 實心）
             for dx in -1i32..=1 {
                 for dz in -1i32..=1 {
-                    add(&mut out, cx + dx, cy + 4, cz + dz, Block::Stone);
+                    add(&mut out, cx + dx, cy + body_h, cz + dz, style.roof);
                 }
             }
-            // 共 9 + 8×4 + 9 = 50 塊
+            // 共 9 + 8×body_h + 9 塊
         }
 
         BuildKind::Garden => {
+            // 花木中心：多數為 Leaves，開窗風格（style.windows）者改種樹苗，增添變化。
+            let center = if style.windows { Block::Sapling } else { Block::Leaves };
             // 草地底（cy-1 層，3×3 Grass）
             for dx in -1i32..=1 {
                 for dz in -1i32..=1 {
                     add(&mut out, cx + dx, cy - 1, cz + dz, Block::Grass);
                 }
             }
-            // 花壇邊框（cy 層，3×3 外框，Stone）
+            // 花壇邊框（cy 層，3×3 外框，材質依居民/群系 style.wall）
             for dx in -1i32..=1 {
                 for dz in -1i32..=1 {
                     if dx.abs() == 1 || dz.abs() == 1 {
-                        add(&mut out, cx + dx, cy, cz + dz, Block::Stone);
+                        add(&mut out, cx + dx, cy, cz + dz, style.wall);
                     }
                 }
             }
-            // 中心裝飾（Leaves，象徵花木）
-            add(&mut out, cx, cy, cz, Block::Leaves);
+            // 中心裝飾（象徵花木）
+            add(&mut out, cx, cy, cz, center);
             // 共 9 + 8 + 1 = 18 塊
         }
     }
@@ -649,19 +816,35 @@ mod tests {
         assert!(!prayer_promotable(""));
     }
 
-    // ── generate_blocks 方塊數 ────────────────────────────────────────────────
+    // ── generate_blocks 方塊數（用「最小樣式」＝退化回原本 3×3 方盒，維持穩定基準）──
+
+    /// 最小樣式：3×3、牆高 2、平頂、無窗、無點綴 → 等同建築創作前的原始小木屋，
+    /// 讓既有方塊數/門洞的穩定基準測試仍成立（其餘測試才去驗「變化」）。
+    fn style_small() -> BuildStyle {
+        BuildStyle {
+            wall: Block::Wood,
+            roof: Block::Stone,
+            floor: Block::Plank,
+            peaked: false,
+            windows: false,
+            wall_h: 2,
+            x_max: 1,
+            z_max: 1,
+            decor: Decor::None,
+        }
+    }
 
     #[test]
-    fn house_block_count() {
-        let blocks = generate_blocks(BuildKind::House, 0, 5, 0);
+    fn house_block_count_small_style() {
+        let blocks = generate_blocks(BuildKind::House, 0, 5, 0, &style_small());
         // 地板 9 + 牆 8+8 + 屋頂 9 = 34（門洞取代 2 塊木牆，總數不變）
         assert_eq!(blocks.len(), 34);
     }
 
     #[test]
     fn house_has_two_layer_door_at_front() {
-        let blocks = generate_blocks(BuildKind::House, 10, 5, 20);
-        // 正面（dx=0,dz=+1）兩層都應是門，讓居民蓋的家真的能被打開走進去。
+        let blocks = generate_blocks(BuildKind::House, 10, 5, 20, &style_small());
+        // 正面（dx=0, z=z_max=+1）兩層都應是門，讓居民蓋的家真的能被打開走進去。
         let door_layer0 = blocks.iter().find(|b| b.x == 10 && b.y == 5 && b.z == 21);
         let door_layer1 = blocks.iter().find(|b| b.x == 10 && b.y == 6 && b.z == 21);
         assert_eq!(door_layer0.map(|b| b.b), Some(Block::DoorClosed as u8));
@@ -672,32 +855,208 @@ mod tests {
     }
 
     #[test]
-    fn well_block_count() {
-        let blocks = generate_blocks(BuildKind::Well, 0, 5, 0);
+    fn well_block_count_small_style() {
+        let blocks = generate_blocks(BuildKind::Well, 0, 5, 0, &style_small());
         // 底圈 8 + 水 1 + 井壁 8 + 角柱 4 = 21
         assert_eq!(blocks.len(), 21);
     }
 
     #[test]
-    fn tower_block_count() {
-        let blocks = generate_blocks(BuildKind::Tower, 0, 5, 0);
-        // 地基 9 + 塔身 8×4 + 頂台 9 = 50
+    fn tower_block_count_small_style() {
+        let blocks = generate_blocks(BuildKind::Tower, 0, 5, 0, &style_small());
+        // 地基 9 + 塔身 8×4 + 頂台 9 = 50（peaked=false → body_h=4）
         assert_eq!(blocks.len(), 50);
     }
 
     #[test]
-    fn garden_block_count() {
-        let blocks = generate_blocks(BuildKind::Garden, 0, 5, 0);
+    fn garden_block_count_small_style() {
+        let blocks = generate_blocks(BuildKind::Garden, 0, 5, 0, &style_small());
         // 草地 9 + 邊框 8 + 中心 1 = 18
         assert_eq!(blocks.len(), 18);
     }
 
     #[test]
-    fn all_blocks_have_valid_block_type() {
-        for kind in [BuildKind::House, BuildKind::Well, BuildKind::Tower, BuildKind::Garden] {
-            let blocks = generate_blocks(kind, 0, 5, 0);
-            for bb in &blocks {
-                assert!(Block::from_u8(bb.b).is_some(), "無效方塊 id={} 在 {:?}", bb.b, kind);
+    fn all_blocks_have_valid_block_type_across_residents() {
+        // 掃過多位居民 × 四群系 × 四種建物，任何組合生出的方塊都必須是合法方塊 id。
+        for rid in ["vox_res_0", "vox_res_1", "vox_res_2", "vox_res_3", "vox_res_7"] {
+            for biome in [
+                VoxelBiome::Grassland,
+                VoxelBiome::Forest,
+                VoxelBiome::Desert,
+                VoxelBiome::Snow,
+            ] {
+                let style = BuildStyle::for_resident(rid, biome, 7, 0);
+                for kind in [BuildKind::House, BuildKind::Well, BuildKind::Tower, BuildKind::Garden] {
+                    let blocks = generate_blocks(kind, 0, 5, 0, &style);
+                    for bb in &blocks {
+                        assert!(
+                            Block::from_u8(bb.b).is_some(),
+                            "無效方塊 id={} 在 {:?}/{:?}/{rid}",
+                            bb.b, kind, biome
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // ── 建築風格：確定性 + 變化 + 合法性（建築創作第一刀）──────────────────────
+
+    #[test]
+    fn style_is_deterministic_for_same_resident_and_anchor() {
+        // 同居民、同群系、同錨點 → 永遠同一份風格（重啟一致、不會這次木下次石）。
+        let a = BuildStyle::for_resident("vox_res_0", VoxelBiome::Forest, 7, 0);
+        let b = BuildStyle::for_resident("vox_res_0", VoxelBiome::Forest, 7, 0);
+        assert_eq!(a, b);
+        // 連方塊清單也逐塊一致。
+        let ba = generate_blocks(BuildKind::House, 100, 5, 100, &a);
+        let bb = generate_blocks(BuildKind::House, 100, 5, 100, &b);
+        assert_eq!(ba, bb, "同輸入應生出逐塊相同的藍圖");
+    }
+
+    #[test]
+    fn wall_material_follows_biome() {
+        // 牆材質限定在該群系的候選內（森林木系、沙漠沙/拋石、雪原拋石/雪）。
+        for rid in ["vox_res_0", "vox_res_1", "vox_res_2", "vox_res_3"] {
+            let forest = BuildStyle::for_resident(rid, VoxelBiome::Forest, 7, 0).wall;
+            assert!(
+                matches!(forest, Block::Wood | Block::Plank),
+                "森林牆材應為木系：{forest:?}"
+            );
+            let desert = BuildStyle::for_resident(rid, VoxelBiome::Desert, 7, 0).wall;
+            assert!(
+                matches!(desert, Block::Sand | Block::SmoothStone),
+                "沙漠牆材應為沙/拋石：{desert:?}"
+            );
+            let snow = BuildStyle::for_resident(rid, VoxelBiome::Snow, 7, 0).wall;
+            assert!(
+                matches!(snow, Block::SmoothStone | Block::Snow),
+                "雪原牆材應為拋石/雪：{snow:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn different_residents_get_varied_houses() {
+        // 走進村子：不同居民（同群系同座標）蓋出的房子藍圖應當彼此不同，不再是複製貼上。
+        // 收集多位居民的房子「特徵指紋」（材質/尺寸/屋頂/裝飾），要求有足夠多樣。
+        let biome = VoxelBiome::Grassland;
+        let mut fingerprints = std::collections::HashSet::new();
+        let mut blueprints = std::collections::HashSet::new();
+        for i in 0..8 {
+            let rid = format!("vox_res_{i}");
+            let s = BuildStyle::for_resident(&rid, biome, 7, 0);
+            fingerprints.insert((
+                s.wall as u8,
+                s.roof as u8,
+                s.peaked,
+                s.windows,
+                s.wall_h,
+                s.x_max,
+                s.z_max,
+                s.decor,
+            ));
+            let blocks = generate_blocks(BuildKind::House, 0, 5, 0, &s);
+            // 以「排序後的方塊清單」當整棟房子的指紋。
+            let mut v: Vec<(i32, i32, i32, u8)> =
+                blocks.iter().map(|b| (b.x, b.y, b.z, b.b)).collect();
+            v.sort();
+            blueprints.insert(v);
+        }
+        // 8 位居民至少要有 4 種不同的樣式指紋（實務上遠超過），證明「各有不同」。
+        assert!(
+            fingerprints.len() >= 4,
+            "8 位居民的房子樣式太雷同（只有 {} 種）",
+            fingerprints.len()
+        );
+        assert!(
+            blueprints.len() >= 4,
+            "8 位居民的房子藍圖太雷同（只有 {} 種）",
+            blueprints.len()
+        );
+    }
+
+    #[test]
+    fn house_never_has_overlapping_blocks() {
+        // 合法性：同一棟房子不得有兩塊落在同一格（重疊＝壞掉的藍圖）。掃過所有變化維度。
+        for rid in ["vox_res_0", "vox_res_1", "vox_res_2", "vox_res_3", "vox_res_5"] {
+            for biome in [
+                VoxelBiome::Grassland,
+                VoxelBiome::Forest,
+                VoxelBiome::Desert,
+                VoxelBiome::Snow,
+            ] {
+                let s = BuildStyle::for_resident(rid, biome, 7, 0);
+                let blocks = generate_blocks(BuildKind::House, 0, 5, 0, &s);
+                let mut seen = std::collections::HashSet::new();
+                for b in &blocks {
+                    assert!(
+                        seen.insert((b.x, b.y, b.z)),
+                        "方塊重疊於 ({},{},{})：{rid}/{biome:?}",
+                        b.x, b.y, b.z
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn house_foundation_floor_is_always_solid_fill() {
+        // 防破地基：無論尺寸怎麼變，cy-1 地板層都必須把整個佔地填滿實心（無空洞）。
+        for i in 0..8 {
+            let rid = format!("vox_res_{i}");
+            let s = BuildStyle::for_resident(&rid, VoxelBiome::Grassland, 7, 0);
+            let (cx, cy, cz) = (0, 5, 0);
+            let blocks = generate_blocks(BuildKind::House, cx, cy, cz, &s);
+            for x in BuildStyle::X_MIN..=s.x_max {
+                for z in BuildStyle::Z_MIN..=s.z_max {
+                    let cell = blocks
+                        .iter()
+                        .find(|b| b.x == cx + x && b.y == cy - 1 && b.z == cz + z);
+                    let filled = cell.and_then(|b| Block::from_u8(b.b)).map_or(false, |bl| bl.is_solid());
+                    assert!(filled, "地板 ({x},{z}) 應為實心地基：{rid}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn house_always_has_two_layer_front_door() {
+        // 防回歸：無論尺寸/材質/裝飾怎麼變，正面中央（x=0, z=z_max）下兩層永遠是門，
+        // 讓每間家都「打得開走得進」（門洞 v1 + 完工錨點 #967 不受影響）。
+        for i in 0..8 {
+            let rid = format!("vox_res_{i}");
+            let s = BuildStyle::for_resident(&rid, VoxelBiome::Grassland, 7, 0);
+            let (cx, cy, cz) = (10, 5, 20);
+            let blocks = generate_blocks(BuildKind::House, cx, cy, cz, &s);
+            let door_z = cz + s.z_max;
+            for layer in 0..2 {
+                let d = blocks
+                    .iter()
+                    .find(|b| b.x == cx && b.y == cy + layer && b.z == door_z);
+                assert_eq!(
+                    d.map(|b| b.b),
+                    Some(Block::DoorClosed as u8),
+                    "正面第 {layer} 層應為門：{rid}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn house_block_count_stays_bounded() {
+        // 效能：房子方塊數不得暴增（尺寸變化有上限）。掃過所有變化維度，皆 ≤ 80。
+        for rid in ["vox_res_0", "vox_res_1", "vox_res_2", "vox_res_3", "vox_res_9"] {
+            for biome in [
+                VoxelBiome::Grassland,
+                VoxelBiome::Forest,
+                VoxelBiome::Desert,
+                VoxelBiome::Snow,
+            ] {
+                let s = BuildStyle::for_resident(rid, biome, 7, 0);
+                let n = generate_blocks(BuildKind::House, 0, 5, 0, &s).len();
+                assert!(n <= 80, "房子方塊數暴增（{n}）：{rid}/{biome:?}");
+                assert!(n >= 30, "房子方塊數異常過少（{n}）：{rid}/{biome:?}");
             }
         }
     }
