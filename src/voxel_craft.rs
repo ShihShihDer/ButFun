@@ -41,6 +41,13 @@ pub const SHOVEL_STONE_ID: u8 = 40;
 /// 鐵鏟（ROADMAP 690）——物品 ID 41；挖軟方塊加速 6×，需工作台合成。
 pub const SHOVEL_IRON_ID: u8 = 41;
 
+// ── 料理物品 ID（純物品，不可放置於世界，ROADMAP 778）─────────────────────────────
+/// 野菜暖湯（ROADMAP 778）——物品 ID 67；在工作台把胡蘿蔔＋馬鈴薯＋小麥三種親手種的
+/// 作物拌在一起煮成的一鍋暖心料理。純物品、不可放置。這是乙太方界第一道**多食材料理**：
+/// 烤魚(63)、烤地薯(64) 都是單一食材下爐，而暖湯要湊齊三種作物才煮得成——最費心、也最療癒，
+/// 是「種田→料理→餽贈→享用」循環的頂點，居民收到時比任何食物都珍視。
+pub const STEW_ID: u8 = 67;
+
 use crate::voxel_inventory::InvStore;
 
 /// 一條合成配方（靜態常數，不含任何鎖或 IO 呼叫）。
@@ -309,6 +316,18 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
         output_block: 59,             // Block::AetherLamp = 59
         output_count: 1,
     },
+    // ── 野菜暖湯 v1（ROADMAP 778）：乙太方界第一道「多食材料理」───────────────────────
+    // 2 胡蘿蔔(49) + 2 馬鈴薯(53) + 1 小麥(18) → 1 野菜暖湯(STEW_ID=67)。三種親手種的作物、
+    // 滿滿一大鍋（5 格材料）拌在一起煮——要湊齊三種不同作物（不像烤魚/烤地薯只需單一食材），
+    // 且份量超出背包 2×2 塞不下，是最費心的料理，配得上「複雜合成走工作台」。接起
+    // 「種田→料理→餽贈→享用」完整循環的頂點。
+    Recipe {
+        id: "veggie_stew",
+        name_zh: "野菜暖湯",
+        inputs: &[(49, 2), (53, 2), (18, 1)],  // 2 胡蘿蔔 + 2 馬鈴薯 + 1 小麥（一大鍋）
+        output_block: STEW_ID,
+        output_count: 1,
+    },
 ];
 
 /// 熔爐冶煉配方（需放置熔爐方塊後右鍵開啟冶煉面板才能使用）。
@@ -541,7 +560,8 @@ mod tests {
                 || r.output_block == AXE_IRON_ID      // 鐵斧（ROADMAP 689）
                 || r.output_block == SHOVEL_IRON_ID   // 鐵鏟（ROADMAP 690）
                 || r.output_block == 42                // 箱子（ROADMAP 692）
-                || r.output_block == 59;               // 乙太燈（Block::AetherLamp，乙太礦脈 v1）
+                || r.output_block == 59                // 乙太燈（Block::AetherLamp，乙太礦脈 v1）
+                || r.output_block == STEW_ID;          // 野菜暖湯（純物品，多食材料理 ROADMAP 778）
             assert!(
                 ok,
                 "工作台配方「{}」產出 id={} 超出範圍",
@@ -696,7 +716,9 @@ mod tests {
         store.give("旅人", 56, 10); // IceCrystal（冰晶燈配方用）
         store.give("旅人", 58, 10); // AetherOre（乙太燈配方用，乙太礦脈 v1）
         store.give("旅人", 61, 10); // FISH（smelt_fish 烤魚配方用，生小魚）
-        store.give("旅人", 53, 10); // POTATO（smelt_potato 烤地薯配方用，生馬鈴薯）
+        store.give("旅人", 53, 10); // POTATO（smelt_potato 烤地薯／veggie_stew 暖湯配方用，馬鈴薯）
+        store.give("旅人", 49, 10); // CARROT（veggie_stew 暖湯配方用，胡蘿蔔）
+        store.give("旅人", 18, 10); // WHEAT（veggie_stew 暖湯配方用，小麥）
         // 火把配方：1 木頭(5) + 1 煤礦(20) → 4 火把（Wood/CoalOre 已加，數量足夠）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);
@@ -1060,5 +1082,66 @@ mod tests {
         // 不在工作台或熔爐表
         assert!(find_workbench_recipe("door").is_none());
         assert!(find_furnace_recipe("door").is_none());
+    }
+
+    // ── 野菜暖湯 v1（ROADMAP 778）───────────────────────────────────────────────
+
+    #[test]
+    fn veggie_stew_is_workbench_recipe() {
+        // 多食材料理是「複雜合成」→ 只在工作台表，不在背包 2×2 表
+        assert!(find_workbench_recipe("veggie_stew").is_some());
+        assert!(find_recipe("veggie_stew").is_none(), "暖湯是複雜料理、不該在背包 2×2 表");
+        assert!(find_furnace_recipe("veggie_stew").is_none(), "暖湯走工作台拌煮、非熔爐");
+    }
+
+    #[test]
+    fn veggie_stew_outputs_stew_item() {
+        let r = find_workbench_recipe("veggie_stew").unwrap();
+        assert_eq!(r.output_block, STEW_ID, "產出應為野菜暖湯(67)");
+        assert_eq!(r.output_count, 1, "一鍋暖湯");
+        assert_eq!(STEW_ID, 67, "暖湯物品 id 契約鎖定為 67（前後端對齊）");
+    }
+
+    #[test]
+    fn veggie_stew_needs_three_distinct_crops() {
+        // 暖湯之所以最費心：要湊齊三種不同作物、滿滿一大鍋（2+2+1），缺一不可
+        let r = find_workbench_recipe("veggie_stew").unwrap();
+        assert!(r.inputs.contains(&(49, 2)), "需要 2 胡蘿蔔(49)");
+        assert!(r.inputs.contains(&(53, 2)), "需要 2 馬鈴薯(53)");
+        assert!(r.inputs.contains(&(18, 1)), "需要 1 小麥(18)");
+        assert_eq!(r.inputs.len(), 3, "剛好三種作物");
+        // 一大鍋：總材料 > 4，塞不進背包 2×2，必須在工作台煮
+        let total: u32 = r.inputs.iter().map(|&(_, c)| c).sum();
+        assert!(total > 4, "暖湯份量應超出 2×2（總材料 {total}）");
+    }
+
+    #[test]
+    fn veggie_stew_requires_all_three_crops() {
+        let r = find_workbench_recipe("veggie_stew").unwrap();
+
+        // 只有兩種作物（缺小麥）→ 湊不成一鍋湯
+        let mut two = InvStore::default();
+        two.give("旅人", 49, 2);
+        two.give("旅人", 53, 2);
+        assert!(!can_craft(r, &two, "旅人"), "缺小麥煮不成暖湯");
+
+        // 三種齊全但份量不足（各 1）→ 也不夠一大鍋
+        let mut skimpy = InvStore::default();
+        skimpy.give("旅人", 49, 1);
+        skimpy.give("旅人", 53, 1);
+        skimpy.give("旅人", 18, 1);
+        assert!(!can_craft(r, &skimpy, "旅人"), "各 1 顆不夠煮一大鍋暖湯");
+
+        // 份量齊全 → 可煮
+        let mut all = InvStore::default();
+        all.give("旅人", 49, 2);
+        all.give("旅人", 53, 2);
+        all.give("旅人", 18, 1);
+        assert!(can_craft(r, &all, "旅人"), "2 胡蘿蔔+2 馬鈴薯+1 小麥可煮一鍋暖湯");
+    }
+
+    #[test]
+    fn veggie_stew_in_find_any_recipe() {
+        assert!(find_any_recipe("veggie_stew").is_some());
     }
 }

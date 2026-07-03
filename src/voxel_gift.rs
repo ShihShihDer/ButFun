@@ -72,6 +72,7 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         63 => "烤魚",
         64 => "烤地薯",
         65 => "樹苗",
+        67 => "野菜暖湯",
         _ => "物品",
     }
 }
@@ -105,11 +106,12 @@ pub fn treasure_gift_thanks_line(player_name: &str, affinity: usize, pick: usize
     }
 }
 
-/// 是否為「食物」類禮物（麵包、胡蘿蔔、馬鈴薯、小魚、乙太魚、烤魚、烤地薯）——居民會給特別溫暖的回應。
+/// 是否為「食物」類禮物（麵包、胡蘿蔔、馬鈴薯、小魚、乙太魚、烤魚、烤地薯、野菜暖湯）——居民會給特別溫暖的回應。
 pub fn is_food_gift(block_id: u8) -> bool {
-    // BREAD_ID / CARROT_ID / POTATO_ID / FISH_ID / AETHER_FISH_ID / COOKED_FISH_ID / BAKED_POTATO_ID
+    // BREAD_ID / CARROT_ID / POTATO_ID / FISH_ID / AETHER_FISH_ID / COOKED_FISH_ID / BAKED_POTATO_ID / STEW_ID(67)
     block_id == 19 || block_id == 49 || block_id == 53
         || block_id == 61 || block_id == 62 || block_id == 63 || block_id == 64
+        || block_id == 67
 }
 
 /// 烤魚（COOKED_FISH_ID=63）專屬道謝台詞——比一般食物禮物更歡欣，因為那是玩家親手
@@ -163,6 +165,34 @@ pub fn baked_potato_thanks_line(player_name: &str, affinity: usize, pick: usize)
             "{name}，你總是記得我愛吃暖呼呼的東西……這顆烤地薯我會細細品嚐，謝謝你。",
             "每次{name}來都帶著暖意——這次是你親手種、親手烤的地薯，我真的好幸福。",
             "{name}！從田裡挖起、在爐上烤熟的一顆地薯，這份心意我都收下了，謝謝你。",
+        ];
+        pool[pick % pool.len()].replace("{name}", player_name)
+    }
+}
+
+/// 野菜暖湯（STEW_ID=67）專屬道謝台詞——比任何食物禮物都更觸動，因為那是玩家把
+/// 胡蘿蔔、馬鈴薯、小麥三種**親手種的作物湊齊、在工作台拌煮成的一鍋料理**，一道
+/// 費盡心思的暖湯。呼叫時機：`item_id == 67`。`pick` 同其他道謝函式由呼叫端提供。
+pub fn stew_thanks_line(player_name: &str, affinity: usize, pick: usize) -> String {
+    if affinity == 0 || player_name.is_empty() {
+        let pool: &[&str] = &[
+            "哇……這是一整鍋暖湯嗎？聞起來好豐盛！你煮給我的？謝謝你！",
+            "熱騰騰的野菜湯！要湊齊這麼多種菜才煮得成吧，我好感動。",
+            "野菜暖湯耶！你連種帶煮都是為了我嗎？我心裡都暖起來了。",
+        ];
+        pool[pick % pool.len()].to_string()
+    } else if affinity <= 2 {
+        let pool: &[&str] = &[
+            "{name}，你把自己種的菜煮成一鍋湯帶給我了！熱氣一路暖到我手心，謝謝你。",
+            "{name}！這鍋暖湯又香又飽足，湊齊這麼多種菜真不容易，我要一口一口慢慢喝。",
+            "哇，{name}親手煮的野菜湯！我一聞就餓了，這份心思我都嚐得出來，謝謝你。",
+        ];
+        pool[pick % pool.len()].replace("{name}", player_name)
+    } else {
+        let pool: &[&str] = &[
+            "{name}，你把胡蘿蔔、馬鈴薯、小麥全種出來、再煮成這一鍋湯……這份心意我會記一輩子，謝謝你。",
+            "每次{name}來都帶著暖意——這回是你從田裡一樣樣種齊、親手煮的一鍋湯，我真的好幸福。",
+            "{name}！一鍋要湊齊三種收成才煮得成的暖湯，這是我收過最暖的一份心意，謝謝你。",
         ];
         pool[pick % pool.len()].replace("{name}", player_name)
     }
@@ -532,6 +562,43 @@ mod tests {
     fn baked_potato_thanks_friend_contains_name() {
         let s = baked_potato_thanks_line("小星", 5, 0);
         assert!(s.contains("小星"), "友人等級應含玩家名");
+    }
+
+    // ── 野菜暖湯 v1（ROADMAP 778）───────────────────────────────────────────────
+
+    #[test]
+    fn item_name_and_food_gift_include_stew() {
+        // 野菜暖湯 v1：胡蘿蔔(49)+馬鈴薯(53)+小麥(18) 在工作台煮成暖湯(67)。
+        assert_eq!(item_name_zh(67), "野菜暖湯");
+        assert!(is_food_gift(67), "野菜暖湯算食物禮物");
+    }
+
+    #[test]
+    fn stew_thanks_non_empty_no_placeholders() {
+        // 所有好感等級、多個 pick 值，不得有未替換的 {name}/{item}，且都提到「湯」。
+        for affinity in [0, 1, 2, 3, 5] {
+            for pick in 0..4 {
+                let s = stew_thanks_line("旅人", affinity, pick);
+                assert!(!s.is_empty(), "affinity={affinity} pick={pick} 回空");
+                assert!(!s.contains("{name}"), "affinity={affinity} pick={pick} 未替換 name");
+                assert!(!s.contains("{item}"), "affinity={affinity} pick={pick} 出現 item 佔位");
+                assert!(s.contains("湯"), "affinity={affinity} pick={pick} 暖湯道謝該提到湯");
+            }
+        }
+    }
+
+    #[test]
+    fn stew_thanks_friend_contains_name() {
+        let s = stew_thanks_line("小星", 5, 0);
+        assert!(s.contains("小星"), "友人等級應含玩家名");
+    }
+
+    #[test]
+    fn stew_thanks_visitor_has_no_name() {
+        // 訪客模式（空名）不得洩出佔位或殘留名字語塊
+        let s = stew_thanks_line("", 3, 1);
+        assert!(!s.is_empty());
+        assert!(!s.contains("{name}"), "空名不得殘留佔位符");
     }
 
     #[test]

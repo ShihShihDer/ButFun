@@ -3593,6 +3593,9 @@ async fn handle_socket(
                 } else if item_id == vfarm::BAKED_POTATO_ID {
                     // 烤地薯是玩家「種田→收成→烤熟」的一道熱佳餚，用專屬台詞（比一般食物更歡欣）。
                     vgift::baked_potato_thanks_line(&name, affinity, pick)
+                } else if item_id == vcraft::STEW_ID {
+                    // 野菜暖湯是玩家湊齊三種親手種的作物、在工作台拌煮的一鍋料理，用專屬台詞（最觸動）。
+                    vgift::stew_thanks_line(&name, affinity, pick)
                 } else if vgift::is_food_gift(item_id) {
                     vgift::food_gift_thanks_line(&name, affinity, pick)
                 } else {

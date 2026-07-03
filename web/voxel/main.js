@@ -83,6 +83,9 @@ const FISHING_ROD = 60, FISH = 61, AETHER_FISH = 62;
 const COOKED_FISH = 63;
 // 烤地薯 v1：生馬鈴薯(53)在熔爐烤成烤地薯(64)，居民最愛的美味贈禮（純物品不放置）
 const BAKED_POTATO = 64;
+// 野菜暖湯 v1（ROADMAP 778）：胡蘿蔔(49)+馬鈴薯(53)+小麥(18) 在工作台煮成暖湯(67)，
+// 乙太方界第一道「多食材料理」，居民最珍視的餽贈（純物品不放置）
+const STEW = 67;
 // 植樹造林 v1（ROADMAP 738）——砍天然樹葉有機率掉樹苗(65)，種在土地上約 150 秒長成一株樹。
 // 樹苗既是背包物品也是可放置方塊（item_id == block_id），是玩家第一個可再生木材來源。
 const SAPLING = 65;
@@ -162,6 +165,8 @@ const COLOR = {
   [AETHER_FISH]:    [0.40, 0.82, 0.98], // 乙太魚——青藍幽光，呼應乙太礦系
   [COOKED_FISH]:    [0.80, 0.52, 0.30], // 烤魚——烤成金褐帶焦香的暖棕，一看就是熟食
   [BAKED_POTATO]:   [0.72, 0.55, 0.32], // 烤地薯——烤到焦香的暖土褐，比生馬鈴薯更深更熟
+  // 野菜暖湯 v1（ROADMAP 778）——胡蘿蔔橘×小麥金×菜綠拌成的暖橘紅濃湯色，一眼是熱騰騰的一鍋料理
+  [STEW]:           [0.86, 0.42, 0.20],
   // 植樹造林 v1（ROADMAP 738）——嫩黃綠，比草地/樹葉更亮更嫩，一眼認出是剛種下的小苗
   [SAPLING]:        [0.52, 0.74, 0.30], // 樹苗——鮮嫩黃綠，抽芽中的幼苗感
   [SIGN]:           [0.62, 0.44, 0.25], // 告示牌——溫潤木牌棕（比木板稍深），一看就是塊立起來的木牌
@@ -2186,6 +2191,8 @@ const BLOCK_NAME = {
   // 垂釣 v1（ROADMAP 734）
   [FISHING_ROD]: "釣竿", [FISH]: "小魚", [AETHER_FISH]: "乙太魚", [COOKED_FISH]: "烤魚",
   [BAKED_POTATO]: "烤地薯",
+  // 野菜暖湯 v1（ROADMAP 778）
+  [STEW]: "野菜暖湯",
   // 植樹造林 v1（ROADMAP 738）
   [SAPLING]: "樹苗",
   // 告示牌 v1（ROADMAP 740）
@@ -3925,6 +3932,8 @@ const WORKBENCH_RECIPES_JS = [
   { id: "chest",          name: "箱子",           inputs: [[PLANK, 8]],                  output_block: CHEST,        out_count: 1  },
   // 乙太燈 v1（乙太礦脈）：1 乙太礦 + 4 玻璃 → 1 乙太燈（5 格，需工作台；散發真實青藍光）
   { id: "aether_lamp",    name: "乙太燈",         inputs: [[AETHER_ORE, 1], [GLASS, 4]], output_block: AETHER_LAMP,  out_count: 1  },
+  // 野菜暖湯 v1（ROADMAP 778）：2 胡蘿蔔 + 2 馬鈴薯 + 1 小麥 → 1 暖湯（三種作物一大鍋，5 格需工作台）
+  { id: "veggie_stew",    name: "野菜暖湯",       inputs: [[CARROT, 2], [POTATO, 2], [WHEAT, 1]], output_block: STEW, out_count: 1 },
 ];
 
 // wbGrid[0..8]：3×3 共 9 格，0 代表空格，非零代表 block_id。
