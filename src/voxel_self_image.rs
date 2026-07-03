@@ -133,7 +133,18 @@ pub fn dominant_domain(memories: &[MemoryEntry]) -> Option<(SelfDomain, usize)> 
     let mut counts = [0usize; 8];
     for e in memories {
         if let Some(d) = classify_domain(&e.summary) {
-            let idx = DOMAINS.iter().position(|x| *x == d).unwrap();
+            // 窮舉映射到 DOMAINS 的索引：日後加變體時編譯器會在此報錯（漏配 match 臂），
+            // 而非留到執行期 `position().unwrap()` 落空 panic 掉整條遊戲迴圈。
+            let idx = match d {
+                SelfDomain::Builder => 0,
+                SelfDomain::Farmer => 1,
+                SelfDomain::Miner => 2,
+                SelfDomain::Angler => 3,
+                SelfDomain::Stargazer => 4,
+                SelfDomain::Wanderer => 5,
+                SelfDomain::Caretaker => 6,
+                SelfDomain::Companion => 7,
+            };
             counts[idx] += 1;
         }
     }
