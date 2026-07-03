@@ -2615,6 +2615,8 @@ addEventListener("keydown", (e) => {
   }
   // Esc：關操作設定面板（也讓瀏覽器解除滑鼠鎖定，兩者不衝突）。
   if (e.code === "Escape" && settingsPanelVisible()) closeSettingsPanel();
+  // Esc：也收起 ☰ 主選單抽屜（若正開著）。
+  if (e.code === "Escape" && typeof closeMenuDrawer === "function") closeMenuDrawer();
 });
 addEventListener("keyup", (e) => { keys[e.code] = false; });
 
@@ -2696,6 +2698,8 @@ let touchDigHeld = false;
 let crosshairResident = null; // rid 或 null：準心對到的居民（每幀節流更新）
 if (isTouch) {
   if (touchEl) touchEl.style.display = "block";
+  // 標記觸控裝置：CSS 可據此把左下聊天窗抬到搖桿之上（橫式尤其重要，見 index.html）。
+  document.body.classList.add("touch");
   const joy = document.getElementById("joy"), nub = document.getElementById("joyNub");
   let joyId = null, jcx = 0, jcy = 0;
   joy.addEventListener("touchstart", (e) => {
@@ -2896,6 +2900,44 @@ function syncSettingsPanelUI() {
   const vd = q("setViewDefault"); if (vd) vd.value = settings.viewDefault;
 }
 if (gearBtn) gearBtn.addEventListener("click", () => { if (settingsPanelVisible()) closeSettingsPanel(); else openSettingsPanel(); });
+
+// ── ☰ 主選單抽屜（UI 響應式整理）──────────────────────────────────────────────
+// 右側一排功能鈕（動態/日記牆/羅盤/交情/技能/成就）＋人稱/操作設定全收進抽屜，
+// 常駐畫面只留最常用（背包/說話/挖/放置）。所有鈕仍是原本的 DOM 元素、原本的
+// 事件監聽器照舊生效——這裡只管抽屜的開合，不改任何功能行為。
+const menuBtnEl = document.getElementById("menuBtn");
+const menuDrawerEl = document.getElementById("menuDrawer");
+function menuDrawerOpen() { return menuDrawerEl && menuDrawerEl.classList.contains("open"); }
+function openMenuDrawer() {
+  if (!menuDrawerEl) return;
+  menuDrawerEl.classList.add("open");
+  if (menuBtnEl) menuBtnEl.classList.add("open");
+}
+function closeMenuDrawer() {
+  if (menuDrawerEl) menuDrawerEl.classList.remove("open");
+  if (menuBtnEl) menuBtnEl.classList.remove("open");
+}
+if (menuBtnEl) {
+  menuBtnEl.addEventListener("click", (e) => {
+    e.stopPropagation();
+    menuDrawerOpen() ? closeMenuDrawer() : openMenuDrawer();
+  });
+}
+if (menuDrawerEl) {
+  // 點抽屜內任一功能鈕後收起抽屜——它開的面板（z-index 20）就不會被抽屜（z-index 21）擋住。
+  // 各鈕自身的開面板/切人稱監聽器照樣先觸發，這裡只負責關抽屜。
+  menuDrawerEl.addEventListener("click", (e) => {
+    const item = e.target.closest("#feedBtn, #diaryWallBtn, #compassBtn, #relationsBtn, #skillsBtn, #milestonesBtn, #viewBtn, #gearBtn");
+    if (item) closeMenuDrawer();
+  });
+}
+// 點抽屜與 ☰ 鈕以外的地方 → 收起抽屜（麥塊/一般選單直覺）。
+document.addEventListener("click", (e) => {
+  if (!menuDrawerOpen()) return;
+  if (menuDrawerEl && menuDrawerEl.contains(e.target)) return;
+  if (menuBtnEl && menuBtnEl.contains(e.target)) return;
+  closeMenuDrawer();
+});
 {
   const q = (id) => document.getElementById(id);
   const closeBtn = q("settingsClose");
