@@ -77,6 +77,7 @@ use crate::voxel_tend as vtend;
 use crate::voxel_nameplate as vnameplate;
 use crate::voxel_neighborsign as vneighsign;
 use crate::voxel_neighborvisit as vneighvisit;
+use crate::voxel_callingcard as vcard;
 use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_weather as vweather;
 use crate::voxel_clique as vclique;
@@ -340,6 +341,13 @@ struct VoxelResident {
     /// 重返冷卻倒數（秒，讀牌 v3）：一次朝聖（抵達或放棄）後設為 [`vreadsign::PILGRIMAGE_COOLDOWN`]，
     /// 歸零前不再啟程——稀少才有感、不洗版。各居民初始錯開。
     pilgrimage_cooldown: f32,
+    /// 門口留下的「有人來找過」心意佇列（登門撲空留心意 v1，ROADMAP 763）：某訪客登門撲空（752 判定
+    /// 主人不在家）時，訪客名字塞進這裡；日後主人回到自家附近閒著時逐一感應、念一句、記一筆。
+    /// 去重＋上限保護（[`vcard::MAX_PENDING_CALLERS`]）。純記憶體、重啟歸零。
+    pending_callers: Vec<String>,
+    /// 感應門口心意的冷卻倒數（秒，ROADMAP 763）：一次感應後設為 [`vcard::NOTICE_COOLDOWN`]，
+    /// 歸零前不再感應下一張——多張心意一張一張慢慢感應、不一次倒完。各居民初始錯開。
+    callingcard_cooldown: f32,
     /// 晨間思念玩家（記憶驅動·晨間思念玩家 v1，ROADMAP 746）：Some(玩家顯示名, 逾時剩餘秒) =
     /// 醒來讀昨晚睡前反思、發現惦記的是這位在線玩家，正朝他走去要打招呼；抵達（暖暖打招呼＋記一筆
     /// 與他的記憶）或逾時／玩家離線即清空。純記憶體、重啟歸零。
@@ -1106,6 +1114,9 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             pilgrimage_neighbor: None,
             pilgrimage_timer: 0.0,
             pilgrimage_cooldown: 180.0 + i as f32 * 60.0,
+            // 登門撲空留心意 v1（ROADMAP 763）：入場門口沒有待感應的心意；首次感應冷卻各自錯開。
+            pending_callers: Vec::new(),
+            callingcard_cooldown: 20.0 + i as f32 * 15.0,
             // 晨間思念玩家（ROADMAP 746）：入場沒有進行中的思念（僅由清晨醒來時的睡前反思觸發）。
             daybreak_seek: None,
             reunion_seek: None,
@@ -4655,6 +4666,13 @@ fn tick_residents(dt: f32) {
     // 格式：(訪客顯示名, 被登門的主人顯示名, 泡泡雜湊 pick)。
     let mut hosted_meetings: Vec<(&'static str, String, usize)> = Vec::new();
 
+    // 登門撲空留心意事件（登門撲空留心意 v1，ROADMAP 763）：鎖內偵測「訪客登門抵達時那位鄰居**不在家**」，
+    // 鎖外統一把訪客名字塞進那位主人的門口心意佇列（去重＋上限）。格式：(被登門的主人顯示名, 訪客顯示名)。
+    let mut calling_cards: Vec<(String, &'static str)> = Vec::new();
+    // 主人回家感應到門口心意事件（ROADMAP 763）：鎖內偵測「主人回到自家附近、閒著、感應到一張心意」，
+    // 鎖外統一處理主人側記憶（掛訪客名下）＋ Feed。格式：(主人 id, 主人顯示名, 那位訪客顯示名)。
+    let mut callingcard_notices: Vec<(String, &'static str, String)> = Vec::new();
+
     // 就寢反思 Feed 事件（作息·就寢反思 v1，ROADMAP 744）：鎖內入睡時偵測，鎖外記 Feed。
     // 格式：(resident_name, 今天回味的記憶摘要)。
     let mut bedtime_feed: Vec<(&'static str, String)> = Vec::new();
@@ -5480,8 +5498,11 @@ fn tick_residents(dt: f32) {
                                 r.say = vhosted::met_line(&nb, pick);
                                 hosted_meetings.push((r.name, nb.clone(), pick));
                             } else {
-                                // 主人不在家：撲空，落回 751 既有的「對空門口串門子」暖句。
-                                r.say = vneighvisit::visit_line(&nb, pick);
+                                // 主人不在家：撲空（登門撲空留心意 v1，ROADMAP 763）——不再只是對空門口
+                                // 說句話就走，而是**在門口留下一份心意**：念一句帶「留個心意」意味的暖句，
+                                // 並把這位訪客記進那位主人的門口心意佇列（鎖外統一入列，主人回家後感應到）。
+                                r.say = vcard::miss_line(&nb, pick);
+                                calling_cards.push((nb.clone(), r.name));
                             }
                             r.say_timer = SAY_SECS;
                             neighbor_visit_arrivals.push((r.id.clone(), r.name, nb));
@@ -5547,6 +5568,42 @@ fn tick_residents(dt: f32) {
                         }
                     }
                 }
+            }
+
+            // ── 登門撲空留心意·主人回家感應 v1（ROADMAP 763）──────────────────────────────────
+            // 752 的「撲空」分支不再白跑：訪客撲空時已把名字留進主人的門口心意佇列（pending_callers）。
+            // 主人回到自家附近、閒著沒事、沒在說話時，逐一感應這些心意——冒一句暖泡泡、鎖外記一筆掛在
+            // 那位訪客名下的記憶＋一則 Feed，讓主人「就算錯過，也知道有人特地來找過我」。冷卻讓多張心意
+            // 一張一張慢慢感應、不一次倒完。情誼**不在此重複記帳**（751 抵達時已 record_visit 過這對）。
+            // 鎖序：say 於本鎖內設、記憶/Feed 走鎖外 callingcard_notices，不巢狀、不持鎖 await。
+            if r.callingcard_cooldown > 0.0 {
+                r.callingcard_cooldown -= dt;
+            }
+            if !r.pending_callers.is_empty()
+                && r.callingcard_cooldown <= 0.0
+                && r.say.is_empty()
+                && r.pilgrimage.is_none()
+                && r.gather.is_none()
+                && r.fetch.is_none()
+                && r.visiting.is_none()
+                && r.cheer_target.is_none()
+                && !r.seeking_comfort
+                && r.clique_meet.is_none()
+                && r.follow.is_none()
+                && r.invent_run.is_none()
+                && r.daybreak_seek.is_none()
+                && r.reunion_seek.is_none()
+                && r.expedition.is_none()
+                && !r.asleep
+                && vcard::noticed_at_home(r.body.x, r.body.z, r.home_x, r.home_z)
+            {
+                // 逐一感應最舊的一張心意（remove(0)＝先進先感應，逐張騰空佇列）。
+                let guest = r.pending_callers.remove(0);
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                r.say = vcard::notice_line(&guest, pick);
+                r.say_timer = SAY_SECS;
+                r.callingcard_cooldown = vcard::NOTICE_COOLDOWN;
+                callingcard_notices.push((r.id.clone(), r.name, guest));
             }
 
             // ── 遠行探野 v1（ROADMAP 756·PLAN_ETHERVOX item 7「居民散佈世界各處住」第一刀）────────
@@ -7183,6 +7240,37 @@ fn tick_residents(dt: f32) {
         }
         // 城鎮動態 Feed：主人正好在家、親自迎接了登門的訪客。
         vfeed::append_feed("在家迎客", host, &vhosted::hosted_feed(guest, host));
+    }
+
+    // 5c-2d) 登門撲空·留心意入列（登門撲空留心意 v1，ROADMAP 763）：訪客登門撲空（主人不在家）時，
+    // 把訪客名字留進那位主人的門口心意佇列——去重（同一人連來只留一份）＋上限保護。日後主人回到自家
+    // 附近閒著時逐一感應。鎖序：一次短取 residents 寫鎖批次入列即釋、不巢狀、無 IO。
+    if !calling_cards.is_empty() {
+        let mut rs = hub().residents.write().unwrap();
+        for (host, guest) in &calling_cards {
+            if let Some(h) = rs.iter_mut().find(|r| r.name == host.as_str()) {
+                vcard::enqueue_caller(&mut h.pending_callers, guest);
+            }
+        }
+    } // residents 寫鎖釋放
+
+    // 5c-2e) 登門撲空·主人回家感應處理（登門撲空留心意 v1，ROADMAP 763）：主人回到自家附近、閒著時
+    // 感應到門口一張心意（rr 迴圈已設好泡泡並自佇列取出訪客名）——補上主人側的痕跡：① 把「某某趁我不在
+    // 時特地來找過我」記成一筆掛在那位訪客名下的記憶（撲空這一側第一次也在主人心裡留下溫度）；② 一則
+    // 「回家發現有人來找過」Feed。情誼**不在此重複記帳**（751 抵達時已 record_visit 這對）。
+    // 鎖序：memory 寫鎖各自短取即釋、IO 在鎖外——不巢狀、守死鎖鐵律。
+    for (rid, rname, guest) in &callingcard_notices {
+        // 主人側記憶：掛在訪客名下（沿用「跨居民記憶鍵到對方名字」慣例，比照 748/750/752）。
+        let entry = {
+            hub()
+                .memory
+                .write()
+                .unwrap()
+                .add_memory(rid, guest, &vcard::notice_memory(guest))
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&entry);
+        // 城鎮動態 Feed：主人回到家，發現有人趁自己不在時來找過。
+        vfeed::append_feed("回家發現", rname, &vcard::notice_feed(rname, guest));
     }
 
     // 5c-3) 就寢反思 Feed（作息·就寢反思 v1，ROADMAP 744）：居民入睡前回味今天最有感的一件事，
