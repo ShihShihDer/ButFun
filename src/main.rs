@@ -208,6 +208,8 @@ mod voxel_resident_trade;
 mod voxel_share;
 // 乙太方界·玩家里程碑 v1：把玩家自己的療癒循環第一次做成可回頭翻閱的成就徽章（ROADMAP 724）。
 mod voxel_milestones;
+// 乙太方界·玩家位置持久化 v1：登入帳號重整/重登回到上次位置（訪客不存、綁後端權威 email）。
+mod voxel_player_pos;
 mod voxel_keepsake; // ROADMAP 732 你送的心意她擺了出來·玩家餽贈化為紀念物擺進世界
 mod voxel_fishing; // ROADMAP 734 垂釣 v1·對準水面拋竿等待收竿，釣起小魚/稀有乙太魚
 mod voxel_grove; // ROADMAP 738 植樹造林 v1·砍葉得樹苗→種在土地上→靜候長成一株樹，可再生木材
