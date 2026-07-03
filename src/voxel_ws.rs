@@ -56,6 +56,7 @@ use crate::voxel_giftgarden as vgg;
 use crate::voxel_fishing as vfish;
 use crate::voxel_smelt as vsmelt;
 use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
+use crate::voxel_admire as vadmire;
 use crate::voxel_preference as vpref;
 use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
@@ -2006,6 +2007,13 @@ async fn handle_socket(
     // 位置持久化 v1：上次存位置的 unix 秒（0 = 從未存；第一次 Move 後 30 秒內觸發第一次存）。
     let mut last_pos_save_ts: u64 = 0;
 
+    // 居民會注意到你親手蓋的東西 v1（773）：這條連線的「建造連段」（連續放置的塊數＋
+    // 上一塊位置與時刻，見 voxel_admire）＋這條連線對每位居民的讚賞冷卻（per-connection，
+    // 天然 per-player、零跨連線鎖；斷線即清、無持久化需求）。
+    let mut build_streak: Option<vadmire::BuildStreak> = None;
+    let mut admire_cd: std::collections::HashMap<String, std::time::Instant> =
+        std::collections::HashMap::new();
+
     // 讀取迴圈：處理 move / req / break / place / talk。
     while let Some(Ok(msg)) = receiver.next().await {
         let txt = match msg {
@@ -2375,6 +2383,92 @@ async fn handle_socket(
                                     .unwrap()
                                     .add_memory(&rid, &name, &summary); // 記憶寫鎖即釋
                                 vmem::append_memory(&entry); // IO 在鎖外
+                            }
+                        }
+                    } else {
+                        // 居民會注意到你親手蓋的東西 v1（773）：這塊不是幫某居民補計畫（helped=None），
+                        // 而是玩家自己的創作——推進「建造連段」，一段連續建造夠長時，身邊有空的居民
+                        // 會停下來讚賞你的手藝、把「看著這位旅人親手蓋起了東西」記進心裡（累積好感）。
+                        let now_secs = vfarm::now_secs();
+                        build_streak =
+                            Some(vadmire::advance_streak(build_streak, x as f32, z as f32, now_secs));
+                        let streak = build_streak.map_or(0, |s| s.0);
+                        if streak >= vadmire::ADMIRE_STREAK_MIN {
+                            // 快照居民，挑「離這塊最近、此刻有空（沒在冒別的泡泡／拜訪／遠行／
+                            // 聚會／品嘗）」的一位（residents 讀鎖即釋，不與後續鎖巢狀）。
+                            let cand: Option<(String, &'static str, f32)> = {
+                                let residents = hub().residents.read().unwrap();
+                                residents
+                                    .iter()
+                                    .filter(|r| {
+                                        r.say.is_empty()
+                                            && r.visiting.is_none()
+                                            && r.expedition.is_none()
+                                            && r.clique_meet.is_none()
+                                            && r.savoring.is_none()
+                                    })
+                                    .map(|r| {
+                                        let dx = x as f32 - r.body.x;
+                                        let dz = z as f32 - r.body.z;
+                                        (r.id.clone(), r.name, dx * dx + dz * dz)
+                                    })
+                                    .filter(|(_, _, d2)| {
+                                        *d2 <= vadmire::ADMIRE_RADIUS * vadmire::ADMIRE_RADIUS
+                                    })
+                                    .min_by(|a, b| {
+                                        a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)
+                                    })
+                            }; // residents 讀鎖釋放
+                            if let Some((rid, rname, dist_sq)) = cand {
+                                // 冷卻：這位居民對這位玩家上次讚賞是否已過 ADMIRE_COOLDOWN_SECS
+                                // （per-connection 冷卻，天然 per-player，防刷好感／洗版）。
+                                let now = std::time::Instant::now();
+                                let cooldown_ok = match admire_cd.get(&rid) {
+                                    Some(prev) => {
+                                        now.duration_since(*prev).as_secs()
+                                            >= vadmire::ADMIRE_COOLDOWN_SECS
+                                    }
+                                    None => true,
+                                };
+                                if vadmire::admire_triggers(streak, dist_sq, cooldown_ok) {
+                                    admire_cd.insert(rid.clone(), now);
+                                    // 讚賞泡泡（residents 寫鎖即釋；不覆寫既有泡泡＝上面已濾 say 空）。
+                                    let pick = now_secs as usize;
+                                    let said = {
+                                        let mut residents = hub().residents.write().unwrap();
+                                        residents
+                                            .iter_mut()
+                                            .find(|r| r.id == rid)
+                                            .map(|r| {
+                                                r.say = vadmire::admire_say_line(&name, pick)
+                                                    .chars()
+                                                    .take(50)
+                                                    .collect();
+                                                r.say_timer = SAY_SECS;
+                                                r.mood_boost_secs = r
+                                                    .mood_boost_secs
+                                                    .max(voxel_mood::MOOD_BOOST_TALK);
+                                            })
+                                            .is_some()
+                                    }; // residents 寫鎖釋放
+                                    if said {
+                                        broadcast_players();
+                                        // 把「看著你蓋起了東西」寫進記憶（episodic，累積好感）——
+                                        // 記憶寫鎖即釋、append 的 IO 在鎖外（守死鎖鐵律）。
+                                        let summary = vadmire::admire_memory_line(&name);
+                                        let entry = hub()
+                                            .memory
+                                            .write()
+                                            .unwrap()
+                                            .add_memory(&rid, &name, &summary);
+                                        vmem::append_memory(&entry);
+                                        vfeed::append_feed(
+                                            "居民讚賞",
+                                            rname,
+                                            &format!("{rname}讚賞了{name}親手蓋的東西"),
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
