@@ -5600,15 +5600,19 @@ fn tick_residents(dt: f32) {
                     r.say.is_empty(),
                     rand::random::<f32>(),
                 ) {
-                    let seq = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                    let (fx, fz, bearing) = vexp::pick_frontier(r.home_x, r.home_z, seq);
+                    // 遠行 v3（ROADMAP 758）：落點改由「家的方位」確定性算出（outpost_seq），
+                    // 同一位居民每趟遠行都回到同一處邊陲營地——漂泊收斂成安頓、荒野長出專屬據點。
+                    let outpost = vexp::outpost_seq(r.home_x, r.home_z);
+                    let (fx, fz, bearing) = vexp::pick_frontier(r.home_x, r.home_z, outpost);
                     r.expedition = Some((fx, fz, bearing.to_string()));
                     r.expedition_stay = 0.0;
                     r.expedition_timer = vexp::EXPEDITION_TIMEOUT;
                     r.target_x = fx;
                     r.target_z = fz;
                     r.wait_timer = 0.0;
-                    r.say = vexp::embark_bubble(bearing, seq);
+                    // 泡泡台詞仍用當下身位輪替（維持變化，不因據點固定而每趟同一句）。
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    r.say = vexp::embark_bubble(bearing, pick);
                     r.say_timer = SAY_SECS;
                     expedition_feed.push((r.name, vexp::embark_feed_line(bearing)));
                 }
@@ -6892,32 +6896,84 @@ fn tick_residents(dt: f32) {
             let already = voxel::block_at(fx, fy, fz) == Block::Torch;
             (placeable, already)
         }; // deltas 讀鎖釋放
-        if !placeable || already {
+        if !placeable {
+            // 落點不可立（海上／樹裡）→ 營火與小棚都不搭。
             continue;
         }
-        let blocks = vexp::campfire_blocks(*bx, sy, *bz);
-        // 寫鎖批次落地（一次持有、寫完即釋、不 await）。
-        {
-            let mut world = hub().deltas.write().unwrap();
+        if !already {
+            let blocks = vexp::campfire_blocks(*bx, sy, *bz);
+            // 寫鎖批次落地（一次持有、寫完即釋、不 await）。
+            {
+                let mut world = hub().deltas.write().unwrap();
+                for &(x, y, z, b) in &blocks {
+                    voxel::set_block(&mut world, x, y, z, b);
+                }
+            } // deltas 寫鎖釋放
+            // 鎖外收尾：廣播 + 走既有 world delta 持久化（重啟後營火還在）。
             for &(x, y, z, b) in &blocks {
-                voxel::set_block(&mut world, x, y, z, b);
+                broadcast_block(x, y, z, b);
+                vbuild::append_world_block(x, y, z, b as u8);
             }
-        } // deltas 寫鎖釋放
-        // 鎖外收尾：廣播 + 走既有 world delta 持久化（重啟後營火還在）。
-        for &(x, y, z, b) in &blocks {
-            broadcast_block(x, y, z, b);
-            vbuild::append_world_block(x, y, z, b as u8);
+            // 升起營火昇華成一筆記憶（掛遠行哨兵鍵，日記／內心可引用）。
+            let summary = vexp::campfire_memory_summary(bearing);
+            let entry = hub()
+                .memory
+                .write()
+                .unwrap()
+                .add_memory(rid, vexp::EXPEDITION_MEMORY_PLAYER, &summary);
+            vmem::append_memory(&entry);
+            // 一則動態，讓沒在現場的玩家也讀得到「居民在荒野留下了記號」。
+            vfeed::append_feed("遠行", rname, &vexp::campfire_feed_line(bearing));
         }
-        // 升起營火昇華成一筆記憶（掛遠行哨兵鍵，日記／內心可引用）。
-        let summary = vexp::campfire_memory_summary(bearing);
-        let entry = hub()
-            .memory
-            .write()
-            .unwrap()
-            .add_memory(rid, vexp::EXPEDITION_MEMORY_PLAYER, &summary);
-        vmem::append_memory(&entry);
-        // 一則動態，讓沒在現場的玩家也讀得到「居民在荒野留下了記號」。
-        vfeed::append_feed("遠行", rname, &vexp::campfire_feed_line(bearing));
+
+        // 5c-2a'') 邊陲紮營小棚（遠行 v3，ROADMAP 758「在遠方紮營、雛形第二個家」）：抵達據點時，
+        // 居民在營火旁搭起一座簡易 lean-to（背牆＋頂＋一張床）——荒野裡第一個過夜的地方。**獨立於
+        // 營火冪等**（不因營火已存在而略過：v3 部署前既有的營地也會在下一趟回訪時補上小棚）。
+        // 鎖序同營火：surface_y 純函式鎖外算 → deltas 讀鎖快照冪等/可立即釋 → 寫鎖批次落地即釋 →
+        // 鎖外廣播＋持久化＋memory 短寫＋Feed。每塊逐一「該格空氣才放」，起伏地形不覆蓋既有方塊。
+        let (ax, az) = vexp::shelter_anchor(*bx, *bz);
+        let ay = vbuild::surface_y(ax, az);
+        let shelter = vexp::shelter_blocks(ax, ay, az);
+        // 冪等判定 + 逐格可立快照——一次讀鎖即釋。
+        let (bed_exists, placeable_cells) = {
+            let _w = hub().deltas.read().unwrap();
+            let (bx2, by2, bz2) = vexp::shelter_bed_pos(ax, ay, az);
+            let bed_exists = voxel::block_at(bx2, by2, bz2) == Block::Bed;
+            // 逐格：只有目標格目前是空氣才放（不覆蓋地形/水/樹/既有建物）。
+            let cells: Vec<(i32, i32, i32, Block)> = shelter
+                .iter()
+                .copied()
+                .filter(|&(x, y, z, _)| matches!(voxel::block_at(x, y, z), Block::Air))
+                .collect();
+            (bed_exists, cells)
+        }; // deltas 讀鎖釋放
+        // 已搭過（床在）或這趟一塊都放不下（全非空氣）→ 不重複、不空搭。
+        if !bed_exists && !placeable_cells.is_empty() {
+            {
+                let mut world = hub().deltas.write().unwrap();
+                for &(x, y, z, b) in &placeable_cells {
+                    voxel::set_block(&mut world, x, y, z, b);
+                }
+            } // deltas 寫鎖釋放
+            for &(x, y, z, b) in &placeable_cells {
+                broadcast_block(x, y, z, b);
+                vbuild::append_world_block(x, y, z, b as u8);
+            }
+            // 只有真的把床搭起來（雛形第二個家成立）才記憶＋播報，避免半截小棚也洗版。
+            if placeable_cells
+                .iter()
+                .any(|&(_, _, _, b)| b == Block::Bed)
+            {
+                let summary = vexp::shelter_memory_summary(bearing);
+                let entry = hub().memory.write().unwrap().add_memory(
+                    rid,
+                    vexp::EXPEDITION_MEMORY_PLAYER,
+                    &summary,
+                );
+                vmem::append_memory(&entry);
+                vfeed::append_feed("遠行", rname, &vexp::shelter_feed_line(bearing));
+            }
+        }
     }
 
     // 5c-2b) 登門串門子·抵達處理（登門串門子 v1，ROADMAP 751）：居民朝聖抵達的其實是某位鄰居親手
