@@ -80,6 +80,7 @@ use crate::voxel_neighborsign as vneighsign;
 use crate::voxel_neighborvisit as vneighvisit;
 use crate::voxel_callingcard as vcard;
 use crate::voxel_savor as vsavor;
+use crate::voxel_self_image as vself;
 use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_weather as vweather;
 use crate::voxel_clique as vclique;
@@ -354,6 +355,10 @@ struct VoxelResident {
     /// 感應門口心意的冷卻倒數（秒，ROADMAP 763）：一次感應後設為 [`vcard::NOTICE_COOLDOWN`]，
     /// 歸零前不再感應下一張——多張心意一張一張慢慢感應、不一次倒完。各居民初始錯開。
     callingcard_cooldown: f32,
+    /// 說出口自我印象的冷卻倒數（秒，自我印象 v1·ROADMAP 770）：閒暇時偶爾自言自語一句「我好像
+    /// 成了村裡最愛蓋東西的人」——歸零＋過機率＋有明顯主導領域才觸發；觸發後設長冷卻，避免反覆碎念。
+    /// 沒昇華出印象時設中冷卻重試（避免每 tick 白讀記憶鎖）。各居民初始大幅錯開。純記憶體、重啟歸零。
+    self_image_cooldown: f32,
     /// 晨間思念玩家（記憶驅動·晨間思念玩家 v1，ROADMAP 746）：Some(玩家顯示名, 逾時剩餘秒) =
     /// 醒來讀昨晚睡前反思、發現惦記的是這位在線玩家，正朝他走去要打招呼；抵達（暖暖打招呼＋記一筆
     /// 與他的記憶）或逾時／玩家離線即清空。純記憶體、重啟歸零。
@@ -1129,6 +1134,9 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             // 登門撲空留心意 v1（ROADMAP 763）：入場門口沒有待感應的心意；首次感應冷卻各自錯開。
             pending_callers: Vec::new(),
             callingcard_cooldown: 20.0 + i as f32 * 15.0,
+            // 自我印象 v1（ROADMAP 770）：入場先積累記憶再回望自己——首次冷卻各自大幅錯開
+            //（前 8~14 分鐘不碎念自我印象），也避免啟動後同時多人念。
+            self_image_cooldown: 480.0 + i as f32 * 120.0,
             // 晨間思念玩家（ROADMAP 746）：入場沒有進行中的思念（僅由清晨醒來時的睡前反思觸發）。
             daybreak_seek: None,
             reunion_seek: None,
@@ -4837,6 +4845,9 @@ fn tick_residents(dt: f32) {
     // 真的享用了那份心意」（泡泡＋心情補助已於鎖內設好），鎖外統一補一則城鎮動態 Feed。
     // 格式：(居民顯示名, 送禮玩家名, 食物顯示名)。
     let mut savor_feeds: Vec<(&'static str, String, &'static str)> = Vec::new();
+    // 自我印象 v1（ROADMAP 770）：鎖內偵測「居民閒下來、回望自己昇華出一句自我印象」（泡泡已於鎖內設好），
+    // 鎖外統一補一則城鎮動態 Feed（第三人稱旁白，已是純模板、無記憶原文）。
+    let mut self_image_feeds: Vec<(&'static str, String)> = Vec::new();
 
     // 就寢反思 Feed 事件（作息·就寢反思 v1，ROADMAP 744）：鎖內入睡時偵測，鎖外記 Feed。
     // 格式：(resident_name, 今天回味的記憶摘要)。
@@ -5817,6 +5828,47 @@ fn tick_residents(dt: f32) {
                     r.mood_boost_secs =
                         r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_GIFT);
                     savor_feeds.push((r.name, giver, food));
+                }
+            }
+
+            // ── 自我印象 v1（ROADMAP 770·PLAN_ETHERVOX item 2「reflection：把記憶昇華成高階印象」）──
+            // 居民偶爾在閒暇的安靜片刻，回望自己這一路累積的記憶，昇華出一句「我好像成了村裡最愛蓋東西
+            // 的人」的自我概念、自言自語說出口，並記進動態牆。記憶第一次不只被記住／被說出，還昇華成
+            // 居民對「自己是個怎樣的人」的理解——「記憶→行為」的一種（形塑了牠怎麼看自己、怎麼開口）。
+            // 稀少而溫柔：長冷卻＋低機率＋要有明顯主導領域才觸發，不洗版；沿用既有泡泡/Feed 管線、零新
+            // 實體、FPS 零影響。鎖序：記憶短讀即釋→即冒泡泡（say 於本鎖內設）、Feed 走鎖外 self_image_feeds，
+            // 不巢狀、不持鎖 await（守 prod 死鎖鐵律）。隱私：輸出全為固定模板、永不回放記憶原文/玩家原話。
+            if r.self_image_cooldown > 0.0 {
+                r.self_image_cooldown -= dt;
+            }
+            if r.self_image_cooldown <= 0.0
+                && r.say.is_empty()
+                && r.gather.is_none()
+                && r.fetch.is_none()
+                && r.visiting.is_none()
+                && r.cheer_target.is_none()
+                && !r.seeking_comfort
+                && r.clique_meet.is_none()
+                && r.follow.is_none()
+                && r.invent_run.is_none()
+                && r.daybreak_seek.is_none()
+                && r.reunion_seek.is_none()
+                && r.expedition.is_none()
+                && r.pilgrimage.is_none()
+                && !r.asleep
+                && rand::random::<f32>() < vself::SPEAK_CHANCE
+            {
+                // 短鎖快照本居民全部記憶 → 立即釋放，鎖外昇華（純函式、確定性）。
+                let mems = { hub().memory.read().unwrap().all_memories_for(&r.id) };
+                if let Some(bubble) = vself::self_image_bubble(&mems) {
+                    r.say = bubble.chars().take(50).collect();
+                    r.say_timer = SAY_SECS;
+                    if let Some(feed) = vself::self_image_feed_line(&mems) {
+                        self_image_feeds.push((r.name, feed));
+                    }
+                    r.self_image_cooldown = vself::SPEAK_COOLDOWN; // 說過了，久久才再回望一次。
+                } else {
+                    r.self_image_cooldown = vself::RETRY_COOLDOWN; // 還沒昇華出印象，過陣子再看。
                 }
             }
 
@@ -7495,6 +7547,13 @@ fn tick_residents(dt: f32) {
     // 你的心意」。餵食第一次有了「被好好享用」的溫暖回響。鎖外純 IO、不巢狀、守死鎖鐵律。
     for (rname, giver, food) in &savor_feeds {
         vfeed::append_feed("享用", rname, &vsavor::savor_feed_line(rname, giver, food));
+    }
+
+    // 5c-2g) 自我印象 Feed（自我印象 v1，ROADMAP 770）：居民閒下來回望這一路、昇華出「我成了個怎樣
+    // 的人」的自我概念（泡泡已於鎖內設好），鎖外補一則城鎮動態，讓不在線的玩家回來也讀得到「牠如何看
+    // 自己」——記憶昇華進世界的日記牆。鎖外純 IO、不巢狀、守死鎖鐵律；文字已是純模板、無記憶原文。
+    for (rname, detail) in &self_image_feeds {
+        vfeed::append_feed("自省", rname, detail);
     }
 
     // 5c-3) 就寢反思 Feed（作息·就寢反思 v1，ROADMAP 744）：居民入睡前回味今天最有感的一件事，
