@@ -55,6 +55,12 @@ pub struct DiaryPage {
     /// 只是一句去識別化的通用反思，守日記「輸出永不含玩家原話」的隱私鐵律。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub faint_impression: Option<String>,
+    /// 居民對自己的「自我印象」（自我印象 v1，ROADMAP 770）：從累積記憶昇華出的一句
+    /// 高階自我概念（如「不知不覺，我好像成了這一帶最愛動手蓋東西的人了。」）。
+    /// `None` = 還看不出明顯主導領域（記憶太少或勢均力敵）。顯示在日記頁最頂端。
+    /// 隱私：純模板、永不含記憶原文 / 玩家原話（見 `voxel_self_image`）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub self_image: Option<String>,
 }
 
 /// 一段記憶被昇華成的「內心主題」——生命故事級的反思分類。
@@ -89,6 +95,8 @@ pub fn format_diary_page(
         desire: desire.map(|s| s.to_string()),
         entries: curate_reflections(memories, MAX_DIARY_ENTRIES),
         faint_impression: faint_impression_line(faded_count),
+        // 自我印象 v1（ROADMAP 770）：從同一份記憶昇華出高階自我概念，顯示在日記頁最頂端。
+        self_image: crate::voxel_self_image::self_impression(memories),
     }
 }
 

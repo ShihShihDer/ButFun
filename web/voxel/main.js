@@ -1523,6 +1523,18 @@ function renderDiaryPage(page, name) {
   if (!diaryBodyEl) return;
   diaryBodyEl.innerHTML = "";
 
+  // 自我印象區塊（自我印象 v1，ROADMAP 770）：居民從累積記憶昇華出「我是個怎樣的人」的
+  // 高階自我概念，放在日記頁最頂端——翻開日記第一眼就讀到「這位居民如何看待自己」。
+  // 只在後端昇華出明顯主導領域時才有（純模板、無玩家原話，隱私已於後端把關）。
+  if (page && page.self_image) {
+    const selfSection = document.createElement("div");
+    selfSection.className = "diary-self-image";
+    selfSection.innerHTML =
+      '<div class="diary-self-image-label">🪞 自我印象</div>' +
+      '<div class="diary-self-image-text">' + escHtml(page.self_image) + '</div>';
+    diaryBodyEl.appendChild(selfSection);
+  }
+
   // 心願區塊。
   const desireSection = document.createElement("div");
   if (page && page.desire) {
