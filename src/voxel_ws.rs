@@ -80,6 +80,7 @@ use crate::voxel_daybreak as vdaybreak;
 use crate::voxel_reunion as vreunion;
 use crate::voxel_welcome as vwelcome;
 use crate::voxel_resident_trade as vrtrade;
+use crate::voxel_share as vshare;
 use crate::voxel_milestones::{self as vmiles, MilestoneStore};
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
@@ -6132,13 +6133,87 @@ fn tick_residents(dt: f32) {
             }
         }
 
+        // ROADMAP 748：居民互贈·分享採集所得 v1——以物易物（723）是象徵性的（基於特長分類、
+        // 不動實際背包）；本節讓老朋友到訪時，主人偶爾把自己採集背包（res_inv）裡真的採到最多、
+        // 且有餘裕的那種材料，勻一小份**真的**移進訪客背包（零和守恆、不憑空生料），餵訪客自己的
+        // 發明/建造計畫——小社會第一道真實的物資血流。只在這次到訪沒觸發互助蓋家/拌嘴/傳授/易物
+        // 時才可能（同一訪只演一齣戲，鏡像既有優先序）。
+        let mut share_line: Option<String> = None;
+        let other_scene = help_line.is_some()
+            || quarrel_line.is_some()
+            || teach_line.is_some()
+            || resident_trade_line.is_some();
+        if vshare::should_share(tier, other_scene, rand::random::<f32>()) {
+            let host_id = {
+                let residents = hub().residents.read().unwrap();
+                residents.iter().find(|r| r.name == host_name).map(|r| r.id.clone())
+            }; // residents 讀鎖釋放
+            if let Some(host_id) = host_id {
+                // 先讀主人背包挑一份可分享的材料（讀鎖即釋，不巢狀）。
+                let picked = {
+                    let bags = hub().res_inv.read().unwrap();
+                    bags.get(&host_id).and_then(|b| vshare::pick_share(b))
+                }; // res_inv 讀鎖釋放
+                if let Some((block_id, qty)) = picked {
+                    // 真實轉移：主人扣、訪客加（單一寫鎖內循序完成，先扣後加不同時持雙可變借用；
+                    // 再次確認主人此刻仍握有足量，防與同 tick 其他消耗競態）。
+                    let transferred = {
+                        let mut bags = hub().res_inv.write().unwrap();
+                        let host_has =
+                            bags.get(&host_id).and_then(|b| b.get(&block_id)).copied().unwrap_or(0);
+                        if host_has >= qty {
+                            if let Some(hb) = bags.get_mut(&host_id) {
+                                *hb.entry(block_id).or_insert(0) -= qty; // 安全：host_has >= qty
+                            }
+                            *bags
+                                .entry(visitor_id.clone())
+                                .or_default()
+                                .entry(block_id)
+                                .or_insert(0) += qty;
+                            true
+                        } else {
+                            false
+                        }
+                    }; // res_inv 寫鎖釋放
+                    if transferred {
+                        let item_name = vgift::item_name_zh(block_id);
+                        vfeed::append_feed(
+                            vshare::FEED_KIND,
+                            &host_name,
+                            &vshare::share_feed_line(visitor_name, item_name, qty),
+                        );
+                        // 雙方各記一筆（主人慷慨、訪客暖心），日後可被日記昇華。
+                        {
+                            let entry = hub().memory.write().unwrap().add_memory(
+                                &host_id,
+                                visitor_name,
+                                &vshare::share_memory_line_host(visitor_name, item_name),
+                            );
+                            vmem::append_memory(&entry);
+                        } // memory 寫鎖釋放
+                        {
+                            let entry = hub().memory.write().unwrap().add_memory(
+                                &visitor_id,
+                                &host_name,
+                                &vshare::share_memory_line_visitor(&host_name, item_name),
+                            );
+                            vmem::append_memory(&entry);
+                        } // memory 寫鎖釋放
+                        share_line = Some(vshare::share_say_line(visitor_name, item_name, pick));
+                    }
+                }
+            }
+        }
+
         // 依新層級生成問候語 → say_updates（守 say_updates 的「say 空才套」原則）；
         // 若這次到訪順手幫了忙，優先冒幫忙台詞（更有感）；否則若拌了嘴，冒拌嘴台詞；
-        // 否則若學/教了技能，冒傳授台詞；否則若互相易物，冒易物台詞；都沒有才落回一般問候語。
+        // 否則若學/教了技能，冒傳授台詞；否則若互相易物，冒易物台詞；否則若分享了材料，冒分享
+        // 台詞；都沒有才落回一般問候語。
         let greeting = help_line
             .or(quarrel_line)
             .or(teach_line)
             .or(resident_trade_line)
+            .or(share_line)
             .unwrap_or_else(|| vbonds::arrival_line(tier, &host_name, visitor_name, pick));
         say_updates.push((visitor_id, greeting));
     }

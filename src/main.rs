@@ -188,6 +188,8 @@ mod voxel_reunion;
 mod voxel_welcome;
 // 乙太方界·居民互相以物易物 v1：交易特長系統（670）第一次接到居民與居民之間，小社會有了內部經濟（ROADMAP 723）。
 mod voxel_resident_trade;
+// 乙太方界·居民互贈分享採集所得 v1：老朋友到訪時主人把採集背包裡真的有的材料勻一份給訪客，小社會第一道真實物資流動（ROADMAP 748）。
+mod voxel_share;
 // 乙太方界·玩家里程碑 v1：把玩家自己的療癒循環第一次做成可回頭翻閱的成就徽章（ROADMAP 724）。
 mod voxel_milestones;
 mod voxel_keepsake; // ROADMAP 732 你送的心意她擺了出來·玩家餽贈化為紀念物擺進世界
