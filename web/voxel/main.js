@@ -173,6 +173,46 @@ const isTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
 const hudEl = document.getElementById("hud");
 const dbgEl = document.getElementById("dbg");
 
+// ── 操作設定 v1（麥塊 Bedrock 式：準心+按鈕防誤觸、靈敏度、慣用手、自動跳、預設人稱）──
+// 全部存 localStorage、重載保留；合理預設。純前端顯示/手感層，不動遊戲規則或後端。
+const SETTINGS_LS_KEY = "butfun.voxel.settings.v1";
+// 觸控操作模式：
+//   "crosshair" = 準心+按鈕（防誤觸主打）：拖曳只轉視角，挖/放各有專屬按鈕，絕不誤觸。
+//   "tap"       = 點擊互動（舊模式，習慣者可切回）：輕點世界＝挖/對話。
+const SETTINGS_DEFAULTS = {
+  touchMode: "crosshair",                    // 手機預設準心+按鈕（解決誤觸）
+  sensitivity: 1.0,                          // 視角靈敏度倍率（觸控拖曳＋滑鼠＋右搖桿）0.3~2.5
+  btnScale: 1.0,                             // 觸控按鈕大小倍率 0.7~1.6
+  btnOpacity: 1.0,                           // 觸控按鈕透明度 0.35~1.0
+  handed: "right",                           // 慣用手："right"＝搖桿左·按鈕右；"left"＝左右對調
+  autoJump: true,                            // 自動跳躍（撞一格自動踏上；預設開＝維持既有踏階手感）
+  viewDefault: isTouch ? "third" : "first",  // 預設人稱（桌機第一、手機第三，沿用既有成熟手感）
+};
+// 從 localStorage 還原設定；缺欄位／壞資料一律 fallback 到預設（向後相容、永不 throw）。
+function loadSettings() {
+  const s = { ...SETTINGS_DEFAULTS };
+  try {
+    const raw = localStorage.getItem(SETTINGS_LS_KEY);
+    if (raw) {
+      const o = JSON.parse(raw);
+      if (o && typeof o === "object") {
+        if (o.touchMode === "crosshair" || o.touchMode === "tap") s.touchMode = o.touchMode;
+        if (typeof o.sensitivity === "number" && isFinite(o.sensitivity)) s.sensitivity = Math.max(0.3, Math.min(2.5, o.sensitivity));
+        if (typeof o.btnScale === "number" && isFinite(o.btnScale)) s.btnScale = Math.max(0.7, Math.min(1.6, o.btnScale));
+        if (typeof o.btnOpacity === "number" && isFinite(o.btnOpacity)) s.btnOpacity = Math.max(0.35, Math.min(1.0, o.btnOpacity));
+        if (o.handed === "left" || o.handed === "right") s.handed = o.handed;
+        if (typeof o.autoJump === "boolean") s.autoJump = o.autoJump;
+        if (o.viewDefault === "first" || o.viewDefault === "third") s.viewDefault = o.viewDefault;
+      }
+    }
+  } catch (_) { /* localStorage 不可用或壞資料：用預設 */ }
+  return s;
+}
+const settings = loadSettings();
+function saveSettings() {
+  try { localStorage.setItem(SETTINGS_LS_KEY, JSON.stringify(settings)); } catch (_) { /* 無痕/禁 storage：忽略 */ }
+}
+
 // 後端版本戳記：?debug=1 時 fetch /version，把「後端 commit / build 時間」顯示在 dbg HUD，
 // 與前端內容雜湊（window.__BUILD__）並列 → 前後端版本都對得上 origin/main = 全上線了，一眼看出。
 // 堵死「舊 binary 靜默上線、沒人發現」。失敗（端點不存在/離線）一律安全靜默，不影響遊戲。
@@ -2134,7 +2174,8 @@ function moveAxis(axis, delta) {
   const prev = player[axis];
   player[axis] += delta;
   if (!overlaps()) return;
-  if (player.grounded) {
+  // 自動跳躍設定關閉時，撞到一格高就直接擋住（需手動按跳）；開啟＝維持既有踏階手感。
+  if (player.grounded && settings.autoJump) {
     const py = player.y;
     player.y += 1.05;
     if (!overlaps()) {
@@ -2321,10 +2362,12 @@ function cancelMining() {
 /** 每幀推進採礦進度（dt 秒），完成時送 break 訊息。應在 requestAnimationFrame 迴圈呼叫。*/
 function tickMining(dt) {
   if (!mining) return;
+  // 挖掘持續中的判定：桌機按住左鍵、手機按住挖鈕、手把按住挖鍵，任一為真即續挖。
+  const digHeld = isMouseDown || touchDigHeld || gamepadDigHeld;
   // 若準心目標改變（轉頭對準另一格），重置進度。
   if (!target || target.bx !== mining.x || target.by !== mining.y || target.bz !== mining.z) {
     cancelMining();
-    if (target && isMouseDown) startMining();
+    if (target && digHeld) startMining();
     return;
   }
   mining.progress += dt;
@@ -2332,7 +2375,7 @@ function tickMining(dt) {
     // 進度滿：送 break，立刻開始下一塊（如果按著）。
     ws.send(JSON.stringify({ t: "break", x: mining.x, y: mining.y, z: mining.z }));
     cancelMining();
-    if (isMouseDown) startMining();
+    if (digHeld) startMining();
   } else {
     updateMiningBar(mining.progress / mining.total);
   }
@@ -2452,6 +2495,8 @@ addEventListener("keydown", (e) => {
     e.preventDefault();
     if (bagPanelVisible()) closeBagPanel(); else openBagPanel();
   }
+  // Esc：關操作設定面板（也讓瀏覽器解除滑鼠鎖定，兩者不衝突）。
+  if (e.code === "Escape" && settingsPanelVisible()) closeSettingsPanel();
 });
 addEventListener("keyup", (e) => { keys[e.code] = false; });
 
@@ -2460,8 +2505,8 @@ addEventListener("keyup", (e) => { keys[e.code] = false; });
 // 後端玩家只有 yaw（pitch 不上傳、不影響移動/面向）。
 let camPitch = 0.35;
 // 視角模式：'first'=第一人稱（相機在眼睛、藏身體）、'third'=第三人稱（後上方跟隨、看得到身體）。
-// 預設：桌機第一人稱、手機第三人稱（麥塊桌機/MCPE 觸控各自的成熟手感）。
-let viewMode = isTouch ? "third" : "first";
+// 預設：由操作設定的 viewDefault 決定（合理預設＝桌機第一、手機第三，可在設定面板改）。
+let viewMode = settings.viewDefault;
 // 俯仰上下限：第一人稱可近乎正負直視（±83°）；第三人稱維持較窄，避免鏡頭鑽進地面。
 function pitchLimits() { return viewMode === "first" ? [-1.45, 1.45] : [-0.2, 1.3]; }
 function clampPitch() { const [lo, hi] = pitchLimits(); camPitch = Math.max(lo, Math.min(hi, camPitch)); }
@@ -2481,6 +2526,7 @@ const MOUSE_SENS = 0.0022;
 // 有面板/對話開著時不進滑鼠鎖定（那些需要游標操作）。
 function anyPanelOpen() {
   return bagPanelVisible() || wbPanelVisible() || furnacePanelVisible() || chestPanelVisible() ||
+         settingsPanelVisible() ||
          (chatEl && chatEl.style.display === "flex");
 }
 // 釋放滑鼠鎖定（開面板/對話時呼叫，讓游標回來能點格子/打字）。
@@ -2515,8 +2561,9 @@ if (!isTouch) {
   });
   document.addEventListener("mousemove", (e) => {
     if (!pointerLocked) return;
-    player.yaw -= e.movementX * MOUSE_SENS;
-    camPitch += e.movementY * MOUSE_SENS; // 滑鼠往下＝往下看（往下 movementY>0 → pitch 增）
+    const sens = MOUSE_SENS * settings.sensitivity; // 靈敏度設定即時生效
+    player.yaw -= e.movementX * sens;
+    camPitch += e.movementY * sens; // 滑鼠往下＝往下看（往下 movementY>0 → pitch 增）
     clampPitch();
   });
   // 右鍵放置：擋掉瀏覽器選單。
@@ -2526,6 +2573,9 @@ if (!isTouch) {
 // 觸控搖桿（isTouch 常數已在頁首定義）
 const touchEl = document.getElementById("touch");
 let joyVec = { x: 0, y: 0 };
+// 準心+按鈕模式的挖掘狀態（挖鈕按住期間維持）＋準心是否對到居民（挖鈕切「說話」用）。
+let touchDigHeld = false;
+let crosshairResident = null; // rid 或 null：準心對到的居民（每幀節流更新）
 if (isTouch) {
   if (touchEl) touchEl.style.display = "block";
   const joy = document.getElementById("joy"), nub = document.getElementById("joyNub");
@@ -2547,7 +2597,9 @@ if (isTouch) {
   addEventListener("touchend", (e) => {
     for (const t of e.changedTouches) if (t.identifier === joyId) { joyId = null; joyVec = { x: 0, y: 0 }; nub.style.left = "35px"; nub.style.top = "35px"; }
   });
-  // 視角轉動：在非搖桿區拖曳。「點一下」（位移小）＝對準心破壞（MCPE 點破壞範式）。
+  // 視角轉動：在非搖桿區拖曳。靈敏度吃設定倍率。
+  //   準心+按鈕模式：拖曳「只轉視角」，絕不觸發挖/放（防誤觸主打）——但輕點居民仍可開對話（無害、不動世界）。
+  //   點擊互動模式（舊）：輕點世界＝挖（點到居民＝對話），沿用 MCPE 點破壞範式。
   let camId = null, cx0 = 0, cy0 = 0, camMoved = 0;
   renderer.domElement.addEventListener("touchstart", (e) => {
     const t = e.changedTouches[0]; camId = t.identifier; cx0 = t.clientX; cy0 = t.clientY; camMoved = 0;
@@ -2556,8 +2608,9 @@ if (isTouch) {
     for (const t of e.changedTouches) {
       if (t.identifier !== camId) continue;
       camMoved += Math.abs(t.clientX - cx0) + Math.abs(t.clientY - cy0);
-      player.yaw -= (t.clientX - cx0) * 0.006;
-      camPitch += (t.clientY - cy0) * 0.006; clampPitch(); // 夾到目前模式的俯仰範圍
+      const sens = 0.006 * settings.sensitivity; // 觸控拖曳靈敏度吃設定倍率
+      player.yaw -= (t.clientX - cx0) * sens;
+      camPitch += (t.clientY - cy0) * sens; clampPitch(); // 夾到目前模式的俯仰範圍
       cx0 = t.clientX; cy0 = t.clientY;
     }
   }, { passive: false });
@@ -2565,10 +2618,11 @@ if (isTouch) {
     for (const t of e.changedTouches) {
       if (t.identifier !== camId) continue;
       if (camMoved < 8) {
-        // 輕點：先看是否點到居民（開對話），否則挖。
+        // 輕點：先看是否點到居民（開對話，兩種模式皆可——不動世界、無誤觸風險）。
         const rid = pickResident(t.clientX, t.clientY);
         if (rid) { const ent = residents.get(rid); openChat(rid, ent && ent.lastName); }
-        else breakAtTarget();
+        // 點世界＝挖：只在「點擊互動」模式生效；準心+按鈕模式拖曳/輕點都不挖（改按挖鈕）。
+        else if (settings.touchMode === "tap") breakAtTarget();
       }
       camId = null;
     }
@@ -2577,9 +2631,192 @@ if (isTouch) {
   jumpBtn.addEventListener("touchstart", (e) => { tryJump(); e.preventDefault(); }, { passive: false });
   const placeBtn = document.getElementById("place");
   placeBtn.addEventListener("touchstart", (e) => { placeAtTarget(); e.preventDefault(); }, { passive: false });
+  // 專屬「挖」按鈕（準心+按鈕模式核心）：長按對準心方塊計時挖掘（進度條），鬆手取消。
+  //   若準心對到居民 → 改為互動（開對話），不挖（挖/互動分離、絕不混淆）。
+  const digBtn = document.getElementById("dig");
+  if (digBtn) {
+    digBtn.addEventListener("touchstart", (e) => {
+      e.preventDefault();
+      if (crosshairResident) {
+        const ent = residents.get(crosshairResident);
+        openChat(crosshairResident, ent && ent.lastName);
+        return;
+      }
+      touchDigHeld = true;
+      startMining(); // 與桌機共用計時挖掘手感（進度滿才 break）
+    }, { passive: false });
+    const endDig = (e) => { touchDigHeld = false; cancelMining(); if (e) e.preventDefault(); };
+    digBtn.addEventListener("touchend", endDig, { passive: false });
+    digBtn.addEventListener("touchcancel", endDig, { passive: false });
+  }
 }
 
 function tryJump() { if (player.grounded) { player.vy = 8.2; player.grounded = false; } }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 操作設定面板 + 手把（gamepad）v1
+//   全部純前端顯示/手感層：改視角靈敏度、觸控按鈕外觀/擺位、慣用手、自動跳、預設人稱、
+//   觸控模式（準心+按鈕 / 點擊互動），並用瀏覽器 Gamepad API 支援手把。不動遊戲規則/後端。
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── 套用觸控外觀（大小/透明度/慣用手）到 CSS 變數 + body class ──
+// 用 CSS 變數與 class 驅動排版，避免每次都手改多個 inline style（也讓媒體查詢仍生效）。
+function applyTouchStyle() {
+  const root = document.documentElement;
+  root.style.setProperty("--touch-btn-scale", String(settings.btnScale));
+  root.style.setProperty("--touch-btn-opacity", String(settings.btnOpacity));
+  // 慣用手：left 時把觸控層鏡像（搖桿↔按鈕左右對調），用 body class 切 CSS。
+  document.body.classList.toggle("lefty", settings.handed === "left");
+}
+
+// ── 套用觸控操作模式（準心+按鈕 / 點擊互動）：只切「挖鈕」的顯示 ──
+// 準心+按鈕模式才顯示專屬挖鈕；點擊互動模式隱藏挖鈕（改為輕點世界挖）。
+function applyTouchMode() {
+  const digBtn = document.getElementById("dig");
+  if (digBtn) digBtn.style.display = (isTouch && settings.touchMode === "crosshair") ? "flex" : "none";
+}
+
+// ── 每幀（節流）更新準心對到的居民：準心+按鈕模式下讓挖鈕切成「說話」──
+let _crosshairScanTimer = 0;
+function updateCrosshairResident(dt) {
+  if (!isTouch || settings.touchMode !== "crosshair") { crosshairResident = null; return; }
+  _crosshairScanTimer -= dt;
+  if (_crosshairScanTimer > 0) return;
+  _crosshairScanTimer = 0.15; // 節流：每 0.15 秒掃一次（省 raycast，不影響手感）
+  crosshairResident = pickResident(window.innerWidth / 2, window.innerHeight / 2);
+  const digBtn = document.getElementById("dig");
+  if (digBtn) {
+    // 對到居民 → 顯示「💬 說話」；否則回復「⛏ 挖」。
+    digBtn.textContent = crosshairResident ? "💬 說話" : "⛏ 挖";
+    digBtn.classList.toggle("talk", !!crosshairResident);
+  }
+}
+
+// ── 手把（Gamepad）v1：輪詢在既有 rAF 迴圈裡（不另開迴圈）──
+// Xbox 佈局：A(0)跳、B(1)放、X(2)挖、Y(3)背包、LB(4)/RB(5)切快捷欄、LT(6)放/RT(7)挖；
+// 左搖桿移動、右搖桿轉視角。偵測到手把即自動生效。核心 A/B 完整，其餘加分。
+let gamepadConnected = false;
+let gamepadName = "";
+let gamepadDigHeld = false;       // 手把挖鍵是否按住（給 tickMining 續挖）
+let gpMove = { x: 0, y: 0 };      // 手把左搖桿移動向量（餵進 update 的移動合成）
+const _gpPrevBtn = [];            // 上一幀各按鈕是否按下（做邊緣偵測，避免連發）
+const GP_DEADZONE = 0.18;
+const GP_LOOK = 2.6;              // 右搖桿轉視角速率（rad/秒基準，再乘靈敏度）
+function _gpAxis(v) { return Math.abs(v) < GP_DEADZONE ? 0 : v; } // 死區處理
+function pollGamepad(dt) {
+  let pads = [];
+  try { pads = navigator.getGamepads ? navigator.getGamepads() : []; } catch (_) { pads = []; }
+  let gp = null;
+  for (const p of pads) if (p && p.connected) { gp = p; break; }
+  if (!gp) { gamepadConnected = false; gpMove.x = 0; gpMove.y = 0; gamepadDigHeld = false; return; }
+  gamepadConnected = true; gamepadName = gp.id || "手把";
+  // 左搖桿 → 移動（x 右正、y 下正；update 內 -y 當前進，與觸控搖桿一致）
+  gpMove.x = _gpAxis(gp.axes[0] || 0);
+  gpMove.y = _gpAxis(gp.axes[1] || 0);
+  // 右搖桿 → 轉視角（吃靈敏度倍率）
+  const rx = _gpAxis(gp.axes[2] || 0), ry = _gpAxis(gp.axes[3] || 0);
+  if (rx) player.yaw -= rx * GP_LOOK * dt * settings.sensitivity;
+  if (ry) { camPitch += ry * GP_LOOK * dt * settings.sensitivity; clampPitch(); }
+  // 按鈕：邊緣偵測（這幀按下、上幀沒按）→ 觸發一次。
+  const btn = (i) => !!(gp.buttons[i] && gp.buttons[i].pressed);
+  const pressed = (i) => btn(i) && !_gpPrevBtn[i];
+  if (pressed(0)) tryJump();                                  // A：跳
+  if (pressed(1) || pressed(6)) placeAtTarget();              // B / LT：放置
+  if (pressed(3)) { if (bagPanelVisible()) closeBagPanel(); else openBagPanel(); } // Y：背包
+  if (pressed(4)) selectSlot(selectedSlot - 1);              // LB：上一格
+  if (pressed(5)) selectSlot(selectedSlot + 1);              // RB：下一格
+  // X / RT：挖（按住續挖，與觸控挖鈕/滑鼠左鍵共用計時）。準心對到居民 → 改互動。
+  const digNow = btn(2) || btn(7);
+  if (digNow && !gamepadDigHeld) {
+    const rid = pickResident(window.innerWidth / 2, window.innerHeight / 2);
+    if (rid) { const ent = residents.get(rid); openChat(rid, ent && ent.lastName); }
+    else { gamepadDigHeld = true; startMining(); }
+  } else if (!digNow && gamepadDigHeld) {
+    gamepadDigHeld = false; cancelMining();
+  }
+  // 記錄本幀按鈕狀態供下幀邊緣偵測。
+  for (let i = 0; i < gp.buttons.length; i++) _gpPrevBtn[i] = btn(i);
+}
+addEventListener("gamepadconnected", (e) => {
+  gamepadConnected = true; gamepadName = (e.gamepad && e.gamepad.id) || "手把";
+  showMsg("🎮 已連手把：" + gamepadName);
+  updateSettingsGamepadStatus();
+});
+addEventListener("gamepaddisconnected", () => {
+  gamepadConnected = false; updateSettingsGamepadStatus();
+});
+
+// ── 設定面板 DOM 綁定 ──
+const gearBtn = document.getElementById("gearBtn");
+const settingsPanelEl = document.getElementById("settingsPanel");
+function settingsPanelVisible() { return settingsPanelEl && settingsPanelEl.style.display === "flex"; }
+function openSettingsPanel() {
+  if (!settingsPanelEl) return;
+  syncSettingsPanelUI();
+  updateSettingsGamepadStatus();
+  settingsPanelEl.style.display = "flex";
+  releaseMouse(); // 開面板時鬆開滑鼠鎖定，游標可操作控制項
+}
+function closeSettingsPanel() { if (settingsPanelEl) settingsPanelEl.style.display = "none"; }
+function updateSettingsGamepadStatus() {
+  const el = document.getElementById("setGamepadStatus");
+  if (!el) return;
+  el.textContent = gamepadConnected ? ("已連手把：" + gamepadName) : "未偵測到手把";
+}
+// 把 settings 現值灌回面板控制項（開面板時呼叫，確保顯示與實際一致）。
+function syncSettingsPanelUI() {
+  const q = (id) => document.getElementById(id);
+  const mode = q("setTouchMode"); if (mode) mode.value = settings.touchMode;
+  const sens = q("setSensitivity"); if (sens) sens.value = String(settings.sensitivity);
+  const sensV = q("setSensitivityVal"); if (sensV) sensV.textContent = settings.sensitivity.toFixed(2) + "×";
+  const size = q("setBtnScale"); if (size) size.value = String(settings.btnScale);
+  const sizeV = q("setBtnScaleVal"); if (sizeV) sizeV.textContent = settings.btnScale.toFixed(2) + "×";
+  const op = q("setBtnOpacity"); if (op) op.value = String(settings.btnOpacity);
+  const opV = q("setBtnOpacityVal"); if (opV) opV.textContent = Math.round(settings.btnOpacity * 100) + "%";
+  const handed = q("setHanded"); if (handed) handed.value = settings.handed;
+  const aj = q("setAutoJump"); if (aj) aj.checked = settings.autoJump;
+  const vd = q("setViewDefault"); if (vd) vd.value = settings.viewDefault;
+}
+if (gearBtn) gearBtn.addEventListener("click", () => { if (settingsPanelVisible()) closeSettingsPanel(); else openSettingsPanel(); });
+{
+  const q = (id) => document.getElementById(id);
+  const closeBtn = q("settingsClose");
+  if (closeBtn) closeBtn.addEventListener("click", closeSettingsPanel);
+  const mode = q("setTouchMode");
+  if (mode) mode.addEventListener("change", () => { settings.touchMode = mode.value === "tap" ? "tap" : "crosshair"; saveSettings(); applyTouchMode(); });
+  const sens = q("setSensitivity");
+  if (sens) sens.addEventListener("input", () => {
+    settings.sensitivity = Math.max(0.3, Math.min(2.5, parseFloat(sens.value) || 1));
+    const v = q("setSensitivityVal"); if (v) v.textContent = settings.sensitivity.toFixed(2) + "×";
+    saveSettings();
+  });
+  const size = q("setBtnScale");
+  if (size) size.addEventListener("input", () => {
+    settings.btnScale = Math.max(0.7, Math.min(1.6, parseFloat(size.value) || 1));
+    const v = q("setBtnScaleVal"); if (v) v.textContent = settings.btnScale.toFixed(2) + "×";
+    applyTouchStyle(); saveSettings();
+  });
+  const op = q("setBtnOpacity");
+  if (op) op.addEventListener("input", () => {
+    settings.btnOpacity = Math.max(0.35, Math.min(1.0, parseFloat(op.value) || 1));
+    const v = q("setBtnOpacityVal"); if (v) v.textContent = Math.round(settings.btnOpacity * 100) + "%";
+    applyTouchStyle(); saveSettings();
+  });
+  const handed = q("setHanded");
+  if (handed) handed.addEventListener("change", () => { settings.handed = handed.value === "left" ? "left" : "right"; applyTouchStyle(); saveSettings(); });
+  const aj = q("setAutoJump");
+  if (aj) aj.addEventListener("change", () => { settings.autoJump = !!aj.checked; saveSettings(); });
+  const vd = q("setViewDefault");
+  if (vd) vd.addEventListener("change", () => {
+    settings.viewDefault = vd.value === "third" ? "third" : "first";
+    // 立即套用到目前人稱（順手切換，所見即所得），並存檔當下次預設。
+    if (viewMode !== settings.viewDefault) toggleViewMode();
+    saveSettings();
+  });
+}
+// 開頁即套用一次觸控外觀/模式（讓存檔的大小/透明度/慣用手/模式立刻生效）。
+applyTouchStyle();
+applyTouchMode();
 
 // ── WebSocket（/voxel/ws）─────────────────────────────────────────────────
 let ws = null, wsReady = false;
@@ -2962,6 +3199,9 @@ let frames = 0, fpsT = 0, fps = 0;
 let dbgT = 0;
 
 function update(dt) {
+  // 手把輪詢（在既有 rAF 迴圈內，不另開迴圈）：先更新左搖桿移動/右搖桿視角/按鈕，
+  // 讓下面的移動合成吃到本幀手把輸入（無延遲）。沒接手把時零成本早退。
+  pollGamepad(dt);
   // 方向（相對鏡頭 yaw）
   const fwd = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
   const right = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
@@ -2972,6 +3212,8 @@ function update(dt) {
   if (keys["KeyA"] || keys["ArrowLeft"]) mx -= 1;
   // 觸控搖桿（y 往上＝前進）
   mz += -joyVec.y; mx += joyVec.x;
+  // 手把左搖桿（同觸控搖桿慣例：-y 前進、x 右移）
+  mz += -gpMove.y; mx += gpMove.x;
 
   // ── 梯子攀爬 v1（ROADMAP 688）：進入梯子方格後取消重力、Space/跳鈕上爬、S/搖桿下降 ──
   const climbing = aabbHitsLadder(player.x, player.y, player.z, getRaw, PW, PH);
@@ -3062,8 +3304,11 @@ function update(dt) {
   // 準心對準的方塊（破壞/放置目標）+ 高亮外框。
   updateTarget();
 
-  // 採礦手感 v1（ROADMAP 687）：桌機按住左鍵期間每幀推進挖掘進度。
-  if (!isTouch) tickMining(dt);
+  // 準心+按鈕模式：更新準心對到的居民（讓挖鈕切「說話」）。
+  updateCrosshairResident(dt);
+
+  // 採礦手感 v1（ROADMAP 687）：每幀推進挖掘進度（桌機左鍵／手機挖鈕／手把挖鍵共用計時）。
+  tickMining(dt);
 
   // 發光方塊 v1（ROADMAP 691 + 乙太礦脈 v1）：手持發光方塊時在鏡頭附近亮對應色光。
   const heldSel = selectedBlock();
@@ -3128,7 +3373,7 @@ function loop() {
     dbgT = 0;
     // 觸控裝置顯示精簡文字，避免直式螢幕頂部 HUD 溢出
     hudEl.textContent = isTouch
-      ? `乙太方界 · ${myName}\n輕點挖・放置鈕放\nchunk:${chunks.size} 線上:${others.size + 1} 居民:${residents.size}`
+      ? `乙太方界 · ${myName}\n${settings.touchMode === "crosshair" ? "拖曳看・⛏挖鈕・放置鈕" : "輕點挖・放置鈕放"}\nchunk:${chunks.size} 線上:${others.size + 1} 居民:${residents.size}`
       : `乙太方界 · ${myName}\nWASD移動·拖曳轉視角·空白跳\n左鍵/輕點挖·右鍵/放置鈕放·1-6選方塊\nchunk: ${chunks.size}　線上: ${others.size + 1}　居民: ${residents.size}`;
     if (DEBUG) {
       dbgEl.style.display = "block";
@@ -4129,4 +4374,29 @@ window.__voxel = {
   get signTexts() { return Object.fromEntries(signTexts); },
   get signSpriteCount() { return signSprites.size; },
   wrapSignLines(text, per, max) { return wrapSignLines(text, per, max); },
+  // ── 操作設定 + 手把 QA 用（操作大改：準心+按鈕防誤觸、設定面板、鍵盤/手把）──
+  get settings() { return { ...settings }; },
+  setSetting(key, val) {
+    if (!(key in SETTINGS_DEFAULTS)) return null;
+    settings[key] = val;
+    saveSettings();
+    // 套用副作用（與面板 change 事件一致）：外觀/模式/人稱即時生效。
+    applyTouchStyle(); applyTouchMode();
+    if (key === "viewDefault" && viewMode !== settings.viewDefault) toggleViewMode();
+    return settings[key];
+  },
+  reloadSettings() { const s = loadSettings(); Object.assign(settings, s); applyTouchStyle(); applyTouchMode(); return { ...settings }; },
+  get settingsPanelVisible() { return settingsPanelVisible(); },
+  openSettingsPanel() { openSettingsPanel(); },
+  closeSettingsPanel() { closeSettingsPanel(); },
+  get crosshairResident() { return crosshairResident; },
+  get touchDigHeld() { return touchDigHeld; },
+  // 模擬按住/放開觸控挖鈕（QA 驗證「拖曳不挖、按鈕才挖」）。
+  touchDigStart() { if (crosshairResident) { const e = residents.get(crosshairResident); openChat(crosshairResident, e && e.lastName); return "talk"; } touchDigHeld = true; startMining(); return "dig"; },
+  touchDigEnd() { touchDigHeld = false; cancelMining(); },
+  // 手把 QA 用：連線狀態/名稱、挖鍵狀態、注入一次移動向量。
+  get gamepadConnected() { return gamepadConnected; },
+  get gamepadName() { return gamepadName; },
+  get gamepadDigHeld() { return gamepadDigHeld; },
+  pollGamepad(dt) { pollGamepad(dt == null ? 0.016 : dt); return { connected: gamepadConnected, name: gamepadName, move: { ...gpMove } }; },
 };

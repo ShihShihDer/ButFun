@@ -46,13 +46,34 @@
       color: #fff; font-size: 15px; display: flex; align-items: center; justify-content: center;
       pointer-events: auto; user-select: none;
     }
-    /* 放置鈕（手機右側，跳鈕上方）。破壞＝點準心，放置＝這顆。 */
+    /* 放置鈕（手機右側，跳鈕上方）。破壞＝挖鈕/點準心，放置＝這顆。 */
     #place {
       position: absolute; right: 124px; bottom: 60px; width: 76px; height: 76px;
       border-radius: 50%; background: rgba(120,200,120,0.30); border: 2px solid rgba(255,255,255,0.4);
       color: #fff; font-size: 14px; display: flex; align-items: center; justify-content: center;
       pointer-events: auto; user-select: none;
     }
+    /* 專屬「挖」鈕（準心+按鈕模式核心，放置鈕上方）：長按對準心方塊計時挖掘。
+       準心對到居民時 JS 會把文字改成「💬 說話」並加 .talk 類（換暖色，提示改互動不挖）。
+       初始 display:none，由 JS 依觸控模式顯示（只在準心+按鈕模式出現）。 */
+    #dig {
+      position: absolute; right: 124px; bottom: 150px; width: 76px; height: 76px;
+      border-radius: 50%; background: rgba(200,150,90,0.32); border: 2px solid rgba(255,255,255,0.4);
+      color: #fff; font-size: 14px; display: none; align-items: center; justify-content: center;
+      pointer-events: auto; user-select: none;
+    }
+    #dig.talk { background: rgba(120,170,230,0.40); }
+    /* 觸控按鈕大小/透明度：吃設定面板的 CSS 變數（重載保留、即時生效）。
+       用 transform scale 縮放，位置錨點不變（右下拇指區）。 */
+    #jump, #place, #dig {
+      transform: scale(var(--touch-btn-scale, 1));
+      opacity: var(--touch-btn-opacity, 1);
+    }
+    /* 慣用手＝左手（body.lefty）：搖桿移右、跳/放/挖鈕移左，左右對調。 */
+    body.lefty #joy   { left: auto; right: 24px; }
+    body.lefty #jump  { right: auto; left: 30px; }
+    body.lefty #place { right: auto; left: 124px; }
+    body.lefty #dig   { right: auto; left: 124px; }
     /* 中央準心（對準你正在看的方塊）。永遠顯示。 */
     #crosshair {
       position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 7;
@@ -133,6 +154,13 @@
       /* 放置鈕：跳鈕左側，兩顆水平排列、不重疊
          在 390px 螢幕：place 右邊=282px，jump 左邊=294px，間距 12px ✓ */
       #place { right: 108px; bottom: 76px; width: 72px; height: 72px; font-size: 13px; }
+      /* 挖鈕：放置鈕正上方（同 x，堆疊在拇指弧上），準心+按鈕模式的主打互動鍵 */
+      #dig { right: 108px; bottom: 160px; width: 72px; height: 72px; font-size: 13px; }
+      /* 慣用手左手：直式也把三顆鈕移左、搖桿移右 */
+      body.lefty #joy   { left: auto; right: 16px; }
+      body.lefty #jump  { right: auto; left: 16px; }
+      body.lefty #place { right: auto; left: 108px; }
+      body.lefty #dig   { right: auto; left: 108px; }
     }
 
     /* 超窄裝置備援（< 360px 寬）：9×28 + 8×2 + 2×3 = 274px ≤ 320px ✓ */
@@ -140,6 +168,9 @@
       .slot   { width: 28px; height: 28px; font-size: 7px; }
       #hotbar { gap: 2px; padding: 3px; }
       #place  { right: 100px; }
+      #dig    { right: 100px; }
+      body.lefty #place { right: auto; left: 100px; }
+      body.lefty #dig   { right: auto; left: 100px; }
     }
 
     /* ── 居民對話框：底部直式小面板，手機友善、不擋全畫面、可關 ── */
@@ -651,6 +682,68 @@
     #viewBtn:hover { background: rgba(30,45,65,0.8); }
     @media (orientation: portrait) { #viewBtn { top: 96px; font-size: 12px; padding: 5px 9px; } }
 
+    /* ── 操作設定齒輪鈕（開設定面板）：左側，viewBtn 下方，避開右側面板與底部搖桿 ── */
+    #gearBtn {
+      position: fixed; left: 10px; top: 158px; z-index: 6;
+      background: rgba(20,28,40,0.65); color: #cbd6e6;
+      border: 1px solid rgba(203,214,230,0.3);
+      padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      user-select: none; pointer-events: auto;
+    }
+    #gearBtn:hover { background: rgba(30,45,65,0.8); }
+    @media (orientation: portrait) { #gearBtn { top: 128px; font-size: 12px; padding: 5px 9px; } }
+
+    /* ── 操作設定面板（⚙）：置中模態、直式友善、可捲動可關 ── */
+    #settingsPanel {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      z-index: 24; width: min(460px, 94vw); max-height: 86vh;
+      display: none; flex-direction: column;
+      background: rgba(16,22,34,0.97); color: #eaf2ff; border-radius: 16px;
+      border: 1px solid rgba(203,214,230,0.25); box-shadow: 0 8px 32px rgba(0,0,0,0.55);
+      overflow: hidden;
+    }
+    #settingsHead {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px; background: rgba(203,214,230,0.08); font-weight: bold; font-size: 15px;
+      flex-shrink: 0;
+    }
+    #settingsTitle { color: #cbd6e6; }
+    #settingsClose {
+      cursor: pointer; user-select: none; font-size: 18px; line-height: 1;
+      padding: 2px 9px; border-radius: 8px; background: rgba(255,255,255,0.10);
+    }
+    #settingsBody { flex: 1; overflow-y: auto; padding: 10px 14px 16px; }
+    .set-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .set-row:last-child { border-bottom: none; }
+    .set-label { font-size: 13px; color: #dbe6f5; flex-shrink: 0; }
+    .set-label small { display: block; color: #7f93ad; font-size: 10.5px; margin-top: 2px; font-weight: normal; }
+    .set-ctrl { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .set-ctrl select, .set-ctrl input[type=range] { pointer-events: auto; }
+    .set-ctrl select {
+      background: rgba(255,255,255,0.08); color: #eaf2ff; border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 7px; padding: 5px 8px; font-size: 13px;
+    }
+    .set-ctrl input[type=range] { width: 120px; accent-color: #cbd6e6; }
+    .set-ctrl input[type=checkbox] { width: 20px; height: 20px; accent-color: #cbd6e6; }
+    .set-val { font-size: 12px; color: #a8d8ff; min-width: 42px; text-align: right; }
+    .set-sec {
+      font-size: 11px; color: #7f93ad; letter-spacing: 0.8px; text-transform: uppercase;
+      margin: 14px 0 4px;
+    }
+    .set-keys { font-size: 12px; color: #b9c6d8; line-height: 1.7; }
+    .set-keys kbd {
+      display: inline-block; background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 5px; padding: 0 6px; margin-right: 4px; font-family: inherit; font-size: 11px; color: #eaf2ff;
+    }
+    #setGamepadStatus { font-size: 12px; color: #a8d8ff; }
+    @media (orientation: portrait) {
+      .set-ctrl input[type=range] { width: 96px; }
+      #settingsBody { padding: 8px 12px 14px; }
+    }
+
     /* ── 背包 + 合成格面板（ROADMAP 664）───────────────────────────────────── */
     #bagPanel {
       position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
@@ -998,6 +1091,8 @@
     <div id="joy"><div id="joyNub"></div></div>
     <div id="place">放置</div>
     <div id="jump">跳</div>
+    <!-- 專屬挖鈕（準心+按鈕模式）：長按挖準心對準的方塊；對到居民時 JS 改成「💬 說話」 -->
+    <div id="dig">⛏ 挖</div>
   </div>
   <!-- 居民對話框（點居民開啟；內容由 main.js 填）-->
   <div id="chat">
@@ -1043,6 +1138,83 @@
   <button id="furnaceBtn">🔥 熔爐</button>
   <!-- 視角切換鈕（第一/三人稱；桌機也可按 F5）。文字由 main.js 依模式更新 -->
   <button id="viewBtn">👁 第一人稱</button>
+  <!-- 操作設定齒輪鈕（開操作設定面板：模式/靈敏度/按鈕/慣用手/自動跳/人稱/鍵盤/手把）-->
+  <button id="gearBtn">⚙ 操作設定</button>
+  <!-- 操作設定面板（麥塊 Bedrock 式操作大改）-->
+  <div id="settingsPanel">
+    <div id="settingsHead">
+      <span id="settingsTitle">⚙ 操作設定</span>
+      <span id="settingsClose">✕</span>
+    </div>
+    <div id="settingsBody">
+      <div class="set-row">
+        <div class="set-label">觸控操作模式<small>準心+按鈕＝拖曳只轉視角，挖/放各有按鈕（防誤觸）</small></div>
+        <div class="set-ctrl">
+          <select id="setTouchMode">
+            <option value="crosshair">準心 + 按鈕</option>
+            <option value="tap">點擊互動</option>
+          </select>
+        </div>
+      </div>
+      <div class="set-row">
+        <div class="set-label">視角靈敏度<small>觸控拖曳・滑鼠・右搖桿共用</small></div>
+        <div class="set-ctrl">
+          <input id="setSensitivity" type="range" min="0.3" max="2.5" step="0.05" value="1" />
+          <span class="set-val" id="setSensitivityVal">1.00×</span>
+        </div>
+      </div>
+      <div class="set-row">
+        <div class="set-label">觸控按鈕大小</div>
+        <div class="set-ctrl">
+          <input id="setBtnScale" type="range" min="0.7" max="1.6" step="0.05" value="1" />
+          <span class="set-val" id="setBtnScaleVal">1.00×</span>
+        </div>
+      </div>
+      <div class="set-row">
+        <div class="set-label">觸控按鈕透明度</div>
+        <div class="set-ctrl">
+          <input id="setBtnOpacity" type="range" min="0.35" max="1" step="0.05" value="1" />
+          <span class="set-val" id="setBtnOpacityVal">100%</span>
+        </div>
+      </div>
+      <div class="set-row">
+        <div class="set-label">慣用手<small>左手＝搖桿與按鈕左右對調</small></div>
+        <div class="set-ctrl">
+          <select id="setHanded">
+            <option value="right">右手</option>
+            <option value="left">左手</option>
+          </select>
+        </div>
+      </div>
+      <div class="set-row">
+        <div class="set-label">自動跳躍<small>撞一格自動踏上</small></div>
+        <div class="set-ctrl"><input id="setAutoJump" type="checkbox" /></div>
+      </div>
+      <div class="set-row">
+        <div class="set-label">預設人稱<small>下次進場的視角（也立即套用）</small></div>
+        <div class="set-ctrl">
+          <select id="setViewDefault">
+            <option value="first">第一人稱</option>
+            <option value="third">第三人稱</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="set-sec">鍵盤（桌機）</div>
+      <div class="set-keys">
+        <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移動　<kbd>空白</kbd> 跳／爬梯</div>
+        <div><kbd>滑鼠左</kbd> 挖　<kbd>滑鼠右</kbd> 放置／互動　<kbd>移動滑鼠</kbd> 轉視角</div>
+        <div><kbd>1</kbd>–<kbd>9</kbd> 選快捷欄　<kbd>E</kbd> 背包　<kbd>F5</kbd> 切人稱　<kbd>Esc</kbd> 解鎖/關面板</div>
+      </div>
+
+      <div class="set-sec">手把（Xbox 佈局）</div>
+      <div class="set-keys">
+        <div id="setGamepadStatus">未偵測到手把</div>
+        <div><kbd>左搖桿</kbd> 移動　<kbd>右搖桿</kbd> 轉視角</div>
+        <div><kbd>A</kbd> 跳　<kbd>X/RT</kbd> 挖　<kbd>B/LT</kbd> 放置　<kbd>Y</kbd> 背包　<kbd>LB/RB</kbd> 切快捷欄</div>
+      </div>
+    </div>
+  </div>
   <!-- 城鎮動態 Feed（ROADMAP 655）-->
   <div id="feedBtn">🌐 動態</div>
   <div id="feed">
