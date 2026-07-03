@@ -4627,6 +4627,11 @@ fn tick_residents(dt: f32) {
     // 鎖釋放後統一 append_feed（不在持居民鎖時做 IO）。(居民名, 播報詳情)。
     let mut expedition_feed: Vec<(&'static str, String)> = Vec::new();
 
+    // 邊陲營火路標（遠行 v2，PLAN_ETHERVOX item 7「在遠方留下痕跡」）：鎖內收集「某居民抵達邊陲、
+    // 要在落點升起一堆營火路標」的請求；地表計算、deltas 寫、廣播、持久化、記憶與 Feed 全在鎖釋放後
+    // 統一處理（不在持居民鎖時碰 deltas/IO）。(居民 id, 居民名, 落點 x, 落點 z, 方位名)。
+    let mut expedition_campfires: Vec<(String, &'static str, i32, i32, String)> = Vec::new();
+
     // 登門串門子抵達事件（登門串門子 v1，ROADMAP 751）：鎖內偵測「朝聖抵達的其實是某位鄰居的家」，
     // 鎖外統一處理 record_visit（情誼加溫、可能升級）+ 記憶（掛鄰居名下）+ Feed。
     // 格式：(resident_id, resident_name, 被登門的鄰居顯示名)。
@@ -5551,6 +5556,16 @@ fn tick_residents(dt: f32) {
                                 &summary,
                             );
                             vmem::append_memory(&entry);
+                            // 邊陲營火路標（遠行 v2）：抵達那一刻收集一筆「在落點升起營火」的請求，
+                            // 落點取遠行目標中心（tx,tz，居民就在其 EXPEDITION_ARRIVE_DIST 半徑內，
+                            // 不會正踩在灶台上）。實際落地在鎖外統一處理。每趟遠行只在此抵達分支跑一次。
+                            expedition_campfires.push((
+                                r.id.clone(),
+                                r.name,
+                                tx.round() as i32,
+                                tz.round() as i32,
+                                bearing.clone(),
+                            ));
                         }
                     } else {
                         // 還在路上：遞減去程逾時；走太久（地形擋路等）沒到就放棄這趟遠行、
@@ -6856,6 +6871,53 @@ fn tick_residents(dt: f32) {
     // 讓沒在現場的玩家也讀得到「居民的足跡散進了荒野」——世界不再只圍著主城打轉。
     for (rname, detail) in &expedition_feed {
         vfeed::append_feed("遠行", rname, detail);
+    }
+
+    // 5c-2a') 邊陲營火路標（遠行 v2，PLAN_ETHERVOX item 7「在遠方留下痕跡」）：居民抵達邊陲時
+    // 親手升起一堆營火路標——世界第一次因居民散佈而在主城外長出實體痕跡，日後任何玩家路過都會撞見。
+    // 鎖序（嚴守短鎖即釋、鎖外 IO）：地表 surface_y 是純程序地形函式（不讀 delta，可鎖外算）→
+    // deltas 讀鎖快照落點（判定該處是否已有營火＝冪等、落點是否可立＝陸地非水非樹）即釋 →
+    // deltas 寫鎖批次落地 6 塊即釋 → 鎖外廣播 + 持久化 append + memory 短寫 + Feed。不巢狀、不持鎖 await。
+    for (rid, rname, bx, bz, bearing) in &expedition_campfires {
+        let sy = vbuild::surface_y(*bx, *bz);
+        // 落點可立否 + 是否已有營火（冪等）——一次讀鎖快照即釋。
+        let (placeable, already) = {
+            let _w = hub().deltas.read().unwrap();
+            let hearth_slot = voxel::block_at(*bx, sy, *bz); // 灶台要放的那格
+            let ground = voxel::block_at(*bx, sy - 1, *bz); // 腳下那格
+            // 陸地（腳下實心）且灶台格是空氣（不覆水面、不塞進樹幹）才立；避免立在海上或樹裡。
+            let placeable = ground.is_solid() && matches!(hearth_slot, Block::Air);
+            let (fx, fy, fz) = vexp::campfire_flame_pos(*bx, sy, *bz);
+            // 該落點已有這堆營火的火把 → 判定為已立過，跳過（同址不重複堆疊、replay 不重放）。
+            let already = voxel::block_at(fx, fy, fz) == Block::Torch;
+            (placeable, already)
+        }; // deltas 讀鎖釋放
+        if !placeable || already {
+            continue;
+        }
+        let blocks = vexp::campfire_blocks(*bx, sy, *bz);
+        // 寫鎖批次落地（一次持有、寫完即釋、不 await）。
+        {
+            let mut world = hub().deltas.write().unwrap();
+            for &(x, y, z, b) in &blocks {
+                voxel::set_block(&mut world, x, y, z, b);
+            }
+        } // deltas 寫鎖釋放
+        // 鎖外收尾：廣播 + 走既有 world delta 持久化（重啟後營火還在）。
+        for &(x, y, z, b) in &blocks {
+            broadcast_block(x, y, z, b);
+            vbuild::append_world_block(x, y, z, b as u8);
+        }
+        // 升起營火昇華成一筆記憶（掛遠行哨兵鍵，日記／內心可引用）。
+        let summary = vexp::campfire_memory_summary(bearing);
+        let entry = hub()
+            .memory
+            .write()
+            .unwrap()
+            .add_memory(rid, vexp::EXPEDITION_MEMORY_PLAYER, &summary);
+        vmem::append_memory(&entry);
+        // 一則動態，讓沒在現場的玩家也讀得到「居民在荒野留下了記號」。
+        vfeed::append_feed("遠行", rname, &vexp::campfire_feed_line(bearing));
     }
 
     // 5c-2b) 登門串門子·抵達處理（登門串門子 v1，ROADMAP 751）：居民朝聖抵達的其實是某位鄰居親手
