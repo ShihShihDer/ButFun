@@ -838,8 +838,7 @@ pub fn canonicalize_steps(steps: &[CheckedStep]) -> Vec<PrimStep> {
             }
             CheckedStep::Craft { recipe_id } => {
                 if let Some(r) = vcraft::find_recipe(recipe_id) {
-                    ensure_inputs(r, &mut bag, &mut out);
-                    let _ = craft_apply(&mut bag, r); // 備料理應足夠；防禦性忽略失敗
+                    ensure_craftable(r, &mut bag, &mut out);
                 }
                 out.push(PrimStep::Craft { recipe: recipe_id.to_string() });
             }
@@ -854,8 +853,7 @@ pub fn canonicalize_steps(steps: &[CheckedStep]) -> Vec<PrimStep> {
                         let _ = take_one(&mut bag, WORKBENCH_BLOCK_ID);
                         wb_placed = true;
                     }
-                    ensure_inputs(r, &mut bag, &mut out);
-                    let _ = craft_apply(&mut bag, r);
+                    ensure_craftable(r, &mut bag, &mut out);
                 }
                 out.push(PrimStep::CraftWb { recipe: recipe_id.to_string() });
             }
@@ -879,6 +877,34 @@ const ENSURE_MAX_DEPTH: u8 = 4;
 fn ensure_inputs(r: &vcraft::Recipe, bag: &mut HashMap<u8, u32>, out: &mut Vec<PrimStep>) {
     for (bid, need) in r.inputs {
         ensure_have(*bid, *need, bag, out, ENSURE_MAX_DEPTH);
+    }
+}
+
+/// 一次補料迴圈的上限（每輪至少補足一個缺口；鏈有界，8 輪綽綽有餘）。
+const CRAFT_ENSURE_MAX_ROUNDS: u8 = 8;
+
+/// 正規化輔助：確保這個配方**當下能一次合成**——反覆補齊配料直到 [`craft_apply`] 成功。
+///
+/// 為什麼要迴圈而非單趟 `ensure_inputs`（隔離實測 wood_pickaxe／wood_axe 驅動）：
+/// [`ensure_inputs`] 依序確保每個配料，但備某個**加工配料**（木板＝木×2）會**吃掉**
+/// 先前為另一個**原料配料**（木頭）備好的存量——木鎬要木×3＋木板×1，先備木×3、
+/// 再備木板時削掉 2 木剩 1 木，最後 `craft_apply` 缺木失敗（原本被防禦性忽略，正規化後
+/// 的計畫其實缺料、`simulate_plan` 才擋下 → 居民放棄發明）。原料被共用配料的合成吃掉
+/// 是必然，補一輪後重驗、缺多少再補多少，直到能一次合成（有界防呆）。
+/// 純函式、確定性、可測。
+fn ensure_craftable(r: &vcraft::Recipe, bag: &mut HashMap<u8, u32>, out: &mut Vec<PrimStep>) {
+    let mut round = 0;
+    loop {
+        ensure_inputs(r, bag, out);
+        if craft_apply(bag, r) {
+            return; // 配料到位、已扣料產出（模擬背包同步推進）
+        }
+        round += 1;
+        if round >= CRAFT_ENSURE_MAX_ROUNDS {
+            // 防禦：理論到不了（配料皆可自採／鏈上加工品）；補不動就停，
+            // 交給 check_stored_steps／simulate_plan 把關（不硬塞、不 panic）。
+            return;
+        }
     }
 }
 
@@ -1978,6 +2004,41 @@ mod tests {
         assert_eq!(
             checked[0],
             CheckedStep::Gather { resource: GatherResource::Sand, count: 2 }
+        );
+    }
+
+    #[test]
+    fn canonicalize_shared_raw_between_inputs_wood_pickaxe() {
+        // 迴歸（隔離實測 res_4 反覆放棄「木鎬」「木斧」的真兇）：木鎬＝木×3＋木板×1，
+        // 而木板＝木×2——兩個配料共用同一原料「木頭」。舊正規化依序備料：先備木×3、
+        // 再備木板時 `craft plank` 吃掉 2 木剩 1 木，最後合木鎬缺木、被防禦性忽略，
+        // 產出的計畫其實缺料，simulate_plan 才擋下 → 居民白試又放棄。ensure_craftable
+        // 的補料迴圈要「缺多少再補多少」直到能一次合成。
+        for (recipe, goal) in [("wood_pickaxe", vcraft::PICKAXE_WOOD_ID), ("wood_axe", vcraft::AXE_WOOD_ID)] {
+            let steps = vec![CheckedStep::Craft { recipe_id: recipe }];
+            let canon = canonicalize_steps(&steps);
+            let checked = check_stored_steps(&canon).expect("正規化版應過存檔白名單");
+            assert!(
+                simulate_plan(&checked, &HashMap::new(), goal, false).is_ok(),
+                "{recipe}：正規化後從空背包應能真的合成出目標（原料被共用配料吃掉的缺口要補回）"
+            );
+        }
+    }
+
+    #[test]
+    fn accept_proposal_repairs_wood_tool_undercount() {
+        // 端到端（對應日誌 res_4 的重試計畫）：便宜腦排對依賴、數量算不動——採木×3、
+        // 合工作台、合木鎬，卻沒算到合工作台的木板會吃掉木頭。提案階段正規化應補足，
+        // 讓這個「結構對、算術錯」的計畫直接可行、被接受存成技能。
+        let raw = r#"{"name":"自製木鎬","steps":[
+            {"op":"gather","resource":"wood","count":3},
+            {"op":"craft_wb","recipe":"workbench"},
+            {"op":"craft","recipe":"wood_pickaxe"}]}"#;
+        let plan = accept_proposal(raw, &HashMap::new(), vcraft::PICKAXE_WOOD_ID, false)
+            .expect("結構對、共用原料算術錯的計畫應被正規化接受");
+        assert!(
+            simulate_plan(&plan.steps, &HashMap::new(), vcraft::PICKAXE_WOOD_ID, false).is_ok(),
+            "正規化後應真能做出木鎬"
         );
     }
 
