@@ -135,6 +135,8 @@ mod voxel_inventory;
 mod voxel_craft;
 // 乙太方界·種田 v1：撒種‧等待‧收割——療癒循環加入時間維度（ROADMAP 659）。
 mod voxel_farm;
+// 乙太方界·熔爐煨煮 v1：冶煉不再瞬間，放進生料需時間煨熟，回來取熱騰騰成品（自主提案）。
+mod voxel_smelt;
 // 乙太方界·居民贈禮 v1：把採來的材料化作一份心意送給居民（ROADMAP 660）。
 mod voxel_gift;
 // 乙太方界·互動有後果——居民回禮 v1：好感度達門檻時居民主動回贈小禮（ROADMAP 667）。
