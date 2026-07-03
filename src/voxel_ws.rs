@@ -58,6 +58,7 @@ use crate::voxel_smelt as vsmelt;
 use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
 use crate::voxel_admire as vadmire;
 use crate::voxel_confide as vconfide;
+use crate::voxel_witness as vwit;
 use crate::voxel_preference as vpref;
 use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
@@ -3816,6 +3817,9 @@ async fn handle_socket(
                     let marked = {
                         hub().desires.write().unwrap().mark_fulfilled(&resident_id)
                     };
+                    // 只有「首次」圓夢（mark_fulfilled 回 Some）才是值得道賀的一刻——
+                    // 重複送同一件禮物不再觸發（冪等，天然防洗版）。
+                    let first_fulfill = marked.is_some();
                     if let Some(entry) = marked {
                         vdes::append_desire(&entry);
                     }
@@ -3830,6 +3834,87 @@ async fn handle_socket(
                         rname,
                         &format!("{name}送來了{rname}一直想要的{iname}"),
                     );
+
+                    // 12b) 居民為鄰居圓夢而賀喜 v1（ROADMAP 782）：圓夢的這一刻，若身邊剛好有另一位
+                    // 醒著的鄰居，她會看見、由衷道賀一句，圓夢者回謝，兩人情誼因這份共同喜悅升溫、
+                    // 各記一筆——小社會第一次為彼此的成就道賀。**鎖序**：residents 讀（快照鄰居位置，
+                    // 即釋）→ residents 寫（設兩人泡泡，即釋）→ 廣播 → bonds 寫（record_visit，即釋）
+                    // →〔升級時〕bonds 讀 save + memory 寫社交痕跡 → memory 寫 ×2（雙方見證記憶）→
+                    // 動態牆 IO，全程短鎖循序、不巢狀、鎖外 IO，守死鎖鐵律。
+                    if first_fulfill {
+                        // 快照：找醒著、非圓夢者本人的鄰居，算相對圓夢者(rx,rz)的水平位移。
+                        let (wid, wname, cand_offsets): (Vec<String>, Vec<&'static str>, Vec<(f32, f32)>) = {
+                            let residents = hub().residents.read().unwrap();
+                            let mut ids = Vec::new();
+                            let mut names = Vec::new();
+                            let mut offs = Vec::new();
+                            for r in residents.iter() {
+                                if r.id == resident_id || r.asleep {
+                                    continue;
+                                }
+                                ids.push(r.id.clone());
+                                names.push(r.name);
+                                offs.push((r.body.x - rx, r.body.z - rz));
+                            }
+                            (ids, names, offs)
+                        }; // residents 讀鎖釋放
+                        if let Some(wi) = vwit::nearest_witness_index(&cand_offsets) {
+                            let witness_id = wid[wi].clone();
+                            let witness_name = wname[wi];
+                            let say = vwit::witness_say_line(rname, pick);
+                            let reply = vwit::witness_reply_line(witness_name, pick);
+                            // 設兩人泡泡（residents 寫鎖即釋，一把鎖內同時設，畫面上看得見這場道賀）。
+                            {
+                                let mut residents = hub().residents.write().unwrap();
+                                for r in residents.iter_mut() {
+                                    if r.id == witness_id {
+                                        r.say = say.chars().take(40).collect();
+                                        r.say_timer = SAY_SECS;
+                                    } else if r.id == resident_id {
+                                        r.say = reply.chars().take(40).collect();
+                                        r.say_timer = SAY_SECS;
+                                    }
+                                }
+                            } // residents 寫鎖釋放
+                            broadcast_players();
+                            // 情誼因這份共同見證的喜悅加溫一格（bonds 以顯示名記帳）。
+                            let (tier, tier_changed) = {
+                                let mut bonds = hub().bonds.write().unwrap();
+                                bonds.record_visit(rname, witness_name)
+                            }; // bonds 寫鎖釋放
+                            if tier_changed {
+                                {
+                                    let bonds = hub().bonds.read().unwrap();
+                                    vbonds::save_bonds(&bonds);
+                                } // bonds 讀鎖釋放
+                                let milestone = vbonds::tier_up_line(tier, rname, witness_name);
+                                vfeed::append_feed("居民情誼", rname, &milestone);
+                                let social_mem = vbonds::bond_social_memory(witness_name, tier);
+                                if !social_mem.is_empty() {
+                                    let e = hub().memory.write().unwrap()
+                                        .add_memory(&resident_id, witness_name, &social_mem);
+                                    vmem::append_memory(&e);
+                                } // memory 寫鎖釋放
+                            }
+                            // 雙方各記一筆「一起見證圓夢」的記憶（掛在對方名下，交情自然加深）。
+                            let mem_w = vwit::witness_memory_for_witness(rname);
+                            let ew = {
+                                hub().memory.write().unwrap().add_memory(&witness_id, rname, &mem_w)
+                            }; // memory 寫鎖釋放
+                            vmem::append_memory(&ew);
+                            let mem_a = vwit::witness_memory_for_achiever(witness_name);
+                            let ea = {
+                                hub().memory.write().unwrap().add_memory(&resident_id, witness_name, &mem_a)
+                            }; // memory 寫鎖釋放
+                            vmem::append_memory(&ea);
+                            // 動態牆：讓玩家看見 AI 居民為彼此的成就道賀（鎖外 IO）。
+                            vfeed::append_feed(
+                                vwit::FEED_KIND,
+                                witness_name,
+                                &vwit::witness_feed_line(witness_name, rname),
+                            );
+                        }
+                    }
                 }
             }
 
