@@ -361,6 +361,10 @@ struct VoxelResident {
     /// 遠行冷卻倒數（秒，ROADMAP 756）：一趟遠行（歸來或放棄）後設為 [`vexp::EXPEDITION_COOLDOWN`]，
     /// 歸零前不再啟程——稀少才有感、不洗版。各居民初始錯開。
     expedition_cooldown: f32,
+    /// 邊陲過夜（散居·過夜 v4，ROADMAP 759）：true = 這位居民此刻是「睡在邊陲營地那張床上」而非睡在
+    /// 主城的家。與 `asleep` 並存（`asleep` 管「正在睡」，本旗標管「睡在哪」）——醒來時據此分岔：邊陲
+    /// 過夜醒來要結束遠行、啟程返家（跳過家用晨間探友），家裡睡醒才走既有晨間流程。純記憶體、重啟歸零。
+    asleep_at_outpost: bool,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -1110,6 +1114,7 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             expedition_stay: 0.0,
             expedition_timer: 0.0,
             expedition_cooldown: vexp::EXPEDITION_COOLDOWN + i as f32 * 300.0,
+            asleep_at_outpost: false,
     }
 }
 
@@ -4851,13 +4856,43 @@ fn tick_residents(dt: f32) {
                     r.asleep = false;
                     r.mood_boost_secs = r.mood_boost_secs.max(vsleep::WAKE_MOOD_BOOST_SECS);
                     let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                    r.say = vsleep::wake_line(pick).to_string();
-                    r.say_timer = SAY_SECS;
+                    // 邊陲過夜 v4（ROADMAP 759）：分岔——是在邊陲第二個家過夜醒來、還是在主城的家醒來。
+                    let woke_at_outpost = r.asleep_at_outpost;
+                    if woke_at_outpost {
+                        // 在邊陲營地那張床上睡飽了：結束這趟遠行、啟程返家（返程移動交給下方 wander，
+                        // 此刻遠在家域外，`wander_center` 會把牠一路帶回主城）。把「過了一夜」昇華成一筆
+                        // 記憶（掛遠行哨兵鍵），記一則返家 Feed。跳過家用晨間探友（她不在主城的家）。
+                        r.asleep_at_outpost = false;
+                        let bearing = r
+                            .expedition
+                            .as_ref()
+                            .map(|(.., b)| b.clone())
+                            .unwrap_or_default();
+                        r.expedition = None;
+                        r.expedition_stay = 0.0;
+                        r.expedition_cooldown = vexp::EXPEDITION_COOLDOWN;
+                        r.say = vexp::outpost_wake_bubble(&bearing, pick);
+                        r.say_timer = SAY_SECS;
+                        // 記憶：memory 短寫即釋（比照抵達昇華，不巢狀）。
+                        let summary = vexp::outpost_sleep_memory_summary(&bearing);
+                        let entry = hub().memory.write().unwrap().add_memory(
+                            &r.id,
+                            vexp::EXPEDITION_MEMORY_PLAYER,
+                            &summary,
+                        );
+                        vmem::append_memory(&entry);
+                        expedition_feed.push((r.name, vexp::outpost_wake_feed_line(&bearing)));
+                    } else {
+                        r.say = vsleep::wake_line(pick).to_string();
+                        r.say_timer = SAY_SECS;
+                    }
                     // 晨間探友 v1（ROADMAP 745）：記憶驅動行為——醒來讀昨晚昇華的「睡前反思」記憶
                     // （744），若那份牽掛裡有另一位居民的名字，今天第一件事就是走去找他（沿用探訪
                     // 狀態機的抵達／問候／情誼／Feed，零協議改動）。鎖序：memory 短讀鎖即釋、不巢狀；
                     // Feed 走鎖外 morning_feed。剛醒不會在探訪／聚會中，但仍保守判斷不覆蓋既有意圖。
-                    if r.visiting.is_none()
+                    // 邊陲過夜醒來（`woke_at_outpost`）跳過此段：她此刻遠在荒野邊陲、不在主城的家。
+                    if !woke_at_outpost
+                        && r.visiting.is_none()
                         && r.clique_meet.is_none()
                         && vmorning::should_seek(true, rand::random::<f32>())
                     {
@@ -5518,20 +5553,51 @@ fn tick_residents(dt: f32) {
             }
             if let Some((tx, tz, bearing)) = r.expedition.clone() {
                 if r.expedition_stay > 0.0 {
-                    // 已抵達邊陲、正在遠方逗留探索：倒數；歸零則歸來——清空遠行狀態、設冷卻，
-                    // 冒歸來泡泡、收一則歸來 Feed（返家的移動交給下方 wander）。
-                    r.expedition_stay -= dt;
-                    if r.expedition_stay <= 0.0 {
-                        r.expedition = None;
-                        r.expedition_cooldown = vexp::EXPEDITION_COOLDOWN;
-                        expedition_feed.push((r.name, vexp::return_feed_line()));
-                        if r.say.is_empty() {
-                            let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                            r.say = vexp::return_bubble(pick);
-                            r.say_timer = SAY_SECS;
+                    // 已抵達邊陲、正在遠方逗留探索。
+                    // ── 邊陲過夜 v4（ROADMAP 759）：夜色降臨就不趕夜路，改在營地那張床上過一夜 ──
+                    // `is_night`＝可睡時段（傍晚或深夜）：一入夜就凍結逗留倒數（不返家）、把居民導向
+                    // 營地那張床邊等；到了深夜（`is_deep_night`）且已走到床邊 → 躺下睡（設 asleep +
+                    // asleep_at_outpost，下一 tick 起由頂端睡眠 gate 接管靜止到天亮，醒來另行結束遠行、
+                    // 啟程返家）。白天則照舊：倒數逗留，歸零即歸來（返程移動交給下方 wander）。
+                    if is_night {
+                        let (bedx, bedz) = vexp::outpost_bed_center(tx.round() as i32, tz.round() as i32);
+                        let near_bed = vexp::near_outpost_bed(r.body.x, r.body.z, bedx, bedz);
+                        if vexp::should_sleep_at_outpost(is_deep_night, near_bed) {
+                            // 就寢：就地躺下（目標設腳邊、清閒晃意圖），冒過夜泡泡、記一則就寢 Feed；
+                            //「過了一夜」的記憶留到醒來時昇華（見上方 wake 分支）。
+                            r.asleep = true;
+                            r.asleep_at_outpost = true;
+                            r.target_x = r.body.x;
+                            r.target_z = r.body.z;
+                            if r.say.is_empty() {
+                                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                                r.say = vexp::outpost_sleep_bubble(&bearing, pick);
+                                r.say_timer = SAY_SECS;
+                            }
+                            expedition_feed.push((r.name, vexp::outpost_sleep_feed_line(&bearing)));
+                        } else {
+                            // 天黑了但還沒到深夜（或還沒走到床邊）：走向／守在營地床邊等入睡，
+                            // 別再隨機閒晃跑遠（下方 wander 若重挑目標，也會被下一 tick 這裡覆寫回來）。
+                            r.target_x = bedx;
+                            r.target_z = bedz;
+                            r.wait_timer = 0.0;
                         }
+                        // 夜裡凍結逗留倒數：不 -= dt、不返家（等睡醒才啟程回主城）。
+                    } else {
+                        // 白天照舊倒數；歸零則歸來——清空遠行狀態、設冷卻，冒歸來泡泡、收一則歸來 Feed。
+                        r.expedition_stay -= dt;
+                        if r.expedition_stay <= 0.0 {
+                            r.expedition = None;
+                            r.expedition_cooldown = vexp::EXPEDITION_COOLDOWN;
+                            expedition_feed.push((r.name, vexp::return_feed_line()));
+                            if r.say.is_empty() {
+                                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                                r.say = vexp::return_bubble(pick);
+                                r.say_timer = SAY_SECS;
+                            }
+                        }
+                        // 逗留期間不在此設 target：由下方 wander 以邊陲為中心自由走動（見 center 覆寫）。
                     }
-                    // 逗留期間不在此設 target：由下方 wander 以邊陲為中心自由走動（見 center 覆寫）。
                 } else {
                     // 去程：持續朝邊陲走（清小歇，步步逼近，讓玩家看得到牠專程走遠）。
                     r.target_x = tx;

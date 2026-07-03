@@ -65,6 +65,10 @@ pub const EMBARK_CHANCE: f32 = 0.02;
 /// 撞名的內部鍵，讓「我到過遠方」這類記憶不汙染任何玩家的好感度／回想。
 pub const EXPEDITION_MEMORY_PLAYER: &str = "__voxel_expedition__";
 
+/// 邊陲過夜 v4（ROADMAP 759）：判定「已走到營地那張床邊」的水平半徑（世界座標）。與家用睡眠的
+/// [`crate::voxel_sleep::SLEEP_NEAR_RADIUS`] 略窄——邊陲小棚只有一張床，走到它跟前才躺下才自然。
+pub const OUTPOST_BED_NEAR: f32 = 3.0;
+
 /// 泡泡台詞字元上限（比照其他泡泡台詞）。
 pub const SAY_MAX_CHARS: usize = 40;
 
@@ -281,6 +285,68 @@ pub fn shelter_memory_summary(bearing: &str) -> String {
 /// 搭起紮營小棚的 Feed 播報詳情（面向玩家、集中可 i18n）。
 pub fn shelter_feed_line(bearing: &str) -> String {
     format!("在{bearing}的邊陲營火旁搭起一座紮營小棚，雛形第二個家")
+}
+
+// ── 邊陲過夜 v4（ROADMAP 759，PLAN_ETHERVOX item 7「散佈各處『住』」第四刀）──────────────
+// 758 讓居民在邊陲搭起帶一張床的小棚，但那張床至今只是裝飾——居民的逗留倒數一到就返家，從沒真的
+// 睡上去過。這一刀讓「住」名副其實：**遠行途中若夜色降臨，居民不趕夜路，改走到營地那張床上睡一覺、
+// 天亮才啟程回主城**——第二個家的床第一次被真正睡上，「散佈各處住」從「有張床」變成「在那兒過夜」。
+// 純函式層只判定「該不該就寢」「醒來說什麼／記什麼」；狀態機、鎖、廣播都在 `voxel_ws.rs`。
+
+/// 邊陲小棚那張床的水平中心座標（世界座標，f32）：由遠行落點（營火中心）`(tx, tz)` 推得——
+/// 營火中心 → [`shelter_anchor`] 錨點 →床恰在錨點（[`shelter_blocks`] 的 Bed 擺在 `(ax, ay, az)`）。
+/// 供狀態機在夜裡把居民導向床邊、並判定是否已走到床跟前。純函式、確定性、無 IO。
+pub fn outpost_bed_center(tx: i32, tz: i32) -> (f32, f32) {
+    let (ax, az) = shelter_anchor(tx, tz);
+    (ax as f32 + 0.5, az as f32 + 0.5)
+}
+
+/// 距離平方判定「已走到營地床邊」（避免開根號），半徑 [`OUTPOST_BED_NEAR`]。純函式。
+pub fn near_outpost_bed(bx: f32, bz: f32, bedx: f32, bedz: f32) -> bool {
+    let dx = bx - bedx;
+    let dz = bz - bedz;
+    dx * dx + dz * dz <= OUTPOST_BED_NEAR * OUTPOST_BED_NEAR
+}
+
+/// 是否該此刻在邊陲營地就寢：正逗留邊陲 + 已入深夜 + 已走到床邊。三者皆備才躺下——
+/// 白天照常逗留探索、天還沒全黑（傍晚）先走向床邊等、還沒走到床邊不就地睡死。純函式。
+pub fn should_sleep_at_outpost(is_deep_night: bool, near_bed: bool) -> bool {
+    is_deep_night && near_bed
+}
+
+/// 在邊陲床上入睡時頭頂冒的泡泡（點出「在第二個家過夜」，與家用睡眠語有別）。
+pub fn outpost_sleep_bubble(bearing: &str, pick: usize) -> String {
+    let lines = [
+        format!("天黑了，今晚就在{bearing}的營地睡一覺吧～"),
+        "不趕夜路了，第二個家的床，正好過一夜。".to_string(),
+        "荒野的夜好靜……躺在自己搭的床上睡了。".to_string(),
+    ];
+    cap(lines[pick % lines.len()].clone())
+}
+
+/// 邊陲過夜醒來、準備啟程回主城時冒的泡泡。
+pub fn outpost_wake_bubble(bearing: &str, pick: usize) -> String {
+    let lines = [
+        format!("在{bearing}的營地睡飽了，該啟程回主城囉～"),
+        "荒野的清晨真清爽，收拾收拾回家吧。".to_string(),
+        "在自己的第二個家過了一夜，神清氣爽！".to_string(),
+    ];
+    cap(lines[pick % lines.len()].clone())
+}
+
+/// 「在邊陲第二個家過了一夜」昇華成的記憶摘要（掛 [`EXPEDITION_MEMORY_PLAYER`] 哨兵，日記／內心可引用）。
+pub fn outpost_sleep_memory_summary(bearing: &str) -> String {
+    format!("我在{bearing}的邊陲營地過了一夜，睡在自己搭的那張床上——這裡真的成了我的第二個家。")
+}
+
+/// 邊陲就寢的 Feed 播報詳情（面向玩家、集中可 i18n）。
+pub fn outpost_sleep_feed_line(bearing: &str) -> String {
+    format!("在{bearing}的邊陲營地過夜，睡在自己搭的那張床上")
+}
+
+/// 邊陲過夜醒來、啟程返家的 Feed 播報詳情。
+pub fn outpost_wake_feed_line(bearing: &str) -> String {
+    format!("在{bearing}的邊陲營地睡醒，啟程返回主城")
 }
 
 #[cfg(test)]
@@ -504,5 +570,69 @@ mod tests {
         assert!(!shelter_memory_summary("西方").is_empty());
         assert!(shelter_feed_line("南方").contains("南方"));
         assert!(!shelter_feed_line("北方").is_empty());
+    }
+
+    // ── 邊陲過夜 v4（ROADMAP 759）────────────────────────────────────────────
+
+    #[test]
+    fn outpost_bed_center_sits_on_shelter_bed() {
+        // 床水平中心必須落在 shelter_blocks 產出的 Bed 那一格中心（狀態機導向床邊靠它）。
+        let (tx, tz) = (100, -5);
+        let (cx, cz) = outpost_bed_center(tx, tz);
+        let (ax, az) = shelter_anchor(tx, tz);
+        // 床格 = (ax, ay, az)，水平中心 = (ax+0.5, az+0.5)。
+        assert_eq!((cx, cz), (ax as f32 + 0.5, az as f32 + 0.5));
+        // 且該格確實是布局裡的床（ay 任取）。
+        assert!(shelter_blocks(ax, 34, az)
+            .iter()
+            .any(|(x, _, z, b)| *x == ax && *z == az && *b == Block::Bed));
+    }
+
+    #[test]
+    fn near_outpost_bed_uses_radius() {
+        let (bedx, bedz) = (10.5, -3.5);
+        assert!(near_outpost_bed(bedx, bedz, bedx, bedz), "正在床上 → 近");
+        assert!(
+            near_outpost_bed(bedx + OUTPOST_BED_NEAR, bedz, bedx, bedz),
+            "恰在半徑上 → 近（含邊界）"
+        );
+        assert!(
+            !near_outpost_bed(bedx + OUTPOST_BED_NEAR + 0.1, bedz, bedx, bedz),
+            "超出半徑 → 不近"
+        );
+    }
+
+    #[test]
+    fn should_sleep_at_outpost_requires_deep_night_and_near_bed() {
+        assert!(should_sleep_at_outpost(true, true), "深夜+到床邊 → 睡");
+        assert!(!should_sleep_at_outpost(false, true), "白天不睡");
+        assert!(!should_sleep_at_outpost(true, false), "還沒到床邊不睡");
+        assert!(!should_sleep_at_outpost(false, false));
+    }
+
+    #[test]
+    fn outpost_sleep_wake_bubbles_vary_and_cap() {
+        // 依 pick 輪替、非空、不破框（≤ SAY_MAX_CHARS 字元）。
+        assert_ne!(outpost_sleep_bubble("東方", 0), outpost_sleep_bubble("東方", 1));
+        assert_ne!(outpost_wake_bubble("東方", 0), outpost_wake_bubble("東方", 1));
+        for pick in 0..3 {
+            assert!(!outpost_sleep_bubble("南方", pick).is_empty());
+            assert!(!outpost_wake_bubble("南方", pick).is_empty());
+            assert!(outpost_sleep_bubble("南方", pick).chars().count() <= SAY_MAX_CHARS);
+            assert!(outpost_wake_bubble("南方", pick).chars().count() <= SAY_MAX_CHARS);
+        }
+        // pick 取模不越界。
+        let _ = outpost_sleep_bubble("北方", usize::MAX);
+        let _ = outpost_wake_bubble("北方", usize::MAX);
+    }
+
+    #[test]
+    fn outpost_sleep_memory_and_feed_mention_bearing() {
+        assert!(outpost_sleep_memory_summary("東方").contains("東方"));
+        assert!(outpost_sleep_memory_summary("東方").contains("第二個家"));
+        assert!(outpost_sleep_feed_line("西方").contains("西方"));
+        assert!(outpost_wake_feed_line("南方").contains("南方"));
+        assert!(!outpost_sleep_feed_line("北方").is_empty());
+        assert!(!outpost_wake_feed_line("北方").is_empty());
     }
 }
