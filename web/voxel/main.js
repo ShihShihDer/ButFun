@@ -1054,7 +1054,10 @@ function updateResidents(list) {
     const say = r.say || "";
     if (say !== ent.lastSay) {
       ent.lastSay = say;
-      if (say) { setSpriteText(ent.bubble, say, true); ent.bubble.visible = true; }
+      if (say) {
+        setSpriteText(ent.bubble, say, true); ent.bubble.visible = true;
+        chatLogAppend("res", r.name, say, r.id); // 泡泡同步進聊天窗（去重會併掉截斷版）
+      }
       else { ent.bubble.visible = false; }
     }
     // 好感度指示燈（ROADMAP 656）：依 myAffinity 決定顯示哪種心型（sig 保護不重建貼圖）。
@@ -1155,6 +1158,119 @@ function removeThinking() {
   thinkingEl = null;
 }
 
+// ── 麥塊式聊天記錄窗（左下常駐、可開合可捲）────────────────────────────────────
+// 頭上泡泡臨場但難讀、長句被截、消失看不回；這裡把「範圍內所有說的話」完整存成一份
+// 可讀可捲的 log（泡泡可截、log 不截）。凡是會觸發泡泡的訊息來源都經同一入口
+// chatLogAppend()：自己 speak / 附近居民說話廣播(say) / 居民 talk 回覆 / 其他玩家說話。
+//
+// 【資安】訊息內容一律用 textContent 寫入（見下），絕不 innerHTML——別人訊息裡的
+// <script>/HTML 只會顯示成純文字、不會在你畫面上執行（後端 sanitize_talk_text 只 trim/截長，
+// 不濾 HTML，跳脫責任在前端顯示層）。
+const CHATLOG_MAX = 50;         // 最多保留最近 N 條（超過砍最舊）
+const CHATLOG_FADE_SECS = 5;    // 收合態：新訊息亮顯示幾秒後淡化不擋畫面
+const CHATLOG_DEDUP_SECS = 6;   // 去重時間窗：同人、其一為另一前綴＝同一句（截斷泡泡↔完整回覆）
+const CHATLOG_TEXT_CAP = 400;   // DOM 安全上限（> 後端最長回覆 300，實務不會截到真訊息）
+const chatLogWinEl = document.getElementById("chatLogWin");
+const chatLogBodyEl = document.getElementById("chatLogBody");
+const chatLogHeadEl = document.getElementById("chatLogHead");
+const chatLogToggleEl = document.getElementById("chatLogToggle");
+let chatLogEntries = []; // [{ line, textEl, kind, speaker, text, t }]，最新在尾端
+let chatLogExpanded = false;
+let chatLogFadeTO = null;
+
+// 居民/其他玩家 → 穩定顏色（同一位每次同色，一眼分辨誰在講）。純前端雜湊挑色盤。
+const CHATLOG_PALETTE = ["#a0e8b0", "#f5b8d8", "#c8b0ff", "#ffc07a", "#7fe0d8", "#ffe08a", "#b8d8ff", "#e0a0f0"];
+const chatLogColorCache = new Map();
+function chatLogColorFor(key) {
+  const k = key || "";
+  let c = chatLogColorCache.get(k);
+  if (c) return c;
+  let h = 0;
+  for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0;
+  c = CHATLOG_PALETTE[h % CHATLOG_PALETTE.length];
+  chatLogColorCache.set(k, c);
+  return c;
+}
+
+// 亮起（新訊息或展開時）：清淡化、重設幾秒後再淡化的計時（用 setTimeout，不進 render 迴圈）。
+function chatLogBright() {
+  if (!chatLogWinEl) return;
+  chatLogWinEl.classList.remove("faded");
+  if (chatLogFadeTO) clearTimeout(chatLogFadeTO);
+  chatLogFadeTO = setTimeout(() => {
+    if (!chatLogExpanded && chatLogWinEl) chatLogWinEl.classList.add("faded");
+  }, CHATLOG_FADE_SECS * 1000);
+}
+
+// 展開/收合：展開＝可捲動完整歷史（貼底）、收合＝只露最近幾行的精簡條。
+function chatLogSetExpanded(on) {
+  chatLogExpanded = !!on;
+  if (!chatLogWinEl) return;
+  chatLogWinEl.classList.toggle("expanded", chatLogExpanded);
+  chatLogWinEl.classList.toggle("collapsed", !chatLogExpanded);
+  if (chatLogToggleEl) chatLogToggleEl.textContent = chatLogExpanded ? "▼" : "▲";
+  if (chatLogExpanded) {
+    chatLogWinEl.classList.remove("faded");
+    if (chatLogBodyEl) chatLogBodyEl.scrollTop = chatLogBodyEl.scrollHeight;
+  } else {
+    chatLogBright();
+  }
+}
+
+/**
+ * 把一句話 append 進聊天 log（完整、不截斷）。
+ * kind: "self"（自己）/ "res"（居民）/ "other"（其他玩家）/ "sys"（系統）。
+ * colorKey: 上色用的穩定鍵（居民 id / 玩家 id）；self/sys 用固定 CSS 色不需 colorKey。
+ * 去重：同一句話可能同時走「截斷泡泡(say)」與「完整回覆(talk)」兩路 → 近期同 speaker、
+ * 其一為另一前綴時視為同句，保留較長(完整)版、不重複成兩行。
+ */
+function chatLogAppend(kind, speaker, text, colorKey) {
+  if (!chatLogBodyEl) return;
+  let t = (text == null ? "" : String(text)).trim();
+  if (!t) return;
+  if (t.length > CHATLOG_TEXT_CAP) t = t.slice(0, CHATLOG_TEXT_CAP);
+  const name = (speaker == null ? "" : String(speaker)).trim() || "？";
+  const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+
+  // 去重：由尾往前掃時間窗內、同 kind+speaker 的既有行。
+  for (let i = chatLogEntries.length - 1; i >= 0; i--) {
+    const e = chatLogEntries[i];
+    if (now - e.t > CHATLOG_DEDUP_SECS * 1000) break; // 更早的不用再比
+    if (e.kind !== kind || e.speaker !== name) continue;
+    if (e.text === t || e.text.startsWith(t) || t.startsWith(e.text)) {
+      if (t.length > e.text.length) { e.text = t; e.textEl.textContent = t; } // 截斷→完整升級
+      e.t = now;
+      chatLogBright();
+      return;
+    }
+  }
+
+  // 新的一行：名字前綴 + 完整訊息，皆用 textContent（防 XSS）。
+  const line = document.createElement("div");
+  line.className = "clog-line clog-" + kind;
+  const nameEl = document.createElement("span");
+  nameEl.className = "clog-name";
+  nameEl.textContent = name + "：";
+  if (kind === "res" || kind === "other") nameEl.style.color = chatLogColorFor(colorKey || name);
+  const textEl = document.createElement("span");
+  textEl.className = "clog-text";
+  textEl.textContent = t;
+  line.appendChild(nameEl);
+  line.appendChild(textEl);
+  chatLogBodyEl.appendChild(line);
+  chatLogEntries.push({ line, textEl, kind, speaker: name, text: t, t: now });
+
+  // 只保留最近 N 條，超過砍最舊。
+  while (chatLogEntries.length > CHATLOG_MAX) {
+    const old = chatLogEntries.shift();
+    if (old.line.parentNode) old.line.parentNode.removeChild(old.line);
+  }
+  if (chatLogExpanded) chatLogBodyEl.scrollTop = chatLogBodyEl.scrollHeight;
+  chatLogBright();
+}
+
+if (chatLogHeadEl) chatLogHeadEl.addEventListener("click", () => chatLogSetExpanded(!chatLogExpanded));
+
 // 開對話框（換對象就清空對話紀錄）。
 function openChat(rid, name) {
   if (!chatEl) return;
@@ -1187,6 +1303,7 @@ function sendTalk(text) {
   ws.send(JSON.stringify({ t: "talk", resident_id: chatRid, text: t.slice(0, 200) }));
   appendMsg("me", "你：" + t);
   showMyBubble(t); // embodied：自己頭上也冒泡（話活在世界裡）
+  chatLogAppend("self", myName || "你", t); // 自己說的也進左下聊天窗（完整）
 }
 
 // embodied 靠近說話 v1：範圍「說話」——不指定居民，伺服器挑半徑內最近/面對者回話，
@@ -1196,6 +1313,7 @@ function sendSpeak(text) {
   if (!t || !wsReady) return;
   ws.send(JSON.stringify({ t: "talk", text: t.slice(0, 200) })); // 無 resident_id = 範圍說話
   showMyBubble(t); // 自己頭上立即冒泡（零延遲、不等伺服器來回）
+  chatLogAppend("self", myName || "你", t); // 自己說的也進左下聊天窗（完整）
 }
 
 if (chatEl) {
@@ -2888,7 +3006,10 @@ function connect() {
         const say = p.say || "";
         if (say !== ent.lastSay) {
           ent.lastSay = say;
-          if (say) { setSpriteText(ent.bubble, say, true); ent.bubble.visible = true; }
+          if (say) {
+            setSpriteText(ent.bubble, say, true); ent.bubble.visible = true;
+            chatLogAppend("other", p.name || "旅人", say, p.id); // 其他玩家說話也進聊天窗
+          }
           else { ent.bubble.visible = false; }
         }
       }
@@ -2911,6 +3032,8 @@ function connect() {
         removeThinking();     // 真回覆到了，先移除「思考中」
         lastTalkReply = m.reply || "";
         appendMsg("npc", (m.name || "居民") + "：" + lastTalkReply);
+        // 居民 talk 回覆的完整版也進左下聊天窗（去重會併掉稍後那條截 40 字的頭上泡泡 say）。
+        chatLogAppend("res", m.name || "居民", lastTalkReply, m.resident_id);
         // 好感度 v1：對話後更新好感度（後端可能已累積新記憶），讓指示燈即時升燈。
         refreshAffinity();
       }
@@ -4199,6 +4322,13 @@ window.__voxel = {
   speak(text) { sendSpeak(text); return myBubbleText; },
   get myBubbleText() { return myBubble.visible ? myBubbleText : ""; },
   get myBubbleVisible() { return myBubble.visible; },
+  // ── 麥塊式聊天記錄窗 QA 用：注入一句、讀 log 內容/HTML、開合狀態 ──
+  chatLogAppend(kind, speaker, text, colorKey) { chatLogAppend(kind, speaker, text, colorKey); },
+  get chatLogLines() { return chatLogEntries.map((e) => ({ kind: e.kind, speaker: e.speaker, text: e.text })); },
+  get chatLogHTML() { return chatLogBodyEl ? chatLogBodyEl.innerHTML : ""; },
+  get chatLogExpanded() { return chatLogExpanded; },
+  setChatLogExpanded(on) { chatLogSetExpanded(on); },
+  get chatLogFaded() { return chatLogWinEl ? chatLogWinEl.classList.contains("faded") : false; },
   // ── 日記 QA 用（ROADMAP 650）──
   openDiary(rid) { return openDiary(rid); },
   closeDiary() { closeDiary(); },

@@ -304,6 +304,59 @@
       #speakBar { bottom: 66px; width: min(340px, 74vw); }
     }
 
+    /* ── 麥塊式聊天記錄窗（左下常駐、可開合可捲、範圍內所有說的話完整入 log）──────
+       泡泡可截、log 不截；新訊息亮顯示幾秒後淡化不擋畫面，可展開回捲看歷史。
+       防 XSS：所有訊息一律用 textContent 寫入（見 main.js），絕不 innerHTML。 */
+    #chatLogWin {
+      position: fixed; left: 10px; bottom: 74px; z-index: 9;
+      width: min(360px, 78vw); display: flex; flex-direction: column;
+      pointer-events: none; /* 預設穿透讓遊戲點擊過去，只有可互動子元素接管 */
+    }
+    #chatLogHead {
+      display: flex; align-items: center; gap: 6px; align-self: flex-start;
+      padding: 3px 10px; border-radius: 10px 10px 8px 0;
+      background: rgba(20,28,40,0.72); color: #cdd8ea; font-size: 12px;
+      cursor: pointer; user-select: none; pointer-events: auto;
+      transition: opacity 0.5s ease;
+    }
+    #chatLogToggle { font-size: 10px; opacity: 0.8; }
+    #chatLogBody {
+      display: flex; flex-direction: column; justify-content: flex-end; gap: 2px;
+      padding: 6px 9px; border-radius: 0 10px 10px 10px;
+      background: rgba(12,18,28,0.5);
+      max-height: 128px; overflow: hidden; /* 收合：只露最近幾行、貼底顯示、不捲 */
+      font-size: 13px; transition: opacity 0.55s ease;
+    }
+    #chatLogBody:empty { display: none; } /* 還沒有任何話時，只留標題小條 */
+    /* 收合＋淡化態：新訊息過幾秒後半透明，不擋畫面（展開態不淡化）*/
+    #chatLogWin.faded:not(.expanded) #chatLogBody { opacity: 0.34; }
+    #chatLogWin.faded:not(.expanded) #chatLogHead { opacity: 0.5; }
+    /* 展開態：可捲動的完整歷史（手機直式友善）*/
+    #chatLogWin.expanded #chatLogBody {
+      justify-content: flex-start; overflow-y: auto; opacity: 1;
+      max-height: min(46vh, 340px); pointer-events: auto;
+      border: 1px solid rgba(255,255,255,0.12);
+    }
+    #chatLogWin.expanded #chatLogHead { background: rgba(20,28,40,0.94); }
+    /* 每行：名字前綴（可辨色）＋ 完整訊息（不截斷、可換行）*/
+    .clog-line {
+      line-height: 1.42; word-break: break-word; white-space: pre-wrap;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.92); padding: 1px 1px;
+    }
+    .clog-name { font-weight: bold; }
+    /* 顏色分辨：自己＝暖金、其他玩家＝天藍、居民＝各自穩定色（JS 上色）、系統＝灰 */
+    .clog-self { color: #fff2cf; }
+    .clog-self .clog-name { color: #ffd86b; }
+    .clog-other { color: #dcecff; }
+    .clog-other .clog-name { color: #8fd0ff; }
+    .clog-res { color: #eaf5ec; }
+    .clog-sys { color: #9fb0c8; font-style: italic; }
+    /* 直式：避開左下觸控搖桿（搖桿在 left:16 bottom:76 約 120px 高），整個上移 */
+    @media (orientation: portrait) {
+      #chatLogWin { bottom: 208px; width: min(300px, 72vw); }
+      #chatLogWin.expanded #chatLogBody { max-height: min(38vh, 260px); }
+    }
+
     /* ── 居民日記面板 ─────────────────────────────────────────────────────── */
     #diary {
       position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
@@ -1140,6 +1193,14 @@
   <div id="speakBar">
     <input id="speakInput" type="text" maxlength="200" placeholder="說點什麼…附近的居民聽得到" autocomplete="off" />
     <button id="speakSend">說</button>
+  </div>
+  <!-- 麥塊式聊天記錄窗（左下常駐）：範圍內所有說的話完整入 log、可開合可捲、防 XSS。
+       標題列點一下展開/收合歷史；內容由 main.js 以 textContent 填入。 -->
+  <div id="chatLogWin" class="collapsed">
+    <div id="chatLogHead" title="點一下展開/收合聊天記錄">
+      <span>💬 附近的話</span><span id="chatLogToggle">▲</span>
+    </div>
+    <div id="chatLogBody"></div>
   </div>
   <!-- 居民日記面板（ROADMAP 650）-->
   <div id="diary">
