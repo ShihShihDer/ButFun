@@ -5589,7 +5589,9 @@ fn tick_residents(dt: f32) {
                         if r.expedition_stay <= 0.0 {
                             r.expedition = None;
                             r.expedition_cooldown = vexp::EXPEDITION_COOLDOWN;
-                            expedition_feed.push((r.name, vexp::return_feed_line()));
+                            // 生物群系版歸來 Feed：帶回的見聞點名去過的地方（草原／森林／沙漠／雪原）。
+                            let biome = crate::voxel::biome_at_voxel(tx.round() as i32, tz.round() as i32);
+                            expedition_feed.push((r.name, vexp::return_feed_line(biome)));
                             if r.say.is_empty() {
                                 let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                                 r.say = vexp::return_bubble(pick);
@@ -5612,16 +5614,21 @@ fn tick_residents(dt: f32) {
                         //（掛哨兵鍵、日記／內心可引用）。正巧在說別的話就先按住、等 say 清空再抵達。
                         if r.say.is_empty() {
                             r.expedition_stay = vexp::EXPEDITION_STAY_SECS;
+                            // 生物群系版抵達（ROADMAP 760）：居民認出腳下是什麼地方（草原／森林／
+                            // 沙漠／雪原），泡泡、記憶、Feed 都帶上地方感——遠行第一次真的「去了個地方」。
+                            let biome = crate::voxel::biome_at_voxel(tx.round() as i32, tz.round() as i32);
                             let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                            r.say = vexp::arrive_bubble(&bearing, pick);
+                            r.say = vexp::arrive_bubble(&bearing, biome, pick);
                             r.say_timer = SAY_SECS;
-                            let summary = vexp::arrive_memory_summary(&bearing);
+                            let summary = vexp::arrive_memory_summary(&bearing, biome);
                             let entry = hub().memory.write().unwrap().add_memory(
                                 &r.id,
                                 vexp::EXPEDITION_MEMORY_PLAYER,
                                 &summary,
                             );
                             vmem::append_memory(&entry);
+                            // 抵達動態牆播報：不在場的玩家回來也能讀到「牠到了什麼地方」。
+                            expedition_feed.push((r.name, vexp::arrive_feed_line(&bearing, biome)));
                             // 邊陲營火路標（遠行 v2）：抵達那一刻收集一筆「在落點升起營火」的請求，
                             // 落點取遠行目標中心（tx,tz，居民就在其 EXPEDITION_ARRIVE_DIST 半徑內，
                             // 不會正踩在灶台上）。實際落地在鎖外統一處理。每趟遠行只在此抵達分支跑一次。
