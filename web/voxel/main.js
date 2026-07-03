@@ -360,6 +360,75 @@ function updateRain(dt) {
   pos.needsUpdate = true;
 }
 
+// ── 繁星夜空 v1（ROADMAP 783）──────────────────────────────────────────────
+// 夜空第一次掛滿繁星＋升起一輪明月,隨晝夜柔和淡入淡出。純視覺、零新協議:入夜程度全由既有
+// 廣播的 time_of_day(worldTime)本地演算。效能鐵律:整片星場＝單一 THREE.Points(一次 draw call,
+// 別用逐星 mesh),月球＝單一小球 mesh;白天整組隱藏、零成本早退。星場與月球每幀跟著鏡頭平移,
+// 半徑夠大 ⇒ 看起來永遠掛在無限遠的天邊(視差可忽略)。
+const STAR_COUNT = 700;      // 星星數(單一點雲,對 FPS 無感)
+const STAR_RADIUS = 320;     // 星場球半徑(格):夠遠 ⇒ 隨鏡頭平移看起來固定在天上
+const starPositions = new Float32Array(STAR_COUNT * 3);
+for (let i = 0; i < STAR_COUNT; i++) {
+  // 均勻散在球面上,再偏向上半球(y 抬高)——讓多數星星落在地平線之上的夜空,少數貼近天邊。
+  const u = Math.random() * 2 - 1;             // cosθ ∈ [-1,1]
+  const phi = Math.random() * Math.PI * 2;     // 方位角
+  const r = Math.sqrt(Math.max(0, 1 - u * u));
+  let y = u;
+  y = y * 0.7 + 0.35;                            // 整體抬高:壓低地平線以下的星、集中在頭頂夜空
+  starPositions[i * 3 + 0] = Math.cos(phi) * r * STAR_RADIUS;
+  starPositions[i * 3 + 1] = y * STAR_RADIUS;
+  starPositions[i * 3 + 2] = Math.sin(phi) * r * STAR_RADIUS;
+}
+const starGeom = new THREE.BufferGeometry();
+starGeom.setAttribute("position", new THREE.BufferAttribute(starPositions, 3));
+const starMat = new THREE.PointsMaterial({
+  color: 0xffffff, size: 1.7, sizeAttenuation: false, // 螢幕像素尺寸(不隨距離縮),遠處星點清晰
+  transparent: true, opacity: 0, depthWrite: false, fog: false,
+});
+const starPoints = new THREE.Points(starGeom, starMat);
+starPoints.visible = false;
+scene.add(starPoints);
+
+// 明月:單一小球 mesh(MeshBasicMaterial 自發光、不吃光照,任何角度都圓),沿與太陽相對的軌跡掛在夜空。
+const moonMat = new THREE.MeshBasicMaterial({
+  color: 0xf5f2e0, transparent: true, opacity: 0, depthWrite: false, fog: false,
+});
+const moon = new THREE.Mesh(new THREE.SphereGeometry(7, 20, 20), moonMat);
+moon.visible = false;
+scene.add(moon);
+
+// 入夜程度:1=深夜(繁星最盛)、0=白晝(無星),黎明/黃昏之間平滑過渡。與 SKY_KEYS 的深夜段對齊。
+function nightFactor(t) {
+  if (t < 0.16) return 1;                     // 深夜(午夜後)
+  if (t < 0.26) return 1 - (t - 0.16) / 0.10; // 黎明:星星淡出
+  if (t < 0.74) return 0;                     // 白晝:無星
+  if (t < 0.86) return (t - 0.74) / 0.12;     // 黃昏:星星淡入
+  return 1;                                   // 入夜(午夜前)
+}
+
+// 每幀更新星空:依 worldTime 算入夜程度,設星場/月球不透明度;夜裡把兩者跟著鏡頭平移到天邊。
+// 下雨時繁星被雲遮去(淡掉),雨過天晴才重見星空。白天/無星時整組隱藏、零成本早退。
+let starTwinkle = 0; // 星光微閃相位(廉價 sin,一次乘法)
+function updateNightSky(dt) {
+  let nf = nightFactor(worldTime);
+  if (isRaining) nf *= 0.15; // 下雨:烏雲蔽星,只留極淡一層
+  if (nf <= 0.001) { starPoints.visible = false; moon.visible = false; return; }
+  starTwinkle += dt;
+  const twinkle = 0.85 + 0.15 * Math.sin(starTwinkle * 1.6); // 整片星光輕微明滅(非逐星,零額外成本)
+  starPoints.visible = true;
+  starMat.opacity = nf * 0.9 * twinkle;
+  starPoints.position.copy(camera.position); // 跟鏡頭平移 ⇒ 星星像掛在無限遠處
+  moon.visible = true;
+  moonMat.opacity = nf;
+  // 月亮軌跡:與太陽相對(太陽在 t=0.5 正午最高,月亮在午夜最高)。ang 與 updateSkyAndLight 太陽同式再加 π。
+  const ang = (worldTime - 0.25) * Math.PI * 2 + Math.PI;
+  moon.position.set(
+    camera.position.x - Math.cos(ang) * STAR_RADIUS * 0.85,
+    camera.position.y + Math.sin(ang) * STAR_RADIUS * 0.85,
+    camera.position.z + 25,
+  );
+}
+
 // ── 雨後彩虹 v1（ROADMAP 780）─────────────────────────────────────────────
 // 伺服器偵測「雨→晴」後,隨快照廣播 rainbow:bool(彩虹掛在天邊約一分鐘);前端只負責視覺:
 // 一道七彩半弧掛在遠方天邊,雨停時柔和淡入、時間到再淡出。效能鐵律:七道半環 TorusGeometry
@@ -3708,6 +3777,7 @@ function update(dt) {
 
   updateRain(dt);
   updateRainbow(dt);
+  updateNightSky(dt);
   streamChunks(dt);
   sendMove(dt);
 
