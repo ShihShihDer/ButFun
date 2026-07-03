@@ -96,6 +96,7 @@ use crate::voxel_welcome as vwelcome;
 use crate::voxel_resident_trade as vrtrade;
 use crate::voxel_share as vshare;
 use crate::voxel_milestones::{self as vmiles, MilestoneStore};
+use crate::voxel_player_pos as vpp;
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -1817,8 +1818,18 @@ async fn handle_socket(
     let conn_talk_note: Option<&'static str> =
         conn_title.as_deref().and_then(special_title_talk_note);
 
+    // 位置持久化 v1：登入帳號→嘗試載回上次位置（IO 在無鎖段）；訪客/首次登入→用 spawn_pos。
+    // 安全：key 綁後端解出的 email（非客戶端自報），訪客 account_email = None → 路徑不觸及。
+    let (sx, sy, sz, syaw): (f32, f32, f32, f32) = account_email
+        .as_deref()
+        .and_then(|email| vpp::load_player_pos(email))
+        .map(|(lx, ly, lz, lyaw)| (lx, ly, lz, lyaw))
+        .unwrap_or_else(|| {
+            let (x, y, z) = spawn_pos();
+            (x, y, z, 0.0)
+        });
+
     // 建立權威玩家、登錄進 hub。
-    let (sx, sy, sz) = spawn_pos();
     {
         let mut players = hub().players.write().unwrap();
         players.insert(
@@ -1829,7 +1840,7 @@ async fn handle_socket(
                 x: sx,
                 y: sy,
                 z: sz,
-                yaw: 0.0,
+                yaw: syaw,
                 say: String::new(),
                 say_timer: 0.0,
                 title: conn_title.clone(),
@@ -1848,7 +1859,8 @@ async fn handle_socket(
         // 特殊身分稱號（後端判定，不信客戶端自報）：前端據此渲染頭上金色稱號牌 +
         // 只給他看的回歸招呼。一般玩家 / 訪客為 null，完全不受影響。
         "title": conn_title,
-        "spawn": { "x": sx, "y": sy, "z": sz },
+        // 位置持久化 v1：登入帳號重登時 spawn 為上次離開的位置（含 yaw）；訪客/首次為預設。
+        "spawn": { "x": sx, "y": sy, "z": sz, "yaw": syaw },
         "sea": SEA_LEVEL,
         "base": BASE_HEIGHT,
         "chunk": CHUNK,
@@ -1985,6 +1997,9 @@ async fn handle_socket(
     // 對話冷卻：記這條連線上次跟居民說話的時刻（per-connection 節流，防灌爆 LLM）。
     let mut last_talk: Option<std::time::Instant> = None;
 
+    // 位置持久化 v1：上次存位置的 unix 秒（0 = 從未存；第一次 Move 後 30 秒內觸發第一次存）。
+    let mut last_pos_save_ts: u64 = 0;
+
     // 讀取迴圈：處理 move / req / break / place / talk。
     while let Some(Ok(msg)) = receiver.next().await {
         let txt = match msg {
@@ -2009,6 +2024,18 @@ async fn handle_socket(
                 };
                 if changed {
                     broadcast_players();
+                }
+                // 位置持久化 v1：登入帳號每 30 秒存一次當前位置（訪客不存、IO 在鎖外）。
+                // 安全：key 綁後端解出的 email，不信客戶端自報的 x/y/z。
+                if let Some(ref email) = account_email {
+                    let now_ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    if now_ts.saturating_sub(last_pos_save_ts) >= 30 {
+                        vpp::save_player_pos(email, x, y, z, yaw); // IO 在鎖外
+                        last_pos_save_ts = now_ts;
+                    }
                 }
             }
             Ok(ClientMsg::Req { cx, cz }) => {
@@ -4063,6 +4090,18 @@ async fn handle_socket(
 
             // 重複 Join 或壞訊息：忽略。
             _ => {}
+        }
+    }
+
+    // 位置持久化 v1：斷線前把最後位置存起來（登入帳號），讓重登時回到這裡。
+    // 安全：短鎖讀位置即釋（不持鎖後再 IO），IO 在鎖外，零死鎖風險。
+    if let Some(ref email) = account_email {
+        let final_pos = {
+            let players = hub().players.read().unwrap();
+            players.get(&my_id).map(|p| (p.x, p.y, p.z, p.yaw))
+        }; // 讀鎖在此釋放
+        if let Some((px, py, pz, pyaw)) = final_pos {
+            vpp::save_player_pos(email, px, py, pz, pyaw); // IO 在鎖外
         }
     }
 
