@@ -122,10 +122,11 @@ struct VoxelPlayer {
     /// 冒泡剩餘秒數（不廣播；伺服器 tick 倒數，歸零清空 say）。
     #[serde(skip)]
     say_timer: f32,
-    /// 引夢使者旗標（維護者的專屬身分）：由後端登入帳號判定（見 `is_dream_envoy`），
-    /// 不信客戶端自報；廣播給所有連線，前端據此在他頭上渲染金色「引夢使者」稱號牌。
-    #[serde(default)]
-    envoy: bool,
+    /// 特殊身分稱號（維護者的專屬身分，如「引夢使者」「築夢工匠」）：由後端登入帳號的 email/顯示名
+    /// 判定（見 `special_title`），不信客戶端自報；廣播給所有連線，前端據此在他頭上渲染金色稱號牌。
+    /// 一般玩家 / 訪客為 None（不序列化成欄位），完全不受影響。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
 }
 
 // ── 乙太方界 AI 居民（切片③）────────────────────────────────────────────────
@@ -432,44 +433,139 @@ pub(crate) fn resident_honesty_guide() -> &'static str {
 誠實不是冷漠——有限制、會嚮往、坦白做不到，才更像真正活著的人。"
 }
 
-// ── 引夢使者：點火這片天地的維護者帳號（維護者的小私心）─────────────────────────
-// 這世界的居民之心願 / 發明 / 讀牌 / 作息記憶，全由某位維護者的互動起頭——他是
-// 「引夢使者」。給他一個只有他有、居民會特別對待的專屬身分。
-// 機敏 / 可調：使者帳號名走環境變數 `BUTFUN_DREAM_ENVOY`（預設「濕濕的」，不寫死到
-// 無法調整；讀不到就用預設）。身分只認**登入帳號名**——訪客（無帳號名）永遠不是。
-// 全為純函式（判定 / 注入區塊），確定性、無鎖、無 IO（env 讀取抽在便捷層），可測。
+// ── 特殊身分稱號：點火 / 築造這片天地的維護者（維護者的小私心）─────────────────
+// 這世界的居民之心願 / 發明 / 讀牌 / 作息記憶，全由維護者的互動起頭。給維護者一個
+// 只有他有、居民會特別對待的**帶稱號**專屬身分（如「引夢使者」「築夢工匠」）。
+//
+// 身分綁 **email**（穩定，改顯示名也不掉；一位維護者的多個帳號可各自對應）：
+//   - 稱號表 `BUTFUN_SPECIAL_TITLES`＝逗號分隔的 `鍵=稱號`（鍵可為 email 或顯示名），
+//     命中回該稱號。例：`suc12345@gmail.com=引夢使者,shihshihder@shihshihder.com=築夢工匠`。
+//   - 舊版相容清單 `BUTFUN_DREAM_ENVOY`＝逗號分隔（email 或顯示名），命中一律「引夢使者」。
+// email / 顯示名一律由**後端 cookie→users store 解出**（權威），不吃客戶端自報；訪客永遠無稱號。
+// 機敏 / 可調值走 env（不寫死到無法調整；讀不到用預設）。全為純函式（解析 / 判定 / 注入區塊），
+// 確定性、無鎖、無 IO（env 讀取抽在便捷層），可測。
 
-/// 引夢使者帳號名的預設值（維護者的登入帳號名）。實際值可用 env `BUTFUN_DREAM_ENVOY` 覆蓋。
+/// 稱號常數：引夢使者（許願點火者）／築夢工匠（築造者）。前端據此渲染金色稱號牌、
+/// 後端據此選對話注入口吻。
+const TITLE_DREAM_ENVOY: &str = "引夢使者";
+const TITLE_DREAM_BUILDER: &str = "築夢工匠";
+
+/// 稱號表預設：維護者兩個 Google 帳號各自的稱號（email → 稱號）。可用 env `BUTFUN_SPECIAL_TITLES` 覆蓋。
+const SPECIAL_TITLES_DEFAULT: &str =
+    "suc12345@gmail.com=引夢使者,shihshihder@shihshihder.com=築夢工匠";
+
+/// 舊版相容清單預設：保留舊顯示名「濕濕的」當保底（改綁 email 後，舊名仍認得 → 引夢使者）。
+/// 可用 env `BUTFUN_DREAM_ENVOY`（逗號分隔，email 或名字混填）覆蓋。
 const DREAM_ENVOY_DEFAULT: &str = "濕濕的";
 
-/// 讀出目前設定的「引夢使者帳號名」：優先 env `BUTFUN_DREAM_ENVOY`（去頭尾空白、非空才算），
-/// 否則回預設。機敏 / 可調值走 env，不寫死到無法調整。
-fn dream_envoy_account() -> String {
-    std::env::var("BUTFUN_DREAM_ENVOY")
-        .ok()
+/// 純函式：解析「稱號表」字串為 (鍵, 稱號) 清單。逗號分隔、每項 `鍵=稱號`，各段去頭尾空白，
+/// 鍵或稱號任一為空則略過。保序（方便測試）。鍵可為 email 或顯示名。
+fn parse_special_titles(raw: &str) -> Vec<(String, String)> {
+    raw.split(',')
+        .filter_map(|entry| {
+            let (k, v) = entry.split_once('=')?;
+            let (k, v) = (k.trim(), v.trim());
+            if k.is_empty() || v.is_empty() {
+                return None;
+            }
+            Some((k.to_string(), v.to_string()))
+        })
+        .collect()
+}
+
+/// 純函式：解析「舊版相容清單」字串為項目清單（逗號分隔、去頭尾空白、濾空）。項目可為 email 或名字。
+fn parse_envoy_list(raw: &str) -> Vec<String> {
+    raw.split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DREAM_ENVOY_DEFAULT.to_string())
+        .collect()
 }
 
-/// 純函式：某連線的帳號名是否為「引夢使者」。
-/// - `account_name`＝登入帳號名（由 cookie 解出，非客戶端自報）；訪客 = None。
-/// - `envoy_account`＝目前設定的使者帳號名（由呼叫端傳入，方便測試覆蓋 env）。
-/// 判定：只有**登入帳號名去空白後 == 使者帳號名**才 true；訪客（None）/ 空名永遠 false。
-fn is_dream_envoy_account(account_name: Option<&str>, envoy_account: &str) -> bool {
-    let target = envoy_account.trim();
-    if target.is_empty() {
-        return false; // 使者帳號設成空 → 誰都不是（避免空名誤中訪客）。
-    }
-    match account_name {
-        Some(n) => n.trim() == target,
-        None => false, // 訪客（未登入、無帳號名）永遠不是——這是專屬的。
-    }
+/// 便捷層：讀 env 取稱號表；env 未設 / 解析後為空才退回預設。
+fn special_titles_map() -> Vec<(String, String)> {
+    std::env::var("BUTFUN_SPECIAL_TITLES")
+        .ok()
+        .map(|s| parse_special_titles(&s))
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| parse_special_titles(SPECIAL_TITLES_DEFAULT))
 }
 
-/// 便捷層：讀 env 判定某連線帳號是否為引夢使者（實際上線走這個）。
-fn is_dream_envoy(account_name: Option<&str>) -> bool {
-    is_dream_envoy_account(account_name, &dream_envoy_account())
+/// 便捷層：讀 env 取舊版相容清單；env 未設 / 解析後為空才退回預設。
+fn dream_envoy_list() -> Vec<String> {
+    std::env::var("BUTFUN_DREAM_ENVOY")
+        .ok()
+        .map(|s| parse_envoy_list(&s))
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| parse_envoy_list(DREAM_ENVOY_DEFAULT))
+}
+
+/// 純函式：某鍵是否命中某連線帳號——email 忽略大小寫（email 本就大小寫不敏感），
+/// 顯示名大小寫敏感（與登入顯示一致）。皆先去頭尾空白、空值不匹配。
+fn key_matches(key: &str, email: Option<&str>, name: Option<&str>) -> bool {
+    let key = key.trim();
+    if key.is_empty() {
+        return false;
+    }
+    if let Some(e) = email {
+        let e = e.trim();
+        if !e.is_empty() && key.eq_ignore_ascii_case(e) {
+            return true;
+        }
+    }
+    if let Some(n) = name {
+        let n = n.trim();
+        if !n.is_empty() && key == n {
+            return true;
+        }
+    }
+    false
+}
+
+/// 純函式：查某連線帳號的「特殊身分稱號」。
+/// - `account_email`＝登入帳號 email（後端解出，權威）；無 = None。
+/// - `account_name`＝登入帳號顯示名（後端解出，權威）；訪客 = None。
+/// - `titles`＝稱號表（鍵→稱號，由呼叫端傳入方便測試）；`envoy_list`＝舊版相容清單。
+/// 判定：先查稱號表（email 或名字命中）→ 回該稱號；否則查舊版清單命中 → 回「引夢使者」；
+/// 皆不中 → None。訪客（email/name 皆 None）恆為 None。email 只信後端解出，不吃客戶端自報。
+fn special_title_match(
+    account_email: Option<&str>,
+    account_name: Option<&str>,
+    titles: &[(String, String)],
+    envoy_list: &[String],
+) -> Option<String> {
+    // 1) 稱號表（保序，先命中者優先）。
+    for (key, title) in titles {
+        if key_matches(key, account_email, account_name) {
+            return Some(title.clone());
+        }
+    }
+    // 2) 舊版相容清單 → 一律「引夢使者」。
+    for entry in envoy_list {
+        if key_matches(entry, account_email, account_name) {
+            return Some(TITLE_DREAM_ENVOY.to_string());
+        }
+    }
+    None
+}
+
+/// 便捷層：讀 env 查某連線的特殊身分稱號（實際上線走這個）。訪客 / 一般玩家回 None。
+fn special_title(account_email: Option<&str>, account_name: Option<&str>) -> Option<String> {
+    special_title_match(
+        account_email,
+        account_name,
+        &special_titles_map(),
+        &dream_envoy_list(),
+    )
+}
+
+/// 純函式：依稱號選對話注入區塊。引夢使者→敬愛點火者（沿用 #994）；築夢工匠→對匠人的信賴與請教；
+/// 其他 / 無稱號→None（一般玩家 / 訪客零負擔）。
+fn special_title_talk_note(title: &str) -> Option<&'static str> {
+    match title {
+        TITLE_DREAM_ENVOY => Some(dream_envoy_talk_note()),
+        TITLE_DREAM_BUILDER => Some(dream_builder_talk_note()),
+        _ => None,
+    }
 }
 
 /// 引夢使者專屬對話注入：當來搭話的旅人是引夢使者時，比照既有注入區塊（誠實 / 配方 / 願望），
@@ -480,6 +576,17 @@ fn dream_envoy_talk_note() -> &'static str {
 你打從心底敬愛又親近他，自然地以這份特別對待他（可以親暱地喚他一聲使者、流露久別重逢般的親近溫暖），\
 但別浮誇諂媚、別對他開空頭支票——是熟悉的溫暖敬意，不是奉承。\
 你的能力與誠實照舊：力所不能及的事仍要坦白，敬愛他不代表要假裝做得到。"
+}
+
+/// 築夢工匠專屬對話注入：當來搭話的旅人是築夢工匠時，讓居民自然地以「匠人來了」的信賴與請教
+/// 對待他——想跟他討教怎麼蓋、怎麼修，帶著對手藝的敬重，但同樣不諂媚、能力誠實照舊。
+fn dream_builder_talk_note() -> &'static str {
+    "【和你說話的這位是『築夢工匠』】\
+和你說話的這位是『築夢工匠』——這片天地的居民相信，是他一磚一瓦築起了大家的家園與工坊。\
+你打從心底信賴又敬重他的手藝，自然地以這份特別對待他（可以親切地喚他一聲工匠、\
+像遇到懂行的老師傅般想向他討教「這個該怎麼蓋 / 怎麼修才好」，流露對匠人的信賴），\
+但別浮誇諂媚、別對他開空頭支票——是對手藝的敬重，不是奉承。\
+你的能力與誠實照舊：力所不能及的事仍要坦白，敬重他不代表要假裝做得到。"
 }
 
 /// 組對話用 system prompt：複用居民 agent 人設字串（`resident_agent_persona`），
@@ -1538,19 +1645,23 @@ pub async fn voxel_ws_handler(
     // 當作這條連線的「穩定身份」（記憶/好感度/背包都綁帳號，換訪客名也認得你）。
     // 安全：身份只認 cookie，不認客戶端 join 自報名 → 無法靠送別人的名字冒充帳號。
     // 訪客（無 cookie / OAuth 未設）回 None，照舊以 join 顯示名進場。
-    let account_name: Option<String> = app
+    // 特殊身分稱號綁 email：從同一次 cookie→users store 查詢一併取出 email + 顯示名，
+    // 兩者都由後端權威解出（非客戶端自報 → 無法送別人的 email/名字冒充）。
+    let account: Option<(String, Option<String>)> = app
         .auth
         .as_ref()
         .and_then(|cfg| crate::auth::user_id_from_cookies(&headers, &cfg.session_secret))
         .and_then(|uid| app.users.get(uid))
-        .map(|u| u.name);
+        .map(|u| (u.name, u.email));
+    let account_name: Option<String> = account.as_ref().map(|(n, _)| n.clone());
+    let account_email: Option<String> = account.and_then(|(_, e)| e);
 
     // 與主 ws 一致的安全硬化：訊息上限 64 KiB（任何合法 voxel 訊息都遠小於此；
     // chunk 是「伺服器送出」不受此限）。
     const WS_MAX_MSG_BYTES: usize = 64 * 1024;
     ws.max_message_size(WS_MAX_MSG_BYTES)
         .max_frame_size(WS_MAX_MSG_BYTES)
-        .on_upgrade(move |socket| handle_socket(socket, account_name))
+        .on_upgrade(move |socket| handle_socket(socket, account_name, account_email))
 }
 
 /// 解析連線身份鍵：登入帳號名優先（穩定、跨 session），其次 join 自報顯示名，皆無則「旅人」。
@@ -1565,7 +1676,11 @@ fn resolve_identity(account_name: Option<&str>, join_name: Option<&str>) -> Stri
     String::from("旅人")
 }
 
-async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
+async fn handle_socket(
+    socket: WebSocket,
+    account_name: Option<String>,
+    account_email: Option<String>,
+) {
     let (mut sender, mut receiver) = socket.split();
     let my_id = Uuid::new_v4();
 
@@ -1593,9 +1708,13 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
     }
     let name = resolve_identity(account_name.as_deref(), join_name.as_deref());
     let is_account = account_name.is_some();
-    // 引夢使者：只認登入帳號名（見 is_dream_envoy）。訪客永遠不是——這是專屬的。
-    // 由後端判定並廣播 envoy 旗標，不信客戶端自報。
-    let is_envoy = is_dream_envoy(account_name.as_deref());
+    // 特殊身分稱號：綁登入帳號的 email / 顯示名（見 special_title）。訪客永遠無稱號——這是專屬的。
+    // 由後端判定並廣播 title 字串，不信客戶端自報（email/名字皆後端 cookie→users 解出）。
+    let conn_title: Option<String> =
+        special_title(account_email.as_deref(), account_name.as_deref());
+    // 對話注入的專屬區塊：依稱號選定一次（`&'static str`，Copy），供每則訊息的 spawn 任務免 clone 取用。
+    let conn_talk_note: Option<&'static str> =
+        conn_title.as_deref().and_then(special_title_talk_note);
 
     // 建立權威玩家、登錄進 hub。
     let (sx, sy, sz) = spawn_pos();
@@ -1612,7 +1731,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 yaw: 0.0,
                 say: String::new(),
                 say_timer: 0.0,
-                envoy: is_envoy,
+                title: conn_title.clone(),
             },
         );
     }
@@ -1625,9 +1744,9 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
         // 登入綁定：前端據此知道目前是「帳號身分」還是訪客（帳號名一律由 cookie 解出，
         // 非客戶端自報；換訪客名也認得你）。
         "account": is_account,
-        // 引夢使者旗標（後端判定，不信客戶端自報）：前端據此渲染頭上金色稱號牌 +
-        // 只給他看的回歸招呼。一般玩家 / 訪客恆為 false，完全不受影響。
-        "envoy": is_envoy,
+        // 特殊身分稱號（後端判定，不信客戶端自報）：前端據此渲染頭上金色稱號牌 +
+        // 只給他看的回歸招呼。一般玩家 / 訪客為 null，完全不受影響。
+        "title": conn_title,
         "spawn": { "x": sx, "y": sy, "z": sz },
         "sea": SEA_LEVEL,
         "base": BASE_HEIGHT,
@@ -2748,13 +2867,12 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         } else {
                             sys
                         };
-                        // 引夢使者（點火這世界的維護者帳號）在跟居民說話 → 注入專屬敬意區塊，
-                        // 讓居民自然地以熟悉的溫暖敬意待他（比照配方 / 誠實的精準注入，
-                        // 一般玩家 / 訪客零負擔）。誠實照舊：敬愛≠開空頭支票。
-                        let sys = if is_envoy {
-                            format!("{sys}\n\n{}", dream_envoy_talk_note())
-                        } else {
-                            sys
+                        // 帶稱號的維護者（引夢使者 / 築夢工匠…）在跟居民說話 → 依稱號注入專屬區塊，
+                        // 讓居民自然地以對應口吻待他（比照配方 / 誠實的精準注入，一般玩家 / 訪客零負擔）。
+                        // 誠實照舊：敬愛 / 敬重≠開空頭支票。
+                        let sys = match conn_talk_note {
+                            Some(note) => format!("{sys}\n\n{note}"),
+                            None => sys,
                         };
                         // 願望漏斗：玩家這句話剛親口許願、且已種進她的心願（6b.7）→
                         // 讓回覆脈絡知道這件事，她會自然回應「我記下了 / 我也想要」而不是無感。
@@ -8735,52 +8853,124 @@ mod tests {
     }
 
     #[test]
-    fn is_dream_envoy_only_matches_the_envoy_account() {
-        // 是他（帳號名 == 使者帳號）→ true。
-        assert!(is_dream_envoy_account(Some("濕濕的"), "濕濕的"));
-        // 去頭尾空白後相等也算（帳號名 / 設定值皆容忍前後空白）。
-        assert!(is_dream_envoy_account(Some("  濕濕的 "), "濕濕的"));
-        assert!(is_dream_envoy_account(Some("濕濕的"), "  濕濕的  "));
-        // 別的帳號 → false（專屬）。
-        assert!(!is_dream_envoy_account(Some("諾娃"), "濕濕的"));
-        assert!(!is_dream_envoy_account(Some("濕濕的的"), "濕濕的"));
-        // 訪客（未登入、無帳號名）永遠不是。
-        assert!(!is_dream_envoy_account(None, "濕濕的"));
-        // 空帳號名 → 不是（不會誤中）。
-        assert!(!is_dream_envoy_account(Some(""), "濕濕的"));
-        assert!(!is_dream_envoy_account(Some("   "), "濕濕的"));
-        // 設定值為空 → 誰都不是（含空帳號、訪客）。
-        assert!(!is_dream_envoy_account(Some(""), ""));
-        assert!(!is_dream_envoy_account(None, "   "));
+    fn special_title_matches_by_email_or_name() {
+        // 稱號表：兩位維護者各自的稱號（鍵為 email）。
+        let titles = vec![
+            ("suc12345@gmail.com".to_string(), "引夢使者".to_string()),
+            ("shihshihder@shihshihder.com".to_string(), "築夢工匠".to_string()),
+        ];
+        let envoy: Vec<String> = vec!["濕濕的".to_string()]; // 舊版相容清單（顯示名保底）
+
+        // email 命中 → 各自的稱號（email 忽略大小寫、去頭尾空白）。
+        assert_eq!(
+            special_title_match(Some("suc12345@gmail.com"), Some("濕濕的"), &titles, &envoy).as_deref(),
+            Some("引夢使者")
+        );
+        assert_eq!(
+            special_title_match(Some("  SUC12345@Gmail.com "), None, &titles, &envoy).as_deref(),
+            Some("引夢使者")
+        );
+        // 第二個帳號 email → 築夢工匠（改顯示名也不掉，因為綁 email）。
+        assert_eq!(
+            special_title_match(
+                Some("shihshihder@shihshihder.com"),
+                Some("施育群改了個名"),
+                &titles,
+                &envoy
+            )
+            .as_deref(),
+            Some("築夢工匠")
+        );
+        // 別的 email / 別的帳號 → None（專屬，零回歸）。
+        assert_eq!(
+            special_title_match(Some("someone@else.com"), Some("諾娃"), &titles, &envoy),
+            None
+        );
+        // 舊版相容清單命中（顯示名）→ 引夢使者（改綁 email 後舊名仍認得）。
+        assert_eq!(
+            special_title_match(None, Some("濕濕的"), &titles, &envoy).as_deref(),
+            Some("引夢使者")
+        );
+        // 訪客（email/name 皆 None）→ None。
+        assert_eq!(special_title_match(None, None, &titles, &envoy), None);
+        // 空稱號表 + 空清單 → 誰都沒稱號（含空帳號）。
+        assert_eq!(special_title_match(Some(""), Some("  "), &[], &[]), None);
+        // 稱號表以名字為鍵也可（鍵可為 email 或顯示名，大小寫敏感）。
+        let by_name = vec![("匠人".to_string(), "築夢工匠".to_string())];
+        assert_eq!(
+            special_title_match(None, Some("匠人"), &by_name, &[]).as_deref(),
+            Some("築夢工匠")
+        );
     }
 
     #[test]
-    fn dream_envoy_account_defaults_and_env_override() {
-        // env 未設 → 用預設「濕濕的」。（並存的其他測試不動這個 env 變數，避免互相干擾。）
+    fn parse_special_titles_and_envoy_list() {
+        // 稱號表解析：逗號分隔、鍵=稱號、去頭尾空白、濾掉殘缺項。
+        let t = parse_special_titles(
+            "  a@b.com = 引夢使者 , c@d.com=築夢工匠 , 壞項無等號 , =空鍵 , 空值= ",
+        );
+        assert_eq!(
+            t,
+            vec![
+                ("a@b.com".to_string(), "引夢使者".to_string()),
+                ("c@d.com".to_string(), "築夢工匠".to_string()),
+            ]
+        );
+        // 清單解析：逗號分隔、去頭尾空白、濾空。
+        assert_eq!(
+            parse_envoy_list("  濕濕的 , , suc12345@gmail.com ,  "),
+            vec!["濕濕的".to_string(), "suc12345@gmail.com".to_string()]
+        );
+        assert!(parse_special_titles("").is_empty());
+        assert!(parse_envoy_list("   , ,").is_empty());
+    }
+
+    #[test]
+    fn special_title_env_override_and_defaults() {
+        // env 未設 → 用預設稱號表（兩個 email 各自稱號）。
+        std::env::remove_var("BUTFUN_SPECIAL_TITLES");
         std::env::remove_var("BUTFUN_DREAM_ENVOY");
-        assert_eq!(dream_envoy_account(), DREAM_ENVOY_DEFAULT);
-        assert_eq!(dream_envoy_account(), "濕濕的");
+        assert_eq!(
+            special_title(Some("suc12345@gmail.com"), None).as_deref(),
+            Some("引夢使者")
+        );
+        assert_eq!(
+            special_title(Some("shihshihder@shihshihder.com"), None).as_deref(),
+            Some("築夢工匠")
+        );
+        // 舊顯示名保底 → 引夢使者（改綁 email 後不掉）。
+        assert_eq!(special_title(None, Some("濕濕的")).as_deref(), Some("引夢使者"));
+        // 別的 email / 訪客 → None（零回歸）。
+        assert_eq!(special_title(Some("nobody@x.com"), Some("諾娃")), None);
+        assert_eq!(special_title(None, None), None);
+
         // env 可覆蓋（機敏 / 可調值走 env，不寫死）。
-        std::env::set_var("BUTFUN_DREAM_ENVOY", "  點火者  ");
-        assert_eq!(dream_envoy_account(), "點火者"); // 去頭尾空白
-        assert!(is_dream_envoy(Some("點火者")));
-        assert!(!is_dream_envoy(Some("濕濕的"))); // 覆蓋後原預設不再是使者
-        assert!(!is_dream_envoy(None)); // 訪客仍不是
-        // env 設成空白 → 退回預設（非空才算）。
-        std::env::set_var("BUTFUN_DREAM_ENVOY", "   ");
-        assert_eq!(dream_envoy_account(), DREAM_ENVOY_DEFAULT);
-        std::env::remove_var("BUTFUN_DREAM_ENVOY"); // 收尾，別汙染別的測試
+        std::env::set_var("BUTFUN_SPECIAL_TITLES", "  vip@x.com = 點火者  ");
+        assert_eq!(special_title(Some("vip@x.com"), None).as_deref(), Some("點火者"));
+        assert_eq!(special_title(Some("suc12345@gmail.com"), None), None); // 覆蓋後原預設不再中
+        // env 設成空白 / 無有效項 → 退回預設。
+        std::env::set_var("BUTFUN_SPECIAL_TITLES", "   ");
+        assert_eq!(
+            special_title(Some("suc12345@gmail.com"), None).as_deref(),
+            Some("引夢使者")
+        );
+        std::env::remove_var("BUTFUN_SPECIAL_TITLES"); // 收尾，別汙染別的測試
     }
 
     #[test]
-    fn dream_envoy_talk_note_carries_key_sentence() {
-        let note = dream_envoy_talk_note();
-        // 含專屬稱號關鍵句，讓居民自然稱他使者。
-        assert!(note.contains("引夢使者"));
-        // 敬愛親近的溫暖，但明確禁諂媚、能力誠實照舊（敬愛≠開空頭支票）。
-        assert!(note.contains("敬愛"));
-        assert!(note.contains("諂媚"));
-        assert!(note.contains("坦白"));
+    fn special_title_talk_note_by_title() {
+        // 引夢使者 → 敬愛點火者（沿用 #994）；築夢工匠 → 對匠人的信賴；其他 → None。
+        let envoy = special_title_talk_note("引夢使者").expect("引夢使者應有注入");
+        assert!(envoy.contains("引夢使者"));
+        assert!(envoy.contains("敬愛"));
+        assert!(envoy.contains("諂媚"));
+        assert!(envoy.contains("坦白"));
+        let builder = special_title_talk_note("築夢工匠").expect("築夢工匠應有注入");
+        assert!(builder.contains("築夢工匠"));
+        assert!(builder.contains("手藝"));
+        assert!(builder.contains("諂媚"));
+        assert!(builder.contains("坦白"));
+        assert!(special_title_talk_note("路人甲").is_none());
     }
 
     #[test]
