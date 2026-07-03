@@ -467,6 +467,22 @@ pub fn player_help_say_line(player_name: &str, kind_name: &str) -> String {
     format!("謝謝{player_name}幫忙放的這塊，{kind_name}又更接近完工了！")
 }
 
+/// 玩家協助居民建造後，居民心中留下的**感激記憶**摘要（純函式、確定性、零 LLM）。
+///
+/// 「互動有後果」閉環的第一塊拼圖：此前玩家幫居民蓋家（ROADMAP 699）只化成一句道謝
+/// 泡泡＋心情補助＋Feed，**從沒寫進記憶**——重啟即遺忘、不累積好感、也不驅動任何後續
+/// 回報。這條摘要讓那份出力**真的被記住**：
+/// - 含「幫我蓋」關鍵詞 → 供 [`crate::voxel_fond_greeting::detect_context`] 認出
+///   「協助建造」情境，居民日後見你會說出提及這份情的專屬老友問候。
+/// - **刻意避開** [`crate::voxel_memory::classify_importance`] 的目標/偏好/承諾關鍵詞
+///   （不含「要蓋」「想要」「答應」等）→ 停在 episodic 層：計入好感（記憶筆數），
+///   卻不佔用長期精華 12 條上限。
+///
+/// 面向玩家字串集中一處、留 i18n 空間。
+pub fn player_help_memory_line(player_name: &str, kind_name: &str) -> String {
+    format!("{player_name}幫我蓋{kind_name}，出了一份力，我記著這份情。")
+}
+
 // ── jsonl 持久化 ──────────────────────────────────────────────────────────────
 
 /// 建造計畫落地路徑（`data/` 已 gitignore）。
@@ -900,6 +916,27 @@ mod tests {
         let line = player_help_say_line("小明", "小木屋");
         assert!(line.contains("小明"), "應提到玩家名：{line}");
         assert!(line.contains("小木屋"), "應提到建物種類：{line}");
+    }
+
+    #[test]
+    fn player_help_memory_line_mentions_player_kind_and_has_helpbuild_keyword() {
+        let line = player_help_memory_line("小明", "小木屋");
+        assert!(line.contains("小明"), "應提到玩家名：{line}");
+        assert!(line.contains("小木屋"), "應提到建物種類：{line}");
+        // 含「幫我蓋」→ 供 fond_greeting 認出「協助建造」情境。
+        assert!(line.contains("幫我蓋"), "應含 HelpedBuild 關鍵詞「幫我蓋」：{line}");
+    }
+
+    #[test]
+    fn player_help_memory_line_avoids_semantic_keywords() {
+        // 感激記憶必須停在 episodic 層（計入好感、不佔長期精華）——
+        // 不可含 classify_importance 的目標/偏好/承諾關鍵詞，否則會被誤升成語意事實。
+        for kind in ["小木屋", "水井", "瞭望台", "花圃"] {
+            let line = player_help_memory_line("旅人", kind);
+            for kw in ["要蓋", "要建", "想要", "打算", "要把", "我要", "最喜歡", "喜歡", "答應", "承諾"] {
+                assert!(!line.contains(kw), "感激記憶不該含語意關鍵詞「{kw}」：{line}");
+            }
+        }
     }
 
     // ── surface_y 純函式 ──────────────────────────────────────────────────────
