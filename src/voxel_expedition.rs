@@ -22,6 +22,8 @@
 //! **純邏輯層**：本檔全是零 IO、零鎖、零 LLM、零 async 的確定性純函式；朝邊陲走的狀態機、逗留計時、
 //! 記憶昇華與 Feed 廣播都在 `voxel_ws.rs`（沿用探訪／朝聖既有的短鎖手法與 wander 中心覆寫慣例）。
 
+use crate::voxel::Block;
+
 /// 遠行落點距家域中心的基準距離（世界座標）：家已在主城外圍（±75），再往外推這麼遠 → 落在
 /// 離主城逾百格的荒野，玩家平常閒晃絕不會誤入，撞見居民在那才顯得「牠真的走遠了」。
 pub const EXPEDITION_DIST: f32 = 95.0;
@@ -165,6 +167,47 @@ pub fn return_feed_line() -> String {
     "遠行歸來，帶回了荒野盡頭的見聞".to_string()
 }
 
+// ── 邊陲營火路標（遠行 v2，PLAN_ETHERVOX item 7 後續「在遠方留下痕跡」）─────────────────
+// item 7 第一刀（遠行 v1）讓居民走進荒野再走回來——足跡散進了荒野，但世界本身沒留下任何痕跡：
+// 居民一走，那片邊陲又空無一物，玩家除非「正好在場」否則永遠不知道居民來過。這一刀把「暫時到訪」
+// 升級成「留下永久記號」：抵達邊陲時，居民親手升起一堆營火路標（實體方塊、走 world delta 持久化），
+// 日後任何玩家路過那片荒野，都會撞見這堆營火、知道「有居民的足跡到過這裡」。世界第一次因居民散佈
+// 而在主城以外長出實體痕跡，是把「散往世界各處『住』」從人影過境推向落地生根的地基。
+
+/// 遠行居民抵達邊陲時親手升起的一堆「營火路標」的方塊布局（世界座標）：以落點 `(bx,bz)`、地表
+/// 站立高度 `sy`（[`crate::voxel_building::surface_y`] 回傳的地面正上方那格）為基準——中心一塊
+/// StoneBrick 灶台（人為鋪過的痕跡、有別於天然亂石）、四鄰各一塊 Stone 圍成火塘圈、灶台上一支
+/// Torch 當火（夜裡在荒野遠遠就能望見這點光）。共 6 塊，稀少而有份量、不喧賓奪主。
+/// 純函式、確定性、無 IO；實際落地（deltas 寫 + 廣播 + 持久化）在 `voxel_ws.rs` 鎖外進行。
+pub fn campfire_blocks(bx: i32, sy: i32, bz: i32) -> Vec<(i32, i32, i32, Block)> {
+    let mut v = Vec::with_capacity(6);
+    // 灶台：中心鋪一塊石磚（人為痕跡，一眼看得出不是天然亂石）。
+    v.push((bx, sy, bz, Block::StoneBrick));
+    // 圍石：四鄰各一塊石頭，圍成一圈火塘。
+    for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+        v.push((bx + dx, sy, bz + dz, Block::Stone));
+    }
+    // 火：灶台正上方一支火把（荒野夜裡遠遠一點光）。
+    v.push((bx, sy + 1, bz, Block::Torch));
+    v
+}
+
+/// 營火路標中心「火」的座標（即 [`campfire_blocks`] 產出的火把位置）——落地前用來判定該落點是否
+/// 已有一堆營火（冪等：同一落點不重複堆疊，也避免重啟 replay 後重放產生的多餘 append）。
+pub fn campfire_flame_pos(bx: i32, sy: i32, bz: i32) -> (i32, i32, i32) {
+    (bx, sy + 1, bz)
+}
+
+/// 升起營火時昇華成的記憶摘要（掛 [`EXPEDITION_MEMORY_PLAYER`] 哨兵，日記／內心可引用）。
+pub fn campfire_memory_summary(bearing: &str) -> String {
+    format!("我在{bearing}的邊陲升起一堆營火，為自己走過的足跡留下一個記號。")
+}
+
+/// 升起營火的 Feed 播報詳情（面向玩家、集中可 i18n）。
+pub fn campfire_feed_line(bearing: &str) -> String {
+    format!("在{bearing}的邊陲升起一堆營火，為足跡留下記號")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,5 +325,41 @@ mod tests {
         assert!(!embark_feed_line("東方").is_empty());
         assert!(embark_feed_line("南方").contains("南方"));
         assert!(!return_feed_line().is_empty());
+    }
+
+    #[test]
+    fn campfire_has_hearth_ring_and_flame() {
+        let v = campfire_blocks(100, 33, -40);
+        // 共 6 塊：1 灶台 + 4 圍石 + 1 火。
+        assert_eq!(v.len(), 6);
+        // 中心灶台是石磚、在地表層 sy。
+        assert!(v.contains(&(100, 33, -40, Block::StoneBrick)));
+        // 四鄰各一塊 Stone 圍石（同一 sy 高度）。
+        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            assert!(v.contains(&(100 + dx, 33, -40 + dz, Block::Stone)));
+        }
+        // 火在灶台正上方 sy+1、且恰好一支。
+        let torches: Vec<_> = v.iter().filter(|(.., b)| *b == Block::Torch).collect();
+        assert_eq!(torches.len(), 1);
+        assert_eq!(*torches[0], (100, 34, -40, Block::Torch));
+    }
+
+    #[test]
+    fn campfire_flame_pos_matches_torch_in_layout() {
+        // flame_pos 必須與 campfire_blocks 產出的火把座標一致（冪等判定靠它）。
+        let (bx, sy, bz) = (7, 34, 12);
+        let flame = campfire_flame_pos(bx, sy, bz);
+        assert_eq!(flame, (bx, sy + 1, bz));
+        assert!(campfire_blocks(bx, sy, bz)
+            .iter()
+            .any(|(x, y, z, b)| (*x, *y, *z) == flame && *b == Block::Torch));
+    }
+
+    #[test]
+    fn campfire_lines_nonempty_and_mention_bearing() {
+        assert!(campfire_memory_summary("東方").contains("東方"));
+        assert!(!campfire_memory_summary("西方").is_empty());
+        assert!(campfire_feed_line("南方").contains("南方"));
+        assert!(!campfire_feed_line("北方").is_empty());
     }
 }
