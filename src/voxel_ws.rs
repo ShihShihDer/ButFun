@@ -4637,6 +4637,12 @@ fn tick_residents(dt: f32) {
     // 統一處理（不在持居民鎖時碰 deltas/IO）。(居民 id, 居民名, 落點 x, 落點 z, 方位名)。
     let mut expedition_campfires: Vec<(String, &'static str, i32, i32, String)> = Vec::new();
 
+    // 遠行帶回的邊陲風物（遠行 v5，ROADMAP 761）：鎖內收集「某居民遠行歸來、要把邊陲群系的當地風物
+    // 種在家門前紀念花圃」的請求；種植座標算、deltas 寫、廣播、持久化、記憶與 Feed 全在鎖釋放後統一
+    // 處理（比照營火）。格式：(居民 id, 居民名, 家 x, 家 z, 邊陲群系, 方位名)。
+    let mut expedition_keepsakes: Vec<(String, &'static str, f32, f32, crate::voxel::VoxelBiome, String)> =
+        Vec::new();
+
     // 登門串門子抵達事件（登門串門子 v1，ROADMAP 751）：鎖內偵測「朝聖抵達的其實是某位鄰居的家」，
     // 鎖外統一處理 record_visit（情誼加溫、可能升級）+ 記憶（掛鄰居名下）+ Feed。
     // 格式：(resident_id, resident_name, 被登門的鄰居顯示名)。
@@ -5594,9 +5600,20 @@ fn tick_residents(dt: f32) {
                             expedition_feed.push((r.name, vexp::return_feed_line(biome)));
                             if r.say.is_empty() {
                                 let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                                r.say = vexp::return_bubble(pick);
+                                // 生物群系版歸來泡泡（ROADMAP 761）：點出從邊陲帶回了什麼當地風物。
+                                r.say = vexp::return_bubble(biome, pick);
                                 r.say_timer = SAY_SECS;
                             }
+                            // 遠行帶回的邊陲風物（ROADMAP 761）：收集一筆「把當地風物種在家門前」的
+                            // 請求，鎖外統一落地（比照營火／小棚）。家門前那排紀念漸漸長成牠去過的地圖。
+                            expedition_keepsakes.push((
+                                r.id.clone(),
+                                r.name,
+                                r.home_x,
+                                r.home_z,
+                                biome,
+                                bearing.clone(),
+                            ));
                         }
                         // 逗留期間不在此設 target：由下方 wander 以邊陲為中心自由走動（見 center 覆寫）。
                     }
@@ -7046,6 +7063,43 @@ fn tick_residents(dt: f32) {
                 vmem::append_memory(&entry);
                 vfeed::append_feed("遠行", rname, &vexp::shelter_feed_line(bearing));
             }
+        }
+    }
+
+    // 5c-2a''') 遠行帶回的邊陲風物（遠行 v5，ROADMAP 761「不同地方採到不同資源」）：遠行歸來的居民
+    // 從邊陲群系帶回一件當地特產風物（草原小樹苗／森林枝葉／沙漠仙人掌／雪原冰晶），種在自家門前的
+    // 一小列紀念花圃——玩家看到居民家門漸漸長出一排來自遠方的紀念，每件都對應牠去過的一個地方。
+    // 四種群系各佔花圃一格、每格只種一次（冪等）。鎖序同營火：surface_y 純函式鎖外算 → deltas 讀鎖
+    // 快照（可立/冪等）即釋 → 寫鎖落一塊即釋 → 鎖外廣播＋持久化＋memory 短寫＋Feed。不巢狀、不持鎖 await。
+    for (rid, rname, home_x, home_z, biome, bearing) in &expedition_keepsakes {
+        let (kx, kz) = vexp::keepsake_pos(*home_x, *home_z, *biome);
+        let ky = vbuild::surface_y(kx, kz);
+        let block = vexp::keepsake_block(*biome);
+        // 可立否 + 冪等——一次讀鎖快照即釋。腳下實心（陸地）且該格是空氣（沒種過、也不覆蓋既有物）才種。
+        // 已種過時該格＝風物方塊（非空氣）→ placeable 為 false 自然跳過（同址不重複、replay 不重放）。
+        let placeable = {
+            let _w = hub().deltas.read().unwrap();
+            let slot = voxel::block_at(kx, ky, kz); // 風物要放的那格
+            let ground = voxel::block_at(kx, ky - 1, kz); // 腳下那格
+            ground.is_solid() && matches!(slot, Block::Air)
+        }; // deltas 讀鎖釋放
+        if placeable {
+            {
+                let mut world = hub().deltas.write().unwrap();
+                voxel::set_block(&mut world, kx, ky, kz, block);
+            } // deltas 寫鎖釋放
+            broadcast_block(kx, ky, kz, block);
+            vbuild::append_world_block(kx, ky, kz, block as u8);
+            // 種下風物昇華成一筆記憶（掛遠行哨兵鍵，日記／內心可引用）。
+            let summary = vexp::keepsake_memory_summary(bearing, *biome);
+            let entry = hub().memory.write().unwrap().add_memory(
+                rid,
+                vexp::EXPEDITION_MEMORY_PLAYER,
+                &summary,
+            );
+            vmem::append_memory(&entry);
+            // 一則動態，讓沒在現場的玩家也讀到「牠從遠方帶回了什麼、種在家門前」。
+            vfeed::append_feed("遠行", rname, &vexp::keepsake_feed_line(bearing, *biome));
         }
     }
 
