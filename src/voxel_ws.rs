@@ -51,6 +51,7 @@ use crate::voxel_grove::{self as vgrove, GroveStore};
 use crate::voxel_gift as vgift;
 use crate::voxel_keepsake as vkeep;
 use crate::voxel_seedgift as vseed;
+use crate::voxel_giftgarden as vgg;
 use crate::voxel_fishing as vfish;
 use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
 use crate::voxel_preference as vpref;
@@ -941,6 +942,10 @@ struct VoxelHub {
     /// 告示牌文字 store（ROADMAP 740）：世界座標 → 一行短字。
     /// 持久化到 data/voxel_signs.jsonl；文字浮在牌上、所有人看得見（序列化 RwLock 解決競爭）。
     sign: RwLock<vsign::SignStore>,
+    /// 禮物菜園 store（ROADMAP 755）：作物方塊世界座標 → 一畦「因你的種子而生」的田
+    /// （居民 id、送種子的玩家名、作物種類）。持久化到 data/voxel_gift_gardens.jsonl；
+    /// 那畦田熟了、種它的居民遇到你，會親手收成、把第一把收穫回贈給你。
+    giftgarden: RwLock<vgg::GiftGardenStore>,
     /// 水流動待處理佇列（水流動模擬）：只有「可能變化」的格才排入
     /// （玩家/居民挖破地形的缺口鄰格、水格自己擴散到的新鄰格），每 tick 只算佇列、
     /// 穩定的移出——**不整世界每 tick 掃描**（效能鐵律）。
@@ -1095,6 +1100,9 @@ fn hub() -> &'static VoxelHub {
             chest: RwLock::new(vchest::ChestStore::from_entries(vchest::load_chests())),
             // 啟動時從 data/voxel_signs.jsonl 載回告示牌文字（重啟後牌面仍在）。
             sign: RwLock::new(vsign::SignStore::from_entries(vsign::load_signs())),
+            // 啟動時從 data/voxel_gift_gardens.jsonl 載回未收成的禮物菜園（重啟後那畦田還在，
+            // 待種它的居民遇到送種子的你時收成回贈）。
+            giftgarden: RwLock::new(vgg::GiftGardenStore::from_entries(vgg::load_gift_gardens())),
             // 水流佇列：啟動空；玩家/居民挖破地形時排入缺口鄰格，水才開始流。
             water_queue: std::sync::Mutex::new(WaterQueue::default()),
             // 天氣：啟動時永遠從晴天開始，之後靠 tick_farm 的機率擲骰自然演變。
@@ -3124,6 +3132,20 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             );
                             // 持久化這塊作物方塊（重啟後你送的種子仍留在世界裡）。
                             vbuild::append_world_block(gx, gy, gz, seeded_block as u8);
+                            // 收成回贈 v1（ROADMAP 755）：登記這畦「因你而生」的田——記下座標、
+                            // 種它的居民、送種子的你、作物種類。日後它熟了、她遇到你，就會收成回贈。
+                            // giftgarden 寫鎖即釋、append IO 在鎖外（守死鎖鐵律）。
+                            {
+                                let gg_entry = {
+                                    hub().giftgarden.write().unwrap().record(
+                                        &vgg::pos_key(gx, gy, gz),
+                                        &resident_id,
+                                        &name,
+                                        vgg::crop_code(kind),
+                                    )
+                                };
+                                vgg::append_gift_garden(&gg_entry);
+                            }
                             // 換上她邊種邊說的暖句（覆蓋 8) 的通用道謝——種田這句更貼切、更活）。
                             {
                                 let mut residents = hub().residents.write().unwrap();
@@ -4188,6 +4210,16 @@ fn tick_residents(dt: f32) {
     // 格式：(resident_id, resident_name, player_name, block_id, qty, message)
     let mut return_gift_events: Vec<(String, &'static str, String, u8, u32, String)> = Vec::new();
 
+    // 收成回贈事件（ROADMAP 755）：鎖內偵測「那畦因你而生的田熟了、種它的居民遇到送種子的你」，
+    // 鎖外執行（收成方塊→FarmSoil + 廣播 + 果實入你背包 + 移除這畦 + 持久化 + Feed）。
+    // 格式：(resident_id, resident_name, player_name, pos_key, gx, gy, gz, crop_code)
+    let mut harvest_return_events: Vec<(String, &'static str, String, String, i32, i32, i32, u8)> =
+        Vec::new();
+    // 失效的禮物菜園座標鍵（作物被玩家自己收成／破壞了）：鎖外誠實清帳（移除＋持久化）。
+    let mut giftgarden_stale: Vec<String> = Vec::new();
+    // no-op 世界不白鎖：一畦禮物菜園都沒有就整段功能早退（絕大多數 tick 走這條）。
+    let any_gift_gardens = !hub().giftgarden.read().unwrap().is_empty();
+
     // 探訪 v1（ROADMAP 671）抵達 / 返家 Feed 事件（鎖內偵測，鎖外 IO）。
     // 格式：(visitor_name, host_name, is_return)
     let mut visit_events: Vec<(&'static str, String, bool)> = Vec::new();
@@ -4610,6 +4642,86 @@ fn tick_residents(dt: f32) {
                                     r.name,
                                     &vtend::tend_feed_line(r.name, nearest_name, crop),
                                 );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 收成回贈 v1（ROADMAP 755）：那畦「因你的種子而生」的田（754）熟了，種它的居民
+            // 遇到送種子的你，會親手收成、把第一把收穫當面回贈給你——你的餽贈在世界裡走了一整圈
+            // 才回來，且回來時已是它結的果，而非你送出去的那把種子。層層過閘（機率節流→玩家在旁
+            // →真有一畦掛她名下、且是眼前這位玩家送的→已成熟）才觸發；罕見路徑才做 delta 讀。
+            // 鎖序：giftgarden 讀（即釋）→ delta 讀快照判成熟（即釋）→ 鎖內只改 say/記憶；
+            // 收成方塊 / 果實入背包 / 移除這畦 / 持久化 / Feed 全走鎖外事件（守死鎖鐵律）。
+            if any_gift_gardens
+                && r.say.is_empty()
+                && !r.seeking_comfort
+                && rand::random::<f32>() < vgg::HARVEST_CHANCE_PER_TICK
+            {
+                if let Some((d2, nearest_name)) =
+                    nearest_player_info(r.body.x, r.body.z, &player_pts)
+                {
+                    if d2 < GREET_DIST * GREET_DIST && !nearest_name.is_empty() {
+                        // 撈這位居民名下、且是眼前這位玩家送的種子長成的田（讀鎖即釋）。
+                        let plots =
+                            hub().giftgarden.read().unwrap().plots_for(&r.id, nearest_name);
+                        if !plots.is_empty() {
+                            // 短讀鎖 clone delta 快照判每畦作物方塊現況（即釋）。
+                            let snap = hub().deltas.read().unwrap().clone();
+                            let mut ready: Option<(String, i32, i32, i32, u8)> = None;
+                            for (pos, crop) in plots {
+                                let Some((gx, gy, gz)) = vgg::parse_key(&pos) else { continue };
+                                let (mature, seeded) = match crop {
+                                    vgg::CROP_WHEAT => {
+                                        (Block::WheatMature, Block::FarmSoilSeeded)
+                                    }
+                                    vgg::CROP_CARROT => {
+                                        (Block::CarrotMature, Block::CarrotSeeded)
+                                    }
+                                    vgg::CROP_POTATO => {
+                                        (Block::PotatoMature, Block::PotatoSeeded)
+                                    }
+                                    _ => continue,
+                                };
+                                let b = voxel::effective_block_at(&snap, gx, gy, gz);
+                                if b == mature {
+                                    // 挑第一畦熟的收（每 tick 只收一畦，不洗版）。
+                                    if ready.is_none() {
+                                        ready = Some((pos, gx, gy, gz, crop));
+                                    }
+                                } else if b != seeded {
+                                    // 作物已不在（被玩家自己收成／破壞）→ 這畦失效，
+                                    // 標記移除（誠實清帳，鎖外套用）。
+                                    giftgarden_stale.push(pos);
+                                }
+                            }
+                            if let Some((pos, gx, gy, gz, crop)) = ready {
+                                let cname = vgg::crop_name(crop);
+                                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                                r.say = vgg::harvest_say_line(nearest_name, cname, pick)
+                                    .chars()
+                                    .take(40)
+                                    .collect();
+                                r.say_timer = SAY_SECS;
+                                // 記進記憶（掛玩家名下，情誼再加溫——你的餽贈結了果、又回到你手裡）。
+                                let summary = vgg::harvest_memory_line(nearest_name, cname);
+                                let entry = hub()
+                                    .memory
+                                    .write()
+                                    .unwrap()
+                                    .add_memory(&r.id, nearest_name, &summary);
+                                vmem::append_memory(&entry);
+                                harvest_return_events.push((
+                                    r.id.clone(),
+                                    r.name,
+                                    nearest_name.to_string(),
+                                    pos,
+                                    gx,
+                                    gy,
+                                    gz,
+                                    crop,
+                                ));
                             }
                         }
                     }
@@ -5800,6 +5912,57 @@ fn tick_residents(dt: f32) {
             rname,
             &format!("把{}份{}送給了{}", qty, iname, pname),
         );
+    }
+
+    // 收成回贈 v1（ROADMAP 755）：套用「那畦熟了的禮物菜園」事件——收成方塊回土、果實入你
+    // 背包、移除這畦、持久化、廣播 toast + Feed，把「你送種子 → 她種下 → 世界長出 → 她收成 →
+    // 又回到你手裡」這個閉環演完。鎖序：giftgarden 寫（即釋）→ append → delta 寫（set FarmSoil，
+    // 即釋）→ broadcast → farm 寫清記錄（保險，即釋）→ inventory 寫（即釋）→ append → 廣播/Feed，
+    // 全程短鎖循序不巢狀（守死鎖鐵律）。
+    for (rid, rname, pname, pos, gx, gy, gz, crop) in &harvest_return_events {
+        // 移除這畦（寫鎖即釋）+ 持久化移除事件；已被別的 tick 收掉就跳過（防重複套用）。
+        let removed = { hub().giftgarden.write().unwrap().remove(pos) };
+        let Some(rm_entry) = removed else { continue };
+        vgg::append_gift_garden(&rm_entry);
+        // 收成：作物方塊換回犁好的農地（比照玩家收成 Mature → FarmSoil），廣播 + 持久化。
+        {
+            let mut world = hub().deltas.write().unwrap();
+            voxel::set_block(&mut world, *gx, *gy, *gz, Block::FarmSoil);
+        } // deltas 寫鎖釋放
+        broadcast_block(*gx, *gy, *gz, Block::FarmSoil);
+        vbuild::append_world_block(*gx, *gy, *gz, Block::FarmSoil as u8);
+        // 農地計時本應在成熟時已被 tick_farm 清掉，保險再清一次（idempotent）。
+        hub().farm.write().unwrap().remove(*gx, *gy, *gz);
+        // 果實入你背包（寫鎖即釋）+ 持久化。
+        let (bid, qty) = vgg::produce_gift(*crop);
+        let inv_entry = { hub().inventory.write().unwrap().give(pname, bid, qty) };
+        vinv::append_inv(&inv_entry);
+        let new_count = hub().inventory.read().unwrap().count(pname, bid);
+        let iname = vgift::item_name_zh(bid);
+        // 廣播回贈事件（沿用 return_gift 前端 toast 管線，前端依 player 是否為自己決定顯示）。
+        let msg = serde_json::json!({
+            "t": "return_gift",
+            "resident_id": rid,
+            "resident_name": rname,
+            "player": pname,
+            "item_id": bid,
+            "item_name": iname,
+            "qty": qty,
+            "new_count": new_count,
+        })
+        .to_string();
+        let _ = hub().tx.send(std::sync::Arc::new(msg));
+        // Feed：記錄這個閉環時刻。
+        let cname = vgg::crop_name(*crop);
+        vfeed::append_feed("收成回贈", rname, &vgg::harvest_feed_line(rname, pname, cname));
+    }
+
+    // 失效的禮物菜園誠實清帳（作物被玩家自己收成／破壞了）：移除 + 持久化，不回贈。
+    for pos in &giftgarden_stale {
+        let removed = { hub().giftgarden.write().unwrap().remove(pos) };
+        if let Some(rm_entry) = removed {
+            vgg::append_gift_garden(&rm_entry);
+        }
     }
 
     // 5) 無鎖 spawn 思考（LLM）。整個 agent 思考可由 BUTFUN_NPC_AGENT=0 關掉，
