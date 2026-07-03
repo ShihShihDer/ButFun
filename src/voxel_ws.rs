@@ -71,6 +71,7 @@ use crate::voxel_sign as vsign;
 use crate::voxel_readsign as vreadsign;
 use crate::voxel_nameplate as vnameplate;
 use crate::voxel_neighborsign as vneighsign;
+use crate::voxel_neighborvisit as vneighvisit;
 use crate::voxel_weather as vweather;
 use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
@@ -291,9 +292,16 @@ struct VoxelResident {
     /// 心中念念不忘的告示牌（居民讀牌 v3，ROADMAP 743）：Some(牌子中心 x, z, 引文) =
     /// 讀到一塊讓牠印象深刻的牌子後記下的「心中地標」；閒暇時偶爾據此重返。純記憶體、重啟歸零。
     cherished_sign: Option<(f32, f32, String)>,
+    /// 心中地標其實是「哪位鄰居的家」（登門串門子 v1，ROADMAP 751）：Some(鄰居名) = 上面 `cherished_sign`
+    /// 那塊牌是該鄰居親手立的自建家牌（750 認得的）；None = 是玩家立的牌。與 `cherished_sign` 同步更新，
+    /// 讓日後朝聖抵達時能把「重返」升級成一次真正的「登門拜訪」。純記憶體、重啟歸零。
+    cherished_neighbor: Option<String>,
     /// 正在重返心中的牌子（讀牌 v3）：Some(目標 x, z, 引文) = 正朝那塊牌子走；抵達後駐足念一句、
     /// 寫一筆「又回來看看」記憶、清空。None = 沒在朝聖。
     pilgrimage: Option<(f32, f32, String)>,
+    /// 這趟朝聖走向的其實是「哪位鄰居的家」（登門串門子 v1，ROADMAP 751）：啟程時從 `cherished_neighbor`
+    /// 快照，讓途中即使又讀到別的牌也不影響抵達判定。Some(鄰居名) = 抵達時當成登門拜訪；None = 獨自朝聖玩家的牌。
+    pilgrimage_neighbor: Option<String>,
     /// 朝聖逾時倒數（秒，讀牌 v3）：啟程時設 [`vreadsign::PILGRIMAGE_TIMEOUT`]；未抵達時遞減，
     /// 歸零仍沒到（地形擋路等）即放棄，避免無限走。
     pilgrimage_timer: f32,
@@ -851,7 +859,10 @@ fn init_residents() -> Vec<VoxelResident> {
             // 重返心中的牌子（讀牌 v3，ROADMAP 743）：入場心裡還沒記著任何牌、沒在朝聖；
             // 首次重返冷卻長且錯開（前數分鐘不朝聖，讓居民先讀到牌、心裡有地標再說）。
             cherished_sign: None,
+            // 登門串門子 v1（ROADMAP 751）：入場心裡還沒認得任何鄰居家、沒在登門途中。
+            cherished_neighbor: None,
             pilgrimage: None,
+            pilgrimage_neighbor: None,
             pilgrimage_timer: 0.0,
             pilgrimage_cooldown: 180.0 + i as f32 * 60.0,
             // 晨間思念玩家（ROADMAP 746）：入場沒有進行中的思念（僅由清晨醒來時的睡前反思觸發）。
@@ -4059,6 +4070,11 @@ fn tick_residents(dt: f32) {
     // 格式：(resident_name, 牌面引文)。
     let mut pilgrimage_feed: Vec<(&'static str, String)> = Vec::new();
 
+    // 登門串門子抵達事件（登門串門子 v1，ROADMAP 751）：鎖內偵測「朝聖抵達的其實是某位鄰居的家」，
+    // 鎖外統一處理 record_visit（情誼加溫、可能升級）+ 記憶（掛鄰居名下）+ Feed。
+    // 格式：(resident_id, resident_name, 被登門的鄰居顯示名)。
+    let mut neighbor_visit_arrivals: Vec<(String, &'static str, String)> = Vec::new();
+
     // 就寢反思 Feed 事件（作息·就寢反思 v1，ROADMAP 744）：鎖內入睡時偵測，鎖外記 Feed。
     // 格式：(resident_name, 今天回味的記憶摘要)。
     let mut bedtime_feed: Vec<(&'static str, String)> = Vec::new();
@@ -4438,6 +4454,10 @@ fn tick_residents(dt: f32) {
                         // 日後閒暇時偶爾會特地走回來駐足——讀牌記憶第一次改變居民的去向。
                         // 鄰居的家牌同樣成地標：居民日後可能特地晃回鄰居家門口（複用 743 朝聖）。
                         r.cherished_sign = Some((sx, sz, quote));
+                        // 登門串門子 v1（ROADMAP 751）：同步記下「這塊地標其實是哪位鄰居的家」——
+                        // 是鄰居家牌就存鄰居名，是玩家的牌就清成 None，讓日後朝聖抵達能把「重返」
+                        // 升級成一次真正的「登門拜訪」（與 cherished_sign 同一處更新、恆保持一致）。
+                        r.cherished_neighbor = neighbor.map(|s| s.to_string());
                     }
                 }
             }
@@ -4675,17 +4695,29 @@ fn tick_residents(dt: f32) {
                     // 若正巧在說別的話，就先按住位置等 say 清空（不遞減逾時，避免站在牌前反被逾時放棄）。
                     if r.say.is_empty() {
                         let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                        r.say = vreadsign::revisit_sign_line(&quote, pick);
-                        r.say_timer = SAY_SECS;
-                        let summary = vreadsign::revisit_memory_summary(&quote);
-                        let entry = hub()
-                            .memory
-                            .write()
-                            .unwrap()
-                            .add_memory(&r.id, vreadsign::SIGN_MEMORY_PLAYER, &summary);
-                        vmem::append_memory(&entry);
-                        pilgrimage_feed.push((r.name, quote.clone()));
+                        // 登門串門子 v1（ROADMAP 751）：這趟走向的若其實是某位鄰居親手立的家牌
+                        //（750 認得的、啟程時快照進 pilgrimage_neighbor），抵達就不再只是獨自對牌
+                        // 懷念，而是當成一次真正的「登門拜訪」——暖暖點名招呼、記憶掛在那位鄰居名下、
+                        // 情誼因這趟登門而加溫（鎖外 neighbor_visit_arrivals 統一處理 record_visit）。
+                        if let Some(nb) = r.pilgrimage_neighbor.clone() {
+                            r.say = vneighvisit::visit_line(&nb, pick);
+                            r.say_timer = SAY_SECS;
+                            neighbor_visit_arrivals.push((r.id.clone(), r.name, nb));
+                        } else {
+                            // 既有路徑（743）：獨自朝聖玩家立的牌，駐足念一句、寫「又回來看看」記憶。
+                            r.say = vreadsign::revisit_sign_line(&quote, pick);
+                            r.say_timer = SAY_SECS;
+                            let summary = vreadsign::revisit_memory_summary(&quote);
+                            let entry = hub()
+                                .memory
+                                .write()
+                                .unwrap()
+                                .add_memory(&r.id, vreadsign::SIGN_MEMORY_PLAYER, &summary);
+                            vmem::append_memory(&entry);
+                            pilgrimage_feed.push((r.name, quote.clone()));
+                        }
                         r.pilgrimage = None;
+                        r.pilgrimage_neighbor = None;
                         r.pilgrimage_cooldown = vreadsign::PILGRIMAGE_COOLDOWN;
                     }
                 } else {
@@ -4693,6 +4725,7 @@ fn tick_residents(dt: f32) {
                     r.pilgrimage_timer -= dt;
                     if r.pilgrimage_timer <= 0.0 {
                         r.pilgrimage = None;
+                        r.pilgrimage_neighbor = None;
                         r.pilgrimage_cooldown = vreadsign::PILGRIMAGE_COOLDOWN;
                     }
                 }
@@ -4723,6 +4756,9 @@ fn tick_residents(dt: f32) {
                         let dz = r.body.z - sz;
                         if vreadsign::pilgrimage_worth_going(dx * dx + dz * dz) {
                             r.pilgrimage = Some((sx, sz, quote));
+                            // 登門串門子 v1（ROADMAP 751）：啟程時快照「這趟走向的是哪位鄰居的家」，
+                            // 途中即使又讀到別的牌改了 cherished_neighbor 也不影響這趟抵達的判定。
+                            r.pilgrimage_neighbor = r.cherished_neighbor.clone();
                             r.pilgrimage_timer = vreadsign::PILGRIMAGE_TIMEOUT;
                             r.wait_timer = 0.0;
                         }
@@ -5911,6 +5947,48 @@ fn tick_residents(dt: f32) {
     // 駐足時記一筆動態，讓沒在現場的玩家也看得到「我立的牌子把她引了回來」。
     for (rname, quote) in &pilgrimage_feed {
         vfeed::append_feed("重返", rname, &vreadsign::revisit_feed_line(quote));
+    }
+
+    // 5c-2b) 登門串門子·抵達處理（登門串門子 v1，ROADMAP 751）：居民朝聖抵達的其實是某位鄰居親手
+    // 立的家牌（750 認得的）時，把這趟走過去當成一次真正的「登門拜訪」——① 情誼帳本 record_visit：
+    // 這趟登門讓彼此更熟，可能因此升級成老朋友（沿用 672 的鎖序：寫鎖短取即釋 → 若升級再讀鎖 save
+    // + 里程碑 Feed）；② 掛在那位鄰居名下的記憶（日記／回想可引用）；③ 一則「串門子」Feed。
+    for (rid, rname, neighbor) in &neighbor_visit_arrivals {
+        // 情誼加溫：這趟登門記進情誼帳本（visitor=登門者、host=被登門的鄰居）。
+        let (tier, tier_changed) = {
+            let mut bonds = hub().bonds.write().unwrap();
+            bonds.record_visit(rname, neighbor)
+        }; // bonds 寫鎖釋放
+        if tier_changed {
+            // 升級里程碑：持久化 + Feed 廣播——玩家看見「常繞來串門子，兩位居民漸漸成了老朋友」。
+            {
+                let bonds = hub().bonds.read().unwrap();
+                vbonds::save_bonds(&bonds);
+            } // bonds 讀鎖釋放
+            let milestone = vbonds::tier_up_line(tier, rname, neighbor);
+            vfeed::append_feed("居民情誼", rname, &milestone);
+            // 社交足跡（673）：情誼升級時在登門者記憶裡也留一筆，讓日記有這段情誼的痕跡。
+            let social_mem = vbonds::bond_social_memory(neighbor, tier);
+            if !social_mem.is_empty() {
+                let entry = hub()
+                    .memory
+                    .write()
+                    .unwrap()
+                    .add_memory(rid, neighbor, &social_mem);
+                vmem::append_memory(&entry);
+            } // memory 寫鎖釋放
+        }
+        // 掛在那位鄰居名下的「登門串門子」記憶（無論是否升級都記，讓這趟登門在日記留下痕跡）。
+        let entry = {
+            hub()
+                .memory
+                .write()
+                .unwrap()
+                .add_memory(rid, neighbor, &vneighvisit::visit_memory(neighbor))
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&entry);
+        // 城鎮動態 Feed：某居民特地登門找某鄰居串門子（鄰里往來第一次被世界看板記下）。
+        vfeed::append_feed("串門子", rname, &vneighvisit::visit_feed(rname, neighbor));
     }
 
     // 5c-3) 就寢反思 Feed（作息·就寢反思 v1，ROADMAP 744）：居民入睡前回味今天最有感的一件事，

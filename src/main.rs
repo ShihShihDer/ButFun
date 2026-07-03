@@ -167,6 +167,7 @@ mod voxel_sign;
 mod voxel_readsign; // 居民讀牌 v1：居民路過告示牌（740）時念出牌面、回應——玩家寫的字被 AI 看見
 mod voxel_nameplate; // 居民立牌命名 v1：居民蓋完建物親手在門前立牌署名（749，741 讀牌的鏡像）
 mod voxel_neighborsign; // 居民認得鄰居的家 v1：讀到別的居民立的銘牌時認出那是誰家、記成掛在該鄰居名下的記憶（750）
+mod voxel_neighborvisit; // 居民登門找鄰居串門子 v1：朝聖地標其實是鄰居家牌時，抵達當成登門拜訪、情誼加溫（751）
 // 乙太方界·居民口耳相傳 v1：老朋友到訪時轉述見聞，記憶經朋友網絡流通（ROADMAP 694）。
 mod voxel_gossip;
 // 乙太方界·下雨天氣 v1：機率式晴/雨切換，下雨時農地視同水耕（ROADMAP 700）。
