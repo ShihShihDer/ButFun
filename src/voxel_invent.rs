@@ -853,6 +853,10 @@ pub struct InventedSkillRecord {
     pub steps: Vec<PrimStep>,
     /// 單調遞增序號。
     pub seq: u64,
+    /// 技能來源（人口成長 v1·世代傳承）：`Some("諾娃")` 表示這是新生兒承繼自諾娃的技能；
+    /// `None`＝自己發明的（或舊記錄，`#[serde(default)]` 向後相容：舊檔沒此欄位載回即 None）。
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// 每居民技能庫。重啟後載回——「她已經會了」跨重啟仍然會。
@@ -905,6 +909,37 @@ impl InventedSkillStore {
             goal_block,
             steps,
             seq: self.next_seq,
+            source: None,
+        };
+        self.next_seq = self.next_seq.wrapping_add(1);
+        self.skills.push(rec.clone());
+        Some(rec)
+    }
+
+    /// 某位居民可傳給下一代的技能清單（人口成長 v1·世代傳承）：她自己會的全部技能。
+    /// 回傳 clone 快照供呼叫端在鎖外挑選 1~2 個給新生兒；順序即技能庫既有順序（確定性）。
+    pub fn inheritable_for(&self, parent: &str) -> Vec<InventedSkillRecord> {
+        self.skills
+            .iter()
+            .filter(|k| k.resident == parent)
+            .cloned()
+            .collect()
+    }
+
+    /// 讓 `child` 繼承一筆前輩技能（人口成長 v1·世代傳承）：把 `from` 的原語序列複製到
+    /// 新生兒名下，`source` 標成父母名——她一出生就會做這件事（零 LLM 重用照舊）。
+    /// 同處境（goal_block）child 已有技能 → 不重複繼承（回 `None`）。回傳 record 供落地。
+    pub fn inherit(&mut self, child: &str, from: &InventedSkillRecord, parent_name: &str) -> Option<InventedSkillRecord> {
+        if self.find_for(child, from.goal_block).is_some() {
+            return None;
+        }
+        let rec = InventedSkillRecord {
+            resident: child.to_string(),
+            name: from.name.clone(),
+            goal_block: from.goal_block,
+            steps: from.steps.clone(),
+            seq: self.next_seq,
+            source: Some(parent_name.to_string()),
         };
         self.next_seq = self.next_seq.wrapping_add(1);
         self.skills.push(rec.clone());
@@ -1806,6 +1841,7 @@ mod tests {
             goal_block: 10,
             steps: plan.raw_steps.clone(),
             seq: 0,
+            source: None,
         };
         let new = InventedSkillRecord {
             resident: "vox_res_0".into(),
@@ -1813,9 +1849,38 @@ mod tests {
             goal_block: 10,
             steps: plan.raw_steps,
             seq: 5,
+            source: None,
         };
         let s = InventedSkillStore::from_entries(vec![old, new]);
         assert_eq!(s.find_for("vox_res_0", 10).unwrap().name, "新玻璃法");
+    }
+
+    #[test]
+    fn inherit_copies_parent_skill_with_source() {
+        let plan = parse_plan(glass_plan_json()).unwrap();
+        let mut s = InventedSkillStore::new();
+        // 父母（諾娃 vox_res_1）自己發明了「燒玻璃」。
+        s.add("vox_res_1", "燒玻璃", 10, plan.raw_steps.clone()).unwrap();
+        let parent_skills = s.inheritable_for("vox_res_1");
+        assert_eq!(parent_skills.len(), 1);
+        // 新生兒 vox_res_4 繼承 → 名下多一筆同原語、source 標父母名的技能。
+        let inherited = s.inherit("vox_res_4", &parent_skills[0], "諾娃").unwrap();
+        assert_eq!(inherited.resident, "vox_res_4");
+        assert_eq!(inherited.name, "燒玻璃");
+        assert_eq!(inherited.steps, plan.raw_steps);
+        assert_eq!(inherited.source.as_deref(), Some("諾娃"));
+        // 一出生就會做（零 LLM 重用照舊：查得到她自己的技能）。
+        assert!(s.find_for("vox_res_4", 10).is_some());
+        // 同處境已會 → 不重複繼承。
+        assert!(s.inherit("vox_res_4", &parent_skills[0], "諾娃").is_none());
+    }
+
+    #[test]
+    fn old_record_without_source_loads_as_none() {
+        // 向後相容：舊 jsonl 沒有 source 欄位 → 載回 source=None（不 panic）。
+        let line = r#"{"resident":"vox_res_0","name":"燒玻璃","goal_block":10,"steps":[],"seq":0}"#;
+        let rec: InventedSkillRecord = serde_json::from_str(line).unwrap();
+        assert_eq!(rec.source, None);
     }
 
     #[test]

@@ -10,6 +10,7 @@
 //! 3. 讀取：處理 `move`（更新並廣播）與 `req`（補送 chunk）。
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
@@ -58,6 +59,7 @@ use crate::voxel_preference as vpref;
 use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
 use crate::voxel_residents::{self as vr, Body};
+use crate::voxel_roster as vroster;
 use crate::voxel_time::{self as vt, WorldTime, TimePhase};
 use crate::voxel_announce as vannounce;
 use crate::voxel_bonds::{self as vbonds, ResidentBonds};
@@ -135,8 +137,25 @@ struct VoxelPlayer {
 // 在 voxel_residents.rs）、會閒晃、被既有 npc_agent「腦袋」低頻驅動偶爾冒一句心裡話/心願。
 // 採集/蓋家留切片④（禱告蓋家）。
 
-/// 乙太方界居民人數（刻意少：成本鐵律 + FPS 鐵律，渲染負擔可忽略）。
+/// 乙太方界**初始**居民人數（世界首建就有的固定 4 位，id vox_res_0..3）。
+/// 人口成長 v1 之後這只是「起點」——聚落穩定時會偶爾誕生新居民（見 `voxel_roster`），
+/// 實際在世人口由 [`resident_count`] 回報，上限由 [`vroster::max_residents`] 守住。
 const RESIDENT_COUNT: usize = 4;
+
+/// 目前在世居民數（含出生後誕生的）。id 恆為連續的 vox_res_0..{RESIDENT_POP-1}——
+/// 名冊**只增不減**（新生兒 append，既有 id 永不回收），故各處「枚舉全體居民 id」
+/// 可安全用 `(0..resident_count())`。啟動時由 `init_residents` 設為（4 + 名冊人數），
+/// 每誕生一位在 residents 寫鎖內 +1（見 `maybe_birth`）。無鎖讀取、避免再入死鎖。
+static RESIDENT_POP: AtomicUsize = AtomicUsize::new(RESIDENT_COUNT);
+
+/// 目前在世居民數（無鎖、便宜）。所有「枚舉全體居民 id」的地方一律用它，不要再用固定常數。
+fn resident_count() -> usize {
+    RESIDENT_POP.load(Ordering::Relaxed)
+}
+
+/// 上次出生的 unix 秒（人口成長 v1·出生節流）。0＝尚未建立基準（首次 `maybe_birth` 只記基準點、
+/// 不生，避免伺服器一啟動就冒新居民）。純記憶體、重啟重置基準（低頻事件，重啟偶發可接受）。
+static LAST_BIRTH_UNIX: AtomicU64 = AtomicU64::new(0);
 /// 居民閒晃半徑下/上限（方塊）：挑下一個目標時離當前位置的距離區間。
 const WANDER_MIN_R: f32 = 4.0;
 const WANDER_MAX_R: f32 = 12.0;
@@ -364,7 +383,14 @@ struct ResidentView {
 }
 
 /// 居民名字池（取自 resident_npc 的近城居民風格名，柔和轉寫式、與主要 NPC 一致）。
-const RESIDENT_NAMES: [&str; RESIDENT_COUNT] = ["露娜", "諾娃", "賽勒", "奧瑞"];
+/// 居民名字池（人口成長 v1）：前 4 個是初始居民（順序與 id 綁定，**絕不更動**，
+/// 向後相容既有存檔/記憶/技能 key）；之後 12 個是新生兒依 id 索引取用的名字池。
+/// 長度即人口絕對天花板（見 `vroster::RESIDENT_NAME_POOL_LEN`，兩者須一致）。
+/// 名字皆柔和轉寫式、與主要 NPC 一致，彼此不重複。
+const RESIDENT_NAMES: [&str; vroster::RESIDENT_NAME_POOL_LEN] = [
+    "露娜", "諾娃", "賽勒", "奧瑞", // 初始 4 位（id 0..3）
+    "米拉", "澄兒", "蕾雅", "費恩", "星禾", "柯洛", "雅辛", "恩雅", "佩緹", "昂恩", "希雅", "洛安",
+];
 
 /// 由居民 id（"vox_res_{i}"）取其顯示名（解析失敗 / 越界皆安全退回第一位）。
 fn resident_name_of(rid: &str) -> &'static str {
@@ -954,17 +980,42 @@ fn nearest_player_dist_sq(rx: f32, rz: f32, players: &[(f32, f32)]) -> Option<f3
         .fold(None, |acc, d| Some(acc.map_or(d, |a: f32| a.min(d))))
 }
 
-/// 初始化 N 位居民：環狀散在出生點周邊的乾地上，各自站穩。
-/// 初始化 N 位居民：各自散佈到家域中心，各自站穩在陸地上。
+/// 初始化在世居民：初始 4 位（家域散布世界四方）＋ 人口成長 v1 名冊載回的出生居民。
+/// 舊世界無名冊檔＝只有初始 4 位（向後相容）。同時把在世人口寫進 `RESIDENT_POP`。
 fn init_residents() -> Vec<VoxelResident> {
-    let mut out = Vec::with_capacity(RESIDENT_COUNT);
+    // 先組「要建構哪些居民」的規格清單：(id 索引, 家域中心 x, z, 出生 body)。
+    let mut specs: Vec<(usize, f32, f32, Body)> = Vec::new();
     for i in 0..RESIDENT_COUNT {
-        // 各居民有自己的家域基準點，分散世界四方（見 vr::resident_home_base）。
+        // 初始居民各有自己的家域基準點，分散世界四方（見 vr::resident_home_base）。
         let (hox, hoz) = vr::resident_home_base(i);
         let body = vr::dry_ground_spawn(hox, hoz);
-        let home_x = body.x;
-        let home_z = body.z;
-        out.push(VoxelResident {
+        specs.push((i, body.x, body.z, body));
+    }
+    // 人口成長 v1：載回出生居民（append-only 名冊）。索引須連續接在既有 id 之後、落在名字池內，
+    // 否則跳過（斷號/壞行容忍，保住 id 連續性——resident_count 的 0..N 枚舉才安全）。
+    for entry in vroster::load_roster() {
+        let i = vroster::resident_index(&entry.resident);
+        if i >= vroster::RESIDENT_NAME_POOL_LEN || i != specs.len() {
+            continue;
+        }
+        let body = vr::dry_ground_spawn(entry.home_base_x, entry.home_base_z);
+        specs.push((i, body.x, body.z, body));
+    }
+    let mut out = Vec::with_capacity(specs.len());
+    for (i, home_x, home_z, body) in specs {
+        out.push(build_resident(i, home_x, home_z, body));
+    }
+    // 在世人口（含出生居民）→ resident_count() 無鎖回報的單一事實來源。
+    RESIDENT_POP.store(out.len(), Ordering::Relaxed);
+    out
+}
+
+/// 建構一位居民（初始 4 位與出生的新居民共用同一套欄位初始化）：
+/// `i`＝id 索引（決定名字 / persona / 各冷卻相位錯開），`home_x/home_z`＝家域中心、
+/// `body`＝出生位置。純建構、不碰鎖 / IO。人口成長 v1 讓出生走這條與初始完全相同的路，
+/// 新居民因此天生就有採集 / 蓋家 / 好奇心等既有零 / 低 LLM 行為，多幾位不爆成本。
+fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelResident {
+    VoxelResident {
             id: format!("vox_res_{i}"),
             name: RESIDENT_NAMES[i],
             persona: persona_for(i),
@@ -1054,14 +1105,12 @@ fn init_residents() -> Vec<VoxelResident> {
             daybreak_seek: None,
             reunion_seek: None,
             // 遠行探野（ROADMAP 756）：入場無遠行任務；首次冷卻各自大幅錯開（前 15~30 分鐘不遠行，
-            // 讓居民先在家域安頓、也避免啟動後短時間內誰都往荒野跑）。
+            // 讓居民先在家域安頓、也避免啟動後短時間內誰都往荒野跑）。新生兒也走這條，一併有遠行欄位。
             expedition: None,
             expedition_stay: 0.0,
             expedition_timer: 0.0,
             expedition_cooldown: vexp::EXPEDITION_COOLDOWN + i as f32 * 300.0,
-        });
     }
-    out
 }
 
 /// voxel 世界的多人 hub：玩家表 + 方塊改動 overlay + 廣播頻道 + AI 居民 + 決策匯流排。
@@ -1393,7 +1442,7 @@ fn players_snapshot_json() -> String {
         (snaps, boosts, asleep)
     }; // 居民讀鎖在此釋放
     // 計算每位居民的心情 emoji（ROADMAP 676）：短鎖讀 bonds → drop → 短鎖讀 memory → drop。
-    let resident_id_strs: Vec<String> = (0..RESIDENT_COUNT).map(|i| format!("vox_res_{i}")).collect();
+    let resident_id_strs: Vec<String> = (0..resident_count()).map(|i| format!("vox_res_{i}")).collect();
     let resident_ids: Vec<&str> = resident_id_strs.iter().map(|s| s.as_str()).collect();
     let mood_map: HashMap<String, String> = {
         // 1. bonds 讀鎖
@@ -3942,9 +3991,136 @@ pub fn spawn_farm_tick() {
             ticker.tick().await;
             tick_farm();
             tick_grove(); // 植樹造林 v1（ROADMAP 738）：同節拍檢查樹苗是否長成。
+            maybe_birth(); // 人口成長 v1：低頻檢查聚落是否有餘裕誕生一位新居民。
         }
     });
     spawn_water_tick();
+}
+
+/// 人口成長 v1（世代傳承）：低頻（併入 15 秒農作節拍）檢查是否誕生一位新居民。
+///
+/// **成本紀律是核心**：先做最便宜的早退（到上限就直接回，連鎖都不碰）；出生條件由
+/// [`vroster::should_birth`] 純函式判定（上限未滿＋聚落過半安頓＋距上次夠久＋機率門檻）。
+/// 真的要生時：確定性挑一位父母 → 新居民生在父母家附近、分到不衝突的家域 →
+/// **繼承父母 1~2 個已發明技能**（複製進她自己的技能庫、標記「承自XX」，一出生就會做、
+/// 零 LLM 重用照舊）→ 落地名冊 + 技能 jsonl（重啟後人口與技能都還在）→ Feed + 冒泡慶祝。
+///
+/// **鎖紀律**：各 store 短鎖循序取放、不巢狀、不持鎖 await/IO；名冊增長在 residents 寫鎖內
+/// 安全完成並把 `RESIDENT_POP` +1；技能 append / Feed 都在鎖外。
+fn maybe_birth() {
+    let base = RESIDENT_COUNT;
+    let pop = resident_count();
+    let max = vroster::max_residents(base);
+    if pop >= max {
+        return; // 到上限：絕不無限生（最便宜的早退，連鎖都不碰）
+    }
+
+    let now = vfarm::now_secs();
+    // 首次呼叫只記基準時間、不生（避免伺服器一啟動就冒新居民）。
+    if LAST_BIRTH_UNIX.load(Ordering::Relaxed) == 0 {
+        LAST_BIRTH_UNIX.store(now, Ordering::Relaxed);
+        return;
+    }
+    let elapsed = now.saturating_sub(LAST_BIRTH_UNIX.load(Ordering::Relaxed)) as f32;
+    let interval = vroster::birth_interval_secs();
+    if elapsed < interval {
+        return; // 距上次出生還不夠久：低頻
+    }
+
+    // 聚落是否穩定：短讀鎖數「已蓋好至少一樣東西」的居民 → 立即釋放。
+    let settled = {
+        let goals = hub().goals.read().unwrap();
+        (0..pop)
+            .filter(|&i| !goals.done_kinds(&format!("vox_res_{i}")).is_empty())
+            .count()
+    }; // goals 讀鎖釋放
+    let ready = vroster::settlement_ready(settled, pop);
+    if !vroster::should_birth(pop, max, ready, elapsed, interval, rand::random::<f32>()) {
+        return;
+    }
+
+    // ── 決定出生 ──
+    let new_i = pop; // id 連續：新居民＝下一個索引 vox_res_{pop}
+    let seed = now ^ (new_i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let parent_i = vroster::pick_parent_index(pop, seed);
+    let parent_id = format!("vox_res_{parent_i}");
+    let parent_name = RESIDENT_NAMES[parent_i];
+    let new_id = format!("vox_res_{new_i}");
+    let new_name = RESIDENT_NAMES[new_i];
+
+    // 家域分配：讀既有全部家域 + 父母家域快照（短讀鎖即釋），選一塊不衝突的新家。
+    let (existing_homes, parent_home): (Vec<(i32, i32)>, (i32, i32)) = {
+        let rs = hub().residents.read().unwrap();
+        let homes: Vec<(i32, i32)> =
+            rs.iter().map(|r| (r.home_x.floor() as i32, r.home_z.floor() as i32)).collect();
+        let ph = rs
+            .get(parent_i)
+            .map(|r| (r.home_x.floor() as i32, r.home_z.floor() as i32))
+            .unwrap_or((0, 0));
+        (homes, ph)
+    }; // residents 讀鎖釋放
+    let (hox, hoz) = vroster::birth_home_base(parent_home.0, parent_home.1, &existing_homes, seed);
+    let body = vr::dry_ground_spawn(hox, hoz);
+
+    // 技能繼承（北極星）：父母技能庫挑最多 2 個複製給新生兒；invented 寫鎖內完成、append 鎖外。
+    let (inherited_names, inherited_recs): (Vec<String>, Vec<vinvent::InventedSkillRecord>) = {
+        let mut inv = hub().invented.write().unwrap();
+        let parent_skills = inv.inheritable_for(&parent_id);
+        let mut names = Vec::new();
+        let mut recs = Vec::new();
+        for from in parent_skills.iter().take(2) {
+            if let Some(rec) = inv.inherit(&new_id, from, parent_name) {
+                names.push(rec.name.clone());
+                recs.push(rec);
+            }
+        }
+        (names, recs)
+    }; // invented 寫鎖釋放
+    for rec in &inherited_recs {
+        vinvent::append_invented_skill(rec); // 鎖外落地：重啟後新生兒仍會做
+    }
+
+    // 建構新居民 + 冒出生泡泡；residents 寫鎖內 append 並把人口 +1。
+    let mut newcomer = build_resident(new_i, body.x, body.z, body);
+    let birth_say: String = if let Some(first) = inherited_names.first() {
+        format!("我是{new_name}，剛來到這片天地～{parent_name}把「{first}」教給了我！")
+    } else {
+        format!("我是{new_name}，剛在這片天地誕生，請多指教！")
+    };
+    newcomer.say = birth_say.chars().take(40).collect();
+    newcomer.say_timer = SAY_SECS;
+    {
+        let mut rs = hub().residents.write().unwrap();
+        // 讓父母也冒一句歡迎（若當下沒在說話）。
+        if let Some(parent) = rs.get_mut(parent_i) {
+            if parent.say.is_empty() {
+                parent.say = format!("歡迎來到世界，{new_name}！").chars().take(40).collect();
+                parent.say_timer = SAY_SECS;
+            }
+        }
+        rs.push(newcomer);
+        RESIDENT_POP.store(rs.len(), Ordering::Relaxed); // 人口 +1（寫鎖內安全）
+    } // residents 寫鎖釋放
+    LAST_BIRTH_UNIX.store(now, Ordering::Relaxed);
+
+    // 名冊落地（鎖外）：重啟後這位新居民還在。
+    vroster::append_roster_entry(&vroster::RosterEntry {
+        resident: new_id.clone(),
+        name: new_name.to_string(),
+        home_base_x: hox,
+        home_base_z: hoz,
+        parent: parent_id,
+        parent_name: parent_name.to_string(),
+        birth_unix: now,
+    });
+
+    // Feed 廣播（鎖外）：世界動態上看得到「新居民誕生 + 承繼了誰的技能」。
+    let detail = if let Some(first) = inherited_names.first() {
+        format!("在{parent_name}家附近誕生了，承繼了{parent_name}的「{first}」")
+    } else {
+        format!("在{parent_name}家附近誕生了")
+    };
+    vfeed::append_feed("新居民誕生", new_name, &detail);
 }
 
 /// 水流 tick 頻率（秒）：0.5s（2Hz）——水一格一格漫開，像麥塊那樣「看得到在流」，
@@ -4199,7 +4375,7 @@ pub async fn voxel_affinity_handler(
     // 短鎖快照各居民的好感度計數 → 立即釋放。
     let counts: std::collections::HashMap<String, usize> = {
         let mem = hub().memory.read().unwrap();
-        (0..RESIDENT_COUNT)
+        (0..resident_count())
             .map(|i| {
                 let rid = format!("vox_res_{i}");
                 let count = if player_name.is_empty() { 0 } else { mem.affinity_count(&player_name, &rid) };
@@ -4225,9 +4401,10 @@ pub async fn voxel_relations_handler() -> axum::response::Response {
     let rows: Vec<serde_json::Value> = {
         // 短讀鎖一次性快照全部兩兩組合 → 立即釋放，不與其他鎖巢狀。
         let bonds = hub().bonds.read().unwrap();
-        let mut out = Vec::with_capacity(RESIDENT_COUNT * (RESIDENT_COUNT - 1) / 2);
-        for i in 0..RESIDENT_COUNT {
-            for j in (i + 1)..RESIDENT_COUNT {
+        let n = resident_count(); // 含出生居民（人口成長 v1）：兩兩交情全都攤開
+        let mut out = Vec::with_capacity(n * n.saturating_sub(1) / 2);
+        for i in 0..n {
+            for j in (i + 1)..n {
                 let id_a = format!("vox_res_{i}");
                 let id_b = format!("vox_res_{j}");
                 let tier = resident_tier_of(&bonds, &id_a, &id_b);
@@ -4261,7 +4438,7 @@ pub async fn voxel_skills_handler() -> axum::response::Response {
     let rows: Vec<serde_json::Value> = {
         // 短讀鎖一次性快照 4 位居民的技能清單 → 立即釋放，不與其他鎖巢狀。
         let invented = hub().invented.read().unwrap();
-        (0..RESIDENT_COUNT)
+        (0..resident_count())
             .map(|i| {
                 let rid = format!("vox_res_{i}");
                 serde_json::json!({
@@ -4342,7 +4519,7 @@ fn tick_residents(dt: f32) {
     // 供下面 residents 寫鎖那段挑閒晃中心用——不與 residents 鎖巢狀（守死鎖鐵律）。
     let house_locations: HashMap<String, (i32, i32, i32)> = {
         let goals = hub().goals.read().unwrap();
-        (0..RESIDENT_COUNT)
+        (0..resident_count())
             .filter_map(|j| {
                 let rid = format!("vox_res_{j}");
                 goals.house_of(&rid).map(|loc| (rid, loc))
@@ -4418,7 +4595,7 @@ fn tick_residents(dt: f32) {
     // 居民 id 格式固定為 "vox_res_{i}"，直接枚舉取（不需先讀居民清單）。
     let desire_snaps: HashMap<String, String> = {
         let des = hub().desires.read().unwrap();
-        (0..RESIDENT_COUNT)
+        (0..resident_count())
             .filter_map(|i| {
                 let id = format!("vox_res_{i}");
                 des.get_desire(&id).map(|d| (id, d.desire.clone()))
@@ -6000,7 +6177,7 @@ fn tick_residents(dt: f32) {
         // 批次計算所有居民心情（2 把短鎖，循序即釋，不巢狀），避免迴圈中反覆取鎖。
         // 鎖序：bonds 讀（即釋）→ memory 讀（即釋）。
         let all_res_ids_for_cheer: Vec<String> =
-            (0..RESIDENT_COUNT).map(|j| format!("vox_res_{j}")).collect();
+            (0..resident_count()).map(|j| format!("vox_res_{j}")).collect();
         let cheer_bond_counts: Vec<(usize, usize)> = {
             let bonds = hub().bonds.read().unwrap();
             all_res_ids_for_cheer
@@ -6089,7 +6266,7 @@ fn tick_residents(dt: f32) {
         // 2f) 小圈子聚會觸發掃描（ROADMAP 711）：找互為老朋友的圈子，偶爾相約碰面。
         // 鎖序：bonds 讀（即釋），不與其他鎖巢狀。居民數極少，全兩兩查詢零效能疑慮。
         let all_res_ids_for_gather: Vec<String> =
-            (0..RESIDENT_COUNT).map(|j| format!("vox_res_{j}")).collect();
+            (0..resident_count()).map(|j| format!("vox_res_{j}")).collect();
         let tier_matrix: HashMap<(String, String), vbonds::BondTier> = {
             let bonds = hub().bonds.read().unwrap();
             let mut m = HashMap::new();
@@ -7136,7 +7313,7 @@ fn tick_residents(dt: f32) {
 
     // ROADMAP 680：批次計算所有居民心情 → 對應建造間隔（鎖序：bonds 讀即釋 → memory 讀即釋）。
     let build_mood_intervals: HashMap<String, f32> = {
-        let all_ids: Vec<String> = (0..RESIDENT_COUNT).map(|j| format!("vox_res_{j}")).collect();
+        let all_ids: Vec<String> = (0..resident_count()).map(|j| format!("vox_res_{j}")).collect();
         let bond_counts: Vec<(usize, usize)> = {
             let bonds = hub().bonds.read().unwrap();
             all_ids.iter().map(|rid| resident_bond_counts(&bonds, rid)).collect()
