@@ -350,7 +350,8 @@ struct VoxelResident {
     reunion_seek: Option<(String, f32)>,
     /// 遠行探野（PLAN_ETHERVOX item 7 散居·遠行探野 v1，ROADMAP 756）：Some(邊陲落點 x, z, 方位名) =
     /// 正遠行前往遠離主城的荒野邊陲、或已抵達正在那逗留；None = 沒在遠行（正常閒晃/採集/建造）。
-    /// 只有 Wanderer 人格居民（奧瑞）會啟程。純記憶體、重啟歸零。
+    /// 散居 v6（ROADMAP 762）起，能遠行的人格為 Wanderer（奧瑞·漂泊）與 FarmWorker（諾娃·尋地）
+    /// ——見 `vexp::expedition_motive`。純記憶體、重啟歸零。
     expedition: Option<(f32, f32, String)>,
     /// 遠行抵達邊陲後的逗留倒數（秒，ROADMAP 756）：> 0 = 已抵達、正在遠方逗留探索，到 0 時清空
     /// `expedition`、交回一般 wander（此刻遠在家域外，`wander_center` 會把牠一路帶回家）。
@@ -5549,7 +5550,9 @@ fn tick_residents(dt: f32) {
             }
 
             // ── 遠行探野 v1（ROADMAP 756·PLAN_ETHERVOX item 7「居民散佈世界各處住」第一刀）────────
-            // Wanderer 人格居民（奧瑞）偶爾放下手邊的事、獨自遠行到遠離主城的荒野邊陲住上一陣子再返家
+            // 散居 v6（ROADMAP 762）：能遠行的人格擴成兩位——奧瑞（漂泊天性）與諾娃（農人尋覓沃野），
+            // 各自往家的方位安下**不同**的邊陲據點（落點由家座標算出→不同方位/生物群系）。
+            // 能遠行的居民偶爾放下手邊的事、獨自遠行到遠離主城的荒野邊陲住上一陣子再返家
             // ——居民的足跡第一次真的散進荒野，玩家會在遠離主城的地方撞見牠。狀態機沿用探訪／朝聖既有
             // 手法：`expedition` 有值＝正遠行前往或在邊陲逗留；逗留倒數歸零即清空、交回下方一般 wander
             // （此刻遠在家域外，`wander_center` 會把牠一路帶回家，不必顯式返程腿）。
@@ -5668,8 +5671,9 @@ fn tick_residents(dt: f32) {
                     }
                 }
             } else {
-                // 尚未遠行：Wanderer 人格 + 閒置自由 + 白天 + 冷卻到 + 過機率門檻 → 啟程遠行。
+                // 尚未遠行：能遠行的人格（奧瑞·漂泊／諾娃·尋地）+ 閒置自由 + 白天 + 冷卻到 + 過機率門檻 → 啟程。
                 // 「閒置自由」＝沒在採集/跑腿/探訪/打氣/尋伴/聚會/跟隨/發明/朝聖/思念/奔迎/睡覺（不搶正事）。
+                let motive = vexp::expedition_motive(r.persona);
                 let idle_free = r.gather.is_none()
                     && r.fetch.is_none()
                     && r.visiting.is_none()
@@ -5683,13 +5687,15 @@ fn tick_residents(dt: f32) {
                     && r.reunion_seek.is_none()
                     && !r.asleep;
                 if vexp::should_embark(
-                    matches!(r.persona, ResidentPersona::Wanderer),
+                    motive.is_some(),
                     idle_free,
                     !is_night,
                     r.expedition_cooldown,
                     r.say.is_empty(),
                     rand::random::<f32>(),
                 ) {
+                    // should_embark 過閘已保證 motive.is_some()（能遠行的人格才會過 can_embark 閘）。
+                    let motive = motive.expect("能遠行的人格才會過 should_embark 閘");
                     // 遠行 v3（ROADMAP 758）：落點改由「家的方位」確定性算出（outpost_seq），
                     // 同一位居民每趟遠行都回到同一處邊陲營地——漂泊收斂成安頓、荒野長出專屬據點。
                     let outpost = vexp::outpost_seq(r.home_x, r.home_z);
@@ -5700,11 +5706,12 @@ fn tick_residents(dt: f32) {
                     r.target_x = fx;
                     r.target_z = fz;
                     r.wait_timer = 0.0;
-                    // 泡泡台詞仍用當下身位輪替（維持變化，不因據點固定而每趟同一句）。
+                    // 泡泡台詞仍用當下身位輪替（維持變化，不因據點固定而每趟同一句）；依動機分岔
+                    //（奧瑞漂泊／諾娃尋地口吻各異）。
                     let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                    r.say = vexp::embark_bubble(bearing, pick);
+                    r.say = vexp::embark_bubble(motive, bearing, pick);
                     r.say_timer = SAY_SECS;
-                    expedition_feed.push((r.name, vexp::embark_feed_line(bearing)));
+                    expedition_feed.push((r.name, vexp::embark_feed_line(motive, bearing)));
                 }
             }
 
