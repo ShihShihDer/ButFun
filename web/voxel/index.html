@@ -822,6 +822,18 @@
     }
     #bagBtn:hover { background: rgba(60,50,20,0.75); }
 
+    /* 享用鈕（親手煮的暖食自己也能享用 v1，779）：手上有自己煮的熟食時才浮現，
+       疊在右側鈕欄最下（清開 furnaceBtn 204+44）；暖橘紅配色呼應「熱食」。 */
+    #eatBtn {
+      position: fixed; right: 10px; top: 258px; z-index: 6;
+      display: none; align-items: center; justify-content: center;
+      background: rgba(46,24,10,0.72); color: #ffb060;
+      border: 1px solid rgba(255,176,96,0.35);
+      padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      user-select: none; pointer-events: auto; min-height: 44px;
+    }
+    #eatBtn:hover { background: rgba(90,44,14,0.82); }
+
     /* 視角切換鈕（第一/三人稱）：左側，避開右側合成鈕欄與底部搖桿。 */
     #viewBtn {
       position: fixed; left: 10px; top: 120px; z-index: 6;
@@ -1152,6 +1164,7 @@
     #furnaceHint { font-size: 11px; color: #50381a; margin-top: 10px; line-height: 1.5; }
     @media (orientation: portrait) {
       #furnaceBtn { top: 204px; bottom: auto; right: 10px; }
+      #eatBtn { top: 258px; bottom: auto; right: 10px; }
       #furnacePanel { top: auto; transform: translateX(-50%); bottom: 10px; max-height: 75vh; }
       #furnaceBody { flex-direction: column; }
       #furnaceCraftRow { justify-content: center; }
@@ -1294,6 +1307,8 @@
   </div>
   <!-- 背包 + 合成格按鈕（ROADMAP 664）-->
   <button id="bagBtn">🎒 背包</button>
+  <!-- 親手煮的暖食自己也能享用 v1（779）：手上有自己煮的熟食時才浮現，點一下吃一份得暖意回饋 -->
+  <button id="eatBtn" style="display:none">🍲 享用</button>
   <!-- 工作台開啟鈕（靠近工作台方塊時顯示，ROADMAP 665）-->
   <button id="wbBtn">🔨 工作台</button>
   <!-- 熔爐開啟鈕（靠近熔爐方塊時顯示，ROADMAP 666）-->
