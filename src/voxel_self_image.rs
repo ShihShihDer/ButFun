@@ -206,6 +206,36 @@ pub fn self_image_feed_line(memories: &[MemoryEntry]) -> Option<String> {
     Some(format!("靜下來回望這一路，覺得自己成了{}。", domain.epithet()))
 }
 
+/// 自我印象 v2（ROADMAP 771·PLAN_ETHERVOX 核心信念「記憶要驅動**行為**、不只聊天」）：
+/// 居民昇華出「我是個怎樣的人」（[`dominant_domain`]）之後，這份自我理解**化為一個呼應
+/// 自己的第一人稱心願**——驅動她接下來真的動手去追尋，而不只是說一句就散。
+///
+/// 只有能自然落到「具體建造」的領域才生出心願（回傳的字串保證被
+/// `voxel_building::classify_desire` 分類成一種建物 → 她會真的把它蓋出來）：
+/// - [`SelfDomain::Builder`] → 小屋（她一路淨在蓋，於是再親手蓋一間）
+/// - [`SelfDomain::Farmer`] → 花圃（離不開泥土，於是再開一畦）
+/// - [`SelfDomain::Stargazer`] → 觀星高台（心思老飄向夜空，於是蓋座台好好望）
+/// - [`SelfDomain::Angler`] → 水井（被水留住，於是在身邊掘口井）
+///
+/// 其餘領域（採礦／漫遊／待人／重情）沒有自然對應的**具體建造**，回 `None`——她仍只是
+/// 說出自我印象（v1），不硬塞一個蓋東西的心願（寧缺勿假，維持誠實）。
+///
+/// **隱私鐵律**：輸出全為固定模板，永不含任何記憶原文 / 玩家原話 / 玩家名。確定性、可窮舉測試。
+pub fn self_sparked_desire(memories: &[MemoryEntry]) -> Option<&'static str> {
+    let (domain, _count) = dominant_domain(memories)?;
+    match domain {
+        SelfDomain::Builder => Some("我想再親手蓋一間小屋。"),
+        SelfDomain::Farmer => Some("我想再開一畦花圃，種點什麼。"),
+        SelfDomain::Stargazer => Some("我想蓋一座觀星的高台。"),
+        SelfDomain::Angler => Some("我想在水邊掘一口水井。"),
+        // 沒有自然對應的具體建造 → 不生心願（只保留 v1 的自我印象泡泡）。
+        SelfDomain::Miner
+        | SelfDomain::Wanderer
+        | SelfDomain::Caretaker
+        | SelfDomain::Companion => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +338,70 @@ mod tests {
             assert!(!out.contains("SECRET1234"), "自我印象洩漏記憶原文：{out}");
             assert!(!out.contains("旅人"), "自我印象洩漏玩家名：{out}");
         }
+    }
+
+    #[test]
+    fn self_sparked_desire_only_for_buildable_domains() {
+        // 四個能落到具體建造的領域，各自生出一句心願。
+        let builder: Vec<MemoryEntry> = (0..5).map(|i| mem("又蓋了間房子", i)).collect();
+        let farmer: Vec<MemoryEntry> = (0..5).map(|i| mem("在田裡種了幼苗", i)).collect();
+        let stargazer: Vec<MemoryEntry> = (0..5).map(|i| mem("抬頭望了好久星空", i)).collect();
+        let angler: Vec<MemoryEntry> = (0..5).map(|i| mem("在湖邊釣了魚", i)).collect();
+        assert!(self_sparked_desire(&builder).is_some());
+        assert!(self_sparked_desire(&farmer).is_some());
+        assert!(self_sparked_desire(&stargazer).is_some());
+        assert!(self_sparked_desire(&angler).is_some());
+
+        // 沒有自然建造對應的領域 → None（誠實，不硬塞）。
+        let miner: Vec<MemoryEntry> = (0..5).map(|i| mem("往礦坑深處挖", i)).collect();
+        let wanderer: Vec<MemoryEntry> = (0..5).map(|i| mem("遠行到荒野邊陲", i)).collect();
+        let caretaker: Vec<MemoryEntry> = (0..5).map(|i| mem("送了朋友一份心意", i)).collect();
+        let companion: Vec<MemoryEntry> = (0..5).map(|i| mem("和老朋友敘舊", i)).collect();
+        assert_eq!(self_sparked_desire(&miner), None);
+        assert_eq!(self_sparked_desire(&wanderer), None);
+        assert_eq!(self_sparked_desire(&caretaker), None);
+        assert_eq!(self_sparked_desire(&companion), None);
+
+        // 無明顯主導領域 → None。
+        let vague: Vec<MemoryEntry> = vec![mem("嗨", 1), mem("你好", 2)];
+        assert_eq!(self_sparked_desire(&vague), None);
+    }
+
+    #[test]
+    fn sparked_desire_actually_classifies_into_a_build() {
+        // 鐵律：生出的心願字串必須真的能被建造管線分類成一種建物，
+        // 否則它只是一句空話、居民不會真的動手蓋——那就違背「記憶→行為」的初衷。
+        use crate::voxel_building::{classify_desire, BuildKind};
+        let builder: Vec<MemoryEntry> = (0..5).map(|i| mem("又蓋了間房子", i)).collect();
+        let farmer: Vec<MemoryEntry> = (0..5).map(|i| mem("在田裡種了幼苗", i)).collect();
+        let stargazer: Vec<MemoryEntry> = (0..5).map(|i| mem("抬頭望了好久星空", i)).collect();
+        let angler: Vec<MemoryEntry> = (0..5).map(|i| mem("在湖邊釣了魚", i)).collect();
+        assert_eq!(
+            classify_desire(self_sparked_desire(&builder).unwrap()),
+            Some(BuildKind::House)
+        );
+        assert_eq!(
+            classify_desire(self_sparked_desire(&farmer).unwrap()),
+            Some(BuildKind::Garden)
+        );
+        assert_eq!(
+            classify_desire(self_sparked_desire(&stargazer).unwrap()),
+            Some(BuildKind::Tower)
+        );
+        assert_eq!(
+            classify_desire(self_sparked_desire(&angler).unwrap()),
+            Some(BuildKind::Well)
+        );
+    }
+
+    #[test]
+    fn sparked_desire_never_leaks_memory_text() {
+        let leaky: Vec<MemoryEntry> = (0..5)
+            .map(|i| mem("蓋房子時聽旅人說了SECRET1234", i))
+            .collect();
+        let d = self_sparked_desire(&leaky).unwrap();
+        assert!(!d.contains("SECRET1234"), "自發心願洩漏記憶原文：{d}");
+        assert!(!d.contains("旅人"), "自發心願洩漏玩家名：{d}");
     }
 
     #[test]
