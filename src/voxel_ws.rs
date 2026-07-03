@@ -72,6 +72,7 @@ use crate::voxel_readsign as vreadsign;
 use crate::voxel_nameplate as vnameplate;
 use crate::voxel_neighborsign as vneighsign;
 use crate::voxel_neighborvisit as vneighvisit;
+use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_weather as vweather;
 use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
@@ -4075,6 +4076,12 @@ fn tick_residents(dt: f32) {
     // 格式：(resident_id, resident_name, 被登門的鄰居顯示名)。
     let mut neighbor_visit_arrivals: Vec<(String, &'static str, String)> = Vec::new();
 
+    // 登門遇主人在家·迎客事件（登門遇主人在家 v1，ROADMAP 752）：鎖內偵測「訪客登門抵達時，
+    // 那位鄰居正好也在家」，鎖外統一處理主人側的迎客泡泡 + 「在家迎客」記憶 + Feed。
+    // 情誼不在此重複記帳（751 抵達時已 record_visit 過這對），只補上當面互動與主人側痕跡。
+    // 格式：(訪客顯示名, 被登門的主人顯示名, 泡泡雜湊 pick)。
+    let mut hosted_meetings: Vec<(&'static str, String, usize)> = Vec::new();
+
     // 就寢反思 Feed 事件（作息·就寢反思 v1，ROADMAP 744）：鎖內入睡時偵測，鎖外記 Feed。
     // 格式：(resident_name, 今天回味的記憶摘要)。
     let mut bedtime_feed: Vec<(&'static str, String)> = Vec::new();
@@ -4162,6 +4169,11 @@ fn tick_residents(dt: f32) {
         let resident_names: Vec<&'static str> = residents.iter().map(|r| r.name).collect();
         let resident_homes: Vec<(f32, f32)> =
             residents.iter().map(|r| (r.home_x, r.home_z)).collect();
+        // 登門遇主人在家 v1（ROADMAP 752）：再快照所有居民的**當前座標**（與 resident_names 索引對齊），
+        // 供「訪客抵達鄰居家牌時，判斷那位鄰居此刻是否正好在家（站在自家牌子附近）」——
+        // 避免在持 residents 寫鎖的迴圈裡再借用 residents 讀。座標在本 tick 內幾乎不變，快照安全。
+        let resident_pos: Vec<(f32, f32)> =
+            residents.iter().map(|r| (r.body.x, r.body.z)).collect();
 
         // 2b) 物理 + 閒晃 + 社交冷卻 + 思考排程。
         for r in residents.iter_mut() {
@@ -4700,7 +4712,23 @@ fn tick_residents(dt: f32) {
                         // 懷念，而是當成一次真正的「登門拜訪」——暖暖點名招呼、記憶掛在那位鄰居名下、
                         // 情誼因這趟登門而加溫（鎖外 neighbor_visit_arrivals 統一處理 record_visit）。
                         if let Some(nb) = r.pilgrimage_neighbor.clone() {
-                            r.say = vneighvisit::visit_line(&nb, pick);
+                            // 登門遇主人在家 v1（ROADMAP 752）：那位鄰居此刻是否正好在家？
+                            // 從本 tick 開頭的座標快照查那位鄰居的位置，看牠是否站在自家牌子（tx,tz）附近。
+                            let host_home = resident_names
+                                .iter()
+                                .position(|n| *n == nb.as_str())
+                                .and_then(|i| resident_pos.get(i))
+                                .map(|&(hx, hz)| vhosted::host_is_home(hx, hz, tx, tz))
+                                .unwrap_or(false);
+                            if host_home {
+                                // 撲了個空變成真的碰上本人：訪客雀躍地念「見到本人」暖句，
+                                // 主人側的迎客反應（迎客泡泡＋在家迎客記憶＋Feed）鎖外統一處理。
+                                r.say = vhosted::met_line(&nb, pick);
+                                hosted_meetings.push((r.name, nb.clone(), pick));
+                            } else {
+                                // 主人不在家：撲空，落回 751 既有的「對空門口串門子」暖句。
+                                r.say = vneighvisit::visit_line(&nb, pick);
+                            }
                             r.say_timer = SAY_SECS;
                             neighbor_visit_arrivals.push((r.id.clone(), r.name, nb));
                         } else {
@@ -5989,6 +6017,39 @@ fn tick_residents(dt: f32) {
         vmem::append_memory(&entry);
         // 城鎮動態 Feed：某居民特地登門找某鄰居串門子（鄰里往來第一次被世界看板記下）。
         vfeed::append_feed("串門子", rname, &vneighvisit::visit_feed(rname, neighbor));
+    }
+
+    // 5c-2c) 登門遇主人在家·迎客處理（登門遇主人在家 v1，ROADMAP 752）：訪客登門抵達時那位鄰居
+    // 正好也在家（站在自家牌子附近）——這趟登門不再撲空，補上主人這一側的迎客反應：
+    // ① 主人若沒在說別的話就冒一句點名訪客的迎客泡泡；② 把「某鄰居特地登門、我正好在家、親自迎了迎」
+    // 記成一筆掛在訪客名下的記憶（鄰里往來第一次從主人這一側也留下痕跡）；③ 一則「在家迎客」Feed。
+    // 情誼**不在此重複記帳**（751 抵達時已 record_visit 這對）。鎖序：先短取 residents 寫鎖設泡泡並
+    // 取得主人 id，即釋；再各自短取 memory 寫鎖、IO 在鎖外——不巢狀、守死鎖鐵律。
+    for &(guest, ref host, pick) in &hosted_meetings {
+        // 短寫鎖：主人若閒著沒在說話，回一句迎客暖招呼；順手取主人 id 供記憶鍵用。
+        let host_id: Option<String> = {
+            let mut rs = hub().residents.write().unwrap();
+            rs.iter_mut().find(|r| r.name == host.as_str()).map(|h| {
+                if h.say.is_empty() {
+                    h.say = vhosted::host_welcome_line(guest, pick);
+                    h.say_timer = SAY_SECS;
+                }
+                h.id.clone()
+            })
+        }; // residents 寫鎖釋放
+        if let Some(hid) = host_id {
+            // 主人側記憶：掛在訪客名下（沿用「跨居民記憶鍵到對方名字」慣例，比照 748/750）。
+            let entry = {
+                hub()
+                    .memory
+                    .write()
+                    .unwrap()
+                    .add_memory(&hid, guest, &vhosted::host_welcome_memory(guest))
+            }; // memory 寫鎖釋放
+            vmem::append_memory(&entry);
+        }
+        // 城鎮動態 Feed：主人正好在家、親自迎接了登門的訪客。
+        vfeed::append_feed("在家迎客", host, &vhosted::hosted_feed(guest, host));
     }
 
     // 5c-3) 就寢反思 Feed（作息·就寢反思 v1，ROADMAP 744）：居民入睡前回味今天最有感的一件事，
