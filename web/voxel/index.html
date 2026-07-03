@@ -5,8 +5,23 @@
   <!-- base：讓相對資源(main.js)永遠解析到 /voxel/，這樣首頁無論掛在 / 或 /voxel/ 都載得到。
        WS 與所有 fetch 都用絕對路徑(location.host/voxel/ws、/version…)，不受 base 影響。 -->
   <base href="/voxel/" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>乙太方界 — ButFun</title>
+
+  <!-- ═══ PWA：可安裝 / 加到主畫面像 App ═══
+       manifest、圖示、sw 皆由後端服務（見 src/main.rs）。start_url=/、scope=/。 -->
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="theme-color" content="#1b2b4d" />
+  <meta name="description" content="一個瀏覽器即玩的蒸汽龐克太空歌劇療癒方塊世界，與會自己生活的 AI 居民一起蓋家。" />
+  <!-- 一般 favicon -->
+  <link rel="icon" type="image/png" sizes="32x32" href="/voxel/icons/favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/voxel/icons/icon-192.png" />
+  <!-- iOS：蘋果不吃 manifest icons / theme-color，需獨立 apple meta + apple-touch-icon -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="乙太方界" />
+  <link rel="apple-touch-icon" href="/voxel/icons/apple-touch-icon.png" />
   <style>
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #87b7e0; font-family: system-ui, sans-serif; }
@@ -981,6 +996,10 @@
 </head>
 <body>
   <div id="app"></div>
+  <!-- PWA 安裝提示鈕：預設隱藏，瀏覽器判定可安裝(beforeinstallprompt)時才顯示 -->
+  <button id="pwaInstall" style="display:none;position:fixed;right:10px;bottom:64px;z-index:9;
+    padding:8px 14px;font-size:13px;color:#0e1830;background:#4fd6c8;border:0;border-radius:10px;
+    box-shadow:0 2px 8px rgba(0,0,0,.4);cursor:pointer;font-weight:700;">⬇️ 安裝乙太方界</button>
   <!-- 水下氛圍覆蓋層：相機在水方塊內時顯示淡藍色，JS 控制 opacity -->
   <div id="underwaterOverlay"></div>
   <div id="hud">載入中…</div>
@@ -1184,6 +1203,43 @@
       <div id="chestHint">點物品欄的格子→存入箱子；點箱子的格子→取回物品欄</div>
     </div>
   </div>
+  <!-- PWA Service Worker 註冊：包在 try/catch，沙箱/不支援/失敗一律安靜略過，絕不影響遊戲。
+       sw 以 /sw.js 服務（根 scope），能同時控制 / 與 /voxel/ 兩個入口。 -->
+  <script>
+    (function () {
+      if (!("serviceWorker" in navigator)) return;
+      window.addEventListener("load", function () {
+        navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(function (e) {
+          console.info("[PWA] Service Worker 未註冊（可能為沙箱/非 https）：", e && e.message);
+        });
+      });
+      // 「安裝乙太方界」小提示：瀏覽器判定可安裝時攔下事件，玩家點按鈕才喚起原生安裝。
+      var deferredPrompt = null;
+      window.addEventListener("beforeinstallprompt", function (e) {
+        e.preventDefault();
+        deferredPrompt = e;
+        var btn = document.getElementById("pwaInstall");
+        if (btn) btn.style.display = "block";
+      });
+      window.addEventListener("DOMContentLoaded", function () {
+        var btn = document.getElementById("pwaInstall");
+        if (!btn) return;
+        btn.addEventListener("click", function () {
+          if (!deferredPrompt) { btn.style.display = "none"; return; }
+          deferredPrompt.prompt();
+          deferredPrompt.userChoice.finally(function () {
+            deferredPrompt = null;
+            btn.style.display = "none";
+          });
+        });
+      });
+      window.addEventListener("appinstalled", function () {
+        var btn = document.getElementById("pwaInstall");
+        if (btn) btn.style.display = "none";
+      });
+    })();
+  </script>
+
   <!-- 相對於 /voxel/ 載入；?v 由後端 serve_voxel_index 注入內容雜湊 -->
   <script type="module" src="main.js?v=1"></script>
 </body>

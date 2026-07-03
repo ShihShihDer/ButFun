@@ -527,6 +527,14 @@ async fn main() {
         // additive，與現有 2D/3D 協定零交集（見 voxel.rs / voxel_ws.rs）。
         .route("/voxel/", get(serve_voxel_index))
         .route("/voxel/index.html", get(serve_voxel_index))
+        // PWA（乙太方界可安裝 / 加到主畫面像 App）：
+        //   - /manifest.webmanifest：Web App Manifest（實檔在 web/voxel/，這裡顯式服務到根路徑，
+        //     讓 start_url=/ 的 manifest link 抓得到）。
+        //   - /sw.js：Service Worker，以「根 scope」服務——no-cache（更新看得到）+
+        //     `Service-Worker-Allowed: /`，讓它能同時控制 / 與 /voxel/ 兩個入口。
+        //   - 圖示 /voxel/icons/* 由既有 fallback 靜態(ServeDir)服務（web/voxel/icons/）。
+        .route("/manifest.webmanifest", get(serve_manifest))
+        .route("/sw.js", get(serve_service_worker))
         .route("/voxel/ws", get(voxel_ws::voxel_ws_handler))
         // 乙太方界·居民日記（ROADMAP 650）：讀取記憶 + 心願格式化成日記頁 JSON。
         .route("/voxel/diary", get(voxel_ws::voxel_diary_handler))
@@ -846,6 +854,63 @@ async fn serve_voxel_index() -> impl IntoResponse {
         ],
         body,
     )
+}
+
+/// PWA Web App Manifest：實檔在 `web/voxel/manifest.webmanifest`，這裡顯式服務到根路徑
+/// `/manifest.webmanifest`（index.html 的 `<link rel="manifest">` 用絕對根路徑抓）。
+/// no-cache 讓調整 manifest（名稱/圖示/色）後玩家立刻拿到新版。
+async fn serve_manifest() -> impl IntoResponse {
+    match std::fs::read("web/voxel/manifest.webmanifest") {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/manifest+json; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-cache, must-revalidate"),
+            ],
+            bytes,
+        ),
+        Err(e) => {
+            tracing::error!("讀 web/voxel/manifest.webmanifest 失敗：{e}");
+            (
+                StatusCode::NOT_FOUND,
+                [
+                    (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
+                b"manifest not found".to_vec(),
+            )
+        }
+    }
+}
+
+/// PWA Service Worker：實檔在 `web/voxel/sw.js`，顯式服務到根路徑 `/sw.js`，取得「根 scope」。
+/// 額外送 `Service-Worker-Allowed: /`（即使日後改到子路徑供應也允許控制根），並 no-cache
+/// （sw 一改就更新，配合 sw 內 skipWaiting + 清舊快取，避免玩家卡舊版）。
+async fn serve_service_worker() -> impl IntoResponse {
+    let swa = header::HeaderName::from_static("service-worker-allowed");
+    match std::fs::read("web/voxel/sw.js") {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-cache, must-revalidate"),
+                (swa, "/"),
+            ],
+            bytes,
+        ),
+        Err(e) => {
+            tracing::error!("讀 web/voxel/sw.js 失敗：{e}");
+            (
+                StatusCode::NOT_FOUND,
+                [
+                    (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                    (header::CACHE_CONTROL, "no-cache"),
+                    (header::HeaderName::from_static("service-worker-allowed"), "/"),
+                ],
+                b"sw not found".to_vec(),
+            )
+        }
+    }
 }
 
 /// 行程啟動時刻（算 uptime 用）。`LazyLock` 在 main 啟動早期第一次被讀到時定錨。
