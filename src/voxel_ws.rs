@@ -76,6 +76,7 @@ use crate::voxel_teach as vteach;
 use crate::voxel_sleep as vsleep;
 use crate::voxel_bedtime as vbedtime;
 use crate::voxel_morning as vmorning;
+use crate::voxel_daybreak as vdaybreak;
 use crate::voxel_welcome as vwelcome;
 use crate::voxel_resident_trade as vrtrade;
 use crate::voxel_milestones::{self as vmiles, MilestoneStore};
@@ -295,6 +296,10 @@ struct VoxelResident {
     /// 重返冷卻倒數（秒，讀牌 v3）：一次朝聖（抵達或放棄）後設為 [`vreadsign::PILGRIMAGE_COOLDOWN`]，
     /// 歸零前不再啟程——稀少才有感、不洗版。各居民初始錯開。
     pilgrimage_cooldown: f32,
+    /// 晨間思念玩家（記憶驅動·晨間思念玩家 v1，ROADMAP 746）：Some(玩家顯示名, 逾時剩餘秒) =
+    /// 醒來讀昨晚睡前反思、發現惦記的是這位在線玩家，正朝他走去要打招呼；抵達（暖暖打招呼＋記一筆
+    /// 與他的記憶）或逾時／玩家離線即清空。純記憶體、重啟歸零。
+    daybreak_seek: Option<(String, f32)>,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -841,6 +846,8 @@ fn init_residents() -> Vec<VoxelResident> {
             pilgrimage: None,
             pilgrimage_timer: 0.0,
             pilgrimage_cooldown: 180.0 + i as f32 * 60.0,
+            // 晨間思念玩家（ROADMAP 746）：入場沒有進行中的思念（僅由清晨醒來時的睡前反思觸發）。
+            daybreak_seek: None,
         });
     }
     out
@@ -3988,6 +3995,15 @@ fn tick_residents(dt: f32) {
     // 格式：(resident_name, 昨晚惦記、一早去找的那位居民名字)。
     let mut morning_feed: Vec<(&'static str, &'static str)> = Vec::new();
 
+    // 晨間思念玩家 v1（作息 × 記憶驅動行為，ROADMAP 746）：鎖內醒來時偵測「昨晚惦記的是位在線玩家」
+    // → 記 Feed（鎖外）。格式：(resident_name, 玩家顯示名)。
+    let mut daybreak_feed: Vec<(&'static str, String)> = Vec::new();
+    // 晨間思念玩家抵達事件（ROADMAP 746）：鎖內偵測「走到玩家面前」，鎖外補記憶（掛玩家名下、算情誼）。
+    // 格式：(resident_id, resident_name, 玩家顯示名)。
+    let mut daybreak_arrivals: Vec<(String, &'static str, String)> = Vec::new();
+    // 此刻在線玩家的顯示名（與 player_pts 索引對齊）：供晨間思念玩家偵測反思裡惦記到誰。
+    let player_names: Vec<&str> = player_pts.iter().map(|(_, _, n)| n.as_str()).collect();
+
     // 居民回禮事件（ROADMAP 667）：鎖內偵測，鎖外執行（加入背包 + 廣播）。
     // 格式：(resident_id, resident_name, player_name, block_id, qty, message)
     let mut return_gift_events: Vec<(String, &'static str, String, u8, u32, String)> = Vec::new();
@@ -4193,6 +4209,23 @@ fn tick_residents(dt: f32) {
                                 r.say = vmorning::seek_bubble(friend, pick);
                                 r.say_timer = SAY_SECS;
                                 morning_feed.push((r.name, friend));
+                            } else if vdaybreak::should_miss(true, rand::random::<f32>()) {
+                                // 晨間思念玩家 v1（ROADMAP 746）：昨晚惦記的不是居民、而是某位此刻在線
+                                // 玩家 → 醒來朝他走過去打招呼（745 的對稱補完：記憶讓居民來找「你」）。
+                                // 只比對在線玩家名（player_names），離線者不在名單、絕不誤中。
+                                if let Some(pidx) =
+                                    vdaybreak::mentioned_player(&summary, &player_names)
+                                {
+                                    let (px, pz, pname) = &player_pts[pidx];
+                                    r.daybreak_seek =
+                                        Some((pname.clone(), vdaybreak::SEEK_TIMEOUT_SECS));
+                                    r.target_x = *px;
+                                    r.target_z = *pz;
+                                    r.wait_timer = 0.0;
+                                    r.say = vdaybreak::wake_bubble(pname, pick);
+                                    r.say_timer = SAY_SECS;
+                                    daybreak_feed.push((r.name, pname.clone()));
+                                }
                             }
                         }
                     }
@@ -4425,6 +4458,55 @@ fn tick_residents(dt: f32) {
                 }
             }
 
+            // 晨間思念玩家走動 v1（ROADMAP 746）：daybreak_seek 有效時，持續朝那位特定玩家走過去
+            // （他可能在移動，故每 tick 依名字重查其座標步步逼近）；抵達（XZ 距離 < ARRIVE_DIST 且
+            // say 空）→ 暖暖打招呼、收集抵達事件（鎖外補一筆與他的記憶）、清除任務。玩家離線／逾時
+            // 則放下這份牽掛。比照打氣走動 / 朝聖的狀態機（每 tick 覆寫 target、抵達即清空）。
+            if let Some((pname, remaining)) = r.daybreak_seek.clone() {
+                let remaining = remaining - dt;
+                // 依名字重查那位玩家此刻的座標（可能已移動）。
+                let here = player_pts
+                    .iter()
+                    .find(|(_, _, n)| *n == pname)
+                    .map(|(x, z, _)| (*x, *z));
+                match here {
+                    Some((px, pz)) if remaining > 0.0 => {
+                        let dx = r.body.x - px;
+                        let dz = r.body.z - pz;
+                        let arrived =
+                            dx * dx + dz * dz < vdaybreak::ARRIVE_DIST * vdaybreak::ARRIVE_DIST;
+                        if arrived {
+                            // 走到玩家面前：沒在說別的話就暖暖打招呼、記一筆與他的記憶，收工。
+                            // 若正巧在說別的話（如剛醒的晨思泡泡），先按住位置等 say 清空再打招呼
+                            // （不遞減逾時的殘留、避免站在跟前反被逾時放棄）。
+                            if r.say.is_empty() {
+                                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                                r.say = vdaybreak::arrive_greet_bubble(&pname, pick);
+                                r.say_timer = SAY_SECS;
+                                daybreak_arrivals.push((r.id.clone(), r.name, pname.clone()));
+                                r.daybreak_seek = None;
+                            } else {
+                                // 站定等說完話：保持目標、續留這份牽掛（逾時照遞減，不至無限等）。
+                                r.target_x = px;
+                                r.target_z = pz;
+                                r.wait_timer = 0.0;
+                                r.daybreak_seek = Some((pname, remaining));
+                            }
+                        } else {
+                            // 還在路上：步步逼近、清小歇，讓玩家看得到牠專程走過來。
+                            r.target_x = px;
+                            r.target_z = pz;
+                            r.wait_timer = 0.0;
+                            r.daybreak_seek = Some((pname, remaining));
+                        }
+                    }
+                    // 玩家離線（不在名單）或逾時走太久 → 放下這份牽掛，回到平常的一天。
+                    _ => {
+                        r.daybreak_seek = None;
+                    }
+                }
+            }
+
             // 重返心中的牌子 v3（ROADMAP 743）：讀牌記憶第一次改變居民的去向。
             // 冷卻遞減；正在朝聖時持續朝牌子走、抵達即駐足念一句、逾時則放棄。
             // 鎖序：memory 寫（短鎖即釋，比照 v2），Feed 走鎖外 pilgrimage_feed，不巢狀、不持鎖 await。
@@ -4477,6 +4559,7 @@ fn tick_residents(dt: f32) {
                     && r.clique_meet.is_none()
                     && r.follow.is_none()
                     && r.invent_run.is_none()
+                    && r.daybreak_seek.is_none()
                     && !r.asleep;
                 if vreadsign::should_pilgrimage(
                     r.cherished_sign.is_some(),
@@ -5692,6 +5775,27 @@ fn tick_residents(dt: f32) {
     // 昨晚的心事第一次不只被說出來、還真的把居民的腳步帶去了某個地方。
     for (rname, friend) in &morning_feed {
         vfeed::append_feed("晨想", rname, &vmorning::seek_feed_line(friend));
+    }
+
+    // 5c-5) 晨間思念玩家 Feed（作息 × 記憶驅動行為·晨間思念玩家 v1，ROADMAP 746）：居民醒來讀昨晚
+    // 的睡前反思，若惦記到的是某位在線玩家就一早朝他走去——記一筆動態，沒在世界另一頭的玩家也讀得到
+    // 「牠一早惦記著你、往你走去了」。745 讓記憶帶居民去找居民，本刀讓記憶把居民的腳步帶到了「你」面前。
+    for (rname, player) in &daybreak_feed {
+        vfeed::append_feed("晨思", rname, &vdaybreak::miss_feed_line(player));
+    }
+
+    // 5c-6) 晨間思念玩家·抵達補記憶（ROADMAP 746）：居民走到玩家面前打招呼後，把「今早特地來找你」
+    // 昇華成一筆掛在該玩家名下的記憶（算進與你的情誼）——你的離開與歸來，第一次在居民的清晨留下回聲。
+    // 鎖序：memory 寫鎖各自短取即釋、不巢狀、append_memory 的 IO 在鎖外進行（守死鎖鐵律）。
+    for (rid, _rname, player) in &daybreak_arrivals {
+        let entry = {
+            hub()
+                .memory
+                .write()
+                .unwrap()
+                .add_memory(rid, player, &vdaybreak::miss_memory_summary(player))
+        };
+        vmem::append_memory(&entry);
     }
 
     // 5d) 探訪 Feed（ROADMAP 671）：抵達 / 返家各一筆，讓離線玩家也知道居民在往來。
