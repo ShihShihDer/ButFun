@@ -1386,8 +1386,8 @@ fn hub() -> &'static VoxelHub {
             res_inv: RwLock::new(HashMap::new()),
             // 啟動時從 data/voxel_inventory.jsonl 載回玩家背包（重啟後存量還在）。
             inventory: RwLock::new(InvStore::from_entries(vinv::load_inventory())),
-            // 農地 store 純記憶體（與世界 delta 一致：重啟後農地重置，玩家重新種即可）。
-            farm: RwLock::new(FarmStore::new()),
+            // 農地持久化 v1：啟動時從 data/voxel_farm.jsonl replay 種植計時（重啟後作物續存續長）。
+            farm: RwLock::new(FarmStore::from_events(vfarm::load_farm())),
             grove: RwLock::new(GroveStore::new()),
             // 啟動時從 data/voxel_return_gifts.jsonl 載回已回贈紀錄（重啟後仍記得送過）。
             return_gifts: RwLock::new(ReturnGiftStore::from_entries(vret::load_return_gifts())),
@@ -2063,14 +2063,17 @@ async fn handle_socket(
                             _ => &[], // 後面用 else 分支處理
                         };
 
-                        // 種田 v1 的方塊 → 農地 store 也要清掉記錄。
+                        // 種田 v1 的方塊 → 農地 store 也要清掉記錄（並持久化移除，farm 寫鎖即釋）。
                         if matches!(
                             target_block,
                             Block::FarmSoilSeeded | Block::WheatMature
                                 | Block::CarrotSeeded | Block::CarrotMature
                                 | Block::PotatoSeeded | Block::PotatoMature
                         ) {
-                            hub().farm.write().unwrap().remove(x, y, z);
+                            let farm_e = { hub().farm.write().unwrap().remove(x, y, z) };
+                            if let Some(farm_e) = farm_e {
+                                vfarm::append_farm(&farm_e);
+                            }
                         }
 
                         // 植樹造林 v1（ROADMAP 738）：挖掉還沒長成的樹苗 → 清掉 grove 記錄
@@ -3229,8 +3232,12 @@ async fn handle_socket(
                 };
                 // 套 delta：FarmSoil → 對應 Seeded 狀態（delta 寫鎖即釋）。
                 voxel::set_block(&mut hub().deltas.write().unwrap(), x, y, z, seeded_block);
-                // 記錄農地 + 持久化種子消耗（兩者都在鎖外）。
-                hub().farm.write().unwrap().plant(x, y, z, vfarm::now_secs(), kind);
+                // 持久化這塊 Seeded 方塊（此前玩家自種的作物方塊未落地、重啟即整棵消失——農地持久化 v1 補上）。
+                vbuild::append_world_block(x, y, z, seeded_block as u8);
+                // 記錄農地計時 + 持久化（farm 寫鎖即釋、append 在鎖外）。
+                let farm_e = { hub().farm.write().unwrap().plant(x, y, z, vfarm::now_secs(), kind) };
+                vfarm::append_farm(&farm_e);
+                // 持久化種子消耗。
                 vinv::append_inv(&seed_e);
                 // 水耕檢查（短讀鎖即釋）：下雨時視同水耕（下雨天氣 v1，ROADMAP 700）。
                 let irrigated = *hub().weather.read().unwrap() || {
@@ -3462,14 +3469,12 @@ async fn handle_socket(
                             } // deltas 寫鎖釋放
                             broadcast_block(gx, gy, gz, seeded_block);
                             enqueue_water_around(gx, gy, gz);
-                            // 登記農地計時（隨 tick_farm 成熟，比照玩家種植）。
-                            hub().farm.write().unwrap().plant(
-                                gx,
-                                gy,
-                                gz,
-                                vfarm::now_secs(),
-                                kind,
-                            );
+                            // 登記農地計時 + 持久化（farm 寫鎖即釋、append 在鎖外）——
+                            // 農地持久化 v1：此前計時器純記憶體，重啟後這畦會永遠卡在幼苗長不出來。
+                            let farm_e = {
+                                hub().farm.write().unwrap().plant(gx, gy, gz, vfarm::now_secs(), kind)
+                            };
+                            vfarm::append_farm(&farm_e);
                             // 持久化這塊作物方塊（重啟後你送的種子仍留在世界裡）。
                             vbuild::append_world_block(gx, gy, gz, seeded_block as u8);
                             // 收成回贈 v1（ROADMAP 755）：登記這畦「因你而生」的田——記下座標、
@@ -4278,16 +4283,27 @@ fn tick_farm() {
         return;
     }
     for ((fx, fy, fz), kind) in mature {
-        // 寫鎖清掉農地記錄（避免下輪重複處理）。
-        hub().farm.write().unwrap().remove(fx, fy, fz);
-        // delta 寫鎖：依作物種類把 Seeded 換成對應 Mature 狀態
-        //（FarmSoilSeeded→WheatMature / CarrotSeeded→CarrotMature / PotatoSeeded→PotatoMature）。
-        let mature_block = match kind {
-            vfarm::CropKind::Wheat => Block::WheatMature,
-            vfarm::CropKind::Carrot => Block::CarrotMature,
-            vfarm::CropKind::Potato => Block::PotatoMature,
+        // 寫鎖清掉農地記錄（避免下輪重複處理）＋持久化移除（farm 寫鎖即釋、append 鎖外）。
+        let farm_e = { hub().farm.write().unwrap().remove(fx, fy, fz) };
+        if let Some(farm_e) = farm_e {
+            vfarm::append_farm(&farm_e);
+        }
+        // 依作物種類決定「該格此刻應是的 Seeded 方塊」與「成熟後方塊」。
+        let (expected_seeded, mature_block) = match kind {
+            vfarm::CropKind::Wheat => (Block::FarmSoilSeeded, Block::WheatMature),
+            vfarm::CropKind::Carrot => (Block::CarrotSeeded, Block::CarrotMature),
+            vfarm::CropKind::Potato => (Block::PotatoSeeded, Block::PotatoMature),
         };
+        // 農地持久化 v1 自癒守衛：唯有該格當下真的還是對應 Seeded 方塊才轉成熟。
+        // 若計時器與世界方塊發生分歧（例：世界重置清了方塊卻沒清農地 jsonl），
+        // 這裡只默默清掉孤兒計時、不憑空長出幻影作物——用快照判斷（每格唯一、無爭用）。
+        if voxel::effective_block_at(&deltas_snap, fx, fy, fz) != expected_seeded {
+            continue;
+        }
+        // delta 寫鎖：把 Seeded 換成對應 Mature 狀態。
         voxel::set_block(&mut hub().deltas.write().unwrap(), fx, fy, fz, mature_block);
+        // 成熟後的方塊也持久化（重啟後看到的是成熟作物，而非又退回幼苗）。
+        vbuild::append_world_block(fx, fy, fz, mature_block as u8);
         // 廣播方塊更新（所有連線玩家即時看到作物成熟變色）。
         broadcast_block(fx, fy, fz, mature_block);
     }
@@ -5152,7 +5168,13 @@ fn tick_residents(dt: f32) {
                         if let Some(((cx, cy, cz), kind, remaining)) = candidate {
                             let nudge = vtend::nudge_amount(remaining);
                             if nudge > 0 {
-                                hub().farm.write().unwrap().nudge_growth(cx, cy, cz, nudge); // farm 寫鎖即釋
+                                // farm 寫鎖即釋、append 在 farm 鎖外（比照同區塊 append_memory/append_feed，
+                                // 皆小檔同步 IO、不巢狀 farm/memory 鎖、非 await）——照料進度也持久化。
+                                let farm_e =
+                                    { hub().farm.write().unwrap().nudge_growth(cx, cy, cz, nudge) };
+                                if let Some(farm_e) = farm_e {
+                                    vfarm::append_farm(&farm_e);
+                                }
                                 let crop = vtend::crop_name(kind);
                                 let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                                 r.say = vtend::tend_say_line(crop, pick).chars().take(40).collect();
@@ -6678,8 +6700,11 @@ fn tick_residents(dt: f32) {
         } // deltas 寫鎖釋放
         broadcast_block(*gx, *gy, *gz, Block::FarmSoil);
         vbuild::append_world_block(*gx, *gy, *gz, Block::FarmSoil as u8);
-        // 農地計時本應在成熟時已被 tick_farm 清掉，保險再清一次（idempotent）。
-        hub().farm.write().unwrap().remove(*gx, *gy, *gz);
+        // 農地計時本應在成熟時已被 tick_farm 清掉，保險再清一次（idempotent，farm 寫鎖即釋）。
+        let farm_e = { hub().farm.write().unwrap().remove(*gx, *gy, *gz) };
+        if let Some(farm_e) = farm_e {
+            vfarm::append_farm(&farm_e);
+        }
         // 果實入你背包（寫鎖即釋）+ 持久化。
         let (bid, qty) = vgg::produce_gift(*crop);
         let inv_entry = { hub().inventory.write().unwrap().give(pname, bid, qty) };

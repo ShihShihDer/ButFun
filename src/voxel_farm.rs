@@ -19,11 +19,21 @@
 //! 取消種植：Break FarmSoilSeeded/CarrotSeeded/PotatoSeeded → 對應種子×1 + FarmSoil(11)（退還種子）。
 //! 麵包：3 Wheat(18) → Bread(19)（2×2 合成格一排）。
 //!
-//! FarmStore **純記憶體**（與世界 delta 行為一致：重啟後農地重置）。
-//! 之後需持久化再加 jsonl 層，此版先讓玩家看到「有感的農地時間維度」。
+//! **農地持久化 v1**：FarmStore 改走 **append-only jsonl**（`data/voxel_farm.jsonl`，比照
+//! `voxel_inventory`）。此前 FarmStore 純記憶體、重啟即丟計時器，而種下的 Seeded 方塊卻經
+//! 世界 delta 持久化留了下來——prod 頻繁重啟下會造成兩種玩家可見的壞狀態：
+//!   ① 居民贈種種下的作物：方塊留著、計時器沒了 → **永遠卡在幼苗、再也長不出來**。
+//!   ② 玩家自己種的作物：連 Seeded 方塊都沒持久化 → **整棵憑空消失**。
+//! 本版把種植計時器也持久化（plant / remove / 居民照料 nudge 都落一筆 delta），
+//! 重啟後種植進度續存、作物如常長到成熟——「你種的田，回來還在長」。
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+
+/// jsonl 持久化路徑（append-only delta，比照 `voxel_inventory::VOXEL_INV_PATH`）。
+pub const VOXEL_FARM_PATH: &str = "data/voxel_farm.jsonl";
 
 /// 種子物品 id（純 inventory 物品，無對應 Block enum；Block::from_u8(SEEDS_ID) = None）。
 /// 從葉片(6)/成熟小麥(13)/幼苗(12)破壞後掉落。
@@ -81,7 +91,8 @@ pub const POTATO_IRRIGATED_GROW_SECS: u64 = 60;
 pub const FARM_WATER_RANGE: i32 = 4;
 
 /// 作物種類（第二種作物 v1）——決定生長秒數與收成方塊/物品。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// 序列化為變體名字串（"Wheat"/"Carrot"/"Potato"），jsonl 人類可讀、向後相容。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CropKind {
     Wheat,
     Carrot,
@@ -112,10 +123,29 @@ pub struct FarmPlot {
     pub kind: CropKind,
 }
 
-/// 農地 store（純記憶體，重啟後農地重置，與世界 delta 行為一致）。
+/// 一筆農地事件（append-only jsonl 最小單元，比照 `voxel_inventory::InvEntry`）。
+/// `planted_secs`/`kind` 皆 Some → 種下（或更新計時）；皆 None → 移除該格記錄。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FarmEvent {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    /// Some(秒)=種下/更新計時；None=移除。舊檔缺欄位時預設 None（向後相容）。
+    #[serde(default)]
+    pub planted_secs: Option<u64>,
+    /// Some(種類)=種下/更新計時；None=移除。
+    #[serde(default)]
+    pub kind: Option<CropKind>,
+    /// 單調遞增序號（replay 順序保證）。
+    pub seq: u64,
+}
+
+/// 農地 store（append-only jsonl 持久化，重啟後種植進度續存）。
 #[derive(Default)]
 pub struct FarmStore {
     plots: HashMap<(i32, i32, i32), FarmPlot>,
+    /// 下一筆事件序號（replay 續號）。
+    pub next_seq: u64,
 }
 
 impl FarmStore {
@@ -124,15 +154,32 @@ impl FarmStore {
     }
 
     /// 種下種子：記錄農地 + planted_secs + 作物種類。重複種同格 → 覆蓋（重置計時、可換種）。
-    pub fn plant(&mut self, x: i32, y: i32, z: i32, now_secs: u64, kind: CropKind) -> FarmPlot {
+    /// 回傳待落地的 `FarmEvent`（呼叫端在鎖外 `append_farm`）。
+    pub fn plant(&mut self, x: i32, y: i32, z: i32, now_secs: u64, kind: CropKind) -> FarmEvent {
         let plot = FarmPlot { x, y, z, planted_secs: now_secs, kind };
-        self.plots.insert((x, y, z), plot.clone());
-        plot
+        self.plots.insert((x, y, z), plot);
+        let e = FarmEvent {
+            x,
+            y,
+            z,
+            planted_secs: Some(now_secs),
+            kind: Some(kind),
+            seq: self.next_seq,
+        };
+        self.next_seq += 1;
+        e
     }
 
     /// 移除農地記錄（方塊被挖掉 / 成熟後從 store 清掉）。
-    pub fn remove(&mut self, x: i32, y: i32, z: i32) {
-        self.plots.remove(&(x, y, z));
+    /// 該格原本有記錄才回 `Some(FarmEvent)`（呼叫端 append 落地）；本來就沒有 → `None`（不落空事件）。
+    pub fn remove(&mut self, x: i32, y: i32, z: i32) -> Option<FarmEvent> {
+        if self.plots.remove(&(x, y, z)).is_some() {
+            let e = FarmEvent { x, y, z, planted_secs: None, kind: None, seq: self.next_seq };
+            self.next_seq += 1;
+            Some(e)
+        } else {
+            None
+        }
     }
 
     /// 此座標是否有農地記錄。
@@ -172,14 +219,25 @@ impl FarmStore {
     }
 
     /// 把某格作物的生長往前推進 `secs` 秒（居民照料 v1，ROADMAP 753）：等效於「提早種下」，
-    /// 讓它更快成熟。回傳該格是否存在（不存在則什麼都不做）。純記憶體、確定性。
-    pub fn nudge_growth(&mut self, x: i32, y: i32, z: i32, secs: u64) -> bool {
-        if let Some(p) = self.plots.get_mut(&(x, y, z)) {
+    /// 讓它更快成熟。純記憶體、確定性。
+    /// 該格存在才回 `Some(FarmEvent)`（帶更新後的 planted_secs，呼叫端 append 讓照料進度也留得住）；
+    /// 不存在則回 `None`、什麼都不做。
+    pub fn nudge_growth(&mut self, x: i32, y: i32, z: i32, secs: u64) -> Option<FarmEvent> {
+        let (planted_secs, kind) = {
+            let p = self.plots.get_mut(&(x, y, z))?;
             p.planted_secs = p.planted_secs.saturating_sub(secs);
-            true
-        } else {
-            false
-        }
+            (p.planted_secs, p.kind)
+        };
+        let e = FarmEvent {
+            x,
+            y,
+            z,
+            planted_secs: Some(planted_secs),
+            kind: Some(kind),
+            seq: self.next_seq,
+        };
+        self.next_seq += 1;
+        Some(e)
     }
 
     /// 找出 (rx, rz) 水平半徑 `radius` 內、最近的一塊**尚未成熟**（剩餘生長秒數 > 0）的作物，
@@ -217,6 +275,29 @@ impl FarmStore {
         }
         best.map(|(coord, kind, remaining, _)| (coord, kind, remaining))
     }
+
+    /// 由 jsonl 事件列表重建狀態（啟動時 replay，比照 `InvStore::from_entries`）。
+    /// plant/nudge（planted_secs+kind 皆 Some）→ 覆蓋該格；remove（皆 None）→ 清掉該格。
+    pub fn from_events(events: Vec<FarmEvent>) -> Self {
+        let mut store = FarmStore::default();
+        for e in &events {
+            match (e.planted_secs, e.kind) {
+                (Some(planted_secs), Some(kind)) => {
+                    store.plots.insert(
+                        (e.x, e.y, e.z),
+                        FarmPlot { x: e.x, y: e.y, z: e.z, planted_secs, kind },
+                    );
+                }
+                _ => {
+                    store.plots.remove(&(e.x, e.y, e.z));
+                }
+            }
+            if e.seq >= store.next_seq {
+                store.next_seq = e.seq + 1;
+            }
+        }
+        store
+    }
 }
 
 /// 取得目前 Unix 秒數（農地計時用）。
@@ -225,6 +306,39 @@ pub fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_secs()
+}
+
+// ── jsonl 持久化（比照 voxel_inventory：輕量同步小檔 append，不持任何鎖）─────────────
+
+/// 把一筆 FarmEvent append 到 jsonl（呼叫端須已釋放 farm 鎖；失敗只記 log、不 panic）。
+pub fn append_farm(event: &FarmEvent) {
+    let Ok(val) = serde_json::to_value(event) else {
+        return;
+    };
+    write_farm_line(VOXEL_FARM_PATH, &val);
+}
+
+/// 從 jsonl 載回所有事件（啟動時呼叫一次）。檔不存在 / 壞行皆容忍。
+pub fn load_farm() -> Vec<FarmEvent> {
+    let Ok(content) = std::fs::read_to_string(VOXEL_FARM_PATH) else {
+        return vec![];
+    };
+    content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<FarmEvent>(line).ok())
+        .collect()
+}
+
+fn write_farm_line(path: &str, record: &serde_json::Value) {
+    use std::io::Write;
+    match std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        Ok(mut f) => {
+            if let Ok(line) = serde_json::to_string(record) {
+                let _ = writeln!(f, "{}", line);
+            }
+        }
+        Err(e) => eprintln!("[voxel_farm] append 失敗: {e}"),
+    }
 }
 
 #[cfg(test)]
@@ -533,14 +647,16 @@ mod tests {
         s.plant(0, 5, 0, 1000, CropKind::Wheat);
         // 原本 1090 才成熟；把生長推進 30 秒（planted 1000→970）→ 1060 就成熟。
         assert!(s.mature_plots(1060).is_empty()); // 推進前 1060 未熟
-        assert!(s.nudge_growth(0, 5, 0, 30));
+        let e = s.nudge_growth(0, 5, 0, 30).expect("該格存在");
+        assert_eq!(e.planted_secs, Some(970)); // 事件帶更新後計時（1000-30）
+        assert_eq!(e.kind, Some(CropKind::Wheat));
         assert!(!s.mature_plots(1060).is_empty()); // 推進後 1060 已熟
     }
 
     #[test]
-    fn nudge_growth_returns_false_for_missing_plot() {
+    fn nudge_growth_returns_none_for_missing_plot() {
         let mut s = FarmStore::new();
-        assert!(!s.nudge_growth(1, 2, 3, 10));
+        assert!(s.nudge_growth(1, 2, 3, 10).is_none());
     }
 
     #[test]
@@ -548,7 +664,7 @@ mod tests {
         let mut s = FarmStore::new();
         s.plant(0, 5, 0, 5, CropKind::Wheat);
         // 推進量超過 planted_secs 也不會 underflow（saturating_sub）：planted 5→0。
-        assert!(s.nudge_growth(0, 5, 0, 999));
+        assert!(s.nudge_growth(0, 5, 0, 999).is_some());
         // planted 已歸 0，到 GROW_SECS(90) 秒即成熟（不會因 underflow 變成永不成熟）。
         assert!(!s.mature_plots(GROW_SECS).is_empty());
     }
@@ -596,5 +712,123 @@ mod tests {
         let wet = s.nearest_immature_plot_near(0.0, 0.0, 2.5, 1010, |_, _, _| true);
         assert_eq!(dry.map(|(_, _, r)| r), Some(80));
         assert_eq!(wet.map(|(_, _, r)| r), Some(35));
+    }
+
+    // ── 農地持久化 v1：事件 / replay / jsonl ─────────────────────────────────────
+
+    #[test]
+    fn plant_emits_event_and_bumps_seq() {
+        let mut s = FarmStore::new();
+        let e0 = s.plant(1, 5, 2, 1000, CropKind::Carrot);
+        assert_eq!((e0.x, e0.y, e0.z), (1, 5, 2));
+        assert_eq!(e0.planted_secs, Some(1000));
+        assert_eq!(e0.kind, Some(CropKind::Carrot));
+        assert_eq!(e0.seq, 0);
+        let e1 = s.plant(3, 5, 4, 1100, CropKind::Wheat);
+        assert_eq!(e1.seq, 1); // 序號單調遞增
+    }
+
+    #[test]
+    fn remove_emits_event_only_when_plot_existed() {
+        let mut s = FarmStore::new();
+        s.plant(0, 5, 0, 1000, CropKind::Wheat);
+        let e = s.remove(0, 5, 0).expect("有記錄才回 Some");
+        assert_eq!(e.planted_secs, None); // 移除事件無計時/種類
+        assert_eq!(e.kind, None);
+        // 再移除同格（已不存在）→ None，不落空事件。
+        assert!(s.remove(0, 5, 0).is_none());
+    }
+
+    #[test]
+    fn from_events_replays_plant_and_remove() {
+        // plant → 幾筆後 remove → 該格不該還在；另一格 plant 未 remove → 還在且計時正確。
+        let events = vec![
+            FarmEvent { x: 0, y: 5, z: 0, planted_secs: Some(1000), kind: Some(CropKind::Wheat), seq: 0 },
+            FarmEvent { x: 1, y: 5, z: 0, planted_secs: Some(1100), kind: Some(CropKind::Potato), seq: 1 },
+            FarmEvent { x: 0, y: 5, z: 0, planted_secs: None, kind: None, seq: 2 }, // 移除 (0,5,0)
+        ];
+        let s = FarmStore::from_events(events);
+        assert!(!s.has_plot(0, 5, 0)); // 已被移除事件清掉
+        assert!(s.has_plot(1, 5, 0));  // 只 plant 未 remove → 留著
+        assert_eq!(s.next_seq, 3);     // 續號 = 最大 seq + 1
+        // 計時續存：(1,5,0) 馬鈴薯 1100 種下，在 1100+120 才成熟。
+        assert!(s.mature_plots_irrigated(1100 + POTATO_GROW_SECS - 1, |_, _, _| false).is_empty());
+        assert_eq!(s.mature_plots_irrigated(1100 + POTATO_GROW_SECS, |_, _, _| false).len(), 1);
+    }
+
+    #[test]
+    fn from_events_nudge_overrides_planted_secs() {
+        // 種下 1000 → 照料 nudge 到 970（同格再一筆 plant-型事件）→ replay 取最後值。
+        let events = vec![
+            FarmEvent { x: 0, y: 5, z: 0, planted_secs: Some(1000), kind: Some(CropKind::Wheat), seq: 0 },
+            FarmEvent { x: 0, y: 5, z: 0, planted_secs: Some(970), kind: Some(CropKind::Wheat), seq: 1 },
+        ];
+        let s = FarmStore::from_events(events);
+        // 以 970 為準：970+90=1060 就成熟（若誤用 1000 則要 1090）。
+        assert!(!s.mature_plots(1060).is_empty());
+    }
+
+    #[test]
+    fn from_empty_events_is_empty() {
+        let s = FarmStore::from_events(vec![]);
+        assert_eq!(s.next_seq, 0);
+        assert!(s.mature_plots(99999).is_empty());
+    }
+
+    #[test]
+    fn plant_remove_replay_roundtrip_via_recorded_events() {
+        // 模擬真實流程：邊操作邊收集事件 → from_events 重建 → 狀態一致。
+        let mut live = FarmStore::new();
+        let mut log: Vec<FarmEvent> = Vec::new();
+        log.push(live.plant(2, 5, 3, 500, CropKind::Carrot));
+        log.push(live.plant(4, 5, 6, 600, CropKind::Wheat));
+        if let Some(e) = live.remove(2, 5, 3) {
+            log.push(e);
+        }
+        let rebuilt = FarmStore::from_events(log);
+        assert_eq!(rebuilt.has_plot(2, 5, 3), live.has_plot(2, 5, 3)); // 皆 false
+        assert_eq!(rebuilt.has_plot(4, 5, 6), live.has_plot(4, 5, 6)); // 皆 true
+        assert_eq!(rebuilt.next_seq, live.next_seq);
+    }
+
+    #[test]
+    fn farm_jsonl_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("voxfarm_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("voxel_farm.jsonl");
+        let pstr = path.to_str().unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        let e = FarmEvent { x: 7, y: 5, z: 8, planted_secs: Some(1234), kind: Some(CropKind::Potato), seq: 0 };
+        let val = serde_json::to_value(&e).unwrap();
+        write_farm_line(pstr, &val);
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let loaded: Vec<FarmEvent> = content
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0], e);
+    }
+
+    #[test]
+    fn farm_jsonl_bad_line_skipped() {
+        let dir = std::env::temp_dir().join(format!("voxfarm_bad_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("voxel_farm_bad.jsonl");
+        let pstr = path.to_str().unwrap();
+        let _ = std::fs::remove_file(&path);
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(pstr).unwrap();
+        writeln!(f, "{{\"x\":1,\"y\":5,\"z\":1,\"planted_secs\":100,\"kind\":\"Wheat\",\"seq\":0}}").unwrap();
+        writeln!(f, "壞行{{not json}}").unwrap();
+        writeln!(f, "{{\"x\":2,\"y\":5,\"z\":2,\"planted_secs\":null,\"kind\":null,\"seq\":1}}").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let loaded: Vec<FarmEvent> =
+            content.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+        assert_eq!(loaded.len(), 2); // 壞行被略過
+        assert_eq!(loaded[1].planted_secs, None); // 移除事件 replay 正確
     }
 }
