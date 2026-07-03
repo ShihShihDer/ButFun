@@ -2949,6 +2949,25 @@ function connect() {
       if (bagPanelVisible()) renderBagPanel();
       if (wbPanelVisible()) renderWbPanel();
       if (furnacePanelVisible()) renderFurnacePanel();
+    } else if (m.t === "smelt_started") {
+      // 熔爐煨煮 v1：熔爐冶煉不再瞬間——配料已入爐，過 m.secs 秒才熟成（回來自動入背包）。
+      // 清空冶煉格 + 重繪面板（配料已被消耗，面板本就該歸零），提示先去忙別的。
+      showMsg("🔥 " + (m.name_zh || "成品") + " 放進熔爐煨煮中…約 " + (m.secs || 0) + " 秒後熟成，先去忙別的吧");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+      furnaceGrid.fill(0); furnacePick = 0;
+      if (furnacePanelVisible()) renderFurnacePanel();
+    } else if (m.t === "smelt_done") {
+      // 熔爐煨煮 v1：某爐熟成——只有這爐的主人才顯示提示並更新背包（比照 return_gift 管線）。
+      if (m.player === myName) {
+        const iname = BLOCK_NAME[m.item_id] || m.item_name || "成品";
+        if (m.count > 0) myInv.set(m.item_id, m.count);
+        else myInv.delete(m.item_id);
+        updateInvHud();
+        updateGiftBtn();
+        if (furnacePanelVisible()) renderFurnacePanel();
+        showMsg("🔥 你的 " + iname + " ×" + (m.qty || 1) + " 煨好了！熱騰騰的，已放進背包");
+        setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+      }
     } else if (m.t === "plant_ok") {
       // 種田 v1 / 水耕農業 v1（ROADMAP 686）/ 第二/三種作物 v1：依作物種類 + 是否鄰近水源給不同提示。
       const plantMsg = m.carrot

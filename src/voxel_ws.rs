@@ -54,6 +54,7 @@ use crate::voxel_keepsake as vkeep;
 use crate::voxel_seedgift as vseed;
 use crate::voxel_giftgarden as vgg;
 use crate::voxel_fishing as vfish;
+use crate::voxel_smelt as vsmelt;
 use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
 use crate::voxel_preference as vpref;
 use crate::voxel_overhear as vh;
@@ -1174,6 +1175,9 @@ struct VoxelHub {
     /// 農地 store（種田 v1·純記憶體；重啟後農地重置，與世界 delta 行為一致）。
     /// 記錄哪些格子種下了幼苗、何時種的，每 15 秒 tick 一次成熟檢查。
     farm: RwLock<FarmStore>,
+    /// 熔爐煨煮 store（熔爐煨煮 v1·自主提案）：記錄每爐正在慢慢煨熟的成品、屬於誰、何時熟成，
+    /// 每 15 秒 tick（`tick_smelt`）交付熟成的爐。append-only jsonl 持久化，重啟後續烤。
+    smelt: RwLock<vsmelt::SmeltStore>,
     /// 樹苗 store（植樹造林 v1·ROADMAP 738·純記憶體；重啟後種下的樹苗重置，已長成的樹是 delta 方塊會持久）。
     /// 記錄哪些格子種下了樹苗、何時種的，每 15 秒 tick（`tick_grove`）一次成熟檢查。
     grove: RwLock<GroveStore>,
@@ -1397,6 +1401,8 @@ fn hub() -> &'static VoxelHub {
             inventory: RwLock::new(InvStore::from_entries(vinv::load_inventory())),
             // 農地持久化 v1：啟動時從 data/voxel_farm.jsonl replay 種植計時（重啟後作物續存續長）。
             farm: RwLock::new(FarmStore::from_events(vfarm::load_farm())),
+            // 熔爐煨煮 v1：啟動時從 data/voxel_smelt.jsonl 載回未交付的爐（重啟後那爐還在煨）。
+            smelt: RwLock::new(vsmelt::SmeltStore::from_events(vsmelt::load_smelt())),
             grove: RwLock::new(GroveStore::new()),
             // 啟動時從 data/voxel_return_gifts.jsonl 載回已回贈紀錄（重啟後仍記得送過）。
             return_gifts: RwLock::new(ReturnGiftStore::from_entries(vret::load_return_gifts())),
@@ -3153,40 +3159,66 @@ async fn handle_socket(
                         }
                     }; // inventory 寫鎖釋放
                     if ok {
-                        // 步驟 2：給產出方塊（第二把寫鎖，在第一把釋放後取）。
-                        let out_e = hub().inventory.write().unwrap().give(
-                            &name, recipe.output_block, recipe.output_count,
-                        ); // inventory 寫鎖釋放
-                        // 步驟 3：持久化（全在鎖外，比照 voxel_memory 做法）。
+                        // 熔爐煨煮 v1（自主提案）：熔爐配方走「延遲煨熟」，背包 2×2 / 工作台 3×3
+                        // 仍瞬間（手感不變）。無論哪條路，配料都已在步驟 1 消耗，這裡先把「消耗」
+                        // 持久化 + 回報新存量（兩條路共用），再分岔。
+                        let is_furnace = vcraft::find_furnace_recipe(&recipe_id).is_some();
+                        // 步驟 2：持久化消耗（全在鎖外，比照 voxel_memory 做法）。
                         for e in &consumed { vinv::append_inv(e); }
-                        vinv::append_inv(&out_e);
-                        // 步驟 4：送 inv_update（各消耗方塊 + 產出方塊的新計數）。
-                        let inv_r = hub().inventory.read().unwrap();
-                        for &(block_id, _) in recipe.inputs {
-                            let cnt = inv_r.count(&name, block_id);
+                        // 步驟 3：送各消耗方塊的新計數。
+                        {
+                            let inv_r = hub().inventory.read().unwrap();
+                            for &(block_id, _) in recipe.inputs {
+                                let cnt = inv_r.count(&name, block_id);
+                                let _ = out_tx.try_send(Message::Text(
+                                    serde_json::json!({ "t": "inv_update", "block_id": block_id, "count": cnt }).to_string(),
+                                ));
+                            }
+                        } // 讀鎖釋放
+                        if is_furnace {
+                            // 開一爐慢慢煨——不立刻給成品；`tick_smelt` 熟成後才交付入背包。
+                            let now = vfarm::now_secs();
+                            let dur = vsmelt::smelt_secs(&recipe_id);
+                            let ev = hub().smelt.write().unwrap().start(
+                                &name, &recipe_id, recipe.output_block, recipe.output_count, now, dur,
+                            ); // smelt 寫鎖釋放
+                            vsmelt::append_smelt(&ev); // 持久化（鎖外）
                             let _ = out_tx.try_send(Message::Text(
-                                serde_json::json!({ "t": "inv_update", "block_id": block_id, "count": cnt }).to_string(),
+                                serde_json::json!({
+                                    "t": "smelt_started",
+                                    "recipe_id": &recipe_id,
+                                    "name_zh": recipe.name_zh,
+                                    "secs": dur,
+                                    "out_count": recipe.output_count
+                                }).to_string(),
                             ));
+                            // 開爐也算「動手合成」的第一步，一併解里程碑。
+                            try_unlock_milestone(&name, "first_craft", &out_tx);
+                        } else {
+                            // 步驟 4：瞬間給產出方塊（第二把寫鎖，在第一把釋放後取）。
+                            let out_e = hub().inventory.write().unwrap().give(
+                                &name, recipe.output_block, recipe.output_count,
+                            ); // inventory 寫鎖釋放
+                            vinv::append_inv(&out_e);
+                            let out_cnt = hub().inventory.read().unwrap().count(&name, recipe.output_block);
+                            let _ = out_tx.try_send(Message::Text(
+                                serde_json::json!({
+                                    "t": "inv_update",
+                                    "block_id": recipe.output_block,
+                                    "count": out_cnt
+                                }).to_string(),
+                            ));
+                            let _ = out_tx.try_send(Message::Text(
+                                serde_json::json!({
+                                    "t": "craft_ok",
+                                    "recipe_id": &recipe_id,
+                                    "name_zh": recipe.name_zh,
+                                    "out_count": recipe.output_count
+                                }).to_string(),
+                            ));
+                            // 玩家里程碑 v1（ROADMAP 724）：人生第一次成功合成出成品。
+                            try_unlock_milestone(&name, "first_craft", &out_tx);
                         }
-                        let out_cnt = inv_r.count(&name, recipe.output_block);
-                        drop(inv_r); // 讀鎖釋放後再送 craft_ok（守循序取放）
-                        let _ = out_tx.try_send(Message::Text(
-                            serde_json::json!({
-                                "t": "inv_update",
-                                "block_id": recipe.output_block,
-                                "count": out_cnt
-                            }).to_string(),
-                        ));
-                        let _ = out_tx.try_send(Message::Text(
-                            serde_json::json!({
-                                "t": "craft_ok",
-                                "recipe_id": &recipe_id,
-                                "name_zh": recipe.name_zh,
-                                "out_count": recipe.output_count
-                            }).to_string(),
-                        ));
-                        // 玩家里程碑 v1（ROADMAP 724）：人生第一次成功合成出成品。
-                        try_unlock_milestone(&name, "first_craft", &out_tx);
                     } else {
                         let _ = out_tx.try_send(Message::Text(
                             serde_json::json!({
@@ -4030,6 +4062,7 @@ pub fn spawn_farm_tick() {
             ticker.tick().await;
             tick_farm();
             tick_grove(); // 植樹造林 v1（ROADMAP 738）：同節拍檢查樹苗是否長成。
+            tick_smelt(); // 熔爐煨煮 v1（自主提案）：同節拍交付熟成的爐（成品入背包 + 廣播）。
             maybe_birth(); // 人口成長 v1：低頻檢查聚落是否有餘裕誕生一位新居民。
         }
     });
@@ -4322,6 +4355,47 @@ fn tick_farm() {
         vbuild::append_world_block(fx, fy, fz, mature_block as u8);
         // 廣播方塊更新（所有連線玩家即時看到作物成熟變色）。
         broadcast_block(fx, fy, fz, mature_block);
+    }
+}
+
+/// 熔爐煨煮 v1（自主提案）：交付所有熟成的爐——成品入該玩家背包、廣播 `smelt_done`（前端跳
+/// 「你的Ｘ煨好了」暖提示 + 同步背包計數，比照 return_gift 前端管線），並持久化「交付」事件。
+///
+/// 鎖紀律（嚴守短鎖即釋、不巢狀、不持鎖 await/IO，比照 `tick_farm`）：
+///  ① smelt 讀鎖取熟成清單（clone）→ 釋。② 每爐：smelt 寫鎖移除該爐（idempotent，防重複交付）→ 釋
+///     → append 移除事件（鎖外）。③ inventory 寫鎖 give 成品 → 釋 → append（鎖外）→ 讀鎖取新計數 → 釋。
+///  ④ 全域廣播（鎖外）。全程循序、不巢狀。
+fn tick_smelt() {
+    let now = vfarm::now_secs();
+    // 早退省鎖：沒有任何爐在煨就不動（大多數 tick 如此）。
+    if hub().smelt.read().unwrap().is_empty() {
+        return;
+    }
+    let ready = { hub().smelt.read().unwrap().ready(now) };
+    for (id, job) in ready {
+        // 移除這爐（寫鎖即釋）+ 持久化移除；已被別的 tick 交付就跳過（防重複套用）。
+        let removed = { hub().smelt.write().unwrap().remove(id) };
+        let Some(done_ev) = removed else { continue };
+        vsmelt::append_smelt(&done_ev);
+        // 成品入該玩家背包（寫鎖即釋）+ 持久化 + 取新計數。
+        let out_e = {
+            hub().inventory.write().unwrap().give(&job.player, job.output_block, job.output_count)
+        };
+        vinv::append_inv(&out_e);
+        let new_count = hub().inventory.read().unwrap().count(&job.player, job.output_block);
+        let iname = vgift::item_name_zh(job.output_block);
+        // 全域廣播 smelt_done（前端依 player 是否為自己決定顯示提示 + 更新背包，比照 return_gift）。
+        let msg = serde_json::json!({
+            "t": "smelt_done",
+            "player": &job.player,
+            "recipe_id": &job.recipe_id,
+            "item_id": job.output_block,
+            "item_name": iname,
+            "qty": job.output_count,
+            "count": new_count,
+        })
+        .to_string();
+        let _ = hub().tx.send(std::sync::Arc::new(msg));
     }
 }
 
