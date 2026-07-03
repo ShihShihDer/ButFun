@@ -3020,12 +3020,24 @@ applyTouchStyle();
 applyTouchMode();
 
 // ── WebSocket（/voxel/ws）─────────────────────────────────────────────────
+// 無痛自動重連：部署重啟（~2 秒）玩家幾乎無感，指數退避，安靜期不顯示嚇人橫幅。
 let ws = null, wsReady = false;
+let wsRetryDelay = 300;       // 指數退避首次延遲(ms)；每次斷線加倍，上限 8s
+const WS_RETRY_MAX = 8000;    // 最大退避上限
+let wsRetryTimer = null;      // 重連排程 handle（避免同時多個重連 timer）
+let wsBannerTimer = null;     // 安靜期橫幅延遲 handle（斷線後 3s 才顯示大橫幅）
+let wsIsReconnect = false;    // 標記此次 connect() 為重連（非首次進場）
+let wsSavedPos = null;        // 斷線前玩家位置，重連後恢復（不被 server spawn 蓋掉）
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/voxel/ws`);
   ws.onopen = () => {
     wsReady = true;
+    wsRetryDelay = 300;  // 重置退避計時器
+    // 取消安靜期橫幅排程（若在 3s 安靜期內重連成功，橫幅永遠不出現）
+    if (wsBannerTimer) { clearTimeout(wsBannerTimer); wsBannerTimer = null; }
+    // 若先前已顯示「重新連線中」提示，重連成功後立即隱藏
+    if (errEl) errEl.style.display = "none";
     // 入場名：登入者用帳號名（伺服器仍以 cookie 為準覆蓋，這裡只是讓 HUD 先正確），
     // 訪客用 localStorage 暫存名。身份綁定的真相在後端 resolve_identity。
     let nm = "旅人";
@@ -3038,7 +3050,15 @@ function connect() {
       myId = m.id; myName = m.name || "旅人";
       // 帶稱號的維護者回歸 → 只給他看的溫暖招呼（後端 title 字串判定，引夢使者/築夢工匠…）。
       if (m.title) appendMsg("sys", "✦ " + m.title + "，你回來了——居民們一直記得你。");
-      player.x = m.spawn.x; player.y = m.spawn.y; player.z = m.spawn.z;
+      // 重連後恢復斷線前位置，不讓玩家被傳送回出生點；首次連線才套用伺服器 spawn。
+      // 濫用防護：重連仍走既有 join 身分驗證（cookie 路徑），wsSavedPos 只影響前端位置，無新對外面。
+      if (wsIsReconnect && wsSavedPos) {
+        player.x = wsSavedPos.x; player.y = wsSavedPos.y; player.z = wsSavedPos.z;
+      } else {
+        player.x = m.spawn.x; player.y = m.spawn.y; player.z = m.spawn.z;
+      }
+      wsIsReconnect = false;
+      wsSavedPos = null;
       // 出生瞬間先脫困一次（若出生 chunk 已到、地表把人埋住，立刻頂出來）。
       unstuckIfNeeded();
       // 好感度 v1：連線後立即拉取與各居民的好感度，讓指示燈盡快亮起。
@@ -3313,13 +3333,25 @@ function connect() {
   };
   ws.onclose = () => {
     wsReady = false;
+    // 儲存斷線前位置（重連成功後恢復，不讓玩家回到出生點）。
+    wsSavedPos = { x: player.x, y: player.y, z: player.z };
+    wsIsReconnect = true;
     // 垂釣 v1：斷線時伺服器已清掉進行中的拋竿，前端旗標同步歸零，避免重連後卡在「以為還在釣」。
     fishPending = false;
     if (fishBiteTimer) { clearTimeout(fishBiteTimer); fishBiteTimer = null; }
-    showErr("連線中斷，重新連線中…");
-    setTimeout(connect, 1500);
+    // 安靜期橫幅（3 秒）：快速重啟（部署重開 ~2s）不跳嚇人大橫幅；超時才顯示「重新連線中」。
+    if (wsBannerTimer) { clearTimeout(wsBannerTimer); wsBannerTimer = null; }
+    wsBannerTimer = setTimeout(() => {
+      wsBannerTimer = null;
+      if (!wsReady) showErr("重新連線中…");
+    }, 3000);
+    // 指數退避重連：300ms → 600ms → 1200ms → … 上限 8s，避免對剛重啟的伺服器瘋狂轟炸。
+    if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
+    wsRetryTimer = setTimeout(() => { wsRetryTimer = null; connect(); }, wsRetryDelay);
+    wsRetryDelay = Math.min(wsRetryDelay * 2, WS_RETRY_MAX);
   };
-  ws.onerror = () => { showErr("連線錯誤"); };
+  // onerror 後必跟 onclose，讓 onclose 統一處理重連；此處只記 console 不重複顯示橫幅。
+  ws.onerror = (e) => { console.warn("[voxel] WS 錯誤，等待 onclose 重連", e && e.type); };
 }
 connect();
 
