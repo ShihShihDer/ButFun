@@ -69,6 +69,7 @@ use crate::voxel_cheer as vcheer;
 use crate::voxel_chest as vchest;
 use crate::voxel_sign as vsign;
 use crate::voxel_readsign as vreadsign;
+use crate::voxel_tend as vtend;
 use crate::voxel_nameplate as vnameplate;
 use crate::voxel_neighborsign as vneighsign;
 use crate::voxel_neighborvisit as vneighvisit;
@@ -209,6 +210,9 @@ struct VoxelResident {
     /// 讀到**不同於上次**的牌才再寫一筆記憶——避免反覆讀同一塊牌把 episodic 記憶塞滿、
     /// 擠掉真實玩家的對話記憶。純記憶體、重啟歸零。
     last_read_sign: Option<String>,
+    /// 照料菜園冷卻倒數（秒，居民照料 v1 ROADMAP 753）：> 0 表示最近幫玩家照料過作物，
+    /// 暫不再照料——稀少才有感，也避免連續 tick 刷成長。純記憶體、重啟歸零。
+    tend_timer: f32,
     /// 居民↔居民社交冷卻倒數（秒）：> 0 表示最近主動搭話過另一位居民，尚不可再發起。
     social_cooldown: f32,
     /// 另一位居民剛搭話，等這秒數到期後回應（id, 名字, 剩餘秒）。
@@ -803,6 +807,9 @@ fn init_residents() -> Vec<VoxelResident> {
             read_sign_timer: 30.0 + i as f32 * 20.0,
             // 尚未讀過任何牌（居民讀牌 v2）。
             last_read_sign: None,
+            // 照料菜園冷卻（居民照料 v1 ROADMAP 753）：入場先靜置約一分鐘、錯開，
+            // 讓玩家有時間種下作物、也避免啟動瞬間全員同時照料。
+            tend_timer: 60.0 + i as f32 * 30.0,
             // 錯開初始社交冷卻，避免啟動瞬間全員一起嘗試搭話。
             social_cooldown: i as f32 * 20.0,
             pending_response: None,
@@ -4470,6 +4477,67 @@ fn tick_residents(dt: f32) {
                         // 是鄰居家牌就存鄰居名，是玩家的牌就清成 None，讓日後朝聖抵達能把「重返」
                         // 升級成一次真正的「登門拜訪」（與 cherished_sign 同一處更新、恆保持一致）。
                         r.cherished_neighbor = neighbor.map(|s| s.to_string());
+                    }
+                }
+            }
+
+            // 照料菜園 v1（ROADMAP 753）：對你有好感（affinity ≥ FOND_AFFINITY）的居民，路過你
+            // 種下、還沒成熟的作物旁時，偶爾停下來順手幫忙照料——把作物的生長往前推進一小段
+            // （但永不揠苗助長到瞬間成熟，留最後一小段讓你親眼看它長好），冒句話、記進記憶、Feed
+            // 播報。人類種田的樂趣第一次與 AI 居民的好感連成一線：你種下、喜歡你的居民幫你顧。
+            // 先擲骰（no-op 世界不白鎖）→ 短鎖讀好感 → 短鎖查附近未熟作物 → 短鎖 nudge，皆即釋
+            // 不巢狀，守死鎖鐵律（比照讀牌 v2 的 add_memory 手法）。零 LLM、零 migration。
+            if r.tend_timer > 0.0 {
+                r.tend_timer -= dt;
+            } else if r.say.is_empty()
+                && !r.seeking_comfort
+                && rand::random::<f32>() < vtend::TEND_CHANCE_PER_TICK
+            {
+                if let Some((d2, nearest_name)) = nearest_player_info(r.body.x, r.body.z, &player_pts)
+                {
+                    // 只有喜歡你、且你就在旁邊的居民才會特地幫你顧菜園（記憶驅動能動性）。
+                    let is_fond = d2 < GREET_DIST * GREET_DIST
+                        && !nearest_name.is_empty()
+                        && hub().memory.read().unwrap().affinity_count(nearest_name, &r.id)
+                            >= vfond::FOND_AFFINITY; // 記憶讀鎖即釋
+                    if is_fond {
+                        let now = vfarm::now_secs();
+                        // 短讀鎖 clone delta 快照判水耕（只在通過好感閘後才做，罕見路徑），即釋。
+                        let deltas_snap = hub().deltas.read().unwrap().clone();
+                        let raining = *hub().weather.read().unwrap(); // 短讀鎖即釋
+                        let candidate = hub().farm.read().unwrap().nearest_immature_plot_near(
+                            r.body.x,
+                            r.body.z,
+                            vtend::CARE_DIST,
+                            now,
+                            |fx, fy, fz| raining || is_irrigated_in_delta(&deltas_snap, fx, fy, fz),
+                        ); // farm 讀鎖即釋
+                        if let Some(((cx, cy, cz), kind, remaining)) = candidate {
+                            let nudge = vtend::nudge_amount(remaining);
+                            if nudge > 0 {
+                                hub().farm.write().unwrap().nudge_growth(cx, cy, cz, nudge); // farm 寫鎖即釋
+                                let crop = vtend::crop_name(kind);
+                                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                                r.say = vtend::tend_say_line(crop, pick).chars().take(40).collect();
+                                r.say_timer = SAY_SECS;
+                                r.tend_timer = vtend::TEND_COOLDOWN;
+                                // 記進記憶（掛在該玩家名下，好感自然累積——你的善意有了回報）；
+                                // add_memory 寫鎖即釋、append_memory 的 IO 在鎖外（守死鎖鐵律）。
+                                let summary = vtend::tend_memory_line(nearest_name, crop);
+                                let entry = hub()
+                                    .memory
+                                    .write()
+                                    .unwrap()
+                                    .add_memory(&r.id, nearest_name, &summary);
+                                vmem::append_memory(&entry);
+                                // Feed 播報，讓不在場的訪客回來也讀得到這份溫柔。
+                                vfeed::append_feed(
+                                    vtend::FEED_KIND,
+                                    r.name,
+                                    &vtend::tend_feed_line(r.name, nearest_name, crop),
+                                );
+                            }
+                        }
                     }
                 }
             }

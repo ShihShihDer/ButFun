@@ -170,6 +170,53 @@ impl FarmStore {
             .map(|(&coord, p)| (coord, p.kind))
             .collect()
     }
+
+    /// 把某格作物的生長往前推進 `secs` 秒（居民照料 v1，ROADMAP 753）：等效於「提早種下」，
+    /// 讓它更快成熟。回傳該格是否存在（不存在則什麼都不做）。純記憶體、確定性。
+    pub fn nudge_growth(&mut self, x: i32, y: i32, z: i32, secs: u64) -> bool {
+        if let Some(p) = self.plots.get_mut(&(x, y, z)) {
+            p.planted_secs = p.planted_secs.saturating_sub(secs);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 找出 (rx, rz) 水平半徑 `radius` 內、最近的一塊**尚未成熟**（剩餘生長秒數 > 0）的作物，
+    /// 回傳其座標、作物種類與剩餘秒數（供居民路過照料，ROADMAP 753）。
+    /// `is_irrigated`：呼叫端提供、判定某格是否鄰近水源（影響有效生長秒數）。純函式、無副作用。
+    pub fn nearest_immature_plot_near<F>(
+        &self,
+        rx: f32,
+        rz: f32,
+        radius: f32,
+        now_secs: u64,
+        is_irrigated: F,
+    ) -> Option<((i32, i32, i32), CropKind, u64)>
+    where
+        F: Fn(i32, i32, i32) -> bool,
+    {
+        let r2 = radius * radius;
+        let mut best: Option<((i32, i32, i32), CropKind, u64, f32)> = None;
+        for (&(px, py, pz), p) in &self.plots {
+            let grow = effective_grow_secs(p.kind, is_irrigated(px, py, pz));
+            let mature_at = p.planted_secs.saturating_add(grow);
+            if now_secs >= mature_at {
+                continue; // 已成熟（即將被 tick_farm 收成），不照料
+            }
+            let remaining = mature_at - now_secs;
+            let dx = px as f32 - rx;
+            let dz = pz as f32 - rz;
+            let d2 = dx * dx + dz * dz;
+            if d2 > r2 {
+                continue;
+            }
+            if best.map_or(true, |(_, _, _, bd2)| d2 < bd2) {
+                best = Some(((px, py, pz), p.kind, remaining, d2));
+            }
+        }
+        best.map(|(coord, kind, remaining, _)| (coord, kind, remaining))
+    }
 }
 
 /// 取得目前 Unix 秒數（農地計時用）。
@@ -476,5 +523,78 @@ mod tests {
     #[test]
     fn farm_water_range_is_positive() {
         assert!(FARM_WATER_RANGE > 0, "水耕偵測範圍應大於 0");
+    }
+
+    // ── 居民照料 v1（ROADMAP 753）：nudge_growth / nearest_immature_plot_near ──
+
+    #[test]
+    fn nudge_growth_advances_maturity() {
+        let mut s = FarmStore::new();
+        s.plant(0, 5, 0, 1000, CropKind::Wheat);
+        // 原本 1090 才成熟；把生長推進 30 秒（planted 1000→970）→ 1060 就成熟。
+        assert!(s.mature_plots(1060).is_empty()); // 推進前 1060 未熟
+        assert!(s.nudge_growth(0, 5, 0, 30));
+        assert!(!s.mature_plots(1060).is_empty()); // 推進後 1060 已熟
+    }
+
+    #[test]
+    fn nudge_growth_returns_false_for_missing_plot() {
+        let mut s = FarmStore::new();
+        assert!(!s.nudge_growth(1, 2, 3, 10));
+    }
+
+    #[test]
+    fn nudge_growth_saturates_at_zero() {
+        let mut s = FarmStore::new();
+        s.plant(0, 5, 0, 5, CropKind::Wheat);
+        // 推進量超過 planted_secs 也不會 underflow（saturating_sub）：planted 5→0。
+        assert!(s.nudge_growth(0, 5, 0, 999));
+        // planted 已歸 0，到 GROW_SECS(90) 秒即成熟（不會因 underflow 變成永不成熟）。
+        assert!(!s.mature_plots(GROW_SECS).is_empty());
+    }
+
+    #[test]
+    fn nearest_immature_finds_plot_in_range() {
+        let mut s = FarmStore::new();
+        s.plant(3, 5, 4, 1000, CropKind::Carrot); // 60 秒熟
+        // now=1010（剩 50 秒），居民站在 (3,4) 正上方 → 命中。
+        let hit = s.nearest_immature_plot_near(3.0, 4.0, 2.5, 1010, |_, _, _| false);
+        assert_eq!(hit, Some(((3, 5, 4), CropKind::Carrot, 50)));
+    }
+
+    #[test]
+    fn nearest_immature_skips_out_of_range() {
+        let mut s = FarmStore::new();
+        s.plant(20, 5, 20, 1000, CropKind::Wheat);
+        // 居民離很遠 → 半徑外，沒得照料。
+        assert!(s.nearest_immature_plot_near(0.0, 0.0, 2.5, 1010, |_, _, _| false).is_none());
+    }
+
+    #[test]
+    fn nearest_immature_skips_already_mature() {
+        let mut s = FarmStore::new();
+        s.plant(0, 5, 0, 1000, CropKind::Carrot); // 60 秒熟
+        // now=1100（早已成熟）→ 不當照料對象（即將被 tick_farm 收成）。
+        assert!(s.nearest_immature_plot_near(0.0, 0.0, 2.5, 1100, |_, _, _| false).is_none());
+    }
+
+    #[test]
+    fn nearest_immature_picks_closest_of_several() {
+        let mut s = FarmStore::new();
+        s.plant(0, 5, 2, 1000, CropKind::Wheat); // 距 (0,0) = 2
+        s.plant(0, 5, 1, 1000, CropKind::Potato); // 距 (0,0) = 1（更近）
+        let hit = s.nearest_immature_plot_near(0.0, 0.0, 5.0, 1010, |_, _, _| false);
+        assert_eq!(hit.map(|(c, k, _)| (c, k)), Some(((0, 5, 1), CropKind::Potato)));
+    }
+
+    #[test]
+    fn nearest_immature_respects_irrigation_shortens_remaining() {
+        let mut s = FarmStore::new();
+        s.plant(0, 5, 0, 1000, CropKind::Wheat); // 乾 90s / 水耕 45s
+        // now=1010：乾燥剩 80 秒；水耕剩 35 秒。
+        let dry = s.nearest_immature_plot_near(0.0, 0.0, 2.5, 1010, |_, _, _| false);
+        let wet = s.nearest_immature_plot_near(0.0, 0.0, 2.5, 1010, |_, _, _| true);
+        assert_eq!(dry.map(|(_, _, r)| r), Some(80));
+        assert_eq!(wet.map(|(_, _, r)| r), Some(35));
     }
 }
