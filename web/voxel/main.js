@@ -748,15 +748,16 @@ function setSpriteText(sprite, text, bubble) {
   sprite.material.needsUpdate = true;
 }
 
-// 引夢使者稱號牌（維護者的專屬身分）：金色「✦ 引夢使者 ✦」小標，浮在他頭頂上方，
-// 與一般玩家（本來就沒名牌）明顯區別。只在後端 envoy 旗標為真時掛上（不信客戶端自報）。
-function makeEnvoyTitleSprite() {
+// 特殊身分稱號牌（維護者的專屬身分）：金色「✦ 稱號 ✦」小標，穩定貼在他頭頂正上方一點點，
+// 與一般玩家（本來就沒名牌）明顯區別。只在後端 title 字串為真時掛上（不信客戶端自報）。
+// title＝稱號文字（如「引夢使者」「築夢工匠」）。
+function makeTitleSprite(title) {
   const canvas = document.createElement("canvas");
   canvas.width = 256; canvas.height = 64;
   const ctx = canvas.getContext("2d");
   ctx.font = "bold 26px system-ui, sans-serif";
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  const label = "✦ 引夢使者 ✦";
+  const label = "✦ " + title + " ✦";
   // 深色描邊讓金字在任何背景都清楚。
   ctx.lineWidth = 6; ctx.strokeStyle = "rgba(60,40,0,0.85)";
   ctx.strokeText(label, 128, 32);
@@ -771,7 +772,9 @@ function makeEnvoyTitleSprite() {
   tex.anisotropy = 4;
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
   sprite.scale.set(2.6, 0.65, 1);
-  sprite.position.y = PH / 2 + 1.15; // 名牌浮在頭頂（在對話泡泡之下、頭之上）
+  // mesh 原點在身體中心（見 players 更新：mesh.position = p.y + PH/2）。頭頂在中心上方 PH/2；
+  // 稱號牌貼頭頂正上方一點點（頭頂 + 0.35），跟著 mesh 每幀移動，不再飄在半空。
+  sprite.position.y = PH / 2 + 0.35;
   return sprite;
 }
 
@@ -2595,8 +2598,8 @@ function connect() {
     let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
     if (m.t === "welcome") {
       myId = m.id; myName = m.name || "旅人";
-      // 引夢使者（點火這世界的維護者帳號）回歸 → 只給他看的溫暖招呼（後端 envoy 旗標判定）。
-      if (m.envoy) appendMsg("sys", "✦ 引夢使者，你回來了——居民們一直記得你。");
+      // 帶稱號的維護者回歸 → 只給他看的溫暖招呼（後端 title 字串判定，引夢使者/築夢工匠…）。
+      if (m.title) appendMsg("sys", "✦ " + m.title + "，你回來了——居民們一直記得你。");
       player.x = m.spawn.x; player.y = m.spawn.y; player.z = m.spawn.z;
       // 出生瞬間先脫困一次（若出生 chunk 已到、地表把人埋住，立刻頂出來）。
       unstuckIfNeeded();
@@ -2628,17 +2631,19 @@ function connect() {
           bubble.position.y = PH / 2 + 1.7; // mesh 原點在身體中心，泡泡浮到頭頂上方
           bubble.visible = false;
           mesh.add(bubble);
-          ent = { mesh, bubble, lastSay: "", envoy: false };
+          ent = { mesh, bubble, lastSay: "", titleText: null, title: null };
           others.set(p.id, ent);
         }
-        // 引夢使者稱號牌：後端 envoy 旗標為真才掛（不信客戶端自報）；一般玩家沒有名牌，不受影響。
-        if (p.envoy && !ent.envoy) {
-          ent.title = makeEnvoyTitleSprite();
-          ent.mesh.add(ent.title);
-          ent.envoy = true;
-        } else if (!p.envoy && ent.envoy) {
+        // 特殊身分稱號牌：後端 title 字串（引夢使者/築夢工匠…）為真才掛（不信客戶端自報）；
+        // 一般玩家 / 訪客 title 為 null，沒有名牌，不受影響。稱號變更即重建（換稱號也跟得上）。
+        const ptitle = p.title || null;
+        if (ptitle !== ent.titleText) {
           if (ent.title) { ent.mesh.remove(ent.title); ent.title = null; }
-          ent.envoy = false;
+          if (ptitle) {
+            ent.title = makeTitleSprite(ptitle);
+            ent.mesh.add(ent.title);
+          }
+          ent.titleText = ptitle;
         }
         ent.mesh.position.set(p.x, p.y + PH / 2, p.z);
         ent.mesh.rotation.y = p.yaw || 0;
