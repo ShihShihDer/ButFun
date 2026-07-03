@@ -515,6 +515,16 @@ pub enum VoxelBiome {
     Snow,
 }
 
+/// 生物群系的玩家可讀名（繁中，面向玩家、i18n 友善集中此處）。確定性純函式。
+pub fn biome_name(b: VoxelBiome) -> &'static str {
+    match b {
+        VoxelBiome::Grassland => "草原",
+        VoxelBiome::Forest => "森林",
+        VoxelBiome::Desert => "沙漠",
+        VoxelBiome::Snow => "雪原",
+    }
+}
+
 /// 生物群系場噪聲種子（大尺度、低頻 → 世界有大塊感，與高度 noise 獨立）。
 const BIOME_SEED: u32 = SEED ^ 0x_B104_EB14;
 /// 生物群系噪聲頻率：比高度 noise 低 4× → 群系邊界平緩（~200 格一個群系）。

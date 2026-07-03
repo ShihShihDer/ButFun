@@ -32,7 +32,7 @@
 //! **純邏輯層**：本檔全是零 IO、零鎖、零 LLM、零 async 的確定性純函式；朝邊陲走的狀態機、逗留計時、
 //! 記憶昇華與 Feed 廣播都在 `voxel_ws.rs`（沿用探訪／朝聖既有的短鎖手法與 wander 中心覆寫慣例）。
 
-use crate::voxel::Block;
+use crate::voxel::{biome_name, Block, VoxelBiome};
 
 /// 遠行落點距家域中心的基準距離（世界座標）：家已在主城外圍（±75），再往外推這麼遠 → 落在
 /// 離主城逾百格的荒野，玩家平常閒晃絕不會誤入，撞見居民在那才顯得「牠真的走遠了」。
@@ -146,12 +146,26 @@ pub fn embark_bubble(bearing: &str, pick: usize) -> String {
     cap(lines[pick % lines.len()].clone())
 }
 
-/// 抵達遠方邊陲時冒的泡泡。
-pub fn arrive_bubble(bearing: &str, pick: usize) -> String {
+/// 抵達邊陲時，居民認出腳下生物群系的一句感嘆（面向玩家、i18n 友善集中此處）。
+/// 生物群系第一刀（ROADMAP 725）讓世界有了「不同的地方」，但遠行到那裡的居民一直對「這是
+/// 什麼地方」毫無知覺——只喊「這裡好開闊」，森林、沙漠、雪原都是同一句。本函式把地方感補上。
+fn biome_flavor(biome: VoxelBiome) -> &'static str {
+    match biome {
+        VoxelBiome::Grassland => "一片開闊的草原，風吹草浪好舒服",
+        VoxelBiome::Forest => "一片幽深的森林，樹影遮天、格外清涼",
+        VoxelBiome::Desert => "一片焦黃的沙漠，好熱、只有仙人掌作伴",
+        VoxelBiome::Snow => "一片皚皚的雪原，冷得直哆嗦、卻美得屏息",
+    }
+}
+
+/// 抵達遠方邊陲時冒的泡泡（生物群系版——居民第一次認出「這是什麼地方」）。
+/// 方位點出「往哪走」、群系點出「到了什麼地方」，兩者合起來地方感才具體。依 `pick` 輪替開頭不機械。
+pub fn arrive_bubble(bearing: &str, biome: VoxelBiome, pick: usize) -> String {
+    let flavor = biome_flavor(biome);
     let lines = [
-        format!("終於走到{bearing}的邊陲了，這裡好開闊啊……"),
-        format!("原來{bearing}這麼遠的地方，是這副模樣。"),
-        "遠離人聲的荒野，安安靜靜的，真好。".to_string(),
+        format!("終於走到{bearing}的邊陲了——這裡是{flavor}……"),
+        format!("原來{bearing}這麼遠的地方，是{flavor}。"),
+        format!("我走到{bearing}的盡頭，眼前是{flavor}。"),
     ];
     cap(lines[pick % lines.len()].clone())
 }
@@ -166,9 +180,15 @@ pub fn return_bubble(pick: usize) -> String {
     cap(lines[pick % lines.len()].to_string())
 }
 
-/// 抵達邊陲時昇華成的記憶摘要（掛 [`EXPEDITION_MEMORY_PLAYER`] 哨兵，日記／內心可引用）。
-pub fn arrive_memory_summary(bearing: &str) -> String {
-    format!("我獨自遠行到{bearing}的邊陲，看見了主城以外那片開闊的荒野。")
+/// 抵達邊陲時昇華成的記憶摘要（生物群系版，掛 [`EXPEDITION_MEMORY_PLAYER`] 哨兵；日記／內心
+/// 可引用「牠去過什麼地方」）。記下的不再只是「一片荒野」，而是具體的草原／森林／沙漠／雪原。
+pub fn arrive_memory_summary(bearing: &str, biome: VoxelBiome) -> String {
+    format!("我獨自遠行到{bearing}的邊陲，那裡是一片{}，和主城很不一樣。", biome_name(biome))
+}
+
+/// 抵達邊陲的 Feed 播報詳情（生物群系版）：不在場的玩家回來也能從動態牆讀到「牠到了什麼地方」。
+pub fn arrive_feed_line(bearing: &str, biome: VoxelBiome) -> String {
+    format!("抵達{bearing}的邊陲——那裡是一片{}", biome_name(biome))
 }
 
 /// 啟程遠行的 Feed 播報詳情（面向玩家、集中可 i18n）。
@@ -176,9 +196,9 @@ pub fn embark_feed_line(bearing: &str) -> String {
     format!("獨自往{bearing}的邊陲遠行了")
 }
 
-/// 遠行歸來的 Feed 播報詳情。
-pub fn return_feed_line() -> String {
-    "遠行歸來，帶回了荒野盡頭的見聞".to_string()
+/// 遠行歸來的 Feed 播報詳情（生物群系版）：帶回的見聞點名去過的地方，動態牆上的一趟遠行有始有終。
+pub fn return_feed_line(biome: VoxelBiome) -> String {
+    format!("遠行歸來，帶回了{}盡頭的見聞", biome_name(biome))
 }
 
 // ── 邊陲營火路標（遠行 v2，PLAN_ETHERVOX item 7 後續「在遠方留下痕跡」）─────────────────
@@ -438,18 +458,29 @@ mod tests {
 
     #[test]
     fn bubbles_and_memory_nonempty_capped_and_mention_bearing() {
+        let biomes = [
+            VoxelBiome::Grassland,
+            VoxelBiome::Forest,
+            VoxelBiome::Desert,
+            VoxelBiome::Snow,
+        ];
         for pick in 0..6 {
             let e = embark_bubble("東方", pick);
-            let a = arrive_bubble("西方", pick);
             let r = return_bubble(pick);
             assert!(!e.is_empty() && e.chars().count() <= SAY_MAX_CHARS);
-            assert!(!a.is_empty() && a.chars().count() <= SAY_MAX_CHARS);
             assert!(!r.is_empty() && r.chars().count() <= SAY_MAX_CHARS);
+            // 抵達泡泡每種群系都非空、有界，且真的帶上該群系的地方感詞。
+            for b in biomes {
+                let a = arrive_bubble("西方", b, pick);
+                assert!(!a.is_empty() && a.chars().count() <= SAY_MAX_CHARS);
+                assert!(a.contains(biome_name(b)) || a.contains(biome_flavor(b)));
+            }
         }
-        // 啟程泡泡與抵達記憶都點出方位。
+        // 啟程泡泡點出方位；抵達記憶同時點出方位與去過的群系。
         assert!(embark_bubble("南方", 0).contains("南方"));
-        assert!(arrive_memory_summary("北方").contains("北方"));
-        assert!(!arrive_memory_summary("東方").is_empty());
+        assert!(arrive_memory_summary("北方", VoxelBiome::Desert).contains("北方"));
+        assert!(arrive_memory_summary("東方", VoxelBiome::Snow).contains("雪原"));
+        assert!(!arrive_memory_summary("東方", VoxelBiome::Grassland).is_empty());
     }
 
     #[test]
@@ -465,7 +496,10 @@ mod tests {
     fn feed_lines_nonempty() {
         assert!(!embark_feed_line("東方").is_empty());
         assert!(embark_feed_line("南方").contains("南方"));
-        assert!(!return_feed_line().is_empty());
+        // 歸來 Feed 帶上去過的群系名；抵達 Feed 同時帶方位與群系。
+        assert!(return_feed_line(VoxelBiome::Forest).contains("森林"));
+        assert!(arrive_feed_line("東方", VoxelBiome::Desert).contains("東方"));
+        assert!(arrive_feed_line("東方", VoxelBiome::Desert).contains("沙漠"));
     }
 
     #[test]
