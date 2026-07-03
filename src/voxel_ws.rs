@@ -84,6 +84,7 @@ use crate::voxel_savor as vsavor;
 use crate::voxel_self_image as vself;
 use crate::voxel_playerepithet as vepi;
 use crate::voxel_epithet_spread as vespread;
+use crate::voxel_epithet_esteem as vesteem;
 use crate::voxel_epithet_sign as vepisign;
 use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_weather as vweather;
@@ -377,6 +378,13 @@ struct VoxelResident {
     /// 的名號（第二手傳聞）。key＝玩家顯示名。打招呼時若還昇華不出自己的第一手名號（affinity 不到
     /// 老友門檻），但此表有你 → 用一句「久仰」的傳聞招呼喊你。純記憶體、重啟歸零（比照 `coined_epithets`）。
     heard_epithets: std::collections::HashMap<String, vespread::Hearsay>,
+    /// 名號化為敬意 v1（自主提案·ROADMAP 777）：Some(玩家顯示名, 已為他昇華的名號角色) =
+    /// 這位居民**已為某位在線玩家昇華出名號**（`coined_epithets` 有他），此刻正**特地放下閒晃、
+    /// 走過去向他致意**；抵達（冒致意泡泡＋記城鎮動態）或玩家走遠／離線即清空。純記憶體、重啟歸零。
+    /// 由**敬重**驅動（有別於 678 `seeking_comfort` 的**孤獨**驅動）。
+    approaching_esteem: Option<(String, vepi::PlayerRole)>,
+    /// 敬意致意冷卻倒數（秒，ROADMAP 777）：每次致意後歸此值、倒數到 0 才可能再起身。純記憶體。
+    esteem_approach_cooldown: f32,
     /// 晨間思念玩家（記憶驅動·晨間思念玩家 v1，ROADMAP 746）：Some(玩家顯示名, 逾時剩餘秒) =
     /// 醒來讀昨晚睡前反思、發現惦記的是這位在線玩家，正朝他走去要打招呼；抵達（暖暖打招呼＋記一筆
     /// 與他的記憶）或逾時／玩家離線即清空。純記憶體、重啟歸零。
@@ -1159,6 +1167,9 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             self_image_domain: None,
             coined_epithets: std::collections::HashMap::new(),
             heard_epithets: std::collections::HashMap::new(),
+            approaching_esteem: None,
+            // 各居民初始冷卻錯開，避免入場後同時起身向玩家致意（比照 678 尋伴）。
+            esteem_approach_cooldown: vesteem::approach_cooldown_offset(i),
             // 晨間思念玩家（ROADMAP 746）：入場沒有進行中的思念（僅由清晨醒來時的睡前反思觸發）。
             daybreak_seek: None,
             reunion_seek: None,
@@ -5140,6 +5151,10 @@ fn tick_residents(dt: f32) {
             if r.seek_comfort_cooldown > 0.0 {
                 r.seek_comfort_cooldown -= dt;
             }
+            // 名號化為敬意冷卻倒數（ROADMAP 777）。
+            if r.esteem_approach_cooldown > 0.0 {
+                r.esteem_approach_cooldown -= dt;
+            }
 
             // 打氣冷卻倒數（ROADMAP 679）。
             if r.cheer_cooldown > 0.0 {
@@ -5341,7 +5356,7 @@ fn tick_residents(dt: f32) {
             // 尋伴時不走普通招呼（ROADMAP 678）：等抵達玩家旁才冒求陪泡泡。
             if r.greet_timer > 0.0 {
                 r.greet_timer -= dt;
-            } else if r.say.is_empty() && !r.seeking_comfort {
+            } else if r.say.is_empty() && !r.seeking_comfort && r.approaching_esteem.is_none() {
                 if let Some((d2, nearest_name)) = nearest_player_info(r.body.x, r.body.z, &player_pts) {
                     if d2 < GREET_DIST * GREET_DIST && rand::random::<f32>() < GREET_CHANCE_PER_TICK {
                         let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
@@ -5720,6 +5735,76 @@ fn tick_residents(dt: f32) {
                         let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                         r.say = vcomfort::comfort_seek_line(pick).chars().take(40).collect();
                         r.say_timer = SAY_SECS;
+                    }
+                }
+            }
+
+            // 名號化為敬意 v1（ROADMAP 777）：被你贏得名號的居民，看見你在中距離時，偶爾放下閒晃、
+            // 特地走過來向你致意——你的名聲第一次改變居民的「行為」。鏡像 678 尋伴的走近機制，但由
+            // 「敬重」（`coined_epithets` 已有這位玩家）而非「孤獨」驅動，冷卻更長（不黏人）。
+            // 只在非忙碌狀態（未在尋伴/打氣/探訪/遠行/晨思/重逢）才起身，不搶既有意圖；純目標移動，
+            // 由既有導航步走過去。零 LLM、零持久化、零新協議欄位。
+            if let Some((pname, role)) = r.approaching_esteem.clone() {
+                // 續朝玩家更新目標；玩家走太遠 / 離線 / 換了最近的別位玩家 → 放棄本次致意。
+                match nearest_player_with_pos(r.body.x, r.body.z, &player_pts) {
+                    Some((d2, px, pz, nm))
+                        if nm == pname
+                            && d2 <= vesteem::ESTEEM_APPROACH_RANGE * vesteem::ESTEEM_APPROACH_RANGE =>
+                    {
+                        r.target_x = px;
+                        r.target_z = pz;
+                        r.wait_timer = 0.0;
+                        // 抵達面前且沒在說話 → 冒致意泡泡 + 記城鎮動態，清狀態、設冷卻。
+                        if d2 < vesteem::ESTEEM_ARRIVE_DIST * vesteem::ESTEEM_ARRIVE_DIST
+                            && r.say.is_empty()
+                        {
+                            let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                            r.say = vesteem::esteem_arrive_line(role, &pname, pick)
+                                .chars()
+                                .take(40)
+                                .collect();
+                            r.say_timer = SAY_SECS;
+                            epithet_feeds.push((r.name, vesteem::esteem_feed_line(&pname, role)));
+                            r.approaching_esteem = None;
+                            r.esteem_approach_cooldown = vesteem::ESTEEM_COOLDOWN;
+                        }
+                    }
+                    _ => {
+                        r.approaching_esteem = None;
+                        r.esteem_approach_cooldown = vesteem::ESTEEM_COOLDOWN;
+                    }
+                }
+            } else if r.esteem_approach_cooldown <= 0.0
+                && r.say.is_empty()
+                && !r.seeking_comfort
+                && r.cheer_target.is_none()
+                && r.visiting.is_none()
+                && r.expedition.is_none()
+                && r.daybreak_seek.is_none()
+                && r.reunion_seek.is_none()
+                // 也讓位給更高優先的移動意圖（跟隨/採集/取物），否則 flag 會空懸走不到玩家。
+                && r.follow.is_none()
+                && r.gather.is_none()
+                && r.fetch.is_none()
+            {
+                // 觸發判定：最近的在線玩家若是「這位居民已為他昇華出名號」的人，就低機率起身致意。
+                if let Some((d2, px, pz, nm)) =
+                    nearest_player_with_pos(r.body.x, r.body.z, &player_pts)
+                {
+                    if !nm.is_empty() {
+                        if let Some(&role) = r.coined_epithets.get(nm) {
+                            if vesteem::should_start_approach(
+                                d2,
+                                r.esteem_approach_cooldown,
+                                rand::random::<f32>(),
+                            ) {
+                                let name = nm.to_string();
+                                r.target_x = px;
+                                r.target_z = pz;
+                                r.wait_timer = 0.0;
+                                r.approaching_esteem = Some((name, role));
+                            }
+                        }
                     }
                 }
             }
