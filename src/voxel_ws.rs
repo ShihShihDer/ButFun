@@ -1125,16 +1125,73 @@ fn try_unlock_milestone(player: &str, id: &str, out_tx: &mpsc::Sender<Message>) 
 
 static HUB: OnceLock<VoxelHub> = OnceLock::new();
 
+/// 舊坑一次性修復標記（存在即代表已跑過，冪等不再跑；`data/` 已 gitignore）。
+const GATHER_HOLES_MIGRATED_MARKER: &str = "data/.gather_holes_migrated_v1";
+
+/// **舊坑一次性修復（migration，動玩家/居民資料——保守且冪等）**。
+///
+/// 背景：早期採集一律把地表方塊挖成 `Air`，日積月累在地表留下一堆淺坑（實測 6855 個）。
+/// 新版採集已改成回填（見 `GatherResource::refill_after_gather`），此函式負責**補救既有存檔**：
+/// 掃 delta 裡每個被改動過的格，只把 `vskill::surface_hole_refill` 判定為「採集地表淺坑」的
+/// 格回填成裸土/同材料——保守到不會誤填水井內部、礦道、地下室、玩家刻意挖的深洞
+/// （判定四條同時成立：現為 Air＋底下實心＋自然材料是地面覆蓋層＋正是自然地表頂）。
+///
+/// **資料安全**：① 有 marker 就直接跳過（只跑一次）。② 動檔前先把
+/// `voxel_resident_blocks.jsonl` 備份成 `.bak-holes-<epoch>`。③ 回填走既有
+/// `append_world_block` append-only 路徑（不改寫、不刪任何既有行）。④ 冪等：即便 marker
+/// 被刪重跑，已回填的格現為實心 → 判定回 None → 不重覆補、不再 append。
+fn migrate_fill_surface_holes(deltas: &mut WorldDelta, loaded: &[vbuild::BuildBlock]) {
+    // ① 已跑過就跳過。
+    if std::path::Path::new(GATHER_HOLES_MIGRATED_MARKER).exists() {
+        return;
+    }
+    // ② 動檔前備份（僅在原檔存在時）。備份失敗就中止本次修復（不冒險改資料），下次啟動再試。
+    let src = vbuild::VOXEL_RES_BLOCKS_PATH;
+    if std::path::Path::new(src).exists() {
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let bak = format!("{src}.bak-holes-{epoch}");
+        if let Err(e) = std::fs::copy(src, &bak) {
+            tracing::warn!("舊坑修復：備份 {src} 失敗，本次略過（下次啟動再試）：{e}");
+            return;
+        }
+        tracing::info!("舊坑修復：已備份世界改動到 {bak}");
+    }
+    // 收斂候選格（去重）：只掃「曾被改動過」的座標，其餘地表天生無坑不必看。
+    let cells: std::collections::HashSet<(i32, i32, i32)> =
+        loaded.iter().map(|bb| (bb.x, bb.y, bb.z)).collect();
+    let mut filled = 0usize;
+    for (x, y, z) in cells {
+        if let Some(block) = vskill::surface_hole_refill(deltas, x, y, z) {
+            voxel::set_block(deltas, x, y, z, block);
+            // 走既有 append-only 持久化路徑（不改寫既有行、可向後相容）。
+            vbuild::append_world_block(x, y, z, block as u8);
+            filled += 1;
+        }
+    }
+    // ③ 寫 marker（冪等）。
+    if let Some(parent) = std::path::Path::new(GATHER_HOLES_MIGRATED_MARKER).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(GATHER_HOLES_MIGRATED_MARKER, b"1");
+    tracing::info!("舊坑修復完成：回填了 {filled} 個採集地表淺坑（保守判定，未動深洞/水井/礦道）");
+}
+
 fn hub() -> &'static VoxelHub {
     HUB.get_or_init(|| {
         let (tx, _rx) = broadcast::channel(256);
         // 重啟還原：把居民先前蓋的方塊／挖的洞 replay 套回 delta（持久化，重啟後還在）。
         let mut deltas = WorldDelta::new();
-        for bb in vbuild::load_world_blocks() {
+        let loaded = vbuild::load_world_blocks();
+        for bb in &loaded {
             if let Some(b) = Block::from_u8(bb.b) {
                 voxel::set_block(&mut deltas, bb.x, bb.y, bb.z, b);
             }
         }
+        // 舊坑一次性修復（冪等）：把早期採集留下的地表淺坑回填成裸土，讓地表恢復平整。
+        migrate_fill_surface_holes(&mut deltas, &loaded);
         VoxelHub {
             players: RwLock::new(HashMap::new()),
             deltas: RwLock::new(deltas),
@@ -6182,11 +6239,13 @@ fn tick_residents(dt: f32) {
         }
     }
 
-    // 5b) 採集挖掘執行（agency v1·技能調用收尾）：居民走到資源旁 → 真的挖掉 → 入小背包。
+    // 5b) 採集挖掘執行（agency v1·技能調用收尾）：居民走到資源旁 → 真的採 → 入小背包。
     //     鎖序：deltas 寫（即釋）→ broadcast → res_inv 寫（即釋）→ 持久化/Feed（鎖外）。
-    //     **她真的在做事**：玩家會看到地表被挖出一個洞、feed 出現「採集了草皮」。
+    //     **她真的在做事**：feed 出現「採集了草皮」——但**採地表不再留坑**：草採走 → 該格
+    //     降級成裸土（實心平整），沙/土採走 → 格子維持同材料（無洞），只有石/木才留 Air
+    //     （採礦道／砍半空樹幹本就合理）。回填塊由 `refill_after_gather` 決定，材料照樣入袋。
     for (rid, rname, gx, gy, gz, res) in gather_mines {
-        // 只在目標方塊「現在仍是該資源」時才挖（防別人先挖走→空挖）。
+        // 只在目標方塊「現在仍是該資源」時才採（防別人先採走→空採）。
         let still_there = {
             let world = hub().deltas.read().unwrap();
             voxel::effective_block_at(&world, gx, gy, gz) == res.block()
@@ -6194,17 +6253,24 @@ fn tick_residents(dt: f32) {
         if !still_there {
             continue;
         }
-        // 挖掉（設成空氣）。
-        {
-            let mut world = hub().deltas.write().unwrap();
-            voxel::set_block(&mut world, gx, gy, gz, Block::Air);
-        } // deltas 寫鎖釋放
-        broadcast_block(gx, gy, gz, Block::Air);
-        // 水流動：居民挖出的洞也可能讓水流過來（缺口鄰格排入佇列）。
-        enqueue_water_around(gx, gy, gz);
-        // 持久化這次世界改動（重啟後挖的洞還在）。
-        vbuild::append_world_block(gx, gy, gz, Block::Air as u8);
-        // 入居民小背包（純記憶體）。
+        // 採集回填：地表覆蓋層採走後回填裸土/同材料（不留坑），石/木仍留 Air。
+        let refill = res.refill_after_gather();
+        // 回填塊與原資源塊不同才需真的改世界（沙→沙、土→土 無變化 → 跳過寫入/廣播/持久化，
+        // 但材料照樣入袋）——地表維持平整、也省掉無謂的 delta 與廣播。
+        if refill != res.block() {
+            {
+                let mut world = hub().deltas.write().unwrap();
+                voxel::set_block(&mut world, gx, gy, gz, refill);
+            } // deltas 寫鎖釋放
+            broadcast_block(gx, gy, gz, refill);
+            // 水流動：只有回填成 Air（石/木）才開出缺口讓水流過來；回填實心地表不需要。
+            if refill == Block::Air {
+                enqueue_water_around(gx, gy, gz);
+            }
+            // 持久化這次世界改動（重啟後回填/挖掉的結果還在）。
+            vbuild::append_world_block(gx, gy, gz, refill as u8);
+        }
+        // 入居民小背包（純記憶體）——採集產出的材料數量不變（回填不影響入袋）。
         {
             let mut inv = hub().res_inv.write().unwrap();
             *inv.entry(rid.clone()).or_default().entry(res.block_id()).or_insert(0) += 1;

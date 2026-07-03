@@ -149,6 +149,57 @@ impl GatherResource {
             _ => None,
         }
     }
+
+    /// **採集收尾回填**（核心：採集不再把地表挖成坑坑巴巴的洞）。
+    /// 採走一塊資源後，該格該變成什麼方塊——不是一律留 `Air`，而是依材料回填成合理地表：
+    /// - **草皮**：草是地表覆蓋層，採走後格子降級成裸土 `Dirt`——地表仍實心平整，只少了草皮。
+    /// - **細沙／泥土**：本就是地面材料，採走一把後格子維持同材料（回傳自身、不留洞）。
+    /// - **石頭**：採礦本就往下挖、留礦道，回傳 `Air`（維持既有採礦/礦道行為）。
+    /// - **木頭**：砍的是離地的樹幹柱、不是地面那格，回傳 `Air`（樹樁的缺口在半空、不破地表）。
+    ///
+    /// 呼叫端據此決定：回填塊 == 原資源塊時可直接跳過世界寫入（沒有視覺變化、材料照樣入袋）；
+    /// 回填塊為 `Air` 時（木/石）才需觸發水流。純函式、確定性、可測。
+    pub fn refill_after_gather(self) -> Block {
+        match self {
+            // 地表覆蓋層採走後回填裸土 → 地表維持實心平整，不再坑坑巴巴。
+            GatherResource::Grass => Block::Dirt,
+            // 沙／土本身即地面材料，採一把不改地表（回填同材料＝維持平整、無洞）。
+            GatherResource::Sand => Block::Sand,
+            GatherResource::Dirt => Block::Dirt,
+            // 石／木本就是「往下挖礦道／砍半空樹幹」，留 Air 合理（非地表破洞）。
+            GatherResource::Stone => Block::Air,
+            GatherResource::Wood => Block::Air,
+        }
+    }
+}
+
+/// **舊坑一次性修復判定**（純函式、可測）：給定世界 delta 與一格座標，若它是一個
+/// 「採集留下的地表淺坑」就回傳該回填的地表材料，否則 `None`（保守：不誤填水井/礦道/地下室）。
+///
+/// 判定四條**同時**成立才算淺坑（把水井/礦道/地下室/深洞全排除在外）：
+/// 1. 該格目前有效方塊是 `Air`（真的是個洞；水坑等非 Air 一律不動）。
+/// 2. 洞底下一格是實心（1 格淺坑、有實心地板；深井/礦道的下方也是 Air → 被排除）。
+/// 3. 該格的**自然程序地表材料**是可採地面覆蓋層（草/沙/泥），且回填後為實心
+///    （石頭→採礦道不回填；木/葉→樹不回填，均由 `refill_after_gather` 回傳 Air 濾掉）。
+/// 4. 該格正是該柱的**自然地表頂**（正上方自然方塊非實心）——地下室/井底那種
+///    「上方自然仍是實心土層」的格子不符，故只補真正暴露在地表那一層的坑。
+pub fn surface_hole_refill(world: &WorldDelta, x: i32, y: i32, z: i32) -> Option<Block> {
+    // 1) 目前必須是空氣洞。
+    if voxel::effective_block_at(world, x, y, z) != Block::Air {
+        return None;
+    }
+    // 2) 洞底下須實心（1 格淺坑、非深井/礦道）。
+    if !voxel::effective_block_at(world, x, y - 1, z).is_solid() {
+        return None;
+    }
+    // 4) 須為自然地表頂：正上方自然方塊非實心（排除樹幹柱間、地下室/井底埋在土層裡的格）。
+    if voxel::block_at(x, y + 1, z).is_solid() {
+        return None;
+    }
+    // 3) 自然材料須是可採地面覆蓋層、且回填為實心（石/木回 Air → 濾掉，不誤填礦道/樹）。
+    let res = GatherResource::from_block(voxel::block_at(x, y, z))?;
+    let refill = res.refill_after_gather();
+    refill.is_solid().then_some(refill)
 }
 
 // ── 技能調用骨架（找目標 → 走過去 → 動作）────────────────────────────────────
@@ -904,6 +955,84 @@ mod tests {
         assert_eq!(GatherResource::from_block(Block::Leaves), None);
         assert_eq!(GatherResource::from_block(Block::Water), None);
         assert_eq!(GatherResource::from_block(Block::Air), None);
+    }
+
+    // ── refill_after_gather：採集不留坑（核心）────────────────────────────────
+    #[test]
+    fn refill_keeps_ground_solid_but_leaves_wood_stone_air() {
+        // 地表覆蓋層採走 → 回填實心（草→裸土、沙/土→同材料），地表維持平整不破洞。
+        assert_eq!(GatherResource::Grass.refill_after_gather(), Block::Dirt);
+        assert_eq!(GatherResource::Sand.refill_after_gather(), Block::Sand);
+        assert_eq!(GatherResource::Dirt.refill_after_gather(), Block::Dirt);
+        assert!(GatherResource::Grass.refill_after_gather().is_solid());
+        assert!(GatherResource::Sand.refill_after_gather().is_solid());
+        assert!(GatherResource::Dirt.refill_after_gather().is_solid());
+        // 石（礦道）／木（半空樹幹）採走 → 留 Air 合理，非地表破洞。
+        assert_eq!(GatherResource::Stone.refill_after_gather(), Block::Air);
+        assert_eq!(GatherResource::Wood.refill_after_gather(), Block::Air);
+        // 草採走後回填塊與原塊不同（會真的改世界）；沙/土回填塊與原塊相同（可跳過寫入）。
+        assert_ne!(GatherResource::Grass.refill_after_gather(), GatherResource::Grass.block());
+        assert_eq!(GatherResource::Sand.refill_after_gather(), GatherResource::Sand.block());
+        assert_eq!(GatherResource::Dirt.refill_after_gather(), GatherResource::Dirt.block());
+    }
+
+    // ── surface_hole_refill：舊坑一次性修復判定（保守、不誤填深洞）─────────────
+
+    /// 找一個「地表可採（草/沙）、且正上方是空氣（無樹/仙人掌擋著）」的陸地點。
+    fn gatherable_land_point() -> (i32, i32, i32) {
+        for c in 0..5000 {
+            let h = height_at(c, 0);
+            if h <= SEA_LEVEL + 3 {
+                continue;
+            }
+            let surf = voxel::block_at(c, h, 0);
+            let refillable = GatherResource::from_block(surf)
+                .map_or(false, |r| r.refill_after_gather().is_solid());
+            if refillable && !voxel::block_at(c, h + 1, 0).is_solid() {
+                return (c, h, 0);
+            }
+        }
+        panic!("找不到可採且上方淨空的陸地點");
+    }
+
+    #[test]
+    fn surface_hole_refill_fills_shallow_gather_pit() {
+        let (x, h, z) = gatherable_land_point();
+        let mut world = WorldDelta::new();
+        // 模擬舊採集：把地表頂那格挖成 Air（1 格淺坑，底下自然土層仍實心）。
+        voxel::set_block(&mut world, x, h, z, Block::Air);
+        let refill = surface_hole_refill(&world, x, h, z);
+        assert!(refill.is_some(), "地表 1 格淺坑應被判定為可回填");
+        assert!(refill.unwrap().is_solid(), "回填塊須實心，讓地表恢復平整");
+    }
+
+    #[test]
+    fn surface_hole_refill_ignores_intact_and_nonair() {
+        let (x, h, z) = gatherable_land_point();
+        let world = WorldDelta::new();
+        // 完好地表（非 Air）→ 不動。
+        assert_eq!(surface_hole_refill(&world, x, h, z), None);
+        // 放一塊玩家蓋的方塊（非 Air）→ 不動。
+        let mut w2 = world.clone();
+        voxel::set_block(&mut w2, x, h + 1, z, Block::Stone);
+        assert_eq!(surface_hole_refill(&w2, x, h + 1, z), None);
+    }
+
+    #[test]
+    fn surface_hole_refill_never_fills_deep_hole() {
+        // 保守鐵律：深井/礦道/地下室（多格深洞）一律不回填——只補真正的地表淺坑。
+        let (x, h, z) = gatherable_land_point();
+        let mut world = WorldDelta::new();
+        // 挖 3 格深洞（h、h-1、h-2 全成 Air），底下 h-3 仍實心。
+        for dy in 0..3 {
+            voxel::set_block(&mut world, x, h - dy, z, Block::Air);
+        }
+        // 頂層：底下是 Air（深洞）→ 不填。
+        assert_eq!(surface_hole_refill(&world, x, h, z), None);
+        // 中層：底下是 Air → 不填。
+        assert_eq!(surface_hole_refill(&world, x, h - 1, z), None);
+        // 底層：底下實心，但「上方自然仍是實心土層」（非自然地表頂）→ 不填（不誤填井底/地下室）。
+        assert_eq!(surface_hole_refill(&world, x, h - 2, z), None);
     }
 
     // ── within_gather_reach ───────────────────────────────────────────────────
