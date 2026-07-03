@@ -82,6 +82,7 @@ use crate::voxel_neighborvisit as vneighvisit;
 use crate::voxel_callingcard as vcard;
 use crate::voxel_savor as vsavor;
 use crate::voxel_self_image as vself;
+use crate::voxel_playerepithet as vepi;
 use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_weather as vweather;
 use crate::voxel_clique as vclique;
@@ -365,6 +366,11 @@ struct VoxelResident {
     /// 供偵測「自我印象轉變」——當前昇華出的主導領域若與這個不同，就是牠察覺「我不太一樣了」的一刻。
     /// `None` = 還沒說出過任何自我印象（首次昇華不算轉變）。純記憶體、重啟歸零（重啟後首句視同首次）。
     self_image_domain: Option<vself::SelfDomain>,
+    /// 居民為玩家取的名號（居民為你取一個名號 v1）：`玩家顯示名 → 已昇華出的角色`。供偵測「第一次
+    /// 為某玩家安下名號 / 名號改換」的那一刻（記一則動態牆）＋打招呼時用名號稱呼你。名號本身每次
+    /// 打招呼都由當下記憶即時昇華（此表只記「上回是什麼」供去重），純記憶體、重啟歸零（重啟後首次
+    /// 相見會重新安一次名號、動態牆再記一次，無害）。
+    coined_epithets: std::collections::HashMap<String, vepi::PlayerRole>,
     /// 晨間思念玩家（記憶驅動·晨間思念玩家 v1，ROADMAP 746）：Some(玩家顯示名, 逾時剩餘秒) =
     /// 醒來讀昨晚睡前反思、發現惦記的是這位在線玩家，正朝他走去要打招呼；抵達（暖暖打招呼＋記一筆
     /// 與他的記憶）或逾時／玩家離線即清空。純記憶體、重啟歸零。
@@ -1145,6 +1151,7 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             self_image_cooldown: 480.0 + i as f32 * 120.0,
             // 自我印象 v3（ROADMAP 772）：入場還沒說出過自我印象——首次昇華不算「轉變」。
             self_image_domain: None,
+            coined_epithets: std::collections::HashMap::new(),
             // 晨間思念玩家（ROADMAP 746）：入場沒有進行中的思念（僅由清晨醒來時的睡前反思觸發）。
             daybreak_seek: None,
             reunion_seek: None,
@@ -4988,6 +4995,9 @@ fn tick_residents(dt: f32) {
     // 自我印象 v1（ROADMAP 770）：鎖內偵測「居民閒下來、回望自己昇華出一句自我印象」（泡泡已於鎖內設好），
     // 鎖外統一補一則城鎮動態 Feed（第三人稱旁白，已是純模板、無記憶原文）。
     let mut self_image_feeds: Vec<(&'static str, String)> = Vec::new();
+    // 居民為你取一個名號 v1：鎖內打招呼時偵測「第一次為某玩家安下名號 / 名號改換」（名號招呼已於
+    // 鎖內設好 r.say），鎖外統一補一則城鎮動態。格式：(居民顯示名, 旁白句)。
+    let mut epithet_feeds: Vec<(&'static str, String)> = Vec::new();
     // 自我印象 v2（ROADMAP 771）：鎖內偵測「居民回望自己、且此刻心中沒有心願」→ 讓這份自我理解
     // 化為一個呼應自己的自發心願（鎖外套用，守鎖序）。格式：(居民 id, 居民顯示名, 心願字串)。
     let mut self_aspiration_sparks: Vec<(String, &'static str, &'static str)> = Vec::new();
@@ -5324,25 +5334,38 @@ fn tick_residents(dt: f32) {
                 if let Some((d2, nearest_name)) = nearest_player_info(r.body.x, r.body.z, &player_pts) {
                     if d2 < GREET_DIST * GREET_DIST && rand::random::<f32>() < GREET_CHANCE_PER_TICK {
                         let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                        // 短鎖讀好感度 + 必要時取最近記憶摘要（一次鎖即釋，不巢狀）。
-                        let (affinity, summaries): (usize, Vec<String>) = {
+                        // 短鎖讀好感度 + 必要時取「關於這位玩家」的全部記憶（一次鎖即釋，不巢狀）。
+                        // 老友門檻以上才撈全記憶（供名號昇華＋老友情境偵測），陌生人不白撈。
+                        let (affinity, pmems): (usize, Vec<crate::voxel_memory::MemoryEntry>) = {
                             let mem = hub().memory.read().unwrap();
                             let aff = mem.affinity_count(nearest_name, &r.id);
-                            let sums = if aff >= vfond::FOND_AFFINITY {
-                                // 老友：取最近 4 筆摘要供情境偵測（僅字串，輕量）。
-                                mem.recall(&r.id, nearest_name, 4)
-                                    .into_iter()
-                                    .map(|e| e.summary)
-                                    .collect()
+                            let ms = if aff >= vfond::FOND_AFFINITY {
+                                mem.all_player_memories(&r.id, nearest_name)
                             } else {
                                 Vec::new()
                             };
-                            (aff, sums)
+                            (aff, ms)
                         }; // 記憶讀鎖在此釋放
                         let line = if affinity >= vfond::FOND_AFFINITY && !nearest_name.is_empty() {
-                            // 老友情境問候：依記憶摘要偵測情境，說出記憶驅動的特定台詞。
-                            let ctx = vfond::detect_context(&summaries);
-                            vfond::fond_greeting_line(nearest_name, &ctx, pick)
+                            // 居民為你取一個名號 v1：先看牠是否已從「關於你的全部作為」昇華出一個**明顯
+                            // 主導的角色**（造物者／慷慨的人／老搭檔／常來的老友）。有的話——你不再只是
+                            // 一個名字，而是牠心中一個掙來的名號，牠改用名號稱呼你。這是 770 自我印象
+                            // 的對外鏡像：世界如何看你。與底下 fond 老友問候（回憶單次互動）刻意區隔：
+                            // 名號要「某類作為持續主導」才昇華，著眼「你是誰」而非「我們做過什麼」。
+                            if let Some(role) = vepi::dominant_role(&pmems) {
+                                // 第一次為你安下名號 / 名號改換的那一刻 → 記一則城鎮動態（鎖外 flush）。
+                                if r.coined_epithets.get(nearest_name) != Some(&role) {
+                                    epithet_feeds.push((r.name, vepi::coined_feed_line(nearest_name, role)));
+                                    r.coined_epithets.insert(nearest_name.to_string(), role);
+                                }
+                                vepi::greeting_for_role(role, pick)
+                            } else {
+                                // 還昇華不出明顯主導名號 → 落回老友情境問候：依最近 4 筆摘要偵測情境。
+                                let summaries: Vec<String> =
+                                    pmems.iter().take(4).map(|e| e.summary.clone()).collect();
+                                let ctx = vfond::detect_context(&summaries);
+                                vfond::fond_greeting_line(nearest_name, &ctx, pick)
+                            }
                         } else {
                             greeting_line_affinity(affinity, nearest_name, pick)
                         };
@@ -7729,6 +7752,14 @@ fn tick_residents(dt: f32) {
     // 自己」——記憶昇華進世界的日記牆。鎖外純 IO、不巢狀、守死鎖鐵律；文字已是純模板、無記憶原文。
     for (rname, detail) in &self_image_feeds {
         vfeed::append_feed("自省", rname, detail);
+    }
+
+    // 5c-2g-2) 名號 Feed（居民為你取一個名號 v1）：居民打招呼時第一次為某玩家昇華出一個名號、或
+    // 名號改換（名號招呼已於鎖內設好），鎖外補一則城鎮動態，讓玩家（與不在線者回來）讀到「在某居民
+    // 眼中，我漸漸成了造物者／慷慨的人…」——你的作為聚合成世界對你的稱呼。鎖外純 IO、不巢狀、守死鎖
+    // 鐵律；文字為純模板、只嵌玩家顯示名、無記憶原文。
+    for (rname, detail) in &epithet_feeds {
+        vfeed::append_feed("名號", rname, detail);
     }
 
     // 5c-2h) 自我印象驅動自發追尋（自我印象 v2，ROADMAP 771·PLAN_ETHERVOX 核心信念「記憶要驅動

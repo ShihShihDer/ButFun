@@ -234,6 +234,16 @@ impl VoxelMemory {
         hits
     }
 
+    /// 取某居民**關於某位玩家**的所有 episodic 記憶（不設上限、最新在前）。
+    /// [`recall`] 會截斷成最近 N 筆供對話上下文；本函式不截斷，供「昇華聚合印象」（如
+    /// `voxel_playerepithet` 把一位玩家的全部作為統計成主導角色）用。純讀、確定性。
+    pub fn all_player_memories(&self, resident: &str, player: &str) -> Vec<MemoryEntry> {
+        let Some(q) = self.long.get(resident) else { return Vec::new(); };
+        let mut hits: Vec<MemoryEntry> = q.iter().filter(|e| e.player == player).cloned().collect();
+        hits.sort_by(|a, b| b.seq.cmp(&a.seq));
+        hits
+    }
+
     /// 取某對 `(居民, 玩家)` 的長期精華事實（B 層）——供對話 prompt 使用，不受 episodic cap 淘汰。
     pub fn semantic_facts_for(&self, resident: &str, player: &str) -> Vec<SemanticFact> {
         self.semantic
@@ -1186,5 +1196,23 @@ mod tests {
     fn semantic_facts_for_returns_empty_for_unknown() {
         let m = VoxelMemory::new();
         assert!(m.semantic_facts_for("vox_res_0", "旅人").is_empty());
+    }
+
+    #[test]
+    fn all_player_memories_filters_by_player_newest_first_no_cap() {
+        let mut m = VoxelMemory::new();
+        // 交錯登記兩位玩家的記憶。
+        m.add_memory("r0", "露娜", "露娜送來木頭");     // seq 0
+        m.add_memory("r0", "諾娃", "諾娃隨便聊聊");     // seq 1
+        m.add_memory("r0", "露娜", "露娜幫我蓋牆");     // seq 2
+        m.add_memory("r0", "露娜", "露娜親手蓋起方塊"); // seq 3
+        let luna = m.all_player_memories("r0", "露娜");
+        assert_eq!(luna.len(), 3, "只回露娜名下的三筆");
+        assert!(luna.iter().all(|e| e.player == "露娜"));
+        // 最新在前（seq 遞減）
+        assert!(luna[0].seq > luna[1].seq && luna[1].seq > luna[2].seq);
+        // 未知玩家 / 居民 → 空
+        assert!(m.all_player_memories("r0", "無此人").is_empty());
+        assert!(m.all_player_memories("無此居民", "露娜").is_empty());
     }
 }
