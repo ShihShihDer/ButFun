@@ -83,6 +83,7 @@ use crate::voxel_callingcard as vcard;
 use crate::voxel_savor as vsavor;
 use crate::voxel_self_image as vself;
 use crate::voxel_playerepithet as vepi;
+use crate::voxel_epithet_spread as vespread;
 use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_weather as vweather;
 use crate::voxel_clique as vclique;
@@ -371,6 +372,10 @@ struct VoxelResident {
     /// 打招呼都由當下記憶即時昇華（此表只記「上回是什麼」供去重），純記憶體、重啟歸零（重啟後首次
     /// 相見會重新安一次名號、動態牆再記一次，無害）。
     coined_epithets: std::collections::HashMap<String, vepi::PlayerRole>,
+    /// 你的名號口耳相傳 v1（自主提案）：這位居民**沒跟你深交**、卻從相熟的老朋友口中**聽說過**你
+    /// 的名號（第二手傳聞）。key＝玩家顯示名。打招呼時若還昇華不出自己的第一手名號（affinity 不到
+    /// 老友門檻），但此表有你 → 用一句「久仰」的傳聞招呼喊你。純記憶體、重啟歸零（比照 `coined_epithets`）。
+    heard_epithets: std::collections::HashMap<String, vespread::Hearsay>,
     /// 晨間思念玩家（記憶驅動·晨間思念玩家 v1，ROADMAP 746）：Some(玩家顯示名, 逾時剩餘秒) =
     /// 醒來讀昨晚睡前反思、發現惦記的是這位在線玩家，正朝他走去要打招呼；抵達（暖暖打招呼＋記一筆
     /// 與他的記憶）或逾時／玩家離線即清空。純記憶體、重啟歸零。
@@ -1152,6 +1157,7 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             // 自我印象 v3（ROADMAP 772）：入場還沒說出過自我印象——首次昇華不算「轉變」。
             self_image_domain: None,
             coined_epithets: std::collections::HashMap::new(),
+            heard_epithets: std::collections::HashMap::new(),
             // 晨間思念玩家（ROADMAP 746）：入場沒有進行中的思念（僅由清晨醒來時的睡前反思觸發）。
             daybreak_seek: None,
             reunion_seek: None,
@@ -5366,6 +5372,17 @@ fn tick_residents(dt: f32) {
                                 let ctx = vfond::detect_context(&summaries);
                                 vfond::fond_greeting_line(nearest_name, &ctx, pick)
                             }
+                        } else if !nearest_name.is_empty() {
+                            // 名號口耳相傳 v1（自主提案）：這位居民其實還沒跟你深交（affinity 不到
+                            // 老友門檻、昇華不出自己的第一手名號），但先前有相熟的老朋友來訪時說起過
+                            // 你——她心裡記著這個聽來的名號。頭一次撞見你，就用一句「久仰」的傳聞招呼
+                            // 喊你。你的名聲第一次透過小社會朋友網絡自己傳開了。若日後她真跟你處成
+                            // 老友、自己昇華出名號，上面 affinity≥FOND 分支的第一手名號自然接管。
+                            if let Some(hs) = r.heard_epithets.get(nearest_name) {
+                                vespread::hearsay_greeting_line(hs, pick)
+                            } else {
+                                greeting_line_affinity(affinity, nearest_name, pick)
+                            }
                         } else {
                             greeting_line_affinity(affinity, nearest_name, pick)
                         };
@@ -7895,6 +7912,46 @@ fn tick_residents(dt: f32) {
                         vmem::append_memory(&entry);
                     } // memory 寫鎖釋放
                 }
+            }
+        }
+        // 你的名號口耳相傳 v1（自主提案）：老朋友到訪時，主人若已在心裡為某位玩家安下名號
+        // （774），偶爾會**說起你**——訪客從此「久仰」你（心裡記下這個聽來的名號＋一筆社交記憶），
+        // 日後頭一次撞見你就用「久仰」的招呼喊出名號。774 名號從此不再只活在一位居民心裡，而是
+        // 透過朋友網絡在小社會裡自己傳開。挑訪客還完全不認得的玩家（模擬「介紹一位新朋友給你」）。
+        if rand::random::<f32>() < vespread::share_chance(tier) {
+            // 一次 residents 寫鎖：讀主人名號表 → 挑一個訪客還不認得的 → 寫進訪客傳聞表（短鎖即釋、
+            // 先 clone 主人表避免同時可變/不可變借用，比照本檔既有短鎖循序，不巢狀、不持鎖 await）。
+            let shared: Option<(String, vepi::PlayerRole)> = {
+                let host_coined = {
+                    let residents = hub().residents.read().unwrap();
+                    residents.iter().find(|r| r.name == host_name).map(|r| r.coined_epithets.clone())
+                }; // residents 讀鎖釋放
+                match host_coined {
+                    Some(host_coined) if !host_coined.is_empty() => {
+                        let mut residents = hub().residents.write().unwrap();
+                        if let Some(v) = residents.iter_mut().find(|r| r.id == visitor_id) {
+                            vespread::pick_to_share(&host_coined, &v.coined_epithets, &v.heard_epithets)
+                                .map(|(pname, role)| {
+                                    v.heard_epithets.insert(
+                                        pname.clone(),
+                                        vespread::Hearsay { role, from: host_name.clone() },
+                                    );
+                                    (pname, role)
+                                })
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            }; // residents 寫鎖釋放
+            if let Some((pname, role)) = shared {
+                // Feed 一則「口碑相傳」（鎖外）＋訪客記一筆社交記憶（主體＝主人名，不掛玩家名下，
+                // 免污染玩家角色分類；比照 gossip 慣例）。additive Feed kind，舊前端安全落回 📌。
+                vfeed::append_feed("口碑相傳", visitor_name, &vespread::spread_feed_line(&host_name, &pname, role));
+                let mem_text = vespread::heard_memory_summary(&host_name, &pname, role);
+                let entry = hub().memory.write().unwrap().add_memory(&visitor_id, &host_name, &mem_text);
+                vmem::append_memory(&entry);
             }
         }
         // ROADMAP 696：居民互助蓋家 v1——老朋友到訪時，若主人正在蓋家，順手幫忙推進一塊，
