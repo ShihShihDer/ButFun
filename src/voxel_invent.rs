@@ -288,10 +288,16 @@ pub fn parse_plan_detailed(raw: &str) -> Result<InventedPlan, String> {
         return Err("輸出裡找不到 JSON 物件".to_string());
     }
     let json = &raw[start..=end];
-    let plan: RawPlan = serde_json::from_str(json).map_err(|_| {
-        "JSON 解析失敗——必須是 {\"name\":\"…\",\"steps\":[…]} 且每步只用允許的原語欄位"
-            .to_string()
-    })?;
+    // 先走嚴格解析（合法 JSON 零額外成本、零風險）；失敗才退而用 [`relax_json`] 修復
+    // 便宜腦常見的 JSON 瑕疵（裸鍵 `count:8`、trailing comma、`//`／`/* */` 註解、單引號），
+    // 再解一次。實測小模型（qwen2.5:3b）約半數計畫壞在這幾種語法瑕疵上，修復後多能救回。
+    let plan: RawPlan = match serde_json::from_str::<RawPlan>(json) {
+        Ok(p) => p,
+        Err(_) => serde_json::from_str::<RawPlan>(&relax_json(json)).map_err(|_| {
+            "JSON 解析失敗——必須是 {\"name\":\"…\",\"steps\":[…]} 且每步只用允許的原語欄位"
+                .to_string()
+        })?,
+    };
     let name: String = plan.name.trim().chars().take(SKILL_NAME_MAX_CHARS).collect();
     if name.is_empty() {
         return Err("技能名（name）不可為空".to_string());
@@ -308,6 +314,157 @@ pub fn parse_plan_detailed(raw: &str) -> Result<InventedPlan, String> {
         .map(|s| check_step(s).ok_or_else(|| explain_bad_step(s)))
         .collect::<Result<_, _>>()?;
     Ok(InventedPlan { name, raw_steps: plan.steps, steps })
+}
+
+/// 寬容修復便宜腦常吐的「近似 JSON」——**只在嚴格解析失敗後當退路呼叫**，合法 JSON 永遠走不到這裡。
+///
+/// 單趟掃描、字串內容一律原樣保留（不會誤改字串裡的 `,`／`}`／`//`／看似裸鍵的字），只在
+/// 結構位置修四種實測最常見的瑕疵：
+/// 1. **裸物件鍵**：`count:8` → `"count":8`（鍵位置的未加引號識別字補上雙引號）。
+/// 2. **trailing comma**：`[1,2,]`／`{"a":1,}` → 去掉 `}`／`]` 前多餘的逗號。
+/// 3. **註解**：`// …` 行註解與 `/* … */` 區塊註解整段刪除。
+/// 4. **單引號字串**：`'gather'` → `"gather"`（內含雙引號會轉義）。
+///
+/// 純函式、無 I/O、絕不 panic；壞到修不動就原樣吐回、留給呼叫端的 serde 再判一次失敗。
+pub fn relax_json(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let n = chars.len();
+    let mut out = String::with_capacity(input.len());
+    // 容器堆疊（'{' 物件／'[' 陣列）＋「下一個 token 是否為物件鍵位置」。
+    let mut stack: Vec<char> = Vec::new();
+    let mut expect_key = false;
+    let mut i = 0;
+    while i < n {
+        let c = chars[i];
+        // 註解（結構位置才算；字串內容在下面的 '"' 分支整段複製，到不了這裡）。
+        if c == '/' && i + 1 < n {
+            if chars[i + 1] == '/' {
+                i += 2;
+                while i < n && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if chars[i + 1] == '*' {
+                i += 2;
+                while i + 1 < n && !(chars[i] == '*' && chars[i + 1] == '/') {
+                    i += 1;
+                }
+                i = (i + 2).min(n);
+                continue;
+            }
+        }
+        // 雙引號字串：原樣複製（含跳脫），字串裡的一切都不解讀。
+        if c == '"' {
+            out.push('"');
+            i += 1;
+            while i < n {
+                let d = chars[i];
+                out.push(d);
+                i += 1;
+                if d == '\\' && i < n {
+                    out.push(chars[i]);
+                    i += 1;
+                    continue;
+                }
+                if d == '"' {
+                    break;
+                }
+            }
+            expect_key = false;
+            continue;
+        }
+        // 單引號字串 → 轉成合法雙引號字串（內含雙引號跳脫）。
+        if c == '\'' {
+            out.push('"');
+            i += 1;
+            while i < n {
+                let d = chars[i];
+                if d == '\\' && i + 1 < n {
+                    out.push(d);
+                    out.push(chars[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                if d == '\'' {
+                    i += 1;
+                    break;
+                }
+                if d == '"' {
+                    out.push('\\');
+                }
+                out.push(d);
+                i += 1;
+            }
+            out.push('"');
+            expect_key = false;
+            continue;
+        }
+        match c {
+            '{' => {
+                out.push(c);
+                stack.push('{');
+                expect_key = true;
+                i += 1;
+            }
+            '[' => {
+                out.push(c);
+                stack.push('[');
+                expect_key = false;
+                i += 1;
+            }
+            '}' | ']' => {
+                trim_trailing_comma(&mut out);
+                out.push(c);
+                stack.pop();
+                expect_key = false;
+                i += 1;
+            }
+            ',' => {
+                out.push(c);
+                expect_key = matches!(stack.last(), Some('{'));
+                i += 1;
+            }
+            ':' => {
+                out.push(c);
+                expect_key = false;
+                i += 1;
+            }
+            _ if c.is_whitespace() => {
+                out.push(c);
+                i += 1;
+            }
+            _ => {
+                // 物件鍵位置遇到未加引號的識別字 → 補雙引號（如 `count:` → `"count":`）。
+                if expect_key
+                    && matches!(stack.last(), Some('{'))
+                    && (c.is_alphabetic() || c == '_')
+                {
+                    let mut ident = String::new();
+                    while i < n && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                        ident.push(chars[i]);
+                        i += 1;
+                    }
+                    out.push('"');
+                    out.push_str(&ident);
+                    out.push('"');
+                    expect_key = false;
+                } else {
+                    out.push(c);
+                    i += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 去掉 `out` 尾端「空白＊＋一個逗號」——供 `}`／`]` 前修 trailing comma。
+fn trim_trailing_comma(out: &mut String) {
+    let trimmed_len = out.trim_end().len();
+    if out.as_bytes().get(trimmed_len.wrapping_sub(1)) == Some(&b',') {
+        out.truncate(trimmed_len - 1);
+    }
 }
 
 /// 白名單驗證失敗的一步 → 具體的繁中原因（回饋給便宜腦修正用）。
@@ -1498,6 +1655,79 @@ mod tests {
         assert!(parse_plan_detailed(r#"{"name":"空","steps":[]}"#).unwrap_err().contains("steps"));
         // 好計畫走詳細版仍通過（與 parse_plan 一致）。
         assert!(parse_plan_detailed(glass_plan_json()).is_ok());
+    }
+
+    // ── relax_json：便宜腦近似 JSON 的寬容修復（嚴格解析失敗後的退路）─────────────
+
+    #[test]
+    fn relax_leaves_valid_json_untouched() {
+        // 合法 JSON 過修復器應原樣不動（修復器只在嚴格解析失敗後呼叫，但必須自身無害且冪等）。
+        let valid = glass_plan_json();
+        assert_eq!(relax_json(valid), valid);
+        assert_eq!(relax_json(&relax_json(valid)), relax_json(valid), "應冪等");
+    }
+
+    #[test]
+    fn relax_quotes_bare_object_keys() {
+        // 便宜腦實測吐 `count:8`（裸鍵）→ 補雙引號後 serde 可解。
+        let raw = r#"{"name":"造爐","steps":[{"op":"gather","resource":"stone",count:8}]}"#;
+        let fixed = relax_json(raw);
+        assert!(fixed.contains(r#""count":8"#), "裸鍵應補引號：{fixed}");
+        let plan: RawPlan = serde_json::from_str(&fixed).expect("修復後應可解析");
+        assert_eq!(plan.steps.len(), 1);
+    }
+
+    #[test]
+    fn relax_drops_trailing_commas() {
+        // 陣列與物件的 trailing comma 都要去掉。
+        let raw = r#"{"name":"x","steps":[{"op":"craft","recipe":"glass",},],}"#;
+        let fixed = relax_json(raw);
+        assert!(!fixed.contains(",]") && !fixed.contains(",}"), "不應殘留 trailing comma：{fixed}");
+        assert!(serde_json::from_str::<RawPlan>(&fixed).is_ok(), "修復後應可解析：{fixed}");
+    }
+
+    #[test]
+    fn relax_strips_comments() {
+        // 行註解與區塊註解整段刪除。
+        let raw = "{\n  // 這是我的計畫\n  \"name\":\"x\", /* 步驟 */ \"steps\":[{\"op\":\"craft\",\"recipe\":\"glass\"}]\n}";
+        let fixed = relax_json(raw);
+        assert!(!fixed.contains("//") && !fixed.contains("/*"), "註解應被刪除：{fixed}");
+        assert!(serde_json::from_str::<RawPlan>(&fixed).is_ok(), "修復後應可解析：{fixed}");
+    }
+
+    #[test]
+    fn relax_converts_single_quotes() {
+        // 單引號字串 → 雙引號。
+        let raw = "{'name':'燒玻璃','steps':[{'op':'craft','recipe':'glass'}]}";
+        let fixed = relax_json(raw);
+        let plan: RawPlan = serde_json::from_str(&fixed).expect("單引號修復後應可解析");
+        assert_eq!(plan.name, "燒玻璃");
+    }
+
+    #[test]
+    fn relax_never_touches_string_contents() {
+        // 字串「內容」裡的 `,` `}` `//` 與看似裸鍵的字都不可被改動——只動結構位置。
+        let raw = r#"{"name":"a // b, c: d}","steps":[{"op":"craft","recipe":"glass"}]}"#;
+        let fixed = relax_json(raw);
+        let plan: RawPlan = serde_json::from_str(&fixed).expect("應可解析");
+        assert_eq!(plan.name, "a // b, c: d}", "字串內容必須原封不動：{fixed}");
+    }
+
+    #[test]
+    fn parse_recovers_from_cheap_brain_json_quirks() {
+        // 端到端：帶多種瑕疵的「近似 JSON」經修復退路後，parse_plan 仍成功解析出合法計畫。
+        // 綜合裸鍵＋trailing comma＋行註解（皆取自線上便宜腦真實失敗樣態）。
+        let raw = "{\n \"name\":\"燒玻璃\", // 我的技能\n \"steps\":[{\"op\":\"gather\",\"resource\":\"sand\",count:2},{\"op\":\"craft\",\"recipe\":\"glass\"},]\n}";
+        let p = parse_plan(raw).expect("帶瑕疵的計畫應經修復退路救回");
+        assert_eq!(p.steps.len(), 2);
+        assert_eq!(p.name, "燒玻璃");
+    }
+
+    #[test]
+    fn parse_still_rejects_unrepairable_garbage() {
+        // 修復退路不是「什麼都收」——語意壞的（白名單外資源）修好語法仍該被白名單擋下。
+        let raw = r#"{"name":"亂",steps:[{"op":"gather",resource:"iron",count:2}]}"#;
+        assert!(parse_plan(raw).is_none(), "語法修好但白名單外資源仍應拒絕");
     }
 
     #[test]
