@@ -85,6 +85,7 @@ use crate::voxel_bedtime as vbedtime;
 use crate::voxel_morning as vmorning;
 use crate::voxel_daybreak as vdaybreak;
 use crate::voxel_reunion as vreunion;
+use crate::voxel_expedition as vexp;
 use crate::voxel_welcome as vwelcome;
 use crate::voxel_resident_trade as vrtrade;
 use crate::voxel_share as vshare;
@@ -327,6 +328,19 @@ struct VoxelResident {
     /// 某位在線玩家久別歸來、由對他記憶最厚的這位居民放下手邊的事奔去迎接；抵達（暖暖迎接＋記一筆
     /// 與他的重逢記憶）或逾時／玩家離線即清空。純記憶體、重啟歸零。
     reunion_seek: Option<(String, f32)>,
+    /// 遠行探野（PLAN_ETHERVOX item 7 散居·遠行探野 v1，ROADMAP 756）：Some(邊陲落點 x, z, 方位名) =
+    /// 正遠行前往遠離主城的荒野邊陲、或已抵達正在那逗留；None = 沒在遠行（正常閒晃/採集/建造）。
+    /// 只有 Wanderer 人格居民（奧瑞）會啟程。純記憶體、重啟歸零。
+    expedition: Option<(f32, f32, String)>,
+    /// 遠行抵達邊陲後的逗留倒數（秒，ROADMAP 756）：> 0 = 已抵達、正在遠方逗留探索，到 0 時清空
+    /// `expedition`、交回一般 wander（此刻遠在家域外，`wander_center` 會把牠一路帶回家）。
+    expedition_stay: f32,
+    /// 遠行去程逾時倒數（秒，ROADMAP 756）：啟程時設 [`vexp::EXPEDITION_TIMEOUT`]；未抵達時遞減，
+    /// 歸零仍沒到（地形擋路等）即放棄這趟遠行、不無限走。
+    expedition_timer: f32,
+    /// 遠行冷卻倒數（秒，ROADMAP 756）：一趟遠行（歸來或放棄）後設為 [`vexp::EXPEDITION_COOLDOWN`]，
+    /// 歸零前不再啟程——稀少才有感、不洗版。各居民初始錯開。
+    expedition_cooldown: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -932,6 +946,12 @@ fn init_residents() -> Vec<VoxelResident> {
             // 晨間思念玩家（ROADMAP 746）：入場沒有進行中的思念（僅由清晨醒來時的睡前反思觸發）。
             daybreak_seek: None,
             reunion_seek: None,
+            // 遠行探野（ROADMAP 756）：入場無遠行任務；首次冷卻各自大幅錯開（前 15~30 分鐘不遠行，
+            // 讓居民先在家域安頓、也避免啟動後短時間內誰都往荒野跑）。
+            expedition: None,
+            expedition_stay: 0.0,
+            expedition_timer: 0.0,
+            expedition_cooldown: vexp::EXPEDITION_COOLDOWN + i as f32 * 300.0,
         });
     }
     out
@@ -1642,7 +1662,10 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         let mut rs = hub().residents.write().unwrap();
                         if let Some(r) = rs.iter_mut().find(|r| r.id == greeter_id) {
                             // 覆寫成奔迎任務：清掉平常閒晃目標，tick 起持續朝這位歸來玩家逼近。
-                            r.reunion_seek = Some((name.clone(), vreunion::SEEK_TIMEOUT_SECS));
+                            // 遠行中（ROADMAP 756）的居民遠在荒野、不抽身奔迎，讓給下一位夠惦記的（此處從缺無妨）。
+                            if r.expedition.is_none() {
+                                r.reunion_seek = Some((name.clone(), vreunion::SEEK_TIMEOUT_SECS));
+                            }
                         }
                     } // residents 寫鎖釋放
                 }
@@ -2437,6 +2460,9 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                                 r.cheer_target = None;
                                 r.visiting = None;
                                 r.visit_stay_timer = 0.0;
+                                // 玩家指令優先：正遠行在荒野也放下、乖乖跟隨（ROADMAP 756）。
+                                r.expedition = None;
+                                r.expedition_stay = 0.0;
                                 r.wait_timer = 0.0;
                                 r.follow = Some((player_key.clone(), vdt::FOLLOW_DURATION_SECS));
                                 r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
@@ -2519,6 +2545,9 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                                     r.visit_stay_timer = 0.0;
                                     r.follow = None;
                                     r.clique_meet = None;
+                                    // 玩家指令優先：正遠行在荒野也放下、去幫忙採集（ROADMAP 756）。
+                                    r.expedition = None;
+                                    r.expedition_stay = 0.0;
                                     r.wait_timer = 0.0;
                                     r.fetch = Some(FetchTask::new(player_key.clone(), resource, count));
                                     r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
@@ -4242,6 +4271,9 @@ fn tick_residents(dt: f32) {
     // 重返心中的牌子 Feed 事件（讀牌 v3，ROADMAP 743）：鎖內偵測抵達，鎖外記 Feed。
     // 格式：(resident_name, 牌面引文)。
     let mut pilgrimage_feed: Vec<(&'static str, String)> = Vec::new();
+    // 遠行探野 Feed（遠行探野 v1，ROADMAP 756）：鎖內收集「某居民啟程遠行／遠行歸來」事件，
+    // 鎖釋放後統一 append_feed（不在持居民鎖時做 IO）。(居民名, 播報詳情)。
+    let mut expedition_feed: Vec<(&'static str, String)> = Vec::new();
 
     // 登門串門子抵達事件（登門串門子 v1，ROADMAP 751）：鎖內偵測「朝聖抵達的其實是某位鄰居的家」，
     // 鎖外統一處理 record_visit（情誼加溫、可能升級）+ 記憶（掛鄰居名下）+ Feed。
@@ -4840,7 +4872,7 @@ fn tick_residents(dt: f32) {
                         r.seek_comfort_cooldown = vcomfort::SEEK_COMFORT_COOLDOWN;
                     }
                 }
-            } else if r.seek_comfort_cooldown <= 0.0 && r.say.is_empty() {
+            } else if r.seek_comfort_cooldown <= 0.0 && r.say.is_empty() && r.expedition.is_none() {
                 // 觸發尋伴：只有 Lonely 心情才走。
                 let (friends, acq) = {
                     let bonds = hub().bonds.read().unwrap();
@@ -5093,6 +5125,7 @@ fn tick_residents(dt: f32) {
                     && r.invent_run.is_none()
                     && r.daybreak_seek.is_none()
                     && r.reunion_seek.is_none()
+                    && r.expedition.is_none()
                     && !r.asleep;
                 if vreadsign::should_pilgrimage(
                     r.cherished_sign.is_some(),
@@ -5114,6 +5147,103 @@ fn tick_residents(dt: f32) {
                             r.wait_timer = 0.0;
                         }
                     }
+                }
+            }
+
+            // ── 遠行探野 v1（ROADMAP 756·PLAN_ETHERVOX item 7「居民散佈世界各處住」第一刀）────────
+            // Wanderer 人格居民（奧瑞）偶爾放下手邊的事、獨自遠行到遠離主城的荒野邊陲住上一陣子再返家
+            // ——居民的足跡第一次真的散進荒野，玩家會在遠離主城的地方撞見牠。狀態機沿用探訪／朝聖既有
+            // 手法：`expedition` 有值＝正遠行前往或在邊陲逗留；逗留倒數歸零即清空、交回下方一般 wander
+            // （此刻遠在家域外，`wander_center` 會把牠一路帶回家，不必顯式返程腿）。
+            // 鎖序：memory 短寫即釋（比照朝聖 v3），Feed 走鎖外 expedition_feed，不巢狀、不持鎖 await。
+            if r.expedition_cooldown > 0.0 {
+                r.expedition_cooldown -= dt;
+            }
+            if let Some((tx, tz, bearing)) = r.expedition.clone() {
+                if r.expedition_stay > 0.0 {
+                    // 已抵達邊陲、正在遠方逗留探索：倒數；歸零則歸來——清空遠行狀態、設冷卻，
+                    // 冒歸來泡泡、收一則歸來 Feed（返家的移動交給下方 wander）。
+                    r.expedition_stay -= dt;
+                    if r.expedition_stay <= 0.0 {
+                        r.expedition = None;
+                        r.expedition_cooldown = vexp::EXPEDITION_COOLDOWN;
+                        expedition_feed.push((r.name, vexp::return_feed_line()));
+                        if r.say.is_empty() {
+                            let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                            r.say = vexp::return_bubble(pick);
+                            r.say_timer = SAY_SECS;
+                        }
+                    }
+                    // 逗留期間不在此設 target：由下方 wander 以邊陲為中心自由走動（見 center 覆寫）。
+                } else {
+                    // 去程：持續朝邊陲走（清小歇，步步逼近，讓玩家看得到牠專程走遠）。
+                    r.target_x = tx;
+                    r.target_z = tz;
+                    r.wait_timer = 0.0;
+                    let dx = r.body.x - tx;
+                    let dz = r.body.z - tz;
+                    let arrived = dx * dx + dz * dz
+                        < vexp::EXPEDITION_ARRIVE_DIST * vexp::EXPEDITION_ARRIVE_DIST;
+                    if arrived {
+                        // 抵達邊陲且沒在說別的話：開始逗留、冒抵達泡泡、把「到過遠方」昇華成一筆記憶
+                        //（掛哨兵鍵、日記／內心可引用）。正巧在說別的話就先按住、等 say 清空再抵達。
+                        if r.say.is_empty() {
+                            r.expedition_stay = vexp::EXPEDITION_STAY_SECS;
+                            let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                            r.say = vexp::arrive_bubble(&bearing, pick);
+                            r.say_timer = SAY_SECS;
+                            let summary = vexp::arrive_memory_summary(&bearing);
+                            let entry = hub().memory.write().unwrap().add_memory(
+                                &r.id,
+                                vexp::EXPEDITION_MEMORY_PLAYER,
+                                &summary,
+                            );
+                            vmem::append_memory(&entry);
+                        }
+                    } else {
+                        // 還在路上：遞減去程逾時；走太久（地形擋路等）沒到就放棄這趟遠行、
+                        // 清空並設冷卻（交回一般 wander 帶牠回家）。
+                        r.expedition_timer -= dt;
+                        if r.expedition_timer <= 0.0 {
+                            r.expedition = None;
+                            r.expedition_cooldown = vexp::EXPEDITION_COOLDOWN;
+                        }
+                    }
+                }
+            } else {
+                // 尚未遠行：Wanderer 人格 + 閒置自由 + 白天 + 冷卻到 + 過機率門檻 → 啟程遠行。
+                // 「閒置自由」＝沒在採集/跑腿/探訪/打氣/尋伴/聚會/跟隨/發明/朝聖/思念/奔迎/睡覺（不搶正事）。
+                let idle_free = r.gather.is_none()
+                    && r.fetch.is_none()
+                    && r.visiting.is_none()
+                    && r.cheer_target.is_none()
+                    && !r.seeking_comfort
+                    && r.clique_meet.is_none()
+                    && r.follow.is_none()
+                    && r.invent_run.is_none()
+                    && r.pilgrimage.is_none()
+                    && r.daybreak_seek.is_none()
+                    && r.reunion_seek.is_none()
+                    && !r.asleep;
+                if vexp::should_embark(
+                    matches!(r.persona, ResidentPersona::Wanderer),
+                    idle_free,
+                    !is_night,
+                    r.expedition_cooldown,
+                    r.say.is_empty(),
+                    rand::random::<f32>(),
+                ) {
+                    let seq = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    let (fx, fz, bearing) = vexp::pick_frontier(r.home_x, r.home_z, seq);
+                    r.expedition = Some((fx, fz, bearing.to_string()));
+                    r.expedition_stay = 0.0;
+                    r.expedition_timer = vexp::EXPEDITION_TIMEOUT;
+                    r.target_x = fx;
+                    r.target_z = fz;
+                    r.wait_timer = 0.0;
+                    r.say = vexp::embark_bubble(bearing, seq);
+                    r.say_timer = SAY_SECS;
+                    expedition_feed.push((r.name, vexp::embark_feed_line(bearing)));
                 }
             }
 
@@ -5440,14 +5570,20 @@ fn tick_residents(dt: f32) {
                     // 歸巢遮蔽：不在探訪中 + （現在是夜間 或 正在下雨）+ 已蓋好自己的小屋
                     // → 以小屋為閒晃中心（緊靠自家），取代原本的家域出生點。
                     // ROADMAP 701：白天下雨時也比照夜間歸巢，居民第一次會為了避雨回家。
+                    // 遠行中不遮蔽：牠正遠在荒野邊陲探索，不該被夜間／下雨拉回主城的家（遠行有逾時
+                    // 與逗留上限自我了結，不會無限滯留）。
                     let sheltering = r.visiting.is_none()
+                        && r.expedition.is_none()
                         && r.clique_meet.is_none()
                         && vr::should_shelter(is_night, raining, house_locations.contains_key(&r.id));
                     // 探訪中：以目的地為閒晃中心（讓居民在鄰居家附近自然走動）；
+                    // 遠行逗留中（ROADMAP 756）：以邊陲落點為中心，讓牠在遠方一小片範圍自然走動、不被拉回家；
                     // 聚會中（ROADMAP 711）：以聚會點為中心，讓一群人看起來聚在一塊；
                     // 夜間遮蔽：以自己蓋的小屋為中心；否則：以自己家域中心為基準（正常行為）。
                     let (center_x, center_z) = if let Some((vx, vz, _)) = &r.visiting {
                         (*vx, *vz)
+                    } else if let Some((ex, ez, _)) = &r.expedition {
+                        (*ex, *ez)
                     } else if let Some((gx, gz, _)) = &r.clique_meet {
                         (*gx, *gz)
                     } else if sheltering {
@@ -5456,10 +5592,12 @@ fn tick_residents(dt: f32) {
                     } else {
                         (r.home_x, r.home_z)
                     };
-                    // 探訪中用探訪範圍；聚會中用更小的聚會範圍（不散開）；
-                    // 夜間遮蔽用更小的遮蔽半徑（緊靠自家）；否則用家域半徑（正常行為）。
+                    // 探訪中用探訪範圍；遠行逗留用遠行範圍（在邊陲一小片走動）；聚會中用更小的聚會範圍
+                    //（不散開）；夜間遮蔽用更小的遮蔽半徑（緊靠自家）；否則用家域半徑（正常行為）。
                     let wander_r = if r.visiting.is_some() {
                         vvisit::VISIT_WANDER_RADIUS
+                    } else if r.expedition.is_some() {
+                        vexp::EXPEDITION_WANDER_RADIUS
                     } else if r.clique_meet.is_some() {
                         vclique::GATHER_WANDER_RADIUS
                     } else if sheltering {
@@ -5724,7 +5862,8 @@ fn tick_residents(dt: f32) {
                     r.body.x,
                     r.body.z,
                     r.cheer_cooldown,
-                    !r.say.is_empty(),
+                    // 遠行中的居民（奧瑞在荒野）視同「忙碌」，既不當打氣發起者也不當被打氣對象（ROADMAP 756）。
+                    !r.say.is_empty() || r.expedition.is_some(),
                     r.cheer_target.is_some(),
                     r.clique_meet.is_some(),
                 )
@@ -5799,6 +5938,7 @@ fn tick_residents(dt: f32) {
                     r.clique_meet.is_none()
                         && r.cheer_target.is_none()
                         && r.visiting.is_none()
+                        && r.expedition.is_none()
                         && r.follow.is_none()
                         && r.say.is_empty()
                         && r.clique_cooldown <= 0.0
@@ -6349,6 +6489,12 @@ fn tick_residents(dt: f32) {
     // 駐足時記一筆動態，讓沒在現場的玩家也看得到「我立的牌子把她引了回來」。
     for (rname, quote) in &pilgrimage_feed {
         vfeed::append_feed("重返", rname, &vreadsign::revisit_feed_line(quote));
+    }
+
+    // 5c-2a) 遠行探野 Feed（遠行探野 v1，ROADMAP 756）：某居民啟程遠行／遠行歸來時記一筆動態，
+    // 讓沒在現場的玩家也讀得到「居民的足跡散進了荒野」——世界不再只圍著主城打轉。
+    for (rname, detail) in &expedition_feed {
+        vfeed::append_feed("遠行", rname, detail);
     }
 
     // 5c-2b) 登門串門子·抵達處理（登門串門子 v1，ROADMAP 751）：居民朝聖抵達的其實是某位鄰居親手
@@ -7112,7 +7258,8 @@ fn tick_residents(dt: f32) {
                     let (is_visiting, is_gathering, visit_cooldown) = {
                         let residents = hub().residents.read().unwrap();
                         residents.iter().find(|r| r.id == rid)
-                            .map_or((false, false, 0.0), |r| (r.visiting.is_some(), r.clique_meet.is_some(), r.visit_cooldown))
+                            // 遠行中（ROADMAP 756）視同 is_visiting，別讓探訪蓋掉遠行目標。
+                            .map_or((false, false, 0.0), |r| (r.visiting.is_some() || r.expedition.is_some(), r.clique_meet.is_some(), r.visit_cooldown))
                     }; // residents 讀鎖釋放
 
                     // 小圈子聚會（ROADMAP 711）優先：正在前往/等待聚會時，別讓探訪蓋掉目標。
