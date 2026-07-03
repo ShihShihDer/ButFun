@@ -303,6 +303,23 @@
     @media (orientation: portrait) {
       #speakBar { bottom: 66px; width: min(340px, 74vw); }
     }
+    /* ── 觸控裝置：常駐輸入列會壓到搖桿／挖放／快捷欄（三者都在底部拇指區），
+       改成「點左上『💬 說』鈕才展開」的隨叫隨到輸入列。收起時 display:none 不佔位，
+       展開時沿用上面已知能配合軟鍵盤的底部位置；送出或失焦即收。
+       桌機（無 body.touch）維持底部常駐輸入列——桌機沒有拇指控制、不衝突。 */
+    #speakToggle { display: none; } /* 桌機不需要：底部已有常駐輸入列 */
+    body.touch #speakBar { display: none; }        /* 觸控：預設收起、不佔位 */
+    body.touch #speakBar.open { display: flex; }   /* 點鈕才展開 */
+    body.touch #speakToggle {
+      display: inline-flex; align-items: center; gap: 6px;
+      position: fixed; left: 10px; top: 78px; z-index: 9;
+      min-height: 44px; padding: 8px 13px; border-radius: 999px;
+      background: rgba(20,28,40,0.72); color: #eaf2ff;
+      border: 1px solid rgba(255,255,255,0.28);
+      font-size: 13px; font-family: inherit; cursor: pointer;
+      user-select: none; pointer-events: auto;
+    }
+    body.touch #speakToggle:active { background: rgba(40,54,78,0.9); }
 
     /* ── 麥塊式聊天記錄窗（左下常駐、可開合可捲、範圍內所有說的話完整入 log）──────
        泡泡可截、log 不截；新訊息亮顯示幾秒後淡化不擋畫面，可展開回捲看歷史。
@@ -397,6 +414,11 @@
       padding: 9px 13px !important; border-radius: 10px !important;
       font-size: 14px !important; text-align: left; cursor: pointer;
     }
+    /* PWA 安裝鈕：收進 ☰ 選單抽屜，只在瀏覽器判定「可安裝且未安裝」時由 JS 加 .show 顯示，
+       絕不常駐在遊戲操作區、不壓搖桿/挖放/輸入。預設隱藏（兩個 id 的高特異性 !important
+       蓋過上面 #menuDrawer > * 的 display:flex）。顯示時沿用抽屜列排版、只換主題色。 */
+    #menuDrawer #pwaInstall { display: none !important; background: #4fd6c8; color: #0e1830; font-weight: 700; border: 0; }
+    #menuDrawer #pwaInstall.show { display: flex !important; }
     /* 桌機與手機統一收納：都用同一顆 ☰ 選單，桌機也享受乾淨畫面（手機優先設計）。 */
 
     @media (orientation: portrait) {
@@ -1195,10 +1217,6 @@
 </head>
 <body>
   <div id="app"></div>
-  <!-- PWA 安裝提示鈕：預設隱藏，瀏覽器判定可安裝(beforeinstallprompt)時才顯示 -->
-  <button id="pwaInstall" style="display:none;position:fixed;right:10px;bottom:64px;z-index:9;
-    padding:8px 14px;font-size:13px;color:#0e1830;background:#4fd6c8;border:0;border-radius:10px;
-    box-shadow:0 2px 8px rgba(0,0,0,.4);cursor:pointer;font-weight:700;">⬇️ 安裝乙太方界</button>
   <!-- 水下氛圍覆蓋層：相機在水方塊內時顯示淡藍色，JS 控制 opacity -->
   <div id="underwaterOverlay"></div>
   <div id="hud">載入中…</div>
@@ -1242,11 +1260,14 @@
       <button id="chatSend">送出</button>
     </div>
   </div>
-  <!-- 常駐說話輸入列（embodied 靠近說話 v1）：打字→範圍說話，附近居民聽得到 -->
+  <!-- 說話輸入列（embodied 靠近說話 v1）：打字→範圍說話，附近居民聽得到。
+       桌機常駐；觸控裝置預設收起，點左上「💬 說」鈕才展開（避開底部拇指區）。 -->
   <div id="speakBar">
     <input id="speakInput" type="text" maxlength="200" placeholder="說點什麼…附近的居民聽得到" autocomplete="off" />
     <button id="speakSend">說</button>
   </div>
+  <!-- 觸控：展開範圍說話輸入列的鈕（左上、避開拇指區；桌機隱藏，底部已有常駐輸入列）-->
+  <button id="speakToggle">💬 說</button>
   <!-- 麥塊式聊天記錄窗（左下常駐）：範圍內所有說的話完整入 log、可開合可捲、防 XSS。
        標題列點一下展開/收合歷史；內容由 main.js 以 textContent 填入。 -->
   <div id="chatLogWin" class="collapsed">
@@ -1289,6 +1310,8 @@
     <button id="viewBtn">👁 第一人稱</button>
     <!-- 操作設定齒輪鈕（開操作設定面板：模式/靈敏度/按鈕/慣用手/自動跳/人稱/鍵盤/手把）-->
     <button id="gearBtn">⚙ 操作設定</button>
+    <!-- PWA 安裝鈕：收進選單，只在瀏覽器判定可安裝(beforeinstallprompt)時由 JS 加 .show 顯示 -->
+    <button id="pwaInstall">⬇️ 安裝乙太方界</button>
   </div>
   <!-- 操作設定面板（麥塊 Bedrock 式操作大改）-->
   <div id="settingsPanel">
@@ -1512,27 +1535,29 @@
       });
       // 「安裝乙太方界」小提示：瀏覽器判定可安裝時攔下事件，玩家點按鈕才喚起原生安裝。
       var deferredPrompt = null;
+      // 安裝鈕收在 ☰ 選單抽屜裡：用 .show class 控制顯示（CSS 以高特異性 !important 蓋過
+      // #menuDrawer > * 的 display:flex），只在可安裝且未安裝時出現，絕不壓遊戲操作區。
       window.addEventListener("beforeinstallprompt", function (e) {
         e.preventDefault();
         deferredPrompt = e;
         var btn = document.getElementById("pwaInstall");
-        if (btn) btn.style.display = "block";
+        if (btn) btn.classList.add("show");
       });
       window.addEventListener("DOMContentLoaded", function () {
         var btn = document.getElementById("pwaInstall");
         if (!btn) return;
         btn.addEventListener("click", function () {
-          if (!deferredPrompt) { btn.style.display = "none"; return; }
+          if (!deferredPrompt) { btn.classList.remove("show"); return; }
           deferredPrompt.prompt();
           deferredPrompt.userChoice.finally(function () {
             deferredPrompt = null;
-            btn.style.display = "none";
+            btn.classList.remove("show");
           });
         });
       });
       window.addEventListener("appinstalled", function () {
         var btn = document.getElementById("pwaInstall");
-        if (btn) btn.style.display = "none";
+        if (btn) btn.classList.remove("show");
       });
     })();
   </script>
