@@ -57,6 +57,7 @@ use crate::voxel_fishing as vfish;
 use crate::voxel_smelt as vsmelt;
 use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
 use crate::voxel_admire as vadmire;
+use crate::voxel_confide as vconfide;
 use crate::voxel_preference as vpref;
 use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
@@ -202,6 +203,9 @@ const GREET_DIST: f32 = 4.0;
 const GREET_COOLDOWN: f32 = 25.0;
 /// 每個合格 tick 觸發招呼的機率（10Hz 下 0.04 ≈ 靠近後約 2.5 秒內冒一句）。
 const GREET_CHANCE_PER_TICK: f32 = 0.04;
+/// 每個合格 tick 觸發「主動聊心事」的機率（居民主動聊心事 v1，781）。設得比招呼低
+/// （0.03）——掏心比打招呼更慎重；配合 240s 長冷卻＋好感門檻，整體稀有有份量。
+const CONFIDE_CHANCE_PER_TICK: f32 = 0.03;
 /// 記憶回想泡泡觸發距離（方塊）：比招呼稍近，表示「走到面前才說起回憶」。
 const RECALL_DIST: f32 = 5.0;
 /// 回想泡泡冷卻（秒）：觸發一次後要等這麼久——稀少才有感，不能跟招呼一樣頻繁。
@@ -246,6 +250,9 @@ struct VoxelResident {
     say_timer: f32,
     /// 主動招呼冷卻倒數（秒）：> 0 表示最近招呼過、暫不再冒，避免洗版。
     greet_timer: f32,
+    /// 主動掏心冷卻倒數（秒，居民主動聊心事 v1）：> 0 表示最近才跟某位玩家分享過心事，
+    /// 暫不再掏心，讓「主動聊起自己的渴望」稀有有份量、天然防洗版。
+    confide_timer: f32,
     /// 讀牌冷卻倒數（秒，居民讀牌 v1）：> 0 表示最近念過附近的告示牌，暫不再讀，稀少才有感。
     read_sign_timer: f32,
     /// 上一塊「寫進記憶」的牌面文字（居民讀牌 v2）：讀到同一塊牌重複念沒關係，但只有
@@ -1088,6 +1095,9 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             say: String::new(),
             say_timer: 0.0,
             greet_timer: 0.0,
+            // 主動掏心冷卻（居民主動聊心事 v1）：錯開初始冷卻，避免啟動後同時觸發；
+            // 也讓一上線不會立刻碎念心事，先熟起來再說。
+            confide_timer: vconfide::CONFIDE_COOLDOWN_SECS + i as f32 * 90.0,
             // 讀牌冷卻（居民讀牌 v1）：錯開初始冷卻，避免啟動後短時間全員同時讀同一塊牌。
             read_sign_timer: 30.0 + i as f32 * 20.0,
             // 尚未讀過任何牌（居民讀牌 v2）。
@@ -5164,6 +5174,10 @@ fn tick_residents(dt: f32) {
     // 居民為你取一個名號 v1：鎖內打招呼時偵測「第一次為某玩家安下名號 / 名號改換」（名號招呼已於
     // 鎖內設好 r.say），鎖外統一補一則城鎮動態。格式：(居民顯示名, 旁白句)。
     let mut epithet_feeds: Vec<(&'static str, String)> = Vec::new();
+    // 居民主動聊心事 v1（自主提案，781）：招呼時序內偵測「夠熟的居民對你掏心（把當前渴望當心事說出口）」
+    // → 收集 (居民 id, 玩家顯示名)；residents 寫鎖釋放後再開 memory 寫鎖記一筆「我對這位旅人掏了心」
+    // （episodic，累積好感），守「residents 寫鎖內不巢狀取 memory 寫鎖」的死鎖鐵律。
+    let mut confide_mems: Vec<(String, String)> = Vec::new();
     // 名號立牌 v1（自主提案）：鎖內偵測「居民**第一次**為某玩家安下名號」→ 鎖外在牠自家門旁刻一塊
     // 名號榮譽牌（走既有 Sign 管線），把口說的名號實體化成世界裡的永久印記。收集
     // (居民 id, 居民顯示名, 家 x, 家 z, 玩家顯示名, 名號角色)；鎖外去重（掃 SignStore，重啟安全）後立牌。
@@ -5570,6 +5584,53 @@ fn tick_residents(dt: f32) {
                         r.say = line.chars().take(40).collect();
                         r.say_timer = SAY_SECS;
                         r.greet_timer = GREET_COOLDOWN;
+                    }
+                }
+            }
+
+            // 主動聊心事 v1（自主提案，781）：招呼之外的另一拍——夠熟的居民偶爾**主動**把
+            // 自己此刻懷著的渴望（`voxel_desires`）當成心事對你說出口。被動的日記內在，第一次
+            // 變成她主動分享的話；「對你掏了心」也記進她對你的記憶、讓交情更深一層。
+            // 與上面招呼刻意錯開：只在這一 tick 招呼沒觸發（`r.say` 仍空）時才可能發生，
+            // 兩拍不同幀、不互相蓋泡泡。冷卻長（240s）＋好感門檻＝稀有有份量、天然防洗版。
+            if r.confide_timer > 0.0 {
+                r.confide_timer -= dt;
+            } else if r.say.is_empty() && !r.seeking_comfort && r.approaching_esteem.is_none() {
+                if let Some((d2, nearest_name)) = nearest_player_info(r.body.x, r.body.z, &player_pts)
+                {
+                    // 先過「靠得夠近＋低頻機率」再讀鎖（省鎖）；訪客名空（未綁定）不掏心。
+                    if d2 < GREET_DIST * GREET_DIST
+                        && !nearest_name.is_empty()
+                        && rand::random::<f32>() < CONFIDE_CHANCE_PER_TICK
+                    {
+                        // 好感讀鎖即釋（與上面招呼同款短讀鎖，不巢狀、不持鎖 await）。
+                        let affinity = hub().memory.read().unwrap().affinity_count(nearest_name, &r.id);
+                        // cooldown_ok 由外層 `confide_timer <= 0` 分支保證；roll 已在上面過門檻，
+                        // 這裡再過一次好感門檻（把「熟不熟該不該說」的判定集中在純函式裡）。
+                        if vconfide::should_confide(affinity, true, 0.0, 1.0) {
+                            // 有當前渴望才有心事可掏；desires 讀鎖即釋。
+                            let desire = hub()
+                                .desires
+                                .read()
+                                .unwrap()
+                                .get_desire(&r.id)
+                                .map(|d| d.desire.clone());
+                            if let Some(d) = desire {
+                                if !d.trim().is_empty() {
+                                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                                    r.say = vconfide::confide_line(&d, pick)
+                                        .chars()
+                                        .take(vconfide::CONFIDE_SAY_MAX_CHARS)
+                                        .collect();
+                                    r.say_timer = SAY_SECS;
+                                    r.confide_timer = vconfide::CONFIDE_COOLDOWN_SECS;
+                                    r.mood_boost_secs =
+                                        r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                    // 「對你掏了心」記進記憶（鎖外 flush，守死鎖鐵律）。
+                                    confide_mems.push((r.id.clone(), nearest_name.to_string()));
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -8030,6 +8091,16 @@ fn tick_residents(dt: f32) {
     // 自己」——記憶昇華進世界的日記牆。鎖外純 IO、不巢狀、守死鎖鐵律；文字已是純模板、無記憶原文。
     for (rname, detail) in &self_image_feeds {
         vfeed::append_feed("自省", rname, detail);
+    }
+
+    // 5c-2g-1b) 居民主動聊心事 v1（自主提案，781）：居民主動對某玩家掏心（把當前渴望當心事說出口，
+    // 泡泡已於鎖內設好）後，鎖外把「我對這位旅人掏了心」記進牠對這位玩家的記憶——episodic、累積好感，
+    // 讓「她主動跟我聊過心事」成為情誼裡的一筆、日後也能昇華進日記。記憶寫鎖即釋、append IO 在鎖外
+    // （守死鎖鐵律）；摘要為純模板、只嵌玩家顯示名、不含渴望原文。
+    for (rid, player) in &confide_mems {
+        let summary = vconfide::confide_memory_line(player);
+        let entry = hub().memory.write().unwrap().add_memory(rid, player, &summary);
+        vmem::append_memory(&entry);
     }
 
     // 5c-2g-2) 名號 Feed（居民為你取一個名號 v1）：居民打招呼時第一次為某玩家昇華出一個名號、或
