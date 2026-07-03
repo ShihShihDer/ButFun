@@ -70,6 +70,7 @@ use crate::voxel_chest as vchest;
 use crate::voxel_sign as vsign;
 use crate::voxel_readsign as vreadsign;
 use crate::voxel_nameplate as vnameplate;
+use crate::voxel_neighborsign as vneighsign;
 use crate::voxel_weather as vweather;
 use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
@@ -4391,27 +4392,52 @@ fn tick_residents(dt: f32) {
                     .nearest_within_xz(r.body.x, r.body.z, vreadsign::READ_RANGE); // sign 讀鎖在此釋放
                 if let Some((sx, sz, text, _)) = nearby.filter(|(_, _, t, _)| !t.is_empty()) {
                     let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                    r.say = vreadsign::read_sign_line(&text, pick);
+                    let quote = vreadsign::display_quote(&text);
+                    // 居民認得鄰居的家 v1（ROADMAP 750）：先看這塊牌是不是**別的居民**立的自建
+                    // 銘牌（749，格式「{名}的{建物}」）。是的話認出鄰居、念一句更親暱的招呼；
+                    // 否則落回既有的世界級讀牌路徑（741/742/743），行為完全不變。
+                    let neighbor = vneighsign::identify_nameplate(&text, r.name, &RESIDENT_NAMES);
+                    r.say = match neighbor {
+                        Some(nb) => vneighsign::neighbor_sign_line(nb, &quote, pick),
+                        None => vreadsign::read_sign_line(&text, pick),
+                    };
                     r.say_timer = SAY_SECS;
                     r.read_sign_timer = vreadsign::READ_COOLDOWN;
                     // 居民讀牌 v2：讀到的牌在心裡留下印象——只有讀到「不同於上次」的牌才寫一筆
-                    // 記憶（避免反覆讀同一塊牌塞滿 episodic）。掛在世界級哨兵鍵下，不污染真實
-                    // 玩家好感；日後翻開居民日記會看到牠對「有人在此留字」的內心反思。
+                    // 記憶（避免反覆讀同一塊牌塞滿 episodic）。
                     // 短鎖：add_memory 的寫鎖在該語句結束即釋，append_memory 的 IO 在鎖外進行
                     //（守死鎖鐵律：記憶讀寫不在持鎖中 await）。
                     if r.last_read_sign.as_deref() != Some(text.as_str()) {
                         r.last_read_sign = Some(text.clone());
-                        let summary = vreadsign::sign_memory_summary(&text);
-                        let entry = hub()
-                            .memory
-                            .write()
-                            .unwrap()
-                            .add_memory(&r.id, vreadsign::SIGN_MEMORY_PLAYER, &summary);
+                        let entry = match neighbor {
+                            // 750：認出是某位鄰居的牌 → 記憶**掛在那位鄰居名下**（不再落到世界級
+                            // 哨兵鍵），讀牌記憶第一次連到「某個具體的鄰居」；日後回想／日記可引用。
+                            Some(nb) => {
+                                let mem = vneighsign::neighbor_sign_memory(nb, &quote);
+                                let e = hub().memory.write().unwrap().add_memory(&r.id, nb, &mem);
+                                // 城鎮動態 Feed：某居民認出了某鄰居的住處（鄰里認知第一次浮上檯面）。
+                                vfeed::append_feed(
+                                    "鄰里認家",
+                                    r.name,
+                                    &vneighsign::neighbor_sign_feed(r.name, nb),
+                                );
+                                e
+                            }
+                            // 既有路徑：玩家寫的字，掛世界級哨兵鍵，不污染真實玩家好感。
+                            None => {
+                                let summary = vreadsign::sign_memory_summary(&text);
+                                hub().memory.write().unwrap().add_memory(
+                                    &r.id,
+                                    vreadsign::SIGN_MEMORY_PLAYER,
+                                    &summary,
+                                )
+                            }
+                        };
                         vmem::append_memory(&entry);
                         // 居民讀牌 v3（ROADMAP 743）：把這塊「不同於上次」的牌記成心中的地標，
                         // 日後閒暇時偶爾會特地走回來駐足——讀牌記憶第一次改變居民的去向。
-                        // 存已截短的引文（display_quote），供重返時泡泡/記憶/Feed 直接引用。
-                        r.cherished_sign = Some((sx, sz, vreadsign::display_quote(&text)));
+                        // 鄰居的家牌同樣成地標：居民日後可能特地晃回鄰居家門口（複用 743 朝聖）。
+                        r.cherished_sign = Some((sx, sz, quote));
                     }
                 }
             }
