@@ -12,6 +12,16 @@
 //! 居民從「主城的固定住戶」推向「散佈世界各處的居民」的地基——日後可在此之上長出「在遠方紮營／
 //! 蓋第二個家／真的搬過去住」（item 7 後續）。
 //!
+//! **遠行 v3（ROADMAP 758，本刀「在邊陲紮營、雛形第二個家」）**：v1 讓居民走進荒野再走回、v2 讓牠
+//! 抵達時升起營火路標——但每趟遠行的落點都由當下身位抖動而定，居民每次都跑到荒野裡**不同的**一點，
+//! 留下的是散落各處的一次性營火，稱不上「住」。item 7 講的是「散佈世界各處**住**」——住意味著有一個
+//! **固定會回去的據點**，不是無盡漂泊。這一刀把「漂泊」收斂成「安頓」：①遠行落點改由**家的方位**
+//! 確定性算出（見 `pick_frontier` 呼叫端改餵家座標 seq）——同一位居民每趟遠行都回到**同一處**邊陲
+//! 營地，玩家會一再在那個熟悉的荒野角落撞見牠，那裡漸漸長成「奧瑞的邊陲營地」；②抵達時除了營火，
+//! 居民還在營火旁**搭起一座紮營小棚**（背牆＋頂＋一張床的簡易 lean-to，走既有 world delta 持久化、
+//! 冪等只搭一次）——荒野裡第一次有一張床、一個過夜的地方，是「第二個家」最初的雛形。世界因居民散居
+//! 而在主城外從「一個記號」長成「一處可歇腳過夜的據點」。
+//!
 //! **與既有『離家』行為的定位區隔**：
 //! - 探訪鄰居（671，`voxel_visit`）／登門串門子（751，`voxel_neighborvisit`）走向的是**另一位
 //!   居民的家域**（主城範圍內、社交目的）；本模組走向的是**無人的荒野邊陲**（空間探索、不為找人）。
@@ -208,6 +218,71 @@ pub fn campfire_feed_line(bearing: &str) -> String {
     format!("在{bearing}的邊陲升起一堆營火，為足跡留下記號")
 }
 
+// ── 邊陲固定營地（遠行 v3，ROADMAP 758「散往世界各處『住』」）─────────────────────────
+// v1/v2 每趟遠行的落點都由當下身位抖動決定，居民每次跑到荒野裡不同的一點——這一刀把落點改由
+// 「家的方位」確定性算出：同一位居民每趟遠行都回到同一處邊陲營地，那裡漸漸長成牠專屬的據點。
+
+/// 由居民的家座標算出「這位居民專屬的固定邊陲營地」的 seq——確定性、不隨身位變動，讓每趟遠行都
+/// 回到同一處落點（呼叫端把此值餵給 [`pick_frontier`]）。家座標整趟遠行不變，故落點恆定。
+/// 純函式、確定性、無 IO。
+pub fn outpost_seq(home_x: f32, home_z: f32) -> usize {
+    (home_x.to_bits() ^ home_z.to_bits()) as usize
+}
+
+// ── 邊陲紮營小棚（遠行 v3，ROADMAP 758「在遠方紮營、雛形第二個家」）────────────────────
+// 抵達邊陲時，居民除了升起營火（v2），還在營火旁搭起一座簡易紮營小棚——荒野裡第一次有一張床、
+// 一個過夜的地方，是「第二個家」最初的雛形。走既有 world delta 持久化，冪等（同址只搭一次）。
+
+/// 紮營小棚相對營火中心的水平位移（世界座標，東向 +x）：擺在營火東側 3 格，避開營火本身
+/// （footprint 橫跨中心 ±1 格）與抵達落點，讓「營火在前、小棚在後」一眼看得出是一處營地。
+pub const SHELTER_OFFSET_X: i32 = 3;
+
+/// 紮營小棚錨點（世界座標）：由營火中心 `(bx, bz)` 往東推 [`SHELTER_OFFSET_X`] 格。
+/// 小棚自身的地表高度另由呼叫端 `surface_y(ax, az)` 算（地形起伏各欄不同）。純函式、確定性。
+pub fn shelter_anchor(bx: i32, bz: i32) -> (i32, i32) {
+    (bx + SHELTER_OFFSET_X, bz)
+}
+
+/// 紮營小棚的方塊布局（世界座標）：以錨點 `(ax, az)`、地表站立層 `ay`（`surface_y` 回傳的地面
+/// 正上方那格）為基準，搭一座朝西（-x，面向營火）開口的簡易 lean-to——
+/// **背牆**（東側 dx=+1）2 寬 × 2 高共 4 塊木板遮風；**屋頂** ay+2 一片 2×2 共 4 塊木板遮雨；
+/// **床** 擺在小棚裡（錨點地面 ay）一張，是荒野裡第一個過夜的地方。共 9 塊，三面透空的 lean-to
+/// 不會把居民困在裡面。純函式、確定性、無 IO；實際落地（deltas 寫＋廣播＋持久化）在 `voxel_ws.rs`
+/// 鎖外進行，且每塊逐一以「該格為空氣才放」為守（起伏地形上不覆蓋既有地形/水，只是少放幾塊）。
+pub fn shelter_blocks(ax: i32, ay: i32, az: i32) -> Vec<(i32, i32, i32, Block)> {
+    let mut v = Vec::with_capacity(9);
+    // 背牆（東側 dx=+1）：2 寬（z=az, az+1）× 2 高（ay, ay+1），共 4 塊木板遮風。
+    for dz in [0, 1] {
+        v.push((ax + 1, ay, az + dz, Block::Plank));
+        v.push((ax + 1, ay + 1, az + dz, Block::Plank));
+    }
+    // 屋頂（ay+2）：蓋住整個 2×2 footprint，共 4 塊木板遮雨。
+    for dx in [0, 1] {
+        for dz in [0, 1] {
+            v.push((ax + dx, ay + 2, az + dz, Block::Plank));
+        }
+    }
+    // 床：擺在小棚裡、朝開口那側（dx=0）的地面站立層，一張。荒野裡第一個過夜的地方。
+    v.push((ax, ay, az, Block::Bed));
+    v
+}
+
+/// 紮營小棚的「床」座標（即 [`shelter_blocks`] 產出的 Bed 位置）——落地前用來判定該處是否已搭過
+/// 小棚（冪等：同址不重複搭，也避免重啟 replay 後重放產生的多餘 append）。
+pub fn shelter_bed_pos(ax: i32, ay: i32, az: i32) -> (i32, i32, i32) {
+    (ax, ay, az)
+}
+
+/// 搭起紮營小棚時昇華成的記憶摘要（掛 [`EXPEDITION_MEMORY_PLAYER`] 哨兵，日記／內心可引用）。
+pub fn shelter_memory_summary(bearing: &str) -> String {
+    format!("我在{bearing}的邊陲營火旁搭起一座小棚，這裡漸漸成了我在荒野的第二個家。")
+}
+
+/// 搭起紮營小棚的 Feed 播報詳情（面向玩家、集中可 i18n）。
+pub fn shelter_feed_line(bearing: &str) -> String {
+    format!("在{bearing}的邊陲營火旁搭起一座紮營小棚，雛形第二個家")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,5 +436,73 @@ mod tests {
         assert!(!campfire_memory_summary("西方").is_empty());
         assert!(campfire_feed_line("南方").contains("南方"));
         assert!(!campfire_feed_line("北方").is_empty());
+    }
+
+    #[test]
+    fn outpost_seq_is_stable_per_home_and_yields_fixed_frontier() {
+        // 同一個家座標 → outpost_seq 恆定（不隨身位變動）。
+        let s0 = outpost_seq(75.0, 0.0);
+        let s1 = outpost_seq(75.0, 0.0);
+        assert_eq!(s0, s1, "同家座標的 outpost_seq 應恆定");
+        // 用 outpost_seq 餵 pick_frontier → 同一位居民每趟遠行都回到同一處落點。
+        let (ax, az, ab) = pick_frontier(75.0, 0.0, s0);
+        let (bx, bz, bb) = pick_frontier(75.0, 0.0, s1);
+        assert_eq!((ax, az, ab), (bx, bz, bb), "固定 seq 應落在同一處邊陲營地");
+        // 不同的家 → 通常落在不同據點（散佈各處，各有各的營地）。
+        let se = outpost_seq(-75.0, 0.0);
+        let (ex, _, eb) = pick_frontier(-75.0, 0.0, se);
+        assert!(ex < 0.0 && eb == "西方", "西方家的據點應在西邊");
+    }
+
+    #[test]
+    fn shelter_anchor_is_east_of_campfire_clear_of_footprint() {
+        // 小棚錨點在營火中心東側 SHELTER_OFFSET_X 格——避開營火 ±1 格 footprint。
+        let (ax, az) = shelter_anchor(100, -40);
+        assert_eq!((ax, az), (100 + SHELTER_OFFSET_X, -40));
+        assert!(ax > 100 + 1, "小棚背牆應落在營火 footprint(中心±1)之外");
+    }
+
+    #[test]
+    fn shelter_has_backwall_roof_and_a_bed() {
+        let (ax, ay, az) = (50, 33, 12);
+        let v = shelter_blocks(ax, ay, az);
+        // 共 9 塊：4 背牆 + 4 屋頂 + 1 床。
+        assert_eq!(v.len(), 9);
+        // 背牆：東側 dx=+1，2 寬 × 2 高，皆木板。
+        for dz in [0, 1] {
+            assert!(v.contains(&(ax + 1, ay, az + dz, Block::Plank)));
+            assert!(v.contains(&(ax + 1, ay + 1, az + dz, Block::Plank)));
+        }
+        // 屋頂：ay+2 一片 2×2 木板。
+        for dx in [0, 1] {
+            for dz in [0, 1] {
+                assert!(v.contains(&(ax + dx, ay + 2, az + dz, Block::Plank)));
+            }
+        }
+        // 恰一張床，在錨點地面站立層。
+        let beds: Vec<_> = v.iter().filter(|(.., b)| *b == Block::Bed).collect();
+        assert_eq!(beds.len(), 1);
+        assert_eq!(*beds[0], (ax, ay, az, Block::Bed));
+        // 三面透空（開口側 dx=0 的 ay/ay+1 除了床格外沒有牆）→ 不困住居民。
+        assert!(!v.iter().any(|(x, y, ..)| *x == ax && *y == ay + 1 && (*x, *y) == (ax, ay + 1)));
+    }
+
+    #[test]
+    fn shelter_bed_pos_matches_bed_in_layout() {
+        // bed_pos 必須與 shelter_blocks 產出的床座標一致（冪等判定靠它）。
+        let (ax, ay, az) = (8, 34, -3);
+        let bed = shelter_bed_pos(ax, ay, az);
+        assert_eq!(bed, (ax, ay, az));
+        assert!(shelter_blocks(ax, ay, az)
+            .iter()
+            .any(|(x, y, z, b)| (*x, *y, *z) == bed && *b == Block::Bed));
+    }
+
+    #[test]
+    fn shelter_lines_nonempty_and_mention_bearing() {
+        assert!(shelter_memory_summary("東方").contains("東方"));
+        assert!(!shelter_memory_summary("西方").is_empty());
+        assert!(shelter_feed_line("南方").contains("南方"));
+        assert!(!shelter_feed_line("北方").is_empty());
     }
 }
