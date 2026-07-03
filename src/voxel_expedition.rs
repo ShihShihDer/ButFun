@@ -170,14 +170,16 @@ pub fn arrive_bubble(bearing: &str, biome: VoxelBiome, pick: usize) -> String {
     cap(lines[pick % lines.len()].clone())
 }
 
-/// 遠行歸來（回到家域）時冒的泡泡。
-pub fn return_bubble(pick: usize) -> String {
+/// 遠行歸來（回到家域）時冒的泡泡（生物群系版，ROADMAP 761）：不再只是「回來了」——還點出
+/// 從邊陲帶回了什麼當地風物（要種在家門前做紀念）。方位／群系合起來，一趟遠行的收穫才具體。
+pub fn return_bubble(biome: VoxelBiome, pick: usize) -> String {
+    let item = keepsake_name_zh(biome);
     let lines = [
-        "遠行回來啦！世界真的比想像的還大。",
-        "走了好遠一圈，還是家附近讓人安心～",
-        "這趟遠行看了好多，回家真好。",
+        format!("遠行回來啦！還帶回了{item}，種在家門口做紀念～"),
+        format!("走了好遠一圈，帶著{item}回家，家附近最讓人安心。"),
+        format!("這趟遠行帶回{item}，家門前又多了一件遠方的紀念。"),
     ];
-    cap(lines[pick % lines.len()].to_string())
+    cap(lines[pick % lines.len()].clone())
 }
 
 /// 抵達邊陲時昇華成的記憶摘要（生物群系版，掛 [`EXPEDITION_MEMORY_PLAYER`] 哨兵；日記／內心
@@ -369,6 +371,80 @@ pub fn outpost_wake_feed_line(bearing: &str) -> String {
     format!("在{bearing}的邊陲營地睡醒，啟程返回主城")
 }
 
+// ── 遠行帶回的邊陲風物（遠行 v5，ROADMAP 761，PLAN_ETHERVOX item 7「不同地方採到不同資源」）──
+// 760 讓居民認出腳下是草原／森林／沙漠／雪原，並埋下鉤子「這是往後不同地方採到不同資源／對地方
+// 形成偏好的記憶地基」。這一刀兌現它的第一步：遠行歸來的居民從邊陲群系**帶回一件當地特產風物**，
+// 種在自家門前的一小列「紀念花圃」——玩家會看到居民的家門漸漸長出一排來自遠方的紀念（草原的小樹苗、
+// 森林的枝葉、沙漠的仙人掌、雪原的冰晶），每一件都對應牠去過的一個地方。四種群系各佔花圃一格、
+// 每格只種一次（冪等），累積成一排「我去過哪些地方」的實體記憶。純函式層只算「種什麼／種哪／說什麼／
+// 記什麼」；實際落地（deltas 寫＋廣播＋持久化）在 `voxel_ws.rs` 鎖外進行，比照營火／小棚手法。
+
+/// 家門前「紀念花圃」的擺放基準：由家中心往南（+z）推這麼遠——避開屋舍核心（家域半徑 20 格，
+/// 屋舍集中在中心一帶），又近到玩家一進家門就看得見這排遠方帶回的紀念。
+pub const KEEPSAKE_ROW_Z: i32 = 6;
+
+/// 依邊陲群系決定帶回的當地風物方塊：草原→小樹苗、森林→枝葉、沙漠→仙人掌、雪原→冰晶。
+/// 皆為既有的可放置裝飾方塊；樹苗直接以 delta 落地（**不經 grove store 註冊、故不會長成樹**，
+/// 只是一株靜態的紀念小苗）。純函式、確定性。
+pub fn keepsake_block(biome: VoxelBiome) -> Block {
+    match biome {
+        VoxelBiome::Grassland => Block::Sapling,
+        VoxelBiome::Forest => Block::Leaves,
+        VoxelBiome::Desert => Block::Cactus,
+        VoxelBiome::Snow => Block::IceCrystal,
+    }
+}
+
+/// 風物的面向玩家名（繁中，i18n 友善集中此處）——泡泡／記憶／Feed 皆引用。
+pub fn keepsake_name_zh(biome: VoxelBiome) -> &'static str {
+    match biome {
+        VoxelBiome::Grassland => "一株草原的小樹苗",
+        VoxelBiome::Forest => "一叢森林的青翠枝葉",
+        VoxelBiome::Desert => "一株沙漠的仙人掌",
+        VoxelBiome::Snow => "一簇雪原的晶亮冰晶",
+    }
+}
+
+/// 風物在紀念花圃裡的欄位 x 位移（相對家中心）：四種群系各錯開一格，排成一小列——同一位居民
+/// 去過不同地方帶回的風物並排累積，不互相覆蓋。純函式、確定性。
+fn keepsake_col(biome: VoxelBiome) -> i32 {
+    match biome {
+        VoxelBiome::Grassland => -3,
+        VoxelBiome::Forest => -1,
+        VoxelBiome::Desert => 1,
+        VoxelBiome::Snow => 3,
+    }
+}
+
+/// 風物該種下的水平座標（世界座標）：由家中心往南 [`KEEPSAKE_ROW_Z`] 格、依群系錯開 x——
+/// 同一位居民同一群系的風物每趟遠行都落在同一格（冪等只種一次）。地表高度由呼叫端 `surface_y`
+/// 另算（地形起伏各欄不同）。純函式、確定性、無 IO。
+pub fn keepsake_pos(home_x: f32, home_z: f32, biome: VoxelBiome) -> (i32, i32) {
+    let cx = home_x.round() as i32 + keepsake_col(biome);
+    let cz = home_z.round() as i32 + KEEPSAKE_ROW_Z;
+    (cx, cz)
+}
+
+/// 種下帶回的風物昇華成的記憶摘要（掛 [`EXPEDITION_MEMORY_PLAYER`] 哨兵，日記／內心可引用）——
+/// 記下的是「我從東方的沙漠帶回一株仙人掌」，家門前那排紀念是牠去過每個地方的實體記憶。
+pub fn keepsake_memory_summary(bearing: &str, biome: VoxelBiome) -> String {
+    format!(
+        "我從{bearing}的{}帶回{}，種在家門前——家門口那排紀念，記著我去過的每個地方。",
+        biome_name(biome),
+        keepsake_name_zh(biome)
+    )
+}
+
+/// 種下帶回風物的 Feed 播報詳情（面向玩家、集中可 i18n）：不在場的玩家回來也能從動態牆讀到
+/// 「牠從哪個地方帶回了什麼、種在家門前」。
+pub fn keepsake_feed_line(bearing: &str, biome: VoxelBiome) -> String {
+    format!(
+        "從{bearing}的{}帶回{}，種在家門前的紀念花圃",
+        biome_name(biome),
+        keepsake_name_zh(biome)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,7 +542,7 @@ mod tests {
         ];
         for pick in 0..6 {
             let e = embark_bubble("東方", pick);
-            let r = return_bubble(pick);
+            let r = return_bubble(VoxelBiome::Grassland, pick);
             assert!(!e.is_empty() && e.chars().count() <= SAY_MAX_CHARS);
             assert!(!r.is_empty() && r.chars().count() <= SAY_MAX_CHARS);
             // 抵達泡泡每種群系都非空、有界，且真的帶上該群系的地方感詞。
@@ -668,5 +744,69 @@ mod tests {
         assert!(outpost_wake_feed_line("南方").contains("南方"));
         assert!(!outpost_sleep_feed_line("北方").is_empty());
         assert!(!outpost_wake_feed_line("北方").is_empty());
+    }
+
+    // ── 遠行帶回的邊陲風物（ROADMAP 761）────────────────────────────────────────
+
+    const ALL_BIOMES: [VoxelBiome; 4] = [
+        VoxelBiome::Grassland,
+        VoxelBiome::Forest,
+        VoxelBiome::Desert,
+        VoxelBiome::Snow,
+    ];
+
+    #[test]
+    fn keepsake_block_maps_each_biome_to_its_specialty() {
+        assert_eq!(keepsake_block(VoxelBiome::Grassland), Block::Sapling);
+        assert_eq!(keepsake_block(VoxelBiome::Forest), Block::Leaves);
+        assert_eq!(keepsake_block(VoxelBiome::Desert), Block::Cactus);
+        assert_eq!(keepsake_block(VoxelBiome::Snow), Block::IceCrystal);
+    }
+
+    #[test]
+    fn keepsake_pos_is_south_of_home_and_distinct_per_biome() {
+        let (hx, hz) = (75.0_f32, 0.0_f32); // 奧瑞的家（東方）
+        let mut xs = Vec::new();
+        for b in ALL_BIOMES {
+            let (kx, kz) = keepsake_pos(hx, hz, b);
+            // 每種群系都落在家中心南側同一列（家 z + KEEPSAKE_ROW_Z）。
+            assert_eq!(kz, hz.round() as i32 + KEEPSAKE_ROW_Z);
+            // 確定性：同輸入恆得同座標。
+            assert_eq!((kx, kz), keepsake_pos(hx, hz, b));
+            xs.push(kx);
+        }
+        // 四種群系錯開成一小列，各佔不同的一格（不互相覆蓋）。
+        let mut sorted = xs.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 4, "四種風物應排在四個不同的欄位");
+    }
+
+    #[test]
+    fn return_bubble_mentions_the_keepsake_and_rotates() {
+        for b in ALL_BIOMES {
+            let item = keepsake_name_zh(b);
+            for pick in 0..3 {
+                let s = return_bubble(b, pick);
+                assert!(!s.is_empty() && s.chars().count() <= SAY_MAX_CHARS);
+                assert!(s.contains(item), "歸來泡泡應點名帶回的風物");
+            }
+            // 依 pick 輪替、不永遠同一句。
+            assert!(return_bubble(b, 0) != return_bubble(b, 1) || return_bubble(b, 1) != return_bubble(b, 2));
+        }
+        // pick 取模不越界。
+        let _ = return_bubble(VoxelBiome::Snow, usize::MAX);
+    }
+
+    #[test]
+    fn keepsake_memory_and_feed_mention_bearing_biome_and_item() {
+        for b in ALL_BIOMES {
+            let item = keepsake_name_zh(b);
+            let mem = keepsake_memory_summary("東方", b);
+            let feed = keepsake_feed_line("東方", b);
+            assert!(mem.contains("東方") && mem.contains(biome_name(b)) && mem.contains(item));
+            assert!(feed.contains("東方") && feed.contains(biome_name(b)) && feed.contains(item));
+            assert!(!mem.is_empty() && !feed.is_empty());
+        }
     }
 }
