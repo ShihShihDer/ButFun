@@ -50,6 +50,7 @@ use crate::voxel_farm::{self as vfarm, FarmStore};
 use crate::voxel_grove::{self as vgrove, GroveStore};
 use crate::voxel_gift as vgift;
 use crate::voxel_keepsake as vkeep;
+use crate::voxel_seedgift as vseed;
 use crate::voxel_fishing as vfish;
 use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
 use crate::voxel_preference as vpref;
@@ -3080,6 +3081,79 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                             rname,
                             &vkeep::keepsake_feed_line(rname, &name, kname),
                         );
+                    }
+                }
+                // 11c) 居民種下你送的種子，長成她自己的一畦菜園 v1（ROADMAP 754）：把「人類種田」
+                // 與「居民生活」第一次接起來——已和你要好的居民，會把你送的種子真的種進家旁的土裡，
+                // 隨既有農地 tick 長大。居民第一次成為種田系統的生產者，你的餽贈在世界裡生根長大。
+                // 鎖序：deltas 讀（找可耕地，即釋）→ deltas 寫（set_block，即釋）→ 廣播 →
+                // farm 寫（登記農地計時，即釋）→ residents 寫（換上她種田的台詞，即釋）→
+                // memory 寫（即釋）→ 持久化/Feed（鎖外 IO），全程短鎖循序、不巢狀，守死鎖鐵律。
+                if let Some(crop) = vseed::plantable_crop_name(item_id) {
+                    // 只有已和你要好（好感 ≥ 門檻）的居民，才會鄭重把你的種子種下。
+                    if affinity >= vseed::PLANT_AFFINITY {
+                        // 依種子挑作物種類 + Seeded 方塊（比照 Plant handler，向後相容三種作物）。
+                        let (kind, seeded_block) = if item_id == vfarm::CARROT_SEEDS_ID {
+                            (vfarm::CropKind::Carrot, Block::CarrotSeeded)
+                        } else if item_id == vfarm::POTATO_SEEDS_ID {
+                            (vfarm::CropKind::Potato, Block::PotatoSeeded)
+                        } else {
+                            (vfarm::CropKind::Wheat, Block::FarmSoilSeeded)
+                        };
+                        // 在居民腳邊找一塊可耕地（草/泥土、頭頂空氣、搆得到）；找不到就誠實不種。
+                        let spot = {
+                            let world = hub().deltas.read().unwrap();
+                            vseed::find_garden_spot(rx, ry, rz, |x, y, z| {
+                                voxel::effective_block_at(&world, x, y, z) as u8
+                            })
+                        }; // deltas 讀鎖釋放
+                        if let Some((gx, gy, gz)) = spot {
+                            {
+                                let mut world = hub().deltas.write().unwrap();
+                                voxel::set_block(&mut world, gx, gy, gz, seeded_block);
+                            } // deltas 寫鎖釋放
+                            broadcast_block(gx, gy, gz, seeded_block);
+                            enqueue_water_around(gx, gy, gz);
+                            // 登記農地計時（隨 tick_farm 成熟，比照玩家種植）。
+                            hub().farm.write().unwrap().plant(
+                                gx,
+                                gy,
+                                gz,
+                                vfarm::now_secs(),
+                                kind,
+                            );
+                            // 持久化這塊作物方塊（重啟後你送的種子仍留在世界裡）。
+                            vbuild::append_world_block(gx, gy, gz, seeded_block as u8);
+                            // 換上她邊種邊說的暖句（覆蓋 8) 的通用道謝——種田這句更貼切、更活）。
+                            {
+                                let mut residents = hub().residents.write().unwrap();
+                                if let Some(r) =
+                                    residents.iter_mut().find(|r| r.id == resident_id)
+                                {
+                                    r.say = vseed::plant_say_line(&name, crop, pick)
+                                        .chars()
+                                        .take(40)
+                                        .collect();
+                                    r.say_timer = SAY_SECS;
+                                }
+                            }
+                            broadcast_players();
+                            // 居民記得「我把旅人送的種子種下了」（掛玩家名下，好感自然累積）。
+                            let mem = vseed::plant_memory_line(&name, crop);
+                            let entry = {
+                                hub().memory.write().unwrap().add_memory(
+                                    &resident_id,
+                                    &name,
+                                    &mem,
+                                )
+                            };
+                            vmem::append_memory(&entry);
+                            vfeed::append_feed(
+                                "種下心意",
+                                rname,
+                                &vseed::plant_feed_line(rname, &name, crop),
+                            );
+                        }
                     }
                 }
                 // 12) 送對禮物 v1（ROADMAP 722）：心願送到了——標記已實現（desires 寫鎖即釋，
