@@ -32,7 +32,41 @@
 //! **純邏輯層**：本檔全是零 IO、零鎖、零 LLM、零 async 的確定性純函式；朝邊陲走的狀態機、逗留計時、
 //! 記憶昇華與 Feed 廣播都在 `voxel_ws.rs`（沿用探訪／朝聖既有的短鎖手法與 wander 中心覆寫慣例）。
 
+use crate::resident_npc::ResidentPersona;
 use crate::voxel::{biome_name, Block, VoxelBiome};
+
+/// 遠行動機——由人格決定「誰會散往荒野、又為了什麼」（散居 v6，ROADMAP 762）。
+///
+/// 散居 v1~v5（756~761）只有奧瑞（Wanderer）憑漂泊天性遠行，世界的荒野裡始終只有他一個人的
+/// 足跡與一處據點——稱不上「散佈**各處**住」。本切片把「誰會遠行」從一人擴成兩人，且**各有其
+/// 真實動機**，讓第二處邊陲家園是角色天性長出來的、不是把奧瑞的行為複製到另一隻 NPC 身上：
+/// - [`ExpeditionMotive::Roam`]（Wanderer·奧瑞）：天生腳癢、愛四處看看的漂泊天性（既有）。
+/// - [`ExpeditionMotive::SeekLand`]（FarmWorker·諾娃）：農人為主城外尋覓一片沃野而遠行——
+///   同一套「啟程→紮營→過夜→認地→帶風物回家」的行為，但**出發的理由**不同，世界因此有了
+///   兩位動機各異的散居者。
+///
+/// 動機只在**啟程**（`embark_bubble`／`embark_feed_line`）分岔——那是「為什麼走」最該現形的地方；
+/// 抵達／歸來／營火／小棚等文字談的是「那個**地方**」（已隨生物群系而異），維持通用不隨動機再分岔，
+/// 把新增的文字面收斂在最有感、最不喧賓奪主的一處。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpeditionMotive {
+    /// 漂泊天性：想四處走走看看（Wanderer·奧瑞）。
+    Roam,
+    /// 尋覓沃野：農人想在主城外找一片能耕作的好地方（FarmWorker·諾娃）。
+    SeekLand,
+}
+
+/// 由人格算出遠行動機——`Some` 者會散往荒野，`None` 者（MarketBrowser·露娜／TownSquare·賽勒）
+/// 留守主城不遠行。**散居是漸進的、不是全員一次散開**：先讓天性最相容的兩位（漂泊的奧瑞、
+/// 尋地的諾娃）踏出去，市集人／廣場人留在主城，世界的散居分佈才自然、有層次。
+/// 純函式、確定性、無 IO——「誰散居、為何散居」這個設計決策集中於此、可單元測試釘住。
+pub fn expedition_motive(persona: ResidentPersona) -> Option<ExpeditionMotive> {
+    match persona {
+        ResidentPersona::Wanderer => Some(ExpeditionMotive::Roam),
+        ResidentPersona::FarmWorker => Some(ExpeditionMotive::SeekLand),
+        ResidentPersona::MarketBrowser | ResidentPersona::TownSquare => None,
+    }
+}
 
 /// 遠行落點距家域中心的基準距離（世界座標）：家已在主城外圍（±75），再往外推這麼遠 → 落在
 /// 離主城逾百格的荒野，玩家平常閒晃絕不會誤入，撞見居民在那才顯得「牠真的走遠了」。
@@ -72,18 +106,19 @@ pub const OUTPOST_BED_NEAR: f32 = 3.0;
 /// 泡泡台詞字元上限（比照其他泡泡台詞）。
 pub const SAY_MAX_CHARS: usize = 40;
 
-/// 是否啟程遠行：Wanderer 人格 + 閒置自由（沒在忙別的意圖）+ 白天 + 冷卻到期 + 此刻沒在說話
-/// + 過機率門檻。`roll` 由呼叫端以 `rand::random::<f32>()` 餵入（與本專案其他機率骰同慣例）。
+/// 是否啟程遠行：能遠行的人格（`can_embark`＝[`expedition_motive`] 回 `Some`，散居 v6 起為
+/// Wanderer·奧瑞 或 FarmWorker·諾娃）+ 閒置自由（沒在忙別的意圖）+ 白天 + 冷卻到期 + 此刻沒在
+/// 說話 + 過機率門檻。`roll` 由呼叫端以 `rand::random::<f32>()` 餵入（與本專案其他機率骰同慣例）。
 /// 純函式、確定性、無 IO。
 pub fn should_embark(
-    is_wanderer: bool,
+    can_embark: bool,
     idle_free: bool,
     is_day: bool,
     cooldown: f32,
     say_empty: bool,
     roll: f32,
 ) -> bool {
-    is_wanderer && idle_free && is_day && cooldown <= 0.0 && say_empty && roll < EMBARK_CHANCE
+    can_embark && idle_free && is_day && cooldown <= 0.0 && say_empty && roll < EMBARK_CHANCE
 }
 
 /// 由方位向量算出玩家看得懂的方位名（繁中）。本世界座標約定：+x = 東、+z = 南
@@ -136,13 +171,23 @@ fn cap(s: String) -> String {
     s.chars().take(SAY_MAX_CHARS).collect()
 }
 
-/// 啟程遠行時冒的泡泡（點出方位、依 `pick` 輪替不機械）。
-pub fn embark_bubble(bearing: &str, pick: usize) -> String {
-    let lines = [
-        format!("今天想往{bearing}走遠一點，去世界的邊陲看看～"),
-        format!("待在城裡太久了，我想一個人去{bearing}的荒野走走。"),
-        format!("腳癢了！這就動身往{bearing}遠行一趟。"),
-    ];
+/// 啟程遠行時冒的泡泡（依**動機**分岔——漂泊的奧瑞 vs 尋地的諾娃出發理由不同；再依 `pick`
+/// 輪替不機械）。動機讓兩位散居者的踏出各有其口吻，世界不再只有一種「遠行」。
+pub fn embark_bubble(motive: ExpeditionMotive, bearing: &str, pick: usize) -> String {
+    let lines = match motive {
+        // 漂泊天性：純粹想往荒野走走看看。
+        ExpeditionMotive::Roam => [
+            format!("今天想往{bearing}走遠一點，去世界的邊陲看看～"),
+            format!("待在城裡太久了，我想一個人去{bearing}的荒野走走。"),
+            format!("腳癢了！這就動身往{bearing}遠行一趟。"),
+        ],
+        // 尋覓沃野：農人為主城外一片能耕作的好地方而遠行。
+        ExpeditionMotive::SeekLand => [
+            format!("城裡的地都種滿了，我想往{bearing}尋一片新的沃野。"),
+            format!("聽說{bearing}的荒野土肥，我去看看能不能落腳耕作。"),
+            format!("背上種子，動身往{bearing}的邊陲找塊好地～"),
+        ],
+    };
     cap(lines[pick % lines.len()].clone())
 }
 
@@ -193,9 +238,13 @@ pub fn arrive_feed_line(bearing: &str, biome: VoxelBiome) -> String {
     format!("抵達{bearing}的邊陲——那裡是一片{}", biome_name(biome))
 }
 
-/// 啟程遠行的 Feed 播報詳情（面向玩家、集中可 i18n）。
-pub fn embark_feed_line(bearing: &str) -> String {
-    format!("獨自往{bearing}的邊陲遠行了")
+/// 啟程遠行的 Feed 播報詳情（依動機分岔，面向玩家、集中可 i18n）：動態牆上，兩位散居者的
+/// 遠行各自寫著不同的緣由——不在場的玩家回來也讀得出「誰為了什麼走進了荒野」。
+pub fn embark_feed_line(motive: ExpeditionMotive, bearing: &str) -> String {
+    match motive {
+        ExpeditionMotive::Roam => format!("獨自往{bearing}的邊陲遠行了"),
+        ExpeditionMotive::SeekLand => format!("往{bearing}的邊陲遠行，去尋一片能耕作的沃野"),
+    }
 }
 
 /// 遠行歸來的 Feed 播報詳情（生物群系版）：帶回的見聞點名去過的地方，動態牆上的一趟遠行有始有終。
@@ -450,10 +499,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn 遠行動機只給漂泊者與農人() {
+        // 散居 v6：Wanderer（奧瑞）漂泊、FarmWorker（諾娃）尋地 → 會遠行且動機各異。
+        assert_eq!(
+            expedition_motive(ResidentPersona::Wanderer),
+            Some(ExpeditionMotive::Roam)
+        );
+        assert_eq!(
+            expedition_motive(ResidentPersona::FarmWorker),
+            Some(ExpeditionMotive::SeekLand)
+        );
+        // 市集人（露娜）／廣場人（賽勒）留守主城、不遠行。
+        assert_eq!(expedition_motive(ResidentPersona::MarketBrowser), None);
+        assert_eq!(expedition_motive(ResidentPersona::TownSquare), None);
+    }
+
+    #[test]
     fn embark_needs_all_gates() {
         // 全條件滿足 + roll 過門檻 → true。
         assert!(should_embark(true, true, true, 0.0, true, 0.0));
-        // 非 Wanderer 人格 → 永不遠行。
+        // 不能遠行的人格（can_embark=false）→ 永不遠行。
         assert!(!should_embark(false, true, true, 0.0, true, 0.0));
         // 正忙別的意圖（idle_free=false）→ 不遠行。
         assert!(!should_embark(true, false, true, 0.0, true, 0.0));
@@ -541,7 +606,7 @@ mod tests {
             VoxelBiome::Snow,
         ];
         for pick in 0..6 {
-            let e = embark_bubble("東方", pick);
+            let e = embark_bubble(ExpeditionMotive::Roam, "東方", pick);
             let r = return_bubble(VoxelBiome::Grassland, pick);
             assert!(!e.is_empty() && e.chars().count() <= SAY_MAX_CHARS);
             assert!(!r.is_empty() && r.chars().count() <= SAY_MAX_CHARS);
@@ -552,8 +617,14 @@ mod tests {
                 assert!(a.contains(biome_name(b)) || a.contains(biome_flavor(b)));
             }
         }
+        // 尋地版啟程泡泡（諾娃）也非空、有界、點出方位。
+        for pick in 0..6 {
+            let s = embark_bubble(ExpeditionMotive::SeekLand, "南方", pick);
+            assert!(!s.is_empty() && s.chars().count() <= SAY_MAX_CHARS);
+            assert!(s.contains("南方"));
+        }
         // 啟程泡泡點出方位；抵達記憶同時點出方位與去過的群系。
-        assert!(embark_bubble("南方", 0).contains("南方"));
+        assert!(embark_bubble(ExpeditionMotive::Roam, "南方", 0).contains("南方"));
         assert!(arrive_memory_summary("北方", VoxelBiome::Desert).contains("北方"));
         assert!(arrive_memory_summary("東方", VoxelBiome::Snow).contains("雪原"));
         assert!(!arrive_memory_summary("東方", VoxelBiome::Grassland).is_empty());
@@ -562,16 +633,32 @@ mod tests {
     #[test]
     fn bubbles_rotate_by_pick() {
         // 不同 pick 至少有兩種不同的啟程泡泡（輪替、不永遠同一句）。
-        let a = embark_bubble("東方", 0);
-        let b = embark_bubble("東方", 1);
-        let c = embark_bubble("東方", 2);
+        let a = embark_bubble(ExpeditionMotive::Roam, "東方", 0);
+        let b = embark_bubble(ExpeditionMotive::Roam, "東方", 1);
+        let c = embark_bubble(ExpeditionMotive::Roam, "東方", 2);
         assert!(a != b || b != c);
     }
 
     #[test]
+    fn 動機不同啟程台詞也不同() {
+        // 同方位同 pick，漂泊（奧瑞）與尋地（諾娃）的啟程泡泡／Feed 口吻各異。
+        assert_ne!(
+            embark_bubble(ExpeditionMotive::Roam, "南方", 0),
+            embark_bubble(ExpeditionMotive::SeekLand, "南方", 0)
+        );
+        assert_ne!(
+            embark_feed_line(ExpeditionMotive::Roam, "南方"),
+            embark_feed_line(ExpeditionMotive::SeekLand, "南方")
+        );
+        // 尋地版點出「耕作／沃野」的農人動機。
+        let f = embark_feed_line(ExpeditionMotive::SeekLand, "南方");
+        assert!(f.contains("耕作") || f.contains("沃野"));
+    }
+
+    #[test]
     fn feed_lines_nonempty() {
-        assert!(!embark_feed_line("東方").is_empty());
-        assert!(embark_feed_line("南方").contains("南方"));
+        assert!(!embark_feed_line(ExpeditionMotive::Roam, "東方").is_empty());
+        assert!(embark_feed_line(ExpeditionMotive::Roam, "南方").contains("南方"));
         // 歸來 Feed 帶上去過的群系名；抵達 Feed 同時帶方位與群系。
         assert!(return_feed_line(VoxelBiome::Forest).contains("森林"));
         assert!(arrive_feed_line("東方", VoxelBiome::Desert).contains("東方"));
