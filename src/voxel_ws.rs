@@ -359,6 +359,10 @@ struct VoxelResident {
     /// 成了村裡最愛蓋東西的人」——歸零＋過機率＋有明顯主導領域才觸發；觸發後設長冷卻，避免反覆碎念。
     /// 沒昇華出印象時設中冷卻重試（避免每 tick 白讀記憶鎖）。各居民初始大幅錯開。純記憶體、重啟歸零。
     self_image_cooldown: f32,
+    /// 上次說出口的自我印象主導領域（自我印象 v3·ROADMAP 772）：`Some(領域)` = 牠先前認得自己是誰。
+    /// 供偵測「自我印象轉變」——當前昇華出的主導領域若與這個不同，就是牠察覺「我不太一樣了」的一刻。
+    /// `None` = 還沒說出過任何自我印象（首次昇華不算轉變）。純記憶體、重啟歸零（重啟後首句視同首次）。
+    self_image_domain: Option<vself::SelfDomain>,
     /// 晨間思念玩家（記憶驅動·晨間思念玩家 v1，ROADMAP 746）：Some(玩家顯示名, 逾時剩餘秒) =
     /// 醒來讀昨晚睡前反思、發現惦記的是這位在線玩家，正朝他走去要打招呼；抵達（暖暖打招呼＋記一筆
     /// 與他的記憶）或逾時／玩家離線即清空。純記憶體、重啟歸零。
@@ -1137,6 +1141,8 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             // 自我印象 v1（ROADMAP 770）：入場先積累記憶再回望自己——首次冷卻各自大幅錯開
             //（前 8~14 分鐘不碎念自我印象），也避免啟動後同時多人念。
             self_image_cooldown: 480.0 + i as f32 * 120.0,
+            // 自我印象 v3（ROADMAP 772）：入場還沒說出過自我印象——首次昇華不算「轉變」。
+            self_image_domain: None,
             // 晨間思念玩家（ROADMAP 746）：入場沒有進行中的思念（僅由清晨醒來時的睡前反思觸發）。
             daybreak_seek: None,
             reunion_seek: None,
@@ -5863,11 +5869,35 @@ fn tick_residents(dt: f32) {
             {
                 // 短鎖快照本居民全部記憶 → 立即釋放，鎖外昇華（純函式、確定性）。
                 let mems = { hub().memory.read().unwrap().all_memories_for(&r.id) };
-                if let Some(bubble) = vself::self_image_bubble(&mems) {
+                // 自我印象 v3（ROADMAP 772·PLAN_ETHERVOX item 2「reflection」）：**自我印象會隨生活
+                // 變遷而轉變**。先看牠這回昇華出的主導領域是否與上次記得的**不同**——若不同，那是比
+                // 一般回望更深的一刻（「我從前是最愛蓋東西的人，這陣子回頭看看，竟活成了離不開水邊的
+                // 人」），優先說出口、取代這回的一般自我印象泡泡；牠的自我認同不再是釘死的標籤，而是
+                // 一件會隨牠的作為成長變化的活東西。轉變後也順勢生「更像現在的自己」的新心願（沿用 v2）。
+                if let Some((shift_line, new_domain)) =
+                    vself::self_image_shift(r.self_image_domain, &mems)
+                {
+                    r.say = shift_line.chars().take(50).collect();
+                    r.say_timer = SAY_SECS;
+                    if let Some(prev) = r.self_image_domain {
+                        self_image_feeds
+                            .push((r.name, vself::self_image_shift_feed_line(prev, new_domain)));
+                    }
+                    r.self_image_domain = Some(new_domain); // 自我認同更新成「現在的自己」。
+                    if let Some(desire) = vself::self_sparked_desire(&mems) {
+                        self_aspiration_sparks.push((r.id.clone(), r.name, desire));
+                    }
+                    r.self_image_cooldown = vself::SPEAK_COOLDOWN;
+                } else if let Some(bubble) = vself::self_image_bubble(&mems) {
                     r.say = bubble.chars().take(50).collect();
                     r.say_timer = SAY_SECS;
                     if let Some(feed) = vself::self_image_feed_line(&mems) {
                         self_image_feeds.push((r.name, feed));
+                    }
+                    // v3：記住這回昇華出的主導領域，供日後偵測轉變（首次昇華在此落定 prev；
+                    // 領域沒變時 self_image_shift 回 None 也會落到這裡、原地重存同一領域）。
+                    if let Some((dom, _)) = vself::dominant_domain(&mems) {
+                        r.self_image_domain = Some(dom);
                     }
                     // 自我印象 v2（ROADMAP 771）：她回望這一路、認出「我是個怎樣的人」的這一刻，
                     // 若能落到一個具體的建造念頭（蓋東西的人→再蓋間屋、離不開泥土的人→再開畦花圃…），

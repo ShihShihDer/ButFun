@@ -236,6 +236,45 @@ pub fn self_sparked_desire(memories: &[MemoryEntry]) -> Option<&'static str> {
     }
 }
 
+/// 自我印象 v3（ROADMAP 772·PLAN_ETHERVOX item 2「reflection」）：**自我印象會隨生活變遷而轉變**。
+///
+/// 居民昇華出的「我是個怎樣的人」不是釘死的標籤——牠這陣子過的日子若換了樣（曾經淨在蓋東西，
+/// 最近卻老往水邊跑），回望時就會**察覺自己不太一樣了**、把自我認同更新成新的領域。給定居民上次
+/// 記得的主導領域 `prev` 與當前記憶，若當前主導領域[`dominant_domain`]**明顯轉成另一個領域**，
+/// 回傳（第一人稱轉變獨白, 新領域）；否則（還沒昇華出主導／領域沒變）回 `None`。
+///
+/// 只有 `prev` 已有值（牠先前確實認得自己是誰）且新主導**不同**才算轉變——首次昇華不是「轉變」、
+/// 也不會誤報。這讓 770 的靜態自我印象變成一件會隨牠的作為**成長變化**的活東西。
+///
+/// **隱私鐵律**：輸出全為固定模板（僅由兩個領域決定），永不含任何記憶原文 / 玩家原話 / 玩家名。
+pub fn self_image_shift(
+    prev: Option<SelfDomain>,
+    memories: &[MemoryEntry],
+) -> Option<(String, SelfDomain)> {
+    let (new_domain, _count) = dominant_domain(memories)?;
+    match prev {
+        Some(p) if p != new_domain => Some((
+            format!(
+                "我從前是{}，這陣子回頭看看……不知不覺竟活成了{}。",
+                p.epithet(),
+                new_domain.epithet()
+            ),
+            new_domain,
+        )),
+        _ => None, // 首次昇華或領域沒變——交回 v1 的一般自我印象泡泡處理。
+    }
+}
+
+/// 動態牆（Feed）上的自我印象**轉變**一句（居民名由 Feed 的 `resident` 欄另帶，不重複嵌名）。
+/// 純模板、無記憶原文。搭 [`self_image_shift`] 使用。
+pub fn self_image_shift_feed_line(from: SelfDomain, to: SelfDomain) -> String {
+    format!(
+        "回望這一路，發覺自己從「{}」漸漸變成了「{}」。",
+        from.epithet(),
+        to.epithet()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,5 +449,39 @@ mod tests {
         let clear: Vec<MemoryEntry> = (0..5).map(|i| mem("遠行到荒野邊陲", i)).collect();
         let feed = self_image_feed_line(&clear).unwrap();
         assert!(feed.starts_with("靜下來"), "Feed detail 應為無名旁白：{feed}");
+    }
+
+    #[test]
+    fn shift_fires_only_when_domain_actually_changes() {
+        // 這陣子淨在水邊 → 當前主導＝Angler。
+        let angler: Vec<MemoryEntry> = (0..5).map(|i| mem("在湖邊釣了魚", i)).collect();
+
+        // 上次記得自己是 Builder → 這回昇華成 Angler，明顯轉變 → 報一句轉變獨白＋回新領域。
+        let shifted = self_image_shift(Some(SelfDomain::Builder), &angler);
+        assert!(matches!(shifted, Some((_, SelfDomain::Angler))));
+        let (line, _) = shifted.unwrap();
+        assert!(line.contains("從前"), "轉變獨白該點出「從前 vs 如今」：{line}");
+
+        // 上次記得的就是 Angler → 領域沒變，不是轉變 → None（交回 v1 一般泡泡）。
+        assert_eq!(self_image_shift(Some(SelfDomain::Angler), &angler), None);
+
+        // 從沒記得過自己是誰（prev=None）→ 首次昇華不算「轉變」→ None。
+        assert_eq!(self_image_shift(None, &angler), None);
+
+        // 當前還昇華不出明顯主導 → 不論 prev 為何都 None。
+        let vague: Vec<MemoryEntry> = vec![mem("嗨", 1), mem("你好", 2)];
+        assert_eq!(self_image_shift(Some(SelfDomain::Builder), &vague), None);
+    }
+
+    #[test]
+    fn shift_output_never_leaks_memory_or_player() {
+        let leaky: Vec<MemoryEntry> = (0..5)
+            .map(|i| mem("在湖邊釣魚時聽旅人說了SECRET1234", i))
+            .collect();
+        let (line, _) = self_image_shift(Some(SelfDomain::Builder), &leaky).unwrap();
+        assert!(!line.contains("SECRET1234"), "轉變獨白洩漏記憶原文：{line}");
+        assert!(!line.contains("旅人"), "轉變獨白洩漏玩家名：{line}");
+        let feed = self_image_shift_feed_line(SelfDomain::Builder, SelfDomain::Angler);
+        assert!(!feed.contains("旅人") && feed.contains("變成"), "轉變 Feed 異常：{feed}");
     }
 }
