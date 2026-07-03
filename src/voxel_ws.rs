@@ -182,6 +182,9 @@ const PLAYER_SAY_MAX_CHARS: usize = 60;
 const TALK_REPLY_MAX_CHARS: usize = 300;
 /// 每條連線的對話冷卻（毫秒）：防單人狂送吃爆 LLM 額度（比照 npc_chat 的 per-player 冷卻）。
 const TALK_COOLDOWN_MS: u64 = 4000;
+/// 協助建造感激記憶冷卻（秒，互動有後果 v2）：一次連續幫忙（放好幾塊方塊）只記**一筆**
+/// 感激記憶，隔這麼久後再幫才會再記一筆——避免好感（＝episodic 記憶筆數）被單次幫忙灌爆。
+const HELP_MEMORY_COOLDOWN_SECS: u64 = 90;
 /// Talk 路徑的 LLM 整體逾時（秒）：`llm_chat_fast` 每 tier 5-8 秒，四 tier 最差 ~23 秒；
 /// 此值作為最後安全網，確保玩家不會永遠等不到回覆。
 const TALK_LLM_TIMEOUT_SECS: u64 = 25;
@@ -1219,6 +1222,12 @@ struct VoxelHub {
     /// 雨剛開始下的一次性旗標（ROADMAP 701）：`tick_farm` 偵測到晴→雨轉換時設 true，
     /// `tick_residents` 讀到後立即清回 false（consume-once），觸發附近居民的雨天反應台詞。
     rain_started_flag: RwLock<bool>,
+    /// 玩家協助建造感激記憶冷卻（互動有後果 v2）：`(居民 id, 玩家 key)` → 上次為這對記下
+    /// 一筆「幫忙蓋家」感激記憶的時刻。因好感＝episodic 記憶筆數，一次幫忙常放很多塊方塊，
+    /// 若每塊都記一筆會瞬間灌爆好感＋淹沒 episodic（cap 24）——故用此冷卻把一段連續幫忙
+    /// 收斂成**一筆**感激（隔 `HELP_MEMORY_COOLDOWN_SECS` 後再幫才會再記）。純記憶體：
+    /// 冷卻狀態重啟歸零可接受（最壞重啟後那對多記一筆，無資料風險）。
+    help_memory_cd: RwLock<HashMap<(String, String), std::time::Instant>>,
     /// 指向任務 v1（指令→任務 + 整地技能）：居民 id → 當前整地任務。
     /// 玩家對居民下「整平這裡」→ 建立任務指派給她 → tick 推進（走過去→分批整地）。
     /// 純記憶體（重啟後任務消失可接受）；**地形改動走既有 world delta 持久化**。
@@ -1429,6 +1438,8 @@ fn hub() -> &'static VoxelHub {
             weather: RwLock::new(false),
             // 雨剛開始旗標：啟動時無雨無旗標。
             rain_started_flag: RwLock::new(false),
+            // 協助建造感激記憶冷卻：啟動空（純記憶體、無需持久化）。
+            help_memory_cd: RwLock::new(HashMap::new()),
             // 整地任務 v1：啟動空（純記憶體、無需持久化）。
             directed_tasks: RwLock::new(HashMap::new()),
             coordinated_tasks: RwLock::new(Vec::new()),
@@ -2293,6 +2304,37 @@ async fn handle_socket(
                                 &rname,
                                 &format!("{name}幫{rname}的{kind_name}放了一塊！"),
                             );
+                            // 互動有後果 v2：把「玩家幫我蓋家」這份情**寫進記憶**——此前只有
+                            // 道謝泡泡＋心情＋Feed，重啟即忘、不累積好感。冷卻節流：一段連續幫忙
+                            // （放好幾塊）只記一筆，避免好感（＝episodic 筆數）被單次幫忙灌爆。
+                            // 短鎖循序：先取冷卻寫鎖判定即釋，再取記憶寫鎖 add 即釋，append 的 IO
+                            // 在所有鎖外（守 prod 死鎖鐵律：記憶讀寫不在持鎖中 await）。
+                            let record_mem = {
+                                let mut cd = hub().help_memory_cd.write().unwrap();
+                                let now = std::time::Instant::now();
+                                let key = (rid.clone(), name.clone());
+                                let due = match cd.get(&key) {
+                                    Some(prev) => {
+                                        now.duration_since(*prev).as_secs()
+                                            >= HELP_MEMORY_COOLDOWN_SECS
+                                    }
+                                    None => true,
+                                };
+                                if due {
+                                    cd.insert(key, now);
+                                }
+                                due
+                            }; // help_memory_cd 寫鎖釋放
+                            if record_mem {
+                                let summary =
+                                    vbuild::player_help_memory_line(&name, &kind_name);
+                                let entry = hub()
+                                    .memory
+                                    .write()
+                                    .unwrap()
+                                    .add_memory(&rid, &name, &summary); // 記憶寫鎖即釋
+                                vmem::append_memory(&entry); // IO 在鎖外
+                            }
                         }
                     }
                 } else {

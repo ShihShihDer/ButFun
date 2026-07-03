@@ -12,6 +12,9 @@ pub const FOND_AFFINITY: usize = 5;
 /// 情境類別（由最近記憶摘要關鍵詞推斷，優先序由高到低）。
 #[derive(Clone, Debug, PartialEq)]
 pub enum FriendContext {
+    /// 玩家曾親手幫這位居民蓋家（記憶含「幫我蓋」，ROADMAP 699 協助建造）。
+    /// 最深的一份情——玩家為她的家出過力，優先於送禮/交易被提及。
+    HelpedBuild,
     /// 玩家曾送禮給這位居民（記憶含「送來」/「送我」）。
     PlayerGaveGift,
     /// 雙方有以物易物記錄（記憶含「以物易物」）。
@@ -23,11 +26,14 @@ pub enum FriendContext {
 /// 從最近幾筆記憶摘要偵測情境（關鍵詞掃描，確定性零 LLM）。
 ///
 /// - `summaries`：[`MemoryEntry.summary`] 列表（傳入前 N 筆，最新在最後）。
-/// - 回傳「最有感」情境；優先順序：`PlayerGaveGift` > `Traded` > `JustTalked`。
+/// - 回傳「最有感」情境；優先順序：`HelpedBuild` > `PlayerGaveGift` > `Traded` > `JustTalked`。
 /// - 空列表安全退回 `JustTalked`。
 pub fn detect_context(summaries: &[String]) -> FriendContext {
-    // 從最近往舊掃，找到最有感情境即回傳。
+    // 從最近往舊掃，找到最有感情境即回傳。協助建造是最深的一份情，最優先被認出。
     for s in summaries.iter().rev() {
+        if s.contains("幫我蓋") {
+            return FriendContext::HelpedBuild;
+        }
         if contains_any(s, &["送來", "送我"]) {
             return FriendContext::PlayerGaveGift;
         }
@@ -50,6 +56,14 @@ pub fn fond_greeting_line(player_name: &str, ctx: &FriendContext, pick: usize) -
         player_name.chars().take(6).collect()
     };
     let raw = match ctx {
+        FriendContext::HelpedBuild => {
+            const LINES: [&str; 3] = [
+                "{n}！你幫我蓋家出的那份力，我一直記著。",
+                "是{n}！多虧你搭手，我的家才蓋得起來。",
+                "{n}回來啦！這個家有你幫忙的一磚一瓦呢。",
+            ];
+            LINES[pick % LINES.len()].replace("{n}", &name)
+        }
         FriendContext::PlayerGaveGift => {
             const LINES: [&str; 3] = [
                 "剛還在想{n}帶來的心意，你回來啦！",
@@ -88,6 +102,30 @@ fn contains_any(s: &str, keywords: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detect_context_helped_build_from_keyword() {
+        let summaries = vec!["小明幫我蓋小木屋，出了一份力，我記著這份情。".to_string()];
+        assert_eq!(detect_context(&summaries), FriendContext::HelpedBuild);
+    }
+
+    #[test]
+    fn detect_context_helped_build_recent_drives_greeting() {
+        // 沿用既有「最近一筆有意義記憶勝出」語意（比照 detect_context_gift_wins_over_trade）：
+        // 協助建造是最近一筆 → 問候提及幫忙蓋家。
+        let summaries = vec![
+            "收到了小明送來的木頭，心裡暖暖的".to_string(),
+            "小明幫我蓋水井，出了一份力，我記著這份情。".to_string(),
+        ];
+        assert_eq!(detect_context(&summaries), FriendContext::HelpedBuild);
+    }
+
+    #[test]
+    fn detect_context_helped_build_priority_within_same_line() {
+        // 同一筆記憶同時含「幫我蓋」與「送來」時，HelpedBuild 優先（行內最高優先）。
+        let summaries = vec!["小明幫我蓋家、還送來木頭，真好".to_string()];
+        assert_eq!(detect_context(&summaries), FriendContext::HelpedBuild);
+    }
 
     #[test]
     fn detect_context_gift_from_keyword_song_lai() {
@@ -130,7 +168,7 @@ mod tests {
 
     #[test]
     fn fond_greeting_contains_player_name() {
-        for ctx in [FriendContext::PlayerGaveGift, FriendContext::Traded, FriendContext::JustTalked] {
+        for ctx in [FriendContext::HelpedBuild, FriendContext::PlayerGaveGift, FriendContext::Traded, FriendContext::JustTalked] {
             let line = fond_greeting_line("小美", &ctx, 0);
             assert!(line.contains("小美"), "台詞應含玩家名：{line}");
         }
@@ -139,7 +177,7 @@ mod tests {
     #[test]
     fn fond_greeting_stays_within_40_chars() {
         let long_name = "超長玩家名字TEST";
-        for ctx in [FriendContext::PlayerGaveGift, FriendContext::Traded, FriendContext::JustTalked] {
+        for ctx in [FriendContext::HelpedBuild, FriendContext::PlayerGaveGift, FriendContext::Traded, FriendContext::JustTalked] {
             for pick in 0..3 {
                 let line = fond_greeting_line(long_name, &ctx, pick);
                 let chars = line.chars().count();
@@ -150,7 +188,7 @@ mod tests {
 
     #[test]
     fn fond_greeting_empty_name_uses_fallback() {
-        for ctx in [FriendContext::PlayerGaveGift, FriendContext::Traded, FriendContext::JustTalked] {
+        for ctx in [FriendContext::HelpedBuild, FriendContext::PlayerGaveGift, FriendContext::Traded, FriendContext::JustTalked] {
             let line = fond_greeting_line("", &ctx, 0);
             // 空名字退回「旅人」——不 panic、不空字串
             assert!(!line.is_empty(), "空名字不該回空字串");
