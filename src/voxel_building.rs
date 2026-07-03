@@ -492,7 +492,7 @@ pub fn load_builds() -> Vec<BuildPlan> {
 // append-only、向後相容（檔缺=空）。玩家自己 break/place 不走這裡（沿用原 session 內行為）。
 
 /// 居民改動方塊落地路徑（`data/` 已 gitignore）。
-const VOXEL_RES_BLOCKS_PATH: &str = "data/voxel_resident_blocks.jsonl";
+pub const VOXEL_RES_BLOCKS_PATH: &str = "data/voxel_resident_blocks.jsonl";
 
 /// Append 一筆「居民改了某方塊」記錄（放置或挖空都走這裡，b=0 即 Air）。
 /// **鐵律**：只在不持任何鎖時呼叫（小檔同步寫，不 await）。
