@@ -69,6 +69,7 @@ use crate::voxel_cheer as vcheer;
 use crate::voxel_chest as vchest;
 use crate::voxel_sign as vsign;
 use crate::voxel_readsign as vreadsign;
+use crate::voxel_nameplate as vnameplate;
 use crate::voxel_weather as vweather;
 use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
@@ -1336,6 +1337,31 @@ fn broadcast_sign(x: i32, y: i32, z: i32, text: &str) {
     );
     let _ = hub().tx.send(msg);
 }
+
+/// 居民立牌命名 v1（ROADMAP 749）：依建物錨點在門前／四邊找一格可立牌的空地。
+/// 條件：該格是空氣、腳下是固體（牌子站得住）、且腳下不是別的牌子（不疊牌）。
+/// 找不到（四邊都被擋）回 None，呼叫方靜默略過——絕不強蓋、不壓既有方塊。
+/// 讀 deltas 一把短鎖即釋（純世界查詢，不巢套其他鎖）。
+fn pick_nameplate_slot(anchor: (i32, i32, i32)) -> Option<(i32, i32, i32)> {
+    let (cx, cy, cz) = anchor;
+    let world = hub().deltas.read().unwrap();
+    for (ox, oz) in vnameplate::NAMEPLATE_OFFSETS {
+        let x = cx + ox;
+        let z = cz + oz;
+        for dy in vnameplate::NAMEPLATE_Y_TRIES {
+            let y = cy + dy;
+            let here = voxel::effective_block_at(&world, x, y, z);
+            let below = voxel::effective_block_at(&world, x, y - 1, z);
+            if matches!(here, Block::Air)
+                && below.is_solid()
+                && !matches!(below, Block::Sign)
+            {
+                return Some((x, y, z));
+            }
+        }
+    }
+    None
+} // deltas 讀鎖釋放
 
 /// 讀目前玩家位置（reach 驗證用）。找不到回 None。
 fn player_pos(id: Uuid) -> Option<(f32, f32, f32)> {
@@ -6711,6 +6737,37 @@ fn tick_residents(dt: f32) {
                     }
                     None => {
                         say_updates.push((rid.clone(), vannounce::build_complete_say(&rname, kind)));
+                    }
+                }
+            }
+            // 居民立牌命名 v1（ROADMAP 749）：蓋完建物親手在門前立一塊告示牌署名，
+            // 741「居民讀牌」的鏡像——居民第一次拿起人類的導覽工具，蓋的家從此有名。
+            // 只在首建（非擴建）立牌，避免同名牌重複；走既有告示牌管線（Sign 方塊 + SignStore
+            // + 廣播 + JSONL），零新協議。找不到合適空地就靜默略過（不強蓋、不壓既有方塊）。
+            if !plan_expansion {
+                if let Some(kind) = vbuild::BuildKind::from_str(&kind_str) {
+                    let text = vnameplate::nameplate_text(&rname, kind);
+                    if !text.is_empty() {
+                        if let Some((sx, sy, sz)) = pick_nameplate_slot(plan_anchor) {
+                            // ① 放 Sign 方塊（deltas 寫鎖短取即釋）。
+                            {
+                                let mut world = hub().deltas.write().unwrap();
+                                voxel::set_block(&mut world, sx, sy, sz, Block::Sign);
+                            } // deltas 寫鎖釋放
+                            broadcast_block(sx, sy, sz, Block::Sign);
+                            vbuild::append_world_block(sx, sy, sz, Block::Sign as u8);
+                            // ② 設牌面文字（sign 寫鎖短取即釋）→ 持久化 → 廣播浮字。
+                            let ev = hub()
+                                .sign
+                                .write()
+                                .unwrap()
+                                .set(&vsign::pos_key(sx, sy, sz), text.clone());
+                            vsign::append_sign(&ev);
+                            broadcast_sign(sx, sy, sz, &text);
+                            // ③ 動態牆 + 立牌泡泡（讓玩家一眼看到居民署了名）。
+                            vfeed::append_feed("立牌命名", &rname, &vnameplate::nameplate_feed(&rname, &text));
+                            say_updates.push((rid.clone(), vnameplate::nameplate_say(&text)));
+                        }
                     }
                 }
             }
