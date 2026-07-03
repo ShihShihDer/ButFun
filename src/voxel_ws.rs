@@ -1264,6 +1264,13 @@ struct VoxelHub {
     /// 雨剛開始下的一次性旗標（ROADMAP 701）：`tick_farm` 偵測到晴→雨轉換時設 true，
     /// `tick_residents` 讀到後立即清回 false（consume-once），觸發附近居民的雨天反應台詞。
     rain_started_flag: RwLock<bool>,
+    /// 雨後彩虹剩餘天氣檢查 tick 數（雨後彩虹 v1，ROADMAP 780）：> 0 = 天邊正掛著一道彩虹。
+    /// 純記憶體、無需持久化（重啟後從無彩虹重新演變）。每次 `tick_farm`（15 秒）由純函式
+    /// `vweather::next_rainbow` 更新：雨→晴升起、持續晴天逐 tick 淡出；隨快照廣播 `rainbow:bool` 給前端。
+    rainbow_ticks: RwLock<u32>,
+    /// 彩虹剛升起的一次性旗標（ROADMAP 780）：`tick_farm` 偵測到「雨→晴」（彩虹 0→>0）時設 true，
+    /// `tick_residents` 讀到後立即清回 false（consume-once），觸發附近居民抬頭望見彩虹的歡呼＋心情補助。
+    rainbow_started_flag: RwLock<bool>,
     /// 玩家協助建造感激記憶冷卻（互動有後果 v2）：`(居民 id, 玩家 key)` → 上次為這對記下
     /// 一筆「幫忙蓋家」感激記憶的時刻。因好感＝episodic 記憶筆數，一次幫忙常放很多塊方塊，
     /// 若每塊都記一筆會瞬間灌爆好感＋淹沒 episodic（cap 24）——故用此冷卻把一段連續幫忙
@@ -1480,6 +1487,9 @@ fn hub() -> &'static VoxelHub {
             weather: RwLock::new(false),
             // 雨剛開始旗標：啟動時無雨無旗標。
             rain_started_flag: RwLock::new(false),
+            // 雨後彩虹：啟動時晴天、無彩虹。
+            rainbow_ticks: RwLock::new(0),
+            rainbow_started_flag: RwLock::new(false),
             // 協助建造感激記憶冷卻：啟動空（純記憶體、無需持久化）。
             help_memory_cd: RwLock::new(HashMap::new()),
             // 整地任務 v1：啟動空（純記憶體、無需持久化）。
@@ -1588,12 +1598,15 @@ fn players_snapshot_json() -> String {
     let time_of_day: f32 = hub().world_time.read().unwrap().time_of_day();
     // 天氣快照（下雨天氣 v1，短鎖、不巢狀）：帶給前端更新天空色調 + 雨滴視覺。
     let raining: bool = *hub().weather.read().unwrap();
+    // 雨後彩虹 v1（ROADMAP 780，短鎖、不巢狀）：> 0 tick = 天邊正掛著彩虹，前端據此顯示彩虹弧。
+    let rainbow: bool = *hub().rainbow_ticks.read().unwrap() > 0;
     serde_json::json!({
         "t": "players",
         "players": players,
         "residents": residents,
         "time_of_day": time_of_day,
         "raining": raining,
+        "rainbow": rainbow,
     }).to_string()
 }
 
@@ -4648,6 +4661,16 @@ fn tick_farm() {
         if *w && !was_raining {
             *hub().rain_started_flag.write().unwrap() = true;
         }
+        // 雨後彩虹 v1（ROADMAP 780）：更新彩虹剩餘 tick（雨→晴升起、持續晴天逐 tick 淡出），
+        // 並偵測「彩虹剛升起（0→>0）」設一次性旗標，供 tick_residents 觸發居民歡呼。短寫鎖即釋、不巢狀。
+        {
+            let mut rb = hub().rainbow_ticks.write().unwrap();
+            let prev = *rb;
+            *rb = vweather::next_rainbow(prev, was_raining, *w);
+            if prev == 0 && *rb > 0 {
+                *hub().rainbow_started_flag.write().unwrap() = true;
+            }
+        }
         *w
     };
     let now = vfarm::now_secs();
@@ -4980,6 +5003,13 @@ fn tick_residents(dt: f32) {
     // 雨剛開始的一次性旗標：consume-once（讀到就清回 false），供下方觸發居民雨天反應台詞。
     let rain_just_started = {
         let mut f = hub().rain_started_flag.write().unwrap();
+        let v = *f;
+        *f = false;
+        v
+    };
+    // 彩虹剛升起的一次性旗標（雨後彩虹 v1，ROADMAP 780）：consume-once，觸發居民抬頭望見彩虹的歡呼。
+    let rainbow_just_appeared = {
+        let mut f = hub().rainbow_started_flag.write().unwrap();
         let v = *f;
         *f = false;
         v
@@ -6552,6 +6582,16 @@ fn tick_residents(dt: f32) {
                 let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                 r.say = vweather::rain_started_line(pick).to_string();
                 r.say_timer = SAY_SECS;
+            }
+
+            // 雨後彩虹 v1（ROADMAP 780）：彩虹剛掛上天邊那一刻，say 為空、醒著的居民抬頭望見而歡呼
+            // 一句（零 LLM、確定性選句），並讓心情亮一格（`mood_boost` 是驅動行為的真狀態，非純美術）。
+            // 與雨天反應同屬罕見一次性事件，值得蓋過閒聊冷卻。
+            if rainbow_just_appeared && !r.asleep && r.say.is_empty() {
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                r.say = vweather::rainbow_line(pick).to_string();
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
             }
 
             // 心情自語 v1（ROADMAP 677）：冷卻到期且 say 為空時，依心情自發冒一句台詞。

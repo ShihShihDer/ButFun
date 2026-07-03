@@ -360,6 +360,57 @@ function updateRain(dt) {
   pos.needsUpdate = true;
 }
 
+// ── 雨後彩虹 v1（ROADMAP 780）─────────────────────────────────────────────
+// 伺服器偵測「雨→晴」後,隨快照廣播 rainbow:bool(彩虹掛在天邊約一分鐘);前端只負責視覺:
+// 一道七彩半弧掛在遠方天邊,雨停時柔和淡入、時間到再淡出。效能鐵律:七道半環 TorusGeometry
+// 只在彩虹出現時可見(平時整組隱藏、零成本早退),半透明加法混合、depthWrite:false 融進天空。
+let rainbowActive = false;       // 伺服器快照旗標:此刻是否該掛彩虹
+let rainbowAlpha = 0;            // 本地平滑不透明度(向目標 ease,免得瞬間出現/消失)
+const RAINBOW_PEAK_ALPHA = 0.55; // 彩虹最亮時的不透明度(半透明、不搶戲)
+const RAINBOW_FADE_SPEED = 0.6;  // 淡入/淡出速度(alpha/秒)
+const RAINBOW_RADIUS = 70;       // 半弧半徑(格),掛在遠方天邊
+// 七彩(紅橙黃綠藍靛紫)由外而內排列,每道半環半徑遞減、共同組成一道彩虹。
+const RAINBOW_COLORS = [0xff5a5a, 0xff9a3d, 0xffe14d, 0x5fd86b, 0x4db8ff, 0x6a72ff, 0xb96aff];
+const rainbowGroup = new THREE.Group();
+const rainbowMats = [];
+for (let i = 0; i < RAINBOW_COLORS.length; i++) {
+  // arc=Math.PI ⇒ 半圈(上半),恰好是一道跨越天際的彩虹弧。tube 細、分段適中即可。
+  const geom = new THREE.TorusGeometry(RAINBOW_RADIUS - i * 0.9, 0.42, 6, 48, Math.PI);
+  const mat = new THREE.MeshBasicMaterial({
+    color: RAINBOW_COLORS[i], transparent: true, opacity: 0,
+    depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+  });
+  rainbowMats.push(mat);
+  rainbowGroup.add(new THREE.Mesh(geom, mat));
+}
+rainbowGroup.visible = false;
+scene.add(rainbowGroup);
+
+// 每幀更新彩虹:alpha 向目標 ease;可見時把整組移到鏡頭附近的遠方天邊、繞 Y 軸朝向鏡頭(僅偏航,
+// 維持直立),讓玩家不論面朝哪都能望見這道弧。不亮時整組隱藏、零成本早退。
+function updateRainbow(dt) {
+  const target = rainbowActive ? RAINBOW_PEAK_ALPHA : 0;
+  if (rainbowAlpha < target) rainbowAlpha = Math.min(target, rainbowAlpha + RAINBOW_FADE_SPEED * dt);
+  else if (rainbowAlpha > target) rainbowAlpha = Math.max(target, rainbowAlpha - RAINBOW_FADE_SPEED * dt);
+  if (rainbowAlpha <= 0.001) { rainbowGroup.visible = false; return; }
+  rainbowGroup.visible = true;
+  for (const mat of rainbowMats) mat.opacity = rainbowAlpha;
+  // 用鏡頭前方的水平朝向決定彩虹掛在哪個方位:取鏡頭視線的水平分量,把彩虹放到那個方向的遠處天邊,
+  // 讓玩家不論面朝哪都能望見這道弧(而非固定世界座標、只在某個朝向看得到)。
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  dir.y = 0;
+  if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
+  dir.normalize();
+  rainbowGroup.position.set(
+    camera.position.x + dir.x * RAINBOW_RADIUS * 1.4,
+    camera.position.y + 6,
+    camera.position.z + dir.z * RAINBOW_RADIUS * 1.4,
+  );
+  // 半弧(TorusGeometry arc=π)預設在 XY 平面、開口朝下;繞 Y 軸轉,讓弧面正對玩家視線(垂直於視線)。
+  rainbowGroup.rotation.y = Math.atan2(dir.x, dir.z) + Math.PI;
+}
+
 // 方塊用 Lambert + 頂點色（每方塊上色），對光反應但靠半球光保底不黑。
 // DoubleSide：切片① 求穩，避免任一面纏繞方向算錯被背面剔除成破洞/黑屏（perf 微讓步，之後可收回 FrontSide）。
 const opaqueMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
@@ -3174,6 +3225,8 @@ function connect() {
       let skyDirty = false;
       if (typeof m.time_of_day === "number") { worldTime = m.time_of_day; skyDirty = true; }
       if (typeof m.raining === "boolean" && m.raining !== isRaining) { isRaining = m.raining; skyDirty = true; }
+      // 雨後彩虹 v1（ROADMAP 780）：rainbow 隨同一份快照送達，切換前端彩虹弧的淡入/淡出目標。
+      if (typeof m.rainbow === "boolean") rainbowActive = m.rainbow;
       if (skyDirty) updateSkyAndLight(worldTime);
     } else if (m.t === "talk") {
       // 居民對話回覆（單播）：
@@ -3654,6 +3707,7 @@ function update(dt) {
   updateUnderwaterAtmosphere();
 
   updateRain(dt);
+  updateRainbow(dt);
   streamChunks(dt);
   sendMove(dt);
 
@@ -4620,6 +4674,12 @@ window.__voxel = {
   set isRaining(v) { isRaining = !!v; updateSkyAndLight(worldTime); },
   get rainVisible() { return rainPoints.visible; },
   updateRain(dt) { updateRain(dt); },
+  // ── 雨後彩虹 v1 QA 用（ROADMAP 780）──
+  get rainbowActive() { return rainbowActive; },
+  set rainbowActive(v) { rainbowActive = !!v; },
+  get rainbowVisible() { return rainbowGroup.visible; },
+  get rainbowAlpha() { return rainbowAlpha; },
+  updateRainbow(dt) { updateRainbow(dt); },
   // ── 真瀏覽器 QA 用：讀準心目標、讀方塊、觸發破壞/放置、選方塊 ──
   get target() { return target; },
   getBlock(x, y, z) { return getRaw(x, y, z); },
