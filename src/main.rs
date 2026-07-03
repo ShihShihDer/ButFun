@@ -179,6 +179,7 @@ mod voxel_clique;
 mod voxel_quarrel;
 mod voxel_tend; // 居民照料菜園 v1：對你有好感的居民路過你種下、還沒成熟的作物旁時順手幫忙照料（ROADMAP 753）
 mod voxel_seedgift; // 居民種下你送的種子 v1：把你送的種子種進家旁的土裡、長成她自己的一畦菜園（ROADMAP 754）
+mod voxel_giftgarden; // 居民收成你送的種子長成的菜園、把第一把收穫回贈給你 v1（ROADMAP 755）
 mod voxel_teach;
 // 乙太方界·居民夜晚睡覺 v1：深夜回到自家附近就躺下睡覺、頭頂冒 💤，天亮才醒來神清氣爽——世界第一次有了入夜就寢的作息（ROADMAP 739）。
 mod voxel_sleep;
