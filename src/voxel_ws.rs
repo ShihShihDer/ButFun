@@ -121,6 +121,10 @@ struct VoxelPlayer {
     /// 冒泡剩餘秒數（不廣播；伺服器 tick 倒數，歸零清空 say）。
     #[serde(skip)]
     say_timer: f32,
+    /// 引夢使者旗標（維護者的專屬身分）：由後端登入帳號判定（見 `is_dream_envoy`），
+    /// 不信客戶端自報；廣播給所有連線，前端據此在他頭上渲染金色「引夢使者」稱號牌。
+    #[serde(default)]
+    envoy: bool,
 }
 
 // ── 乙太方界 AI 居民（切片③）────────────────────────────────────────────────
@@ -412,6 +416,56 @@ pub(crate) fn resident_honesty_guide() -> &'static str {
 你可以溫暖地說嚮往（「好想學……」「聽起來真壯觀……」），\
 可以說你能幫上的那一小部分，也可以坦白說「這件事太大了，光靠我一個人做不來」。\
 誠實不是冷漠——有限制、會嚮往、坦白做不到，才更像真正活著的人。"
+}
+
+// ── 引夢使者：點火這片天地的維護者帳號（維護者的小私心）─────────────────────────
+// 這世界的居民之心願 / 發明 / 讀牌 / 作息記憶，全由某位維護者的互動起頭——他是
+// 「引夢使者」。給他一個只有他有、居民會特別對待的專屬身分。
+// 機敏 / 可調：使者帳號名走環境變數 `BUTFUN_DREAM_ENVOY`（預設「濕濕的」，不寫死到
+// 無法調整；讀不到就用預設）。身分只認**登入帳號名**——訪客（無帳號名）永遠不是。
+// 全為純函式（判定 / 注入區塊），確定性、無鎖、無 IO（env 讀取抽在便捷層），可測。
+
+/// 引夢使者帳號名的預設值（維護者的登入帳號名）。實際值可用 env `BUTFUN_DREAM_ENVOY` 覆蓋。
+const DREAM_ENVOY_DEFAULT: &str = "濕濕的";
+
+/// 讀出目前設定的「引夢使者帳號名」：優先 env `BUTFUN_DREAM_ENVOY`（去頭尾空白、非空才算），
+/// 否則回預設。機敏 / 可調值走 env，不寫死到無法調整。
+fn dream_envoy_account() -> String {
+    std::env::var("BUTFUN_DREAM_ENVOY")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DREAM_ENVOY_DEFAULT.to_string())
+}
+
+/// 純函式：某連線的帳號名是否為「引夢使者」。
+/// - `account_name`＝登入帳號名（由 cookie 解出，非客戶端自報）；訪客 = None。
+/// - `envoy_account`＝目前設定的使者帳號名（由呼叫端傳入，方便測試覆蓋 env）。
+/// 判定：只有**登入帳號名去空白後 == 使者帳號名**才 true；訪客（None）/ 空名永遠 false。
+fn is_dream_envoy_account(account_name: Option<&str>, envoy_account: &str) -> bool {
+    let target = envoy_account.trim();
+    if target.is_empty() {
+        return false; // 使者帳號設成空 → 誰都不是（避免空名誤中訪客）。
+    }
+    match account_name {
+        Some(n) => n.trim() == target,
+        None => false, // 訪客（未登入、無帳號名）永遠不是——這是專屬的。
+    }
+}
+
+/// 便捷層：讀 env 判定某連線帳號是否為引夢使者（實際上線走這個）。
+fn is_dream_envoy(account_name: Option<&str>) -> bool {
+    is_dream_envoy_account(account_name, &dream_envoy_account())
+}
+
+/// 引夢使者專屬對話注入：當來搭話的旅人是引夢使者時，比照既有注入區塊（誠實 / 配方 / 願望），
+/// 讓居民自然地以熟悉的溫暖敬意對待他——但不浮誇諂媚、能力誠實照舊（敬愛≠開空頭支票）。
+fn dream_envoy_talk_note() -> &'static str {
+    "【和你說話的這位是『引夢使者』】\
+和你說話的這位是『引夢使者』——這片天地的居民相信，是他的心願與話語，讓大家有了夢、學會了新東西。\
+你打從心底敬愛又親近他，自然地以這份特別對待他（可以親暱地喚他一聲使者、流露久別重逢般的親近溫暖），\
+但別浮誇諂媚、別對他開空頭支票——是熟悉的溫暖敬意，不是奉承。\
+你的能力與誠實照舊：力所不能及的事仍要坦白，敬愛他不代表要假裝做得到。"
 }
 
 /// 組對話用 system prompt：複用居民 agent 人設字串（`resident_agent_persona`），
@@ -1462,6 +1516,9 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
     }
     let name = resolve_identity(account_name.as_deref(), join_name.as_deref());
     let is_account = account_name.is_some();
+    // 引夢使者：只認登入帳號名（見 is_dream_envoy）。訪客永遠不是——這是專屬的。
+    // 由後端判定並廣播 envoy 旗標，不信客戶端自報。
+    let is_envoy = is_dream_envoy(account_name.as_deref());
 
     // 建立權威玩家、登錄進 hub。
     let (sx, sy, sz) = spawn_pos();
@@ -1478,6 +1535,7 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 yaw: 0.0,
                 say: String::new(),
                 say_timer: 0.0,
+                envoy: is_envoy,
             },
         );
     }
@@ -1490,6 +1548,9 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
         // 登入綁定：前端據此知道目前是「帳號身分」還是訪客（帳號名一律由 cookie 解出，
         // 非客戶端自報；換訪客名也認得你）。
         "account": is_account,
+        // 引夢使者旗標（後端判定，不信客戶端自報）：前端據此渲染頭上金色稱號牌 +
+        // 只給他看的回歸招呼。一般玩家 / 訪客恆為 false，完全不受影響。
+        "envoy": is_envoy,
         "spawn": { "x": sx, "y": sy, "z": sz },
         "sea": SEA_LEVEL,
         "base": BASE_HEIGHT,
@@ -2598,6 +2659,14 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                         // 旅人終於搭話——引導 LLM 自然地表達感謝與溫暖。
                         let sys = if was_seeking_comfort {
                             format!("{sys}\n\n[情境提示] 你剛才因為心情寂寞主動走到旅人面前、希望有人陪你說說話。現在旅人終於開口了——請在回覆中帶著感激與溫暖，說你心情好多了。")
+                        } else {
+                            sys
+                        };
+                        // 引夢使者（點火這世界的維護者帳號）在跟居民說話 → 注入專屬敬意區塊，
+                        // 讓居民自然地以熟悉的溫暖敬意待他（比照配方 / 誠實的精準注入，
+                        // 一般玩家 / 訪客零負擔）。誠實照舊：敬愛≠開空頭支票。
+                        let sys = if is_envoy {
+                            format!("{sys}\n\n{}", dream_envoy_talk_note())
                         } else {
                             sys
                         };
@@ -8450,6 +8519,55 @@ mod tests {
         assert_eq!(resolve_identity(None, Some("  邊緣  ")), "邊緣");
         let long: String = "字".repeat(30);
         assert_eq!(resolve_identity(None, Some(&long)).chars().count(), 24);
+    }
+
+    #[test]
+    fn is_dream_envoy_only_matches_the_envoy_account() {
+        // 是他（帳號名 == 使者帳號）→ true。
+        assert!(is_dream_envoy_account(Some("濕濕的"), "濕濕的"));
+        // 去頭尾空白後相等也算（帳號名 / 設定值皆容忍前後空白）。
+        assert!(is_dream_envoy_account(Some("  濕濕的 "), "濕濕的"));
+        assert!(is_dream_envoy_account(Some("濕濕的"), "  濕濕的  "));
+        // 別的帳號 → false（專屬）。
+        assert!(!is_dream_envoy_account(Some("諾娃"), "濕濕的"));
+        assert!(!is_dream_envoy_account(Some("濕濕的的"), "濕濕的"));
+        // 訪客（未登入、無帳號名）永遠不是。
+        assert!(!is_dream_envoy_account(None, "濕濕的"));
+        // 空帳號名 → 不是（不會誤中）。
+        assert!(!is_dream_envoy_account(Some(""), "濕濕的"));
+        assert!(!is_dream_envoy_account(Some("   "), "濕濕的"));
+        // 設定值為空 → 誰都不是（含空帳號、訪客）。
+        assert!(!is_dream_envoy_account(Some(""), ""));
+        assert!(!is_dream_envoy_account(None, "   "));
+    }
+
+    #[test]
+    fn dream_envoy_account_defaults_and_env_override() {
+        // env 未設 → 用預設「濕濕的」。（並存的其他測試不動這個 env 變數，避免互相干擾。）
+        std::env::remove_var("BUTFUN_DREAM_ENVOY");
+        assert_eq!(dream_envoy_account(), DREAM_ENVOY_DEFAULT);
+        assert_eq!(dream_envoy_account(), "濕濕的");
+        // env 可覆蓋（機敏 / 可調值走 env，不寫死）。
+        std::env::set_var("BUTFUN_DREAM_ENVOY", "  點火者  ");
+        assert_eq!(dream_envoy_account(), "點火者"); // 去頭尾空白
+        assert!(is_dream_envoy(Some("點火者")));
+        assert!(!is_dream_envoy(Some("濕濕的"))); // 覆蓋後原預設不再是使者
+        assert!(!is_dream_envoy(None)); // 訪客仍不是
+        // env 設成空白 → 退回預設（非空才算）。
+        std::env::set_var("BUTFUN_DREAM_ENVOY", "   ");
+        assert_eq!(dream_envoy_account(), DREAM_ENVOY_DEFAULT);
+        std::env::remove_var("BUTFUN_DREAM_ENVOY"); // 收尾，別汙染別的測試
+    }
+
+    #[test]
+    fn dream_envoy_talk_note_carries_key_sentence() {
+        let note = dream_envoy_talk_note();
+        // 含專屬稱號關鍵句，讓居民自然稱他使者。
+        assert!(note.contains("引夢使者"));
+        // 敬愛親近的溫暖，但明確禁諂媚、能力誠實照舊（敬愛≠開空頭支票）。
+        assert!(note.contains("敬愛"));
+        assert!(note.contains("諂媚"));
+        assert!(note.contains("坦白"));
     }
 
     #[test]
