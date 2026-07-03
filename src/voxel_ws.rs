@@ -153,8 +153,9 @@ fn resident_count() -> usize {
     RESIDENT_POP.load(Ordering::Relaxed)
 }
 
-/// 上次出生的 unix 秒（人口成長 v1·出生節流）。0＝尚未建立基準（首次 `maybe_birth` 只記基準點、
-/// 不生，避免伺服器一啟動就冒新居民）。純記憶體、重啟重置基準（低頻事件，重啟偶發可接受）。
+/// 上次出生的 unix 秒（人口成長 v1·出生節流）。0＝尚未從持久化載入（首次 `maybe_birth`
+/// 會嘗試載入 `data/voxel_last_birth`；有值就用值繼續計算 elapsed，無值才記 now 為基準）。
+/// 重啟後由檔案還原，elapsed 跨重啟累積——修正 prod 每 15 分重啟導致永遠生不出居民的 bug。
 static LAST_BIRTH_UNIX: AtomicU64 = AtomicU64::new(0);
 /// 居民閒晃半徑下/上限（方塊）：挑下一個目標時離當前位置的距離區間。
 const WANDER_MIN_R: f32 = 4.0;
@@ -4022,10 +4023,21 @@ fn maybe_birth() {
     }
 
     let now = vfarm::now_secs();
-    // 首次呼叫只記基準時間、不生（避免伺服器一啟動就冒新居民）。
+    // 首次呼叫（LAST_BIRTH_UNIX 仍為 0）：先嘗試從持久化檔載回基準（跨重啟累積 elapsed）。
     if LAST_BIRTH_UNIX.load(Ordering::Relaxed) == 0 {
-        LAST_BIRTH_UNIX.store(now, Ordering::Relaxed);
-        return;
+        match vroster::load_last_birth_unix() {
+            Some(saved) => {
+                // 有持久化基準：還原到記憶體，繼續往下算 elapsed（可能已超過間隔 → 可生）。
+                LAST_BIRTH_UNIX.store(saved, Ordering::Relaxed);
+            }
+            None => {
+                // 真正首次（檔缺 = 從沒設過基準 / 舊部署）：記當下為基準並存檔。
+                // 下次重啟時 load_last_birth_unix() 讀到此值，elapsed 從此刻開始累積。
+                LAST_BIRTH_UNIX.store(now, Ordering::Relaxed);
+                vroster::save_last_birth_unix(now); // 鐵律：鎖外 IO（此處無持任何鎖）
+                return; // 真正首次：只建基準、不生（避免伺服器一啟動就冒新居民）
+            }
+        }
     }
     let elapsed = now.saturating_sub(LAST_BIRTH_UNIX.load(Ordering::Relaxed)) as f32;
     let interval = vroster::birth_interval_secs();
@@ -4108,6 +4120,7 @@ fn maybe_birth() {
         RESIDENT_POP.store(rs.len(), Ordering::Relaxed); // 人口 +1（寫鎖內安全）
     } // residents 寫鎖釋放
     LAST_BIRTH_UNIX.store(now, Ordering::Relaxed);
+    vroster::save_last_birth_unix(now); // 持久化：重啟後 elapsed 從此刻繼續算（不歸零）
 
     // 名冊落地（鎖外）：重啟後這位新居民還在。
     vroster::append_roster_entry(&vroster::RosterEntry {
