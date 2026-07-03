@@ -77,6 +77,7 @@ use crate::voxel_sleep as vsleep;
 use crate::voxel_bedtime as vbedtime;
 use crate::voxel_morning as vmorning;
 use crate::voxel_daybreak as vdaybreak;
+use crate::voxel_reunion as vreunion;
 use crate::voxel_welcome as vwelcome;
 use crate::voxel_resident_trade as vrtrade;
 use crate::voxel_milestones::{self as vmiles, MilestoneStore};
@@ -300,6 +301,10 @@ struct VoxelResident {
     /// 醒來讀昨晚睡前反思、發現惦記的是這位在線玩家，正朝他走去要打招呼；抵達（暖暖打招呼＋記一筆
     /// 與他的記憶）或逾時／玩家離線即清空。純記憶體、重啟歸零。
     daybreak_seek: Option<(String, f32)>,
+    /// 久別重逢奔迎（記憶驅動·久別重逢奔迎 v1，ROADMAP 747）：Some(玩家顯示名, 逾時剩餘秒) =
+    /// 某位在線玩家久別歸來、由對他記憶最厚的這位居民放下手邊的事奔去迎接；抵達（暖暖迎接＋記一筆
+    /// 與他的重逢記憶）或逾時／玩家離線即清空。純記憶體、重啟歸零。
+    reunion_seek: Option<(String, f32)>,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -848,6 +853,7 @@ fn init_residents() -> Vec<VoxelResident> {
             pilgrimage_cooldown: 180.0 + i as f32 * 60.0,
             // 晨間思念玩家（ROADMAP 746）：入場沒有進行中的思念（僅由清晨醒來時的睡前反思觸發）。
             daybreak_seek: None,
+            reunion_seek: None,
         });
     }
     out
@@ -1488,6 +1494,44 @@ async fn handle_socket(socket: WebSocket, account_name: Option<String>) {
                 let _ = out_tx.send(Message::Text(welcome_back)).await;
             }
         }
+        // 久別重逢奔迎 v1（ROADMAP 747）：離線夠久（久別）+ 過機率門檻 → 讓對這位歸來玩家記憶最厚、
+        // 且此刻醒著的居民放下手邊的事奔去迎接（設 reunion_seek，實際走動／迎接／記憶在 tick_residents）。
+        // 只在登入玩家（name 非空）觸發；last=None（首次見面／伺服器剛重啟）不觸發（無基準點、比照摘要）。
+        if !name.is_empty() {
+            if let Some(last_secs) = last {
+                let gap = now.saturating_sub(last_secs);
+                if vreunion::should_rush(gap, rand::random::<f32>()) {
+                    // 一次性短鎖：讀居民 id/是否在睡（釋放）→ 讀記憶算各居民對他的好感度（睡著填 0，釋放）
+                    // → 挑最惦記他的醒著居民 → 寫居民設 reunion_seek。鎖序循序不巢狀（守死鎖鐵律）。
+                    let roster: Vec<(String, bool)> = {
+                        let rs = hub().residents.read().unwrap();
+                        rs.iter().map(|r| (r.id.clone(), r.asleep)).collect()
+                    }; // residents 讀鎖釋放
+                    let affinities: Vec<usize> = {
+                        let mem = hub().memory.read().unwrap();
+                        roster
+                            .iter()
+                            .map(|(id, asleep)| {
+                                if *asleep {
+                                    0 // 睡著的居民填 0：best_greeter 絕不選中、不吵醒熟睡的人。
+                                } else {
+                                    mem.affinity_count(&name, id)
+                                }
+                            })
+                            .collect()
+                    }; // memory 讀鎖釋放
+                    if let Some(idx) = vreunion::best_greeter(&affinities) {
+                        let greeter_id = roster[idx].0.clone();
+                        let mut rs = hub().residents.write().unwrap();
+                        if let Some(r) = rs.iter_mut().find(|r| r.id == greeter_id) {
+                            // 覆寫成奔迎任務：清掉平常閒晃目標，tick 起持續朝這位歸來玩家逼近。
+                            r.reunion_seek = Some((name.clone(), vreunion::SEEK_TIMEOUT_SECS));
+                        }
+                    } // residents 寫鎖釋放
+                }
+            }
+        }
+
         hub().last_seen.write().unwrap().insert(name.clone(), now); // 寫鎖釋放
     }
 
@@ -4004,6 +4048,10 @@ fn tick_residents(dt: f32) {
     // 此刻在線玩家的顯示名（與 player_pts 索引對齊）：供晨間思念玩家偵測反思裡惦記到誰。
     let player_names: Vec<&str> = player_pts.iter().map(|(_, _, n)| n.as_str()).collect();
 
+    // 久別重逢奔迎抵達事件（記憶驅動·久別重逢奔迎 v1，ROADMAP 747）：鎖內偵測「奔到歸來玩家面前」，
+    // 鎖外記 Feed + 補一筆重逢記憶（掛玩家名下、算情誼）。格式：(resident_id, resident_name, 玩家顯示名)。
+    let mut reunion_arrivals: Vec<(String, &'static str, String)> = Vec::new();
+
     // 居民回禮事件（ROADMAP 667）：鎖內偵測，鎖外執行（加入背包 + 廣播）。
     // 格式：(resident_id, resident_name, player_name, block_id, qty, message)
     let mut return_gift_events: Vec<(String, &'static str, String, u8, u32, String)> = Vec::new();
@@ -4507,6 +4555,53 @@ fn tick_residents(dt: f32) {
                 }
             }
 
+            // 久別重逢奔迎走動 v1（ROADMAP 747）：reunion_seek 有效時，持續朝那位久別歸來的玩家奔過去
+            // （他可能在移動，故每 tick 依名字重查其座標步步逼近）；抵達（XZ 距離 < ARRIVE_DIST 且
+            // say 空）→ 暖暖迎接、收集抵達事件（鎖外補一筆與他的重逢記憶）、清除任務。玩家離線／逾時
+            // 則放下這份心意。狀態機比照晨間思念（746，每 tick 覆寫 target、抵達即清空）。
+            if let Some((pname, remaining)) = r.reunion_seek.clone() {
+                let remaining = remaining - dt;
+                // 依名字重查那位玩家此刻的座標（可能已移動）。
+                let here = player_pts
+                    .iter()
+                    .find(|(_, _, n)| *n == pname)
+                    .map(|(x, z, _)| (*x, *z));
+                match here {
+                    Some((px, pz)) if remaining > 0.0 => {
+                        let dx = r.body.x - px;
+                        let dz = r.body.z - pz;
+                        let arrived =
+                            dx * dx + dz * dz < vreunion::ARRIVE_DIST * vreunion::ARRIVE_DIST;
+                        if arrived {
+                            // 奔到玩家面前：沒在說別的話就暖暖迎接、記一筆重逢記憶，收工。
+                            if r.say.is_empty() {
+                                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                                r.say = vreunion::rush_greet_bubble(&pname, pick);
+                                r.say_timer = SAY_SECS;
+                                reunion_arrivals.push((r.id.clone(), r.name, pname.clone()));
+                                r.reunion_seek = None;
+                            } else {
+                                // 站定等說完話：保持目標、續留這份心意（逾時照遞減，不至無限等）。
+                                r.target_x = px;
+                                r.target_z = pz;
+                                r.wait_timer = 0.0;
+                                r.reunion_seek = Some((pname, remaining));
+                            }
+                        } else {
+                            // 還在路上：步步逼近、清小歇，讓玩家看得到牠專程奔過來。
+                            r.target_x = px;
+                            r.target_z = pz;
+                            r.wait_timer = 0.0;
+                            r.reunion_seek = Some((pname, remaining));
+                        }
+                    }
+                    // 玩家離線（不在名單）或逾時奔太久 → 放下這份心意，回到平常的一天。
+                    _ => {
+                        r.reunion_seek = None;
+                    }
+                }
+            }
+
             // 重返心中的牌子 v3（ROADMAP 743）：讀牌記憶第一次改變居民的去向。
             // 冷卻遞減；正在朝聖時持續朝牌子走、抵達即駐足念一句、逾時則放棄。
             // 鎖序：memory 寫（短鎖即釋，比照 v2），Feed 走鎖外 pilgrimage_feed，不巢狀、不持鎖 await。
@@ -4560,6 +4655,7 @@ fn tick_residents(dt: f32) {
                     && r.follow.is_none()
                     && r.invent_run.is_none()
                     && r.daybreak_seek.is_none()
+                    && r.reunion_seek.is_none()
                     && !r.asleep;
                 if vreadsign::should_pilgrimage(
                     r.cherished_sign.is_some(),
@@ -5794,6 +5890,22 @@ fn tick_residents(dt: f32) {
                 .write()
                 .unwrap()
                 .add_memory(rid, player, &vdaybreak::miss_memory_summary(player))
+        };
+        vmem::append_memory(&entry);
+    }
+
+    // 5c-7) 久別重逢奔迎·抵達 Feed + 補記憶（記憶驅動·久別重逢奔迎 v1，ROADMAP 747）：居民奔到久別歸來
+    // 玩家面前迎接後，記一筆 Feed（世界看板可見）、並把「你久違回來、我特地跑來迎你」昇華成一筆掛在該玩家
+    // 名下的重逢記憶（算進與你的情誼）——你的歸來第一次不只被世界記下，而是把某位居民的腳步帶到了你面前。
+    // 鎖序：memory 寫鎖各自短取即釋、不巢狀、append_memory 的 IO 在鎖外進行（守死鎖鐵律）。
+    for (rid, rname, player) in &reunion_arrivals {
+        vfeed::append_feed("重逢", rname, &vreunion::reunion_feed_line(player));
+        let entry = {
+            hub()
+                .memory
+                .write()
+                .unwrap()
+                .add_memory(rid, player, &vreunion::reunion_memory_summary(player))
         };
         vmem::append_memory(&entry);
     }
