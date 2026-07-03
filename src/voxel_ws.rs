@@ -78,6 +78,7 @@ use crate::voxel_nameplate as vnameplate;
 use crate::voxel_neighborsign as vneighsign;
 use crate::voxel_neighborvisit as vneighvisit;
 use crate::voxel_callingcard as vcard;
+use crate::voxel_savor as vsavor;
 use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_weather as vweather;
 use crate::voxel_clique as vclique;
@@ -375,6 +376,12 @@ struct VoxelResident {
     /// 主城的家。與 `asleep` 並存（`asleep` 管「正在睡」，本旗標管「睡在哪」）——醒來時據此分岔：邊陲
     /// 過夜醒來要結束遠行、啟程返家（跳過家用晨間探友），家裡睡醒才走既有晨間流程。純記憶體、重啟歸零。
     asleep_at_outpost: bool,
+    /// 手中捧著、還沒享用的食物餽贈（你送的食物她會細細享用 v1，ROADMAP 765）：
+    /// `Some((食物 item_id, 送禮玩家名, 剩餘延遲秒))` = 玩家剛送了一份食物，居民收下但還沒吃，
+    /// 倒數歸零後在一個閒下來的安靜片刻**真的享用**（冒暖泡泡＋動態牆＋重新點亮心情）；
+    /// `None` = 手中沒有待享用的食物。同時只捧一份（再收到新食物就換成最新那份）。純記憶體、
+    /// 重啟歸零（享用是數十秒內的短暫過場，重啟大不了少享用一次、無資料風險，零 migration）。
+    savoring: Option<(u8, String, f32)>,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -1128,6 +1135,8 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             expedition_timer: 0.0,
             expedition_cooldown: vexp::EXPEDITION_COOLDOWN + i as f32 * 300.0,
             asleep_at_outpost: false,
+            // 你送的食物她會細細享用 v1（ROADMAP 765）：入場手中沒有待享用的食物。
+            savoring: None,
     }
 }
 
@@ -3363,6 +3372,13 @@ async fn handle_socket(
                         // 贈禮帶來更持久的心情補助（比對話長 2 分鐘）。
                         r.mood_boost_secs =
                             r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_GIFT);
+                        // 你送的食物她會細細享用 v1（ROADMAP 765）：若送的是食物，居民不立刻吃掉，
+                        // 而是捧在手中，稍後在閒下來的安靜片刻真的享用（見 tick_residents 的享用分支）。
+                        // 同時只捧一份——連續送多份食物，取最新那份（不排隊、天然防洗版）。
+                        if vgift::is_food_gift(item_id) {
+                            r.savoring =
+                                Some((item_id, name.clone(), vsavor::SAVOR_DELAY_SECS));
+                        }
                     }
                 }
                 // 9) 廣播讓所有人看到居民道謝泡泡。
@@ -4701,6 +4717,10 @@ fn tick_residents(dt: f32) {
     // 主人回家感應到門口心意事件（ROADMAP 763）：鎖內偵測「主人回到自家附近、閒著、感應到一張心意」，
     // 鎖外統一處理主人側記憶（掛訪客名下）＋ Feed。格式：(主人 id, 主人顯示名, 那位訪客顯示名)。
     let mut callingcard_notices: Vec<(String, &'static str, String)> = Vec::new();
+    // 你送的食物她會細細享用事件（ROADMAP 765）：鎖內偵測「居民捧著的食物延遲到期、此刻閒下來，
+    // 真的享用了那份心意」（泡泡＋心情補助已於鎖內設好），鎖外統一補一則城鎮動態 Feed。
+    // 格式：(居民顯示名, 送禮玩家名, 食物顯示名)。
+    let mut savor_feeds: Vec<(&'static str, String, &'static str)> = Vec::new();
 
     // 就寢反思 Feed 事件（作息·就寢反思 v1，ROADMAP 744）：鎖內入睡時偵測，鎖外記 Feed。
     // 格式：(resident_name, 今天回味的記憶摘要)。
@@ -5639,6 +5659,49 @@ fn tick_residents(dt: f32) {
                 r.say_timer = SAY_SECS;
                 r.callingcard_cooldown = vcard::NOTICE_COOLDOWN;
                 callingcard_notices.push((r.id.clone(), r.name, guest));
+            }
+
+            // ── 你送的食物，她會細細享用 v1（ROADMAP 765·PLAN_ETHERVOX item 3「記憶→行為·你的互動有後果」）──
+            // 玩家送食物時（見 Gift 分支）居民把它捧在手中（`savoring`）；這裡讓延遲倒數走完後，在一個
+            // 閒下來的安靜片刻真的享用那份心意——冒一句滿足的暖泡泡、鎖外補一則動態牆，並**重新點亮心情**
+            //（沿用贈禮 mood_boost：把送禮那刻的好心情延續到更晚、甚至在快消退時再拉回一格＝實打實的行為
+            // 後果，非純裝飾）。忙碌時一直捧著、等真的閒下來才享用（不打斷採集/建造/社交/睡覺等正事，也
+            // 不與泡泡打架）。鎖序：say/mood 於本鎖內設、Feed 走鎖外 savor_feeds，不巢狀、不持鎖 await。
+            let savor_due = if let Some((_, _, timer)) = r.savoring.as_mut() {
+                *timer -= dt;
+                *timer <= 0.0
+            } else {
+                false
+            };
+            if savor_due
+                && r.say.is_empty()
+                && r.gather.is_none()
+                && r.fetch.is_none()
+                && r.visiting.is_none()
+                && r.cheer_target.is_none()
+                && !r.seeking_comfort
+                && r.clique_meet.is_none()
+                && r.follow.is_none()
+                && r.invent_run.is_none()
+                && r.daybreak_seek.is_none()
+                && r.reunion_seek.is_none()
+                && r.expedition.is_none()
+                && r.pilgrimage.is_none()
+                && !r.asleep
+            {
+                if let Some((food_id, giver, _)) = r.savoring.take() {
+                    let food = vgift::item_name_zh(food_id);
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    r.say = vsavor::savor_bubble_line(food, &giver, pick)
+                        .chars()
+                        .take(50)
+                        .collect();
+                    r.say_timer = SAY_SECS;
+                    // 吃飽了、暖起來——重新點亮心情（沿用贈禮補助時長）。
+                    r.mood_boost_secs =
+                        r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_GIFT);
+                    savor_feeds.push((r.name, giver, food));
+                }
             }
 
             // ── 遠行探野 v1（ROADMAP 756·PLAN_ETHERVOX item 7「居民散佈世界各處住」第一刀）────────
@@ -7309,6 +7372,13 @@ fn tick_residents(dt: f32) {
         vmem::append_memory(&entry);
         // 城鎮動態 Feed：主人回到家，發現有人趁自己不在時來找過。
         vfeed::append_feed("回家發現", rname, &vcard::notice_feed(rname, guest));
+    }
+
+    // 5c-2f) 你送的食物她會細細享用 Feed（ROADMAP 765）：居民在閒暇時真的享用了玩家稍早送的食物
+    //（泡泡與心情補助已於鎖內設好）——鎖外補一則城鎮動態，讓不在線上的玩家回來也讀得到「牠好好享用了
+    // 你的心意」。餵食第一次有了「被好好享用」的溫暖回響。鎖外純 IO、不巢狀、守死鎖鐵律。
+    for (rname, giver, food) in &savor_feeds {
+        vfeed::append_feed("享用", rname, &vsavor::savor_feed_line(rname, giver, food));
     }
 
     // 5c-3) 就寢反思 Feed（作息·就寢反思 v1，ROADMAP 744）：居民入睡前回味今天最有感的一件事，
