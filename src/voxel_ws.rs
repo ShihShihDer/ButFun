@@ -84,6 +84,7 @@ use crate::voxel_savor as vsavor;
 use crate::voxel_self_image as vself;
 use crate::voxel_playerepithet as vepi;
 use crate::voxel_epithet_spread as vespread;
+use crate::voxel_epithet_sign as vepisign;
 use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_weather as vweather;
 use crate::voxel_clique as vclique;
@@ -5004,6 +5005,10 @@ fn tick_residents(dt: f32) {
     // 居民為你取一個名號 v1：鎖內打招呼時偵測「第一次為某玩家安下名號 / 名號改換」（名號招呼已於
     // 鎖內設好 r.say），鎖外統一補一則城鎮動態。格式：(居民顯示名, 旁白句)。
     let mut epithet_feeds: Vec<(&'static str, String)> = Vec::new();
+    // 名號立牌 v1（自主提案）：鎖內偵測「居民**第一次**為某玩家安下名號」→ 鎖外在牠自家門旁刻一塊
+    // 名號榮譽牌（走既有 Sign 管線），把口說的名號實體化成世界裡的永久印記。收集
+    // (居民 id, 居民顯示名, 家 x, 家 z, 玩家顯示名, 名號角色)；鎖外去重（掃 SignStore，重啟安全）後立牌。
+    let mut epithet_sign_reqs: Vec<(&'static str, f32, f32, String, vepi::PlayerRole)> = Vec::new();
     // 自我印象 v2（ROADMAP 771）：鎖內偵測「居民回望自己、且此刻心中沒有心願」→ 讓這份自我理解
     // 化為一個呼應自己的自發心願（鎖外套用，守鎖序）。格式：(居民 id, 居民顯示名, 心願字串)。
     let mut self_aspiration_sparks: Vec<(String, &'static str, &'static str)> = Vec::new();
@@ -5361,6 +5366,19 @@ fn tick_residents(dt: f32) {
                             if let Some(role) = vepi::dominant_role(&pmems) {
                                 // 第一次為你安下名號 / 名號改換的那一刻 → 記一則城鎮動態（鎖外 flush）。
                                 if r.coined_epithets.get(nearest_name) != Some(&role) {
+                                    // 名號立牌 v1：只在**這位居民從未為這位玩家安過任何名號**（真正第一次）
+                                    // 時，收集一筆「在自家門旁刻名號牌」請求——名號改換不重刻（一塊足矣）。
+                                    // 重啟後 coined_epithets 歸零會讓此條件再度成立，但鎖外立牌會先掃
+                                    // SignStore 去重（既有牌還在），不會重複立牌。
+                                    if !r.coined_epithets.contains_key(nearest_name) {
+                                        epithet_sign_reqs.push((
+                                            r.name,
+                                            r.home_x,
+                                            r.home_z,
+                                            nearest_name.to_string(),
+                                            role,
+                                        ));
+                                    }
                                     epithet_feeds.push((r.name, vepi::coined_feed_line(nearest_name, role)));
                                     r.coined_epithets.insert(nearest_name.to_string(), role);
                                 }
@@ -7777,6 +7795,58 @@ fn tick_residents(dt: f32) {
     // 鐵律；文字為純模板、只嵌玩家顯示名、無記憶原文。
     for (rname, detail) in &epithet_feeds {
         vfeed::append_feed("名號", rname, detail);
+    }
+
+    // 5c-2g-3) 名號立牌 v1（自主提案）：居民第一次為某玩家安下名號的那一刻，鎖外在牠自家門旁刻一塊
+    // 「此地常客·造物者」告示牌——把口說的名號（774）實體化成世界裡永久、可走近、可讀的印記（比照
+    // keepsake 732 把玩家送的禮物擺成世界方塊）。走既有 Sign 方塊＋SignStore＋JSONL 管線、零新協議。
+    // 去重（重啟安全）：先掃家門旁候選格的 SignStore，若已有名號牌就整筆略過（避免重啟後 coined_epithets
+    // 歸零導致重刻）。找不到合適空地也靜默略過（不強蓋、不壓既有方塊），比照 749 立牌命名。
+    for (rname, home_x, home_z, player_name, role) in &epithet_sign_reqs {
+        // 家門旁的錨點：家域中心地表往上一格（沿用 749 nameplate 的偏移＋Y 微調在門旁找空地）。
+        let hx = home_x.floor() as i32;
+        let hz = home_z.floor() as i32;
+        let anchor_y = {
+            let world = hub().deltas.read().unwrap();
+            vdt::ground_top(&world, hx, hz).map(|y| y + 1)
+        }; // deltas 讀鎖釋放
+        let Some(ay) = anchor_y else { continue };
+        // ① 去重掃描：家門旁候選格是否已立過名號牌（讀 SignStore，重啟安全）。
+        let already = {
+            let signs = hub().sign.read().unwrap();
+            vnameplate::NAMEPLATE_OFFSETS.iter().any(|(ox, oz)| {
+                vnameplate::NAMEPLATE_Y_TRIES.iter().any(|dy| {
+                    signs
+                        .get(&vsign::pos_key(hx + ox, ay + dy, hz + oz))
+                        .is_some_and(vepisign::is_honor_sign)
+                })
+            })
+        }; // sign 讀鎖釋放
+        if already {
+            continue;
+        }
+        // ② 找一格門旁空地（腳下固體、頭上空氣），沒有就靜默略過。
+        let Some((sx, sy, sz)) = pick_nameplate_slot((hx, ay, hz)) else {
+            continue;
+        };
+        let text = vepisign::honor_sign_text(*role);
+        // ③ 放 Sign 方塊（deltas 寫鎖短取即釋）→ 廣播 → 落地。
+        {
+            let mut world = hub().deltas.write().unwrap();
+            voxel::set_block(&mut world, sx, sy, sz, Block::Sign);
+        } // deltas 寫鎖釋放
+        broadcast_block(sx, sy, sz, Block::Sign);
+        vbuild::append_world_block(sx, sy, sz, Block::Sign as u8);
+        // ④ 設牌面文字（sign 寫鎖短取即釋）→ 持久化 → 廣播浮字。
+        let ev = hub().sign.write().unwrap().set(&vsign::pos_key(sx, sy, sz), text.clone());
+        vsign::append_sign(&ev);
+        broadcast_sign(sx, sy, sz, &text);
+        // ⑤ 城鎮動態牆：讓玩家（與離線回來者）讀到「某居民把我刻成了這一帶的名號」。
+        vfeed::append_feed(
+            vepisign::FEED_KIND,
+            rname,
+            &vepisign::honor_feed_line(rname, player_name, *role),
+        );
     }
 
     // 5c-2h) 自我印象驅動自發追尋（自我印象 v2，ROADMAP 771·PLAN_ETHERVOX 核心信念「記憶要驅動
