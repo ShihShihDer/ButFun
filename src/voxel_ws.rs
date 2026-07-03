@@ -81,6 +81,7 @@ use crate::voxel_neighborsign as vneighsign;
 use crate::voxel_neighborvisit as vneighvisit;
 use crate::voxel_callingcard as vcard;
 use crate::voxel_savor as vsavor;
+use crate::voxel_meal as vmeal;
 use crate::voxel_self_image as vself;
 use crate::voxel_playerepithet as vepi;
 use crate::voxel_epithet_spread as vespread;
@@ -1673,6 +1674,10 @@ enum ClientMsg {
     /// 垂釣 v1：收竿。太早（魚未上鉤）回 `fish_too_early`（保留這竿）；時機到才釣起漁獲。
     #[serde(rename = "fish_reel")]
     FishReel,
+    /// 親手煮的暖食自己也能享用 v1（779）：吃下背包裡一份自己煮的熟食（麵包/烤魚/烤地薯/
+    /// 野菜暖湯）。伺服器驗證確為可享用料理＋背包存量後，扣一份、回 `eat_ok`（暖意回饋），
+    /// 並感染附近居民（心情點亮＋暖泡泡＋交情記憶＋動態牆，受每連線冷卻節流防洗版）。
+    Eat { item_id: u8 },
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -2038,6 +2043,11 @@ async fn handle_socket(
     let mut build_streak: Option<vadmire::BuildStreak> = None;
     let mut admire_cd: std::collections::HashMap<String, std::time::Instant> =
         std::collections::HashMap::new();
+
+    // 親手煮的暖食自己也能享用 v1（779）：這條連線上次「感染附近居民」的時刻（per-connection
+    // 冷卻，天然 per-player、零跨連線鎖；斷線即清、無持久化需求）。吃東西本身不受此限，只有
+    // 「附近居民被你的滿足感染」這一拍受節流，防囤糧狂吃洗版居民泡泡 / 動態牆。
+    let mut last_eat_share: Option<std::time::Instant> = None;
 
     // 讀取迴圈：處理 move / req / break / place / talk。
     while let Some(Ok(msg)) = receiver.next().await {
@@ -4215,6 +4225,111 @@ async fn handle_socket(
                 }).to_string())).await;
                 // 玩家里程碑 v1（ROADMAP 724）：人生第一次在水邊釣起魚。
                 try_unlock_milestone(&name, "first_fish", &out_tx);
+            }
+
+            Ok(ClientMsg::Eat { item_id }) => {
+                // 親手煮的暖食自己也能享用 v1（779）。
+                // 1) 只有「自己親手煮的熟食」才吃得下（純函式判定，生食/原料/非食物擋掉）。
+                if !vmeal::is_edible_dish(item_id) {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "eat_fail",
+                        "reason": "這個沒法吃，先煮一道熱食吧～"
+                    }).to_string())).await;
+                    continue;
+                }
+                // 2) 驗並消耗一份（inventory 寫鎖即釋）。
+                let taken = { hub().inventory.write().unwrap().take(&name, item_id, 1) };
+                let Some(inv_entry) = taken else {
+                    let iname = vgift::item_name_zh(item_id);
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "eat_fail",
+                        "reason": format!("背包裡沒有{iname}")
+                    }).to_string())).await;
+                    continue;
+                };
+                vinv::append_inv(&inv_entry);
+                let dish = vgift::item_name_zh(item_id);
+                let pick = (vfarm::now_secs() as usize).wrapping_add(item_id as usize);
+                // 3) 玩家自享的暖意回饋（純函式）＋回 inv_update / eat_ok。
+                let cozy = vmeal::savor_self_line(dish, pick);
+                let remain = hub().inventory.read().unwrap().count(&name, item_id);
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "inv_update", "block_id": item_id, "count": remain,
+                }).to_string())).await;
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "eat_ok", "item_id": item_id, "item_name": dish, "line": cozy,
+                }).to_string())).await;
+                // 4) 里程碑：人生第一次嚐一口自己親手煮的料理。
+                try_unlock_milestone(&name, "first_taste", &out_tx);
+                // 5) 交織點：若剛好站在某位居民身邊、且分享冷卻就緒，居民被你的滿足感染
+                //    （心情點亮＋暖泡泡＋交情記憶＋動態牆）。分享冷卻只節流這一拍、不影響吃本身。
+                let share_ready = last_eat_share
+                    .map(|t| t.elapsed().as_secs_f32() >= vmeal::SHARE_COOLDOWN_SECS)
+                    .unwrap_or(true);
+                if share_ready {
+                    // 5a) 短鎖取玩家位置（players 讀鎖即釋）。
+                    let ppos: Option<(f32, f32)> = {
+                        hub().players.read().unwrap().get(&my_id).map(|p| (p.x, p.z))
+                    };
+                    if let Some((px, pz)) = ppos {
+                        // 5b) 挑半徑內、有空反應（未睡、say 空）的最近居民（residents 讀鎖即釋）。
+                        let target: Option<(String, &'static str)> = {
+                            let residents = hub().residents.read().unwrap();
+                            residents
+                                .iter()
+                                .filter(|r| !r.asleep && r.say.is_empty())
+                                .filter_map(|r| {
+                                    let dx = px - r.body.x;
+                                    let dz = pz - r.body.z;
+                                    let d2 = dx * dx + dz * dz;
+                                    if d2 <= vmeal::SHARE_RADIUS * vmeal::SHARE_RADIUS {
+                                        Some((d2, r.id.clone(), r.name))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .min_by(|a, b| {
+                                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                                })
+                                .map(|(_, id, nm)| (id, nm))
+                        };
+                        if let Some((rid, rname)) = target {
+                            // 5c) 居民冒暖泡泡＋心情點亮（residents 寫鎖即釋；再確認 say 仍空防搶拍）。
+                            let sline = vmeal::share_line(dish, pick);
+                            let said = {
+                                let mut residents = hub().residents.write().unwrap();
+                                match residents.iter_mut().find(|r| r.id == rid) {
+                                    Some(r) if r.say.is_empty() => {
+                                        r.say = sline.chars().take(50).collect();
+                                        r.say_timer = SAY_SECS;
+                                        r.mood_boost_secs =
+                                            r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                        true
+                                    }
+                                    _ => false,
+                                }
+                            };
+                            if said {
+                                last_eat_share = Some(std::time::Instant::now());
+                                broadcast_players();
+                                // 交情記憶（memory 寫鎖即釋、append IO 在鎖外，守死鎖鐵律）。
+                                let summary = vmeal::share_memory_line(&name, dish);
+                                let entry = hub()
+                                    .memory
+                                    .write()
+                                    .unwrap()
+                                    .add_memory(&rid, &name, &summary);
+                                vmem::append_memory(&entry);
+                                // 城鎮動態牆。
+                                vfeed::append_feed(
+                                    "暖意分享",
+                                    rname,
+                                    &vmeal::share_feed_line(rname, &name, dish),
+                                );
+                            }
+                        }
+                    }
+                }
             }
 
             // 重複 Join 或壞訊息：忽略。

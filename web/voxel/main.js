@@ -1453,6 +1453,49 @@ function trySendGift() {
 // ── 居民以物易物（ROADMAP 670）───────────────────────────────────────────────
 // 玩家點「⇌ 交易」→ 伺服器回 trade_offer → 前端顯示提案橫幅 → 玩家點接受 → 伺服器執行交易。
 
+// ── 親手煮的暖食自己也能享用 v1（779）────────────────────────────────────────
+// 只有「自己親手煮的熟食」吃得下（對齊後端 voxel_meal::is_edible_dish：麵包/烤魚/烤地薯/野菜暖湯）。
+const EDIBLE_DISHES = new Set([BREAD, COOKED_FISH, BAKED_POTATO, STEW]);
+
+/** 從背包挑一份可享用的熟食（存量最多者、同量取 id 小者，確定性）。無則回 null。 */
+function eatPickItem(inv) {
+  if (!(inv instanceof Map)) return null;
+  let best = null;
+  for (const [bid, cnt] of inv) {
+    if (!EDIBLE_DISHES.has(bid) || cnt <= 0) continue;
+    if (!best || cnt > best.count || (cnt === best.count && bid < best.blockId)) {
+      best = { blockId: bid, count: cnt };
+    }
+  }
+  return best;
+}
+
+/** 更新「🍲 享用」按鈕：手上有熟食才浮現，並顯示要吃的是哪道菜。 */
+function updateEatBtn() {
+  const el = document.getElementById("eatBtn");
+  if (!el) return;
+  const pick = eatPickItem(myInv);
+  if (!pick) {
+    el.style.display = "none";
+  } else {
+    el.style.display = "inline-flex";
+    el.textContent = "🍲 享用" + (BLOCK_NAME[pick.blockId] || "熱食");
+  }
+}
+
+let lastEatMs = 0; // 享用本地冷卻（防連按）
+
+/** 執行享用：吃下一份自己煮的熟食（伺服器仍權威驗證存量）。 */
+function tryEatDish() {
+  if (!wsReady) return;
+  const now = Date.now();
+  if (now - lastEatMs < 1200) return; // 1.2 秒本地冷卻
+  const pick = eatPickItem(myInv);
+  if (!pick) { showMsg("先煮一道熱食吧～（麵包/烤魚/烤地薯/野菜暖湯）"); return; }
+  lastEatMs = now;
+  ws.send(JSON.stringify({ t: "eat", item_id: pick.blockId }));
+}
+
 let lastTradeMs = 0;     // 交易請求本地冷卻（防連按）
 let pendingTradeRid = null; // 目前有開放提案的居民 id
 
@@ -3155,12 +3198,14 @@ function connect() {
       }
       updateInvHud();
       updateGiftBtn(); // 贈禮 v1：背包恢復後同步更新按鈕
+      updateEatBtn();  // 享用 v1（779）：背包恢復後同步更新享用鈕
     } else if (m.t === "inv_update") {
       // 採集 v1：單一材料增減後的新存量（伺服器回傳 total，非 delta）。
       if (m.count > 0) myInv.set(m.block_id, m.count);
       else myInv.delete(m.block_id);
       updateInvHud();
       updateGiftBtn(); // 贈禮 v1：材料變動後同步更新按鈕
+      updateEatBtn();  // 享用 v1（779）：材料變動後同步更新享用鈕
       if (chestPanelVisible()) renderChestPanel(); // 箱子 v1：背包變動後同步更新箱子面板背包區
     } else if (m.t === "inv_denied") {
       // 採集 v1：放置材料不足，短暫提示。
@@ -3222,6 +3267,15 @@ function connect() {
     } else if (m.t === "gift_fail") {
       // 贈禮 v1：送禮失敗（太遠 / 沒材料）。
       showErr(m.reason || "無法送禮");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "eat_ok") {
+      // 親手煮的暖食自己也能享用 v1（779）：吃下一份自己煮的熟食——畫面浮出暖意回饋句。
+      showMsg("🍲 " + (m.line || "暖意從指尖一路暖到心底……"));
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3000);
+      updateEatBtn(); // 背包已由 inv_update 更新，重算享用鈕（吃完可能沒了）
+    } else if (m.t === "eat_fail") {
+      // 享用 v1（779）：吃不了（非熟食 / 背包沒有）。
+      showErr(m.reason || "現在沒法享用");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "return_gift") {
       // 居民回禮 v1（ROADMAP 667）：只有當事玩家才顯示提示並更新背包。
@@ -3900,6 +3954,12 @@ if (viewBtnEl) {
 const bagBtnEl = document.getElementById("bagBtn");
 if (bagBtnEl) bagBtnEl.addEventListener("click", (e) => {
   if (bagPanelVisible()) { closeBagPanel(); } else { openBagPanel(); }
+  e.stopPropagation();
+});
+// 享用鈕（親手煮的暖食自己也能享用 v1，779）：吃下一份自己煮的熟食。
+const eatBtnEl = document.getElementById("eatBtn");
+if (eatBtnEl) eatBtnEl.addEventListener("click", (e) => {
+  tryEatDish();
   e.stopPropagation();
 });
 // 點面板外關閉。
