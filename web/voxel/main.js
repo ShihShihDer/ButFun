@@ -1284,16 +1284,26 @@ function openChat(rid, name) {
   chatTitleEl.textContent = name || "居民";
   releaseMouse(); // 桌機：開對話要放開滑鼠鎖定，游標才能打字
   chatEl.style.display = "flex";
-  // 開定向對話 modal 時收起常駐說話列，避免兩者重疊。
-  const sb = document.getElementById("speakBar");
-  if (sb) sb.style.display = "none";
+  // 開定向對話 modal 時收起範圍說話列，避免兩者重疊。
+  setSpeakBarShown(false);
   updateGiftBtn(); // 贈禮 v1：更新按鈕顯示哪件物品
   hideTradeOffer(); // 換居民時清掉舊交易提案（不同居民的提案不共用）
 }
 function closeChat() {
   if (chatEl) chatEl.style.display = "none";
+  setSpeakBarShown(true); // 桌機恢復底部常駐輸入列；觸控維持收起（由「💬 說」鈕再開）
+}
+
+// 範圍說話輸入列顯隱：桌機常駐（用 inline display），觸控靠 .open class（預設收起、不佔位）。
+function setSpeakBarShown(show) {
   const sb = document.getElementById("speakBar");
-  if (sb) sb.style.display = "flex"; // 恢復常駐說話列
+  if (!sb) return;
+  if (document.body.classList.contains("touch")) {
+    // 觸控：只負責「收起」（開 modal / 送出時）；展開一律由使用者點鈕，避免自動冒出壓拇指區。
+    if (!show) sb.classList.remove("open");
+  } else {
+    sb.style.display = show ? "flex" : "none";
+  }
 }
 
 // 送一句話給目前對話的居民（指定對象＝點居民 / 走近面對）。
@@ -1347,15 +1357,34 @@ if (chatEl) {
 // 底部常駐輸入列：打字 → 範圍「說話」（不必先點居民）。手機/直式友善、不開 modal。
 const speakInputEl = document.getElementById("speakInput");
 const speakSendEl = document.getElementById("speakSend");
+const speakBarEl = document.getElementById("speakBar");
+const speakToggleEl = document.getElementById("speakToggle");
 if (speakInputEl && speakSendEl) {
   const fireSpeak = () => {
     sendSpeak(speakInputEl.value);
     speakInputEl.value = "";
     speakInputEl.blur(); // 送完收鍵盤焦點，讓 WASD 等遊戲鍵恢復作用
+    setSpeakBarShown(false); // 觸控：送完收起輸入列（桌機無影響，仍常駐）
   };
   speakSendEl.addEventListener("click", fireSpeak);
   speakInputEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { fireSpeak(); e.preventDefault(); }
+  });
+  // 觸控：失焦（點別處/收鍵盤）即收起輸入列，避免它常駐壓拇指區。
+  // 延遲一拍讓「說」送出鈕的 click 先觸發（點鈕會先讓 input 失焦）。
+  speakInputEl.addEventListener("blur", () => {
+    if (document.body.classList.contains("touch")) {
+      setTimeout(() => { if (document.activeElement !== speakInputEl) setSpeakBarShown(false); }, 160);
+    }
+  });
+}
+// 觸控「💬 說」鈕：展開/收合範圍說話輸入列（桌機此鈕以 CSS 隱藏、不觸發）。
+if (speakToggleEl && speakBarEl && speakInputEl) {
+  speakToggleEl.addEventListener("click", (e) => {
+    e.preventDefault();
+    const opening = !speakBarEl.classList.contains("open");
+    speakBarEl.classList.toggle("open");
+    if (opening) speakInputEl.focus(); // 展開即聚焦，鍵盤直接彈出可打字
   });
 }
 
