@@ -140,6 +140,32 @@ pub struct RosterEntry {
 /// 名冊落地路徑（`data/` 已 gitignore）。
 const ROSTER_PATH: &str = "data/voxel_residents_roster.jsonl";
 
+/// 上次出生（或首次啟動基準）的 unix 秒持久化路徑。
+/// 單一數字覆寫檔（非 append），跨重啟累積 elapsed，避免頻繁重啟時 LAST_BIRTH_UNIX 歸零。
+const LAST_BIRTH_PATH: &str = "data/voxel_last_birth";
+
+/// 從 `data/voxel_last_birth` 讀回上次出生/基準的 unix 秒。
+/// 檔不存在（舊部署 / 首次啟動）→ `None`。解析失敗（損毀）→ `None`（向後相容）。
+/// **鐵律**：只在不持任何鎖時呼叫（同步小檔讀、不 await）。
+pub fn load_last_birth_unix() -> Option<u64> {
+    std::fs::read_to_string(LAST_BIRTH_PATH)
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+}
+
+/// 把「上次出生/基準」的 unix 秒寫入 `data/voxel_last_birth`（覆寫、非 append）。
+/// 失敗只吞掉，不 panic（比照 voxel_feed 慣例）；data/ 目錄缺失自動建立。
+/// **鐵律**：只在不持任何鎖時呼叫（同步小檔寫、不 await）。
+pub fn save_last_birth_unix(unix: u64) {
+    if let Some(parent) = std::path::Path::new(LAST_BIRTH_PATH).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // 覆寫（非 append）：只需保留最新一筆基準值。
+    let _ = std::fs::write(LAST_BIRTH_PATH, format!("{unix}\n"));
+}
+
 /// Append 一筆名冊記錄。**鐵律**：只在不持任何鎖時呼叫（同步小檔寫、不 await）。
 pub fn append_roster_entry(rec: &RosterEntry) {
     if let Ok(line) = serde_json::to_string(rec) {
@@ -286,5 +312,78 @@ mod tests {
             })
             .collect();
         assert!(parsed.is_empty());
+    }
+
+    // ── last_birth_unix 持久化：解析往返測試 ──────────────────────────────────
+    // 不碰真實 data/ 目錄，只測「字串 ↔ u64」往返——與 load/save 的內核邏輯一致。
+
+    /// 正常數字字串解析為 u64（模擬 load_last_birth_unix 讀到正常檔案）。
+    #[test]
+    fn last_birth_unix_parse_normal() {
+        let raw = "1_700_000_000\n"; // 帶換行，模擬 write! 寫入
+        // 注意：Rust parse::<u64>() 不接受底線分隔，此處測試實際格式（純數字）
+        let raw = "1700000000\n";
+        assert_eq!(raw.trim().parse::<u64>().ok(), Some(1_700_000_000u64));
+    }
+
+    /// 空字串（損毀或空檔）→ None（向後相容，不 panic）。
+    #[test]
+    fn last_birth_unix_parse_empty_is_none() {
+        assert_eq!("".trim().parse::<u64>().ok(), None);
+        assert_eq!("   \n".trim().parse::<u64>().ok(), None);
+    }
+
+    /// 損毀內容 → None（不 panic）。
+    #[test]
+    fn last_birth_unix_parse_corrupt_is_none() {
+        assert_eq!("not_a_number".trim().parse::<u64>().ok(), None);
+        assert_eq!("-1".trim().parse::<u64>().ok(), None); // 負數對 u64 無效
+    }
+
+    /// 序列化往返：u64 → format! 字串 → trim().parse() → 同值（模擬 save+load）。
+    #[test]
+    fn last_birth_unix_serialize_roundtrip() {
+        let original: u64 = 1_718_000_000;
+        let serialized = format!("{original}\n");
+        let loaded: u64 = serialized.trim().parse().expect("往返應成功");
+        assert_eq!(loaded, original);
+    }
+
+    /// 首次啟動邏輯：load 回 None → 記 now 為基準、不生（純邏輯驗）。
+    #[test]
+    fn first_startup_no_file_sets_baseline_only() {
+        // 模擬：沒有持久化值（load 回 None）→ 基準 = now，elapsed = 0，should_birth = false
+        let saved: Option<u64> = None; // 模擬 load_last_birth_unix() 的結果
+        let now: u64 = 1_718_000_000;
+        let baseline = saved.unwrap_or(now); // 首次：記 now
+        let elapsed = now.saturating_sub(baseline) as f32;
+        assert_eq!(elapsed, 0.0); // 首次 elapsed = 0 → 一定不生
+        assert!(!should_birth(4, 10, true, elapsed, 3600.0, 0.0));
+    }
+
+    /// 跨重啟累積：load 回「1 小時前」的基準 → elapsed >= interval → 可生。
+    #[test]
+    fn cross_restart_elapsed_accumulates() {
+        let interval = 3600.0f32;
+        let baseline: u64 = 1_718_000_000; // 1 小時前存的值
+        let now: u64 = baseline + 3601; // 重啟後現在：間隔已到
+        let saved: Option<u64> = Some(baseline); // 模擬 load_last_birth_unix()
+        let loaded_baseline = saved.unwrap_or(now);
+        let elapsed = now.saturating_sub(loaded_baseline) as f32;
+        assert!(elapsed >= interval, "elapsed {elapsed} 應 >= interval {interval}");
+        assert!(should_birth(4, 10, true, elapsed, interval, 0.0));
+    }
+
+    /// 頻繁重啟但間隔未到：load 回「30 分前」的基準 → elapsed < interval → 不生。
+    #[test]
+    fn frequent_restart_within_interval_no_birth() {
+        let interval = 3600.0f32;
+        let baseline: u64 = 1_718_000_000;
+        let now: u64 = baseline + 1800; // 只過了 30 分
+        let saved: Option<u64> = Some(baseline);
+        let loaded_baseline = saved.unwrap_or(now);
+        let elapsed = now.saturating_sub(loaded_baseline) as f32;
+        assert!(elapsed < interval, "elapsed {elapsed} 應 < interval {interval}");
+        assert!(!should_birth(4, 10, true, elapsed, interval, 0.0));
     }
 }
