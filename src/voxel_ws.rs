@@ -2394,14 +2394,15 @@ async fn handle_socket(
                             Some(vadmire::advance_streak(build_streak, x as f32, z as f32, now_secs));
                         let streak = build_streak.map_or(0, |s| s.0);
                         if streak >= vadmire::ADMIRE_STREAK_MIN {
-                            // 快照居民，挑「離這塊最近、此刻有空（沒在冒別的泡泡／拜訪／遠行／
-                            // 聚會／品嘗）」的一位（residents 讀鎖即釋，不與後續鎖巢狀）。
+                            // 快照居民，挑「離這塊最近、此刻有空（沒睡著／沒在冒別的泡泡／拜訪／
+                            // 遠行／聚會／品嘗）」的一位（residents 讀鎖即釋，不與後續鎖巢狀）。
                             let cand: Option<(String, &'static str, f32)> = {
                                 let residents = hub().residents.read().unwrap();
                                 residents
                                     .iter()
                                     .filter(|r| {
                                         r.say.is_empty()
+                                            && !r.asleep
                                             && r.visiting.is_none()
                                             && r.expedition.is_none()
                                             && r.clique_meet.is_none()
