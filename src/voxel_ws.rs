@@ -51,6 +51,7 @@ use crate::voxel_farm::{self as vfarm, FarmStore};
 use crate::voxel_grove::{self as vgrove, GroveStore};
 use crate::voxel_gift as vgift;
 use crate::voxel_keepsake as vkeep;
+use crate::voxel_keepsake_recall as vkrecall;
 use crate::voxel_seedgift as vseed;
 use crate::voxel_giftgarden as vgg;
 use crate::voxel_fishing as vfish;
@@ -368,6 +369,13 @@ struct VoxelResident {
     /// [`vstar::STARGAZE_COOLDOWN_SECS`]，歸零前不再觸發——星夜共賞是偶爾的浪漫一拍、不洗版。
     /// 各居民初始錯開。純記憶體、重啟歸零。
     stargaze_cooldown: f32,
+    /// 這位居民擺在世界裡、你送的紀念物座標小佇列（睹物思人 v1，ROADMAP 784）：keepsake（732）
+    /// 落地一件就記一筆（座標＋紀念物名＋送禮玩家名）；她日後閒晃恰好路過時偶爾駐足追憶。
+    /// 上限 [`vkrecall::MAX_SPOTS`]、去重。純記憶體、重啟歸零（那塊方塊本身仍由 keepsake 持久化）。
+    keepsake_spots: Vec<vkrecall::KeepsakeSpot>,
+    /// 睹物思人冷卻倒數（秒，ROADMAP 784）：一次追憶後設 [`vkrecall::RECALL_COOLDOWN_SECS`]，
+    /// 歸零前不再觸發——偶爾一拍才有感、不洗版。各居民初始錯開。純記憶體、重啟歸零。
+    keepsake_recall_cooldown: f32,
     /// 門口留下的「有人來找過」心意佇列（登門撲空留心意 v1，ROADMAP 763）：某訪客登門撲空（752 判定
     /// 主人不在家）時，訪客名字塞進這裡；日後主人回到自家附近閒著時逐一感應、念一句、記一筆。
     /// 去重＋上限保護（[`vcard::MAX_PENDING_CALLERS`]）。純記憶體、重啟歸零。
@@ -1176,6 +1184,9 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             pilgrimage_cooldown: 180.0 + i as f32 * 60.0,
             // 繁星夜空 v1（ROADMAP 783）：望星冷卻各自錯開，避免同一個星夜大家一起邀。
             stargaze_cooldown: 120.0 + i as f32 * 45.0,
+            // 睹物思人 v1（ROADMAP 784）：入場還沒擺出任何你送的紀念物；追憶冷卻各自錯開。
+            keepsake_spots: Vec::new(),
+            keepsake_recall_cooldown: 90.0 + i as f32 * 40.0,
             // 登門撲空留心意 v1（ROADMAP 763）：入場門口沒有待感應的心意；首次感應冷卻各自錯開。
             pending_callers: Vec::new(),
             callingcard_cooldown: 20.0 + i as f32 * 15.0,
@@ -3731,6 +3742,25 @@ async fn handle_socket(
                             rname,
                             &vkeep::keepsake_feed_line(rname, &name, kname),
                         );
+                        // 睹物思人 v1（ROADMAP 784）：把這件剛擺出的紀念物座標記進這位居民的追憶佇列，
+                        // 她日後閒晃恰好路過時偶爾會駐足想起你。residents 短寫鎖即釋、不巢狀（此處已在
+                        // 其他鎖外，安全）；純記憶體、重啟歸零。
+                        {
+                            let mut residents = hub().residents.write().unwrap();
+                            if let Some(r) = residents.iter_mut().find(|r| r.id == resident_id) {
+                                vkrecall::remember_spot(
+                                    &mut r.keepsake_spots,
+                                    vkrecall::KeepsakeSpot {
+                                        x: kx,
+                                        y: ky,
+                                        z: kz,
+                                        item: kname.to_string(),
+                                        giver: name.clone(),
+                                    },
+                                    vkrecall::MAX_SPOTS,
+                                );
+                            }
+                        } // residents 寫鎖釋放
                     }
                 }
                 // 11c) 居民種下你送的種子，長成她自己的一畦菜園 v1（ROADMAP 754）：把「人類種田」
@@ -5231,6 +5261,9 @@ fn tick_residents(dt: f32) {
     // 事件；記憶寫（add_memory）與 Feed（append_feed）全在居民鎖釋放後統一處理（不持居民鎖做 IO）。
     // (居民 id, 居民名, 玩家名)。
     let mut stargaze_events: Vec<(String, &'static str, String)> = Vec::new();
+    // 睹物思人事件（ROADMAP 784）：居民駐足追憶時鎖內收集，記憶寫＋Feed 在居民鎖釋放後統一落地
+    //（不持居民鎖做 IO，守死鎖鐵律）。(居民 id, 居民名, 送禮玩家名, 紀念物名, pick)。
+    let mut keepsake_recall_events: Vec<(String, &'static str, String, String, usize)> = Vec::new();
 
     // 邊陲營火路標（遠行 v2，PLAN_ETHERVOX item 7「在遠方留下痕跡」）：鎖內收集「某居民抵達邊陲、
     // 要在落點升起一堆營火路標」的請求；地表計算、deltas 寫、廣播、持久化、記憶與 Feed 全在鎖釋放後
@@ -6242,6 +6275,51 @@ fn tick_residents(dt: f32) {
             // 繁星夜空 v1（ROADMAP 783）：望星冷卻遞減（純記憶體、每 tick 一次）。
             if r.stargaze_cooldown > 0.0 {
                 r.stargaze_cooldown -= dt;
+            }
+            // 睹物思人 v1（ROADMAP 784）：追憶冷卻遞減（純記憶體、每 tick 一次）。
+            if r.keepsake_recall_cooldown > 0.0 {
+                r.keepsake_recall_cooldown -= dt;
+            }
+            // 睹物思人 v1（ROADMAP 784）：閒著、醒著、且恰好路過她擺出的某件你送的紀念物時，
+            // 偶爾駐足追憶一句、記進交情——keepsake（732）落地後的持續回響（記憶→行為）。
+            // say 為空、醒著、手邊沒重要事才觸發，不搶正事；長冷卻＋極低機率＝天然節流。
+            // 鎖序：純讀 r.keepsake_spots（居民自身欄位，已持居民寫鎖），記憶寫＋Feed 走鎖外
+            // `keepsake_recall_events`，守死鎖鐵律。
+            if !r.keepsake_spots.is_empty()
+                && r.say.is_empty()
+                && !r.asleep
+                && r.keepsake_recall_cooldown <= 0.0
+                && r.pilgrimage.is_none()
+                && r.expedition.is_none()
+            {
+                if let Some(idx) =
+                    vkrecall::nearest_spot(&r.keepsake_spots, r.body.x, r.body.z, vkrecall::RECALL_NEAR_RADIUS)
+                {
+                    if vkrecall::should_recall(
+                        true, // nearest_spot 已確認在半徑內
+                        true, // 冷卻已在外層確認過
+                        rand::random::<f32>(),
+                        vkrecall::RECALL_CHANCE,
+                    ) {
+                        r.keepsake_recall_cooldown = vkrecall::RECALL_COOLDOWN_SECS;
+                        let spot = r.keepsake_spots[idx].clone();
+                        let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                        r.say = vkrecall::recall_line(&spot.giver, &spot.item, pick);
+                        r.say_timer = SAY_SECS;
+                        r.mood_boost_secs =
+                            r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                        // 只有登入玩家（送禮者名非空）才記進交情、上動態牆（訪客送的無持久身份）。
+                        if !spot.giver.is_empty() {
+                            keepsake_recall_events.push((
+                                r.id.clone(),
+                                r.name,
+                                spot.giver.clone(),
+                                spot.item.clone(),
+                                pick,
+                            ));
+                        }
+                    }
+                }
             }
             if let Some((tx, tz, quote)) = r.pilgrimage.clone() {
                 // 持續朝牌子走、清小歇（步步逼近，讓玩家看得到她專程走過來）。
@@ -7996,6 +8074,21 @@ fn tick_residents(dt: f32) {
             .unwrap()
             .add_memory(rid, pname, &vstar::stargaze_memory(pname)); // 記憶寫鎖即釋
         vfeed::append_feed(vstar::FEED_KIND, rname, &vstar::stargaze_feed_line(rname, pname));
+    }
+
+    // 睹物思人（ROADMAP 784）：居民駐足在你送的紀念物前想起你時，把這份「又想起了你」記進交情、
+    // 上動態牆——鎖外統一 IO（不持居民鎖，守死鎖鐵律）。
+    for (rid, rname, giver, item, pick) in &keepsake_recall_events {
+        hub().memory.write().unwrap().add_memory(
+            rid,
+            giver,
+            &vkrecall::recall_memory_line(giver, item, *pick),
+        ); // 記憶寫鎖即釋
+        vfeed::append_feed(
+            vkrecall::FEED_KIND,
+            rname,
+            &vkrecall::recall_feed_line(rname, giver, item),
+        );
     }
 
     // 5c-2a') 邊陲營火路標（遠行 v2，PLAN_ETHERVOX item 7「在遠方留下痕跡」）：居民抵達邊陲時
