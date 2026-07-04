@@ -82,6 +82,7 @@ use crate::voxel_mood;
 use crate::voxel_comfort as vcomfort;
 use crate::voxel_hunger as vhunger;
 use crate::voxel_share_meal as vsharemeal;
+use crate::voxel_gratitude as vgrat;
 use crate::voxel_cheer as vcheer;
 use crate::voxel_chest as vchest;
 use crate::voxel_sign as vsign;
@@ -494,9 +495,10 @@ struct VoxelResident {
     /// 分食冷卻倒數（秒，飢餓時的守望相助 v1，ROADMAP 800）：一次分食後設
     /// [`vsharemeal::SHARE_COOLDOWN_SECS`]，歸零前不再對人分食，讓「分一口飯」稀少而有份量。純記憶體。
     share_meal_cooldown: f32,
-    /// 被鄰居分食後、延遲道謝的待辦（飢餓時的守望相助 v1）：`Some((分食者名, 倒數))`，
+    /// 被鄰居分食後、延遲道謝的待辦（飢餓時的守望相助 v1）：`Some((分食者名, 倒數, 是否回報))`，
     /// 倒數歸零時冒一句專屬道謝泡泡（比照 792 圍火講古的 `pending_tale_reply` 一來一往機制）。純記憶體。
-    pending_meal_thanks: Option<(String, f32)>,
+    /// 第三欄 `is_repay`（知恩圖報 v1，ROADMAP 801）：true=這頓是「回報當年那口飯」，道謝改用專屬語氣。
+    pending_meal_thanks: Option<(String, f32, bool)>,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -1356,6 +1358,10 @@ struct VoxelHub {
     /// 居民情誼帳本（ROADMAP 672）：拜訪次數累積情誼（陌生→相識→老朋友），持久化跨重啟。
     /// 每次探訪到達時 record_visit → 若升級則 Feed 廣播 + 問候語更換。
     bonds: RwLock<ResidentBonds>,
+    /// 欠飯帳本（知恩圖報 v1，ROADMAP 801）：記錄「誰欠誰一口飯」——被分過飯的居民（欠飯者 id）→
+    /// 牠欠著一口飯的一群恩人（分食者 id）集合。純記憶體、重啟歸零（過場恩情、零 migration）；
+    /// 800 分食 → owe，日後回報 → repay。以居民 id 記帳、與情誼帳本並行、鎖各自獨立短取即釋。
+    meal_debts: RwLock<vgrat::MealDebts>,
     /// 箱子儲存 store（ROADMAP 692）：世界座標 → 方塊 id → 數量。
     /// 持久化到 data/voxel_chests.jsonl；多人共用同一箱子（序列化 RwLock 解決競爭）。
     chest: RwLock<vchest::ChestStore>,
@@ -1596,6 +1602,8 @@ fn hub() -> &'static VoxelHub {
             pending_fish: RwLock::new(HashMap::new()),
             // 居民情誼 v1（ROADMAP 672）：啟動時從 data/voxel_bonds.jsonl 載回情誼記錄。
             bonds: RwLock::new(ResidentBonds::from_entries(vbonds::load_bonds())),
+            // 知恩圖報 v1（ROADMAP 801）：欠飯帳本純記憶體、啟動時空的（過場恩情、重啟歸零、零持久化）。
+            meal_debts: RwLock::new(vgrat::MealDebts::default()),
             // 啟動時從 data/voxel_chests.jsonl 載回箱子存量（重啟後仍保留儲存物品）。
             chest: RwLock::new(vchest::ChestStore::from_entries(vchest::load_chests())),
             // 啟動時從 data/voxel_signs.jsonl 載回告示牌文字（重啟後牌面仍在）。
@@ -5967,7 +5975,9 @@ fn tick_residents(dt: f32) {
     let mut campfire_tale_events: Vec<(String, &'static str, String, &'static str, String)> = Vec::new();
     // 飢餓時的守望相助 v1（ROADMAP 800）：本 tick 分食事件 (分食者 id, 分食者名, 被分食者 id, 被分食者名)，
     // 鎖外落地雙方記憶 + 情誼加溫 + 城鎮動態（比照 792/witness 的鎖外處理，守死鎖鐵律）。
-    let mut share_meal_events: Vec<(String, &'static str, String, &'static str)> = Vec::new();
+    // 末欄 is_repay（知恩圖報 v1，801）：true=這頓是「回報當年那口飯」，鎖外落地時走專屬記憶/Feed
+    // 並結清欠飯；false=一般守望相助分食，落地時登記「被分食者欠分食者一口飯」。
+    let mut share_meal_events: Vec<(String, &'static str, String, &'static str, bool)> = Vec::new();
     // 乙太營火 v1：夜裡才需要一份營火座標快照。短鎖 clone 即釋，避免在 residents 寫鎖迴圈內
     // 再取 campfires 讀鎖（不巢狀鎖，守 prod 死鎖鐵律）；非夜晚時空 Vec，跳過整段判定。
     let campfire_spots: Vec<(i32, i32, i32)> = if matches!(phase, TimePhase::Night) {
@@ -6385,16 +6395,23 @@ fn tick_residents(dt: f32) {
             // 嵌分食者名的專屬道謝泡泡（零 LLM、程式化台詞），心情也亮一格。與通用社交回應分開，讓
             // 「這頓解了餓」有專屬語氣。倒數與 take 都在居民自身鎖內、不巢狀。
             let meal_thanks_ready = match &mut r.pending_meal_thanks {
-                Some((_, cd)) => {
+                Some((_, cd, _)) => {
                     *cd -= dt;
                     *cd <= 0.0
                 }
                 None => false,
             };
             if meal_thanks_ready && r.say.is_empty() {
-                if let Some((sharer_name, _)) = r.pending_meal_thanks.take() {
+                if let Some((sharer_name, _, is_repay)) = r.pending_meal_thanks.take() {
                     let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                    r.say = vsharemeal::thanks_line(&sharer_name, pick).chars().take(40).collect();
+                    // 知恩圖報 v1（801）：被回報者用專屬道謝語氣（「你還記得那頓飯呀」），
+                    // 與 800 一般分食道謝分開，讓「當年那口飯有了回聲」有專屬溫度。
+                    let line = if is_repay {
+                        vgrat::repay_thanks_line(&sharer_name, pick)
+                    } else {
+                        vsharemeal::thanks_line(&sharer_name, pick)
+                    };
+                    r.say = line.chars().take(40).collect();
                     r.say_timer = SAY_SECS;
                     r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                 }
@@ -8425,10 +8442,12 @@ fn tick_residents(dt: f32) {
         // 有長冷卻 + 低機率，天然節流、不干擾物理主迴圈。沿用 2c/2c-2 的 `snaps` 位置快照（i≠j 循序索引、
         // 不雙重借用）；情誼層級以短讀鎖取一次即釋（比照 2e 打氣掃描的 bonds 讀取，鎖序 residents 寫→
         // bonds 讀，不巢狀、不反向，守死鎖鐵律）。
-        let share_pair: Option<(usize, usize)> = {
-            // (分食者 si, 被分食者 hi)。bonds 讀鎖只在挑對期間持有、找到即釋。
+        // 末欄 is_repay（知恩圖報 v1，801）：這對是不是「回報當年那口飯」（分食者 si 記著欠 hi 一口飯）。
+        let share_pair: Option<(usize, usize, bool)> = {
+            // (分食者 si, 被分食者 hi, 是否回報)。bonds/debts 讀鎖只在挑對期間持有、找到即釋。
             let bonds = hub().bonds.read().unwrap();
-            let mut found: Option<(usize, usize)> = None;
+            let debts = hub().meal_debts.read().unwrap();
+            let mut found: Option<(usize, usize, bool)> = None;
             'sscan: for hi in 0..snaps.len() {
                 // 被分食者：正餓著找吃的、沒睡著。
                 if !residents[hi].seeking_food || snaps[hi].7 {
@@ -8458,28 +8477,56 @@ fn tick_residents(dt: f32) {
                     ) {
                         continue;
                     }
-                    // 記憶驅動行為：只有交情到相識以上的鄰居才會分一口飯（陌生人擦身而過不會）。
-                    if !vsharemeal::tier_allows_share(resident_tier_of(&bonds, &snaps[si].1, &snaps[hi].1)) {
+                    // 知恩圖報 v1（801）：分食者 si 是否記著曾被餓著的 hi 分過一口飯（欠 hi 一頓）。
+                    // 若欠著 → 這頓是「回報」：**打破 800 的相識門檻**（連陌生人也還）、且用更積極的
+                    // 回報機率。記憶對行為產生真實例外——你會看到交情還淺的兩人之間也主動分食。
+                    let is_repay = debts.owes(&snaps[si].1, &snaps[hi].1);
+                    // 一般守望相助（非回報）：仍守 800 鐵律——只有交情到相識以上的鄰居才會分一口飯。
+                    if !is_repay
+                        && !vsharemeal::tier_allows_share(resident_tier_of(
+                            &bonds,
+                            &snaps[si].1,
+                            &snaps[hi].1,
+                        ))
+                    {
                         continue;
                     }
-                    if vsharemeal::should_share(
-                        residents[si].share_meal_cooldown, rand::random::<f32>(), vsharemeal::SHARE_CHANCE,
-                    ) {
-                        found = Some((si, hi));
+                    // 回報用更高機率（記著的恩一有機會就想還）；一般分食用 800 機率。冷卻皆共用、天然節流。
+                    let passed = if is_repay {
+                        vgrat::should_repay(
+                            residents[si].share_meal_cooldown,
+                            rand::random::<f32>(),
+                            vgrat::REPAY_CHANCE,
+                        )
+                    } else {
+                        vsharemeal::should_share(
+                            residents[si].share_meal_cooldown,
+                            rand::random::<f32>(),
+                            vsharemeal::SHARE_CHANCE,
+                        )
+                    };
+                    if passed {
+                        found = Some((si, hi, is_repay));
                         break 'sscan;
                     }
                 }
             }
             found
-        }; // bonds 讀鎖釋放
-        if let Some((si, hi)) = share_pair {
+        }; // bonds / debts 讀鎖釋放
+        if let Some((si, hi, is_repay)) = share_pair {
             let sharer_id = snaps[si].1.clone();
             let sharer_name = snaps[si].2;
             let hungry_id = snaps[hi].1.clone();
             let hungry_name = snaps[hi].2;
-            // 分食者喚住鄰居、遞上一口飯（冒暖泡泡、上分食冷卻、心情亮一格）。
+            // 分食者喚住鄰居、遞上一口飯（冒暖泡泡、上分食冷卻、心情亮一格）。回報時用專屬語氣
+            //（「上回你分我一口，這次換我」）；一般守望相助用 800 的暖句。
             let pick = (residents[si].body.x.to_bits() ^ residents[si].body.z.to_bits()) as usize;
-            residents[si].say = vsharemeal::sharer_line(pick).chars().take(40).collect();
+            let sharer_say = if is_repay {
+                vgrat::repay_sharer_line(pick)
+            } else {
+                vsharemeal::sharer_line(pick)
+            };
+            residents[si].say = sharer_say.chars().take(40).collect();
             residents[si].say_timer = SAY_SECS;
             residents[si].share_meal_cooldown = vsharemeal::SHARE_COOLDOWN_SECS;
             residents[si].mood_boost_secs =
@@ -8489,10 +8536,10 @@ fn tick_residents(dt: f32) {
             residents[hi].seeking_food = false;
             residents[hi].hunger_say_cd = vhunger::HUNGER_SAY_COOLDOWN;
             residents[hi].pending_meal_thanks =
-                Some((sharer_name.to_string(), vsharemeal::THANKS_DELAY_SECS));
+                Some((sharer_name.to_string(), vsharemeal::THANKS_DELAY_SECS, is_repay));
             residents[hi].mood_boost_secs =
                 residents[hi].mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
-            share_meal_events.push((sharer_id, sharer_name, hungry_id, hungry_name));
+            share_meal_events.push((sharer_id, sharer_name, hungry_id, hungry_name, is_repay));
         }
 
         // 2d) 打氣到達處理（ROADMAP 679）：把到達事件轉化成 pending_response + 收集記憶/Feed data。
@@ -8746,20 +8793,31 @@ fn tick_residents(dt: f32) {
     // episodic 記憶（掛在對方名下，累積情誼、也能昇華進日記），情誼因這頓飯再加溫一格（升級才 save +
     // 播里程碑，比照 782 witness），並廣播一則城鎮動態。鎖序：memory 寫（即釋）×2 → bonds 寫（即釋）
     //〔升級時〕→ bonds 讀 save + memory 寫；不巢狀、append-only 不破壞既有資料，守死鎖鐵律。
-    for (sharer_id, sharer_name, hungry_id, hungry_name) in &share_meal_events {
-        // 被分食者的記憶（某位鄰居在我餓時分了我一口）。
-        let mem_h = vsharemeal::shared_memory_for_hungry(sharer_name);
+    // 末欄 is_repay（知恩圖報 v1，801）：true=這頓是「回報當年那口飯」——分食者 sharer 其實是**曾被
+    // hungry 分過飯的欠飯者**，此刻反過來還 hungry 一口。記憶/Feed 改用回報語氣，並結清欠飯帳（不再
+    // 產生反向欠飯，避免無止盡你來我往）；false=一般守望相助，登記「被分食者欠分食者一口飯」供日後回報。
+    for (sharer_id, sharer_name, hungry_id, hungry_name, is_repay) in &share_meal_events {
+        // 被分食者的記憶（掛在分食者名下）。回報時：hungry 是當年的恩人，牠記「牠竟記著、把那口飯還我」。
+        let mem_h = if *is_repay {
+            vgrat::repay_memory_for_benefactor(sharer_name)
+        } else {
+            vsharemeal::shared_memory_for_hungry(sharer_name)
+        };
         let eh = {
             hub().memory.write().unwrap().add_memory(hungry_id, sharer_name, &mem_h)
         }; // memory 寫鎖釋放
         vmem::append_memory(&eh);
-        // 分食者的記憶（我分了餓著的鄰居一口飯）。
-        let mem_s = vsharemeal::shared_memory_for_sharer(hungry_name);
+        // 分食者的記憶（掛在被分食者名下）。回報時：sharer 是回報者，牠記「今天把當年那口飯還了回去」。
+        let mem_s = if *is_repay {
+            vgrat::repay_memory_for_repayer(hungry_name)
+        } else {
+            vsharemeal::shared_memory_for_sharer(hungry_name)
+        };
         let es = {
             hub().memory.write().unwrap().add_memory(sharer_id, hungry_name, &mem_s)
         }; // memory 寫鎖釋放
         vmem::append_memory(&es);
-        // 情誼因這頓飯加溫一格（bonds 以顯示名記帳）。
+        // 情誼因這頓飯（不論分食或回報）加溫一格（bonds 以顯示名記帳）。
         let (tier, tier_changed) = {
             let mut bonds = hub().bonds.write().unwrap();
             bonds.record_visit(sharer_name, hungry_name)
@@ -8772,12 +8830,29 @@ fn tick_residents(dt: f32) {
             let milestone = vbonds::tier_up_line(tier, sharer_name, hungry_name);
             vfeed::append_feed("居民情誼", sharer_name, &milestone);
         }
-        // 城鎮動態牆（鎖外 IO）。
-        vfeed::append_feed(
-            vsharemeal::FEED_KIND,
-            sharer_name,
-            &vsharemeal::share_feed_line(sharer_name, hungry_name),
-        );
+        // 欠飯帳本更新（純記憶體、短寫鎖即釋）：回報 → 結清這一筆；一般分食 → 被分食者記下欠分食者一口。
+        {
+            let mut debts = hub().meal_debts.write().unwrap();
+            if *is_repay {
+                debts.repay(sharer_id, hungry_id);
+            } else {
+                debts.owe(hungry_id, sharer_id);
+            }
+        } // meal_debts 寫鎖釋放
+        // 城鎮動態牆（鎖外 IO）。回報用專屬分類與文案（「當年那口飯有了回聲」）。
+        if *is_repay {
+            vfeed::append_feed(
+                vgrat::FEED_KIND,
+                sharer_name,
+                &vgrat::repay_feed_line(sharer_name, hungry_name),
+            );
+        } else {
+            vfeed::append_feed(
+                vsharemeal::FEED_KIND,
+                sharer_name,
+                &vsharemeal::share_feed_line(sharer_name, hungry_name),
+            );
+        }
     }
 
     // 4a-c) 打氣到達記憶落地（ROADMAP 679）：打氣者 + 被打氣者各寫一筆記憶、Feed 廣播。
