@@ -98,6 +98,7 @@ use crate::voxel_epithet_esteem as vesteem;
 use crate::voxel_epithet_sign as vepisign;
 use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_weather as vweather;
+use crate::voxel_season as vseason;
 use crate::voxel_stargaze as vstar;
 use crate::voxel_firework as vfw;
 use crate::voxel_compost as vcompost;
@@ -1359,6 +1360,10 @@ struct VoxelHub {
     /// 彩虹剛升起的一次性旗標（ROADMAP 780）：`tick_farm` 偵測到「雨→晴」（彩虹 0→>0）時設 true，
     /// `tick_residents` 讀到後立即清回 false（consume-once），觸發附近居民抬頭望見彩虹的歡呼＋心情補助。
     rainbow_started_flag: RwLock<bool>,
+    /// 上一輪偵測到的季節（季節輪替 v1，ROADMAP 798）：`tick_residents` 每輪由世界時鐘累計日數
+    /// 推算當前季節，與此比對——不同即「換季」，設下方一次性旗標並上一則城鎮動態。純記憶體、重啟
+    /// 從初春重新流轉（比照天氣／彩虹狀態）。
+    last_season: RwLock<vseason::Season>,
     /// 玩家協助建造感激記憶冷卻（互動有後果 v2）：`(居民 id, 玩家 key)` → 上次為這對記下
     /// 一筆「幫忙蓋家」感激記憶的時刻。因好感＝episodic 記憶筆數，一次幫忙常放很多塊方塊，
     /// 若每塊都記一筆會瞬間灌爆好感＋淹沒 episodic（cap 24）——故用此冷卻把一段連續幫忙
@@ -1582,6 +1587,8 @@ fn hub() -> &'static VoxelHub {
             // 雨後彩虹：啟動時晴天、無彩虹。
             rainbow_ticks: RwLock::new(0),
             rainbow_started_flag: RwLock::new(false),
+            // 季節輪替 v1（ROADMAP 798）：啟動時世界日數為 0 ＝初春；之後靠 tick_residents 逐日推進換季。
+            last_season: RwLock::new(vseason::season_for_day(0)),
             // 協助建造感激記憶冷卻：啟動空（純記憶體、無需持久化）。
             help_memory_cd: RwLock::new(HashMap::new()),
             // 整地任務 v1：啟動空（純記憶體、無需持久化）。
@@ -1692,6 +1699,11 @@ fn players_snapshot_json() -> String {
     let raining: bool = *hub().weather.read().unwrap();
     // 雨後彩虹 v1（ROADMAP 780，短鎖、不巢狀）：> 0 tick = 天邊正掛著彩虹，前端據此顯示彩虹弧。
     let rainbow: bool = *hub().rainbow_ticks.read().unwrap() > 0;
+    // 季節輪替 v1（ROADMAP 798，短鎖、不巢狀）：由世界累計日數推算當前季節，帶給前端隨季節微染天地色調。
+    let season: &str = {
+        let day = hub().world_time.read().unwrap().days_elapsed();
+        vseason::season_for_day(day).as_str()
+    };
     serde_json::json!({
         "t": "players",
         "players": players,
@@ -1699,6 +1711,7 @@ fn players_snapshot_json() -> String {
         "time_of_day": time_of_day,
         "raining": raining,
         "rainbow": rainbow,
+        "season": season,
     }).to_string()
 }
 
@@ -5749,6 +5762,26 @@ fn tick_residents(dt: f32) {
     // 0) 推進世界時鐘（短鎖即釋，不巢狀）。晝夜循環 v1。
     { hub().world_time.write().unwrap().tick(dt); }
 
+    // 0a) 季節輪替 v1（ROADMAP 798）：由世界累計日數推算當前季節，與上輪比對偵測「換季」。
+    //     換季那一刻設本地旗標（供下方觸發附近醒著居民抬頭反應）＋上一則城鎮動態（不在線上的玩家
+    //     回來也讀得到世界換了季）。短鎖即釋、不巢狀（守死鎖鐵律）；Feed append 走鎖外。
+    let current_season = {
+        let day = hub().world_time.read().unwrap().days_elapsed();
+        vseason::season_for_day(day)
+    };
+    let season_just_turned = {
+        let mut last = hub().last_season.write().unwrap();
+        if *last != current_season {
+            *last = current_season;
+            true
+        } else {
+            false
+        }
+    };
+    if season_just_turned {
+        vfeed::append_feed("季節", "乙太方界", vseason::season_feed_detail(current_season));
+    }
+
     // 0b) 讀取目前時段 + 偵測時段轉換（日夜作息 v1）。
     //     短鎖讀 time → drop；短鎖寫 last_phase → drop，不與其他鎖巢狀。
     let phase = { hub().world_time.read().unwrap().phase() };
@@ -7568,6 +7601,16 @@ fn tick_residents(dt: f32) {
             if rainbow_just_appeared && !r.asleep && r.say.is_empty() {
                 let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                 r.say = vweather::rainbow_line(pick).to_string();
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            }
+
+            // 季節輪替 v1（ROADMAP 798）：換季那一刻，say 為空、醒著的居民抬頭感到季節更迭，冒一句
+            // 應景台詞（零 LLM、確定性選句），心情也跟著微亮一格（`mood_boost` 是驅動行為的真狀態）。
+            // 與雨天／彩虹反應同屬罕見的一次性環境事件，值得蓋過閒聊冷卻。
+            if season_just_turned && !r.asleep && r.say.is_empty() {
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                r.say = vseason::season_turn_line(current_season, pick).to_string();
                 r.say_timer = SAY_SECS;
                 r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
             }

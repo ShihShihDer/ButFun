@@ -145,6 +145,8 @@ mod voxel_return_gift;
 mod voxel_preference;
 // 乙太方界·晝夜循環 v1：世界時鐘純邏輯——一遊戲日 10 分鐘，廣播 time_of_day 給前端更新天空/光照（ROADMAP 661）。
 mod voxel_time;
+// 乙太方界·季節輪替 v1：累計遊戲日數 → 四季循環純邏輯；換季換世界色調＋居民抬頭反應＋城鎮動態（ROADMAP 798）。
+mod voxel_season;
 // 乙太方界·居民技能庫 v1：目標+記憶驅動 agency——蓋造不重複/有進展、採集技能（技能調用範本）。
 mod voxel_skills;
 // 乙太方界·技能發明 v1（真進化第一刀）：居民自己把基礎動作原語組合成解法，成功存成「自己的技能」、之後同處境零 LLM 重用。

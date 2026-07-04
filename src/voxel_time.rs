@@ -8,6 +8,10 @@ pub const DAY_DURATION_SECS: f32 = 600.0;
 #[derive(Debug, Clone)]
 pub struct WorldTime {
     elapsed_secs: f32,
+    /// 已流逝的完整遊戲日數（季節輪替 v1，ROADMAP 798）：每逢日界（`elapsed_secs` 繞回 0）
+    /// 累加一日，供 `voxel_season::season_for_day` 推算當前季節。純記憶體、重啟歸零
+    /// （比照天氣／彩虹狀態，世界重啟從初春重新流轉，可接受）。
+    days_elapsed: u64,
 }
 
 /// 一日四個時段，用於居民招呼與前端氛圍。
@@ -29,7 +33,7 @@ impl WorldTime {
     /// 從午夜（`time_of_day = 0.0`）開始。
     pub fn new() -> Self {
         // 預設從上午 10 點（time_of_day ≈ 0.42）開始，讓玩家一進遊戲就是白天。
-        Self { elapsed_secs: DAY_DURATION_SECS * 0.42 }
+        Self { elapsed_secs: DAY_DURATION_SECS * 0.42, days_elapsed: 0 }
     }
 
     /// 推進時鐘，`dt` 超過一日則截斷（防異常 dt 跳轉）。
@@ -38,7 +42,18 @@ impl WorldTime {
             return;
         }
         let dt = dt.min(DAY_DURATION_SECS);
-        self.elapsed_secs = (self.elapsed_secs + dt).rem_euclid(DAY_DURATION_SECS);
+        // dt 已截在一日內，最多跨一次日界；`raw >= 一日` 即代表繞過了午夜 → 累加一日
+        // （季節輪替 v1，ROADMAP 798）。
+        let raw = self.elapsed_secs + dt;
+        if raw >= DAY_DURATION_SECS {
+            self.days_elapsed = self.days_elapsed.saturating_add(1);
+        }
+        self.elapsed_secs = raw.rem_euclid(DAY_DURATION_SECS);
+    }
+
+    /// 已流逝的完整遊戲日數（季節輪替 v1，ROADMAP 798）：供 `voxel_season` 推算當前季節。
+    pub fn days_elapsed(&self) -> u64 {
+        self.days_elapsed
     }
 
     /// 回傳 0.0–1.0 的一日進度（0.0 = 午夜、0.5 = 正午、1.0 ≈ 午夜）。
@@ -48,8 +63,10 @@ impl WorldTime {
 
     /// 睡覺跳過夜晚（床 v1）：直接把世界時鐘撥到隔天黎明起點（`time_of_day = 0.20`），
     /// 讓睡覺有實際效果——玩家不必苦等整段黑夜，一覺醒來就是清晨。
+    /// 一覺睡到隔天 → 累加一日（季節輪替 v1，ROADMAP 798）。
     pub fn skip_to_dawn(&mut self) {
         self.elapsed_secs = DAY_DURATION_SECS * 0.20;
+        self.days_elapsed = self.days_elapsed.saturating_add(1);
     }
 
     /// 根據時刻判斷所在時段。
@@ -148,22 +165,38 @@ mod tests {
 
     #[test]
     fn tick_advances_elapsed() {
-        let mut t = WorldTime { elapsed_secs: 0.0 };
+        let mut t = WorldTime { elapsed_secs: 0.0, days_elapsed: 0 };
         t.tick(10.0);
         assert!((t.elapsed_secs - 10.0).abs() < 0.001);
     }
 
     #[test]
     fn tick_wraps_at_day_boundary() {
-        let mut t = WorldTime { elapsed_secs: DAY_DURATION_SECS - 1.0 };
+        let mut t = WorldTime { elapsed_secs: DAY_DURATION_SECS - 1.0, days_elapsed: 0 };
         t.tick(2.0);
         // 應從 599→601，mod 600 = 1
         assert!(t.elapsed_secs < 2.0, "應包圍到 0..2，得 {}", t.elapsed_secs);
     }
 
     #[test]
+    fn days_elapsed_counts_day_boundaries() {
+        // 季節輪替 v1（ROADMAP 798）：跨午夜才累加一日，日內推進不加。
+        let mut t = WorldTime { elapsed_secs: 0.0, days_elapsed: 0 };
+        t.tick(DAY_DURATION_SECS * 0.5); // 半日內，不跨界
+        assert_eq!(t.days_elapsed(), 0);
+        t.tick(DAY_DURATION_SECS * 0.6); // 越過午夜一次
+        assert_eq!(t.days_elapsed(), 1);
+        // 再滿滿推一日（dt 截在一日內，剛好再跨一次界）。
+        t.tick(DAY_DURATION_SECS);
+        assert_eq!(t.days_elapsed(), 2);
+        // 睡覺跳黎明 = 睡到隔天，也累加一日。
+        t.skip_to_dawn();
+        assert_eq!(t.days_elapsed(), 3);
+    }
+
+    #[test]
     fn tick_ignores_non_positive_dt() {
-        let mut t = WorldTime { elapsed_secs: 100.0 };
+        let mut t = WorldTime { elapsed_secs: 100.0, days_elapsed: 0 };
         t.tick(0.0);
         t.tick(-5.0);
         assert!((t.elapsed_secs - 100.0).abs() < 0.001);
@@ -171,7 +204,7 @@ mod tests {
 
     #[test]
     fn time_of_day_range() {
-        let mut t = WorldTime { elapsed_secs: 0.0 };
+        let mut t = WorldTime { elapsed_secs: 0.0, days_elapsed: 0 };
         for _ in 0..100 {
             let tod = t.time_of_day();
             assert!((0.0..1.0).contains(&tod), "time_of_day 超界：{tod}");
@@ -189,7 +222,7 @@ mod tests {
             (0.90, TimePhase::Evening),
         ];
         for (frac, expected) in cases {
-            let t = WorldTime { elapsed_secs: DAY_DURATION_SECS * frac };
+            let t = WorldTime { elapsed_secs: DAY_DURATION_SECS * frac, days_elapsed: 0 };
             assert_eq!(t.phase(), expected, "t_of_day={frac} 應是 {expected:?}");
         }
     }
@@ -198,7 +231,7 @@ mod tests {
     fn greeting_non_empty_all_phases() {
         let fracs = [0.10, 0.25, 0.50, 0.75, 0.90];
         for frac in fracs {
-            let t = WorldTime { elapsed_secs: DAY_DURATION_SECS * frac };
+            let t = WorldTime { elapsed_secs: DAY_DURATION_SECS * frac, days_elapsed: 0 };
             assert!(!t.greeting().is_empty(), "問候語不應為空（frac={frac}）");
         }
     }
@@ -206,7 +239,7 @@ mod tests {
     #[test]
     fn tick_caps_huge_dt() {
         // 超過一日的 dt 不應讓 elapsed 超出 [0, DAY_DURATION)
-        let mut t = WorldTime { elapsed_secs: 0.0 };
+        let mut t = WorldTime { elapsed_secs: 0.0, days_elapsed: 0 };
         t.tick(DAY_DURATION_SECS * 3.0);
         let tod = t.time_of_day();
         assert!((0.0..1.0).contains(&tod));
@@ -295,7 +328,7 @@ mod tests {
     #[test]
     fn skip_to_dawn_lands_in_dawn_phase() {
         // 睡覺後時鐘應落在 Dawn 時段起點，且不再是可睡覺的夜晚。
-        let mut t = WorldTime { elapsed_secs: 5.0 }; // 深夜
+        let mut t = WorldTime { elapsed_secs: 5.0, days_elapsed: 0 }; // 深夜
         assert!(is_sleepable(t.phase()));
         t.skip_to_dawn();
         assert_eq!(t.phase(), TimePhase::Dawn);
@@ -305,8 +338,8 @@ mod tests {
     #[test]
     fn skip_to_dawn_idempotent_from_any_starting_time() {
         // 無論睡前時鐘在哪，睡完都落在同一個黎明起點（確定性、可重現）。
-        let mut t1 = WorldTime { elapsed_secs: 1.0 };
-        let mut t2 = WorldTime { elapsed_secs: DAY_DURATION_SECS * 0.95 };
+        let mut t1 = WorldTime { elapsed_secs: 1.0, days_elapsed: 0 };
+        let mut t2 = WorldTime { elapsed_secs: DAY_DURATION_SECS * 0.95, days_elapsed: 0 };
         t1.skip_to_dawn();
         t2.skip_to_dawn();
         assert_eq!(t1.time_of_day(), t2.time_of_day());
