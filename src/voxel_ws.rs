@@ -81,6 +81,7 @@ use crate::voxel_gossip as vgossip;
 use crate::voxel_mood;
 use crate::voxel_comfort as vcomfort;
 use crate::voxel_hunger as vhunger;
+use crate::voxel_share_meal as vsharemeal;
 use crate::voxel_cheer as vcheer;
 use crate::voxel_chest as vchest;
 use crate::voxel_sign as vsign;
@@ -490,6 +491,12 @@ struct VoxelResident {
     /// 正走回家找吃的（居民也會肚子餓 v1）：true = 已放下閒晃、目標設向家域中心，
     /// 到家即吃飽重置。純記憶體，鏡像 678 尋伴的「逐 tick 重設目標→抵達即結」機制。
     seeking_food: bool,
+    /// 分食冷卻倒數（秒，飢餓時的守望相助 v1，ROADMAP 800）：一次分食後設
+    /// [`vsharemeal::SHARE_COOLDOWN_SECS`]，歸零前不再對人分食，讓「分一口飯」稀少而有份量。純記憶體。
+    share_meal_cooldown: f32,
+    /// 被鄰居分食後、延遲道謝的待辦（飢餓時的守望相助 v1）：`Some((分食者名, 倒數))`，
+    /// 倒數歸零時冒一句專屬道謝泡泡（比照 792 圍火講古的 `pending_tale_reply` 一來一往機制）。純記憶體。
+    pending_meal_thanks: Option<(String, f32)>,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -1283,6 +1290,9 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             hunger: 0.0,
             hunger_say_cd: vhunger::hunger_cd_offset(i),
             seeking_food: false,
+            // 飢餓時的守望相助 v1（ROADMAP 800）：入場分食冷卻錯開，避免啟動後全員一起搶著分食。
+            share_meal_cooldown: vsharemeal::share_cd_offset(i),
+            pending_meal_thanks: None,
     }
 }
 
@@ -5955,6 +5965,9 @@ fn tick_residents(dt: f32) {
     // 聆聽者的社交記憶寫＋Feed 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。
     // (講述者 id, 講述者名, 聆聽者 id, 聆聽者名, 往事摘要)。
     let mut campfire_tale_events: Vec<(String, &'static str, String, &'static str, String)> = Vec::new();
+    // 飢餓時的守望相助 v1（ROADMAP 800）：本 tick 分食事件 (分食者 id, 分食者名, 被分食者 id, 被分食者名)，
+    // 鎖外落地雙方記憶 + 情誼加溫 + 城鎮動態（比照 792/witness 的鎖外處理，守死鎖鐵律）。
+    let mut share_meal_events: Vec<(String, &'static str, String, &'static str)> = Vec::new();
     // 乙太營火 v1：夜裡才需要一份營火座標快照。短鎖 clone 即釋，避免在 residents 寫鎖迴圈內
     // 再取 campfires 讀鎖（不巢狀鎖，守 prod 死鎖鐵律）；非夜晚時空 Vec，跳過整段判定。
     let campfire_spots: Vec<(i32, i32, i32)> = if matches!(phase, TimePhase::Night) {
@@ -6363,6 +6376,25 @@ fn tick_residents(dt: f32) {
                 if r.pending_tale_reply.take().is_some() {
                     let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                     r.say = vtale::listener_bubble(pick).to_string();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                }
+            }
+
+            // 飢餓時的守望相助 v1·被分食者道謝倒數（ROADMAP 800）：被鄰居分了一口飯後，延遲幾秒冒一句
+            // 嵌分食者名的專屬道謝泡泡（零 LLM、程式化台詞），心情也亮一格。與通用社交回應分開，讓
+            // 「這頓解了餓」有專屬語氣。倒數與 take 都在居民自身鎖內、不巢狀。
+            let meal_thanks_ready = match &mut r.pending_meal_thanks {
+                Some((_, cd)) => {
+                    *cd -= dt;
+                    *cd <= 0.0
+                }
+                None => false,
+            };
+            if meal_thanks_ready && r.say.is_empty() {
+                if let Some((sharer_name, _)) = r.pending_meal_thanks.take() {
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    r.say = vsharemeal::thanks_line(&sharer_name, pick).chars().take(40).collect();
                     r.say_timer = SAY_SECS;
                     r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                 }
@@ -7115,6 +7147,10 @@ fn tick_residents(dt: f32) {
             }
             if r.campfire_tale_cooldown > 0.0 {
                 r.campfire_tale_cooldown -= dt;
+            }
+            // 飢餓時的守望相助 v1（ROADMAP 800）：分食冷卻遞減（純記憶體、每 tick 一次）。
+            if r.share_meal_cooldown > 0.0 {
+                r.share_meal_cooldown -= dt;
             }
             // 集會鐘 v1：應召逾時遞減（純記憶體、每 tick 一次，不管居民此刻走哪條移動分支都算），
             // 逾時歸零即放棄應召（例如鐘被挖了、或被別的高優先任務卡著走不到）——守「卡住自救」。
@@ -8383,6 +8419,82 @@ fn tick_residents(dt: f32) {
             }
         }
 
+        // 2c-3) 飢餓時的守望相助掃描（飢餓時的守望相助 v1，ROADMAP 800）：一位餓著找吃的（`seeking_food`）
+        // 居民路過一位此刻閒著、自己不餓、分食冷卻到期、且與她交情已到相識以上的鄰居時，鄰居偶爾喚住她、
+        // 分一口飯——餓意當場解除、被分食者稍後道謝、雙方各記一筆暖記憶、情誼再加溫一格。每 tick 最多一對、
+        // 有長冷卻 + 低機率，天然節流、不干擾物理主迴圈。沿用 2c/2c-2 的 `snaps` 位置快照（i≠j 循序索引、
+        // 不雙重借用）；情誼層級以短讀鎖取一次即釋（比照 2e 打氣掃描的 bonds 讀取，鎖序 residents 寫→
+        // bonds 讀，不巢狀、不反向，守死鎖鐵律）。
+        let share_pair: Option<(usize, usize)> = {
+            // (分食者 si, 被分食者 hi)。bonds 讀鎖只在挑對期間持有、找到即釋。
+            let bonds = hub().bonds.read().unwrap();
+            let mut found: Option<(usize, usize)> = None;
+            'sscan: for hi in 0..snaps.len() {
+                // 被分食者：正餓著找吃的、沒睡著。
+                if !residents[hi].seeking_food || snaps[hi].7 {
+                    continue;
+                }
+                for si in 0..snaps.len() {
+                    if si == hi {
+                        continue;
+                    }
+                    // 分食者：此刻沒在說話（讀 live，避免本 tick 剛讓她開口）、沒睡著、分食冷卻到期、
+                    // 自己不餓也沒在覓食、不在朝聖/遠行途中（不搶正事）。
+                    if !residents[si].say.is_empty() || snaps[si].7 {
+                        continue;
+                    }
+                    if residents[si].share_meal_cooldown > 0.0 {
+                        continue;
+                    }
+                    if residents[si].seeking_food || vhunger::is_hungry(residents[si].hunger) {
+                        continue;
+                    }
+                    if residents[si].pilgrimage.is_some() || residents[si].expedition.is_some() {
+                        continue;
+                    }
+                    // 就在旁邊才分（近距）。
+                    if !vrel::pair_within_range(
+                        snaps[si].3, snaps[si].4, snaps[hi].3, snaps[hi].4, vsharemeal::SHARE_RADIUS,
+                    ) {
+                        continue;
+                    }
+                    // 記憶驅動行為：只有交情到相識以上的鄰居才會分一口飯（陌生人擦身而過不會）。
+                    if !vsharemeal::tier_allows_share(resident_tier_of(&bonds, &snaps[si].1, &snaps[hi].1)) {
+                        continue;
+                    }
+                    if vsharemeal::should_share(
+                        residents[si].share_meal_cooldown, rand::random::<f32>(), vsharemeal::SHARE_CHANCE,
+                    ) {
+                        found = Some((si, hi));
+                        break 'sscan;
+                    }
+                }
+            }
+            found
+        }; // bonds 讀鎖釋放
+        if let Some((si, hi)) = share_pair {
+            let sharer_id = snaps[si].1.clone();
+            let sharer_name = snaps[si].2;
+            let hungry_id = snaps[hi].1.clone();
+            let hungry_name = snaps[hi].2;
+            // 分食者喚住鄰居、遞上一口飯（冒暖泡泡、上分食冷卻、心情亮一格）。
+            let pick = (residents[si].body.x.to_bits() ^ residents[si].body.z.to_bits()) as usize;
+            residents[si].say = vsharemeal::sharer_line(pick).chars().take(40).collect();
+            residents[si].say_timer = SAY_SECS;
+            residents[si].share_meal_cooldown = vsharemeal::SHARE_COOLDOWN_SECS;
+            residents[si].mood_boost_secs =
+                residents[si].mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            // 被分食者：餓意當場解除、停下覓食（別再往家走）、上靜默冷卻、稍後冒一句專屬道謝、心情亮一格。
+            residents[hi].hunger = 0.0;
+            residents[hi].seeking_food = false;
+            residents[hi].hunger_say_cd = vhunger::HUNGER_SAY_COOLDOWN;
+            residents[hi].pending_meal_thanks =
+                Some((sharer_name.to_string(), vsharemeal::THANKS_DELAY_SECS));
+            residents[hi].mood_boost_secs =
+                residents[hi].mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            share_meal_events.push((sharer_id, sharer_name, hungry_id, hungry_name));
+        }
+
         // 2d) 打氣到達處理（ROADMAP 679）：把到達事件轉化成 pending_response + 收集記憶/Feed data。
         // 在 per-resident 迴圈結束後處理，避免雙重 iter_mut 借用衝突。
         // 格式：(happy_id, happy_name, lonely_rid) → 找到 lonely → 設 pending_response。
@@ -8628,6 +8740,44 @@ fn tick_residents(dt: f32) {
         }; // social 寫鎖在此釋放
         vrel::append_social(&entry);
         vfeed::append_feed("圍火講古", teller_name, &vtale::tale_feed_line(teller_name, listener_name));
+    }
+
+    // 4a-2b) 飢餓時的守望相助落地（飢餓時的守望相助 v1，ROADMAP 800）：分食者 + 被分食者各寫一筆
+    // episodic 記憶（掛在對方名下，累積情誼、也能昇華進日記），情誼因這頓飯再加溫一格（升級才 save +
+    // 播里程碑，比照 782 witness），並廣播一則城鎮動態。鎖序：memory 寫（即釋）×2 → bonds 寫（即釋）
+    //〔升級時〕→ bonds 讀 save + memory 寫；不巢狀、append-only 不破壞既有資料，守死鎖鐵律。
+    for (sharer_id, sharer_name, hungry_id, hungry_name) in &share_meal_events {
+        // 被分食者的記憶（某位鄰居在我餓時分了我一口）。
+        let mem_h = vsharemeal::shared_memory_for_hungry(sharer_name);
+        let eh = {
+            hub().memory.write().unwrap().add_memory(hungry_id, sharer_name, &mem_h)
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&eh);
+        // 分食者的記憶（我分了餓著的鄰居一口飯）。
+        let mem_s = vsharemeal::shared_memory_for_sharer(hungry_name);
+        let es = {
+            hub().memory.write().unwrap().add_memory(sharer_id, hungry_name, &mem_s)
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&es);
+        // 情誼因這頓飯加溫一格（bonds 以顯示名記帳）。
+        let (tier, tier_changed) = {
+            let mut bonds = hub().bonds.write().unwrap();
+            bonds.record_visit(sharer_name, hungry_name)
+        }; // bonds 寫鎖釋放
+        if tier_changed {
+            {
+                let bonds = hub().bonds.read().unwrap();
+                vbonds::save_bonds(&bonds);
+            } // bonds 讀鎖釋放
+            let milestone = vbonds::tier_up_line(tier, sharer_name, hungry_name);
+            vfeed::append_feed("居民情誼", sharer_name, &milestone);
+        }
+        // 城鎮動態牆（鎖外 IO）。
+        vfeed::append_feed(
+            vsharemeal::FEED_KIND,
+            sharer_name,
+            &vsharemeal::share_feed_line(sharer_name, hungry_name),
+        );
     }
 
     // 4a-c) 打氣到達記憶落地（ROADMAP 679）：打氣者 + 被打氣者各寫一筆記憶、Feed 廣播。
@@ -9937,7 +10087,7 @@ fn tick_residents(dt: f32) {
                     if transferred {
                         let item_name = vgift::item_name_zh(block_id);
                         vfeed::append_feed(
-                            vshare::FEED_KIND,
+                            vsharemeal::FEED_KIND,
                             &host_name,
                             &vshare::share_feed_line(visitor_name, item_name, qty),
                         );
