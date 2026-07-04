@@ -89,6 +89,9 @@ const STEW = 67;
 // 乙太煙火 v1（ROADMAP 785）——工作台：1 乙太礦(58)+2 煤礦(20)+2 沙(4) → 3 乙太煙火(68)；
 // 純物品不可放置，朝夜空施放（firework_launch）即消耗，火花在頭頂綻放、附近居民抬頭歡呼。
 const FIREWORK = 68;
+// 乙太沃肥 v1（ROADMAP 789）——工作台：3 雜草(1)+2 泥土(2) → 2 乙太沃肥(69)；純物品不可放置，
+// 手持對準一株幼苗(12/46/50)一撒，作物生長計時往前跳一截（fertilize）——玩家主動催熟農業的動詞。
+const FERTILIZER = 69;
 // 植樹造林 v1（ROADMAP 738）——砍天然樹葉有機率掉樹苗(65)，種在土地上約 150 秒長成一株樹。
 // 樹苗既是背包物品也是可放置方塊（item_id == block_id），是玩家第一個可再生木材來源。
 const SAPLING = 65;
@@ -172,6 +175,8 @@ const COLOR = {
   [STEW]:           [0.86, 0.42, 0.20],
   // 乙太煙火 v1（ROADMAP 785）——青藍底閃著金火花，背包圖示用（純物品不放置）
   [FIREWORK]:       [0.36, 0.58, 0.95],
+  // 乙太沃肥 v1（ROADMAP 789）——腐草漚肥的深潤棕綠，一眼是漚熟的沃土肥料（純物品不放置）
+  [FERTILIZER]:     [0.42, 0.46, 0.24],
   // 植樹造林 v1（ROADMAP 738）——嫩黃綠，比草地/樹葉更亮更嫩，一眼認出是剛種下的小苗
   [SAPLING]:        [0.52, 0.74, 0.30], // 樹苗——鮮嫩黃綠，抽芽中的幼苗感
   [SIGN]:           [0.62, 0.44, 0.25], // 告示牌——溫潤木牌棕（比木板稍深），一看就是塊立起來的木牌
@@ -667,6 +672,67 @@ function updateHumNotes(dt) {
     }
     const t = hb.age / HUM_LIFE_SECS;
     hb.mat.opacity = t < 0.7 ? 1 : Math.max(0, 1 - (t - 0.7) / 0.3); // 後段淡出
+    posAttr.needsUpdate = true;
+  }
+}
+
+// ── 乙太沃肥 v1（ROADMAP 789）：施肥瞬間在幼苗上噴一小撮綠色沃肥火花 ─────────────
+// 純視覺回饋（作物成熟與否由後端農地 tick 權威決定翻面）。單一 THREE.Points＝一次 draw call，
+// 壽命短、上限 FERT_MAX_BURSTS 保險防洗版；陣列空零成本早退（守 FPS 鐵律）。
+const FERT_SPARKS = 14;        // 每次施肥噴出的火花粒子數
+const FERT_LIFE_SECS = 0.9;    // 一撮火花的壽命
+const FERT_MAX_BURSTS = 6;     // 同時最多幾撮（防極端洗版）
+const fertBursts = [];         // 進行中的施肥火花
+
+function spawnFertSparkle(x, y, z) {
+  if (fertBursts.length >= FERT_MAX_BURSTS) {
+    const old = fertBursts.shift();
+    scene.remove(old.points);
+    old.points.geometry.dispose();
+  }
+  const pos = new Float32Array(FERT_SPARKS * 3);
+  const vel = new Float32Array(FERT_SPARKS * 3);
+  for (let i = 0; i < FERT_SPARKS; i++) {
+    pos[i * 3] = x + 0.5; pos[i * 3 + 1] = y + 0.5; pos[i * 3 + 2] = z + 0.5;
+    const a = Math.random() * Math.PI * 2;      // 水平隨機散開
+    const sp = 0.3 + Math.random() * 0.4;
+    vel[i * 3] = Math.cos(a) * sp;
+    vel[i * 3 + 1] = 1.4 + Math.random() * 1.0; // 主要往上竄再落下
+    vel[i * 3 + 2] = Math.sin(a) * sp;
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 0.22, color: 0x8fd44a, transparent: true, opacity: 1,
+    depthWrite: false, fog: true, sizeAttenuation: true,
+  });
+  const points = new THREE.Points(geom, mat);
+  points.frustumCulled = false;
+  scene.add(points);
+  fertBursts.push({ points, mat, vel, age: 0 });
+}
+
+// 每幀推進所有施肥火花：噴發＋重力下墜＋淡出，壽命到就移除、釋放幾何。陣列空即零成本早退。
+function updateFertSparkle(dt) {
+  if (fertBursts.length === 0) return;
+  for (let b = fertBursts.length - 1; b >= 0; b--) {
+    const fb = fertBursts[b];
+    fb.age += dt;
+    if (fb.age >= FERT_LIFE_SECS) {
+      scene.remove(fb.points);
+      fb.points.geometry.dispose();
+      fertBursts.splice(b, 1);
+      continue;
+    }
+    const posAttr = fb.points.geometry.getAttribute("position");
+    const arr = posAttr.array;
+    for (let i = 0; i < FERT_SPARKS; i++) {
+      fb.vel[i * 3 + 1] -= 3.2 * dt; // 重力下墜
+      arr[i * 3] += fb.vel[i * 3] * dt;
+      arr[i * 3 + 1] += fb.vel[i * 3 + 1] * dt;
+      arr[i * 3 + 2] += fb.vel[i * 3 + 2] * dt;
+    }
+    fb.mat.opacity = Math.max(0, 1 - fb.age / FERT_LIFE_SECS);
     posAttr.needsUpdate = true;
   }
 }
@@ -2578,6 +2644,8 @@ const BLOCK_NAME = {
   [STEW]: "野菜暖湯",
   // 乙太煙火 v1（ROADMAP 785）
   [FIREWORK]: "乙太煙火",
+  // 乙太沃肥 v1（ROADMAP 789）
+  [FERTILIZER]: "乙太沃肥",
   // 植樹造林 v1（ROADMAP 738）
   [SAPLING]: "樹苗",
   // 告示牌 v1（ROADMAP 740）
@@ -2991,6 +3059,16 @@ function placeAtTarget() {
     // 複用既有 isWaterId（來源水＋流動水 24~30，與後端 is_water_block 一致；非水面靜默忽略）。
     if (isWaterId(getRaw(target.bx, target.by, target.bz))) {
       ws.send(JSON.stringify({ t: "fish_cast", x: target.bx, y: target.by, z: target.bz }));
+    }
+    return null;
+  }
+  // 乙太沃肥 v1（ROADMAP 789）：手持沃肥對準一株幼苗一撒即催熟。目標是作物方塊本身
+  // （不偏移到面外側）；非幼苗（成熟作物/農田土/其他）靜默忽略——後端仍會權威複驗。
+  if (selectedBlock() === FERTILIZER) {
+    const hitRaw = getRaw(target.bx, target.by, target.bz);
+    if (hitRaw === FARM_SOIL_SEEDED || hitRaw === CARROT_SEEDED || hitRaw === POTATO_SEEDED) {
+      ws.send(JSON.stringify({ t: "fertilize", x: target.bx, y: target.by, z: target.bz }));
+      return { x: target.bx, y: target.by, z: target.bz };
     }
     return null;
   }
@@ -3636,6 +3714,15 @@ function connect() {
       // 乙太煙火 v1（785）：放不了（冷卻中 / 背包沒有）。
       showErr(m.reason || "現在沒法施放煙火");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "fertilize_ok") {
+      // 乙太沃肥 v1（789）：施肥成功——幼苗上噴一撮綠火花＋浮出回饋句（背包由 inv_update 更新）。
+      spawnFertSparkle(m.x | 0, m.y | 0, m.z | 0);
+      showMsg("🌱 " + (m.say || "撒下一撮沃肥，作物抽長了一截～"));
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2400);
+    } else if (m.t === "fertilize_fail") {
+      // 乙太沃肥 v1（789）：施不了（太遠 / 非幼苗 / 背包沒有沃肥）。
+      showErr(m.reason || "現在沒法施肥");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "return_gift") {
       // 居民回禮 v1（ROADMAP 667）：只有當事玩家才顯示提示並更新背包。
       if (m.player === myName) {
@@ -4017,6 +4104,7 @@ function update(dt) {
   updateNightSky(dt);
   updateFireworks(dt); // 乙太煙火 v1（785）：推進進行中的煙火綻放
   updateHumNotes(dt);  // 居民哼歌 v1（788）：推進頭頂飄浮音符
+  updateFertSparkle(dt); // 乙太沃肥 v1（789）：推進施肥綠火花
   streamChunks(dt);
   sendMove(dt);
 
@@ -4365,6 +4453,8 @@ const WORKBENCH_RECIPES_JS = [
   { id: "veggie_stew",    name: "野菜暖湯",       inputs: [[CARROT, 2], [POTATO, 2], [WHEAT, 1]], output_block: STEW, out_count: 1 },
   // 乙太煙火 v1（ROADMAP 785）：1 乙太礦 + 2 煤礦 + 2 沙 → 3 乙太煙火（工作台；朝夜空施放的慶祝道具）
   { id: "aether_firework", name: "乙太煙火",      inputs: [[AETHER_ORE, 1], [COAL_ORE, 2], [SAND, 2]], output_block: FIREWORK, out_count: 3 },
+  // 乙太沃肥 v1（ROADMAP 789）：3 雜草 + 2 泥土 → 2 乙太沃肥（工作台；手持對準幼苗一撒即催熟一截）
+  { id: "aether_fertilizer", name: "乙太沃肥",    inputs: [[GRASS, 3], [DIRT, 2]], output_block: FERTILIZER, out_count: 2 },
 ];
 
 // wbGrid[0..8]：3×3 共 9 格，0 代表空格，非零代表 block_id。

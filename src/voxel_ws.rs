@@ -97,6 +97,7 @@ use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_weather as vweather;
 use crate::voxel_stargaze as vstar;
 use crate::voxel_firework as vfw;
+use crate::voxel_compost as vcompost;
 use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
 use crate::voxel_teach as vteach;
@@ -1750,6 +1751,10 @@ enum ClientMsg {
     /// 座標決定（客戶端不自報位置，防偽造他人施放）。
     #[serde(rename = "firework_launch")]
     FireworkLaunch,
+    /// 乙太沃肥 v1（ROADMAP 789）：手持沃肥(69)對準一株幼苗施肥。(x,y,z) 是瞄準的作物方塊。
+    /// 伺服器驗觸及範圍 + 目標為 Seeded 幼苗(12/46/50) + 背包有沃肥 → 消耗一份、把該格農地
+    /// 生長計時往前推進 `FERTILIZER_BOOST_SECS`（沿用 nudge_growth，持久化），回 `fertilize_ok`。
+    Fertilize { x: i32, y: i32, z: i32 },
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -3603,6 +3608,81 @@ async fn handle_socket(
                 ));
                 // 玩家里程碑 v1（ROADMAP 724）：人生第一次種下種子。
                 try_unlock_milestone(&name, "first_farm", &out_tx);
+            }
+            // ── 乙太沃肥 v1（ROADMAP 789）：手持沃肥對準幼苗催熟一截 ─────────────────
+            Ok(ClientMsg::Fertilize { x, y, z }) => {
+                // 鎖序：players 讀位置 → delta 讀目標 → inventory 寫扣料 → farm 寫 nudge，
+                // 循序取放、不巢狀、鎖外 IO（比照 Plant handler，守 prod 死鎖鐵律）。
+                let Some((px, py, pz)) = player_pos(my_id) else {
+                    continue;
+                };
+                // 觸及範圍驗證（施肥作用在方塊本身，比照 Plant）。
+                if !voxel::in_reach(px, py, pz, x, y, z) {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "fertilize_fail", "reason": "太遠了" }).to_string(),
+                    ));
+                    continue;
+                }
+                // 目標方塊必須是「還在長的幼苗」——後端權威判定（前端不自報合法性·濫用防護）。
+                let target = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
+                if !vcompost::is_growing_crop(target) {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "fertilize_fail", "reason": "只能施在幼苗上" }).to_string(),
+                    ));
+                    continue;
+                }
+                // 消耗 1 份沃肥（放不了不消耗·白嫖不到；inventory 寫鎖即釋）。
+                let fert_entry = hub()
+                    .inventory
+                    .write()
+                    .unwrap()
+                    .take(&name, vcompost::FERTILIZER_ID, 1);
+                let Some(fert_e) = fert_entry else {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "fertilize_fail", "reason": "沒有沃肥" }).to_string(),
+                    ));
+                    continue;
+                };
+                vinv::append_inv(&fert_e);
+                // 農地計時往前推進一截（沿用居民照料 753 同一套 nudge_growth，farm 寫鎖即釋）。
+                let farm_e = {
+                    hub()
+                        .farm
+                        .write()
+                        .unwrap()
+                        .nudge_growth(x, y, z, vcompost::FERTILIZER_BOOST_SECS)
+                };
+                if let Some(e) = &farm_e {
+                    vfarm::append_farm(e);
+                }
+                // 作物顯示名（依 Seeded 方塊分岔；面向玩家字串，i18n 集中）。
+                let crop = match target {
+                    Block::CarrotSeeded => "胡蘿蔔",
+                    Block::PotatoSeeded => "馬鈴薯",
+                    _ => "小麥",
+                };
+                let pick = rand::random::<u64>() as usize;
+                // 送背包更新 + 施肥回饋（作物成熟與否交給既有 farm tick 判定翻面，near-instant）。
+                let new_cnt = hub()
+                    .inventory
+                    .read()
+                    .unwrap()
+                    .count(&name, vcompost::FERTILIZER_ID);
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({
+                        "t": "inv_update",
+                        "block_id": vcompost::FERTILIZER_ID,
+                        "count": new_cnt
+                    })
+                    .to_string(),
+                ));
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({
+                        "t": "fertilize_ok", "x": x, "y": y, "z": z,
+                        "say": vcompost::fertilize_say_line(crop, pick)
+                    })
+                    .to_string(),
+                ));
             }
             // ── 居民贈禮 v1（ROADMAP 660）────────────────────────────────────────
             Ok(ClientMsg::Gift { resident_id, item_id }) => {
