@@ -340,6 +340,17 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
         output_block: crate::voxel_firework::FIREWORK_ID,
         output_count: 3,
     },
+    // ── 乙太沃肥 v1（ROADMAP 789）：把用不完的雜草＋泥土漚成催熟幼苗的沃肥 ──────────
+    // 3 雜草(1) + 2 泥土(2) → 2 乙太沃肥(FERTILIZER_ID=69)。割草採集、挖土時囤下的
+    // 平價廢料漚成肥；5 格材料超出背包 2×2 需工作台，{1:3,2:2} 為唯一多重集（農田土 till 用
+    // 背包 {2:2}、不在工作台表，不相撞）；純物品不可放置，施肥即消耗（voxel_ws 的 Fertilize 處理）。
+    Recipe {
+        id: "aether_fertilizer",
+        name_zh: "乙太沃肥",
+        inputs: &[(1, 3), (2, 2)],  // 3 雜草 + 2 泥土 → 2 乙太沃肥
+        output_block: crate::voxel_compost::FERTILIZER_ID,
+        output_count: 2,
+    },
 ];
 
 /// 熔爐冶煉配方（需放置熔爐方塊後右鍵開啟冶煉面板才能使用）。
@@ -574,7 +585,8 @@ mod tests {
                 || r.output_block == 42                // 箱子（ROADMAP 692）
                 || r.output_block == 59                // 乙太燈（Block::AetherLamp，乙太礦脈 v1）
                 || r.output_block == STEW_ID           // 野菜暖湯（純物品，多食材料理 ROADMAP 778）
-                || r.output_block == crate::voxel_firework::FIREWORK_ID; // 乙太煙火（純物品 id=68，ROADMAP 785）
+                || r.output_block == crate::voxel_firework::FIREWORK_ID // 乙太煙火（純物品 id=68，ROADMAP 785）
+                || r.output_block == crate::voxel_compost::FERTILIZER_ID; // 乙太沃肥（純物品 id=69，ROADMAP 789）
             assert!(
                 ok,
                 "工作台配方「{}」產出 id={} 超出範圍",
@@ -718,6 +730,7 @@ mod tests {
         store.give("旅人", 5, 10);  // Wood
         store.give("旅人", 3, 10);  // Stone
         store.give("旅人", 4, 10);  // Sand
+        store.give("旅人", 1, 10);  // Grass（乙太沃肥配方用，ROADMAP 789）
         store.give("旅人", 2, 10);  // Dirt
         store.give("旅人", 8, 10);  // Plank（工作台 + stone_wood_mix + 箱子 8木板 用）
         store.give("旅人", 18, 10); // Wheat（麵包配方用，WHEAT_ID）
