@@ -100,6 +100,7 @@ use crate::voxel_weather as vweather;
 use crate::voxel_stargaze as vstar;
 use crate::voxel_firework as vfw;
 use crate::voxel_compost as vcompost;
+use crate::voxel_bucket as vbucket;
 use crate::voxel_tool as vtool;
 use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
@@ -1789,6 +1790,14 @@ enum ClientMsg {
     /// 伺服器驗觸及範圍 + 目標為 Seeded 幼苗(12/46/50) + 背包有沃肥 → 消耗一份、把該格農地
     /// 生長計時往前推進 `FERTILIZER_BOOST_SECS`（沿用 nudge_growth，持久化），回 `fertilize_ok`。
     Fertilize { x: i32, y: i32, z: i32 },
+    /// 水桶舀水 v1（自主提案切片）：手持空水桶對準一格水源 → 伺服器驗持有空水桶 + 目標為
+    /// 來源水 + 觸及範圍內 → 該格化為空氣（喚醒鄰格重算水流）、背包空水桶換成滿水桶，回 `bucket_ok`。
+    #[serde(rename = "bucket_fill")]
+    BucketFill { x: i32, y: i32, z: i32 },
+    /// 水桶倒水 v1（自主提案切片）：手持滿水桶對準一格空氣／流動水 → 伺服器驗持有滿水桶 +
+    /// 目標可倒 + 觸及範圍內 → 該格放下一格永久來源水（既有水流模擬自然漫開）、滿水桶換回空水桶。
+    #[serde(rename = "bucket_pour")]
+    BucketPour { x: i32, y: i32, z: i32 },
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -3771,6 +3780,147 @@ async fn handle_socket(
                         "say": vcompost::fertilize_say_line(crop, pick)
                     })
                     .to_string(),
+                ));
+            }
+            // ── 水桶舀水 v1（自主提案切片）──────────────────────────────────────
+            Ok(ClientMsg::BucketFill { x, y, z }) => {
+                // 鎖序：players 讀位置 → delta 讀目標 → inventory 寫換桶 → delta 寫設空氣，
+                // 循序取放不巢狀、鎖外 enqueue_water_around（比照破壞水路慣例，守 prod 死鎖鐵律）。
+                let Some((px, py, pz)) = player_pos(my_id) else {
+                    continue;
+                };
+                if !voxel::in_reach(px, py, pz, x, y, z) {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "bucket_fail", "reason": "太遠了" }).to_string(),
+                    ));
+                    continue;
+                }
+                // 目標必須是來源水——後端權威判定（前端不自報合法性·濫用防護）。
+                let target = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
+                if !vbucket::is_fillable_source(target as u8) {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "bucket_fail", "reason": "這裡沒有水源可舀" })
+                            .to_string(),
+                    ));
+                    continue;
+                }
+                // 消耗 1 只空水桶（沒有就舀不成·白嫖不到；inventory 寫鎖即釋）。
+                let take_e = hub()
+                    .inventory
+                    .write()
+                    .unwrap()
+                    .take(&name, vbucket::BUCKET_ID, 1);
+                let Some(take_e) = take_e else {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "bucket_fail", "reason": "手上沒有空水桶" })
+                            .to_string(),
+                    ));
+                    continue;
+                };
+                vinv::append_inv(&take_e);
+                // 把水源那格化為空氣（delta 寫鎖即釋；session-only，比照一般破壞不寫 world_blocks log）。
+                {
+                    let mut world = hub().deltas.write().unwrap();
+                    voxel::set_block(&mut world, x, y, z, Block::Air);
+                }
+                broadcast_block(x, y, z, Block::Air);
+                // 鎖外喚醒鄰格重算水流——鄰近水體會往缺口流來補位（天然源不會憑空多出、無限複製）。
+                enqueue_water_around(x, y, z);
+                // 換給一只滿水桶（inventory 寫鎖即釋）。
+                let give_e = hub()
+                    .inventory
+                    .write()
+                    .unwrap()
+                    .give(&name, vbucket::WATER_BUCKET_ID, 1);
+                vinv::append_inv(&give_e);
+                // 兩個 inv_update（空桶減、滿桶增）＋回饋句。
+                let empty_cnt = hub().inventory.read().unwrap().count(&name, vbucket::BUCKET_ID);
+                let full_cnt = hub()
+                    .inventory
+                    .read()
+                    .unwrap()
+                    .count(&name, vbucket::WATER_BUCKET_ID);
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "inv_update", "block_id": vbucket::BUCKET_ID, "count": empty_cnt })
+                        .to_string(),
+                ));
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "inv_update", "block_id": vbucket::WATER_BUCKET_ID, "count": full_cnt })
+                        .to_string(),
+                ));
+                let pick = rand::random::<u64>() as usize;
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "bucket_ok", "say": vbucket::fill_ok_line(pick) })
+                        .to_string(),
+                ));
+            }
+            // ── 水桶倒水 v1（自主提案切片）──────────────────────────────────────
+            Ok(ClientMsg::BucketPour { x, y, z }) => {
+                let Some((px, py, pz)) = player_pos(my_id) else {
+                    continue;
+                };
+                if !voxel::in_reach(px, py, pz, x, y, z) {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "bucket_fail", "reason": "太遠了" }).to_string(),
+                    ));
+                    continue;
+                }
+                // 目標必須可倒（空氣或流動水；實心擋水、既有源不必重放·後端權威判定）。
+                let target = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
+                if !vbucket::is_pourable_target(target as u8) {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "bucket_fail", "reason": "這裡倒不了水" })
+                            .to_string(),
+                    ));
+                    continue;
+                }
+                // 消耗 1 只滿水桶（沒有就倒不成·白嫖不到；inventory 寫鎖即釋）。
+                let take_e = hub()
+                    .inventory
+                    .write()
+                    .unwrap()
+                    .take(&name, vbucket::WATER_BUCKET_ID, 1);
+                let Some(take_e) = take_e else {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "bucket_fail", "reason": "手上沒有滿水桶" })
+                            .to_string(),
+                    ));
+                    continue;
+                };
+                vinv::append_inv(&take_e);
+                // 放下一格永久來源水（delta 寫鎖即釋；session-only，比照一般放置不寫 world_blocks log）。
+                {
+                    let mut world = hub().deltas.write().unwrap();
+                    voxel::set_block(&mut world, x, y, z, Block::Water);
+                }
+                broadcast_block(x, y, z, Block::Water);
+                // 鎖外喚醒水流——來源水由既有模擬當永不乾涸的源頭自然漫開、把周圍農地接上水耕。
+                enqueue_water_around(x, y, z);
+                // 換回一只空水桶（inventory 寫鎖即釋）。
+                let give_e = hub()
+                    .inventory
+                    .write()
+                    .unwrap()
+                    .give(&name, vbucket::BUCKET_ID, 1);
+                vinv::append_inv(&give_e);
+                let empty_cnt = hub().inventory.read().unwrap().count(&name, vbucket::BUCKET_ID);
+                let full_cnt = hub()
+                    .inventory
+                    .read()
+                    .unwrap()
+                    .count(&name, vbucket::WATER_BUCKET_ID);
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "inv_update", "block_id": vbucket::WATER_BUCKET_ID, "count": full_cnt })
+                        .to_string(),
+                ));
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "inv_update", "block_id": vbucket::BUCKET_ID, "count": empty_cnt })
+                        .to_string(),
+                ));
+                let pick = rand::random::<u64>() as usize;
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "bucket_ok", "say": vbucket::pour_ok_line(pick) })
+                        .to_string(),
                 ));
             }
             // ── 居民贈禮 v1（ROADMAP 660）────────────────────────────────────────

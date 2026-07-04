@@ -121,6 +121,17 @@ pub const RECIPES: &[Recipe] = &[
         output_block: 31,
         output_count: 4,
     },
+    // ── 水桶 v1（自主提案切片）：3 鐵錠 → 1 水桶（背包 2×2；舀水引水灌溉乾田）──────────
+    // {22:3} 為獨特多重集（鐵磚 {22:6}、鐵鎬/鐵斧 {22:3,8:2}、鐵鏟 {22:2,8:3} 皆不相撞）；
+    // 鐵錠本身需熔爐冶煉，故不必再過工作台即可打一只水桶。空水桶是純物品，對準水源舀水、
+    // 對準空格倒出永久來源水（接既有水流模擬與鄰水加速種田）。
+    Recipe {
+        id: "bucket",
+        name_zh: "水桶",
+        inputs: &[(22, 3)], // 3 鐵錠 → 1 水桶
+        output_block: crate::voxel_bucket::BUCKET_ID, // 71（純物品，不可放置）
+        output_count: 1,
+    },
     // ── 梯子 v1（ROADMAP 688）：3 木板 → 3 梯子（垂直攀爬，深礦上下自如）──────────
     Recipe {
         id: "ladder",
@@ -592,7 +603,8 @@ mod tests {
                 || r.output_block == 45  // 床（Block::Bed）
                 || r.output_block == 57 // 冰晶燈（Block::IceLantern，冰晶合成 v1）
                 || r.output_block == 66 // 告示牌（Block::Sign，告示牌 v1 ROADMAP 740）
-                || r.output_block == crate::voxel_fishing::FISHING_ROD_ID; // 釣竿（垂釣 v1，純物品 id=60）
+                || r.output_block == crate::voxel_fishing::FISHING_ROD_ID // 釣竿（垂釣 v1，純物品 id=60）
+                || r.output_block == crate::voxel_bucket::BUCKET_ID; // 水桶（純物品 id=71，自主提案切片）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
