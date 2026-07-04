@@ -80,6 +80,7 @@ use crate::voxel_fond_greeting as vfond;
 use crate::voxel_gossip as vgossip;
 use crate::voxel_mood;
 use crate::voxel_comfort as vcomfort;
+use crate::voxel_hunger as vhunger;
 use crate::voxel_cheer as vcheer;
 use crate::voxel_chest as vchest;
 use crate::voxel_sign as vsign;
@@ -480,6 +481,15 @@ struct VoxelResident {
     /// `None` = 手中沒有待享用的食物。同時只捧一份（再收到新食物就換成最新那份）。純記憶體、
     /// 重啟歸零（享用是數十秒內的短暫過場，重啟大不了少享用一次、無資料風險，零 migration）。
     savoring: Option<(u8, String, f32)>,
+    /// 餓意（居民也會肚子餓 v1，ROADMAP 799）：0.0=剛吃飽、`vhunger::HUNGER_MAX`=餓極。
+    /// 隨伺服器 tick 累積（`vhunger::tick_hunger`），越過 `HUNGRY_THRESHOLD` 就想找吃的。
+    /// 純記憶體、重啟歸零（餓是數分鐘的過場狀態，零資料風險、零 migration）。
+    hunger: f32,
+    /// 冒餓／吃飽後的靜默冷卻（秒）：> 0 時不再喊餓，避免反覆碎念、稀少才有感。
+    hunger_say_cd: f32,
+    /// 正走回家找吃的（居民也會肚子餓 v1）：true = 已放下閒晃、目標設向家域中心，
+    /// 到家即吃飽重置。純記憶體，鏡像 678 尋伴的「逐 tick 重設目標→抵達即結」機制。
+    seeking_food: bool,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -1268,6 +1278,11 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             asleep_at_outpost: false,
             // 你送的食物她會細細享用 v1（ROADMAP 765）：入場手中沒有待享用的食物。
             savoring: None,
+            // 居民也會肚子餓 v1（ROADMAP 799）：入場剛吃飽，餓意從 0 起累積；
+            // 初始靜默冷卻錯開，避免啟動後短時間全員一起喊餓。
+            hunger: 0.0,
+            hunger_say_cd: vhunger::hunger_cd_offset(i),
+            seeking_food: false,
     }
 }
 
@@ -5980,6 +5995,9 @@ fn tick_residents(dt: f32) {
     // 真的享用了那份心意」（泡泡＋心情補助已於鎖內設好），鎖外統一補一則城鎮動態 Feed。
     // 格式：(居民顯示名, 送禮玩家名, 食物顯示名)。
     let mut savor_feeds: Vec<(&'static str, String, &'static str)> = Vec::new();
+    // 居民也會肚子餓 v1（ROADMAP 799）：鎖內偵測「居民在餓著的時候被玩家餵了食物」（餓意已於鎖內
+    // 歸零），鎖外統一補一則掛玩家名下的深記憶＋城鎮動態。格式：(居民 id, 送食物的玩家名, 居民顯示名)。
+    let mut hunger_fed: Vec<(String, String, &'static str)> = Vec::new();
     // 自我印象 v1（ROADMAP 770）：鎖內偵測「居民閒下來、回望自己昇華出一句自我印象」（泡泡已於鎖內設好），
     // 鎖外統一補一則城鎮動態 Feed（第三人稱旁白，已是純模板、無記憶原文）。
     let mut self_image_feeds: Vec<(&'static str, String)> = Vec::new();
@@ -6132,6 +6150,11 @@ fn tick_residents(dt: f32) {
             // 名號化為敬意冷卻倒數（ROADMAP 777）。
             if r.esteem_approach_cooldown > 0.0 {
                 r.esteem_approach_cooldown -= dt;
+            }
+            // 餓意累積（居民也會肚子餓 v1，ROADMAP 799）：每 tick 慢慢餓一點；靜默冷卻同步倒數。
+            r.hunger = vhunger::tick_hunger(r.hunger, dt);
+            if r.hunger_say_cd > 0.0 {
+                r.hunger_say_cd -= dt;
             }
 
             // 打氣冷卻倒數（ROADMAP 679）。
@@ -6895,6 +6918,60 @@ fn tick_residents(dt: f32) {
                 }
             }
 
+            // 回家吃存糧 v1（居民也會肚子餓 v1，ROADMAP 799）：餓意越過門檻、又沒別的要事在身，
+            // 就放下閒晃、朝自己的家域中心走去找點存糧吃；到家即吃飽、餓意歸零、冒一句滿足暖泡泡。
+            // 純自理、不黏玩家（別於 678 尋伴走向玩家）。鏡像尋伴／致意的「逐 tick 重設目標→抵達
+            // 即結」機制：零 LLM、零持久化、零新協議欄位、零新實體（只是換個目標走、換句泡泡）。
+            if r.seeking_food {
+                let dx = r.home_x - r.body.x;
+                let dz = r.home_z - r.body.z;
+                if dx * dx + dz * dz
+                    < vhunger::EAT_ARRIVE_DIST * vhunger::EAT_ARRIVE_DIST
+                {
+                    // 到家、吃上存糧：餓意歸零、結束覓食、上靜默冷卻，閒下來時冒滿足暖泡泡。
+                    r.hunger = 0.0;
+                    r.seeking_food = false;
+                    r.hunger_say_cd = vhunger::HUNGER_SAY_COOLDOWN;
+                    if r.say.is_empty() {
+                        let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                        r.say = vhunger::sated_say_line(pick).chars().take(40).collect();
+                        r.say_timer = SAY_SECS;
+                    }
+                } else {
+                    // 還沒到家：持續把目標釘在家域中心（純自走回家，不受玩家/世界牽引）。
+                    r.target_x = r.home_x;
+                    r.target_z = r.home_z;
+                    r.wait_timer = 0.0;
+                }
+            } else if vhunger::is_hungry(r.hunger)
+                && r.hunger_say_cd <= 0.0
+                && r.say.is_empty()
+                && r.gather.is_none()
+                && r.fetch.is_none()
+                && r.visiting.is_none()
+                && r.cheer_target.is_none()
+                && !r.seeking_comfort
+                && r.approaching_esteem.is_none()
+                && r.clique_meet.is_none()
+                && r.follow.is_none()
+                && r.invent_run.is_none()
+                && r.daybreak_seek.is_none()
+                && r.reunion_seek.is_none()
+                && r.expedition.is_none()
+                && r.pilgrimage.is_none()
+                && !r.asleep
+            {
+                // 餓了、又閒著：冒一句餓的心聲，起身回家覓食。
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                r.say = vhunger::hunger_say_line(pick).chars().take(40).collect();
+                r.say_timer = SAY_SECS;
+                r.seeking_food = true;
+                r.hunger_say_cd = vhunger::HUNGER_SAY_COOLDOWN;
+                r.target_x = r.home_x;
+                r.target_z = r.home_z;
+                r.wait_timer = 0.0;
+            }
+
             // 打氣走動 v1（ROADMAP 679）：cheer_target 有效時，持續朝 Lonely 同伴走過去；
             // 抵達後冒打氣泡泡、收集到達事件（鎖外補記憶 + Feed）、清除任務。
             if let Some((tx, tz, ref lonely_rid)) = r.cheer_target.clone() {
@@ -7272,6 +7349,15 @@ fn tick_residents(dt: f32) {
                     // 吃飽了、暖起來——重新點亮心情（沿用贈禮補助時長）。
                     r.mood_boost_secs =
                         r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_GIFT);
+                    // 餓時被餵（居民也會肚子餓 v1，ROADMAP 799）：若這口吃的正落在牠餓著的時候，
+                    // 餓意當場歸零、結束覓食，並記得格外深——你的善意踩在對的時間點上。深記憶＋Feed
+                    // 走鎖外（守死鎖鐵律，不在 residents 寫鎖內取 memory 寫鎖）。
+                    if vhunger::is_hungry(r.hunger) {
+                        r.hunger = 0.0;
+                        r.seeking_food = false;
+                        r.hunger_say_cd = vhunger::HUNGER_SAY_COOLDOWN;
+                        hunger_fed.push((r.id.clone(), giver.clone(), r.name));
+                    }
                     savor_feeds.push((r.name, giver, food));
                 }
             }
@@ -9330,6 +9416,17 @@ fn tick_residents(dt: f32) {
     // 你的心意」。餵食第一次有了「被好好享用」的溫暖回響。鎖外純 IO、不巢狀、守死鎖鐵律。
     for (rname, giver, food) in &savor_feeds {
         vfeed::append_feed("享用", rname, &vsavor::savor_feed_line(rname, giver, food));
+    }
+
+    // 5c-2f-2) 餓時被餵的深記憶（居民也會肚子餓 v1，ROADMAP 799）：居民在餓著的時候被玩家餵了一口
+    //（餓意已於鎖內歸零），鎖外把「你在我正餓的時候餵了我」記進牠對這位玩家的記憶——episodic、累積
+    // 好感，讓「善意踩在對的時間點上」成為情誼裡分量更重的一筆；並補一則城鎮動態。記憶寫鎖即釋、
+    // append IO 在鎖外（守死鎖鐵律）；摘要為純模板、只嵌玩家顯示名、不含任何原話。
+    for (rid, giver, rname) in &hunger_fed {
+        let summary = vhunger::fed_memory_line(giver);
+        let entry = hub().memory.write().unwrap().add_memory(rid, giver, &summary);
+        vmem::append_memory(&entry);
+        vfeed::append_feed("餵食", rname, &vhunger::fed_feed_line(rname, giver));
     }
 
     // 5c-2g) 自我印象 Feed（自我印象 v1，ROADMAP 770）：居民閒下來回望這一路、昇華出「我成了個怎樣
