@@ -2992,7 +2992,8 @@ function tickMining(dt) {
   mining.progress += dt;
   if (mining.progress >= mining.total) {
     // 進度滿：送 break，立刻開始下一塊（如果按著）。
-    ws.send(JSON.stringify({ t: "break", x: mining.x, y: mining.y, z: mining.z }));
+    // 工欲善其事 v1（790）：附上手持物品 id；伺服器查背包確認是真工具才給採集加成。
+    ws.send(JSON.stringify({ t: "break", x: mining.x, y: mining.y, z: mining.z, tool: selectedBlock() }));
     cancelMining();
     if (digHeld) startMining();
   } else {
@@ -3005,7 +3006,8 @@ function tickMining(dt) {
 function breakAtTarget() {
   if (!target || !wsReady) return null;
   const c = { x: target.bx, y: target.by, z: target.bz };
-  ws.send(JSON.stringify({ t: "break", x: c.x, y: c.y, z: c.z }));
+  // 工欲善其事 v1（790）：附上手持物品 id 讓伺服器判定採集加成（見上）。
+  ws.send(JSON.stringify({ t: "break", x: c.x, y: c.y, z: c.z, tool: selectedBlock() }));
   return c;
 }
 
@@ -3719,6 +3721,11 @@ function connect() {
       spawnFertSparkle(m.x | 0, m.y | 0, m.z | 0);
       showMsg("🌱 " + (m.say || "撒下一撮沃肥，作物抽長了一截～"));
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2400);
+    } else if (m.t === "tool_bonus") {
+      // 工欲善其事 v1（790）：手持對的工具採集多收到一份材料——跳一句小回饋（背包由 inv_update 更新）。
+      const iname = BLOCK_NAME[m.block_id] || "材料";
+      showMsg("⛏️ 好工具！多採到 " + iname + " ×" + (m.count || 1));
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 1600);
     } else if (m.t === "fertilize_fail") {
       // 乙太沃肥 v1（789）：施不了（太遠 / 非幼苗 / 背包沒有沃肥）。
       showErr(m.reason || "現在沒法施肥");
