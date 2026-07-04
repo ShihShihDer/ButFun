@@ -93,6 +93,7 @@ use crate::voxel_epithet_sign as vepisign;
 use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_weather as vweather;
 use crate::voxel_stargaze as vstar;
+use crate::voxel_firework as vfw;
 use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
 use crate::voxel_teach as vteach;
@@ -1720,6 +1721,12 @@ enum ClientMsg {
     /// 野菜暖湯）。伺服器驗證確為可享用料理＋背包存量後，扣一份、回 `eat_ok`（暖意回饋），
     /// 並感染附近居民（心情點亮＋暖泡泡＋交情記憶＋動態牆，受每連線冷卻節流防洗版）。
     Eat { item_id: u8 },
+    /// 乙太煙火 v1（ROADMAP 785）：朝夜空施放一束背包裡的乙太煙火(68)。伺服器驗每連線
+    /// 冷卻＋消耗一份煙火後，廣播 `firework`（施放者頭頂上方位置＋火花配色）給全場，附近
+    /// 醒著的居民抬頭歡呼。無座標欄位——火花在施放者頭頂夜空綻放，位置由伺服器取施放者當前
+    /// 座標決定（客戶端不自報位置，防偽造他人施放）。
+    #[serde(rename = "firework_launch")]
+    FireworkLaunch,
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -1782,6 +1789,16 @@ fn broadcast_block(x: i32, y: i32, z: i32, b: Block) {
 fn broadcast_sign(x: i32, y: i32, z: i32, text: &str) {
     let msg = Arc::new(
         serde_json::json!({ "t": "sign", "x": x, "y": y, "z": z, "text": text }).to_string(),
+    );
+    let _ = hub().tx.send(msg);
+}
+
+/// 廣播一束乙太煙火的施放給全場（ROADMAP 785）：`(x,y,z)` 是施放者當前座標，前端據此
+/// 在其頭頂夜空綻放火花；`palette` 是伺服器選定的配色盤索引（人人看到同色）。
+fn broadcast_firework(x: f32, y: f32, z: f32, palette: u32) {
+    let msg = Arc::new(
+        serde_json::json!({ "t": "firework", "x": x, "y": y, "z": z, "palette": palette })
+            .to_string(),
     );
     let _ = hub().tx.send(msg);
 }
@@ -2090,6 +2107,10 @@ async fn handle_socket(
     // 冷卻，天然 per-player、零跨連線鎖；斷線即清、無持久化需求）。吃東西本身不受此限，只有
     // 「附近居民被你的滿足感染」這一拍受節流，防囤糧狂吃洗版居民泡泡 / 動態牆。
     let mut last_eat_share: Option<std::time::Instant> = None;
+
+    // 乙太煙火 v1（785）：這條連線上次施放煙火的時刻（per-connection 冷卻，天然 per-player、
+    // 零跨連線鎖；斷線即清）。施放會廣播給全場，此冷卻擋連放洗爆所有人畫面（濫用防護①）。
+    let mut last_firework: Option<std::time::Instant> = None;
 
     // 讀取迴圈：處理 move / req / break / place / talk。
     while let Some(Ok(msg)) = receiver.next().await {
@@ -4473,6 +4494,98 @@ async fn handle_socket(
                                 );
                             }
                         }
+                    }
+                }
+            }
+
+            Ok(ClientMsg::FireworkLaunch) => {
+                // 乙太煙火 v1（785）：朝夜空施放一束煙火，火花在頭頂綻放、附近居民抬頭歡呼。
+                // 1) 每連線冷卻——擋連放洗爆全場畫面（濫用防護①；冷卻未到不消耗煙火）。
+                let ready = last_firework
+                    .map(|t| t.elapsed().as_secs_f32() >= vfw::FIREWORK_COOLDOWN_SECS)
+                    .unwrap_or(true);
+                if !ready {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "firework_fail", "reason": "煙火還在冷卻，稍等一下再放～"
+                    }).to_string())).await;
+                    continue;
+                }
+                // 2) 取施放者當前位置（players 讀鎖即釋；客戶端不自報座標＝火花只在施放者頭頂綻放，
+                //    防偽造他人施放位置，濫用防護③權限由後端權威判定）。
+                let Some((px, py, pz)) = player_pos(my_id) else { continue; };
+                // 3) 驗並消耗一份煙火（inventory 寫鎖即釋）——放不了就白嫖不到（濫用防護②）。
+                let taken = { hub().inventory.write().unwrap().take(&name, vfw::FIREWORK_ID, 1) };
+                let Some(inv_entry) = taken else {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "firework_fail",
+                        "reason": "背包裡沒有乙太煙火——在工作台用乙太礦＋煤礦＋沙做一束吧。"
+                    }).to_string())).await;
+                    continue;
+                };
+                vinv::append_inv(&inv_entry);
+                last_firework = Some(std::time::Instant::now());
+                // 4) 選火花配色（真隨機，每次顏色有變化）＋回報新存量＋施放回饋（單播）。
+                let palette = vfw::firework_palette(rand::random::<u64>());
+                let pick = (vfarm::now_secs() as usize).wrapping_add(palette as usize);
+                let remain = hub().inventory.read().unwrap().count(&name, vfw::FIREWORK_ID);
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "inv_update", "block_id": vfw::FIREWORK_ID, "count": remain,
+                }).to_string())).await;
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "firework_ok", "line": vfw::launch_self_line(pick),
+                }).to_string())).await;
+                // 5) 廣播火花給全場（火花在施放者頭頂夜空綻放，人人看到同色）。
+                broadcast_firework(px, py, pz, palette);
+                // 6) 里程碑：人生第一次朝夜空施放煙火。
+                try_unlock_milestone(&name, "first_firework", &out_tx);
+                // 7) 城鎮動態牆（不在場的人回來也讀得到這份熱鬧）。
+                vfeed::append_feed("煙火", &name, &vfw::launch_feed_line(&name));
+                // 8) 附近醒著、有空反應的居民抬頭歡呼（心情點亮＋暖泡泡＋交情記憶）。
+                //    只挑半徑內、未睡、say 空者（比照 780 彩虹齊發，但受半徑天然節流）。
+                let cheerers: Vec<String> = {
+                    let residents = hub().residents.read().unwrap();
+                    residents
+                        .iter()
+                        .filter(|r| !r.asleep && r.say.is_empty())
+                        .filter_map(|r| {
+                            let dx = px - r.body.x;
+                            let dz = pz - r.body.z;
+                            if dx * dx + dz * dz <= vfw::CHEER_RADIUS * vfw::CHEER_RADIUS {
+                                Some(r.id.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                }; // residents 讀鎖釋放
+                if !cheerers.is_empty() {
+                    let mut cheer_mems: Vec<(String, String)> = Vec::new(); // (rid, summary)
+                    {
+                        let mut residents = hub().residents.write().unwrap();
+                        for (i, rid) in cheerers.iter().enumerate() {
+                            if let Some(r) = residents.iter_mut().find(|r| &r.id == rid) {
+                                if r.say.is_empty() {
+                                    r.say = vfw::cheer_line(pick.wrapping_add(i))
+                                        .chars()
+                                        .take(vfw::CHEER_SAY_MAX_CHARS)
+                                        .collect();
+                                    r.say_timer = SAY_SECS;
+                                    r.mood_boost_secs =
+                                        r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                    // 訪客（名空白）不記交情。
+                                    if !name.is_empty() {
+                                        cheer_mems
+                                            .push((rid.clone(), vfw::cheer_memory_line(&name)));
+                                    }
+                                }
+                            }
+                        }
+                    } // residents 寫鎖釋放
+                    broadcast_players();
+                    // 交情記憶：memory 寫鎖即釋、append IO 在鎖外，守死鎖鐵律。
+                    for (rid, summary) in &cheer_mems {
+                        let entry = hub().memory.write().unwrap().add_memory(rid, &name, summary);
+                        vmem::append_memory(&entry);
                     }
                 }
             }

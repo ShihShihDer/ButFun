@@ -328,6 +328,18 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
         output_block: STEW_ID,
         output_count: 1,
     },
+    // ── 乙太煙火 v1（ROADMAP 785）：玩家朝夜空施放的慶祝道具 ────────────────────────
+    // 1 乙太礦(58) + 2 煤礦(20) + 2 沙(4) → 3 乙太煙火(FIREWORK_ID=68)。煤與沙拌成火藥、
+    // 封進最深處挖回的乙太礦引信裡，做成能升空綻放的煙火。5 格材料超出背包 2×2 需工作台，
+    // {58:1,20:2,4:2} 是唯一多重集（乙太燈用 {58,10}、火把用 {5,20}，皆不相撞）；純物品不可放置，
+    // 施放即消耗（voxel_ws 的 FireworkLaunch 處理）。
+    Recipe {
+        id: "aether_firework",
+        name_zh: "乙太煙火",
+        inputs: &[(58, 1), (20, 2), (4, 2)],  // 1 乙太礦 + 2 煤礦 + 2 沙 → 3 乙太煙火
+        output_block: crate::voxel_firework::FIREWORK_ID,
+        output_count: 3,
+    },
 ];
 
 /// 熔爐冶煉配方（需放置熔爐方塊後右鍵開啟冶煉面板才能使用）。
@@ -561,7 +573,8 @@ mod tests {
                 || r.output_block == SHOVEL_IRON_ID   // 鐵鏟（ROADMAP 690）
                 || r.output_block == 42                // 箱子（ROADMAP 692）
                 || r.output_block == 59                // 乙太燈（Block::AetherLamp，乙太礦脈 v1）
-                || r.output_block == STEW_ID;          // 野菜暖湯（純物品，多食材料理 ROADMAP 778）
+                || r.output_block == STEW_ID           // 野菜暖湯（純物品，多食材料理 ROADMAP 778）
+                || r.output_block == crate::voxel_firework::FIREWORK_ID; // 乙太煙火（純物品 id=68，ROADMAP 785）
             assert!(
                 ok,
                 "工作台配方「{}」產出 id={} 超出範圍",
