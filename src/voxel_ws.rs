@@ -54,6 +54,7 @@ use crate::voxel_keepsake as vkeep;
 use crate::voxel_keepsake_recall as vkrecall;
 use crate::voxel_humming as vhum;
 use crate::voxel_campfire as vcamp;
+use crate::voxel_campfire_tale as vtale;
 use crate::voxel_seedgift as vseed;
 use crate::voxel_giftgarden as vgg;
 use crate::voxel_fishing as vfish;
@@ -399,6 +400,12 @@ struct VoxelResident {
     /// 營火取暖冷卻倒數（秒，乙太營火 v1）：一次圍暖後設 [`vcamp::WARM_COOLDOWN_SECS`]，歸零前不再取暖——
     /// 夜裡路過火邊偶爾駐足、不狂刷泡泡。各居民初始錯開。純記憶體、重啟歸零。
     campfire_warm_cooldown: f32,
+    /// 圍著營火說故事冷卻倒數（秒，圍火講往事 v1）：一次開講後設 [`vtale::TALE_COOLDOWN_SECS`]，歸零前
+    /// 不再開講——夜裡同在一座火邊偶爾講起一段往事、不連珠炮洗版。各居民初始錯開。純記憶體、重啟歸零。
+    campfire_tale_cooldown: f32,
+    /// 被夥伴在營火邊講了故事後、等這秒數到期再應和（講述者名字, 剩餘秒）（圍火講往事 v1）。
+    /// 與 `pending_response` 分開，讓聆聽者冒的是「聽故事」味道的專屬應和，而非通用社交回應。純記憶體。
+    pending_tale_reply: Option<(String, f32)>,
     /// 門口留下的「有人來找過」心意佇列（登門撲空留心意 v1，ROADMAP 763）：某訪客登門撲空（752 判定
     /// 主人不在家）時，訪客名字塞進這裡；日後主人回到自家附近閒著時逐一感應、念一句、記一筆。
     /// 去重＋上限保護（[`vcard::MAX_PENDING_CALLERS`]）。純記憶體、重啟歸零。
@@ -1219,6 +1226,9 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             humming_cooldown: 60.0 + i as f32 * 35.0,
             // 乙太營火 v1：首次取暖冷卻各自錯開，避免入夜同一 tick 一群人齊聲說暖語。
             campfire_warm_cooldown: 140.0 + i as f32 * 30.0,
+            // 圍火講往事 v1：首次講述冷卻各自錯開，避免入夜同一 tick 一群人同時開講；入場無待應和的故事。
+            campfire_tale_cooldown: 170.0 + i as f32 * 45.0,
+            pending_tale_reply: None,
             // 登門撲空留心意 v1（ROADMAP 763）：入場門口沒有待感應的心意；首次感應冷卻各自錯開。
             pending_callers: Vec::new(),
             callingcard_cooldown: 20.0 + i as f32 * 15.0,
@@ -5598,6 +5608,10 @@ fn tick_residents(dt: f32) {
     // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在旁才記交情，否則 None 只上 Feed。
     // (居民 id, 居民名, 火邊玩家名 Option, pick)。
     let mut campfire_warm_events: Vec<(String, &'static str, Option<String>, usize)> = Vec::new();
+    // 圍火講往事 v1：夜裡兩位醒著的居民同在一座營火邊、其中一位講起一段往事時，鎖內收集事件；
+    // 聆聽者的社交記憶寫＋Feed 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。
+    // (講述者 id, 講述者名, 聆聽者 id, 聆聽者名, 往事摘要)。
+    let mut campfire_tale_events: Vec<(String, &'static str, String, &'static str, String)> = Vec::new();
     // 乙太營火 v1：夜裡才需要一份營火座標快照。短鎖 clone 即釋，避免在 residents 寫鎖迴圈內
     // 再取 campfires 讀鎖（不巢狀鎖，守 prod 死鎖鐵律）；非夜晚時空 Vec，跳過整段判定。
     let campfire_spots: Vec<(i32, i32, i32)> = if matches!(phase, TimePhase::Night) {
@@ -5982,6 +5996,24 @@ fn tick_residents(dt: f32) {
                     ));
                     r.say = safe;
                     r.say_timer = SAY_SECS;
+                }
+            }
+
+            // 圍火講往事 v1·聆聽者應和倒數：被夥伴在營火邊講了故事後，延遲幾秒冒一句「聽故事」味道的
+            // 專屬應和（零 LLM、程式化台詞），心情也亮一格。與上面的通用社交回應分開，讓火邊聆聽有專屬語氣。
+            let tale_reply_ready = match &mut r.pending_tale_reply {
+                Some((_, cd)) => {
+                    *cd -= dt;
+                    *cd <= 0.0
+                }
+                None => false,
+            };
+            if tale_reply_ready && r.say.is_empty() {
+                if r.pending_tale_reply.take().is_some() {
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    r.say = vtale::listener_bubble(pick).to_string();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                 }
             }
 
@@ -6675,6 +6707,9 @@ fn tick_residents(dt: f32) {
             // 乙太營火 v1：取暖冷卻遞減（純記憶體、每 tick 一次）。
             if r.campfire_warm_cooldown > 0.0 {
                 r.campfire_warm_cooldown -= dt;
+            }
+            if r.campfire_tale_cooldown > 0.0 {
+                r.campfire_tale_cooldown -= dt;
             }
             // 睹物思人 v1（ROADMAP 784）：閒著、醒著、且恰好路過她擺出的某件你送的紀念物時，
             // 偶爾駐足追憶一句、記進交情——keepsake（732）落地後的持續回響（記憶→行為）。
@@ -7826,6 +7861,59 @@ fn tick_residents(dt: f32) {
             social_events.push((ini_id, ini_name.to_string(), tar_id, tar_name.to_string(), safe_line, false));
         }
 
+        // 2c-2) 圍火講往事掃描（圍火講往事 v1）：入夜後，若兩位醒著、沒在說話的居民恰好聚在**同一座**
+        // 營火邊、且其中一位講述冷卻到期，偶爾其中一位把心裡的一段往事講給對方聽。每 tick 最多一對、
+        // 有長冷卻，天然節流、不干擾物理主迴圈。沿用 2c 的 `snaps` 位置快照（i≠j 循序索引、不雙重借用）；
+        // 講述者記憶以短讀鎖取一次即釋（比照招呼段的記憶讀取，不巢狀寫鎖，守死鎖鐵律）。非夜晚時
+        // `campfire_spots` 為空 → 整段早退零成本。
+        if !campfire_spots.is_empty() {
+            let mut tale_pair: Option<(usize, usize)> = None; // (講述者 i, 聆聽者 j)
+            'tscan: for i in 0..snaps.len() {
+                // 講述者：此刻沒在說話（讀 live，避免 2c 剛讓他開口）、沒睡著、講述冷卻到期、不在朝聖/遠行途中。
+                if !residents[i].say.is_empty() || snaps[i].7 { continue; }
+                if residents[i].campfire_tale_cooldown > 0.0 { continue; }
+                if residents[i].pilgrimage.is_some() || residents[i].expedition.is_some() { continue; }
+                let ci = match vcamp::nearest_campfire(&campfire_spots, snaps[i].3, snaps[i].4, vcamp::WARM_RADIUS) {
+                    Some(c) => c,
+                    None => continue, // 講述者不在任何火邊
+                };
+                for j in 0..snaps.len() {
+                    if i == j { continue; }
+                    // 聆聽者：此刻沒在說話、沒睡著、且和講述者在**同一座**火邊。
+                    if !residents[j].say.is_empty() || snaps[j].7 { continue; }
+                    if vcamp::nearest_campfire(&campfire_spots, snaps[j].3, snaps[j].4, vcamp::WARM_RADIUS) != Some(ci) {
+                        continue;
+                    }
+                    if vtale::should_tell(0.0, rand::random::<f32>(), vtale::TALE_CHANCE) {
+                        tale_pair = Some((i, j));
+                        break 'tscan;
+                    }
+                }
+            }
+            if let Some((i, j)) = tale_pair {
+                let teller_id = snaps[i].1.clone();
+                let teller_name = snaps[i].2;
+                // 讀講述者記憶、挑一則可講的往事（短讀鎖即釋，不巢狀）。挑不到（新居民還沒累積往事）就這 tick 不講。
+                let tale_summary: Option<String> = {
+                    let mem = hub().memory.read().unwrap();
+                    let mems = mem.all_memories_for(&teller_id);
+                    vtale::pick_tale(&mems).map(|e| e.summary.clone())
+                }; // memory 讀鎖釋放
+                if let Some(summary) = tale_summary {
+                    let listener_id = snaps[j].1.clone();
+                    let listener_name = snaps[j].2;
+                    let pick = (residents[i].body.x.to_bits() ^ residents[i].body.z.to_bits()) as usize;
+                    residents[i].say = vtale::tale_bubble(&summary, pick);
+                    residents[i].say_timer = SAY_SECS;
+                    residents[i].campfire_tale_cooldown = vtale::TALE_COOLDOWN_SECS;
+                    residents[i].mood_boost_secs = residents[i].mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    // 聆聽者幾秒後應和（pending_tale_reply 存講述者名 + 倒數，下一 tick 由回應段接手）。
+                    residents[j].pending_tale_reply = Some((teller_name.to_string(), vtale::TALE_REPLY_DELAY_SECS));
+                    campfire_tale_events.push((teller_id, teller_name, listener_id, listener_name, summary));
+                }
+            }
+        }
+
         // 2d) 打氣到達處理（ROADMAP 679）：把到達事件轉化成 pending_response + 收集記憶/Feed data。
         // 在 per-resident 迴圈結束後處理，避免雙重 iter_mut 借用衝突。
         // 格式：(happy_id, happy_name, lonely_rid) → 找到 lonely → 設 pending_response。
@@ -8058,6 +8146,19 @@ fn tick_residents(dt: f32) {
             let detail = format!("對{}說：「{}」", listener_name, line.chars().take(30).collect::<String>());
             vfeed::append_feed("鄰里閒聊", speaker_name, &detail);
         }
+    }
+
+    // 4a-2) 圍火講往事落地（圍火講往事 v1）：聆聽者把「在營火邊聽某人講起往事」記進**社交記憶**
+    // （走既有 `SocialStore`／`append_social`，零新持久化格式），並廣播一則城鎮動態。鎖序：social 寫
+    // （即釋）；不巢狀；append-only 不破壞既有資料。往事原文已由 `listen_social_summary` 截斷去換行。
+    for (teller_id, teller_name, listener_id, listener_name, tale_summary) in &campfire_tale_events {
+        let summary = vtale::listen_social_summary(teller_name, tale_summary);
+        let entry = {
+            let mut soc = hub().social.write().unwrap();
+            soc.record_overheard(listener_id, teller_id, &summary)
+        }; // social 寫鎖在此釋放
+        vrel::append_social(&entry);
+        vfeed::append_feed("圍火講古", teller_name, &vtale::tale_feed_line(teller_name, listener_name));
     }
 
     // 4a-c) 打氣到達記憶落地（ROADMAP 679）：打氣者 + 被打氣者各寫一筆記憶、Feed 廣播。
