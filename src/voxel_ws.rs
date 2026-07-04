@@ -10087,7 +10087,7 @@ fn tick_residents(dt: f32) {
                     if transferred {
                         let item_name = vgift::item_name_zh(block_id);
                         vfeed::append_feed(
-                            vsharemeal::FEED_KIND,
+                            vshare::FEED_KIND,
                             &host_name,
                             &vshare::share_feed_line(visitor_name, item_name, qty),
                         );
