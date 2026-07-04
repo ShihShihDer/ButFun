@@ -91,6 +91,7 @@ use crate::voxel_epithet_esteem as vesteem;
 use crate::voxel_epithet_sign as vepisign;
 use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_weather as vweather;
+use crate::voxel_stargaze as vstar;
 use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
 use crate::voxel_teach as vteach;
@@ -363,6 +364,10 @@ struct VoxelResident {
     /// 重返冷卻倒數（秒，讀牌 v3）：一次朝聖（抵達或放棄）後設為 [`vreadsign::PILGRIMAGE_COOLDOWN`]，
     /// 歸零前不再啟程——稀少才有感、不洗版。各居民初始錯開。
     pilgrimage_cooldown: f32,
+    /// 望星冷卻倒數（秒，繁星夜空 v1，ROADMAP 783）：一次夜裡望星／邀你同賞後設為
+    /// [`vstar::STARGAZE_COOLDOWN_SECS`]，歸零前不再觸發——星夜共賞是偶爾的浪漫一拍、不洗版。
+    /// 各居民初始錯開。純記憶體、重啟歸零。
+    stargaze_cooldown: f32,
     /// 門口留下的「有人來找過」心意佇列（登門撲空留心意 v1，ROADMAP 763）：某訪客登門撲空（752 判定
     /// 主人不在家）時，訪客名字塞進這裡；日後主人回到自家附近閒著時逐一感應、念一句、記一筆。
     /// 去重＋上限保護（[`vcard::MAX_PENDING_CALLERS`]）。純記憶體、重啟歸零。
@@ -1169,6 +1174,8 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             pilgrimage_neighbor: None,
             pilgrimage_timer: 0.0,
             pilgrimage_cooldown: 180.0 + i as f32 * 60.0,
+            // 繁星夜空 v1（ROADMAP 783）：望星冷卻各自錯開，避免同一個星夜大家一起邀。
+            stargaze_cooldown: 120.0 + i as f32 * 45.0,
             // 登門撲空留心意 v1（ROADMAP 763）：入場門口沒有待感應的心意；首次感應冷卻各自錯開。
             pending_callers: Vec::new(),
             callingcard_cooldown: 20.0 + i as f32 * 15.0,
@@ -5220,6 +5227,10 @@ fn tick_residents(dt: f32) {
     // 遠行探野 Feed（遠行探野 v1，ROADMAP 756）：鎖內收集「某居民啟程遠行／遠行歸來」事件，
     // 鎖釋放後統一 append_feed（不在持居民鎖時做 IO）。(居民名, 播報詳情)。
     let mut expedition_feed: Vec<(&'static str, String)> = Vec::new();
+    // 繁星夜空·星夜共賞（v1，ROADMAP 783）：鎖內收集「某居民記得這位玩家愛看星星、在星夜喚他同賞」
+    // 事件；記憶寫（add_memory）與 Feed（append_feed）全在居民鎖釋放後統一處理（不持居民鎖做 IO）。
+    // (居民 id, 居民名, 玩家名)。
+    let mut stargaze_events: Vec<(String, &'static str, String)> = Vec::new();
 
     // 邊陲營火路標（遠行 v2，PLAN_ETHERVOX item 7「在遠方留下痕跡」）：鎖內收集「某居民抵達邊陲、
     // 要在落點升起一堆營火路標」的請求；地表計算、deltas 寫、廣播、持久化、記憶與 Feed 全在鎖釋放後
@@ -6227,6 +6238,11 @@ fn tick_residents(dt: f32) {
             if r.pilgrimage_cooldown > 0.0 {
                 r.pilgrimage_cooldown -= dt;
             }
+
+            // 繁星夜空 v1（ROADMAP 783）：望星冷卻遞減（純記憶體、每 tick 一次）。
+            if r.stargaze_cooldown > 0.0 {
+                r.stargaze_cooldown -= dt;
+            }
             if let Some((tx, tz, quote)) = r.pilgrimage.clone() {
                 // 持續朝牌子走、清小歇（步步逼近，讓玩家看得到她專程走過來）。
                 r.target_x = tx;
@@ -6738,6 +6754,55 @@ fn tick_residents(dt: f32) {
                 r.say = vweather::rainbow_line(pick).to_string();
                 r.say_timer = SAY_SECS;
                 r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            }
+
+            // 繁星夜空·星夜共賞 v1（ROADMAP 783）：夜裡（Night/Evening）靠近你的居民偶爾抬頭望星；
+            // 若牠記得你曾說過愛看星空（`FactCategory::Preference` 記憶命中星／月／夜空關鍵詞），便特地
+            // 喚你到身邊一起看——記憶驅動行為的浪漫一拍（PLAN_ETHERVOX 北極星）。say 為空、醒著才觸發，
+            // 不搶正事；長冷卻＋極低機率＝天然節流。鎖序：memory 讀鎖只在確定要觸發後才短取即釋（不巢狀），
+            // 記憶寫＋Feed 走鎖外 `stargaze_events`（不持居民鎖做 IO，守死鎖鐵律）。
+            if is_night && r.say.is_empty() && !r.asleep {
+                if let Some((d2, pname)) = nearest_player_info(r.body.x, r.body.z, &player_pts) {
+                    let in_range = d2 < vstar::STARGAZE_RANGE * vstar::STARGAZE_RANGE;
+                    if vstar::should_stargaze(
+                        is_night,
+                        in_range,
+                        r.stargaze_cooldown <= 0.0,
+                        false, // say 已在外層確認為空
+                        false, // asleep 已在外層確認為醒
+                        rand::random::<f32>(),
+                    ) {
+                        // 冷卻先鎖上（不論一般望星或邀約，都算一次觸發，避免下一 tick 又擲骰）。
+                        r.stargaze_cooldown = vstar::STARGAZE_COOLDOWN_SECS;
+                        let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                        // 只有登入玩家（名字非空）才查偏好記憶、才可能升級為「記得你愛看星星」的邀約。
+                        let remembers = if pname.is_empty() {
+                            false
+                        } else {
+                            let prefs: Vec<String> = {
+                                let mem = hub().memory.read().unwrap();
+                                mem.semantic_facts_for(&r.id, pname)
+                                    .into_iter()
+                                    .filter(|f| f.category == vmem::FactCategory::Preference)
+                                    .map(|f| f.content)
+                                    .collect()
+                            }; // memory 讀鎖即釋
+                            vstar::remembers_star_love(&prefs)
+                        };
+                        if remembers {
+                            // 記憶驅動行為的魔法一拍：點名邀你同賞、記進交情、上動態牆。
+                            r.say = vstar::invite_line(r.name, pname, pick);
+                            r.say_timer = SAY_SECS;
+                            r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                            stargaze_events.push((r.id.clone(), r.name, pname.to_string()));
+                        } else {
+                            // 一般望星自語（純夜色氛圍，不寫記憶、不上 Feed）。
+                            r.say = vstar::gaze_line(pick).to_string();
+                            r.say_timer = SAY_SECS;
+                            r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                        }
+                    }
+                }
             }
 
             // 心情自語 v1（ROADMAP 677）：冷卻到期且 say 為空時，依心情自發冒一句台詞。
@@ -7920,6 +7985,17 @@ fn tick_residents(dt: f32) {
     // 讓沒在現場的玩家也讀得到「居民的足跡散進了荒野」——世界不再只圍著主城打轉。
     for (rname, detail) in &expedition_feed {
         vfeed::append_feed("遠行", rname, detail);
+    }
+
+    // 5c-2a'') 星夜共賞（繁星夜空 v1，ROADMAP 783）：居民記得你愛看星星、在星夜喚你同賞時，
+    // 把這則共賞記進牠對你的記憶（掛玩家名下、深化交情），並記一筆動態牆——鎖外統一 IO（不持居民鎖）。
+    for (rid, rname, pname) in &stargaze_events {
+        hub()
+            .memory
+            .write()
+            .unwrap()
+            .add_memory(rid, pname, &vstar::stargaze_memory(pname)); // 記憶寫鎖即釋
+        vfeed::append_feed(vstar::FEED_KIND, rname, &vstar::stargaze_feed_line(rname, pname));
     }
 
     // 5c-2a') 邊陲營火路標（遠行 v2，PLAN_ETHERVOX item 7「在遠方留下痕跡」）：居民抵達邊陲時
