@@ -53,6 +53,7 @@ use crate::voxel_gift as vgift;
 use crate::voxel_keepsake as vkeep;
 use crate::voxel_keepsake_recall as vkrecall;
 use crate::voxel_humming as vhum;
+use crate::voxel_campfire as vcamp;
 use crate::voxel_seedgift as vseed;
 use crate::voxel_giftgarden as vgg;
 use crate::voxel_fishing as vfish;
@@ -395,6 +396,9 @@ struct VoxelResident {
     /// 哼歌冷卻倒數（秒，ROADMAP 788）：一次哼歌後設 [`vhum::HUM_COOLDOWN_SECS`]，歸零前不再哼——
     /// 心情正好時偶爾滿溢一段旋律、不洗版。各居民初始錯開。純記憶體、重啟歸零。
     humming_cooldown: f32,
+    /// 營火取暖冷卻倒數（秒，乙太營火 v1）：一次圍暖後設 [`vcamp::WARM_COOLDOWN_SECS`]，歸零前不再取暖——
+    /// 夜裡路過火邊偶爾駐足、不狂刷泡泡。各居民初始錯開。純記憶體、重啟歸零。
+    campfire_warm_cooldown: f32,
     /// 門口留下的「有人來找過」心意佇列（登門撲空留心意 v1，ROADMAP 763）：某訪客登門撲空（752 判定
     /// 主人不在家）時，訪客名字塞進這裡；日後主人回到自家附近閒著時逐一感應、念一句、記一筆。
     /// 去重＋上限保護（[`vcard::MAX_PENDING_CALLERS`]）。純記憶體、重啟歸零。
@@ -1213,6 +1217,8 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             keepsake_recall_cooldown: 90.0 + i as f32 * 40.0,
             // 哼歌 v1（ROADMAP 788）：哼歌冷卻各自錯開，避免大家同時哼起來。
             humming_cooldown: 60.0 + i as f32 * 35.0,
+            // 乙太營火 v1：首次取暖冷卻各自錯開，避免入夜同一 tick 一群人齊聲說暖語。
+            campfire_warm_cooldown: 140.0 + i as f32 * 30.0,
             // 登門撲空留心意 v1（ROADMAP 763）：入場門口沒有待感應的心意；首次感應冷卻各自錯開。
             pending_callers: Vec::new(),
             callingcard_cooldown: 20.0 + i as f32 * 15.0,
@@ -1248,6 +1254,10 @@ struct VoxelHub {
     /// 方塊改動 delta 層（疊在程序生成地形之上）。切片②先記憶體存，session 內正確套用+廣播。
     /// 之後切片可把它接 DB 持久化；AI 蓋家也會共用這層。
     deltas: RwLock<WorldDelta>,
+    /// 乙太營火 v1（自主提案切片）：世界中所有營火方塊座標。放置時 push、破壞時 retain，
+    /// 啟動時由 `vcamp::scan_campfires` 從 delta 重建（篝火持久化，重啟後居民仍記得去哪圍暖）。
+    /// tick 時先短鎖 clone 一份快照再進 residents 寫鎖迴圈用，不巢狀鎖（守 prod 死鎖鐵律）。
+    campfires: RwLock<Vec<(i32, i32, i32)>>,
     /// 乙太方界 AI 居民。
     residents: RwLock<Vec<VoxelResident>>,
     /// 居民決策匯流排（async 思考投入、tick 取走套用；嚴守無鎖 await 鐵律）。
@@ -1492,9 +1502,13 @@ fn hub() -> &'static VoxelHub {
         }
         // 舊坑一次性修復（冪等）：把早期採集留下的地表淺坑回填成裸土，讓地表恢復平整。
         migrate_fill_surface_holes(&mut deltas, &loaded);
+        // 乙太營火 v1：從已 replay 的 delta 掃出所有既存營火座標，重建取暖清單（重啟後居民
+        // 仍會被重啟前蓋的火堆吸引）。掃描發生在 deltas 被 move 進 RwLock 之前，一次性、非熱路徑。
+        let campfires = vcamp::scan_campfires(&deltas);
         VoxelHub {
             players: RwLock::new(HashMap::new()),
             deltas: RwLock::new(deltas),
+            campfires: RwLock::new(campfires),
             residents: RwLock::new(init_residents()),
             agent_bus: AgentBus::new(),
             // 啟動時從 data/voxel_memory.jsonl 載回長期記憶（檔缺 = 首次啟動，回空），
@@ -2235,6 +2249,17 @@ async fn handle_socket(
                             broadcast_sign(x, y, z, "");
                         }
                     }
+                    // 乙太營火 v1：破壞營火 → 從取暖清單移除該座標，並持久化這格已成空氣
+                    //（append world_blocks 覆蓋 Air，重啟 replay 後不會又冒出舊火堆）。火堆方塊
+                    // 本身走後面「其餘實心方塊掉落自身」的通用路徑退還背包(70)，不在此 continue。
+                    if matches!(target_block, Block::Campfire) {
+                        hub()
+                            .campfires
+                            .write()
+                            .unwrap()
+                            .retain(|&(cx, cy, cz)| !(cx == x && cy == y && cz == z));
+                        vbuild::append_world_block(x, y, z, Block::Air as u8);
+                    }
                     // 木門（開）v1（ROADMAP 693）：非實心但可破壞 → 退還木門（關）。
                     if matches!(target_block, Block::DoorOpen) {
                         let bid = Block::DoorClosed as u8; // 43
@@ -2481,6 +2506,13 @@ async fn handle_socket(
                     // 由 `tick_grove`（15 秒節拍）計時，約 150 秒後長成一株樹。
                     if block == Block::Sapling {
                         hub().grove.write().unwrap().plant(x, y, z, vfarm::now_secs());
+                    }
+                    // 乙太營火 v1：剛放下一座營火 → 記進取暖清單（居民夜裡靠它吸引），並持久化
+                    // （走既有 world_blocks append-only log，重啟後火堆與取暖清單一併還原）。
+                    // campfires 寫鎖短取即釋，不與其他鎖巢狀。
+                    if block == Block::Campfire {
+                        hub().campfires.write().unwrap().push((x, y, z));
+                        vbuild::append_world_block(x, y, z, block as u8);
                     }
                     // 水流動：放了一塊（可能堵住水路或填掉水格）→ 喚醒鄰格重算流向。
                     enqueue_water_around(x, y, z);
@@ -5562,6 +5594,17 @@ fn tick_residents(dt: f32) {
     // 哼歌事件（ROADMAP 788）：某居民心情正好、你正好在身邊、牠哼給你聽時鎖內收集，記憶寫＋Feed
     // 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。(居民 id, 居民名, 玩家名, pick)。
     let mut humming_events: Vec<(String, &'static str, String, usize)> = Vec::new();
+    // 營火取暖事件（乙太營火 v1）：某居民夜裡路過火邊駐足圍暖時鎖內收集；記憶寫＋Feed 在居民鎖
+    // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在旁才記交情，否則 None 只上 Feed。
+    // (居民 id, 居民名, 火邊玩家名 Option, pick)。
+    let mut campfire_warm_events: Vec<(String, &'static str, Option<String>, usize)> = Vec::new();
+    // 乙太營火 v1：夜裡才需要一份營火座標快照。短鎖 clone 即釋，避免在 residents 寫鎖迴圈內
+    // 再取 campfires 讀鎖（不巢狀鎖，守 prod 死鎖鐵律）；非夜晚時空 Vec，跳過整段判定。
+    let campfire_spots: Vec<(i32, i32, i32)> = if matches!(phase, TimePhase::Night) {
+        hub().campfires.read().unwrap().clone()
+    } else {
+        Vec::new()
+    };
 
     // 邊陲營火路標（遠行 v2，PLAN_ETHERVOX item 7「在遠方留下痕跡」）：鎖內收集「某居民抵達邊陲、
     // 要在落點升起一堆營火路標」的請求；地表計算、deltas 寫、廣播、持久化、記憶與 Feed 全在鎖釋放後
@@ -6629,6 +6672,10 @@ fn tick_residents(dt: f32) {
             if r.humming_cooldown > 0.0 {
                 r.humming_cooldown -= dt;
             }
+            // 乙太營火 v1：取暖冷卻遞減（純記憶體、每 tick 一次）。
+            if r.campfire_warm_cooldown > 0.0 {
+                r.campfire_warm_cooldown -= dt;
+            }
             // 睹物思人 v1（ROADMAP 784）：閒著、醒著、且恰好路過她擺出的某件你送的紀念物時，
             // 偶爾駐足追憶一句、記進交情——keepsake（732）落地後的持續回響（記憶→行為）。
             // say 為空、醒著、手邊沒重要事才觸發，不搶正事；長冷卻＋極低機率＝天然節流。
@@ -7262,6 +7309,46 @@ fn tick_residents(dt: f32) {
                     // 沒有玩家在身邊（或只有訪客）：獨自哼無詞的調子，不寫記憶、不上 Feed。
                     r.say = vhum::hum_solo_line(pick);
                     r.say_timer = SAY_SECS;
+                }
+            }
+
+            // 乙太營火 v1：入夜後，閒著、醒著、且恰好路過玩家蓋的某座營火附近時，居民偶爾駐足
+            // 圍暖、心情變好、說句暖心話；你也在火邊（WARM_PLAYER_RADIUS 內）時點你名並記進交情。
+            // 三閘（靠近火＋冷卻＋機率）＋長冷卻＝天然節流。鎖序：純讀居民自身欄位＋鎖前備好的
+            // `campfire_spots` 快照（不巢狀 campfires 讀鎖），記憶寫＋Feed 走鎖外 `campfire_warm_events`。
+            if !campfire_spots.is_empty()
+                && r.say.is_empty()
+                && !r.asleep
+                && r.campfire_warm_cooldown <= 0.0
+                && r.pilgrimage.is_none()
+                && r.expedition.is_none()
+                && vcamp::nearest_campfire(&campfire_spots, r.body.x, r.body.z, vcamp::WARM_RADIUS)
+                    .is_some()
+                && vcamp::should_warm(true, 0.0, rand::random::<f32>(), vcamp::WARM_CHANCE)
+            {
+                r.campfire_warm_cooldown = vcamp::WARM_COOLDOWN_SECS;
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                // 火邊最近的玩家：夠近（WARM_PLAYER_RADIUS 內）且是登入玩家（名非空）→ 暖語點你名、記交情。
+                let near_player = nearest_player_info(r.body.x, r.body.z, &player_pts)
+                    .filter(|(d2, pname)| {
+                        *d2 < vcamp::WARM_PLAYER_RADIUS * vcamp::WARM_PLAYER_RADIUS
+                            && !pname.is_empty()
+                    })
+                    .map(|(_, pname)| pname.to_string());
+                if let Some(pname) = near_player {
+                    r.say = vcamp::warm_bubble_with_player(&pname, pick)
+                        .chars()
+                        .take(50)
+                        .collect();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    campfire_warm_events.push((r.id.clone(), r.name, Some(pname), pick));
+                } else {
+                    // 沒有玩家在火邊（或只有訪客）：獨自圍暖念句通用暖語，上 Feed、不寫玩家交情。
+                    r.say = vcamp::warm_bubble(pick).to_string();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    campfire_warm_events.push((r.id.clone(), r.name, None, pick));
                 }
             }
 
@@ -8482,6 +8569,19 @@ fn tick_residents(dt: f32) {
             .unwrap()
             .add_memory(rid, pname, &vhum::hum_memory_line(pname, *pick)); // 記憶寫鎖即釋
         vfeed::append_feed(vhum::FEED_KIND, rname, &vhum::hum_feed_line(rname, pname));
+    }
+
+    // 乙太營火 v1：夜裡圍暖事件落地——玩家在火邊時把「一起圍爐」記進交情（掛玩家名下），
+    // 無論有無玩家都上動態牆。記憶寫鎖短取即釋、Feed 走 IO，皆在 residents 鎖釋放後（守死鎖鐵律）。
+    for (rid, rname, pname_opt, _pick) in &campfire_warm_events {
+        if let Some(pname) = pname_opt {
+            hub()
+                .memory
+                .write()
+                .unwrap()
+                .add_memory(rid, pname, &vcamp::warm_memory_line(pname)); // 記憶寫鎖即釋
+        }
+        vfeed::append_feed("營火取暖", rname, &vcamp::warm_feed_line(rname));
     }
 
     // 5c-2a') 邊陲營火路標（遠行 v2，PLAN_ETHERVOX item 7「在遠方留下痕跡」）：居民抵達邊陲時

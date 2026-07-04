@@ -200,6 +200,13 @@ pub enum Block {
     /// 命名、標記、導覽自己的基地。實心方塊、可放置、破壞回收（文字一併清除）。
     /// id 66：既是背包物品也是世界方塊（沿用「可放置方塊 item_id == block_id」慣例）。
     Sign = 66,
+    /// 營火（乙太營火 v1，自主提案切片）——工作台合成：3 石頭 + 2 木頭 + 1 煤礦 → 1 營火。
+    /// 玩家親手蓋的一處火堆，是**發光方塊**（夜裡向四周散出溫暖橘光、照亮營地）；
+    /// 更重要的是它會**塑造居民的夜間行為**：入夜後路過火邊的居民會駐足圍暖、心情變好，
+    /// 你也在旁時哼一句暖心話並記進交情——玩家第一次能主動在世界裡點一處溫暖、把居民聚過來。
+    /// 與火把（純照明）、乙太煙火（一次性綻放）刻意區隔。實心、可放置、破壞回收自身。
+    /// id 70：60~69 已被純物品（釣具/漁獲/煙火/沃肥等）佔用，70 是首個可放置方塊空號。
+    Campfire = 70,
 }
 
 impl Block {
@@ -278,6 +285,7 @@ impl Block {
             59 => Some(Block::AetherLamp),
             65 => Some(Block::Sapling),
             66 => Some(Block::Sign),
+            70 => Some(Block::Campfire),
             _ => None,
         }
     }
@@ -293,7 +301,8 @@ impl Block {
             Block::CoalOre | Block::IronOre | Block::IronIngot | Block::IronBlock |
             Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed | Block::Bed |
             Block::Cactus | Block::Snow | Block::IceCrystal | Block::IceLantern |
-            Block::AetherOre | Block::AetherLamp | Block::Sapling | Block::Sign
+            Block::AetherOre | Block::AetherLamp | Block::Sapling | Block::Sign |
+            Block::Campfire
         )
     }
 }
@@ -1212,6 +1221,15 @@ mod tests {
         assert!(!Block::CarrotMature.is_placeable(), "成熟胡蘿蔔不可手動放置");
         assert_eq!(Block::from_u8(46), Some(Block::CarrotSeeded));
         assert_eq!(Block::from_u8(47), Some(Block::CarrotMature));
+    }
+
+    #[test]
+    fn campfire_roundtrips_placeable_and_solid() {
+        // 營火（id 70，乙太營火 v1）：from_u8 往返、可放置、實心（會擋路/掉落自身）。
+        assert_eq!(Block::from_u8(70), Some(Block::Campfire));
+        assert_eq!(Block::Campfire as u8, 70);
+        assert!(Block::Campfire.is_placeable(), "營火應可放置");
+        assert!(Block::Campfire.is_solid(), "營火應為實心方塊");
     }
 
     #[test]

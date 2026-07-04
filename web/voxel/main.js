@@ -92,6 +92,9 @@ const FIREWORK = 68;
 // 乙太沃肥 v1（ROADMAP 789）——工作台：3 雜草(1)+2 泥土(2) → 2 乙太沃肥(69)；純物品不可放置，
 // 手持對準一株幼苗(12/46/50)一撒，作物生長計時往前跳一截（fertilize）——玩家主動催熟農業的動詞。
 const FERTILIZER = 69;
+// 乙太營火 v1（自主提案切片）——工作台：3 石頭(3)+2 木頭(5)+1 煤礦(20) → 1 營火(70)；
+// 可放置的發光方塊，放下即向四周散出溫暖橘光照亮營地，入夜後吸引路過居民駐足圍暖。
+const CAMPFIRE = 70;
 // 植樹造林 v1（ROADMAP 738）——砍天然樹葉有機率掉樹苗(65)，種在土地上約 150 秒長成一株樹。
 // 樹苗既是背包物品也是可放置方塊（item_id == block_id），是玩家第一個可再生木材來源。
 const SAPLING = 65;
@@ -180,6 +183,8 @@ const COLOR = {
   // 植樹造林 v1（ROADMAP 738）——嫩黃綠，比草地/樹葉更亮更嫩，一眼認出是剛種下的小苗
   [SAPLING]:        [0.52, 0.74, 0.30], // 樹苗——鮮嫩黃綠，抽芽中的幼苗感
   [SIGN]:           [0.62, 0.44, 0.25], // 告示牌——溫潤木牌棕（比木板稍深），一看就是塊立起來的木牌
+  // 乙太營火 v1（自主提案切片）——炙熱的橘紅火堆色，比火把更飽和鮮亮，一眼是燃燒的營火（發光方塊）
+  [CAMPFIRE]:       [0.95, 0.42, 0.12],
 };
 
 const DEBUG = location.search.includes("debug");
@@ -792,11 +797,16 @@ const waterMat = makeWaterMat();
 
 const TORCH_LIGHT_COLOR = 0xff8820;      // 火把——暖橘黃（比火把顏色稍橘，光感更暖）
 const AETHER_LIGHT_COLOR = 0x66ccff;     // 乙太燈——清冷青藍（比火把冷、辨識度高）
+const CAMPFIRE_LIGHT_COLOR = 0xff6a1e;   // 營火——炙熱橘紅（比火把更飽和暖烈，一堆真的在燒的火）
 
 /** 此方塊是否為「發光方塊」（會被登記進光源池）。 */
-function isLightBlock(b) { return b === TORCH || b === AETHER_LAMP; }
+function isLightBlock(b) { return b === TORCH || b === AETHER_LAMP || b === CAMPFIRE; }
 /** 發光方塊的光色（不同方塊不同色調）。 */
-function lightColorFor(b) { return b === AETHER_LAMP ? AETHER_LIGHT_COLOR : TORCH_LIGHT_COLOR; }
+function lightColorFor(b) {
+  if (b === AETHER_LAMP) return AETHER_LIGHT_COLOR;
+  if (b === CAMPFIRE) return CAMPFIRE_LIGHT_COLOR;
+  return TORCH_LIGHT_COLOR;
+}
 
 // 追蹤世界中所有已知發光方塊座標（key="wx,wy,wz" → {wx,wy,wz,color}）。
 const torchPositions = new Map();
@@ -4462,6 +4472,8 @@ const WORKBENCH_RECIPES_JS = [
   { id: "aether_firework", name: "乙太煙火",      inputs: [[AETHER_ORE, 1], [COAL_ORE, 2], [SAND, 2]], output_block: FIREWORK, out_count: 3 },
   // 乙太沃肥 v1（ROADMAP 789）：3 雜草 + 2 泥土 → 2 乙太沃肥（工作台；手持對準幼苗一撒即催熟一截）
   { id: "aether_fertilizer", name: "乙太沃肥",    inputs: [[GRASS, 3], [DIRT, 2]], output_block: FERTILIZER, out_count: 2 },
+  // 乙太營火 v1（自主提案切片）：3 石頭 + 2 木頭 + 1 煤礦 → 1 營火（工作台；發光方塊，夜裡吸引居民圍暖）
+  { id: "campfire",       name: "營火",           inputs: [[STONE, 3], [WOOD, 2], [COAL_ORE, 1]], output_block: CAMPFIRE, out_count: 1 },
 ];
 
 // wbGrid[0..8]：3×3 共 9 格，0 代表空格，非零代表 block_id。
