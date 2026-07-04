@@ -3847,6 +3847,11 @@ function connect() {
       // 時令作物 v1（811）：種在該作物的時令季節時，後端附一句暖回饋（m.timely），接在種植提示後。
       showMsg(m.timely ? (plantMsg + "　" + m.timely) : plantMsg);
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, m.timely ? 3600 : 2500);
+    } else if (m.t === "bounty") {
+      // 時令豐收 v1（812）：在作物的時令季節收割成熟植株，額外多得一份果實——浮出當季鮮採回饋句
+      //（背包已由 inv_update 更新）。與種植端的時令回饋（811）對成一對。
+      showMsg(m.line || "🌾 當季鮮採，多收了一份！");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3200);
     } else if (m.t === "plant_fail") {
       // 種田 v1：種植失敗（非農田土 / 沒種子 / 太遠），短暫提示。
       showErr("種植失敗：" + (m.reason || "未知原因"));
