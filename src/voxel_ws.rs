@@ -55,6 +55,7 @@ use crate::voxel_keepsake_recall as vkrecall;
 use crate::voxel_humming as vhum;
 use crate::voxel_campfire as vcamp;
 use crate::voxel_campfire_tale as vtale;
+use crate::voxel_bell as vbell;
 use crate::voxel_seedgift as vseed;
 use crate::voxel_giftgarden as vgg;
 use crate::voxel_fishing as vfish;
@@ -405,6 +406,13 @@ struct VoxelResident {
     /// 圍著營火說故事冷卻倒數（秒，圍火講往事 v1）：一次開講後設 [`vtale::TALE_COOLDOWN_SECS`]，歸零前
     /// 不再開講——夜裡同在一座火邊偶爾講起一段往事、不連珠炮洗版。各居民初始錯開。純記憶體、重啟歸零。
     campfire_tale_cooldown: f32,
+    /// 正在應召循鐘聲趕來（集會鐘 v1）：玩家敲響集會鐘時，範圍內閒著的居民設此欄位，
+    /// 移動鏈據此朝鐘走去、抵達即聚攏反應後清空；逾時（[`vbell::SUMMON_TIMEOUT_SECS`]）自動放棄。
+    /// 純記憶體、重啟歸零。
+    summon: Option<vbell::Summon>,
+    /// 集會鐘應召冷卻倒數（秒，集會鐘 v1）：應召一次後設 [`vbell::SUMMON_COOLDOWN_SECS`]，歸零前
+    /// 不再被鐘聲拉動——**濫用防護主閘**：狂敲鐘也拖不動同一位居民太頻繁。純記憶體、重啟歸零。
+    summon_cooldown: f32,
     /// 被夥伴在營火邊講了故事後、等這秒數到期再應和（講述者名字, 剩餘秒）（圍火講往事 v1）。
     /// 與 `pending_response` 分開，讓聆聽者冒的是「聽故事」味道的專屬應和，而非通用社交回應。純記憶體。
     pending_tale_reply: Option<(String, f32)>,
@@ -1231,6 +1239,9 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             // 圍火講往事 v1：首次講述冷卻各自錯開，避免入夜同一 tick 一群人同時開講；入場無待應和的故事。
             campfire_tale_cooldown: 170.0 + i as f32 * 45.0,
             pending_tale_reply: None,
+            // 集會鐘 v1：入場沒有正在應召的鐘；應召冷卻歸零（一出生就聽得到第一次鐘聲）。
+            summon: None,
+            summon_cooldown: 0.0,
             // 登門撲空留心意 v1（ROADMAP 763）：入場門口沒有待感應的心意；首次感應冷卻各自錯開。
             pending_callers: Vec::new(),
             callingcard_cooldown: 20.0 + i as f32 * 15.0,
@@ -1804,6 +1815,11 @@ enum ClientMsg {
     /// 鋤頭是工具、反覆使用不耗損（比照鎬／斧採集不消耗工具），只驗持有、不消耗。
     #[serde(rename = "hoe_till")]
     HoeTill { x: i32, y: i32, z: i32 },
+    /// 集會鐘 v1（自主提案切片）：右鍵敲響一座集會鐘。(x,y,z) 是瞄準的鐘方塊。伺服器驗
+    /// 觸及範圍 + 目標為 Bell(74) → 把範圍內閒著、醒著、冷卻到期的居民設為「應召」，讓牠們
+    /// 循聲朝鐘走來；至少召到一位才廣播鐘聲＋上 Feed（濫用防護：無在場可召者則不廣播、不洗版）。
+    #[serde(rename = "ring_bell")]
+    RingBell { x: i32, y: i32, z: i32 },
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -1876,6 +1892,19 @@ fn broadcast_firework(x: f32, y: f32, z: f32, palette: u32) {
     let msg = Arc::new(
         serde_json::json!({ "t": "firework", "x": x, "y": y, "z": z, "palette": palette })
             .to_string(),
+    );
+    let _ = hub().tx.send(msg);
+}
+
+/// 廣播一座集會鐘被敲響給全場（集會鐘 v1）：`(x,y,z)` 是鐘方塊座標，前端據此播鐘聲音效／
+/// 在鐘上冒一圈聲波漣漪；`ringer` 敲鐘者名、`count` 循聲聚來的居民數（供前端做提示）。
+/// 只在真的召到居民時才呼叫（見 RingBell handler），避免空敲洗版全場。
+fn broadcast_bell_ring(x: i32, y: i32, z: i32, ringer: &str, count: usize) {
+    let msg = Arc::new(
+        serde_json::json!({
+            "t": "bell_ring", "x": x, "y": y, "z": z, "ringer": ringer, "count": count,
+        })
+        .to_string(),
     );
     let _ = hub().tx.send(msg);
 }
@@ -2285,6 +2314,12 @@ async fn handle_socket(
                             .retain(|&(cx, cy, cz)| !(cx == x && cy == y && cz == z));
                         vbuild::append_world_block(x, y, z, Block::Air as u8);
                     }
+                    // 集會鐘 v1：破壞鐘 → 持久化這格已成空氣（重啟 replay 後不再冒出舊鐘）。鐘方塊
+                    // 本身走後面「其餘實心方塊掉落自身」的通用路徑退還背包(74)，不在此 continue。
+                    // 應召狀態只是 in-memory：鐘沒了，正朝它走的居民逾時（SUMMON_TIMEOUT）自然放棄，不必特別清。
+                    if matches!(target_block, Block::Bell) {
+                        vbuild::append_world_block(x, y, z, Block::Air as u8);
+                    }
                     // 木門（開）v1（ROADMAP 693）：非實心但可破壞 → 退還木門（關）。
                     if matches!(target_block, Block::DoorOpen) {
                         let bid = Block::DoorClosed as u8; // 43
@@ -2537,6 +2572,11 @@ async fn handle_socket(
                     // campfires 寫鎖短取即釋，不與其他鎖巢狀。
                     if block == Block::Campfire {
                         hub().campfires.write().unwrap().push((x, y, z));
+                        vbuild::append_world_block(x, y, z, block as u8);
+                    }
+                    // 集會鐘 v1：剛放下一座鐘 → 持久化（走既有 world_blocks append-only log，重啟後鐘還在）。
+                    // 不需 in-memory 索引：召集是敲響當下依鐘座標即時判定範圍（不像營火要夜裡持續吸引路過者）。
+                    if block == Block::Bell {
                         vbuild::append_world_block(x, y, z, block as u8);
                     }
                     // 水流動：放了一塊（可能堵住水路或填掉水格）→ 喚醒鄰格重算流向。
@@ -3967,6 +4007,63 @@ async fn handle_socket(
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({ "t": "hoe_ok", "say": vhoe::till_ok_line(pick) }).to_string(),
                 ));
+            }
+            // ── 集會鐘 v1（自主提案切片）：敲響一座鐘，把附近閒著的居民召到身邊 ─────────
+            Ok(ClientMsg::RingBell { x, y, z }) => {
+                // 鎖序：players 讀位置 → delta 讀目標型別 → residents 寫設應召，循序不巢狀（守死鎖鐵律）。
+                let Some((px, py, pz)) = player_pos(my_id) else {
+                    continue;
+                };
+                if !voxel::in_reach(px, py, pz, x, y, z) {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "ring_fail", "reason": "走近一點才敲得到鐘" }).to_string(),
+                    ));
+                    continue;
+                }
+                // 目標必須是集會鐘——後端權威判定（前端不自報合法性·濫用防護③：型別由伺服器認）。
+                let target = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
+                if !matches!(target, Block::Bell) {
+                    // 對準的不是鐘（或鐘已被別人挖掉）→ 靜默忽略。
+                    continue;
+                }
+                // 召集：把範圍內閒著（醒著、非遠行、應召冷卻到期）的居民設為應召，循聲朝鐘走來。
+                // 濫用防護①：per-居民 [`vbell::SUMMON_COOLDOWN_SECS`] 冷卻＝就算狂敲鐘，同一位居民也
+                // 拖不動太頻繁。濫用防護②：ring_bell 不觸發任何 LLM／不收自由文字，無注入／燒額度風險。
+                let ringer = name.clone();
+                let bx = x as f32 + 0.5;
+                let bz = z as f32 + 0.5;
+                let heeded = {
+                    let mut residents = hub().residents.write().unwrap();
+                    let mut n = 0usize;
+                    for r in residents.iter_mut() {
+                        if !vbell::eligible(r.asleep, r.expedition.is_some(), r.summon_cooldown) {
+                            continue;
+                        }
+                        if vbell::within_summon(bx, bz, r.body.x, r.body.z, vbell::SUMMON_RADIUS) {
+                            r.summon = Some(vbell::Summon {
+                                x: bx,
+                                z: bz,
+                                timer: vbell::SUMMON_TIMEOUT_SECS,
+                                ringer: ringer.clone(),
+                            });
+                            n += 1;
+                        }
+                    }
+                    n
+                }; // residents 寫鎖釋放
+                if heeded > 0 {
+                    // 至少召到一位才廣播鐘聲＋上 Feed（濫用防護：空敲不廣播、不洗版全場）。
+                    broadcast_bell_ring(x, y, z, &ringer, heeded);
+                    vfeed::append_feed("鐘聲", &ringer, &vbell::ring_feed_line(&ringer, heeded));
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "ring_ok", "count": heeded }).to_string(),
+                    ));
+                } else {
+                    // 附近沒有聽得到又有空的居民（都睡了／遠行／剛應召過）→ 只回敲鐘者一句提示，不廣播。
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "ring_none" }).to_string(),
+                    ));
+                }
             }
             // ── 居民贈禮 v1（ROADMAP 660）────────────────────────────────────────
             Ok(ClientMsg::Gift { resident_id, item_id }) => {
@@ -5803,6 +5900,9 @@ fn tick_residents(dt: f32) {
     // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在旁才記交情，否則 None 只上 Feed。
     // (居民 id, 居民名, 火邊玩家名 Option, pick)。
     let mut campfire_warm_events: Vec<(String, &'static str, Option<String>, usize)> = Vec::new();
+    // 集會鐘 v1：某位應召的居民走到鐘邊聚攏時，鎖內收集事件；「你敲鐘召我來」的交情記憶＋Feed
+    // 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。(居民 id, 居民名, 敲鐘者名)。
+    let mut bell_gather_events: Vec<(String, &'static str, String)> = Vec::new();
     // 圍火講往事 v1：夜裡兩位醒著的居民同在一座營火邊、其中一位講起一段往事時，鎖內收集事件；
     // 聆聽者的社交記憶寫＋Feed 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。
     // (講述者 id, 講述者名, 聆聽者 id, 聆聽者名, 往事摘要)。
@@ -6906,6 +7006,18 @@ fn tick_residents(dt: f32) {
             if r.campfire_tale_cooldown > 0.0 {
                 r.campfire_tale_cooldown -= dt;
             }
+            // 集會鐘 v1：應召逾時遞減（純記憶體、每 tick 一次，不管居民此刻走哪條移動分支都算），
+            // 逾時歸零即放棄應召（例如鐘被挖了、或被別的高優先任務卡著走不到）——守「卡住自救」。
+            if let Some(sm) = r.summon.as_mut() {
+                sm.timer -= dt;
+                if sm.timer <= 0.0 {
+                    r.summon = None;
+                }
+            }
+            // 應召冷卻遞減（濫用防護主閘：一位居民應召一次後隔一段才會再被鐘聲拉動）。
+            if r.summon_cooldown > 0.0 {
+                r.summon_cooldown -= dt;
+            }
             // 睹物思人 v1（ROADMAP 784）：閒著、醒著、且恰好路過她擺出的某件你送的紀念物時，
             // 偶爾駐足追憶一句、記進交情——keepsake（732）落地後的持續回響（記憶→行為）。
             // say 為空、醒著、手邊沒重要事才觸發，不搶正事；長冷卻＋極低機率＝天然節流。
@@ -7780,6 +7892,39 @@ fn tick_residents(dt: f32) {
                         tx as f32 + 0.5, tz as f32 + 0.5,
                         dt, vr::RES_SPEED * speed_mult,
                     );
+                    if let Some(yaw) = vr::yaw_from_move(r.body.x - bx, r.body.z - bz) {
+                        r.yaw = yaw;
+                    }
+                }
+            } else if let Some(sm) = r.summon.clone() {
+                // 集會鐘 v1·應召：循著鐘聲朝鐘走去；抵達鐘邊就聚攏反應。優先於平常閒晃／小歇，
+                // 但讓位給上方跟隨／整地／交付等玩家明確指派或已committed的任務（那些分支在前）。
+                // 逾時遞減＋走不到的放棄在上方冷卻段每 tick 處理（守「卡住自救」，不鬼打牆）。
+                let dx = r.body.x - sm.x;
+                let dz = r.body.z - sm.z;
+                if vbell::arrived(dx, dz, vbell::GATHER_RADIUS) {
+                    // 抵達鐘邊：清應召、設冷卻（濫用防護：一段時間內不再被同/別的鐘拉動），冒聚攏泡泡、
+                    // 心情亮一格；「你敲鐘召我來」的交情記憶＋Feed 走鎖外 `bell_gather_events`。原地站穩。
+                    r.summon = None;
+                    r.summon_cooldown = vbell::SUMMON_COOLDOWN_SECS;
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    if r.say.is_empty() {
+                        // 敲鐘者名非空（登入玩家）→ 點名版；訪客／名空 → 通用版。
+                        let line = if sm.ringer.is_empty() {
+                            vbell::gather_bubble(pick).to_string()
+                        } else {
+                            vbell::gather_bubble_with_ringer(&sm.ringer, pick)
+                        };
+                        r.say = line.chars().take(50).collect();
+                        r.say_timer = SAY_SECS;
+                    }
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    bell_gather_events.push((r.id.clone(), r.name, sm.ringer.clone()));
+                    vr::gravity_step(&world, &mut r.body, dt);
+                } else {
+                    // 還在路上：朝鐘走（沿牆滑行、踏階由物理處理）。
+                    let (bx, bz) = (r.body.x, r.body.z);
+                    vr::step_toward(&world, &mut r.body, sm.x, sm.z, dt, vr::RES_SPEED * speed_mult);
                     if let Some(yaw) = vr::yaw_from_move(r.body.x - bx, r.body.z - bz) {
                         r.yaw = yaw;
                     }
@@ -8878,6 +9023,21 @@ fn tick_residents(dt: f32) {
                 .add_memory(rid, pname, &vcamp::warm_memory_line(pname)); // 記憶寫鎖即釋
         }
         vfeed::append_feed("營火取暖", rname, &vcamp::warm_feed_line(rname));
+    }
+
+    // 集會鐘 v1：應召走到鐘邊聚攏的居民，把「你敲鐘召我來」這份互動記進交情（掛敲鐘者名下、
+    // 累積好感）——鎖外統一 IO（不持居民鎖，守死鎖鐵律）。動態牆已由敲鐘當下的一則彙總 Feed
+    // （「X敲響集會鐘，N位居民聚來」）代表，這裡不逐位重複上 Feed（避免洗版）。敲鐘者名空（訪客）
+    // 無可歸屬帳號 → 只享當下反應、不寫交情記憶。記憶持久化（比照贈禮/幫忙：玩家主動互動該留得下）。
+    for (rid, _rname, ringer) in &bell_gather_events {
+        if !ringer.is_empty() {
+            let entry = hub()
+                .memory
+                .write()
+                .unwrap()
+                .add_memory(rid, ringer, &vbell::gather_memory_line(ringer)); // 記憶寫鎖即釋
+            vmem::append_memory(&entry);
+        }
     }
 
     // 5c-2a') 邊陲營火路標（遠行 v2，PLAN_ETHERVOX item 7「在遠方留下痕跡」）：居民抵達邊陲時

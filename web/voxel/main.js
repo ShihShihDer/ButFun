@@ -108,6 +108,10 @@ const BUCKET = 71, WATER_BUCKET = 72;
 // 鋤頭 v1（自主提案切片）——背包：2 木頭 + 1 木板 → 1 木鋤頭(73)；純物品不可放置。
 // 手持鋤頭對準草地／泥土＝就地開墾成農田土（省去挖土搬工作台再放回的繞路）；與水桶成對。
 const HOE = 73;
+// 集會鐘 v1（自主提案切片）——工作台：4 鐵錠(22) + 1 木頭(5) → 1 集會鐘(74)；可放置的方塊。
+// 放下後右鍵敲響即向四周傳出鐘聲，附近閒著的居民循聲朝你走來聚集——玩家第一次能像村長一樣
+// 主動把村民召到身邊。既是背包物品也是可放置方塊（item_id == block_id）。
+const BELL = 74;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -197,6 +201,8 @@ const COLOR = {
   [WATER_BUCKET]:   [0.28, 0.52, 0.82],
   // 鋤頭 v1（自主提案切片）——木柄土棕色，一眼是把農具（純物品不放置，只在物品欄顯示）
   [HOE]:            [0.62, 0.44, 0.24],
+  // 集會鐘 v1（自主提案切片）——溫潤的青銅金鐘色，比鐵磚更暖更亮，一眼是掛著的鑄鐘（可放置方塊）
+  [BELL]:           [0.80, 0.62, 0.24],
 };
 
 const DEBUG = location.search.includes("debug");
@@ -607,6 +613,55 @@ function updateFireworks(dt) {
       fw.mat.size = 0.9 + bf * 0.6;                 // 火花微微變大再散去
     }
     posAttr.needsUpdate = true;
+  }
+}
+
+// ── 集會鐘·鐘聲漣漪 v1（自主提案切片）─────────────────────────────────────────────
+// 前端契約：任一玩家敲響集會鐘時伺服器廣播 bell_ring{x,y,z,ringer,count} 給全場，前端在鐘的位置
+// 生成一圈往外擴散、淡出的水平聲波環（人人可見），呼應「鐘聲傳了出去、把村民召來」。效能鐵律：
+// 每圈＝單一 THREE.Mesh（一次 draw call、共用環幾何、只縮放與調透明度），壽命約 1.6 秒後移除；
+// 同時最多 BELL_MAX_RINGS 圈（敲鐘本就有 per-居民冷卻＋後端只在召到人時才廣播天然節流，另設保險上限）。
+// 陣列空時 update 零成本早退。
+const BELL_RING_SECS = 1.6;        // 一圈聲波從冒出到散盡的壽命（秒）
+const BELL_RING_MAX_R = 9.0;       // 聲波擴散到的最大半徑（格）
+const BELL_MAX_RINGS = 10;         // 同時最多幾圈（保險上限，防極端連環敲洗版）
+// 共用一張薄環幾何（內外徑差＝環的粗細）；各圈只是同一幾何的不同縮放實例，省記憶體。
+const bellRingGeom = new THREE.RingGeometry(0.82, 1.0, 40);
+const bellRings = []; // 進行中的聲波環
+function spawnBellRing(x, y, z) {
+  if (bellRings.length >= BELL_MAX_RINGS) {
+    // 超出上限：回收最舊一圈（極端情況保險，材質才是每圈自有、需釋放；幾何共用不釋放）。
+    const old = bellRings.shift();
+    scene.remove(old.mesh);
+    old.mesh.material.dispose();
+  }
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xffe08a, transparent: true, opacity: 0.75, side: THREE.DoubleSide,
+    depthWrite: false, fog: false,
+  });
+  const mesh = new THREE.Mesh(bellRingGeom, mat);
+  mesh.rotation.x = -Math.PI / 2;             // 攤平成水平環（躺在地面上擴散）
+  mesh.position.set(x + 0.5, y + 0.6, z + 0.5); // 從鐘身中段略高處冒出
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  bellRings.push({ mesh, mat, age: 0 });
+}
+// 每幀推進所有聲波環：半徑線性外擴、透明度淡出，壽命到就移除、釋放材質。陣列空即零成本早退。
+function updateBellRings(dt) {
+  if (bellRings.length === 0) return;
+  for (let b = bellRings.length - 1; b >= 0; b--) {
+    const rg = bellRings[b];
+    rg.age += dt;
+    if (rg.age >= BELL_RING_SECS) {
+      scene.remove(rg.mesh);
+      rg.mat.dispose();
+      bellRings.splice(b, 1);
+      continue;
+    }
+    const t = rg.age / BELL_RING_SECS;          // 0..1
+    const r = 1.0 + (BELL_RING_MAX_R - 1.0) * t; // 半徑從 1 擴到最大
+    rg.mesh.scale.set(r, r, r);
+    rg.mat.opacity = 0.75 * (1 - t);            // 線性淡出
   }
 }
 
@@ -2672,6 +2727,8 @@ const BLOCK_NAME = {
   [BUCKET]: "水桶", [WATER_BUCKET]: "滿水桶",
   // 鋤頭 v1（自主提案切片）
   [HOE]: "木鋤頭",
+  // 集會鐘 v1（自主提案切片）
+  [BELL]: "集會鐘",
   // 植樹造林 v1（ROADMAP 738）
   [SAPLING]: "樹苗",
   // 告示牌 v1（ROADMAP 740）
@@ -3069,6 +3126,12 @@ function placeAtTarget() {
   // 告示牌互動（ROADMAP 740）：右鍵對準既有告示牌 → 跳出輸入框編輯牌面文字。
   if (getRaw(target.bx, target.by, target.bz) === SIGN) {
     promptSignEdit(target.bx, target.by, target.bz, false);
+    return null;
+  }
+  // 集會鐘互動（集會鐘 v1，自主提案切片）：右鍵對準既有集會鐘 → 敲響它（不放置新方塊）。
+  //   後端權威複驗觸及範圍＋目標仍是鐘，把附近閒著的居民召來；不論手持什麼都能敲。
+  if (getRaw(target.bx, target.by, target.bz) === BELL) {
+    ws.send(JSON.stringify({ t: "ring_bell", x: target.bx, y: target.by, z: target.bz }));
     return null;
   }
   // 床互動：右鍵對準床 → 傳送 sleep_in_bed，夜晚時伺服器把時鐘撥到隔天黎明。
@@ -3760,6 +3823,21 @@ function connect() {
     } else if (m.t === "firework") {
       // 乙太煙火 v1（785）：全場任一玩家施放的煙火——在該座標上方綻放一朵火花（人人可見）。
       spawnFirework(m.x, m.y, m.z, m.palette | 0);
+    } else if (m.t === "bell_ring") {
+      // 集會鐘 v1（自主提案切片）：全場任一玩家敲響的鐘——在該座標冒一圈往外擴散的聲波環（人人可見）。
+      spawnBellRing(m.x | 0, m.y | 0, m.z | 0);
+    } else if (m.t === "ring_ok") {
+      // 集會鐘 v1：自己成功敲響——浮出「召來幾位居民」的回饋句。
+      showMsg("🔔 鐘聲傳了出去，" + (m.count | 0) + " 位居民循聲趕來了～");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+    } else if (m.t === "ring_none") {
+      // 集會鐘 v1：敲響了但附近沒有聽得到又有空的居民（都睡了／遠行／剛應召過）。
+      showMsg("🔔 鐘聲迴盪，可惜這會兒附近沒有能過來的居民。");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+    } else if (m.t === "ring_fail") {
+      // 集會鐘 v1：敲不到（離鐘太遠）。
+      showErr(m.reason || "現在敲不到這座鐘");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "firework_ok") {
       // 乙太煙火 v1（785）：自己成功施放——浮出綻放回饋句。
       showMsg("🎆 " + (m.line || "煙火在夜空中綻放開來。"));
@@ -4179,6 +4257,7 @@ function update(dt) {
   updateRainbow(dt);
   updateNightSky(dt);
   updateFireworks(dt); // 乙太煙火 v1（785）：推進進行中的煙火綻放
+  updateBellRings(dt); // 集會鐘 v1（自主提案切片）：推進進行中的鐘聲漣漪
   updateHumNotes(dt);  // 居民哼歌 v1（788）：推進頭頂飄浮音符
   updateFertSparkle(dt); // 乙太沃肥 v1（789）：推進施肥綠火花
   streamChunks(dt);
@@ -4537,6 +4616,8 @@ const WORKBENCH_RECIPES_JS = [
   { id: "aether_fertilizer", name: "乙太沃肥",    inputs: [[GRASS, 3], [DIRT, 2]], output_block: FERTILIZER, out_count: 2 },
   // 乙太營火 v1（自主提案切片）：3 石頭 + 2 木頭 + 1 煤礦 → 1 營火（工作台；發光方塊，夜裡吸引居民圍暖）
   { id: "campfire",       name: "營火",           inputs: [[STONE, 3], [WOOD, 2], [COAL_ORE, 1]], output_block: CAMPFIRE, out_count: 1 },
+  // 集會鐘 v1（自主提案切片）：4 鐵錠 + 1 木頭 → 1 集會鐘（工作台；放下後右鍵敲響召集附近居民）
+  { id: "bell",           name: "集會鐘",         inputs: [[IRON_INGOT, 4], [WOOD, 1]], output_block: BELL, out_count: 1 },
 ];
 
 // wbGrid[0..8]：3×3 共 9 格，0 代表空格，非零代表 block_id。
