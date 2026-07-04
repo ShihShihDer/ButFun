@@ -83,6 +83,7 @@ use crate::voxel_comfort as vcomfort;
 use crate::voxel_hunger as vhunger;
 use crate::voxel_share_meal as vsharemeal;
 use crate::voxel_gratitude as vgrat;
+use crate::voxel_ratelimit as vrl;
 use crate::voxel_cheer as vcheer;
 use crate::voxel_chest as vchest;
 use crate::voxel_sign as vsign;
@@ -209,6 +210,9 @@ const PLAYER_SAY_MAX_CHARS: usize = 60;
 const TALK_REPLY_MAX_CHARS: usize = 300;
 /// 每條連線的對話冷卻（毫秒）：防單人狂送吃爆 LLM 額度（比照 npc_chat 的 per-player 冷卻）。
 const TALK_COOLDOWN_MS: u64 = 4000;
+/// per-IP 對話限流被擋時，在玩家自己頭上冒的溫柔提示（治安三件套①）——
+/// 讓超速的人知道「慢一點」，而非靜默吞掉；面向玩家字串、集中於此、i18n 友善。
+const TALK_RATE_NOTICE: &str = "（說得太快啦，喘口氣、待會兒再聊～）";
 /// 協助建造感激記憶冷卻（秒，互動有後果 v2）：一次連續幫忙（放好幾塊方塊）只記**一筆**
 /// 感激記憶，隔這麼久後再幫才會再記一筆——避免好感（＝episodic 記憶筆數）被單次幫忙灌爆。
 const HELP_MEMORY_COOLDOWN_SECS: u64 = 90;
@@ -577,6 +581,21 @@ fn sanitize_talk_text(raw: &str) -> Option<String> {
 /// 對話冷卻判定：距離上次說話已過 `elapsed_ms` 毫秒，是否允許這次（≥ `TALK_COOLDOWN_MS`）。
 fn talk_cooldown_ok(elapsed_ms: u64) -> bool {
     elapsed_ms >= TALK_COOLDOWN_MS
+}
+
+/// 全域 per-IP 對話速率限制器（治安三件套①）：跨所有連線共用一份，以真實 IP 為鍵，
+/// 給對話（觸發 LLM）的路徑設一道 per-connection 冷卻擋不住的跨連線天花板。
+fn ip_talk_limiter() -> &'static std::sync::Mutex<vrl::IpTalkLimiter> {
+    static L: std::sync::OnceLock<std::sync::Mutex<vrl::IpTalkLimiter>> = std::sync::OnceLock::new();
+    L.get_or_init(|| std::sync::Mutex::new(vrl::IpTalkLimiter::new()))
+}
+
+/// 當前 UNIX 毫秒時間戳（餵給 token bucket；時鐘不可用時退 0，限流器內部對回退安全）。
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// 居民「能力與誠實」指引——純函式、確定性、無 IO、可測。
@@ -2006,12 +2025,24 @@ pub async fn voxel_ws_handler(
     let account_name: Option<String> = account.as_ref().map(|(n, _)| n.clone());
     let account_email: Option<String> = account.and_then(|(_, e)| e);
 
+    // 治安三件套①：解出這條連線的真實 client IP，供 per-IP 對話限流用（跨連線天花板）。
+    // Cloudflare tunnel 後真實 IP 在 `cf-connecting-ip`（退而求其次 `x-forwarded-for` 取首段）。
+    // 與既有建議箱 per-IP 限流（main.rs `post_suggestion`）同一套取法；解不出則歸一個
+    // 保底桶 "unknown"（本機/無標頭時所有連線共用一桶，只影響 QA、不影響 prod CF 流量）。
+    let client_ip: String = headers
+        .get("cf-connecting-ip")
+        .or_else(|| headers.get("x-forwarded-for"))
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+
     // 與主 ws 一致的安全硬化：訊息上限 64 KiB（任何合法 voxel 訊息都遠小於此；
     // chunk 是「伺服器送出」不受此限）。
     const WS_MAX_MSG_BYTES: usize = 64 * 1024;
     ws.max_message_size(WS_MAX_MSG_BYTES)
         .max_frame_size(WS_MAX_MSG_BYTES)
-        .on_upgrade(move |socket| handle_socket(socket, account_name, account_email))
+        .on_upgrade(move |socket| handle_socket(socket, account_name, account_email, client_ip))
 }
 
 /// 解析連線身份鍵：登入帳號名優先（穩定、跨 session），其次 join 自報顯示名，皆無則「旅人」。
@@ -2030,6 +2061,7 @@ async fn handle_socket(
     socket: WebSocket,
     account_name: Option<String>,
     account_email: Option<String>,
+    client_ip: String,
 ) {
     let (mut sender, mut receiver) = socket.split();
     let my_id = Uuid::new_v4();
@@ -2808,6 +2840,24 @@ async fn handle_socket(
                     }
                 }
                 last_talk = Some(now);
+                // 2b) per-IP 對話限流（治安三件套①）：步驟 2 的 per-connection 冷卻可被「同一人
+                //     開多條 WebSocket 連線」繞過（每連線各有 last_talk）→ 白嫖／燒爆免費 LLM。
+                //     這道以真實 IP 為鍵的 token bucket 設一道跨連線天花板；超量→在玩家自己頭上
+                //     冒一句溫柔提示、跳過（絕不觸發 LLM）。短鎖即釋、不持鎖 await（守鎖紀律）。
+                {
+                    let allowed = ip_talk_limiter()
+                        .lock()
+                        .unwrap()
+                        .allow(&client_ip, now_unix_ms());
+                    if !allowed {
+                        let mut players = hub().players.write().unwrap();
+                        if let Some(p) = players.get_mut(&my_id) {
+                            p.say = TALK_RATE_NOTICE.to_string();
+                            p.say_timer = PLAYER_SAY_SECS;
+                        }
+                        continue;
+                    }
+                }
                 // 身份鍵：登入者為帳號名（穩定、跨 session、換訪客名也認得你），訪客為 join 顯示名。
                 // `name` 已在入場時由 resolve_identity 綁定。
                 let player_key = name.clone();
