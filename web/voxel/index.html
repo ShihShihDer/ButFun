@@ -834,6 +834,18 @@
     }
     #eatBtn:hover { background: rgba(90,44,14,0.82); }
 
+    /* 煙火鈕（乙太煙火 v1，785）：背包裡有乙太煙火時才浮現，疊在享用鈕下方；
+       青金配色呼應夜空火花。點一下朝夜空放一束。 */
+    #fireworkBtn {
+      position: fixed; right: 10px; top: 306px; z-index: 6;
+      display: none; align-items: center; justify-content: center;
+      background: rgba(18,26,52,0.74); color: #9fd8ff;
+      border: 1px solid rgba(159,216,255,0.4);
+      padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      user-select: none; pointer-events: auto; min-height: 44px;
+    }
+    #fireworkBtn:hover { background: rgba(34,52,96,0.85); }
+
     /* 視角切換鈕（第一/三人稱）：左側，避開右側合成鈕欄與底部搖桿。 */
     #viewBtn {
       position: fixed; left: 10px; top: 120px; z-index: 6;
@@ -1165,6 +1177,7 @@
     @media (orientation: portrait) {
       #furnaceBtn { top: 204px; bottom: auto; right: 10px; }
       #eatBtn { top: 258px; bottom: auto; right: 10px; }
+      #fireworkBtn { top: 306px; bottom: auto; right: 10px; }
       #furnacePanel { top: auto; transform: translateX(-50%); bottom: 10px; max-height: 75vh; }
       #furnaceBody { flex-direction: column; }
       #furnaceCraftRow { justify-content: center; }
@@ -1309,6 +1322,8 @@
   <button id="bagBtn">🎒 背包</button>
   <!-- 親手煮的暖食自己也能享用 v1（779）：手上有自己煮的熟食時才浮現，點一下吃一份得暖意回饋 -->
   <button id="eatBtn" style="display:none">🍲 享用</button>
+  <!-- 乙太煙火 v1（785）：背包裡有乙太煙火時才浮現，點一下朝夜空放一束、附近居民抬頭歡呼 -->
+  <button id="fireworkBtn" style="display:none">🎆 施放煙火</button>
   <!-- 工作台開啟鈕（靠近工作台方塊時顯示，ROADMAP 665）-->
   <button id="wbBtn">🔨 工作台</button>
   <!-- 熔爐開啟鈕（靠近熔爐方塊時顯示，ROADMAP 666）-->

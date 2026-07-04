@@ -86,6 +86,9 @@ const BAKED_POTATO = 64;
 // 野菜暖湯 v1（ROADMAP 778）：胡蘿蔔(49)+馬鈴薯(53)+小麥(18) 在工作台煮成暖湯(67)，
 // 乙太方界第一道「多食材料理」，居民最珍視的餽贈（純物品不放置）
 const STEW = 67;
+// 乙太煙火 v1（ROADMAP 785）——工作台：1 乙太礦(58)+2 煤礦(20)+2 沙(4) → 3 乙太煙火(68)；
+// 純物品不可放置，朝夜空施放（firework_launch）即消耗，火花在頭頂綻放、附近居民抬頭歡呼。
+const FIREWORK = 68;
 // 植樹造林 v1（ROADMAP 738）——砍天然樹葉有機率掉樹苗(65)，種在土地上約 150 秒長成一株樹。
 // 樹苗既是背包物品也是可放置方塊（item_id == block_id），是玩家第一個可再生木材來源。
 const SAPLING = 65;
@@ -167,6 +170,8 @@ const COLOR = {
   [BAKED_POTATO]:   [0.72, 0.55, 0.32], // 烤地薯——烤到焦香的暖土褐，比生馬鈴薯更深更熟
   // 野菜暖湯 v1（ROADMAP 778）——胡蘿蔔橘×小麥金×菜綠拌成的暖橘紅濃湯色，一眼是熱騰騰的一鍋料理
   [STEW]:           [0.86, 0.42, 0.20],
+  // 乙太煙火 v1（ROADMAP 785）——青藍底閃著金火花，背包圖示用（純物品不放置）
+  [FIREWORK]:       [0.36, 0.58, 0.95],
   // 植樹造林 v1（ROADMAP 738）——嫩黃綠，比草地/樹葉更亮更嫩，一眼認出是剛種下的小苗
   [SAPLING]:        [0.52, 0.74, 0.30], // 樹苗——鮮嫩黃綠，抽芽中的幼苗感
   [SIGN]:           [0.62, 0.44, 0.25], // 告示牌——溫潤木牌棕（比木板稍深），一看就是塊立起來的木牌
@@ -478,6 +483,109 @@ function updateRainbow(dt) {
   );
   // 半弧(TorusGeometry arc=π)預設在 XY 平面、開口朝下;繞 Y 軸轉,讓弧面正對玩家視線(垂直於視線)。
   rainbowGroup.rotation.y = Math.atan2(dir.x, dir.z) + Math.PI;
+}
+
+// ── 乙太煙火 v1（ROADMAP 785）────────────────────────────────────────────────
+// 玩家朝夜空施放的煙火:一束火花在施放者頭頂上方升空、綻放。伺服器廣播 firework{x,y,z,palette}
+// 給全場,前端在該位置上方生成一朵綻放的火花點雲。效能鐵律:每束煙火＝單一 THREE.Points
+// (一次 draw call),壽命約 2 秒後整束移除、釋放幾何;同時最多幾束(受伺服器每連線冷卻天然節流,
+// 另設 FW_MAX_BURSTS 保險上限)。陣列空時 update 零成本早退。
+const FW_PARTICLES = 90;          // 每束火花粒子數(單一點雲)
+const FW_RISE_SECS = 0.55;        // 升空(咻)階段時長
+const FW_BURST_SECS = 1.7;        // 綻放(砰)階段時長
+const FW_RISE_HEIGHT = 16;        // 從施放者頭頂再往上升多少格才炸開
+const FW_SPREAD = 7.5;            // 綻放速度尺度(格/秒)
+const FW_GRAVITY = 5.0;           // 火花下墜加速度(格/秒^2)
+const FW_MAX_BURSTS = 8;          // 同時最多幾束(保險上限,防極端洗版拖垮)
+// 六組配色盤(對齊後端 firework_palette 的 PALETTE_COUNT=6);每束由伺服器選定索引,人人同色。
+const FW_PALETTES = [
+  [0xff5a5a, 0xffd24d, 0xffffff], // 暖紅金
+  [0x4db8ff, 0x9fe8ff, 0xffffff], // 冰藍白(乙太系)
+  [0x8a6aff, 0xd06aff, 0xffd24d], // 紫金
+  [0x5fd86b, 0xd6ff7a, 0xffffff], // 翠綠
+  [0xff8a3d, 0xffd24d, 0xff5a9a], // 橙桃
+  [0x66ccff, 0xb96aff, 0xffffff], // 青紫(星夜呼應)
+];
+const fireworkBursts = []; // 進行中的煙火束
+
+// 施放一束煙火:在世界座標 (x,y,z) 上方生成一朵先升空再綻放的火花。
+function spawnFirework(x, y, z, palette) {
+  if (fireworkBursts.length >= FW_MAX_BURSTS) {
+    // 超出上限:回收最舊一束,避免無限累積(極端情況保險)。
+    const old = fireworkBursts.shift();
+    scene.remove(old.points);
+    old.points.geometry.dispose();
+  }
+  const pal = FW_PALETTES[((palette % FW_PALETTES.length) + FW_PALETTES.length) % FW_PALETTES.length];
+  const pos = new Float32Array(FW_PARTICLES * 3);
+  const col = new Float32Array(FW_PARTICLES * 3);
+  const vel = new Float32Array(FW_PARTICLES * 3); // 綻放後各粒子速度
+  const originY = y + 2.0;          // 從施放者頭頂起
+  const apexY = originY + FW_RISE_HEIGHT;
+  const c = new THREE.Color();
+  for (let i = 0; i < FW_PARTICLES; i++) {
+    // 升空階段:全部聚在同一顆上升火種位置(update 每幀覆寫)。
+    pos[i * 3] = x; pos[i * 3 + 1] = originY; pos[i * 3 + 2] = z;
+    // 綻放速度:球面隨機方向 × 隨機速率(火花四散成球狀)。
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    const sp = FW_SPREAD * (0.5 + Math.random() * 0.5);
+    vel[i * 3]     = Math.sin(ph) * Math.cos(th) * sp;
+    vel[i * 3 + 1] = Math.cos(ph) * sp;
+    vel[i * 3 + 2] = Math.sin(ph) * Math.sin(th) * sp;
+    c.setHex(pal[i % pal.length]);
+    col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geom.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 0.9, vertexColors: true, transparent: true, opacity: 1,
+    depthWrite: false, blending: THREE.AdditiveBlending, fog: false, sizeAttenuation: true,
+  });
+  const points = new THREE.Points(geom, mat);
+  points.frustumCulled = false; // 火花在頭頂遠處,別被視錐誤剔
+  scene.add(points);
+  fireworkBursts.push({ points, mat, vel, x, z, originY, apexY, age: 0 });
+}
+
+// 每幀推進所有煙火束:升空→綻放→淡出,壽命到就移除、釋放幾何。陣列空即零成本早退。
+function updateFireworks(dt) {
+  if (fireworkBursts.length === 0) return;
+  const total = FW_RISE_SECS + FW_BURST_SECS;
+  for (let b = fireworkBursts.length - 1; b >= 0; b--) {
+    const fw = fireworkBursts[b];
+    fw.age += dt;
+    if (fw.age >= total) {
+      scene.remove(fw.points);
+      fw.points.geometry.dispose();
+      fireworkBursts.splice(b, 1);
+      continue;
+    }
+    const posAttr = fw.points.geometry.getAttribute("position");
+    const arr = posAttr.array;
+    if (fw.age < FW_RISE_SECS) {
+      // 升空:火種從 originY 線性上升到 apexY,全部粒子同位置(一顆亮點往上竄)。
+      const t = fw.age / FW_RISE_SECS;
+      const cy = fw.originY + (fw.apexY - fw.originY) * t;
+      for (let i = 0; i < FW_PARTICLES; i++) {
+        arr[i * 3] = fw.x; arr[i * 3 + 1] = cy; arr[i * 3 + 2] = fw.z;
+      }
+      fw.mat.opacity = 1; fw.mat.size = 0.7;
+    } else {
+      // 綻放:各粒子從 apex 依速度飛散 + 重力下墜,隨時間淡出。
+      const k = fw.age - FW_RISE_SECS;              // 綻放已過秒數(位置積分係數)
+      for (let i = 0; i < FW_PARTICLES; i++) {
+        arr[i * 3]     = fw.x + fw.vel[i * 3] * k;
+        arr[i * 3 + 1] = fw.apexY + fw.vel[i * 3 + 1] * k - 0.5 * FW_GRAVITY * k * k;
+        arr[i * 3 + 2] = fw.z + fw.vel[i * 3 + 2] * k;
+      }
+      const bf = k / FW_BURST_SECS;                 // 綻放進度 0..1
+      fw.mat.opacity = Math.max(0, 1 - bf);         // 線性淡出
+      fw.mat.size = 0.9 + bf * 0.6;                 // 火花微微變大再散去
+    }
+    posAttr.needsUpdate = true;
+  }
 }
 
 // 方塊用 Lambert + 頂點色（每方塊上色），對光反應但靠半球光保底不黑。
@@ -1616,6 +1724,33 @@ function tryEatDish() {
   ws.send(JSON.stringify({ t: "eat", item_id: pick.blockId }));
 }
 
+// ── 乙太煙火 v1（ROADMAP 785）─────────────────────────────────────────────────
+/** 更新「🎆 施放煙火」按鈕：背包裡有乙太煙火才浮現，顯示剩餘束數。 */
+function updateFireworkBtn() {
+  const el = document.getElementById("fireworkBtn");
+  if (!el) return;
+  const cnt = (myInv instanceof Map ? myInv.get(FIREWORK) : 0) || 0;
+  if (cnt <= 0) {
+    el.style.display = "none";
+  } else {
+    el.style.display = "inline-flex";
+    el.textContent = "🎆 施放煙火 ×" + cnt;
+  }
+}
+
+let lastFireworkMs = 0; // 施放本地冷卻（防連按；伺服器另有權威冷卻）
+
+/** 執行施放：朝夜空放一束煙火（伺服器權威驗證存量＋每連線冷卻）。 */
+function tryLaunchFirework() {
+  if (!wsReady) return;
+  const now = Date.now();
+  if (now - lastFireworkMs < 800) return; // 0.8 秒本地防連按（伺服器冷卻更長）
+  const cnt = (myInv instanceof Map ? myInv.get(FIREWORK) : 0) || 0;
+  if (cnt <= 0) { showMsg("背包裡沒有乙太煙火——在工作台用乙太礦＋煤礦＋沙做一束吧。"); return; }
+  lastFireworkMs = now;
+  ws.send(JSON.stringify({ t: "firework_launch" }));
+}
+
 let lastTradeMs = 0;     // 交易請求本地冷卻（防連按）
 let pendingTradeRid = null; // 目前有開放提案的居民 id
 
@@ -2356,6 +2491,8 @@ const BLOCK_NAME = {
   [BAKED_POTATO]: "烤地薯",
   // 野菜暖湯 v1（ROADMAP 778）
   [STEW]: "野菜暖湯",
+  // 乙太煙火 v1（ROADMAP 785）
+  [FIREWORK]: "乙太煙火",
   // 植樹造林 v1（ROADMAP 738）
   [SAPLING]: "樹苗",
   // 告示牌 v1（ROADMAP 740）
@@ -3321,6 +3458,7 @@ function connect() {
       updateInvHud();
       updateGiftBtn(); // 贈禮 v1：背包恢復後同步更新按鈕
       updateEatBtn();  // 享用 v1（779）：背包恢復後同步更新享用鈕
+      updateFireworkBtn(); // 乙太煙火 v1（785）：背包變動同步更新施放鈕
     } else if (m.t === "inv_update") {
       // 採集 v1：單一材料增減後的新存量（伺服器回傳 total，非 delta）。
       if (m.count > 0) myInv.set(m.block_id, m.count);
@@ -3328,6 +3466,7 @@ function connect() {
       updateInvHud();
       updateGiftBtn(); // 贈禮 v1：材料變動後同步更新按鈕
       updateEatBtn();  // 享用 v1（779）：材料變動後同步更新享用鈕
+      updateFireworkBtn(); // 乙太煙火 v1（785）：背包變動同步更新施放鈕
       if (chestPanelVisible()) renderChestPanel(); // 箱子 v1：背包變動後同步更新箱子面板背包區
     } else if (m.t === "inv_denied") {
       // 採集 v1：放置材料不足，短暫提示。
@@ -3395,9 +3534,22 @@ function connect() {
       showMsg("🍲 " + (m.line || "暖意從指尖一路暖到心底……"));
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3000);
       updateEatBtn(); // 背包已由 inv_update 更新，重算享用鈕（吃完可能沒了）
+      updateFireworkBtn(); // 乙太煙火 v1（785）：背包變動同步更新施放鈕
     } else if (m.t === "eat_fail") {
       // 享用 v1（779）：吃不了（非熟食 / 背包沒有）。
       showErr(m.reason || "現在沒法享用");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "firework") {
+      // 乙太煙火 v1（785）：全場任一玩家施放的煙火——在該座標上方綻放一朵火花（人人可見）。
+      spawnFirework(m.x, m.y, m.z, m.palette | 0);
+    } else if (m.t === "firework_ok") {
+      // 乙太煙火 v1（785）：自己成功施放——浮出綻放回饋句。
+      showMsg("🎆 " + (m.line || "煙火在夜空中綻放開來。"));
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2800);
+      updateFireworkBtn(); // 背包已由 inv_update 更新，重算施放鈕（放完可能沒了）
+    } else if (m.t === "firework_fail") {
+      // 乙太煙火 v1（785）：放不了（冷卻中 / 背包沒有）。
+      showErr(m.reason || "現在沒法施放煙火");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "return_gift") {
       // 居民回禮 v1（ROADMAP 667）：只有當事玩家才顯示提示並更新背包。
@@ -3778,6 +3930,7 @@ function update(dt) {
   updateRain(dt);
   updateRainbow(dt);
   updateNightSky(dt);
+  updateFireworks(dt); // 乙太煙火 v1（785）：推進進行中的煙火綻放
   streamChunks(dt);
   sendMove(dt);
 
@@ -4086,6 +4239,12 @@ if (eatBtnEl) eatBtnEl.addEventListener("click", (e) => {
   tryEatDish();
   e.stopPropagation();
 });
+// 乙太煙火 v1（785）：施放鈕點擊 → 朝夜空放一束。
+const fireworkBtnEl = document.getElementById("fireworkBtn");
+if (fireworkBtnEl) fireworkBtnEl.addEventListener("click", (e) => {
+  tryLaunchFirework();
+  e.stopPropagation();
+});
 // 點面板外關閉。
 document.addEventListener("pointerdown", (e) => {
   if (bagPanelVisible()) {
@@ -4118,6 +4277,8 @@ const WORKBENCH_RECIPES_JS = [
   { id: "aether_lamp",    name: "乙太燈",         inputs: [[AETHER_ORE, 1], [GLASS, 4]], output_block: AETHER_LAMP,  out_count: 1  },
   // 野菜暖湯 v1（ROADMAP 778）：2 胡蘿蔔 + 2 馬鈴薯 + 1 小麥 → 1 暖湯（三種作物一大鍋，5 格需工作台）
   { id: "veggie_stew",    name: "野菜暖湯",       inputs: [[CARROT, 2], [POTATO, 2], [WHEAT, 1]], output_block: STEW, out_count: 1 },
+  // 乙太煙火 v1（ROADMAP 785）：1 乙太礦 + 2 煤礦 + 2 沙 → 3 乙太煙火（工作台；朝夜空施放的慶祝道具）
+  { id: "aether_firework", name: "乙太煙火",      inputs: [[AETHER_ORE, 1], [COAL_ORE, 2], [SAND, 2]], output_block: FIREWORK, out_count: 3 },
 ];
 
 // wbGrid[0..8]：3×3 共 9 格，0 代表空格，非零代表 block_id。
