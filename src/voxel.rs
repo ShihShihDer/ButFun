@@ -222,6 +222,12 @@ pub enum Block {
     /// 採收（Break）→ 莓果(77)×2 ＋ **就地回退成莓果叢苗(75)** ＋ 重啟計時：多年生、可反覆採收，不必重種。
     /// id 76。
     BerryBushRipe = 76,
+    /// 木長椅（木長椅 v1，自主提案切片）——背包 2×2 合成：木頭(5)×2 + 木板(8)×2 → 1 長椅。
+    /// 玩家親手做一張擺在世界裡，白天路過、閒著的居民會**停下腳步坐上去歇一會兒**、心情變好，
+    /// 你也在旁時把「和你同坐一張長椅歇腳」記進交情——玩家的建造第一次塑造居民的**日間**日常，
+    /// 與營火（夜間圍暖）那條線對成白天／夜晚一對。實心、可放置、破壞回收自身。
+    /// id 79：0~78 皆已用（純物品／方塊），79 是首個空號。
+    Bench = 79,
 }
 
 impl Block {
@@ -304,6 +310,7 @@ impl Block {
             74 => Some(Block::Bell),
             75 => Some(Block::BerryBush),
             76 => Some(Block::BerryBushRipe),
+            79 => Some(Block::Bench),
             _ => None,
         }
     }
@@ -320,7 +327,7 @@ impl Block {
             Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed | Block::Bed |
             Block::Cactus | Block::Snow | Block::IceCrystal | Block::IceLantern |
             Block::AetherOre | Block::AetherLamp | Block::Sapling | Block::Sign |
-            Block::Campfire | Block::Bell | Block::BerryBush
+            Block::Campfire | Block::Bell | Block::BerryBush | Block::Bench
             // BerryBushRipe 是伺服器維護的狀態方塊（由 tick_berry 長成），玩家不能手動放置。
         )
     }
@@ -1254,6 +1261,11 @@ mod tests {
         assert_eq!(Block::Bell as u8, 74);
         assert!(Block::Bell.is_placeable(), "集會鐘應可放置");
         assert!(Block::Bell.is_solid(), "集會鐘應為實心方塊");
+        // 木長椅 v1：id 79、可放置、實心（掉落自身）。
+        assert_eq!(Block::from_u8(79), Some(Block::Bench));
+        assert_eq!(Block::Bench as u8, 79);
+        assert!(Block::Bench.is_placeable(), "木長椅應可放置");
+        assert!(Block::Bench.is_solid(), "木長椅應為實心方塊");
     }
 
     #[test]

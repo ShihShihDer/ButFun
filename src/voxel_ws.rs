@@ -54,6 +54,7 @@ use crate::voxel_gift as vgift;
 use crate::voxel_keepsake as vkeep;
 use crate::voxel_keepsake_recall as vkrecall;
 use crate::voxel_humming as vhum;
+use crate::voxel_bench as vbench;
 use crate::voxel_campfire as vcamp;
 use crate::voxel_campfire_tale as vtale;
 use crate::voxel_bell as vbell;
@@ -441,6 +442,9 @@ struct VoxelResident {
     /// 圍著營火說故事冷卻倒數（秒，圍火講往事 v1）：一次開講後設 [`vtale::TALE_COOLDOWN_SECS`]，歸零前
     /// 不再開講——夜裡同在一座火邊偶爾講起一段往事、不連珠炮洗版。各居民初始錯開。純記憶體、重啟歸零。
     campfire_tale_cooldown: f32,
+    /// 木長椅歇腳冷卻倒數（秒，木長椅 v1）：一次坐下歇腳後設 [`vbench::REST_COOLDOWN_SECS`]，歸零前
+    /// 不再歇腳——白天路過椅邊偶爾坐下、不狂刷歇腳泡泡。各居民初始錯開。純記憶體、重啟歸零。
+    bench_rest_cooldown: f32,
     /// 正在應召循鐘聲趕來（集會鐘 v1）：玩家敲響集會鐘時，範圍內閒著的居民設此欄位，
     /// 移動鏈據此朝鐘走去、抵達即聚攏反應後清空；逾時（[`vbell::SUMMON_TIMEOUT_SECS`]）自動放棄。
     /// 純記憶體、重啟歸零。
@@ -1319,6 +1323,8 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             campfire_warm_cooldown: 140.0 + i as f32 * 30.0,
             // 圍火講往事 v1：首次講述冷卻各自錯開，避免入夜同一 tick 一群人同時開講；入場無待應和的故事。
             campfire_tale_cooldown: 170.0 + i as f32 * 45.0,
+            // 木長椅 v1：首次歇腳冷卻各自錯開，避免一群人同一 tick 齊坐齊念歇腳話。
+            bench_rest_cooldown: 80.0 + i as f32 * 20.0,
             pending_tale_reply: None,
             // 集會鐘 v1：入場沒有正在應召的鐘；應召冷卻歸零（一出生就聽得到第一次鐘聲）。
             summon: None,
@@ -1370,6 +1376,10 @@ struct VoxelHub {
     /// 啟動時由 `vcamp::scan_campfires` 從 delta 重建（篝火持久化，重啟後居民仍記得去哪圍暖）。
     /// tick 時先短鎖 clone 一份快照再進 residents 寫鎖迴圈用，不巢狀鎖（守 prod 死鎖鐵律）。
     campfires: RwLock<Vec<(i32, i32, i32)>>,
+    /// 木長椅 v1（自主提案切片）：世界中所有長椅方塊座標。放置時 push、破壞時 retain，
+    /// 啟動時由 `vbench::scan_benches` 從 delta 重建（長椅持久化，重啟後居民仍記得去哪歇腳）。
+    /// tick 時先短鎖 clone 一份快照再進 residents 寫鎖迴圈用，不巢狀鎖（守 prod 死鎖鐵律）。
+    benches: RwLock<Vec<(i32, i32, i32)>>,
     /// 乙太方界 AI 居民。
     residents: RwLock<Vec<VoxelResident>>,
     /// 居民決策匯流排（async 思考投入、tick 取走套用；嚴守無鎖 await 鐵律）。
@@ -1633,10 +1643,14 @@ fn hub() -> &'static VoxelHub {
         // 乙太營火 v1：從已 replay 的 delta 掃出所有既存營火座標，重建取暖清單（重啟後居民
         // 仍會被重啟前蓋的火堆吸引）。掃描發生在 deltas 被 move 進 RwLock 之前，一次性、非熱路徑。
         let campfires = vcamp::scan_campfires(&deltas);
+        // 木長椅 v1：同理從 replay 後的 delta 掃出所有既存長椅座標，重建歇腳清單（重啟後居民
+        // 仍會被重啟前擺的長椅吸引坐下歇腳）。一次性、非熱路徑。
+        let benches = vbench::scan_benches(&deltas);
         VoxelHub {
             players: RwLock::new(HashMap::new()),
             deltas: RwLock::new(deltas),
             campfires: RwLock::new(campfires),
+            benches: RwLock::new(benches),
             residents: RwLock::new(init_residents()),
             agent_bus: AgentBus::new(),
             // 啟動時從 data/voxel_memory.jsonl 載回長期記憶（檔缺 = 首次啟動，回空），
@@ -2506,6 +2520,17 @@ async fn handle_socket(
                     if matches!(target_block, Block::Bell) {
                         vbuild::append_world_block(x, y, z, Block::Air as u8);
                     }
+                    // 木長椅 v1：破壞長椅 → 從歇腳清單移除該座標，並持久化這格已成空氣
+                    //（重啟 replay 後不再冒出舊長椅）。椅方塊本身走後面「其餘實心方塊掉落自身」的
+                    // 通用路徑退還背包(79)，不在此 continue。
+                    if matches!(target_block, Block::Bench) {
+                        hub()
+                            .benches
+                            .write()
+                            .unwrap()
+                            .retain(|&(cx, cy, cz)| !(cx == x && cy == y && cz == z));
+                        vbuild::append_world_block(x, y, z, Block::Air as u8);
+                    }
                     // 莓果叢 v1（ROADMAP 806）：採收「結果的莓果叢」→ **不消失**，就地回退成
                     // 莓果叢苗(75) ＋ 重啟結果計時（多年生：採過還會再結，不必重種）。破壞流程上面
                     // 已把這格設為空氣並廣播；這裡緊接著再放回莓果叢苗、廣播、重新登記計時。莓果
@@ -2806,6 +2831,13 @@ async fn handle_socket(
                     // 集會鐘 v1：剛放下一座鐘 → 持久化（走既有 world_blocks append-only log，重啟後鐘還在）。
                     // 不需 in-memory 索引：召集是敲響當下依鐘座標即時判定範圍（不像營火要夜裡持續吸引路過者）。
                     if block == Block::Bell {
+                        vbuild::append_world_block(x, y, z, block as u8);
+                    }
+                    // 木長椅 v1：剛擺下一張長椅 → 記進歇腳清單（居民白天靠它吸引坐下），並持久化
+                    //（走既有 world_blocks append-only log，重啟後長椅與歇腳清單一併還原）。
+                    // benches 寫鎖短取即釋，不與其他鎖巢狀。
+                    if block == Block::Bench {
+                        hub().benches.write().unwrap().push((x, y, z));
                         vbuild::append_world_block(x, y, z, block as u8);
                     }
                     // 水流動：放了一塊（可能堵住水路或填掉水格）→ 喚醒鄰格重算流向。
@@ -6237,6 +6269,10 @@ fn tick_residents(dt: f32) {
     // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在旁才記交情，否則 None 只上 Feed。
     // (居民 id, 居民名, 火邊玩家名 Option, pick)。
     let mut campfire_warm_events: Vec<(String, &'static str, Option<String>, usize)> = Vec::new();
+    // 木長椅歇腳事件（木長椅 v1）：某居民白天路過椅邊坐下歇腳時鎖內收集；記憶寫＋Feed 在居民鎖
+    // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在旁才記交情，否則 None 只上 Feed。
+    // (居民 id, 居民名, 椅邊玩家名 Option, pick)。
+    let mut bench_rest_events: Vec<(String, &'static str, Option<String>, usize)> = Vec::new();
     // 集會鐘 v1：某位應召的居民走到鐘邊聚攏時，鎖內收集事件；「你敲鐘召我來」的交情記憶＋Feed
     // 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。(居民 id, 居民名, 敲鐘者名)。
     let mut bell_gather_events: Vec<(String, &'static str, String)> = Vec::new();
@@ -6256,6 +6292,14 @@ fn tick_residents(dt: f32) {
     } else {
         Vec::new()
     };
+    // 木長椅 v1：與營火相反——白天（清醒時段：拂曉／白晝／黃昏）才需要一份長椅座標快照，
+    // 讓路過的居民坐下歇腳。短鎖 clone 即釋，不巢狀鎖（守 prod 死鎖鐵律）；夜裡居民本就睡了，空 Vec 跳過整段。
+    let bench_spots: Vec<(i32, i32, i32)> =
+        if matches!(phase, TimePhase::Dawn | TimePhase::Day | TimePhase::Dusk) {
+            hub().benches.read().unwrap().clone()
+        } else {
+            Vec::new()
+        };
 
     // 邊陲營火路標（遠行 v2，PLAN_ETHERVOX item 7「在遠方留下痕跡」）：鎖內收集「某居民抵達邊陲、
     // 要在落點升起一堆營火路標」的請求；地表計算、deltas 寫、廣播、持久化、記憶與 Feed 全在鎖釋放後
@@ -7538,6 +7582,10 @@ fn tick_residents(dt: f32) {
             if r.campfire_tale_cooldown > 0.0 {
                 r.campfire_tale_cooldown -= dt;
             }
+            // 木長椅 v1：歇腳冷卻遞減（純記憶體、每 tick 一次）。
+            if r.bench_rest_cooldown > 0.0 {
+                r.bench_rest_cooldown -= dt;
+            }
             // 飢餓時的守望相助 v1（ROADMAP 800）：分食冷卻遞減（純記憶體、每 tick 一次）。
             if r.share_meal_cooldown > 0.0 {
                 r.share_meal_cooldown -= dt;
@@ -8246,6 +8294,50 @@ fn tick_residents(dt: f32) {
                     r.say_timer = SAY_SECS;
                     r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                     campfire_warm_events.push((r.id.clone(), r.name, None, pick));
+                }
+            }
+
+            // 木長椅 v1：白天，閒著、醒著、且恰好路過玩家擺的某張長椅附近時，居民偶爾**停下腳步
+            // 坐上去歇一會兒**（設 wait_timer 原地小坐，這一拍的關鍵新行為＝居民第一次主動停步休息）、
+            // 心情變好、說句輕鬆的歇腳話；你也坐在旁邊（REST_PLAYER_RADIUS 內）時點你名並記進交情。
+            // 三閘（靠近椅＋冷卻＋機率）＋長冷卻＝天然節流。與營火（夜間圍暖）刻意對成白天／夜晚一對。
+            // 鎖序：純讀居民自身欄位＋鎖前備好的 `bench_spots` 快照（不巢狀 benches 讀鎖），記憶寫＋Feed
+            // 走鎖外 `bench_rest_events`（守 prod 死鎖鐵律）。`bench_spots` 夜裡為空 → 夜間整段早退零成本。
+            if !bench_spots.is_empty()
+                && r.say.is_empty()
+                && !r.asleep
+                && r.bench_rest_cooldown <= 0.0
+                && r.pilgrimage.is_none()
+                && r.expedition.is_none()
+                && vbench::nearest_bench(&bench_spots, r.body.x, r.body.z, vbench::REST_RADIUS)
+                    .is_some()
+                && vbench::should_rest(true, 0.0, rand::random::<f32>(), vbench::REST_CHANCE)
+            {
+                r.bench_rest_cooldown = vbench::REST_COOLDOWN_SECS;
+                // 坐下歇腳＝停下移動、原地小坐一會兒（下方移動分支讀到 wait_timer > 0 就讓她站/坐著不走）。
+                r.wait_timer = r.wait_timer.max(vbench::REST_SIT_SECS);
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                // 椅邊最近的玩家：夠近（REST_PLAYER_RADIUS 內）且是登入玩家（名非空）→ 歇腳話點你名、記交情。
+                let near_player = nearest_player_info(r.body.x, r.body.z, &player_pts)
+                    .filter(|(d2, pname)| {
+                        *d2 < vbench::REST_PLAYER_RADIUS * vbench::REST_PLAYER_RADIUS
+                            && !pname.is_empty()
+                    })
+                    .map(|(_, pname)| pname.to_string());
+                if let Some(pname) = near_player {
+                    r.say = vbench::rest_bubble_with_player(&pname, pick)
+                        .chars()
+                        .take(50)
+                        .collect();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    bench_rest_events.push((r.id.clone(), r.name, Some(pname), pick));
+                } else {
+                    // 沒有玩家在椅邊（或只有訪客）：獨自坐下念句通用歇腳話，上 Feed、不寫玩家交情。
+                    r.say = vbench::rest_bubble(pick).to_string();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    bench_rest_events.push((r.id.clone(), r.name, None, pick));
                 }
             }
 
@@ -9750,6 +9842,20 @@ fn tick_residents(dt: f32) {
                 .add_memory(rid, pname, &vcamp::warm_memory_line(pname)); // 記憶寫鎖即釋
         }
         vfeed::append_feed("營火取暖", rname, &vcamp::warm_feed_line(rname));
+    }
+
+    // 木長椅 v1：白天坐下歇腳事件落地——玩家在椅邊時把「和你同坐歇腳」記進交情（掛玩家名下），
+    // 無論有無玩家都上動態牆。記憶寫鎖短取即釋、Feed 走 IO，皆在 residents 鎖釋放後（守死鎖鐵律）。
+    // 比照營火：歇腳是輕鬆的日常小拍，記憶只進記憶庫（in-memory，重啟歸零），不額外持久化。
+    for (rid, rname, pname_opt, _pick) in &bench_rest_events {
+        if let Some(pname) = pname_opt {
+            hub()
+                .memory
+                .write()
+                .unwrap()
+                .add_memory(rid, pname, &vbench::rest_memory_line(pname)); // 記憶寫鎖即釋
+        }
+        vfeed::append_feed("長椅歇腳", rname, &vbench::rest_feed_line(rname));
     }
 
     // 集會鐘 v1：應召走到鐘邊聚攏的居民，把「你敲鐘召我來」這份互動記進交情（掛敲鐘者名下、
