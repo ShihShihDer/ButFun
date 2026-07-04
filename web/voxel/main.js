@@ -309,6 +309,17 @@ function _hc(hex) {
   return [(hex >> 16 & 0xff) / 255, (hex >> 8 & 0xff) / 255, (hex & 0xff) / 255];
 }
 
+// 季節輪替 v1（ROADMAP 798）：各季節的天地染色 [r, g, b, 權重]（皆 0..1）。
+// 依當前季節把插值後的天空/霧色往該季色調輕輕一混——權重刻意小，讓晝夜與晴雨變化仍讀得出，
+// 只在氛圍上一眼分得出「換季了」。春天近乎原色（新綠本就是預設世界的模樣），
+// 夏濃綠、秋暖橙、冬冷白。
+const SEASON_TINT = {
+  spring: [0.60, 0.85, 0.55, 0.06],
+  summer: [0.50, 0.80, 0.45, 0.10],
+  autumn: [0.88, 0.55, 0.28, 0.16],
+  winter: [0.80, 0.86, 0.96, 0.18],
+};
+
 // 更新天空背景色、霧色、太陽方向/顏色、半球光強度。
 function updateSkyAndLight(t) {
   // 找所在的插值段。
@@ -332,6 +343,14 @@ function updateSkyAndLight(t) {
     sg = sg + (gg - sg) * rw;
     sb = sb + (gb - sb) * rw;
   }
+  // 季節輪替 v1（ROADMAP 798）：依當前季節把天空/霧色往該季色調輕輕一染（權重小、晝夜仍讀得出），
+  // 讓世界過了一季的氛圍變化一眼可辨。
+  const st = SEASON_TINT[worldSeason];
+  if (st) {
+    sr = sr + (st[0] - sr) * st[3];
+    sg = sg + (st[1] - sg) * st[3];
+    sb = sb + (st[2] - sb) * st[3];
+  }
   scene.background.setRGB(sr, sg, sb);
   scene.fog.color.setRGB(sr, sg, sb);
 
@@ -353,6 +372,12 @@ function updateSkyAndLight(t) {
 // 伺服器機率式演變晴/雨並隨玩家快照廣播 raining:bool；前端只負責視覺：天空灰藍調 + 雨滴粒子。
 // 宣告需在初始 updateSkyAndLight() 呼叫之前，避免其讀取 isRaining 時尚未初始化。
 let isRaining = false;
+
+// ── 季節輪替 v1（ROADMAP 798）───────────────────────────────────────────────
+// 伺服器由世界累計日數推算當前季節、隨快照廣播 season:"spring"|"summer"|"autumn"|"winter"；
+// 前端只負責視覺：換季時為整片天地（天空/霧/半球光）微微換上不同色調，讓「世界過了一季」一眼可辨。
+// 宣告需在初始 updateSkyAndLight() 呼叫之前，避免其讀取 worldSeason 時尚未初始化。
+let worldSeason = "spring";
 
 // 初始套用，讓進場就是白天而非等第一幀快照。
 updateSkyAndLight(worldTime);
@@ -3714,6 +3739,8 @@ function connect() {
       if (typeof m.raining === "boolean" && m.raining !== isRaining) { isRaining = m.raining; skyDirty = true; }
       // 雨後彩虹 v1（ROADMAP 780）：rainbow 隨同一份快照送達，切換前端彩虹弧的淡入/淡出目標。
       if (typeof m.rainbow === "boolean") rainbowActive = m.rainbow;
+      // 季節輪替 v1（ROADMAP 798）：season 隨同一份快照送達，換季時整片天地換上不同色調。
+      if (typeof m.season === "string" && m.season !== worldSeason) { worldSeason = m.season; skyDirty = true; }
       if (skyDirty) updateSkyAndLight(worldTime);
     } else if (m.t === "talk") {
       // 居民對話回覆（單播）：
