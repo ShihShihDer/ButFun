@@ -101,6 +101,10 @@ const SAPLING = 65;
 // 告示牌 v1（ROADMAP 740）——2 木板合成，放置後右鍵寫一行短字，浮在牌上人人看得見。
 // 既是背包物品也是可放置方塊（item_id == block_id）。
 const SIGN = 66;
+// 水桶 v1（自主提案切片）——工作台：3 鐵錠 → 1 空水桶(71)；純物品不可放置。
+// 手持空水桶對準水源＝舀水（→滿水桶72）；手持滿水桶對準空格＝倒出一格永久來源水（→空水桶）。
+// 接上既有水流模擬與鄰水加速種田，玩家第一次能親手搬水、把荒地改造成綠洲水田。
+const BUCKET = 71, WATER_BUCKET = 72;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -185,6 +189,9 @@ const COLOR = {
   [SIGN]:           [0.62, 0.44, 0.25], // 告示牌——溫潤木牌棕（比木板稍深），一看就是塊立起來的木牌
   // 乙太營火 v1（自主提案切片）——炙熱的橘紅火堆色，比火把更飽和鮮亮，一眼是燃燒的營火（發光方塊）
   [CAMPFIRE]:       [0.95, 0.42, 0.12],
+  // 水桶 v1（自主提案切片）——空桶是冷灰的鐵皮桶色；滿桶帶一泓水藍，一眼分得出裝了水（純物品不放置）
+  [BUCKET]:         [0.58, 0.60, 0.64],
+  [WATER_BUCKET]:   [0.28, 0.52, 0.82],
 };
 
 const DEBUG = location.search.includes("debug");
@@ -2656,6 +2663,8 @@ const BLOCK_NAME = {
   [FIREWORK]: "乙太煙火",
   // 乙太沃肥 v1（ROADMAP 789）
   [FERTILIZER]: "乙太沃肥",
+  // 水桶 v1（自主提案切片）
+  [BUCKET]: "水桶", [WATER_BUCKET]: "滿水桶",
   // 植樹造林 v1（ROADMAP 738）
   [SAPLING]: "樹苗",
   // 告示牌 v1（ROADMAP 740）
@@ -3083,6 +3092,23 @@ function placeAtTarget() {
       return { x: target.bx, y: target.by, z: target.bz };
     }
     return null;
+  }
+  // 水桶 v1（自主提案切片）：手持空水桶對準水源 → 舀水（後端權威複驗目標為來源水）。
+  //   複用釣竿同款 isWaterId 判定（來源水＋流動水），非水面靜默忽略；後端只認來源水才真的舀。
+  if (selectedBlock() === BUCKET) {
+    if (isWaterId(getRaw(target.bx, target.by, target.bz))) {
+      ws.send(JSON.stringify({ t: "bucket_fill", x: target.bx, y: target.by, z: target.bz }));
+    }
+    return null;
+  }
+  // 水桶 v1：手持滿水桶 → 在命中方塊的面外側倒出一格永久來源水（比照一般放置的面偏移）。
+  if (selectedBlock() === WATER_BUCKET) {
+    const px = target.bx + target.nx, py = target.by + target.ny, pz = target.bz + target.nz;
+    // 別把水倒進自己身體（避免整個人泡在水裡的突兀感；後端仍會權威複驗目標可倒）。
+    if (px === Math.floor(player.x) && pz === Math.floor(player.z) &&
+        (py === Math.floor(player.y) || py === Math.floor(player.y + 1))) return null;
+    ws.send(JSON.stringify({ t: "bucket_pour", x: px, y: py, z: pz }));
+    return { x: px, y: py, z: pz };
   }
   // 種子的特殊種植動作：目標是農田土本身（不偏移到面外側）。
   // 第二種作物 v1：胡蘿蔔種子選中時種下胡蘿蔔；第三種作物 v1：馬鈴薯種子選中時種下馬鈴薯，
@@ -3740,6 +3766,14 @@ function connect() {
       // 乙太沃肥 v1（789）：施不了（太遠 / 非幼苗 / 背包沒有沃肥）。
       showErr(m.reason || "現在沒法施肥");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "bucket_ok") {
+      // 水桶 v1（自主提案切片）：舀水／倒水成功——浮出回饋句（背包由 inv_update 更新，水格由 block 廣播更新）。
+      showMsg(m.say || "🪣 水桶用了一下～");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2200);
+    } else if (m.t === "bucket_fail") {
+      // 水桶 v1：用不了（太遠 / 目標非水源或不可倒 / 背包沒有對應水桶）。
+      showErr(m.reason || "現在沒法用水桶");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "return_gift") {
       // 居民回禮 v1（ROADMAP 667）：只有當事玩家才顯示提示並更新背包。
       if (m.player === myName) {
@@ -4220,6 +4254,8 @@ const RECIPES_JS = [
   { id: "ice_lantern", name: "冰晶燈", inputs: [[ICE_CRYSTAL, 1], [GLASS, 2]], output_block: ICE_LANTERN, out_count: 1 },
   // 告示牌 v1（ROADMAP 740）：2 木板 → 1 告示牌（唯一多重集，避開 4 木板＝工作台/木門的遮蔽）
   { id: "sign", name: "告示牌", inputs: [[PLANK, 2]], output_block: SIGN, out_count: 1 },
+  // 水桶 v1（自主提案切片）：3 鐵錠 → 1 水桶（舀水引水灌溉乾田；鐵錠需熔爐，故不必再過工作台）
+  { id: "bucket", name: "水桶", inputs: [[IRON_INGOT, 3]], output_block: BUCKET, out_count: 1 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
