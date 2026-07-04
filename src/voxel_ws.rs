@@ -117,6 +117,7 @@ use crate::voxel_teach as vteach;
 use crate::voxel_sleep as vsleep;
 use crate::voxel_bedtime as vbedtime;
 use crate::voxel_dream as vdream;
+use crate::voxel_dreamshare as vdreamshare;
 use crate::voxel_morning as vmorning;
 use crate::voxel_daybreak as vdaybreak;
 use crate::voxel_reunion as vreunion;
@@ -394,6 +395,13 @@ struct VoxelResident {
     /// 這位居民至今做過幾個夢（居民會做夢 v1，ROADMAP 805）：睡著時身體靜止、座標不變，
     /// 若只用座標當 `pick` 種子會整夜夢同一件事——摻入此計數讓每個夢輪替不同的往事／語氣。純記憶體。
     dream_seq: u32,
+    /// 昨晚那個夢的核心，暫存等白天說給你聽（居民早上會把昨晚的夢說給你聽 v1，ROADMAP 807）：
+    /// 做夢（805）時把夢核心存進來，白天遇到玩家分享一次後即清空 `None`；下次做夢再覆蓋成新的夢。
+    /// 純記憶體、重啟歸零（分享夢是溫暖的偶發過場，重啟大不了少說一次、無資料風險）。
+    last_dream: Option<String>,
+    /// 主動分享夢的冷卻倒數（同上 807）：分享後設為 `vdreamshare::DREAMSHARE_COOLDOWN_SECS`、
+    /// 每 tick 遞減，稀有才有份量、天然防洗版。純記憶體、各居民初始錯開。
+    dreamshare_timer: f32,
     /// 心中念念不忘的告示牌（居民讀牌 v3，ROADMAP 743）：Some(牌子中心 x, z, 引文) =
     /// 讀到一塊讓牠印象深刻的牌子後記下的「心中地標」；閒暇時偶爾據此重返。純記憶體、重啟歸零。
     cherished_sign: Option<(f32, f32, String)>,
@@ -1287,6 +1295,10 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             // 做夢 v1（ROADMAP 805）：入場沒在冷卻、還沒做過夢。
             dream_cooldown: 0.0,
             dream_seq: 0,
+            // 把昨晚的夢說給你聽 v1（ROADMAP 807）：入場還沒做過夢可說；分享冷卻錯開初始，
+            // 避免一上線就同時觸發（也讓居民先夜裡真的做過夢，白天才有夢可分享）。
+            last_dream: None,
+            dreamshare_timer: vdreamshare::DREAMSHARE_COOLDOWN_SECS + i as f32 * 60.0,
             // 重返心中的牌子（讀牌 v3，ROADMAP 743）：入場心裡還沒記著任何牌、沒在朝聖；
             // 首次重返冷卻長且錯開（前數分鐘不朝聖，讓居民先讀到牌、心裡有地標再說）。
             cherished_sign: None,
@@ -6282,6 +6294,11 @@ fn tick_residents(dt: f32) {
     // → 收集 (居民 id, 玩家顯示名)；residents 寫鎖釋放後再開 memory 寫鎖記一筆「我對這位旅人掏了心」
     // （episodic，累積好感），守「residents 寫鎖內不巢狀取 memory 寫鎖」的死鎖鐵律。
     let mut confide_mems: Vec<(String, String)> = Vec::new();
+    // 把昨晚的夢說給你聽 v1（自主提案，807）：招呼時序內偵測「做過夢的居民把昨晚的夢分享給你」
+    // → 收集 (居民 id, 玩家顯示名) 記一筆 episodic 記憶（累積好感），與 (居民顯示名, 玩家顯示名)
+    // 補一則城鎮動態；同樣 residents 寫鎖釋放後才開 memory 寫鎖 / 動態 IO，守死鎖鐵律。
+    let mut dreamshare_mems: Vec<(String, String)> = Vec::new();
+    let mut dreamshare_feeds: Vec<(&'static str, String)> = Vec::new();
     // 居民拜託你幫個小忙 v1（自主提案）：招呼時序內偵測「夠面熟的居民主動向你討一樣材料」→ 收集
     // (居民顯示名, 材料名)；residents 寫鎖釋放後鎖外統一補一則城鎮動態牆（讓不在場 / 回來的玩家
     // 也讀到「某居民正想要某材料」）。純模板、只嵌居民名＋材料名、無記憶原文。
@@ -6648,6 +6665,9 @@ fn tick_residents(dt: f32) {
                             r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                             r.dream_cooldown = vdream::DREAM_COOLDOWN_SECS;
                             r.dream_seq = r.dream_seq.wrapping_add(1);
+                            // 把這個夢的核心暫存起來，等白天遇到玩家時說給他聽（ROADMAP 807）——
+                            // 覆蓋前一個沒說出口的夢（只留最近一個夢可分享，昨晚沒說成隔天不追溯）。
+                            r.last_dream = Some(core.clone());
                             dream_feed.push((r.name, core));
                         }
                         // 沒有可夢的珍貴往事 → 無夢好眠，冷卻不重置、下次擲中再試。
@@ -6843,6 +6863,45 @@ fn tick_residents(dt: f32) {
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            // 把昨晚的夢說給你聽 v1（自主提案，807）：招呼 / 掏心之外的另一拍——夜裡做過夢（805）
+            // 的居民，白天遇到你時偶爾主動把昨晚那個夢分享出來。夜裡孤零零浮現的夢，第一次有了
+            // 白天的回響與聽眾；「把夢說給你聽」的親近也記進記憶、加深情誼。與掏心（781）刻意區隔：
+            // 那是私密的當前渴望、要熟才說；夢是輕盈奇妙的、遇到你就可能說（不設好感門檻），且因果
+            // 綁在「昨晚真的做了那個夢」——沒夢就沒得說。與上面幾拍同款：只在這一 tick 招呼／掏心
+            // 都沒觸發（`r.say` 仍空）時才可能發生，不同幀、不互蓋泡泡。
+            if r.dreamshare_timer > 0.0 {
+                r.dreamshare_timer -= dt;
+            } else if r.say.is_empty()
+                && !r.seeking_comfort
+                && r.approaching_esteem.is_none()
+                && r.last_dream.is_some()
+            {
+                if let Some((d2, nearest_name)) = nearest_player_info(r.body.x, r.body.z, &player_pts)
+                {
+                    // 靠得夠近 ＋ 非訪客（名非空）＋ 過低頻機率 → 分享（純函式集中判定，無鎖）。
+                    let near = d2 < GREET_DIST * GREET_DIST;
+                    if vdreamshare::should_share_dream(
+                        true,
+                        near && !nearest_name.is_empty(),
+                        true,
+                        rand::random::<f32>(),
+                        vdreamshare::DREAMSHARE_CHANCE_PER_TICK,
+                    ) {
+                        // take() 取出並清空那個夢——說過就不再重複說同一個夢（下次做夢再覆蓋成新的）。
+                        let core = r.last_dream.take().unwrap_or_default();
+                        let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize
+                            ^ r.dream_seq as usize;
+                        r.say = vdreamshare::dreamshare_line(&core, nearest_name, pick);
+                        r.say_timer = SAY_SECS;
+                        r.dreamshare_timer = vdreamshare::DREAMSHARE_COOLDOWN_SECS;
+                        r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                        // 「把夢說給你聽」記進記憶 ＋ 城鎮動態（鎖外 flush，守死鎖鐵律）。
+                        dreamshare_mems.push((r.id.clone(), nearest_name.to_string()));
+                        dreamshare_feeds.push((r.name, nearest_name.to_string()));
                     }
                 }
             }
@@ -9975,6 +10034,19 @@ fn tick_residents(dt: f32) {
         let summary = vconfide::confide_memory_line(player);
         let entry = hub().memory.write().unwrap().add_memory(rid, player, &summary);
         vmem::append_memory(&entry);
+    }
+
+    // 5c-2g-1b-2) 把昨晚的夢說給你聽 v1（自主提案，807）：居民把昨晚的夢分享給某玩家（泡泡已於鎖內
+    // 設好）後，鎖外把「我把夢說給了對方聽」記進牠對這位玩家的 episodic 記憶（累積好感，讓「她把夢
+    // 分享給我」成為情誼裡的一筆、日後也能昇華進日記），並補一則城鎮動態牆讓不在場 / 回訪的玩家也讀到。
+    // 記憶寫鎖即釋、append IO 在鎖外（守死鎖鐵律）；摘要 / 動態皆純模板、只嵌玩家與居民顯示名、不含夢原文。
+    for (rid, player) in &dreamshare_mems {
+        let summary = vdreamshare::dreamshare_memory_line(player);
+        let entry = hub().memory.write().unwrap().add_memory(rid, player, &summary);
+        vmem::append_memory(&entry);
+    }
+    for (rname, player) in &dreamshare_feeds {
+        vfeed::append_feed("夢", rname, &vdreamshare::dreamshare_feed_line(rname, player));
     }
 
     // 5c-2g-1c) 拜託你幫個小忙 v1（自主提案）：居民主動向某位玩家開口討材料（泡泡＋open_request
