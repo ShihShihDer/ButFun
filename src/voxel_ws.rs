@@ -56,6 +56,7 @@ use crate::voxel_keepsake_recall as vkrecall;
 use crate::voxel_humming as vhum;
 use crate::voxel_bench as vbench;
 use crate::voxel_bench_chat as vbenchchat;
+use crate::voxel_anglerest as vangler;
 use crate::voxel_campfire as vcamp;
 use crate::voxel_campfire_tale as vtale;
 use crate::voxel_bell as vbell;
@@ -455,6 +456,9 @@ struct VoxelResident {
     /// 被熟人招呼在長椅上並肩坐下後、等這秒數到期再應和（發起者名字, 剩餘秒）（長椅並坐閒聊 v1）。
     /// 與 `pending_tale_reply`／`pending_response` 分開，讓被招呼者冒的是「並坐閒聊」味道的專屬應和。純記憶體。
     pending_bench_reply: Option<(String, f32)>,
+    /// 臨水垂釣冷卻倒數（秒，居民臨水垂釣 v1）：一次坐下垂釣後設 [`vangler::REST_COOLDOWN_SECS`]，
+    /// 歸零前不再垂釣——白天路過水邊偶爾坐下釣一竿、不狂刷垂釣泡泡。各居民初始錯開。純記憶體、重啟歸零。
+    angler_cooldown: f32,
     /// 正在應召循鐘聲趕來（集會鐘 v1）：玩家敲響集會鐘時，範圍內閒著的居民設此欄位，
     /// 移動鏈據此朝鐘走去、抵達即聚攏反應後清空；逾時（[`vbell::SUMMON_TIMEOUT_SECS`]）自動放棄。
     /// 純記憶體、重啟歸零。
@@ -1338,6 +1342,8 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             // 長椅並坐閒聊 v1：首次並坐冷卻各自錯開，避免白天同一 tick 一群人同時招呼並坐；入場無待應和。
             bench_chat_cooldown: 100.0 + i as f32 * 25.0,
             pending_bench_reply: None,
+            // 居民臨水垂釣 v1：首次垂釣冷卻各自錯開，避免白天同一 tick 一群人一起開釣。
+            angler_cooldown: vangler::fish_cd_offset(i),
             pending_tale_reply: None,
             // 集會鐘 v1：入場沒有正在應召的鐘；應召冷卻歸零（一出生就聽得到第一次鐘聲）。
             summon: None,
@@ -6342,6 +6348,10 @@ fn tick_residents(dt: f32) {
     // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在旁才記交情，否則 None 只上 Feed。
     // (居民 id, 居民名, 椅邊玩家名 Option, pick)。
     let mut bench_rest_events: Vec<(String, &'static str, Option<String>, usize)> = Vec::new();
+    // 臨水垂釣事件（居民臨水垂釣 v1）：某居民白天恰好臨水、坐下釣一竿時鎖內收集；記憶寫＋Feed 在居民鎖
+    // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在水邊才記交情，否則 None 只上 Feed。
+    // (居民 id, 居民名, 水邊玩家名 Option, pick)。
+    let mut angler_events: Vec<(String, &'static str, Option<String>, usize)> = Vec::new();
     // 集會鐘 v1：某位應召的居民走到鐘邊聚攏時，鎖內收集事件；「你敲鐘召我來」的交情記憶＋Feed
     // 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。(居民 id, 居民名, 敲鐘者名)。
     let mut bell_gather_events: Vec<(String, &'static str, String)> = Vec::new();
@@ -7698,6 +7708,10 @@ fn tick_residents(dt: f32) {
             if r.bench_chat_cooldown > 0.0 {
                 r.bench_chat_cooldown -= dt;
             }
+            // 居民臨水垂釣 v1：垂釣冷卻遞減（純記憶體、每 tick 一次）。
+            if r.angler_cooldown > 0.0 {
+                r.angler_cooldown -= dt;
+            }
             // 飢餓時的守望相助 v1（ROADMAP 800）：分食冷卻遞減（純記憶體、每 tick 一次）。
             if r.share_meal_cooldown > 0.0 {
                 r.share_meal_cooldown -= dt;
@@ -8450,6 +8464,62 @@ fn tick_residents(dt: f32) {
                     r.say_timer = SAY_SECS;
                     r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                     bench_rest_events.push((r.id.clone(), r.name, None, pick));
+                }
+            }
+
+            // 居民臨水垂釣 v1：白天，閒著、醒著、且恰好走到天然水體邊的居民，偶爾**停下腳步、對著水面
+            // 靜靜垂一竿**（設 wait_timer 原地小坐）、心情變好、釣起一尾小魚說句療癒的垂釣話；你也在水邊
+            // （PLAYER_RADIUS 內）時點你名並記進交情。把垂釣（734）模組早埋下「居民的日記悄悄嚮往著釣魚」
+            // 那份至今只寫在日記裡的嚮往第一次真的活出來——記憶/嚮往驅動行為（PLAN_ETHERVOX 核心信念）。
+            // 臨水判定走既有 `world`（deltas 讀 guard，本迴圈本就持有、不另取鎖）取樣居民四周鄰格；記憶寫＋
+            // Feed 走鎖外 `angler_events`（守 prod 死鎖鐵律）。三閘（臨水＋冷卻＋機率）＋長冷卻＝天然節流。
+            if r.say.is_empty()
+                && !r.asleep
+                && r.angler_cooldown <= 0.0
+                && r.pilgrimage.is_none()
+                && r.expedition.is_none()
+                && matches!(phase, TimePhase::Dawn | TimePhase::Day | TimePhase::Dusk)
+            {
+                // 取樣居民腳邊四個水平鄰格（腳所在層與其下一層）——任一是水就算臨水（沿用 vfish 水判定）。
+                let fx = r.body.x.floor() as i32;
+                let fy = r.body.y.floor() as i32;
+                let fz = r.body.z.floor() as i32;
+                let mut neigh = [0u8; 8];
+                let mut n = 0usize;
+                for &(dx, dz) in &[(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                    for &dy in &[0i32, -1] {
+                        neigh[n] = voxel::effective_block_at(&world, fx + dx, fy + dy, fz + dz) as u8;
+                        n += 1;
+                    }
+                }
+                if vangler::any_water(&neigh)
+                    && vangler::should_fish(true, 0.0, rand::random::<f32>(), vangler::FISH_CHANCE)
+                {
+                    r.angler_cooldown = vangler::REST_COOLDOWN_SECS;
+                    // 坐下垂釣＝停下移動、原地靜靜釣一會兒（移動分支讀到 wait_timer > 0 就讓她駐足）。
+                    r.wait_timer = r.wait_timer.max(vangler::FISH_SIT_SECS);
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    // 水邊最近的登入玩家（PLAYER_RADIUS 內、名非空）→ 垂釣話點你名、記交情。
+                    let near_player = nearest_player_info(r.body.x, r.body.z, &player_pts)
+                        .filter(|(d2, pname)| {
+                            *d2 < vangler::PLAYER_RADIUS * vangler::PLAYER_RADIUS && !pname.is_empty()
+                        })
+                        .map(|(_, pname)| pname.to_string());
+                    if let Some(pname) = near_player {
+                        r.say = vangler::angler_bubble_with_player(&pname, pick)
+                            .chars()
+                            .take(vangler::SAY_CHARS)
+                            .collect();
+                        r.say_timer = SAY_SECS;
+                        r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                        angler_events.push((r.id.clone(), r.name, Some(pname), pick));
+                    } else {
+                        // 沒有玩家在水邊（或只有訪客）：獨自垂一竿念句通用垂釣話，上 Feed、不寫玩家交情。
+                        r.say = vangler::angler_bubble(pick).to_string();
+                        r.say_timer = SAY_SECS;
+                        r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                        angler_events.push((r.id.clone(), r.name, None, pick));
+                    }
                 }
             }
 
@@ -10096,6 +10166,21 @@ fn tick_residents(dt: f32) {
                 .add_memory(rid, pname, &vbench::rest_memory_line(pname)); // 記憶寫鎖即釋
         }
         vfeed::append_feed("長椅歇腳", rname, &vbench::rest_feed_line(rname));
+    }
+
+    // 居民臨水垂釣 v1：白天臨水釣一竿的事件落地——玩家在水邊時把「和你一起臨水垂釣」記進交情（掛玩家
+    // 名下、日後浮進日記把「想釣魚」的嚮往變成「和你一起釣過魚」的回憶），無論有無玩家都上動態牆。
+    // 記憶寫鎖短取即釋、Feed 走 IO，皆在 residents 鎖釋放後（守死鎖鐵律）。比照長椅歇腳：垂釣是輕鬆的
+    // 日常小拍，記憶只進記憶庫（in-memory，重啟歸零），不額外持久化。
+    for (rid, rname, pname_opt, _pick) in &angler_events {
+        if let Some(pname) = pname_opt {
+            hub()
+                .memory
+                .write()
+                .unwrap()
+                .add_memory(rid, pname, &vangler::angler_memory_line(pname)); // 記憶寫鎖即釋
+        }
+        vfeed::append_feed(vangler::FEED_KIND, rname, &vangler::angler_feed_line(rname));
     }
 
     // 集會鐘 v1：應召走到鐘邊聚攏的居民，把「你敲鐘召我來」這份互動記進交情（掛敲鐘者名下、
