@@ -84,6 +84,7 @@ use crate::voxel_hunger as vhunger;
 use crate::voxel_share_meal as vsharemeal;
 use crate::voxel_gratitude as vgrat;
 use crate::voxel_ratelimit as vrl;
+use crate::voxel_moderation as vmod;
 use crate::voxel_cheer as vcheer;
 use crate::voxel_chest as vchest;
 use crate::voxel_sign as vsign;
@@ -2920,6 +2921,21 @@ async fn handle_socket(
                         let mut players = hub().players.write().unwrap();
                         if let Some(p) = players.get_mut(&my_id) {
                             p.say = TALK_RATE_NOTICE.to_string();
+                            p.say_timer = PLAYER_SAY_SECS;
+                        }
+                        continue;
+                    }
+                }
+                // 2c) 內容審查（治安三件套②）：文字長度/速率合格不代表「內容」乾淨。玩家對話會
+                //     ①直達免費 LLM（居民的腦）②廣播成泡泡給所有人看——這道純邏輯審查攔 prompt
+                //     injection/越獄注入（想劫持居民的腦、套系統提示）與明顯辱罵；命中→在玩家自己
+                //     頭上冒一句溫柔提示、跳過（絕不觸發 LLM、絕不把原文廣播出去）。零鎖純比對。
+                {
+                    let verdict = vmod::screen(&clean);
+                    if verdict != vmod::Screen::Clean {
+                        let mut players = hub().players.write().unwrap();
+                        if let Some(p) = players.get_mut(&my_id) {
+                            p.say = vmod::gentle_notice(verdict).to_string();
                             p.say_timer = PLAYER_SAY_SECS;
                         }
                         continue;

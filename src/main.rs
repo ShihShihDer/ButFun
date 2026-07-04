@@ -240,6 +240,7 @@ mod voxel_hunger; // 居民也會肚子餓 v1·居民第一個生理需求：餓
 mod voxel_share_meal; // 飢餓時的守望相助 v1·餓著找吃的居民路遇交情已到相識以上的閒著鄰居，鄰居偶爾分她一口飯：餓意當場解、雙方各記暖記憶、情誼再加溫一格（自主提案切片 800）
 mod voxel_gratitude; // 知恩圖報 v1·居民記得誰在牠餓時分過飯，換牠有餘力時優先回報那一口——連陌生人也還（打破 800 相識門檻），記憶對行為產生真實例外（自主提案切片 801）
 mod voxel_ratelimit; // 對話 per-IP 速率限制 v1·上架前治安三件套①：per-connection 冷卻可被「開多條連線」繞過→以真實 IP 為鍵的 token bucket 設跨連線天花板，擋白嫖/燒爆免費 LLM（自主提案切片 802）
+mod voxel_moderation; // 對話內容審查 v1·上架前治安三件套②：文字長度/速率合格但「內容」無閘→純邏輯樣式審查攔 prompt injection/越獄注入與明顯辱罵，超線者收溫柔提示、絕不觸發 LLM/廣播原文（自主提案切片 803）
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
