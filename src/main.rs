@@ -224,6 +224,7 @@ mod voxel_milestones;
 mod voxel_player_pos;
 mod voxel_keepsake; // ROADMAP 732 你送的心意她擺了出來·玩家餽贈化為紀念物擺進世界
 mod voxel_keepsake_recall; // ROADMAP 784 居民路過你送的紀念物時駐足想起你·keepsake 落地後接成「記憶→睹物思人」的持續回響（自主提案切片）
+mod voxel_humming; // ROADMAP 788 居民哼起歌來·心情正好（剛被互動點亮）時偶爾哼歌、頭頂飄音符，你在身邊時哼給你聽並記進交情——世界第一段旋律（自主提案切片）
 mod voxel_fishing; // ROADMAP 734 垂釣 v1·對準水面拋竿等待收竿，釣起小魚/稀有乙太魚
 mod voxel_grove; // ROADMAP 738 植樹造林 v1·砍葉得樹苗→種在土地上→靜候長成一株樹，可再生木材
 mod pet;

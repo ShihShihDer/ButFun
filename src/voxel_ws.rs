@@ -52,6 +52,7 @@ use crate::voxel_grove::{self as vgrove, GroveStore};
 use crate::voxel_gift as vgift;
 use crate::voxel_keepsake as vkeep;
 use crate::voxel_keepsake_recall as vkrecall;
+use crate::voxel_humming as vhum;
 use crate::voxel_seedgift as vseed;
 use crate::voxel_giftgarden as vgg;
 use crate::voxel_fishing as vfish;
@@ -389,6 +390,9 @@ struct VoxelResident {
     /// 睹物思人冷卻倒數（秒，ROADMAP 784）：一次追憶後設 [`vkrecall::RECALL_COOLDOWN_SECS`]，
     /// 歸零前不再觸發——偶爾一拍才有感、不洗版。各居民初始錯開。純記憶體、重啟歸零。
     keepsake_recall_cooldown: f32,
+    /// 哼歌冷卻倒數（秒，ROADMAP 788）：一次哼歌後設 [`vhum::HUM_COOLDOWN_SECS`]，歸零前不再哼——
+    /// 心情正好時偶爾滿溢一段旋律、不洗版。各居民初始錯開。純記憶體、重啟歸零。
+    humming_cooldown: f32,
     /// 門口留下的「有人來找過」心意佇列（登門撲空留心意 v1，ROADMAP 763）：某訪客登門撲空（752 判定
     /// 主人不在家）時，訪客名字塞進這裡；日後主人回到自家附近閒著時逐一感應、念一句、記一筆。
     /// 去重＋上限保護（[`vcard::MAX_PENDING_CALLERS`]）。純記憶體、重啟歸零。
@@ -1205,6 +1209,8 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             // 睹物思人 v1（ROADMAP 784）：入場還沒擺出任何你送的紀念物；追憶冷卻各自錯開。
             keepsake_spots: Vec::new(),
             keepsake_recall_cooldown: 90.0 + i as f32 * 40.0,
+            // 哼歌 v1（ROADMAP 788）：哼歌冷卻各自錯開，避免大家同時哼起來。
+            humming_cooldown: 60.0 + i as f32 * 35.0,
             // 登門撲空留心意 v1（ROADMAP 763）：入場門口沒有待感應的心意；首次感應冷卻各自錯開。
             pending_callers: Vec::new(),
             callingcard_cooldown: 20.0 + i as f32 * 15.0,
@@ -5426,6 +5432,9 @@ fn tick_residents(dt: f32) {
     // 睹物思人事件（ROADMAP 784）：居民駐足追憶時鎖內收集，記憶寫＋Feed 在居民鎖釋放後統一落地
     //（不持居民鎖做 IO，守死鎖鐵律）。(居民 id, 居民名, 送禮玩家名, 紀念物名, pick)。
     let mut keepsake_recall_events: Vec<(String, &'static str, String, String, usize)> = Vec::new();
+    // 哼歌事件（ROADMAP 788）：某居民心情正好、你正好在身邊、牠哼給你聽時鎖內收集，記憶寫＋Feed
+    // 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。(居民 id, 居民名, 玩家名, pick)。
+    let mut humming_events: Vec<(String, &'static str, String, usize)> = Vec::new();
 
     // 邊陲營火路標（遠行 v2，PLAN_ETHERVOX item 7「在遠方留下痕跡」）：鎖內收集「某居民抵達邊陲、
     // 要在落點升起一堆營火路標」的請求；地表計算、deltas 寫、廣播、持久化、記憶與 Feed 全在鎖釋放後
@@ -6489,6 +6498,10 @@ fn tick_residents(dt: f32) {
             if r.keepsake_recall_cooldown > 0.0 {
                 r.keepsake_recall_cooldown -= dt;
             }
+            // 哼歌 v1（ROADMAP 788）：哼歌冷卻遞減（純記憶體、每 tick 一次）。
+            if r.humming_cooldown > 0.0 {
+                r.humming_cooldown -= dt;
+            }
             // 睹物思人 v1（ROADMAP 784）：閒著、醒著、且恰好路過她擺出的某件你送的紀念物時，
             // 偶爾駐足追憶一句、記進交情——keepsake（732）落地後的持續回響（記憶→行為）。
             // say 為空、醒著、手邊沒重要事才觸發，不搶正事；長冷卻＋極低機率＝天然節流。
@@ -7089,6 +7102,39 @@ fn tick_residents(dt: f32) {
                             r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                         }
                     }
+                }
+            }
+
+            // 哼歌 v1（ROADMAP 788）：心情正好（`mood_boost_secs > 0`＝剛因一次互動被點亮）、say 為空、
+            // 醒著、手邊沒正事的居民，偶爾忍不住輕輕哼起歌來（頭頂飄音符——前端偵測 say 以 ♪ 起頭）。
+            // 記憶驅動行為的一拍：若此刻有位登入玩家正好在身邊（[`vhum::HUM_NEAR_RADIUS`] 內），牠哼的那句
+            // 會點到你名、並把「和你在一起忍不住哼起歌來」記進交情、上動態牆；否則只哼無詞的調子（純氛圍）。
+            // 長冷卻＋極低機率＝天然節流。鎖序：純讀居民自身欄位（已持居民寫鎖），記憶寫＋Feed 走鎖外
+            // `humming_events`，守死鎖鐵律。
+            if r.mood_boost_secs > 0.0
+                && r.say.is_empty()
+                && !r.asleep
+                && r.humming_cooldown <= 0.0
+                && r.pilgrimage.is_none()
+                && r.expedition.is_none()
+                && vhum::should_hum(true, true, rand::random::<f32>(), vhum::HUM_CHANCE)
+            {
+                r.humming_cooldown = vhum::HUM_COOLDOWN_SECS;
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                // 身邊最近的玩家：夠近（半徑內）且是登入玩家（名非空）→ 哼給你聽、記進交情。
+                let near_player = nearest_player_info(r.body.x, r.body.z, &player_pts)
+                    .filter(|(d2, pname)| {
+                        *d2 < vhum::HUM_NEAR_RADIUS * vhum::HUM_NEAR_RADIUS && !pname.is_empty()
+                    })
+                    .map(|(_, pname)| pname.to_string());
+                if let Some(pname) = near_player {
+                    r.say = vhum::hum_to_player_line(&pname, pick);
+                    r.say_timer = SAY_SECS;
+                    humming_events.push((r.id.clone(), r.name, pname, pick));
+                } else {
+                    // 沒有玩家在身邊（或只有訪客）：獨自哼無詞的調子，不寫記憶、不上 Feed。
+                    r.say = vhum::hum_solo_line(pick);
+                    r.say_timer = SAY_SECS;
                 }
             }
 
@@ -8298,6 +8344,17 @@ fn tick_residents(dt: f32) {
             rname,
             &vkrecall::recall_feed_line(rname, giver, item),
         );
+    }
+
+    // 哼歌（ROADMAP 788）：居民心情正好、你正好在身邊、牠哼給你聽時，把這份好心情記進交情、上動態牆
+    //——鎖外統一 IO（不持居民鎖，守死鎖鐵律）。
+    for (rid, rname, pname, pick) in &humming_events {
+        hub()
+            .memory
+            .write()
+            .unwrap()
+            .add_memory(rid, pname, &vhum::hum_memory_line(pname, *pick)); // 記憶寫鎖即釋
+        vfeed::append_feed(vhum::FEED_KIND, rname, &vhum::hum_feed_line(rname, pname));
     }
 
     // 5c-2a') 邊陲營火路標（遠行 v2，PLAN_ETHERVOX item 7「在遠方留下痕跡」）：居民抵達邊陲時
