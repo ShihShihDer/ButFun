@@ -384,6 +384,18 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
         output_block: crate::voxel_campfire::CAMPFIRE_ID,
         output_count: 1,
     },
+    // ── 集會鐘 v1（自主提案切片）：玩家像村長一樣召集村民的一座鐘 ──────────────────────
+    // 4 鐵錠(22) + 1 木頭(5) → 1 集會鐘(BELL_ID=74)。鐵鑄的鐘身掛在木樑上——鐘身要金屬才響亮，
+    // 用到需採鐵→冶煉的鐵錠＝這是村莊中後期的「聚會核心」，成本配得上它的份量。5 格材料超出
+    // 背包 2×2 需工作台，{22:4,5:1} 為唯一多重集（鐵磚 {22:6}、鐵鎬/斧 {22:3,8:2}、鐵鏟 {22:2,8:3}
+    // 皆不相撞）；可放置的方塊，放下後右鍵敲響即召集附近居民（voxel_ws 的 Place/RingBell 處理）。
+    Recipe {
+        id: "bell",
+        name_zh: "集會鐘",
+        inputs: &[(22, 4), (5, 1)],  // 4 鐵錠 + 1 木頭 → 1 集會鐘
+        output_block: crate::voxel_bell::BELL_ID,
+        output_count: 1,
+    },
 ];
 
 /// 熔爐冶煉配方（需放置熔爐方塊後右鍵開啟冶煉面板才能使用）。
@@ -536,6 +548,20 @@ mod tests {
     }
 
     #[test]
+    fn find_recipe_bell_in_workbench_list() {
+        // 集會鐘是「聚會核心」：走工作台 3×3（5 格材料、用到鐵錠）、不在背包 2×2 表。
+        assert!(find_recipe("bell").is_none(), "集會鐘不該在背包配方表");
+        let r = find_workbench_recipe("bell").unwrap();
+        assert_eq!(r.output_block, 74, "集會鐘 id 應為 74（Block::Bell）");
+        assert_eq!(r.output_count, 1);
+        assert_eq!(r.inputs, &[(22, 4), (5, 1)], "集會鐘需 4 鐵錠 + 1 木頭");
+        // 多重集不與既有鐵製工作台配方相撞（鐵磚 {22:6}、鐵鎬/斧 {22:3,8:2}、鐵鏟 {22:2,8:3}）。
+        assert_ne!(r.inputs, find_workbench_recipe("iron_block").unwrap().inputs);
+        assert_ne!(r.inputs, find_workbench_recipe("iron_pickaxe").unwrap().inputs);
+        assert_ne!(r.inputs, find_workbench_recipe("iron_shovel").unwrap().inputs);
+    }
+
+    #[test]
     fn find_recipe_returns_none_for_unknown() {
         assert!(find_recipe("unknown_xyz").is_none());
         assert!(find_recipe("").is_none());
@@ -632,7 +658,8 @@ mod tests {
                 || r.output_block == STEW_ID           // 野菜暖湯（純物品，多食材料理 ROADMAP 778）
                 || r.output_block == crate::voxel_firework::FIREWORK_ID // 乙太煙火（純物品 id=68，ROADMAP 785）
                 || r.output_block == crate::voxel_compost::FERTILIZER_ID // 乙太沃肥（純物品 id=69，ROADMAP 789）
-                || r.output_block == crate::voxel_campfire::CAMPFIRE_ID; // 乙太營火（可放置發光方塊 id=70，自主提案切片）
+                || r.output_block == crate::voxel_campfire::CAMPFIRE_ID // 乙太營火（可放置發光方塊 id=70，自主提案切片）
+                || r.output_block == crate::voxel_bell::BELL_ID; // 集會鐘（可放置方塊 id=74，自主提案切片）
             assert!(
                 ok,
                 "工作台配方「{}」產出 id={} 超出範圍",

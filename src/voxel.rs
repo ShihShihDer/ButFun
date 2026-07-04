@@ -207,6 +207,12 @@ pub enum Block {
     /// 與火把（純照明）、乙太煙火（一次性綻放）刻意區隔。實心、可放置、破壞回收自身。
     /// id 70：60~69 已被純物品（釣具/漁獲/煙火/沃肥等）佔用，70 是首個可放置方塊空號。
     Campfire = 70,
+    /// 集會鐘（集會鐘 v1，自主提案切片）——工作台合成：4 鐵錠 + 1 木頭 → 1 集會鐘。
+    /// 玩家親手鑄的一座鐘，右鍵敲響即向四周傳出鐘聲：附近閒著的居民會**循聲朝你走來**聚集、
+    /// 說句話、心情變好，並把「你敲鐘召我來」記進交情——玩家第一次能像村長一樣主動把村民召到身邊。
+    /// 與營火（被動、夜間、居民路過才圍暖）刻意區隔。實心、可放置、破壞回收自身。
+    /// id 74：60~73 已被純物品/方塊（釣具/煙火/沃肥/營火/水桶/鋤頭）佔用，74 是首個空號。
+    Bell = 74,
 }
 
 impl Block {
@@ -286,6 +292,7 @@ impl Block {
             65 => Some(Block::Sapling),
             66 => Some(Block::Sign),
             70 => Some(Block::Campfire),
+            74 => Some(Block::Bell),
             _ => None,
         }
     }
@@ -302,7 +309,7 @@ impl Block {
             Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed | Block::Bed |
             Block::Cactus | Block::Snow | Block::IceCrystal | Block::IceLantern |
             Block::AetherOre | Block::AetherLamp | Block::Sapling | Block::Sign |
-            Block::Campfire
+            Block::Campfire | Block::Bell
         )
     }
 }
@@ -1230,6 +1237,11 @@ mod tests {
         assert_eq!(Block::Campfire as u8, 70);
         assert!(Block::Campfire.is_placeable(), "營火應可放置");
         assert!(Block::Campfire.is_solid(), "營火應為實心方塊");
+        // 集會鐘 v1：id 74、可放置、實心。
+        assert_eq!(Block::from_u8(74), Some(Block::Bell));
+        assert_eq!(Block::Bell as u8, 74);
+        assert!(Block::Bell.is_placeable(), "集會鐘應可放置");
+        assert!(Block::Bell.is_solid(), "集會鐘應為實心方塊");
     }
 
     #[test]
