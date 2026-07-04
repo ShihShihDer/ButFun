@@ -26,6 +26,10 @@ pub enum BuildKind {
     Tower,
     /// 花圃：Grass 地 + Stone 邊框 + Leaves 中心，3×3×2。
     Garden,
+    /// 涼亭：四柱撐頂、四面通透的遮蔭歇腳處，3×3×4。
+    /// 刻意**不封牆**——與封閉的小木屋、高聳的瞭望台、種花的花圃、蓄水的水井都不同，
+    /// 給世界第一座「開放式公共歇腳／遮雨」的建物，也是居民「想有個乘涼避雨的地方」渴望的落地。
+    Pavilion,
 }
 
 impl BuildKind {
@@ -36,6 +40,7 @@ impl BuildKind {
             BuildKind::Well => "水井",
             BuildKind::Tower => "瞭望台",
             BuildKind::Garden => "花圃",
+            BuildKind::Pavilion => "涼亭",
         }
     }
 
@@ -45,6 +50,7 @@ impl BuildKind {
             BuildKind::Well => "well",
             BuildKind::Tower => "tower",
             BuildKind::Garden => "garden",
+            BuildKind::Pavilion => "pavilion",
         }
     }
 
@@ -55,6 +61,7 @@ impl BuildKind {
             "well" => Some(BuildKind::Well),
             "tower" => Some(BuildKind::Tower),
             "garden" => Some(BuildKind::Garden),
+            "pavilion" => Some(BuildKind::Pavilion),
             _ => None,
         }
     }
@@ -80,6 +87,18 @@ pub fn classify_desire(desire: &str) -> Option<BuildKind> {
     {
         return Some(BuildKind::Garden);
     }
+    if desire.contains("涼亭")
+        || desire.contains("亭子")
+        || desire.contains("乘涼")
+        || desire.contains("歇腳")
+        || desire.contains("避雨")
+        || desire.contains("遮雨")
+        || desire.contains("遮陽")
+        || desire.contains("遮蔭")
+        || desire.contains("遮蔽")
+    {
+        return Some(BuildKind::Pavilion);
+    }
     if desire.contains("小屋")
         || desire.contains("家")
         || desire.contains("房子")
@@ -91,6 +110,9 @@ pub fn classify_desire(desire: &str) -> Option<BuildKind> {
     // 單字再比對
     if desire.contains("塔") {
         return Some(BuildKind::Tower);
+    }
+    if desire.contains("亭") {
+        return Some(BuildKind::Pavilion);
     }
     if desire.contains("泉") || desire.contains("井") {
         return Some(BuildKind::Well);
@@ -583,6 +605,40 @@ fn generate_blocks(kind: BuildKind, cx: i32, cy: i32, cz: i32, style: &BuildStyl
             add(&mut out, cx, cy, cz, center);
             // 共 9 + 8 + 1 = 18 塊
         }
+
+        BuildKind::Pavilion => {
+            // 涼亭：四柱撐頂、四面通透。地板 style.floor、角柱 style.wall、頂蓋 style.roof，
+            // 材質隨居民/群系變化（讓每座亭不同）；中心一盞燈給夜裡歇腳的暖意。
+            // 亭身高 3 或 4 層（style.peaked 再拔高一層、頂上加尖脊）。
+            let body_h = if style.peaked { 4 } else { 3 };
+            // 地板（cy-1 層，3×3 style.floor 實心——抬出一方乾淨的歇腳台）。
+            for dx in -1i32..=1 {
+                for dz in -1i32..=1 {
+                    add(&mut out, cx + dx, cy - 1, cz + dz, style.floor);
+                }
+            }
+            // 四角立柱（只四角、四面全開通透——與封牆的小木屋刻意區隔）。
+            for layer in 0..body_h {
+                let y = cy + layer;
+                for &(dx, dz) in &[(-1i32, -1i32), (-1, 1), (1, -1), (1, 1)] {
+                    add(&mut out, cx + dx, y, cz + dz, style.wall);
+                }
+            }
+            // 頂蓋（cy+body_h 層，3×3 style.roof 實心，遮陽避雨）。
+            let roof_y = cy + body_h;
+            for dx in -1i32..=1 {
+                for dz in -1i32..=1 {
+                    add(&mut out, cx + dx, roof_y, cz + dz, style.roof);
+                }
+            }
+            // 尖頂：中心再疊一塊（小尖脊感）。
+            if style.peaked {
+                add(&mut out, cx, roof_y + 1, cz, style.roof);
+            }
+            // 中心一盞燈（站立層 cy，火把——夜裡歇腳的暖光，也讓亭子在遠處認得出）。
+            add(&mut out, cx, cy, cz, Block::Torch);
+            // 共 9 + 4×body_h + 9 + 1（+1 尖頂）塊
+        }
     }
 
     out
@@ -779,6 +835,27 @@ mod tests {
     }
 
     #[test]
+    fn classify_pavilion_keywords() {
+        // 「想有個乘涼避雨的地方」這類渴望此前落空（→ None），現在能蓋成一座涼亭。
+        assert_eq!(classify_desire("好想有座涼亭"), Some(BuildKind::Pavilion));
+        assert_eq!(classify_desire("想搭個亭子乘涼"), Some(BuildKind::Pavilion));
+        assert_eq!(classify_desire("盼有個能歇腳的地方"), Some(BuildKind::Pavilion));
+        assert_eq!(classify_desire("下雨天想有處避雨"), Some(BuildKind::Pavilion));
+        assert_eq!(classify_desire("想要遮陽的涼快處"), Some(BuildKind::Pavilion));
+        // 單字「亭」也認得。
+        assert_eq!(classify_desire("蓋座亭"), Some(BuildKind::Pavilion));
+    }
+
+    #[test]
+    fn classify_pavilion_does_not_steal_other_kinds() {
+        // 新增涼亭關鍵詞不得誤搶既有分類（家/塔/井/花仍各歸各的）。
+        assert_eq!(classify_desire("我想有一個家"), Some(BuildKind::House));
+        assert_eq!(classify_desire("我想蓋一座塔"), Some(BuildKind::Tower));
+        assert_eq!(classify_desire("我想要一口水井"), Some(BuildKind::Well));
+        assert_eq!(classify_desire("我想種花"), Some(BuildKind::Garden));
+    }
+
+    #[test]
     fn classify_generic_build_falls_to_house() {
         assert_eq!(classify_desire("我想蓋些什麼"), Some(BuildKind::House));
         assert_eq!(classify_desire("我想建一個東西"), Some(BuildKind::House));
@@ -876,6 +953,28 @@ mod tests {
     }
 
     #[test]
+    fn pavilion_block_count_small_style() {
+        let blocks = generate_blocks(BuildKind::Pavilion, 0, 5, 0, &style_small());
+        // 地板 9 + 四角柱 4×3 + 頂蓋 9 + 中心燈 1 = 31（peaked=false → body_h=3、無尖頂）
+        assert_eq!(blocks.len(), 31);
+    }
+
+    #[test]
+    fn pavilion_is_open_sided_with_central_lantern() {
+        // 涼亭刻意四面通透：站立層 cy 的邊中點（非角）不得有牆，只有四角立柱擋著。
+        let blocks = generate_blocks(BuildKind::Pavilion, 0, 5, 0, &style_small());
+        // 邊中點（如 dx=0,dz=-1）站立層應是空的（開放通行）。
+        let edge_mid = blocks.iter().find(|b| b.x == 0 && b.y == 5 && b.z == -1);
+        assert!(edge_mid.is_none(), "涼亭側邊中點不該有牆（應四面通透）");
+        // 四角立柱存在（如 dx=-1,dz=-1 站立層）。
+        let corner = blocks.iter().find(|b| b.x == -1 && b.y == 5 && b.z == -1);
+        assert_eq!(corner.map(|b| b.b), Some(Block::Wood as u8), "四角應有立柱");
+        // 中心一盞火把（歇腳暖光）。
+        let lantern = blocks.iter().find(|b| b.x == 0 && b.y == 5 && b.z == 0);
+        assert_eq!(lantern.map(|b| b.b), Some(Block::Torch as u8), "涼亭中心應有一盞燈");
+    }
+
+    #[test]
     fn all_blocks_have_valid_block_type_across_residents() {
         // 掃過多位居民 × 四群系 × 四種建物，任何組合生出的方塊都必須是合法方塊 id。
         for rid in ["vox_res_0", "vox_res_1", "vox_res_2", "vox_res_3", "vox_res_7"] {
@@ -886,7 +985,13 @@ mod tests {
                 VoxelBiome::Snow,
             ] {
                 let style = BuildStyle::for_resident(rid, biome, 7, 0);
-                for kind in [BuildKind::House, BuildKind::Well, BuildKind::Tower, BuildKind::Garden] {
+                for kind in [
+                    BuildKind::House,
+                    BuildKind::Well,
+                    BuildKind::Tower,
+                    BuildKind::Garden,
+                    BuildKind::Pavilion,
+                ] {
                     let blocks = generate_blocks(kind, 0, 5, 0, &style);
                     for bb in &blocks {
                         assert!(

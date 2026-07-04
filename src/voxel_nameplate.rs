@@ -23,6 +23,7 @@ fn kind_suffix(kind: BuildKind) -> &'static str {
         BuildKind::Well => "的水井",
         BuildKind::Tower => "的瞭望台",
         BuildKind::Garden => "的花圃",
+        BuildKind::Pavilion => "的涼亭",
     }
 }
 

@@ -50,6 +50,15 @@ pub fn build_complete_say(resident_name: &str, kind: BuildKind) -> String {
             ];
             lines[idx % lines.len()].to_string()
         }
+        BuildKind::Pavilion => {
+            let lines = [
+                "涼亭搭好了！來乘涼歇歇腳吧。",
+                "我的涼亭完工啦，下雨也不怕了！",
+                "涼亭蓋好了，大家來坐坐！",
+                "亭子好啦！夜裡點著燈真溫暖。",
+            ];
+            lines[idx % lines.len()].to_string()
+        }
     }
 }
 
