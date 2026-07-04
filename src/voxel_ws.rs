@@ -219,6 +219,10 @@ const TALK_COOLDOWN_MS: u64 = 4000;
 /// per-IP 對話限流被擋時，在玩家自己頭上冒的溫柔提示（治安三件套①）——
 /// 讓超速的人知道「慢一點」，而非靜默吞掉；面向玩家字串、集中於此、i18n 友善。
 const TALK_RATE_NOTICE: &str = "（說得太快啦，喘口氣、待會兒再聊～）";
+/// 訪客（未登入）試圖與居民交談時，在自己頭上冒的溫柔提示（治安三件套③·對話需登入）——
+/// 對話會觸發免費 LLM（居民的腦），匿名腳本可白嫖／燒爆額度；故要求登入才能聊，訪客可
+/// 自由逛逛與觀看。面向玩家字串、集中於此、i18n 友善。
+const TALK_GUEST_NOTICE: &str = "（登入之後就能和居民說話囉～先四處逛逛、看看這個世界吧！）";
 /// 協助建造感激記憶冷卻（秒，互動有後果 v2）：一次連續幫忙（放好幾塊方塊）只記**一筆**
 /// 感激記憶，隔這麼久後再幫才會再記一筆——避免好感（＝episodic 記憶筆數）被單次幫忙灌爆。
 const HELP_MEMORY_COOLDOWN_SECS: u64 = 90;
@@ -587,6 +591,14 @@ fn sanitize_talk_text(raw: &str) -> Option<String> {
 /// 對話冷卻判定：距離上次說話已過 `elapsed_ms` 毫秒，是否允許這次（≥ `TALK_COOLDOWN_MS`）。
 fn talk_cooldown_ok(elapsed_ms: u64) -> bool {
     elapsed_ms >= TALK_COOLDOWN_MS
+}
+
+/// 對話需登入判定（治安三件套③）：與居民交談會觸發免費 LLM（居民的腦），匿名腳本
+/// 可白嫖／燒爆額度。故只有登入帳號（`is_account==true`，後端 cookie→users 權威解出）
+/// 才能發起對話；訪客回 `false`＝擋下（可自由逛逛與觀看，只是不能聊）。純函式、單一
+/// 政策點，日後若要改成「訪客給極嚴格額度」只需改這裡與呼叫端。
+fn talk_allowed_for_identity(is_account: bool) -> bool {
+    is_account
 }
 
 /// 全域 per-IP 對話速率限制器（治安三件套①）：跨所有連線共用一份，以真實 IP 為鍵，
@@ -2940,6 +2952,18 @@ async fn handle_socket(
                         }
                         continue;
                     }
+                }
+                // 2d) 對話需登入（治安三件套③）：與居民交談會觸發免費 LLM（居民的腦），匿名
+                //     腳本可不登入就狂灌、白嫖／燒爆額度。故只有登入帳號才能發起對話；訪客可自由
+                //     逛逛與觀看，只是不能聊。身分由後端 cookie→users 權威解出（`is_account`，絕不
+                //     信客戶端自報）。訪客→在自己頭上冒一句溫柔提示、跳過（絕不觸發 LLM、絕不廣播）。
+                if !talk_allowed_for_identity(is_account) {
+                    let mut players = hub().players.write().unwrap();
+                    if let Some(p) = players.get_mut(&my_id) {
+                        p.say = TALK_GUEST_NOTICE.to_string();
+                        p.say_timer = PLAYER_SAY_SECS;
+                    }
+                    continue;
                 }
                 // 身份鍵：登入者為帳號名（穩定、跨 session、換訪客名也認得你），訪客為 join 顯示名。
                 // `name` 已在入場時由 resolve_identity 綁定。
@@ -12319,6 +12343,15 @@ mod tests {
         // 剛好到門檻就放行。
         assert!(talk_cooldown_ok(TALK_COOLDOWN_MS));
         assert!(talk_cooldown_ok(TALK_COOLDOWN_MS + 1000));
+    }
+
+    #[test]
+    fn talk_requires_login_gate() {
+        // 治安三件套③：登入帳號才能發起對話（觸發免費 LLM）；訪客擋下。
+        assert!(talk_allowed_for_identity(true), "登入帳號應可與居民交談");
+        assert!(!talk_allowed_for_identity(false), "訪客應被擋下、不可觸發 LLM");
+        // 訪客提示非空、且是面向玩家的溫柔字串（i18n 集中於此常數）。
+        assert!(!TALK_GUEST_NOTICE.is_empty());
     }
 
     #[test]
