@@ -20,7 +20,7 @@ use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::npc_agent::{AgentAction, AgentDecision, NearbyPlayer, SenseInput};
@@ -159,6 +159,11 @@ struct VoxelPlayer {
     /// 一般玩家 / 訪客為 None（不序列化成欄位），完全不受影響。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     title: Option<String>,
+    /// 後端 cookie→users 解出的登入帳號 email（權威，非客戶端自報）。
+    /// **僅後端內部用**：同帳號去重（無痛重連幽靈分身修復）。訪客 = None。
+    /// 不廣播（#[serde(skip)]），前端永遠看不到此值。
+    #[serde(skip)]
+    account: Option<String>,
 }
 
 // ── 乙太方界 AI 居民（切片③）────────────────────────────────────────────────
@@ -1424,6 +1429,11 @@ struct VoxelHub {
     /// 玩家里程碑 v1（ROADMAP 724）：玩家自己的療癒循環第一次做成可回頭翻閱的成就徽章。
     /// 持久化到 data/voxel_milestones.jsonl（append-only，重啟後徽章仍在）。
     milestones: RwLock<MilestoneStore>,
+    /// 同帳號去重——踢舊連線用的 oneshot 信號表（ROADMAP fix 幽靈分身）。
+    /// 連線 UUID → 踢信號發送端；有同 email 的新連線進來時，從此表取出舊 UUID 的發送端並送 ()，
+    /// 讓舊連線的 select! 觸發、優雅退出（幽靈分身消失）。
+    /// 短鎖即釋、所有操作在鎖外 await，守 prod 死鎖鐵律。
+    conn_kick: RwLock<HashMap<Uuid, oneshot::Sender<()>>>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -1638,6 +1648,8 @@ fn hub() -> &'static VoxelHub {
             last_seen: RwLock::new(HashMap::new()),
             // 啟動時從 data/voxel_milestones.jsonl 載回玩家已達成的成就徽章（重啟後仍記得）。
             milestones: RwLock::new(MilestoneStore::from_entries(vmiles::load_milestones())),
+            // 同帳號去重：啟動空，每條連線進場時登記、離場時清除。純記憶體、無需持久化。
+            conn_kick: RwLock::new(HashMap::new()),
             tx,
         }
     })
@@ -2026,6 +2038,26 @@ fn resolve_identity(account_name: Option<&str>, join_name: Option<&str>) -> Stri
     String::from("旅人")
 }
 
+/// 同帳號去重：在 `players` 寫鎖內呼叫——搜出同 email 的舊 entry、移除並回傳其 UUID。
+/// 訪客（`email = ""`）或找不到舊 entry → 回 `None`，不動 `players`。
+///
+/// **安全**：`email` 必須由後端 cookie→users 解出（呼叫方保證），不信客戶端自報——
+/// 只踢「同一真實帳號」的舊連線，不可能跨帳號踢別人。
+///
+/// **鎖紀律**：此函式本身不取任何鎖，由呼叫方在 `players` 寫鎖內呼叫。
+/// 回傳 old_id 後，呼叫方在**鎖外**再取 conn_kick 鎖送踢信號，不巢狀（守死鎖鐵律）。
+fn remove_duplicate_account(
+    players: &mut HashMap<Uuid, VoxelPlayer>,
+    email: &str,
+) -> Option<Uuid> {
+    let old_id = players
+        .iter()
+        .find(|(_, p)| p.account.as_deref() == Some(email))
+        .map(|(id, _)| *id)?;
+    players.remove(&old_id);
+    Some(old_id)
+}
+
 async fn handle_socket(
     socket: WebSocket,
     account_name: Option<String>,
@@ -2077,9 +2109,19 @@ async fn handle_socket(
             (x, y, z, 0.0)
         });
 
-    // 建立權威玩家、登錄進 hub。
-    {
+    // 同帳號去重 v1（幽靈分身修復，ROADMAP fix #1021 重連副作用）：
+    // 建立這條連線的踢信號通道；之後若有同帳號的第二條連線進來，它會把信號送過來，
+    // 讓我們的 select! 觸發、優雅退出，幽靈分身自然消失。
+    // 安全：email 由後端 cookie→users 解出（權威），只踢同一真實帳號的舊連線，不能跨帳號踢別人。
+    let (kick_tx, mut kick_rx) = oneshot::channel::<()>();
+
+    // 建立權威玩家、登錄進 hub；同帳號去重在同一把 players 寫鎖內完成（原子性）。
+    let old_id_to_kick: Option<Uuid> = {
         let mut players = hub().players.write().unwrap();
+        // 登入帳號才做去重（訪客 account_email = None → 多條訪客連線不互踢）。
+        let old_id = account_email
+            .as_deref()
+            .and_then(|email| remove_duplicate_account(&mut players, email));
         players.insert(
             my_id,
             VoxelPlayer {
@@ -2092,9 +2134,24 @@ async fn handle_socket(
                 say: String::new(),
                 say_timer: 0.0,
                 title: conn_title.clone(),
+                account: account_email.clone(), // 後端解出，不廣播，僅去重用
             },
         );
-    }
+        old_id
+    }; // players 寫鎖在此釋放
+
+    // 鎖外操作：更新踢信號表、送踢信號給舊連線（守 prod 死鎖鐵律：不持鎖 await）。
+    {
+        let mut conn_kick = hub().conn_kick.write().unwrap();
+        // 若同帳號的舊連線還在，取出其踢信號發送端（同時從表移除）。
+        let old_kick_tx = old_id_to_kick.and_then(|oid| conn_kick.remove(&oid));
+        // 登記自己的踢信號（供將來同帳號的下一條連線使用）。
+        conn_kick.insert(my_id, kick_tx);
+        // 送踢信號——鎖已釋放，send() 不在鎖內，守鐵律。
+        if let Some(tx) = old_kick_tx {
+            let _ = tx.send(()); // 舊連線的 select! 收到後優雅退出
+        }
+    } // conn_kick 寫鎖在此釋放
 
     // 送 welcome（出生點 + 世界常數，前端據此設碰撞/相機）。
     let welcome = serde_json::json!({
@@ -2265,7 +2322,17 @@ async fn handle_socket(
     let mut last_firework: Option<std::time::Instant> = None;
 
     // 讀取迴圈：處理 move / req / break / place / talk。
-    while let Some(Ok(msg)) = receiver.next().await {
+    // 同時監聽同帳號去重的踢信號（kick_rx）：新連線進來時 send(())，此 arm 觸發後 break，
+    // 優雅退出——幽靈分身從 players 表消失，廣播讓所有人看到它不見。
+    loop {
+        let msg = tokio::select! {
+            biased; // 踢信號優先（低頻但時效性高），避免 select 平等隨機時延遲踢除
+            _ = &mut kick_rx => break, // 被同帳號新連線踢出，退出即結束
+            v = receiver.next() => match v {
+                Some(Ok(m)) => m,
+                _ => break, // WebSocket 斷開或錯誤，正常離線
+            },
+        };
         let txt = match msg {
             Message::Text(t) => t,
             Message::Close(_) => break,
@@ -5177,12 +5244,16 @@ async fn handle_socket(
     broadcast_players();
 }
 
-/// 把玩家移出登錄並中止 writer task。
+/// 把玩家移出登錄、清除踢信號、並中止 writer task。
+/// **鎖紀律**：players 寫鎖短取即釋，conn_kick 寫鎖另一把短取即釋，不巢狀。
 fn cleanup(id: Uuid, writer: &tokio::task::JoinHandle<()>) {
     {
         let mut players = hub().players.write().unwrap();
         players.remove(&id);
     }
+    // 同帳號去重：清掉自己的踢信號（連線已結束，不再需要信號）。
+    // 若新連線已提前移走此 entry（dedup 時），remove 是 no-op，安全。
+    { hub().conn_kick.write().unwrap().remove(&id); }
     writer.abort();
 }
 
@@ -12348,5 +12419,98 @@ mod tests {
         // 合法 id → Some；越界 → None（伺服器據此忽略 place）。
         assert_eq!(Block::from_u8(3), Some(Block::Stone));
         assert!(Block::from_u8(200).is_none());
+    }
+
+    // ── 同帳號去重（幽靈分身修復）測試 ───────────────────────────────────────────
+
+    /// 建一個最小 VoxelPlayer，方便去重測試用（account 欄位可指定）。
+    fn make_player(id: Uuid, account: Option<&str>) -> VoxelPlayer {
+        VoxelPlayer {
+            id,
+            name: "測試玩家".to_string(),
+            x: 0.0,
+            y: 64.0,
+            z: 0.0,
+            yaw: 0.0,
+            say: String::new(),
+            say_timer: 0.0,
+            title: None,
+            account: account.map(String::from),
+        }
+    }
+
+    #[test]
+    fn remove_duplicate_account_kicks_old_entry() {
+        // 同帳號第二次 join → 第一個 entry 被移除、回傳舊 UUID。
+        let mut players: HashMap<Uuid, VoxelPlayer> = HashMap::new();
+        let old_id = Uuid::new_v4();
+        players.insert(old_id, make_player(old_id, Some("player@example.com")));
+
+        let result = remove_duplicate_account(&mut players, "player@example.com");
+
+        assert_eq!(result, Some(old_id), "應回傳舊連線 UUID");
+        assert!(players.is_empty(), "players 表中舊 entry 應已移除");
+    }
+
+    #[test]
+    fn remove_duplicate_account_guest_not_kicked() {
+        // 訪客（account = None）第二條連線 → 不互踢（允許多訪客同時在線）。
+        let mut players: HashMap<Uuid, VoxelPlayer> = HashMap::new();
+        let guest1 = Uuid::new_v4();
+        let guest2 = Uuid::new_v4();
+        players.insert(guest1, make_player(guest1, None));
+        players.insert(guest2, make_player(guest2, None));
+
+        // 以任何 email 去重，兩位訪客都不受波及（他們的 account 是 None）。
+        let result = remove_duplicate_account(&mut players, "someone@example.com");
+
+        assert_eq!(result, None, "訪客帳號不應被去重踢除");
+        assert_eq!(players.len(), 2, "兩位訪客都應仍在線");
+    }
+
+    #[test]
+    fn remove_duplicate_account_different_accounts_not_kicked() {
+        // 不同帳號互不干擾：去重只踢同一 email 的舊連線。
+        let mut players: HashMap<Uuid, VoxelPlayer> = HashMap::new();
+        let id_a = Uuid::new_v4();
+        let id_b = Uuid::new_v4();
+        players.insert(id_a, make_player(id_a, Some("alice@example.com")));
+        players.insert(id_b, make_player(id_b, Some("bob@example.com")));
+
+        // Bob 重連，只踢 Bob 的舊連線，Alice 不受影響。
+        let result = remove_duplicate_account(&mut players, "bob@example.com");
+
+        assert_eq!(result, Some(id_b), "應回傳 Bob 的舊 UUID");
+        assert!(players.contains_key(&id_a), "Alice 的連線應仍在線");
+        assert!(!players.contains_key(&id_b), "Bob 的舊連線應已移除");
+    }
+
+    #[test]
+    fn remove_duplicate_account_no_existing_returns_none() {
+        // 帳號首次登入（players 表沒有同帳號的舊 entry）→ 回 None，不動 players。
+        let mut players: HashMap<Uuid, VoxelPlayer> = HashMap::new();
+        let id = Uuid::new_v4();
+        players.insert(id, make_player(id, Some("other@example.com")));
+
+        let result = remove_duplicate_account(&mut players, "new@example.com");
+
+        assert_eq!(result, None, "首次登入不應觸發去重");
+        assert_eq!(players.len(), 1, "players 表不應被改動");
+    }
+
+    #[test]
+    fn account_field_not_serialized() {
+        // account 欄位帶 #[serde(skip)]，廣播的 JSON 中永遠看不到此值——安全防護。
+        let id = Uuid::new_v4();
+        let p = make_player(id, Some("secret@example.com"));
+        let json = serde_json::to_string(&p).expect("序列化不應失敗");
+        assert!(
+            !json.contains("account"),
+            "account 欄位不應出現在廣播 JSON 中：{json}"
+        );
+        assert!(
+            !json.contains("secret@example.com"),
+            "email 不應出現在廣播 JSON 中：{json}"
+        );
     }
 }
