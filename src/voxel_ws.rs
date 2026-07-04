@@ -49,6 +49,7 @@ use crate::voxel_inventory::{self as vinv, InvStore};
 use crate::voxel_memory::{self as vmem, VoxelMemory};
 use crate::voxel_farm::{self as vfarm, FarmStore};
 use crate::voxel_grove::{self as vgrove, GroveStore};
+use crate::voxel_berry::{self as vberry, BerryStore};
 use crate::voxel_gift as vgift;
 use crate::voxel_keepsake as vkeep;
 use crate::voxel_keepsake_recall as vkrecall;
@@ -1390,6 +1391,9 @@ struct VoxelHub {
     /// 樹苗 store（植樹造林 v1·ROADMAP 738·純記憶體；重啟後種下的樹苗重置，已長成的樹是 delta 方塊會持久）。
     /// 記錄哪些格子種下了樹苗、何時種的，每 15 秒 tick（`tick_grove`）一次成熟檢查。
     grove: RwLock<GroveStore>,
+    /// 莓果叢 store（莓果叢 v1·ROADMAP 806·純記憶體；重啟後未結果的苗重置計時，已結果的叢是 delta 方塊會持久）。
+    /// 記錄哪些格子種下了莓果叢、何時起算，每 15 秒 tick（`tick_berry`）一次結果檢查；採收後回退重新登記計時。
+    berry: RwLock<BerryStore>,
     /// 居民回禮已送記錄（ROADMAP 667）：每對（居民, 玩家）一生只送一次。
     /// 持久化到 data/voxel_return_gifts.jsonl。
     return_gifts: RwLock<ReturnGiftStore>,
@@ -1643,6 +1647,7 @@ fn hub() -> &'static VoxelHub {
             // 熔爐煨煮 v1：啟動時從 data/voxel_smelt.jsonl 載回未交付的爐（重啟後那爐還在煨）。
             smelt: RwLock::new(vsmelt::SmeltStore::from_events(vsmelt::load_smelt())),
             grove: RwLock::new(GroveStore::new()),
+            berry: RwLock::new(BerryStore::new()),
             // 啟動時從 data/voxel_return_gifts.jsonl 載回已回贈紀錄（重啟後仍記得送過）。
             return_gifts: RwLock::new(ReturnGiftStore::from_entries(vret::load_return_gifts())),
             // 世界時鐘：從白天（time_of_day ≈ 0.42）開始，讓玩家一進遊戲就是白天。
@@ -2489,6 +2494,23 @@ async fn handle_socket(
                     if matches!(target_block, Block::Bell) {
                         vbuild::append_world_block(x, y, z, Block::Air as u8);
                     }
+                    // 莓果叢 v1（ROADMAP 806）：採收「結果的莓果叢」→ **不消失**，就地回退成
+                    // 莓果叢苗(75) ＋ 重啟結果計時（多年生：採過還會再結，不必重種）。破壞流程上面
+                    // 已把這格設為空氣並廣播；這裡緊接著再放回莓果叢苗、廣播、重新登記計時。莓果
+                    // 本身走下面 is_solid 的 drops 特殊掉落規則給予（BerryBushRipe → 莓果×2）。
+                    if matches!(target_block, Block::BerryBushRipe) {
+                        {
+                            let mut world = hub().deltas.write().unwrap();
+                            voxel::set_block(&mut world, x, y, z, Block::BerryBush);
+                        } // delta 寫鎖即釋
+                        broadcast_block(x, y, z, Block::BerryBush);
+                        hub().berry.write().unwrap().plant(x, y, z, vfarm::now_secs());
+                    }
+                    // 莓果叢 v1：挖除「未結果的莓果叢苗」→ 清掉 berry 計時記錄（避免下輪 tick_berry
+                    // 在空格憑空結果）。莓果叢苗方塊本身走下面「其餘實心方塊掉落自身」通用路徑退還背包(75)。
+                    if matches!(target_block, Block::BerryBush) {
+                        hub().berry.write().unwrap().remove(x, y, z);
+                    }
                     // 木門（開）v1（ROADMAP 693）：非實心但可破壞 → 退還木門（關）。
                     if matches!(target_block, Block::DoorOpen) {
                         let bid = Block::DoorClosed as u8; // 43
@@ -2525,6 +2547,9 @@ async fn handle_socket(
                             Block::Dirt            => &[(Block::Dirt as u8, 1), (vfarm::POTATO_SEEDS_ID, 1)],
                             Block::PotatoSeeded    => &[(11, 1), (vfarm::POTATO_SEEDS_ID, 1)],
                             Block::PotatoMature    => &[(11, 1), (vfarm::POTATO_SEEDS_ID, 1), (vfarm::POTATO_ID, 2)],
+                            // 莓果叢 v1（ROADMAP 806）：採收結果的莓果叢 → 莓果×2（叢本身上面已就地回退成
+                            // 莓果叢苗、不掉落方塊）。未結果的莓果叢苗(75) 不在此表 → 走 else 掉落自身退還。
+                            Block::BerryBushRipe   => &[(vberry::BERRY_ID, vberry::BERRY_YIELD)],
                             _ => &[], // 後面用 else 分支處理
                         };
 
@@ -2705,6 +2730,24 @@ async fn handle_socket(
                         continue;
                     }
                 }
+                // 莓果叢 v1（ROADMAP 806）：莓果叢苗和樹苗一樣只能種在「土地」上（草/土/沙/雪/農田土），
+                // 不合格早退退提示、不白白消耗莓果叢苗。（短讀鎖取腳下方塊即釋，不與後續鎖巢狀。）
+                if block == Block::BerryBush {
+                    let ground = {
+                        let deltas = hub().deltas.read().unwrap();
+                        voxel::effective_block_at(&deltas, x, y - 1, z) as u8
+                    };
+                    if !vberry::is_plantable_ground(ground) {
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({
+                                "t": "plant_fail",
+                                "reason": "莓果叢要種在土地上"
+                            })
+                            .to_string(),
+                        ));
+                        continue;
+                    }
+                }
                 // 步驟1：嘗試消耗材料（inventory 寫鎖，立即釋放）。
                 let inv_entry = {
                     hub().inventory.write().unwrap().take(&name, b, 1)
@@ -2735,6 +2778,11 @@ async fn handle_socket(
                     // 由 `tick_grove`（15 秒節拍）計時，約 150 秒後長成一株樹。
                     if block == Block::Sapling {
                         hub().grove.write().unwrap().plant(x, y, z, vfarm::now_secs());
+                    }
+                    // 莓果叢 v1（ROADMAP 806）：剛種下的莓果叢苗記進 berry store，
+                    // 由 `tick_berry`（15 秒節拍）計時，約 100 秒後結果。
+                    if block == Block::BerryBush {
+                        hub().berry.write().unwrap().plant(x, y, z, vfarm::now_secs());
                     }
                     // 乙太營火 v1：剛放下一座營火 → 記進取暖清單（居民夜裡靠它吸引），並持久化
                     // （走既有 world_blocks append-only log，重啟後火堆與取暖清單一併還原）。
@@ -5387,6 +5435,7 @@ pub fn spawn_farm_tick() {
             ticker.tick().await;
             tick_farm();
             tick_grove(); // 植樹造林 v1（ROADMAP 738）：同節拍檢查樹苗是否長成。
+            tick_berry(); // 莓果叢 v1（ROADMAP 806）：同節拍檢查莓果叢是否結果。
             tick_smelt(); // 熔爐煨煮 v1（自主提案）：同節拍交付熟成的爐（成品入背包 + 廣播）。
             maybe_birth(); // 人口成長 v1：低頻檢查聚落是否有餘裕誕生一位新居民。
         }
@@ -5770,6 +5819,36 @@ fn tick_grove() {
             voxel::set_block(&mut hub().deltas.write().unwrap(), tx, ty, tz, block);
             broadcast_block(tx, ty, tz, block);
         }
+    }
+}
+
+/// 莓果叢結果 tick（莓果叢 v1·ROADMAP 806）——與 `tick_grove` 同 15 秒節拍。
+/// 鎖序：① berry 讀鎖取「已結果」座標即釋。② 每叢：只在該格「還是莓果叢苗(75)」時
+/// 換成結果的莓果叢(76)（防玩家已挖走／被別的方塊蓋掉時憑空長出），換好即把該格從
+/// berry store 移除（結果狀態不需再計時，採收時再重新登記回退計時）。零鎖巢狀、零 IO。
+fn tick_berry() {
+    let now = vfarm::now_secs();
+    // ① berry 讀鎖取已結果座標，馬上釋放。
+    let ripe: Vec<(i32, i32, i32)> = hub().berry.read().unwrap().ripe_bushes(now);
+    if ripe.is_empty() {
+        return;
+    }
+    for (bx, by, bz) in ripe {
+        // ② 短讀鎖確認該格仍是莓果叢苗（玩家可能已挖走／回退前被覆蓋），不是就跳過並清記錄。
+        let still_bush = {
+            let deltas = hub().deltas.read().unwrap();
+            voxel::effective_block_at(&deltas, bx, by, bz) == Block::BerryBush
+        };
+        // 不論長成與否，先把這輪計時記錄清掉（避免下輪重複觸發）；長成後由採收重新登記回退計時。
+        hub().berry.write().unwrap().remove(bx, by, bz);
+        if !still_bush {
+            continue;
+        }
+        {
+            let mut world = hub().deltas.write().unwrap();
+            voxel::set_block(&mut world, bx, by, bz, Block::BerryBushRipe);
+        } // delta 寫鎖即釋
+        broadcast_block(bx, by, bz, Block::BerryBushRipe);
     }
 }
 
