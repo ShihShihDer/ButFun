@@ -115,6 +115,7 @@ use crate::voxel_quarrel as vquarrel;
 use crate::voxel_teach as vteach;
 use crate::voxel_sleep as vsleep;
 use crate::voxel_bedtime as vbedtime;
+use crate::voxel_dream as vdream;
 use crate::voxel_morning as vmorning;
 use crate::voxel_daybreak as vdaybreak;
 use crate::voxel_reunion as vreunion;
@@ -385,6 +386,13 @@ struct VoxelResident {
     /// 睡著時停下一切閒晃／社交／採集／建造、名牌旁顯示 💤，天亮（離開夜間時段）才醒。
     /// 記憶體前置、不持久化、零 migration（重啟後大不了當晚重睡一次，無資料風險）。
     asleep: bool,
+    /// 兩個夢之間的冷卻倒數（居民會做夢 v1，ROADMAP 805）：熟睡中做完一個夢後設為
+    /// `vdream::DREAM_COOLDOWN_SECS`、每 tick 遞減，到期後才可能再做下一個夢，避免夢泡洗版。
+    /// 純記憶體、重啟歸零（做夢是睡夢中的短暫過場，重啟大不了少做一次、無資料風險）。
+    dream_cooldown: f32,
+    /// 這位居民至今做過幾個夢（居民會做夢 v1，ROADMAP 805）：睡著時身體靜止、座標不變，
+    /// 若只用座標當 `pick` 種子會整夜夢同一件事——摻入此計數讓每個夢輪替不同的往事／語氣。純記憶體。
+    dream_seq: u32,
     /// 心中念念不忘的告示牌（居民讀牌 v3，ROADMAP 743）：Some(牌子中心 x, z, 引文) =
     /// 讀到一塊讓牠印象深刻的牌子後記下的「心中地標」；閒暇時偶爾據此重返。純記憶體、重啟歸零。
     cherished_sign: Option<(f32, f32, String)>,
@@ -1275,6 +1283,9 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             invent_backoff: HashMap::new(),
             // 出生時醒著；入睡由夜間作息迴圈決定（ROADMAP 739）。
             asleep: false,
+            // 做夢 v1（ROADMAP 805）：入場沒在冷卻、還沒做過夢。
+            dream_cooldown: 0.0,
+            dream_seq: 0,
             // 重返心中的牌子（讀牌 v3，ROADMAP 743）：入場心裡還沒記著任何牌、沒在朝聖；
             // 首次重返冷卻長且錯開（前數分鐘不朝聖，讓居民先讀到牌、心裡有地標再說）。
             cherished_sign: None,
@@ -6208,6 +6219,10 @@ fn tick_residents(dt: f32) {
     // 格式：(resident_name, 今天回味的記憶摘要)。
     let mut bedtime_feed: Vec<(&'static str, String)> = Vec::new();
 
+    // 做夢 Feed 事件（作息 × 記憶驅動行為·居民會做夢 v1，ROADMAP 805）：鎖內熟睡時偵測，鎖外記 Feed。
+    // 格式：(resident_name, 夢見的那段珍貴往事摘要)。
+    let mut dream_feed: Vec<(&'static str, String)> = Vec::new();
+
     // 晨間探友 Feed 事件（作息 × 記憶驅動行為·晨間探友 v1，ROADMAP 745）：鎖內醒來時偵測，鎖外記 Feed。
     // 格式：(resident_name, 昨晚惦記、一早去找的那位居民名字)。
     let mut morning_feed: Vec<(&'static str, &'static str)> = Vec::new();
@@ -6506,7 +6521,58 @@ fn tick_residents(dt: f32) {
                     }
                     // 不 continue：醒來後這一 tick 就讓她照常展開新的一天。
                 } else {
-                    // 仍是夜裡：安靜睡著，只落重力、不做任何行為。
+                    // 仍是夜裡：安靜睡著，只落重力、不做任何行為——但熟睡中偶爾會做個夢（ROADMAP 805）。
+                    // 做夢 v1：一段深藏心底的珍貴往事不由自主浮成夢，冒「💤 夢見…」泡泡＋記進動態 Feed，
+                    // 讓夜裡路過的玩家與離線回訪者都瞥見居民「連睡夢裡都在活著」的內心。
+                    // 與 744 就寢反思區隔：那是「躺下當下、有意識回味今天最近的事」；本刀是「睡著之後、
+                    // 不由自主浮現、可觸及整座記憶庫裡更舊更深的珍藏」，觸發點／取樣／語氣皆不同。
+                    if r.dream_cooldown > 0.0 {
+                        r.dream_cooldown -= dt;
+                    }
+                    if r.say.is_empty()
+                        && r.dream_cooldown <= 0.0
+                        && vdream::should_dream(rand::random::<f32>())
+                    {
+                        // 短鎖讀整座記憶庫 → 濾掉哨兵偽玩家（只夢真實經歷，不夢自己的反思）→ 收集
+                        // 珍貴（persistent）的往事 → 即釋。鎖序：residents 寫（外）→ memory 讀（內），
+                        // 比照 744 就寢反思的短鎖循序，同向不巢狀、不反向、不持鎖 await。
+                        let dream_core = {
+                            let mem = hub().memory.read().unwrap();
+                            let cherished: Vec<String> = mem
+                                .all_memories_for(&r.id) // 最新在前
+                                .into_iter()
+                                .take(vdream::DREAM_WINDOW)
+                                // 跳過就寢反思／遠行等哨兵偽玩家（皆 "__voxel_*__" 命名）——夢的是
+                                // 真實經歷（玩家/鄰居/旅人），不是居民自己昨晚的反思，免遞迴夢反思。
+                                .filter(|e| !e.player.starts_with("__"))
+                                // 只夢「珍貴」的往事（目標／偏好／承諾／人際等 persistent），寒暄瑣事
+                                // 不入夢——夢自然而然只浮現真正放在心上的事，也天然壓低頻率。
+                                .filter(|e| {
+                                    matches!(
+                                        vmem::classify_importance(&e.summary),
+                                        vmem::Importance::Persistent(_)
+                                    )
+                                })
+                                .map(|e| e.summary)
+                                .collect();
+                            // 摻入「已做過幾個夢」讓 pick 逐夢變化（睡著身體靜止，只用座標會整夜同夢）。
+                            let pick =
+                                (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize ^ r.dream_seq as usize;
+                            vdream::pick_dream(cherished.len(), pick).map(|i| cherished[i].clone())
+                        }; // 記憶讀鎖在此釋放
+                        if let Some(core) = dream_core {
+                            let pick =
+                                (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize ^ r.dream_seq as usize;
+                            r.say = vdream::dream_bubble(&core, pick);
+                            r.say_timer = SAY_SECS;
+                            // 一個好夢，暖意延續一格（沿用既有心情補助機制，比照火邊聆聽 792）。
+                            r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                            r.dream_cooldown = vdream::DREAM_COOLDOWN_SECS;
+                            r.dream_seq = r.dream_seq.wrapping_add(1);
+                            dream_feed.push((r.name, core));
+                        }
+                        // 沒有可夢的珍貴往事 → 無夢好眠，冷卻不重置、下次擲中再試。
+                    }
                     vr::gravity_step(&world, &mut r.body, dt);
                     continue;
                 }
@@ -9927,6 +9993,13 @@ fn tick_residents(dt: f32) {
     // 記一筆動態，讓沒在線上的玩家回來也讀得到「牠昨晚睡前想著什麼」——記憶昇華進世界的日記牆。
     for (rname, summary) in &bedtime_feed {
         vfeed::append_feed("就寢", rname, &vbedtime::reflect_feed_line(summary));
+    }
+
+    // 5c-3b) 做夢 Feed（作息 × 記憶驅動行為·居民會做夢 v1，ROADMAP 805）：居民熟睡中，一段深藏
+    // 心底的珍貴往事浮成夢，記一筆動態——沒在線上的玩家回來也讀得到「牠昨晚夢見了什麼」。744 是躺下
+    // 當下有意識回味今天，本刀是睡著之後不由自主浮現的深夜之夢，記憶連睡夢裡都在悄悄活著。
+    for (rname, summary) in &dream_feed {
+        vfeed::append_feed("夢", rname, &vdream::dream_feed_line(summary));
     }
 
     // 5c-4) 晨間探友 Feed（作息 × 記憶驅動行為·晨間探友 v1，ROADMAP 745）：居民醒來讀昨晚的睡前
