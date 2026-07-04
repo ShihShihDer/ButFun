@@ -60,6 +60,7 @@ use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
 use crate::voxel_admire as vadmire;
 use crate::voxel_confide as vconfide;
 use crate::voxel_witness as vwit;
+use crate::voxel_friendtoken as vftoken;
 use crate::voxel_preference as vpref;
 use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
@@ -8641,6 +8642,49 @@ fn tick_residents(dt: f32) {
                     .add_memory(&visitor_id, &host_name, &social_mem);
                 vmem::append_memory(&entry);
             } // memory 寫鎖釋放
+            // 居民為友誼立下信物 v1（自主提案）：兩位居民**第一次**跨越老朋友門檻的這一刻
+            // （tier_changed 保證同一對只跨一次＝冪等、天然防重放），作東的居民在自家旁的
+            // 空地點起一盞「友誼的燈」作信物——這段情誼第一次在世界裡留下**持久、看得見**的
+            // 實體地標（沿用居民立牌 749 的選址＋方塊落地＋持久化路徑）。找不到合適空地就
+            // 靜默略過（不強蓋、不壓既有方塊），優雅退化。
+            if tier == vbonds::BondTier::Friend {
+                // 取作東居民 id 與當前位置（record_visit 的 host 側；讀鎖即釋、不巢狀）。
+                let host_pos: Option<(String, (i32, i32, i32))> = {
+                    let residents = hub().residents.read().unwrap();
+                    residents.iter().find(|r| r.name == host_name).map(|r| {
+                        (
+                            r.id.clone(),
+                            (r.body.x.floor() as i32, r.body.y.floor() as i32, r.body.z.floor() as i32),
+                        )
+                    })
+                }; // residents 讀鎖釋放
+                if let Some((host_id, anchor)) = host_pos {
+                    // 在作東居民腳邊挑一塊「上方為空、下方為實地」的格子（deltas 讀鎖短取即釋）。
+                    if let Some((tx, ty, tz)) = pick_nameplate_slot(anchor) {
+                        let token = vftoken::token_block(pick);
+                        // ① 落下信物方塊（deltas 寫鎖短取即釋）→ 廣播 → 持久化（重啟後仍亮著）。
+                        {
+                            let mut world = hub().deltas.write().unwrap();
+                            voxel::set_block(&mut world, tx, ty, tz, token);
+                        } // deltas 寫鎖釋放
+                        broadcast_block(tx, ty, tz, token);
+                        vbuild::append_world_block(tx, ty, tz, token as u8);
+                        // ② 動態牆 + 作東者記一筆友誼記憶（掛對方名下、社交足跡；memory 寫鎖即釋）。
+                        vfeed::append_feed(
+                            vftoken::FEED_KIND,
+                            &host_name,
+                            &vftoken::token_feed_line(&host_name, visitor_name),
+                        );
+                        {
+                            let entry = hub().memory.write().unwrap()
+                                .add_memory(&host_id, visitor_name, &vftoken::token_memory_line(visitor_name));
+                            vmem::append_memory(&entry);
+                        } // memory 寫鎖釋放
+                        // ③ 作東者冒立信物泡泡（走既有 say_updates 統一套用，比照見證圓夢的雙泡泡）。
+                        say_updates.push((host_id, vftoken::token_say_line(visitor_name, pick)));
+                    }
+                }
+            }
         }
         // ROADMAP 694：口耳相傳——老朋友到訪時，主人把自己最近一則見聞轉述給訪客，
         // 見聞從此進訪客自己的記憶庫（經朋友網絡流通，不再只留在主人腦中）。
