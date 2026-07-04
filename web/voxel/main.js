@@ -588,6 +588,89 @@ function updateFireworks(dt) {
   }
 }
 
+// ── 居民哼歌·飄浮音符 v1（ROADMAP 788）──────────────────────────────────────────
+// 前端契約：伺服器把哼歌台詞以音符符號「♪」起頭廣播進居民 say；前端偵測到 say 以 ♪ 起頭，就在
+// 該居民頭頂生成一束緩緩上飄、淡出的音符——世界第一段可見的旋律。效能鐵律：每束＝單一 THREE.Points
+// （一次 draw call、共用一張 ♪ 貼圖當點精靈），壽命約 2.6 秒後整束移除、釋放幾何；同時最多 HUM_MAX_BURSTS
+// 束（居民哼歌本就長冷卻＋低機率天然節流，另設保險上限）。陣列空時 update 零成本早退。
+const HUM_NOTES = 6;             // 每束音符粒子數（單一點雲）
+const HUM_LIFE_SECS = 2.6;      // 一束音符壽命
+const HUM_RISE_SPEED = 0.9;     // 上飄速度（格/秒）
+const HUM_DRIFT = 0.5;          // 左右輕飄幅度尺度
+const HUM_MAX_BURSTS = 6;       // 同時最多幾束（保險上限）
+// ♪ 音符點精靈貼圖（共用一張、所有音符束共用，省記憶體）。柔和暖白，融進世界不刺眼。
+function makeNoteTexture() {
+  const s = 64;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = s;
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, s, s);
+  ctx.font = "52px serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#fff3c4"; // 暖白偏金
+  ctx.fillText("♪", s / 2, s / 2 + 4);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.needsUpdate = true;
+  return tex;
+}
+const NOTE_TEX = makeNoteTexture();
+const humBursts = []; // 進行中的哼歌音符束
+
+// 在世界座標 (x,y,z) 上方生成一束緩緩上飄的音符。
+function spawnHumNotes(x, y, z) {
+  if (humBursts.length >= HUM_MAX_BURSTS) {
+    const old = humBursts.shift();
+    scene.remove(old.points);
+    old.points.geometry.dispose();
+  }
+  const pos = new Float32Array(HUM_NOTES * 3);
+  const seed = new Float32Array(HUM_NOTES); // 各音符的相位（左右飄動錯開）
+  const rise = new Float32Array(HUM_NOTES); // 各音符的上升速度倍率
+  const originY = y + 2.4;                   // 從居民頭頂稍上方起
+  for (let i = 0; i < HUM_NOTES; i++) {
+    pos[i * 3] = x + (Math.random() - 0.5) * 0.6;
+    pos[i * 3 + 1] = originY + Math.random() * 0.5;
+    pos[i * 3 + 2] = z + (Math.random() - 0.5) * 0.6;
+    seed[i] = Math.random() * Math.PI * 2;
+    rise[i] = 0.7 + Math.random() * 0.6;
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 0.85, map: NOTE_TEX, transparent: true, opacity: 1,
+    depthWrite: false, fog: true, sizeAttenuation: true, alphaTest: 0.1,
+  });
+  const points = new THREE.Points(geom, mat);
+  points.frustumCulled = false;
+  scene.add(points);
+  humBursts.push({ points, mat, seed, rise, x, z, age: 0 });
+}
+
+// 每幀推進所有音符束：上飄＋左右輕飄＋淡出，壽命到就移除、釋放幾何。陣列空即零成本早退。
+function updateHumNotes(dt) {
+  if (humBursts.length === 0) return;
+  for (let b = humBursts.length - 1; b >= 0; b--) {
+    const hb = humBursts[b];
+    hb.age += dt;
+    if (hb.age >= HUM_LIFE_SECS) {
+      scene.remove(hb.points);
+      hb.points.geometry.dispose();
+      humBursts.splice(b, 1);
+      continue;
+    }
+    const posAttr = hb.points.geometry.getAttribute("position");
+    const arr = posAttr.array;
+    for (let i = 0; i < HUM_NOTES; i++) {
+      arr[i * 3 + 1] += HUM_RISE_SPEED * hb.rise[i] * dt; // 緩緩上飄
+      arr[i * 3] += Math.sin(hb.age * 2.2 + hb.seed[i]) * HUM_DRIFT * dt; // 左右輕飄
+    }
+    const t = hb.age / HUM_LIFE_SECS;
+    hb.mat.opacity = t < 0.7 ? 1 : Math.max(0, 1 - (t - 0.7) / 0.3); // 後段淡出
+    posAttr.needsUpdate = true;
+  }
+}
+
 // 方塊用 Lambert + 頂點色（每方塊上色），對光反應但靠半球光保底不黑。
 // DoubleSide：切片① 求穩，避免任一面纏繞方向算錯被背面剔除成破洞/黑屏（perf 微讓步，之後可收回 FrontSide）。
 const opaqueMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
@@ -1290,6 +1373,8 @@ function updateResidents(list) {
       if (say) {
         setSpriteText(ent.bubble, say, true); ent.bubble.visible = true;
         chatLogAppend("res", r.name, say, r.id); // 泡泡同步進聊天窗（去重會併掉截斷版）
+        // 哼歌 v1（ROADMAP 788）：say 以音符「♪」起頭＝這是一段歌聲，於頭頂生成飄浮音符。
+        if (say.charAt(0) === "♪") spawnHumNotes(r.x, r.y, r.z);
       }
       else { ent.bubble.visible = false; }
     }
@@ -3931,6 +4016,7 @@ function update(dt) {
   updateRainbow(dt);
   updateNightSky(dt);
   updateFireworks(dt); // 乙太煙火 v1（785）：推進進行中的煙火綻放
+  updateHumNotes(dt);  // 居民哼歌 v1（788）：推進頭頂飄浮音符
   streamChunks(dt);
   sendMove(dt);
 
