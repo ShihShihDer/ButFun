@@ -250,6 +250,17 @@ pub const RECIPES: &[Recipe] = &[
         output_block: crate::voxel_berry::BUSH_UNRIPE_ID, // 75（可放置的未結果灌木）
         output_count: 1,
     },
+    // ── 木長椅 v1（自主提案切片）：木頭(5)×2 + 木板(8)×2 → 1 木長椅(79)────────────────
+    // 木頭當椅腳、木板當椅面，做一張能坐的長椅。多重集 {5:2,8:2} 獨一無二（既有 2×2 配方
+    // 無一是「2 木頭 + 2 木板」：木鋤 {5:2,8:1}、木板 {5:2}、工作台 {8:4} 皆不同），不撞任何配方。
+    // 剛好填滿 2×2 四格。擺在世界裡→白天路過的居民會停下坐上去歇腳。
+    Recipe {
+        id: "bench",
+        name_zh: "木長椅",
+        inputs: &[(5, 2), (8, 2)],  // 2 木頭 + 2 木板 → 1 木長椅（剛好放滿 2×2 四格）
+        output_block: crate::voxel_bench::BENCH_ID, // 79（可放置的家具方塊）
+        output_count: 1,
+    },
 ];
 
 /// 工作台 3×3 合成配方（需放置工作台方塊後右鍵開啟面板才能合成）。
@@ -580,6 +591,31 @@ mod tests {
     }
 
     #[test]
+    fn find_recipe_bench_in_bag_list() {
+        // 木長椅走背包 2×2（2 木頭 + 2 木板，剛好 4 格），不在工作台表。
+        let r = find_recipe("bench").expect("木長椅應在背包配方表");
+        assert!(find_workbench_recipe("bench").is_none(), "木長椅不該在工作台配方表");
+        assert_eq!(
+            r.output_block,
+            crate::voxel_bench::BENCH_ID,
+            "木長椅 id 應為 79（Block::Bench）"
+        );
+        assert_eq!(r.output_count, 1);
+        assert_eq!(r.inputs, &[(5, 2), (8, 2)], "木長椅需 2 木頭 + 2 木板");
+        // 多重集 {5:2,8:2} 獨一無二：沒有別條 2×2 配方剛好是「2 木頭 + 2 木板」。
+        for other in RECIPES.iter().filter(|o| o.id != "bench") {
+            let two_wood = other.inputs.iter().any(|&(id, n)| id == 5 && n == 2);
+            let two_plank = other.inputs.iter().any(|&(id, n)| id == 8 && n == 2);
+            let only_two_kinds = other.inputs.len() == 2;
+            assert!(
+                !(two_wood && two_plank && only_two_kinds),
+                "配方 {} 與木長椅多重集 {{5:2,8:2}} 相撞",
+                other.id
+            );
+        }
+    }
+
+    #[test]
     fn find_recipe_campfire_in_workbench_list() {
         // 營火是「營地大物」：走工作台 3×3（6 格材料）、不在背包 2×2 表。
         assert!(find_recipe("campfire").is_none(), "營火不該在背包配方表");
@@ -684,7 +720,8 @@ mod tests {
                 || r.output_block == crate::voxel_fishing::FISHING_ROD_ID // 釣竿（垂釣 v1，純物品 id=60）
                 || r.output_block == crate::voxel_bucket::BUCKET_ID // 水桶（純物品 id=71，自主提案切片）
                 || r.output_block == crate::voxel_hoe::HOE_ID // 木鋤頭（純物品 id=73，自主提案切片）
-                || r.output_block == crate::voxel_berry::BUSH_UNRIPE_ID; // 莓果叢苗（可放置方塊 id=75，自主提案切片 806）
+                || r.output_block == crate::voxel_berry::BUSH_UNRIPE_ID // 莓果叢苗（可放置方塊 id=75，自主提案切片 806）
+                || r.output_block == crate::voxel_bench::BENCH_ID; // 木長椅（可放置家具方塊 id=79，自主提案切片）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
