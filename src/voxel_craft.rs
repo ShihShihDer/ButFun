@@ -132,6 +132,16 @@ pub const RECIPES: &[Recipe] = &[
         output_block: crate::voxel_bucket::BUCKET_ID, // 71（純物品，不可放置）
         output_count: 1,
     },
+    // ── 鋤頭 v1（自主提案切片）：2 木頭 + 1 木板 → 1 木鋤頭（背包 2×2；就地把草/土開墾成農田土）──
+    // {5:2,8:1} 為獨特多重集（木鎬/木斧 {5:3,8:1}、木鏟 {5:1,8:1} 皆不相撞）；便宜好上手＝
+    // 「就地開墾」這件事一開始就伸手可得。鋤頭是純物品工具、反覆使用不耗損（比照鎬/斧）。
+    Recipe {
+        id: "hoe",
+        name_zh: "木鋤頭",
+        inputs: &[(5, 2), (8, 1)], // 2 木頭 + 1 木板 → 1 木鋤頭
+        output_block: crate::voxel_hoe::HOE_ID, // 73（純物品，不可放置）
+        output_count: 1,
+    },
     // ── 梯子 v1（ROADMAP 688）：3 木板 → 3 梯子（垂直攀爬，深礦上下自如）──────────
     Recipe {
         id: "ladder",
@@ -604,7 +614,8 @@ mod tests {
                 || r.output_block == 57 // 冰晶燈（Block::IceLantern，冰晶合成 v1）
                 || r.output_block == 66 // 告示牌（Block::Sign，告示牌 v1 ROADMAP 740）
                 || r.output_block == crate::voxel_fishing::FISHING_ROD_ID // 釣竿（垂釣 v1，純物品 id=60）
-                || r.output_block == crate::voxel_bucket::BUCKET_ID; // 水桶（純物品 id=71，自主提案切片）
+                || r.output_block == crate::voxel_bucket::BUCKET_ID // 水桶（純物品 id=71，自主提案切片）
+                || r.output_block == crate::voxel_hoe::HOE_ID; // 木鋤頭（純物品 id=73，自主提案切片）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
