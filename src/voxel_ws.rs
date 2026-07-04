@@ -7287,10 +7287,21 @@ fn tick_residents(dt: f32) {
                             if let Some((pos, gx, gy, gz, crop)) = ready {
                                 let cname = vgg::crop_name(crop);
                                 let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                                r.say = vgg::harvest_say_line(nearest_name, cname, pick)
-                                    .chars()
-                                    .take(40)
-                                    .collect();
+                                // 時令的贈禮花園 v1：收成正逢當季 → 說出「還趕上時令、多結了一份」的暖句
+                                //（回贈數量在鎖外套用事件時同樣走時令版 produce_gift_timely）。
+                                r.say = if vgg::is_timely(crop, current_season) {
+                                    vgg::harvest_say_line_timely(
+                                        nearest_name,
+                                        cname,
+                                        current_season.display_name(),
+                                        pick,
+                                    )
+                                } else {
+                                    vgg::harvest_say_line(nearest_name, cname, pick)
+                                }
+                                .chars()
+                                .take(40)
+                                .collect();
                                 r.say_timer = SAY_SECS;
                                 // 記進記憶（掛玩家名下，情誼再加溫——你的餽贈結了果、又回到你手裡）。
                                 let summary = vgg::harvest_memory_line(nearest_name, cname);
@@ -9654,8 +9665,8 @@ fn tick_residents(dt: f32) {
         if let Some(farm_e) = farm_e {
             vfarm::append_farm(&farm_e);
         }
-        // 果實入你背包（寫鎖即釋）+ 持久化。
-        let (bid, qty) = vgg::produce_gift(*crop);
+        // 果實入你背包（寫鎖即釋）+ 持久化。時令的贈禮花園 v1：正逢當季多回贈一份（812 精神）。
+        let (bid, qty) = vgg::produce_gift_timely(*crop, current_season);
         let inv_entry = { hub().inventory.write().unwrap().give(pname, bid, qty) };
         vinv::append_inv(&inv_entry);
         let new_count = hub().inventory.read().unwrap().count(pname, bid);
@@ -9673,9 +9684,14 @@ fn tick_residents(dt: f32) {
         })
         .to_string();
         let _ = hub().tx.send(std::sync::Arc::new(msg));
-        // Feed：記錄這個閉環時刻。
+        // Feed：記錄這個閉環時刻（時令則點明「正逢當季、多回贈一份」）。
         let cname = vgg::crop_name(*crop);
-        vfeed::append_feed("收成回贈", rname, &vgg::harvest_feed_line(rname, pname, cname));
+        let feed_line = if vgg::is_timely(*crop, current_season) {
+            vgg::harvest_feed_line_timely(rname, pname, cname, current_season.display_name())
+        } else {
+            vgg::harvest_feed_line(rname, pname, cname)
+        };
+        vfeed::append_feed("收成回贈", rname, &feed_line);
     }
 
     // 失效的禮物菜園誠實清帳（作物被玩家自己收成／破壞了）：移除 + 持久化，不回贈。

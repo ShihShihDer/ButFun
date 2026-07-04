@@ -30,6 +30,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::voxel_farm::{CropKind, CARROT_ID, POTATO_ID, WHEAT_ID};
+use crate::voxel_season::Season;
+use crate::voxel_timely::is_in_season;
 
 /// 持久化路徑。
 pub const GIFT_GARDEN_PATH: &str = "data/voxel_gift_gardens.jsonl";
@@ -53,6 +55,17 @@ pub fn crop_code(kind: CropKind) -> u8 {
     }
 }
 
+/// 穩定代碼 → `CropKind`（[`crop_code`] 的反函式）。未知代碼回 `None`（防呆，不 panic）。
+/// 供時令判定（[`is_timely`]）把這畦田的作物對回季節系統的 `CropKind`。
+pub fn crop_kind(code: u8) -> Option<CropKind> {
+    match code {
+        CROP_WHEAT => Some(CropKind::Wheat),
+        CROP_CARROT => Some(CropKind::Carrot),
+        CROP_POTATO => Some(CropKind::Potato),
+        _ => None,
+    }
+}
+
 /// 作物中文名（供台詞／記憶／Feed）。未知代碼回退「作物」（防呆，不 panic）。
 pub fn crop_name(code: u8) -> &'static str {
     match code {
@@ -71,6 +84,29 @@ pub fn produce_gift(code: u8) -> (u8, u32) {
         CROP_CARROT => (CARROT_ID, 1),
         CROP_POTATO => (POTATO_ID, 2),
         _ => (WHEAT_ID, 1),
+    }
+}
+
+/// 時令的贈禮花園 v1：這畦田收成時是否正逢它那種作物的時令季節。
+///
+/// **單一真相來源**：時令對應（🥕春／🌾夏／🥔秋／❄️冬無時令）沿用 811 的
+/// [`crate::voxel_timely::is_in_season`]，本模組不另抄一份對照表。未知代碼回 `false`。
+pub fn is_timely(code: u8, season: Season) -> bool {
+    crop_kind(code).is_some_and(|k| is_in_season(k, season))
+}
+
+/// 這畦田收成、回贈給玩家的果實（物品 id, 數量）——**時令版**。
+///
+/// 承接 812「收在時令的作物多收一份」的精神，把時令豐收接進「贈禮花園回贈」這條線：
+/// 居民收成她替你種下的那畦田時，若正逢該作物時令，就在基礎產量上**多回贈一份**
+/// （複用 [`crate::voxel_bounty::BOUNTY_EXTRA`]，與玩家親手收成的當季紅利同一份量）。
+/// **只獎不罰**：非時令回基礎產量、不減產；你的餽贈走了一圈回來，還因節氣而更沉甸甸。
+pub fn produce_gift_timely(code: u8, season: Season) -> (u8, u32) {
+    let (bid, base) = produce_gift(code);
+    if is_timely(code, season) {
+        (bid, base + crate::voxel_bounty::BOUNTY_EXTRA)
+    } else {
+        (bid, base)
     }
 }
 
@@ -103,6 +139,19 @@ pub fn harvest_say_line(player: &str, crop: &str, pick: usize) -> String {
     lines[pick % lines.len()].clone()
 }
 
+/// 收成時**正逢時令**的暖句（四句輪替）——她收成回贈時特地提一句「還趕上了當季」，
+/// 讓「多回贈的那一份」在世界裡被說出口、有感。`season`＝當前季節名（如「夏」）。
+pub fn harvest_say_line_timely(player: &str, crop: &str, season: &str, pick: usize) -> String {
+    let who = if player.is_empty() { "你" } else { player };
+    let lines = [
+        format!("{who}送的{crop}種子熟啦，還正趕上{season}的時令、多結了一份，都給你～"),
+        format!("你看這{crop}！趕在{season}的當季收，沉甸甸多了一把，全還給你！"),
+        format!("多虧{who}的種子，這畦{crop}又逢{season}時令、收得特別多——拿去、拿去！"),
+        format!("{crop}正當{season}的時令，你的種子結的果比平時還多一份，該有你一份～"),
+    ];
+    lines[pick % lines.len()].clone()
+}
+
 /// 居民記憶摘要（掛玩家名下，`🌾` 前綴供日記／回想歸類）。
 pub fn harvest_memory_line(player: &str, crop: &str) -> String {
     let who = if player.is_empty() { "你" } else { player };
@@ -113,6 +162,12 @@ pub fn harvest_memory_line(player: &str, crop: &str) -> String {
 pub fn harvest_feed_line(rname: &str, player: &str, crop: &str) -> String {
     let who = if player.is_empty() { "有人" } else { player };
     format!("{rname}收成了{who}送的種子長成的{crop}，把第一把收穫回贈給{who}～")
+}
+
+/// 動態牆一行——**時令版**（收成正逢當季、多回贈一份）。
+pub fn harvest_feed_line_timely(rname: &str, player: &str, crop: &str, season: &str) -> String {
+    let who = if player.is_empty() { "有人" } else { player };
+    format!("{rname}收成了{who}送的{crop}，正逢{season}時令、多回贈了一份給{who}～")
 }
 
 /// 一畦禮物菜園的側資料。
@@ -293,6 +348,73 @@ mod tests {
         assert_eq!(produce_gift(CROP_WHEAT), (WHEAT_ID, 1));
         assert_eq!(produce_gift(CROP_CARROT), (CARROT_ID, 1));
         assert_eq!(produce_gift(CROP_POTATO), (POTATO_ID, 2)); // 馬鈴薯量大
+    }
+
+    // ── 時令的贈禮花園 v1（時令回贈加成）────────────────────────────────────
+    #[test]
+    fn crop_kind_is_inverse_of_crop_code() {
+        // crop_kind 與 crop_code 互逆，三種作物皆對得回去。
+        assert_eq!(crop_kind(CROP_WHEAT), Some(CropKind::Wheat));
+        assert_eq!(crop_kind(CROP_CARROT), Some(CropKind::Carrot));
+        assert_eq!(crop_kind(CROP_POTATO), Some(CropKind::Potato));
+        assert_eq!(crop_kind(99), None); // 未知代碼防呆
+        for k in [CropKind::Wheat, CropKind::Carrot, CropKind::Potato] {
+            assert_eq!(crop_kind(crop_code(k)), Some(k));
+        }
+    }
+
+    #[test]
+    fn is_timely_follows_811_season_map() {
+        // 沿用 811 時令對應：胡蘿蔔→春、小麥→夏、馬鈴薯→秋、冬無時令。
+        assert!(is_timely(CROP_CARROT, Season::Spring));
+        assert!(is_timely(CROP_WHEAT, Season::Summer));
+        assert!(is_timely(CROP_POTATO, Season::Autumn));
+        // 錯季不算時令。
+        assert!(!is_timely(CROP_WHEAT, Season::Spring));
+        assert!(!is_timely(CROP_CARROT, Season::Summer));
+        // 冬天四種作物皆非時令。
+        for c in [CROP_WHEAT, CROP_CARROT, CROP_POTATO] {
+            assert!(!is_timely(c, Season::Winter));
+        }
+        // 未知代碼永遠非時令（防呆）。
+        assert!(!is_timely(99, Season::Spring));
+    }
+
+    #[test]
+    fn produce_gift_timely_adds_one_in_season_only() {
+        use crate::voxel_bounty::BOUNTY_EXTRA;
+        // 時令：基礎產量 + 當季紅利（與 812 同一份量）。
+        assert_eq!(
+            produce_gift_timely(CROP_WHEAT, Season::Summer),
+            (WHEAT_ID, 1 + BOUNTY_EXTRA)
+        );
+        assert_eq!(
+            produce_gift_timely(CROP_POTATO, Season::Autumn),
+            (POTATO_ID, 2 + BOUNTY_EXTRA)
+        );
+        // 非時令：只獎不罰——照基礎產量、不減產。
+        assert_eq!(produce_gift_timely(CROP_WHEAT, Season::Winter), (WHEAT_ID, 1));
+        assert_eq!(
+            produce_gift_timely(CROP_CARROT, Season::Autumn),
+            (CARROT_ID, 1)
+        );
+        // 未知代碼：退回小麥基礎（沿用 produce_gift 防呆），且永不加成。
+        assert_eq!(produce_gift_timely(99, Season::Spring), (WHEAT_ID, 1));
+    }
+
+    #[test]
+    fn timely_lines_embed_crop_and_season_no_panic() {
+        // 時令暖句與 Feed 皆嵌作物名與季節、空玩家名退「你/有人」、pick 溢出安全。
+        for pick in 0..12usize {
+            let say = harvest_say_line_timely("諾娃", "小麥", "夏天", pick);
+            assert!(say.contains("小麥") && say.contains("夏天"));
+        }
+        let say_empty = harvest_say_line_timely("", "胡蘿蔔", "春天", 0);
+        assert!(say_empty.contains("你"));
+        let feed = harvest_feed_line_timely("露娜", "馬鈴薯", "阿諾", "秋天");
+        assert!(feed.contains("馬鈴薯") && feed.contains("秋天") && feed.contains("阿諾"));
+        let feed_empty = harvest_feed_line_timely("露娜", "", "小麥", "夏天");
+        assert!(feed_empty.contains("有人"));
     }
 
     // ── 座標鍵 ────────────────────────────────────────────────────────────
