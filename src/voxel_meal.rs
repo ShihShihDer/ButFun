@@ -23,6 +23,7 @@
 //! 居民」這一拍另設每連線冷卻（[`SHARE_COOLDOWN_SECS`]）防囤糧狂吃洗版居民泡泡 / 動態牆。
 //! 零 migration、零新美術；料理判定沿用既有食物 id 常數（單一真相，不重複一份清單）。
 
+use crate::voxel_berry::JAM_ID;
 use crate::voxel_craft::STEW_ID;
 use crate::voxel_farm::{BAKED_POTATO_ID, BREAD_ID};
 use crate::voxel_fishing::COOKED_FISH_ID;
@@ -43,11 +44,25 @@ pub const SHARE_COOLDOWN_SECS: f32 = 45.0;
 ///   - `COOKED_FISH_ID`=63（生魚→烤魚）
 ///   - `BAKED_POTATO_ID`=64（生馬鈴薯→烤地薯）
 ///   - `STEW_ID`=67（胡蘿蔔＋馬鈴薯＋小麥→野菜暖湯）
+///   - `JAM_ID`=78（莓果→莓果醬，世界第一種甜點；ROADMAP 808）
 pub fn is_edible_dish(item_id: u8) -> bool {
     matches!(
         item_id,
-        BREAD_ID | COOKED_FISH_ID | BAKED_POTATO_ID | STEW_ID
+        BREAD_ID | COOKED_FISH_ID | BAKED_POTATO_ID | STEW_ID | JAM_ID
     )
+}
+
+/// 玩家「莓果醬是甜點、不是正餐」——享用它時的暖意回饋句與其他熱食**刻意不同**：
+/// 不強調「熱騰騰」，而是甜味與小確幸（莓果醬 v1 ROADMAP 808，4 句輪替、≤40 字）。
+/// 呼叫時機：`item_id == JAM_ID`（其餘熟食走 [`savor_self_line`]）。
+pub fn savor_sweet_line(pick: usize) -> String {
+    const LINES: &[&str] = &[
+        "舀一口自己熬的莓果醬，酸甜在舌尖化開，嘴角忍不住揚起來。",
+        "甜滋滋的莓果醬……熬了這麼久果然值得，這一刻小小的幸福好滿足。",
+        "莓園的收成熬成了一罐莓果醬，慢慢品著，心也跟著甜了起來。",
+        "抹一口莓果醬含在嘴裡，酸酸甜甜的，療癒得整個人都放鬆了。",
+    ];
+    LINES[pick % LINES.len()].to_string()
 }
 
 /// 玩家咬下一口自己煮的熱食時、畫面浮出的暖意回饋句（4 句輪替、≤40 字）。
@@ -97,13 +112,27 @@ mod tests {
         assert!(is_edible_dish(COOKED_FISH_ID), "烤魚可享用");
         assert!(is_edible_dish(BAKED_POTATO_ID), "烤地薯可享用");
         assert!(is_edible_dish(STEW_ID), "野菜暖湯可享用");
+        assert!(is_edible_dish(JAM_ID), "莓果醬（甜點）可享用");
         // 生食 / 原料 / 非食物一律不可「享用手藝」。
+        assert!(!is_edible_dish(77), "莓果（生）是原料、不是一道菜");
         assert!(!is_edible_dish(49), "胡蘿蔔（生）不是一道煮好的菜");
         assert!(!is_edible_dish(53), "生馬鈴薯不是一道煮好的菜");
         assert!(!is_edible_dish(61), "生小魚不是一道煮好的菜");
         assert!(!is_edible_dish(18), "小麥顆粒是原料、不是菜");
         assert!(!is_edible_dish(5), "木頭不是食物");
         assert!(!is_edible_dish(0), "空氣不是食物");
+    }
+
+    #[test]
+    fn savor_sweet_line_non_empty_bounded_and_rotates() {
+        // 甜點享用句：非空、≤40 字、提到「莓果醬」的甜味療癒感，且會輪替。
+        for pick in 0..8 {
+            let s = savor_sweet_line(pick);
+            assert!(!s.is_empty(), "pick={pick} 甜點暖句不得為空");
+            assert!(s.contains("莓果醬"), "pick={pick} 甜點暖句該提到莓果醬：{s}");
+            assert!(s.chars().count() <= 40, "pick={pick} 甜點暖句 ≤40 字不破框：{s}");
+        }
+        assert_ne!(savor_sweet_line(0), savor_sweet_line(1), "相鄰 pick 應輪到不同句");
     }
 
     #[test]

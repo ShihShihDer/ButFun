@@ -74,6 +74,10 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         65 => "樹苗",
         67 => "野菜暖湯",
         68 => "乙太煙火",
+        // 莓果叢 v1（806）：莓果是採收掉落的純物品、可餽贈居民（806 漏補此名，808 順手補上）。
+        77 => "莓果",
+        // 莓果醬 v1（808）：莓果熬成的甜點熟食。
+        78 => "莓果醬",
         _ => "物品",
     }
 }
@@ -107,12 +111,41 @@ pub fn treasure_gift_thanks_line(player_name: &str, affinity: usize, pick: usize
     }
 }
 
-/// 是否為「食物」類禮物（麵包、胡蘿蔔、馬鈴薯、小魚、乙太魚、烤魚、烤地薯、野菜暖湯）——居民會給特別溫暖的回應。
+/// 是否為「食物」類禮物（麵包、胡蘿蔔、馬鈴薯、小魚、乙太魚、烤魚、烤地薯、野菜暖湯、莓果醬）——居民會給特別溫暖的回應。
 pub fn is_food_gift(block_id: u8) -> bool {
-    // BREAD_ID / CARROT_ID / POTATO_ID / FISH_ID / AETHER_FISH_ID / COOKED_FISH_ID / BAKED_POTATO_ID / STEW_ID(67)
+    // BREAD_ID / CARROT_ID / POTATO_ID / FISH_ID / AETHER_FISH_ID / COOKED_FISH_ID / BAKED_POTATO_ID / STEW_ID(67) / JAM_ID(78)
     block_id == 19 || block_id == 49 || block_id == 53
         || block_id == 61 || block_id == 62 || block_id == 63 || block_id == 64
-        || block_id == 67
+        || block_id == 67 || block_id == crate::voxel_berry::JAM_ID
+}
+
+/// 莓果醬（JAM_ID=78）專屬道謝台詞——乙太方界第一種**甜點**，居民對甜食格外雀躍，
+/// 像收到糖的孩子。比一般食物更歡欣、帶著對「甜」的驚喜（莓果醬 v1 ROADMAP 808）。
+/// 呼叫時機：`item_id == JAM_ID`。`pick` 同其他道謝函式由呼叫端提供，確定性不走 random。
+/// `player_name` 空字串 = 訪客模式，回不帶名字的句池。
+pub fn jam_thanks_line(player_name: &str, affinity: usize, pick: usize) -> String {
+    if affinity == 0 || player_name.is_empty() {
+        let pool: &[&str] = &[
+            "哇……甜甜的莓果醬！我從沒嚐過這麼甜的東西，謝謝你！",
+            "這是莓果熬的醬嗎？光聞就好甜，我的心都要融化了，謝謝你。",
+            "莓果醬耶！甜滋滋的，你是特地熬給我的嗎？我好開心。",
+        ];
+        pool[pick % pool.len()].to_string()
+    } else if affinity <= 2 {
+        let pool: &[&str] = &[
+            "{name}，你把莓果熬成了甜甜的醬帶給我！我要小口小口地捨不得吃完，謝謝你。",
+            "{name}！一罐甜滋滋的莓果醬，這份甜我一嚐就記住了，謝謝你想著我。",
+            "哇，{name}親手熬的莓果醬！甜得像小時候的糖，我開心得不得了。",
+        ];
+        pool[pick % pool.len()].replace("{name}", player_name)
+    } else {
+        let pool: &[&str] = &[
+            "{name}，你從莓園採了莓果、又慢慢熬成這罐甜醬……這份甜我會一直記在心上，謝謝你。",
+            "每次{name}來都帶著甜意——這回是你親手熬的莓果醬，甜到我心底最軟的地方，謝謝你。",
+            "{name}！一罐要守著爐火慢慢熬的莓果醬，這是我收過最甜的一份心意，我好幸福。",
+        ];
+        pool[pick % pool.len()].replace("{name}", player_name)
+    }
 }
 
 /// 烤魚（COOKED_FISH_ID=63）專屬道謝台詞——比一般食物禮物更歡欣，因為那是玩家親手
@@ -386,6 +419,33 @@ mod tests {
     fn item_name_unknown_fallback() {
         assert_eq!(item_name_zh(200), "物品");
         assert_eq!(item_name_zh(0), "物品"); // Air 不送
+    }
+
+    #[test]
+    fn item_name_berry_and_jam() {
+        // 806 漏補的莓果名、808 新增的莓果醬名——不再 fallback 成「物品」。
+        assert_eq!(item_name_zh(77), "莓果");
+        assert_eq!(item_name_zh(crate::voxel_berry::JAM_ID), "莓果醬");
+    }
+
+    #[test]
+    fn jam_is_food_gift() {
+        // 莓果醬是食物禮物（居民給溫暖回應）；生莓果不算「一道菜」但本身可送禮。
+        assert!(is_food_gift(crate::voxel_berry::JAM_ID), "莓果醬應為食物禮物");
+    }
+
+    #[test]
+    fn jam_thanks_line_rotates_and_embeds_name() {
+        // 陌生 / 訪客：不含名字、非空、無殘留佔位符、提到甜或莓果醬。
+        let s = jam_thanks_line("", 0, 0);
+        assert!(!s.is_empty());
+        assert!(!s.contains("{name}"));
+        // 友人：帶名字、輪替。
+        let a = jam_thanks_line("露娜", 3, 0);
+        let b = jam_thanks_line("露娜", 3, 1);
+        assert!(a.contains("露娜") && b.contains("露娜"), "友人句應嵌玩家名");
+        assert_ne!(a, b, "相鄰 pick 應輪到不同句");
+        assert!(!a.contains("{name}"), "佔位符要被替換：{a}");
     }
 
     #[test]

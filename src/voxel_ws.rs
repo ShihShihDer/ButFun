@@ -4443,6 +4443,9 @@ async fn handle_socket(
                 } else if item_id == vcraft::STEW_ID {
                     // 野菜暖湯是玩家湊齊三種親手種的作物、在工作台拌煮的一鍋料理，用專屬台詞（最觸動）。
                     vgift::stew_thanks_line(&name, affinity, pick)
+                } else if item_id == crate::voxel_berry::JAM_ID {
+                    // 莓果醬是乙太方界第一種甜點，居民對甜食格外雀躍，用專屬台詞（莓果醬 v1 ROADMAP 808）。
+                    vgift::jam_thanks_line(&name, affinity, pick)
                 } else if vgift::is_food_gift(item_id) {
                     vgift::food_gift_thanks_line(&name, affinity, pick)
                 } else {
@@ -5207,7 +5210,12 @@ async fn handle_socket(
                 let dish = vgift::item_name_zh(item_id);
                 let pick = (vfarm::now_secs() as usize).wrapping_add(item_id as usize);
                 // 3) 玩家自享的暖意回饋（純函式）＋回 inv_update / eat_ok。
-                let cozy = vmeal::savor_self_line(dish, pick);
+                //    莓果醬是甜點、不是熱食，用甜味專屬暖句；其餘熟食走「熱騰騰」暖句（莓果醬 v1 ROADMAP 808）。
+                let cozy = if item_id == crate::voxel_berry::JAM_ID {
+                    vmeal::savor_sweet_line(pick)
+                } else {
+                    vmeal::savor_self_line(dish, pick)
+                };
                 let remain = hub().inventory.read().unwrap().count(&name, item_id);
                 let _ = out_tx.send(Message::Text(serde_json::json!({
                     "t": "inv_update", "block_id": item_id, "count": remain,

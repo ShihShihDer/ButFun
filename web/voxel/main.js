@@ -117,6 +117,9 @@ const BELL = 74;
 // 世界第一種多年生、可反覆採收、不必重種的作物。莓果叢苗既是背包物品也是可放置方塊（item_id==block_id）；
 // 結果的莓果叢是伺服器狀態方塊（玩家不放置）；莓果是純物品（採收掉落、可餽贈居民）。
 const BERRY_BUSH = 75, BERRY_BUSH_RIPE = 76, BERRY = 77;
+// 莓果醬 v1（自主提案切片 808）——熔爐煨煮：莓果(77)×3 → 1 莓果醬(78)。
+// 乙太方界第一種「甜點」熟食：可自己享用（EDIBLE_DISHES）或餽贈居民（居民對甜食格外雀躍）。純物品不可放置。
+const JAM = 78;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -213,6 +216,7 @@ const COLOR = {
   [BERRY_BUSH]:      [0.22, 0.44, 0.22], // 莓果叢苗——墨綠灌木，尚未結果
   [BERRY_BUSH_RIPE]: [0.55, 0.16, 0.30], // 結果的莓果叢——綴滿莓紅，可採收
   [BERRY]:           [0.72, 0.14, 0.32], // 莓果——鮮甜深莓紅
+  [JAM]:             [0.60, 0.10, 0.26], // 莓果醬——比生莓果更濃稠暗沉的熬煮莓紅（罐裝甜點感）
 };
 
 const DEBUG = location.search.includes("debug");
@@ -1946,7 +1950,7 @@ function trySendGift() {
 
 // ── 親手煮的暖食自己也能享用 v1（779）────────────────────────────────────────
 // 只有「自己親手煮的熟食」吃得下（對齊後端 voxel_meal::is_edible_dish：麵包/烤魚/烤地薯/野菜暖湯）。
-const EDIBLE_DISHES = new Set([BREAD, COOKED_FISH, BAKED_POTATO, STEW]);
+const EDIBLE_DISHES = new Set([BREAD, COOKED_FISH, BAKED_POTATO, STEW, JAM]);
 
 /** 從背包挑一份可享用的熟食（存量最多者、同量取 id 小者，確定性）。無則回 null。 */
 function eatPickItem(inv) {
@@ -2770,6 +2774,7 @@ const BLOCK_NAME = {
   [SIGN]: "告示牌",
   // 莓果叢 v1（自主提案切片 806）
   [BERRY_BUSH]: "莓果叢苗", [BERRY_BUSH_RIPE]: "結果的莓果叢", [BERRY]: "莓果",
+  [JAM]: "莓果醬",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -4847,6 +4852,8 @@ const FURNACE_RECIPES_JS = [
   // 烤魚 v1：1 生小魚 → 1 烤魚（把垂釣漁獲烤成居民最愛的美味贈禮）
   { id: "smelt_fish",  name: "烤魚",         inputs: [[FISH, 1]],                    output_block: COOKED_FISH, out_count: 1 },
   { id: "smelt_potato",name: "烤地薯",       inputs: [[POTATO, 1]],                  output_block: BAKED_POTATO, out_count: 1 },
+  // 莓果醬 v1（808）：3 莓果 → 1 莓果醬（把多年生莓園的莓果小火慢熬成甜點）
+  { id: "smelt_jam",   name: "莓果醬",       inputs: [[BERRY, 3]],                   output_block: JAM,          out_count: 1 },
 ];
 
 // furnaceGrid[0..2]：3 格輸入，0 代表空格，非零代表 block_id。
