@@ -9687,7 +9687,17 @@ fn tick_residents(dt: f32) {
                     let inv = hub().res_inv.read().unwrap();
                     inv.get(&rid).and_then(|b| b.get(&goal.block_id)).copied().unwrap_or(0) >= 1
                 }; // res_inv 讀鎖釋放
-                if !bag_has_goal {
+                // 退避中的目標（#972）本輪完全不碰——不重用、不發明。否則一個老是失敗的
+                // 已學會技能會每個 build tick 被重用、卡在同一步無限鬼打牆（線上實見
+                // `reuse=true step=0` 每 ~9 秒重試）。退避到期（見 invent_backoff 倒數）後可再試。
+                let under_backoff = {
+                    let residents = hub().residents.read().unwrap();
+                    residents
+                        .iter()
+                        .find(|r| r.id == rid)
+                        .map_or(false, |r| r.invent_backoff.contains_key(&goal.block_id))
+                }; // residents 讀鎖釋放
+                if !bag_has_goal && !under_backoff {
                     let known: Option<(String, Vec<vinvent::PrimStep>)> = {
                         let inv = hub().invented.read().unwrap();
                         inv.find_for(&rid, goal.block_id)
@@ -10562,48 +10572,51 @@ fn finish_invent_run(
             step = run.step_idx, plan = %vinvent::steps_summary(&run.steps),
             "發明/重用計畫未完成（逾時/缺料/合成失敗/放不了）——step 指到失敗那一步"
         );
+        // 退避計數（#972 防鬼打牆）：**發明與重用兩條失敗路徑共用**。連敗達門檻同一目標
+        // → 進退避、換方向探索。重用一個老是失敗的已學會技能（多半是身邊暫時沒料）同樣會
+        // 鬼打牆，先前只有首次發明會退避、重用不會，導致 `reuse=true step=0` 每 ~9 秒無限
+        // 重試——本次把重用也納入退避止血。
+        let entered_backoff = {
+            let mut residents = hub().residents.write().unwrap();
+            if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                let count = r.invent_fail_counts.entry(run.goal_block).or_insert(0);
+                if vinvent::note_fail_should_backoff(count) {
+                    r.invent_backoff
+                        .insert(run.goal_block, vinvent::INVENT_BACKOFF_SECS);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }; // residents 寫鎖釋放
+
         if !run.reuse {
-            // 失敗的序列不存；記一次教訓（她記得試過、下次換路子）。
+            // 首次發明失敗的序列不存；記一次教訓（她記得試過、下次換路子）。
+            // 重用失敗多半是環境暫時問題（先前註解原意），不記進記憶、只靠退避止血。
             let entry = {
                 let mut mem = hub().memory.write().unwrap();
                 mem.add_memory(rid, vdes::SELF_SPARK, &vinvent::fail_lesson(&run.goal_name))
             }; // memory 寫鎖釋放
             vmem::append_memory(&entry);
+        }
 
-            // 退避計數（#972 防鬼打牆）：連敗 N 次同一目標 → 進退避、換方向探索。
-            let entered_backoff = {
-                let mut residents = hub().residents.write().unwrap();
-                if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
-                    let count = r.invent_fail_counts.entry(run.goal_block).or_insert(0);
-                    *count += 1;
-                    if *count >= vinvent::INVENT_BACKOFF_THRESHOLD {
-                        *count = 0; // 重置計數，退避到期後可重試
-                        r.invent_backoff
-                            .insert(run.goal_block, vinvent::INVENT_BACKOFF_SECS);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            }; // residents 寫鎖釋放
-
-            if entered_backoff {
-                // 進退避：Feed 一句有人味的，並冒泡提示換目標。
-                vfeed::append_feed(
-                    "發明退避",
-                    rname,
-                    &vinvent::backoff_switch_feed(&run.goal_name),
-                );
-                say_updates.push((rid.to_string(), vinvent::backoff_switch_line(&run.goal_name)));
-                tracing::info!(
-                    resident = %rid, goal = %run.goal_name,
-                    "好奇心退避：連敗達門檻，暫停嘗試此目標"
-                );
-            } else {
-                say_updates.push((rid.to_string(), "唔……這次沒成，再想想。".to_string()));
-            }
+        if entered_backoff {
+            // 進退避：Feed 一句有人味的，並冒泡提示換目標（發明/重用皆適用）。
+            vfeed::append_feed(
+                "發明退避",
+                rname,
+                &vinvent::backoff_switch_feed(&run.goal_name),
+            );
+            say_updates.push((rid.to_string(), vinvent::backoff_switch_line(&run.goal_name)));
+            tracing::info!(
+                resident = %rid, goal = %run.goal_name, reuse = run.reuse,
+                "好奇心退避：連敗達門檻，暫停嘗試此目標"
+            );
+        } else if !run.reuse {
+            // 首次發明未達門檻的失敗照舊冒一句「再想想」；重用未達門檻則安靜路過（沿用原意）。
+            say_updates.push((rid.to_string(), "唔……這次沒成，再想想。".to_string()));
         }
     }
 }
