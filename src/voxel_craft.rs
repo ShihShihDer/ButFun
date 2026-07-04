@@ -351,6 +351,18 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
         output_block: crate::voxel_compost::FERTILIZER_ID,
         output_count: 2,
     },
+    // ── 乙太營火 v1（自主提案切片）：玩家親手蓋的一處發光火堆 ──────────────────────
+    // 3 石頭(3) + 2 木頭(5) + 1 煤礦(20) → 1 營火(CAMPFIRE_ID=70)。石頭圍一圈爐灶、
+    // 木頭當柴、煤礦引火＝一眼就是座火堆。6 格材料超出背包 2×2 需工作台，{3:3,5:2,20:1}
+    // 為唯一多重集（不與既有工作台配方相撞）；可放置的發光方塊，放下即照亮營地、夜裡
+    // 吸引路過居民駐足圍暖（voxel_ws 的 Place/tick_residents 處理）。
+    Recipe {
+        id: "campfire",
+        name_zh: "營火",
+        inputs: &[(3, 3), (5, 2), (20, 1)],  // 3 石頭 + 2 木頭 + 1 煤礦 → 1 營火
+        output_block: crate::voxel_campfire::CAMPFIRE_ID,
+        output_count: 1,
+    },
 ];
 
 /// 熔爐冶煉配方（需放置熔爐方塊後右鍵開啟冶煉面板才能使用）。
@@ -493,6 +505,16 @@ mod tests {
     }
 
     #[test]
+    fn find_recipe_campfire_in_workbench_list() {
+        // 營火是「營地大物」：走工作台 3×3（6 格材料）、不在背包 2×2 表。
+        assert!(find_recipe("campfire").is_none(), "營火不該在背包配方表");
+        let r = find_workbench_recipe("campfire").unwrap();
+        assert_eq!(r.output_block, 70, "營火 id 應為 70（Block::Campfire）");
+        assert_eq!(r.output_count, 1);
+        assert_eq!(r.inputs, &[(3, 3), (5, 2), (20, 1)], "營火需 3 石頭 + 2 木頭 + 1 煤礦");
+    }
+
+    #[test]
     fn find_recipe_returns_none_for_unknown() {
         assert!(find_recipe("unknown_xyz").is_none());
         assert!(find_recipe("").is_none());
@@ -586,7 +608,8 @@ mod tests {
                 || r.output_block == 59                // 乙太燈（Block::AetherLamp，乙太礦脈 v1）
                 || r.output_block == STEW_ID           // 野菜暖湯（純物品，多食材料理 ROADMAP 778）
                 || r.output_block == crate::voxel_firework::FIREWORK_ID // 乙太煙火（純物品 id=68，ROADMAP 785）
-                || r.output_block == crate::voxel_compost::FERTILIZER_ID; // 乙太沃肥（純物品 id=69，ROADMAP 789）
+                || r.output_block == crate::voxel_compost::FERTILIZER_ID // 乙太沃肥（純物品 id=69，ROADMAP 789）
+                || r.output_block == crate::voxel_campfire::CAMPFIRE_ID; // 乙太營火（可放置發光方塊 id=70，自主提案切片）
             assert!(
                 ok,
                 "工作台配方「{}」產出 id={} 超出範圍",
