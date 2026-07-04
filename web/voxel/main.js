@@ -105,6 +105,9 @@ const SIGN = 66;
 // 手持空水桶對準水源＝舀水（→滿水桶72）；手持滿水桶對準空格＝倒出一格永久來源水（→空水桶）。
 // 接上既有水流模擬與鄰水加速種田，玩家第一次能親手搬水、把荒地改造成綠洲水田。
 const BUCKET = 71, WATER_BUCKET = 72;
+// 鋤頭 v1（自主提案切片）——背包：2 木頭 + 1 木板 → 1 木鋤頭(73)；純物品不可放置。
+// 手持鋤頭對準草地／泥土＝就地開墾成農田土（省去挖土搬工作台再放回的繞路）；與水桶成對。
+const HOE = 73;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -192,6 +195,8 @@ const COLOR = {
   // 水桶 v1（自主提案切片）——空桶是冷灰的鐵皮桶色；滿桶帶一泓水藍，一眼分得出裝了水（純物品不放置）
   [BUCKET]:         [0.58, 0.60, 0.64],
   [WATER_BUCKET]:   [0.28, 0.52, 0.82],
+  // 鋤頭 v1（自主提案切片）——木柄土棕色，一眼是把農具（純物品不放置，只在物品欄顯示）
+  [HOE]:            [0.62, 0.44, 0.24],
 };
 
 const DEBUG = location.search.includes("debug");
@@ -2665,6 +2670,8 @@ const BLOCK_NAME = {
   [FERTILIZER]: "乙太沃肥",
   // 水桶 v1（自主提案切片）
   [BUCKET]: "水桶", [WATER_BUCKET]: "滿水桶",
+  // 鋤頭 v1（自主提案切片）
+  [HOE]: "木鋤頭",
   // 植樹造林 v1（ROADMAP 738）
   [SAPLING]: "樹苗",
   // 告示牌 v1（ROADMAP 740）
@@ -3109,6 +3116,16 @@ function placeAtTarget() {
         (py === Math.floor(player.y) || py === Math.floor(player.y + 1))) return null;
     ws.send(JSON.stringify({ t: "bucket_pour", x: px, y: py, z: pz }));
     return { x: px, y: py, z: pz };
+  }
+  // 鋤頭 v1（自主提案切片）：手持鋤頭對準草地／泥土 → 就地開墾成農田土。目標是命中方塊本身
+  //   （不偏移到面外側，比照沃肥）；非草／土靜默忽略——後端仍會權威複驗目標可鋤＋背包真持有鋤頭。
+  if (selectedBlock() === HOE) {
+    const hitRaw = getRaw(target.bx, target.by, target.bz);
+    if (hitRaw === GRASS || hitRaw === DIRT) {
+      ws.send(JSON.stringify({ t: "hoe_till", x: target.bx, y: target.by, z: target.bz }));
+      return { x: target.bx, y: target.by, z: target.bz };
+    }
+    return null;
   }
   // 種子的特殊種植動作：目標是農田土本身（不偏移到面外側）。
   // 第二種作物 v1：胡蘿蔔種子選中時種下胡蘿蔔；第三種作物 v1：馬鈴薯種子選中時種下馬鈴薯，
@@ -3774,6 +3791,14 @@ function connect() {
       // 水桶 v1：用不了（太遠 / 目標非水源或不可倒 / 背包沒有對應水桶）。
       showErr(m.reason || "現在沒法用水桶");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "hoe_ok") {
+      // 鋤頭 v1（自主提案切片）：開墾成功——浮出回饋句（農田土由 block 廣播即時更新）。
+      showMsg(m.say || "🪏 開墾好了一畦田～");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2200);
+    } else if (m.t === "hoe_fail") {
+      // 鋤頭 v1：開墾不了（太遠 / 目標非草地泥土 / 背包沒有鋤頭）。
+      showErr(m.reason || "現在沒法開墾");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "return_gift") {
       // 居民回禮 v1（ROADMAP 667）：只有當事玩家才顯示提示並更新背包。
       if (m.player === myName) {
@@ -4256,6 +4281,8 @@ const RECIPES_JS = [
   { id: "sign", name: "告示牌", inputs: [[PLANK, 2]], output_block: SIGN, out_count: 1 },
   // 水桶 v1（自主提案切片）：3 鐵錠 → 1 水桶（舀水引水灌溉乾田；鐵錠需熔爐，故不必再過工作台）
   { id: "bucket", name: "水桶", inputs: [[IRON_INGOT, 3]], output_block: BUCKET, out_count: 1 },
+  // 鋤頭 v1（自主提案切片）：2 木頭 + 1 木板 → 1 木鋤頭（就地把草/土開墾成農田土；與水桶成對）
+  { id: "hoe", name: "木鋤頭", inputs: [[WOOD, 2], [PLANK, 1]], output_block: HOE, out_count: 1 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────

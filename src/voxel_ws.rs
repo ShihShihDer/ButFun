@@ -101,6 +101,7 @@ use crate::voxel_stargaze as vstar;
 use crate::voxel_firework as vfw;
 use crate::voxel_compost as vcompost;
 use crate::voxel_bucket as vbucket;
+use crate::voxel_hoe as vhoe;
 use crate::voxel_tool as vtool;
 use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
@@ -1798,6 +1799,11 @@ enum ClientMsg {
     /// 目標可倒 + 觸及範圍內 → 該格放下一格永久來源水（既有水流模擬自然漫開）、滿水桶換回空水桶。
     #[serde(rename = "bucket_pour")]
     BucketPour { x: i32, y: i32, z: i32 },
+    /// 鋤頭開墾 v1（自主提案切片）：手持木鋤頭對準一格草地／泥土 → 伺服器驗持有鋤頭 +
+    /// 目標可鋤（草／土）+ 觸及範圍內 → 該格就地翻成農田土（`Block::FarmSoil`），回 `hoe_ok`。
+    /// 鋤頭是工具、反覆使用不耗損（比照鎬／斧採集不消耗工具），只驗持有、不消耗。
+    #[serde(rename = "hoe_till")]
+    HoeTill { x: i32, y: i32, z: i32 },
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -3921,6 +3927,45 @@ async fn handle_socket(
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({ "t": "bucket_ok", "say": vbucket::pour_ok_line(pick) })
                         .to_string(),
+                ));
+            }
+            // ── 鋤頭開墾 v1（自主提案切片）：就地把草／土翻成農田土 ─────────────────────
+            Ok(ClientMsg::HoeTill { x, y, z }) => {
+                // 鎖序：players 讀位置 → delta 讀目標 → inventory 讀驗持有 → delta 寫設農田土，
+                // 循序取放不巢狀（守 prod 死鎖鐵律）。鋤頭是工具不耗損，只驗持有、不消耗。
+                let Some((px, py, pz)) = player_pos(my_id) else {
+                    continue;
+                };
+                if !voxel::in_reach(px, py, pz, x, y, z) {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "hoe_fail", "reason": "太遠了" }).to_string(),
+                    ));
+                    continue;
+                }
+                // 目標必須是草地或泥土——後端權威判定（前端不自報合法性·濫用防護）。
+                let target = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
+                if !vhoe::is_tillable(target as u8) {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "hoe_fail", "reason": "這裡沒法開墾" }).to_string(),
+                    ));
+                    continue;
+                }
+                // 背包必須真持有鋤頭才生效（前端自報手持工具 id，伺服器必查·防偽報白嫖）。
+                if hub().inventory.read().unwrap().count(&name, vhoe::HOE_ID) < 1 {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "hoe_fail", "reason": "手上沒有鋤頭" }).to_string(),
+                    ));
+                    continue;
+                }
+                // 就地翻成農田土（delta 寫鎖即釋；session-only，比照一般放置不寫 world_blocks log）。
+                {
+                    let mut world = hub().deltas.write().unwrap();
+                    voxel::set_block(&mut world, x, y, z, Block::FarmSoil);
+                }
+                broadcast_block(x, y, z, Block::FarmSoil);
+                let pick = rand::random::<u64>() as usize;
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "hoe_ok", "say": vhoe::till_ok_line(pick) }).to_string(),
                 ));
             }
             // ── 居民贈禮 v1（ROADMAP 660）────────────────────────────────────────
