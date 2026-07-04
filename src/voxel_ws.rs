@@ -108,6 +108,7 @@ use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_weather as vweather;
 use crate::voxel_season as vseason;
 use crate::voxel_timely as vtimely;
+use crate::voxel_bounty as vbounty;
 use crate::voxel_stargaze as vstar;
 use crate::voxel_firework as vfw;
 use crate::voxel_compost as vcompost;
@@ -2686,6 +2687,39 @@ async fn handle_socket(
                                 })
                                 .to_string(),
                             ));
+                        }
+
+                        // 時令豐收 v1（ROADMAP 812）：收割「當季時令」的成熟作物 → 額外多得一份果實
+                        // （附加掉落，比照上面 738 砍葉附加掉樹苗的慣例）。與 811「種在時令長得快」對成
+                        // 「種在時令長得快／收在時令收得多」一對。只獎不罰：非時令照常收成、不減產。
+                        // season 讀鎖即釋、不巢狀（delta 寫鎖此處已釋放，循序取鎖、守死鎖鐵律）。
+                        if let Some(kind) = vbounty::crop_kind_of_mature_block(target_block) {
+                            let season = {
+                                let day = hub().world_time.read().unwrap().days_elapsed();
+                                vseason::season_for_day(day)
+                            };
+                            let extra = vbounty::harvest_bonus(kind, season);
+                            if extra > 0 {
+                                let cid = vbounty::crop_item_id(kind);
+                                let entry = hub().inventory.write().unwrap().give(&name, cid, extra);
+                                vinv::append_inv(&entry);
+                                let new_count = hub().inventory.read().unwrap().count(&name, cid);
+                                let _ = out_tx.try_send(Message::Text(
+                                    serde_json::json!({
+                                        "t": "inv_update", "block_id": cid, "count": new_count
+                                    })
+                                    .to_string(),
+                                ));
+                                // 當季鮮採的暖回饋（前端 toast；欄位 additive，舊客戶端忽略即可）。
+                                let _ = out_tx.try_send(Message::Text(
+                                    serde_json::json!({
+                                        "t": "bounty",
+                                        "line": vbounty::bounty_line(kind, season),
+                                        "block_id": cid
+                                    })
+                                    .to_string(),
+                                ));
+                            }
                         }
 
                         // 植樹造林 v1（ROADMAP 738）：砍天然樹葉（Leaves）除了原本掉種子，
