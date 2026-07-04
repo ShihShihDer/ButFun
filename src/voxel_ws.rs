@@ -107,6 +107,7 @@ use crate::voxel_epithet_sign as vepisign;
 use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_weather as vweather;
 use crate::voxel_season as vseason;
+use crate::voxel_timely as vtimely;
 use crate::voxel_stargaze as vstar;
 use crate::voxel_firework as vfw;
 use crate::voxel_compost as vcompost;
@@ -4043,6 +4044,27 @@ async fn handle_socket(
                 // 記錄農地計時 + 持久化（farm 寫鎖即釋、append 在鎖外）。
                 let farm_e = { hub().farm.write().unwrap().plant(x, y, z, vfarm::now_secs(), kind) };
                 vfarm::append_farm(&farm_e);
+                // 時令作物 v1（ROADMAP 811）：種在該作物的時令季節 → 種下當下就靠 nudge_growth
+                // 給一截 head-start（沿用居民照料 753／沃肥 789 同一套機制），比平時更快成熟。
+                // 非時令不減速、不損資料（只獎不罰、療癒優先）。season 讀鎖即釋、不巢狀。
+                let timely_line: Option<String> = {
+                    let season = {
+                        let day = hub().world_time.read().unwrap().days_elapsed();
+                        vseason::season_for_day(day)
+                    };
+                    if vtimely::is_in_season(kind, season) {
+                        let base = vfarm::effective_grow_secs(kind, false);
+                        let boost = vtimely::head_start_secs(base);
+                        if let Some(nudge_e) =
+                            { hub().farm.write().unwrap().nudge_growth(x, y, z, boost) }
+                        {
+                            vfarm::append_farm(&nudge_e); // head-start 也持久化，重啟仍算數
+                        }
+                        Some(vtimely::in_season_line(kind, season))
+                    } else {
+                        None
+                    }
+                };
                 // 持久化種子消耗。
                 vinv::append_inv(&seed_e);
                 // 水耕檢查（短讀鎖即釋）：下雨時視同水耕（下雨天氣 v1，ROADMAP 700）。
@@ -4064,7 +4086,9 @@ async fn handle_socket(
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({
                         "t": "plant_ok", "x": x, "y": y, "z": z,
-                        "irrigated": irrigated, "carrot": is_carrot, "potato": is_potato
+                        "irrigated": irrigated, "carrot": is_carrot, "potato": is_potato,
+                        // 時令作物 v1（811）：種在時令季節時附一句暖回饋（非時令為 null，向後相容舊客戶端）。
+                        "timely": timely_line
                     }).to_string(),
                 ));
                 // 玩家里程碑 v1（ROADMAP 724）：人生第一次種下種子。

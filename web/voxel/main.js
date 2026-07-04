@@ -3844,8 +3844,9 @@ function connect() {
         : m.potato
         ? (m.irrigated ? "💧 水耕！馬鈴薯將在 60 秒後成熟 🥔" : "已種下馬鈴薯種子！等 120 秒就成熟，收成量大 🥔")
         : (m.irrigated ? "💧 水耕！種子將在 45 秒後成熟 🌾" : "已種下種子！等 90 秒小麥就成熟 🌾");
-      showMsg(plantMsg);
-      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2500);
+      // 時令作物 v1（811）：種在該作物的時令季節時，後端附一句暖回饋（m.timely），接在種植提示後。
+      showMsg(m.timely ? (plantMsg + "　" + m.timely) : plantMsg);
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, m.timely ? 3600 : 2500);
     } else if (m.t === "plant_fail") {
       // 種田 v1：種植失敗（非農田土 / 沒種子 / 太遠），短暫提示。
       showErr("種植失敗：" + (m.reason || "未知原因"));
