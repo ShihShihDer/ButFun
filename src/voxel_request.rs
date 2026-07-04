@@ -1,0 +1,211 @@
+//! 乙太方界·居民會反過來拜託你幫個小忙 v1（voxel-request）。
+//!
+//! **北極星（PLAN_ETHERVOX item 3「記憶→行為·你的互動有後果」× 玩家遊玩「交織點」）**：
+//! 至今「請人幫忙採集」永遠是**單向**的——玩家對居民下令（`voxel_fetch`「幫我採木頭」、
+//! `voxel_directed_task`「幫我把這裡整平」），居民照做。居民自己有渴望（`voxel_desires`）、
+//! 會蓋家、會掏心（781），卻從不會**反過來開口拜託你**：「我這陣子想弄點東西，手邊剛好缺塊
+//! 木頭，你要是採到了，能不能勻我一塊呀？」這一刀補上那個對稱的另一半——**夠面熟的居民偶爾會
+//! 主動向你討一樣好採集的小材料**；你去把它採來、當禮物送給她（走既有 `Gift` 送禮管線），她會
+//! 特別歡欣地道謝、把「你在我開口時幫了我」這份人情**牢牢記進對你的記憶**，交情因此更深一層。
+//!
+//! 這是乙太方界第一次讓「採集」這條純人類樂趣，和「居民的需要」直接接上：你不再只是為自己攢材料，
+//! 也第一次為了**幫一位居民的忙**而去採集——人類的樂趣與 AI 的生活，在一塊木頭上交織。
+//!
+//! **與既有的定位區隔**：
+//! - `voxel_fetch`（幫我採集）是**玩家命令居民**去採；本刀是**居民拜託玩家**去採，方向相反。
+//! - `voxel_desires` / 掏心（781）是居民**對自己渴望的表達**；本刀是她**對你提出一個你做得到的
+//!   具體請求**，且**你的回應真的改變你們的交情**（送到＝人情＋好感；沒送＝過段時間她自己作罷）。
+//! - 送對禮物（722，`classify_item_desire`）是「猜中她心願」的驚喜；本刀是她**明講**要什麼、你照
+//!   單去採——一個靠猜、一個靠她開口。
+//!
+//! **純邏輯層**：是否開口（[`should_post_request`]）、討什麼（[`pick_request`]）、把請求包成一句話
+//! （[`request_line`]）、送到後的道謝（[`fulfil_thanks_line`]）與記進記憶的摘要（[`fulfil_memory_line`]）
+//! 全是確定性純函式，零 LLM、零鎖、零 IO。冷卻計時 / 好感讀取 / 記憶寫入 / 送禮判定全在 `voxel_ws.rs`，
+//! 沿用既有招呼那條已驗證的短鎖循序。
+//!
+//! **成本 / 濫用防護**：討的材料只從一份**固定白名單**（[`REQUESTABLE`]，都是好採的基礎資源）裡選，
+//! 句子全走固定模板，**永不夾帶玩家原話**（無注入 / NSFW 風險）；只對好感達 [`REQUEST_MIN_AFFINITY`]
+//! 的玩家開口、配合每位居民 [`REQUEST_COOLDOWN_SECS`] 的長冷卻＋「同時只掛一個未了請求」，稀有有份量、
+//! 天然防洗版、也防「靠不停幫小忙刷好感」（一個請求只回饋一次、送到即清）。零 migration、零新協議欄位、
+//! 零新美術、FPS 零影響（純後端、僅招呼時序偶發）。
+
+/// 一樣居民可能向你討的材料：物品 id ＋ 面向玩家的中文名（留 i18n 空間）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequestItem {
+    /// 物品 / 方塊 id（與 `voxel_gift::item_name_zh` 對照的同一套 id）。
+    pub item_id: u8,
+    /// 面向玩家顯示的材料名。
+    pub name: &'static str,
+}
+
+/// 居民會向你討的材料白名單——刻意只放「玩家隨手採集就有」的基礎資源，讓「幫這個忙」門檻低、
+/// 暖而不擾（不會討稀有／需長途跋涉的東西，那會變成負擔而非療癒）。id 與 `item_name_zh` 一致。
+pub const REQUESTABLE: [RequestItem; 4] = [
+    RequestItem { item_id: 5, name: "木頭" },  // 砍樹就有
+    RequestItem { item_id: 3, name: "石頭" },  // 挖礦就有
+    RequestItem { item_id: 20, name: "煤礦" }, // 挖礦就有
+    RequestItem { item_id: 4, name: "沙" },    // 河邊 / 沙漠就有
+];
+
+/// 居民願意向玩家開口討東西的最低好感（＝關於這位玩家的記憶筆數）。設 2——比全然陌生（0~1）
+/// 多一點面熟才好意思拜託人幫忙，但門檻低於掏心（781 的 3），因為「討塊木頭」比「說心事」更隨性。
+pub const REQUEST_MIN_AFFINITY: usize = 2;
+
+/// 同一位居民再次開口討東西的冷卻（秒）。設得長（300s＝5 分鐘）——拜託人幫忙是偶爾為之的事，
+/// 不是每次靠近都伸手要，稀有才有份量，也把「靠幫小忙刷好感」的速率天然夾死。
+pub const REQUEST_COOLDOWN_SECS: f32 = 300.0;
+
+/// 請求泡泡的字元上限（與泡泡框上限一致，超出截斷不破框）。
+pub const REQUEST_SAY_MAX_CHARS: usize = 40;
+
+/// 判斷此刻是否要主動向玩家開口討東西：好感夠（≥ [`REQUEST_MIN_AFFINITY`]）＋ 冷卻到期 ＋
+/// 手邊**沒有**尚未了結的請求（同時只掛一個，天然防洗版）＋ 過了機率門檻。
+///
+/// 純函式、確定性（機率骰由呼叫端傳入）。「討什麼」由 [`pick_request`] 另外決定。
+pub fn should_post_request(
+    affinity: usize,
+    cooldown_ok: bool,
+    has_open_request: bool,
+    roll: f32,
+    chance: f32,
+) -> bool {
+    affinity >= REQUEST_MIN_AFFINITY && cooldown_ok && !has_open_request && roll < chance
+}
+
+/// 依 `pick` 在白名單裡確定性選一樣材料來討。永不 panic（對長度取模）。
+pub fn pick_request(pick: usize) -> RequestItem {
+    REQUESTABLE[pick % REQUESTABLE.len()]
+}
+
+/// 把「我想討 {材料}」包成一句主動開口的話，依 `pick` 在幾組固定語氣模板間確定性輪替。
+/// 整句以字元為單位截到 [`REQUEST_SAY_MAX_CHARS`] 內，永不破泡泡框、永不回空。
+pub fn request_line(item_name: &str, pick: usize) -> String {
+    const TEMPLATES: [&str; 5] = [
+        "欸，你要是採到{}，能不能勻我一點呀？",
+        "跟你討個小忙——手邊剛好缺塊{}呢。",
+        "我這陣子想弄點東西，正缺{}，你有的話…？",
+        "不好意思，能幫我帶塊{}來嗎？我這正需要。",
+        "要是你路上採到{}，記得留一份給我喔！",
+    ];
+    let line = TEMPLATES[pick % TEMPLATES.len()].replacen("{}", item_name, 1);
+    line.chars().take(REQUEST_SAY_MAX_CHARS).collect()
+}
+
+/// 開口討東西時，同步在城鎮動態牆留一行（第三人稱旁白，讓不在場 / 回來的玩家也讀到「某居民
+/// 正想要某材料」）。面向玩家字串、留 i18n 空間。
+pub fn request_feed_line(resident: &str, item_name: &str) -> String {
+    format!("{resident}正想要一些{item_name}，盼著有人能勻她一點。")
+}
+
+/// 玩家真的把居民開口討的材料送到時的道謝台詞（比一般贈禮更歡欣，因為「你在我開口時幫了我」）。
+/// 依 `pick` 確定性輪替；截到框內、永不回空。
+pub fn fulfil_thanks_line(player: &str, item_name: &str, pick: usize) -> String {
+    const TEMPLATES: [&str; 4] = [
+        "哇，你真的幫我把{item}帶來了！{player}，太謝謝你了，我記著這份人情。",
+        "{player}你居然記得我要{item}——這份心意我可放在心上了，謝謝你！",
+        "正需要{item}的時候你就來了，{player}，有你這樣的朋友真好。",
+        "你替我把{item}採來啦？{player}，你這個忙我會一直記得的。",
+    ];
+    let line = TEMPLATES[pick % TEMPLATES.len()]
+        .replace("{item}", item_name)
+        .replace("{player}", player);
+    line.chars().take(REQUEST_SAY_MAX_CHARS).collect()
+}
+
+/// 請求被滿足後，記進居民「關於這位玩家」的一筆記憶摘要（第一人稱、episodic）。
+/// 停在「你在我開口時幫了我」這個情節層——累積好感（記憶筆數），供日後回想 / 日記昇華。
+pub fn fulfil_memory_line(player: &str, item_name: &str) -> String {
+    format!("我開口向{player}討{item_name}，對方真的替我採來了——這份幫忙我記在心裡。")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_post_needs_affinity_cooldown_noopen_and_roll() {
+        // 四條件齊備才開口。
+        assert!(should_post_request(REQUEST_MIN_AFFINITY, true, false, 0.0, 0.5));
+        assert!(should_post_request(10, true, false, 0.49, 0.5));
+        // 好感不足 → 否決。
+        assert!(!should_post_request(REQUEST_MIN_AFFINITY - 1, true, false, 0.0, 0.5));
+        // 冷卻未到 → 否決。
+        assert!(!should_post_request(10, false, false, 0.0, 0.5));
+        // 已有未了請求 → 否決（同時只掛一個）。
+        assert!(!should_post_request(10, true, true, 0.0, 0.5));
+        // 骰子未過門檻 → 否決。
+        assert!(!should_post_request(10, true, false, 0.5, 0.5));
+        assert!(!should_post_request(10, true, false, 0.9, 0.5));
+    }
+
+    #[test]
+    fn pick_request_is_deterministic_and_in_whitelist() {
+        for pick in 0..20 {
+            let r = pick_request(pick);
+            // 選出的一定在白名單內。
+            assert!(REQUESTABLE.iter().any(|w| *w == r), "選出的材料必須在白名單");
+            // 同 pick → 同結果（確定性）。
+            assert_eq!(pick_request(pick), r);
+        }
+        // 覆蓋整個白名單（0..len 各對到不同一項）。
+        let picked: Vec<u8> = (0..REQUESTABLE.len()).map(|i| pick_request(i).item_id).collect();
+        for w in &REQUESTABLE {
+            assert!(picked.contains(&w.item_id), "白名單每項都應被選到：{}", w.name);
+        }
+    }
+
+    #[test]
+    fn whitelist_ids_unique_and_named() {
+        for (i, a) in REQUESTABLE.iter().enumerate() {
+            assert!(!a.name.is_empty(), "材料須有名字");
+            for b in &REQUESTABLE[i + 1..] {
+                assert_ne!(a.item_id, b.item_id, "白名單 id 不得重複");
+            }
+        }
+    }
+
+    #[test]
+    fn request_line_names_item_and_fits_frame() {
+        for pick in 0..10 {
+            let line = request_line("木頭", pick);
+            assert!(!line.is_empty(), "請求句不該為空");
+            assert!(
+                line.chars().count() <= REQUEST_SAY_MAX_CHARS,
+                "請求句不該破泡泡框：{line}"
+            );
+            assert!(!line.contains("{}"), "佔位符應已被材料名替換：{line}");
+        }
+        assert!(request_line("石頭", 0).contains("石頭"), "請求句應點名材料");
+        // 同 pick、同材料 → 同一句（確定性）。
+        assert_eq!(request_line("煤礦", 3), request_line("煤礦", 3));
+    }
+
+    #[test]
+    fn fulfil_thanks_names_player_item_and_fits_frame() {
+        for pick in 0..8 {
+            let line = fulfil_thanks_line("諾瓦", "木頭", pick);
+            assert!(!line.is_empty());
+            assert!(
+                line.chars().count() <= REQUEST_SAY_MAX_CHARS,
+                "道謝句不該破泡泡框：{line}"
+            );
+            assert!(!line.contains("{item}") && !line.contains("{player}"), "佔位符應已替換：{line}");
+        }
+        let l = fulfil_thanks_line("諾瓦", "石頭", 0);
+        assert!(l.contains("諾瓦") && l.contains("石頭"), "道謝應點名玩家與材料");
+    }
+
+    #[test]
+    fn fulfil_memory_names_player_and_item() {
+        let m = fulfil_memory_line("諾瓦", "煤礦");
+        assert!(m.contains("諾瓦"), "記憶應含玩家名");
+        assert!(m.contains("煤礦"), "記憶應含材料名");
+        assert!(!m.is_empty());
+    }
+
+    #[test]
+    fn feed_line_names_resident_and_item() {
+        let f = request_feed_line("露娜", "沙");
+        assert!(f.contains("露娜") && f.contains("沙"), "動態牆應點名居民與材料");
+    }
+}
