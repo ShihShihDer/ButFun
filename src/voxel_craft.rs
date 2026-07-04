@@ -460,6 +460,16 @@ pub const FURNACE_RECIPES: &[Recipe] = &[
         output_block: 64,
         output_count: 1,
     },
+    Recipe {
+        id: "smelt_jam",
+        name_zh: "莓果醬",
+        // 3 莓果（BERRY_ID=77）→ 1 莓果醬（JAM_ID=78）。把多年生莓園採來的莓果放進熔爐
+        // 小火慢熬，凝成一罐甜滋滋的果醬——乙太方界第一種「甜點」熟食，補上 806 莓果的
+        // 下游用途，接起「莓園→熬煮→自己享用／餽贈」的療癒循環（比照 smelt_fish 之於垂釣）。
+        inputs: &[(crate::voxel_berry::BERRY_ID, 3)],
+        output_block: crate::voxel_berry::JAM_ID,
+        output_count: 1,
+    },
 ];
 
 /// 依 id 找背包配方（2×2，找不到回 None）。
@@ -700,12 +710,13 @@ mod tests {
             );
             assert!(r.output_count > 0, "工作台配方「{}」產出數量應 > 0", r.id);
         }
-        // 熔爐冶煉配方產出 id（8~17 建材、22=IronIngot、63=烤魚、64=烤地薯 食物）
+        // 熔爐冶煉配方產出 id（8~17 建材、22=IronIngot、63=烤魚、64=烤地薯、78=莓果醬 食物）
         for r in FURNACE_RECIPES {
             let ok = (r.output_block >= 8 && r.output_block <= 17)
                 || r.output_block == 22
                 || r.output_block == 63
-                || r.output_block == 64;
+                || r.output_block == 64
+                || r.output_block == crate::voxel_berry::JAM_ID;
             assert!(
                 ok,
                 "熔爐配方「{}」產出 id={} 超出範圍",
@@ -802,6 +813,28 @@ mod tests {
     }
 
     #[test]
+    fn smelt_jam_boils_berries_into_jam() {
+        // 熔爐把 3 莓果（77）慢熬成 1 莓果醬（78）——莓園→熬煮→享用／餽贈循環的中間一環
+        // （莓果醬 v1 ROADMAP 808）。用常數對齊 voxel_berry，避免魔法數字漂移。
+        let r = find_furnace_recipe("smelt_jam").unwrap();
+        assert_eq!(
+            r.inputs,
+            &[(crate::voxel_berry::BERRY_ID, 3)],
+            "需 3 莓果（BERRY_ID=77）"
+        );
+        assert_eq!(
+            r.output_block,
+            crate::voxel_berry::JAM_ID,
+            "產出莓果醬（JAM_ID=78）"
+        );
+        assert_eq!(r.output_count, 1);
+        // 莓果醬配方只在熔爐表（要放置熔爐才能熬），不在背包 / 工作台表。
+        assert!(find_recipe("smelt_jam").is_none());
+        assert!(find_workbench_recipe("smelt_jam").is_none());
+        assert!(find_any_recipe("smelt_jam").is_some());
+    }
+
+    #[test]
     fn smelt_glass_better_yield_than_bag() {
         // 熔爐 2沙→3玻璃（1.5:1）> 背包 2沙→1玻璃（0.5:1）
         let furnace = find_furnace_recipe("smelt_glass").unwrap();
@@ -853,6 +886,7 @@ mod tests {
         store.give("旅人", 18, 10); // WHEAT（veggie_stew 暖湯配方用，小麥）
         store.give("旅人", 65, 10); // SAPLING（berry_bush 莓果叢苗配方用，樹苗，ROADMAP 806）
         store.give("旅人", 14, 10); // SEEDS（berry_bush 莓果叢苗配方用，種子，ROADMAP 806）
+        store.give("旅人", crate::voxel_berry::BERRY_ID, 10); // BERRY（smelt_jam 莓果醬配方用，ROADMAP 808）
         // 火把配方：1 木頭(5) + 1 煤礦(20) → 4 火把（Wood/CoalOre 已加，數量足夠）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);

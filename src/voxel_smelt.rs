@@ -34,6 +34,9 @@ pub fn smelt_secs(recipe_id: &str) -> u64 {
     match recipe_id {
         // 食物：把垂釣 / 種田的收成烤成佳餚——最快，讓「釣到→烤來吃」的回饋不用等太久。
         "smelt_fish" | "smelt_potato" => 12,
+        // 莓果醬：小火慢熬凝成一罐甜點，比烤魚 / 烤地薯稍久一點（熬煮的意象要多點耐心），
+        // 但仍在「趁空去採一輪莓果就熬好」的舒服節奏內（莓果醬 v1 ROADMAP 808）。
+        "smelt_jam" => 15,
         // 鐵：礦石熔成鐵錠是最「硬」的冶煉，煨煮最久，換來的鐵錠也最珍貴。
         "smelt_iron" => 30,
         // 建材（拋光石 / 玻璃 / 石磚）與其它：中等。
@@ -241,6 +244,11 @@ mod tests {
         assert!(smelt_secs("unknown") > 0);
         // 兩種食物同節奏。
         assert_eq!(smelt_secs("smelt_fish"), smelt_secs("smelt_potato"));
+        // 莓果醬（808）：正值、比烤魚稍久（熬煮多點耐心），但仍比鐵快得多。
+        let jam = smelt_secs("smelt_jam");
+        assert!(jam > 0, "莓果醬煨煮秒數應為正值");
+        assert!(jam > food, "莓果醬熬煮應比烤魚稍久：{jam} > {food}");
+        assert!(jam < iron, "莓果醬仍是甜點小食、應比鐵快：{jam} < {iron}");
     }
 
     #[test]
