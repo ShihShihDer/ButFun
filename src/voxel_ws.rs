@@ -57,6 +57,7 @@ use crate::voxel_humming as vhum;
 use crate::voxel_bench as vbench;
 use crate::voxel_bench_chat as vbenchchat;
 use crate::voxel_anglerest as vangler;
+use crate::voxel_raincover as vrain;
 use crate::voxel_campfire as vcamp;
 use crate::voxel_campfire_tale as vtale;
 use crate::voxel_bell as vbell;
@@ -459,6 +460,9 @@ struct VoxelResident {
     /// 臨水垂釣冷卻倒數（秒，居民臨水垂釣 v1）：一次坐下垂釣後設 [`vangler::REST_COOLDOWN_SECS`]，
     /// 歸零前不再垂釣——白天路過水邊偶爾坐下釣一竿、不狂刷垂釣泡泡。各居民初始錯開。純記憶體、重啟歸零。
     angler_cooldown: f32,
+    /// 雨天躲雨冷卻倒數（秒，雨天葉傘避雨 v1）：一次停步躲雨後設 [`vrain::SHELTER_COOLDOWN_SECS`]，
+    /// 歸零前不再躲——一場雨裡偶爾停步避一會兒、不狂刷避雨泡泡。各居民初始錯開。純記憶體、重啟歸零。
+    rain_shelter_cooldown: f32,
     /// 正在應召循鐘聲趕來（集會鐘 v1）：玩家敲響集會鐘時，範圍內閒著的居民設此欄位，
     /// 移動鏈據此朝鐘走去、抵達即聚攏反應後清空；逾時（[`vbell::SUMMON_TIMEOUT_SECS`]）自動放棄。
     /// 純記憶體、重啟歸零。
@@ -1344,6 +1348,8 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             pending_bench_reply: None,
             // 居民臨水垂釣 v1：首次垂釣冷卻各自錯開，避免白天同一 tick 一群人一起開釣。
             angler_cooldown: vangler::fish_cd_offset(i),
+            // 雨天葉傘避雨 v1：首次躲雨冷卻各自錯開，避免一下雨同一 tick 一群人齊聲說避雨話。
+            rain_shelter_cooldown: vrain::shelter_cd_offset(i),
             pending_tale_reply: None,
             // 集會鐘 v1：入場沒有正在應召的鐘；應召冷卻歸零（一出生就聽得到第一次鐘聲）。
             summon: None,
@@ -6352,6 +6358,10 @@ fn tick_residents(dt: f32) {
     // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在水邊才記交情，否則 None 只上 Feed。
     // (居民 id, 居民名, 水邊玩家名 Option, pick)。
     let mut angler_events: Vec<(String, &'static str, Option<String>, usize)> = Vec::new();
+    // 雨天避雨事件（雨天葉傘避雨 v1）：某居民下雨時停步躲一會兒時鎖內收集；記憶寫＋Feed 在居民鎖
+    // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在近旁才記交情，否則 None 只上 Feed。
+    // (居民 id, 居民名, 近旁玩家名 Option, pick)。
+    let mut rain_shelter_events: Vec<(String, &'static str, Option<String>, usize)> = Vec::new();
     // 集會鐘 v1：某位應召的居民走到鐘邊聚攏時，鎖內收集事件；「你敲鐘召我來」的交情記憶＋Feed
     // 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。(居民 id, 居民名, 敲鐘者名)。
     let mut bell_gather_events: Vec<(String, &'static str, String)> = Vec::new();
@@ -7712,6 +7722,10 @@ fn tick_residents(dt: f32) {
             if r.angler_cooldown > 0.0 {
                 r.angler_cooldown -= dt;
             }
+            // 雨天葉傘避雨 v1：躲雨冷卻遞減（純記憶體、每 tick 一次）。
+            if r.rain_shelter_cooldown > 0.0 {
+                r.rain_shelter_cooldown -= dt;
+            }
             // 飢餓時的守望相助 v1（ROADMAP 800）：分食冷卻遞減（純記憶體、每 tick 一次）。
             if r.share_meal_cooldown > 0.0 {
                 r.share_meal_cooldown -= dt;
@@ -8520,6 +8534,48 @@ fn tick_residents(dt: f32) {
                         r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                         angler_events.push((r.id.clone(), r.name, None, pick));
                     }
+                }
+            }
+
+            // 雨天葉傘避雨 v1（voxel_raincover）：下雨時，閒著、醒著、不在朝聖/遠行的居民偶爾**停下腳步、
+            // 摘片闊葉舉頭頂躲一會兒雨**（設 wait_timer 原地駐足＝這一拍的關鍵新行為：雨第一次改變居民
+            //「做什麼」而非只「說什麼」）、心情因這點遮蔽安穩一格；你也在近旁（SHELTER_PLAYER_RADIUS 內）時
+            // 招呼你共避一葉傘、把「和你一起避雨」記進交情。三閘（下雨＋冷卻＋機率）＋長冷卻＝天然節流。
+            // 鎖序：純讀居民自身欄位＋鎖前備好的 `raining` 快照，記憶寫＋Feed 走鎖外 `rain_shelter_events`
+            //（守 prod 死鎖鐵律）。與雨天反應（701·雨剛下說一句）、彩虹（780·雨停望天）刻意區隔。
+            if raining
+                && r.say.is_empty()
+                && !r.asleep
+                && r.rain_shelter_cooldown <= 0.0
+                && r.pilgrimage.is_none()
+                && r.expedition.is_none()
+                && vrain::should_shelter(true, 0.0, rand::random::<f32>(), vrain::SHELTER_CHANCE)
+            {
+                r.rain_shelter_cooldown = vrain::SHELTER_COOLDOWN_SECS;
+                // 躲雨＝停下移動、原地在葉傘下躲一會兒（移動分支讀到 wait_timer > 0 就讓她駐足）。
+                r.wait_timer = r.wait_timer.max(vrain::SHELTER_HUDDLE_SECS);
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                // 近旁最近的登入玩家（SHELTER_PLAYER_RADIUS 內、名非空）→ 避雨話點你名、招呼共避、記交情。
+                let near_player = nearest_player_info(r.body.x, r.body.z, &player_pts)
+                    .filter(|(d2, pname)| {
+                        *d2 < vrain::SHELTER_PLAYER_RADIUS * vrain::SHELTER_PLAYER_RADIUS
+                            && !pname.is_empty()
+                    })
+                    .map(|(_, pname)| pname.to_string());
+                if let Some(pname) = near_player {
+                    r.say = vrain::shelter_bubble_with_player(&pname, pick)
+                        .chars()
+                        .take(vrain::SAY_CHARS)
+                        .collect();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    rain_shelter_events.push((r.id.clone(), r.name, Some(pname), pick));
+                } else {
+                    // 沒有玩家在近旁（或只有訪客）：獨自躲雨念句通用避雨話，上 Feed、不寫玩家交情。
+                    r.say = vrain::shelter_bubble(pick).to_string();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    rain_shelter_events.push((r.id.clone(), r.name, None, pick));
                 }
             }
 
@@ -10181,6 +10237,21 @@ fn tick_residents(dt: f32) {
                 .add_memory(rid, pname, &vangler::angler_memory_line(pname)); // 記憶寫鎖即釋
         }
         vfeed::append_feed(vangler::FEED_KIND, rname, &vangler::angler_feed_line(rname));
+    }
+
+    // 雨天葉傘避雨 v1：雨中停步躲一會兒的事件落地——玩家在近旁時把「和你一起擠在葉傘下避雨」記進交情
+    //（掛玩家名下、日後浮進日記），無論有無玩家都上動態牆。記憶寫鎖短取即釋、Feed 走 IO，皆在 residents
+    // 鎖釋放後（守死鎖鐵律）。比照長椅歇腳／臨水垂釣：避雨是輕鬆日常小拍，記憶只進記憶庫（in-memory、
+    // 重啟歸零），不額外持久化。
+    for (rid, rname, pname_opt, _pick) in &rain_shelter_events {
+        if let Some(pname) = pname_opt {
+            hub()
+                .memory
+                .write()
+                .unwrap()
+                .add_memory(rid, pname, &vrain::shelter_memory_line(pname)); // 記憶寫鎖即釋
+        }
+        vfeed::append_feed(vrain::FEED_KIND, rname, &vrain::shelter_feed_line(rname));
     }
 
     // 集會鐘 v1：應召走到鐘邊聚攏的居民，把「你敲鐘召我來」這份互動記進交情（掛敲鐘者名下、
