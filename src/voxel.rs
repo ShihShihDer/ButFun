@@ -213,6 +213,15 @@ pub enum Block {
     /// 與營火（被動、夜間、居民路過才圍暖）刻意區隔。實心、可放置、破壞回收自身。
     /// id 74：60~73 已被純物品/方塊（釣具/煙火/沃肥/營火/水桶/鋤頭）佔用，74 是首個空號。
     Bell = 74,
+    /// 莓果叢苗（莓果叢 v1，自主提案切片 806）——背包 2×2 合成：樹苗(65) + 種子(14)×2 → 1 莓果叢苗。
+    /// 種在土地上（草/土/沙/雪/農田土之上），約 100 秒後結出莓果（→ `BerryBushRipe`）。
+    /// 既是背包物品也是可放置的未結果灌木方塊（item_id == block_id，比照樹苗 65）。實心、破壞回收自身。
+    /// id 75：0~74 皆已用（純物品/方塊），75 是首個空號。
+    BerryBush = 75,
+    /// 結果的莓果叢（莓果叢 v1）——由 `tick_berry` 從莓果叢苗長成，伺服器維護的狀態方塊，玩家不能手動放置。
+    /// 採收（Break）→ 莓果(77)×2 ＋ **就地回退成莓果叢苗(75)** ＋ 重啟計時：多年生、可反覆採收，不必重種。
+    /// id 76。
+    BerryBushRipe = 76,
 }
 
 impl Block {
@@ -293,6 +302,8 @@ impl Block {
             66 => Some(Block::Sign),
             70 => Some(Block::Campfire),
             74 => Some(Block::Bell),
+            75 => Some(Block::BerryBush),
+            76 => Some(Block::BerryBushRipe),
             _ => None,
         }
     }
@@ -309,7 +320,8 @@ impl Block {
             Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed | Block::Bed |
             Block::Cactus | Block::Snow | Block::IceCrystal | Block::IceLantern |
             Block::AetherOre | Block::AetherLamp | Block::Sapling | Block::Sign |
-            Block::Campfire | Block::Bell
+            Block::Campfire | Block::Bell | Block::BerryBush
+            // BerryBushRipe 是伺服器維護的狀態方塊（由 tick_berry 長成），玩家不能手動放置。
         )
     }
 }
@@ -1242,6 +1254,20 @@ mod tests {
         assert_eq!(Block::Bell as u8, 74);
         assert!(Block::Bell.is_placeable(), "集會鐘應可放置");
         assert!(Block::Bell.is_solid(), "集會鐘應為實心方塊");
+    }
+
+    #[test]
+    fn berry_bush_roundtrips_and_ripe_not_placeable() {
+        // 莓果叢 v1（自主提案切片 806）：莓果叢苗(75) from_u8 往返、可放置、實心。
+        assert_eq!(Block::from_u8(75), Some(Block::BerryBush));
+        assert_eq!(Block::BerryBush as u8, 75);
+        assert!(Block::BerryBush.is_placeable(), "莓果叢苗應可放置");
+        assert!(Block::BerryBush.is_solid(), "莓果叢應為實心方塊");
+        // 結果的莓果叢(76)：from_u8 往返、實心，但**不可**由玩家手動放置（伺服器狀態方塊）。
+        assert_eq!(Block::from_u8(76), Some(Block::BerryBushRipe));
+        assert_eq!(Block::BerryBushRipe as u8, 76);
+        assert!(!Block::BerryBushRipe.is_placeable(), "結果的莓果叢是伺服器狀態方塊，玩家不能放置");
+        assert!(Block::BerryBushRipe.is_solid(), "結果的莓果叢應為實心方塊");
     }
 
     #[test]

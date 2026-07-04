@@ -240,6 +240,16 @@ pub const RECIPES: &[Recipe] = &[
         output_block: 66,             // Block::Sign = 66
         output_count: 1,
     },
+    // ── 莓果叢苗 v1（自主提案切片 806）：樹苗(65) + 種子(14)×2 → 1 莓果叢苗(75)────────────
+    // 把砍葉得來的樹苗與種子育成一叢會結果的灌木。多重集 {65:1,14:2} 獨一無二
+    //（既有 2×2 配方無一用到樹苗 65 或種子 14），不與任何配方相撞。種下後多年生、可反覆採收。
+    Recipe {
+        id: "berry_bush",
+        name_zh: "莓果叢苗",
+        inputs: &[(65, 1), (14, 2)],  // 1 樹苗 + 2 種子 → 1 莓果叢苗（3 格，剛好塞進 2×2）
+        output_block: crate::voxel_berry::BUSH_UNRIPE_ID, // 75（可放置的未結果灌木）
+        output_count: 1,
+    },
 ];
 
 /// 工作台 3×3 合成配方（需放置工作台方塊後右鍵開啟面板才能合成）。
@@ -538,6 +548,28 @@ mod tests {
     }
 
     #[test]
+    fn find_recipe_berry_bush_in_bag_list() {
+        // 莓果叢苗走背包 2×2（樹苗 + 種子×2，3 格），不在工作台表。
+        let r = find_recipe("berry_bush").expect("莓果叢苗應在背包配方表");
+        assert!(find_workbench_recipe("berry_bush").is_none(), "莓果叢苗不該在工作台配方表");
+        assert_eq!(
+            r.output_block,
+            crate::voxel_berry::BUSH_UNRIPE_ID,
+            "莓果叢苗 id 應為 75（Block::BerryBush）"
+        );
+        assert_eq!(r.output_count, 1);
+        assert_eq!(r.inputs, &[(65, 1), (14, 2)], "莓果叢苗需 1 樹苗 + 2 種子");
+        // 多重集 {65:1,14:2} 獨一無二：沒有任何一條 2×2 配方用到樹苗(65) 或種子(14)。
+        for other in RECIPES.iter().filter(|o| o.id != "berry_bush") {
+            assert!(
+                !other.inputs.iter().any(|&(id, _)| id == 65 || id == 14),
+                "配方 {} 不該用到樹苗/種子，才能保證莓果叢苗多重集不撞",
+                other.id
+            );
+        }
+    }
+
+    #[test]
     fn find_recipe_campfire_in_workbench_list() {
         // 營火是「營地大物」：走工作台 3×3（6 格材料）、不在背包 2×2 表。
         assert!(find_recipe("campfire").is_none(), "營火不該在背包配方表");
@@ -641,7 +673,8 @@ mod tests {
                 || r.output_block == 66 // 告示牌（Block::Sign，告示牌 v1 ROADMAP 740）
                 || r.output_block == crate::voxel_fishing::FISHING_ROD_ID // 釣竿（垂釣 v1，純物品 id=60）
                 || r.output_block == crate::voxel_bucket::BUCKET_ID // 水桶（純物品 id=71，自主提案切片）
-                || r.output_block == crate::voxel_hoe::HOE_ID; // 木鋤頭（純物品 id=73，自主提案切片）
+                || r.output_block == crate::voxel_hoe::HOE_ID // 木鋤頭（純物品 id=73，自主提案切片）
+                || r.output_block == crate::voxel_berry::BUSH_UNRIPE_ID; // 莓果叢苗（可放置方塊 id=75，自主提案切片 806）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
@@ -818,6 +851,8 @@ mod tests {
         store.give("旅人", 53, 10); // POTATO（smelt_potato 烤地薯／veggie_stew 暖湯配方用，馬鈴薯）
         store.give("旅人", 49, 10); // CARROT（veggie_stew 暖湯配方用，胡蘿蔔）
         store.give("旅人", 18, 10); // WHEAT（veggie_stew 暖湯配方用，小麥）
+        store.give("旅人", 65, 10); // SAPLING（berry_bush 莓果叢苗配方用，樹苗，ROADMAP 806）
+        store.give("旅人", 14, 10); // SEEDS（berry_bush 莓果叢苗配方用，種子，ROADMAP 806）
         // 火把配方：1 木頭(5) + 1 煤礦(20) → 4 火把（Wood/CoalOre 已加，數量足夠）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);
