@@ -98,6 +98,7 @@ use crate::voxel_weather as vweather;
 use crate::voxel_stargaze as vstar;
 use crate::voxel_firework as vfw;
 use crate::voxel_compost as vcompost;
+use crate::voxel_tool as vtool;
 use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
 use crate::voxel_teach as vteach;
@@ -1683,7 +1684,16 @@ enum ClientMsg {
     /// 走到新區塊時補要 chunk（cx,cz 為 chunk 座標，伺服器補該 column 的 cy 範圍）。
     Req { cx: i32, cz: i32 },
     /// 破壞方塊：目標方塊世界座標。伺服器驗證觸及範圍/實心後挖掉並廣播。
-    Break { x: i32, y: i32, z: i32 },
+    /// 工欲善其事 v1（790）：`tool` 為前端自報的手持物品 id（additive、`#[serde(default)]`
+    /// 向後相容——舊前端不送即無工具加成）。伺服器**必查背包確認真持有該工具**才給加成，
+    /// 防偽報白嫖。
+    Break {
+        x: i32,
+        y: i32,
+        z: i32,
+        #[serde(default)]
+        tool: Option<u8>,
+    },
     /// 放置方塊：放置世界座標 + 方塊型別 id（對齊 Block enum）。伺服器驗證後套用並廣播。
     Place { x: i32, y: i32, z: i32, b: u8 },
     /// 跟居民對話（embodied 靠近說話 v1）：
@@ -2191,7 +2201,7 @@ async fn handle_socket(
                 }
                 let _ = out_tx.send(Message::Text(pack_chunks_msg(&cols))).await;
             }
-            Ok(ClientMsg::Break { x, y, z }) => {
+            Ok(ClientMsg::Break { x, y, z, tool }) => {
                 // 取玩家位置驗 reach，驗目標實心，套 delta（覆蓋成空氣），廣播。
                 // 採集 v1：先讀目標方塊型別（讀鎖即釋），破壞後給予對應材料。
                 let Some((px, py, pz)) = player_pos(my_id) else {
@@ -2369,6 +2379,43 @@ async fn handle_socket(
                                 })
                                 .to_string(),
                             ));
+                        }
+
+                        // 工欲善其事 v1（ROADMAP 790）：手持「對的」工具採集對應的天然方塊時，
+                        // 有機率多掉一份該材料——鎬採石/礦、斧砍原木、鏟挖泥沙，階級越高機率越大。
+                        // 「附加」掉落、不影響基礎掉落，向後相容。
+                        // 濫用防護：前端自報手持工具 id，這裡**必查背包確認真持有該工具**才給加成，
+                        // 防偽報白嫖；機率骰取真隨機（比照上方樹苗/垂釣稀有度慣例），純函式常數可測。
+                        if let Some(tid) = tool {
+                            let owns_tool = hub().inventory.read().unwrap().count(&name, tid) >= 1;
+                            if owns_tool {
+                                if let Some((bonus_id, bonus_cnt)) =
+                                    vtool::tool_bonus_drop(tid, target_block, rand::random::<f32>())
+                                {
+                                    let entry =
+                                        hub().inventory.write().unwrap().give(&name, bonus_id, bonus_cnt);
+                                    vinv::append_inv(&entry);
+                                    let new_count =
+                                        hub().inventory.read().unwrap().count(&name, bonus_id);
+                                    let _ = out_tx.try_send(Message::Text(
+                                        serde_json::json!({
+                                            "t": "inv_update",
+                                            "block_id": bonus_id,
+                                            "count": new_count
+                                        })
+                                        .to_string(),
+                                    ));
+                                    // 告訴前端這是「工具加成」的多收，讓它跳一句小回饋。
+                                    let _ = out_tx.try_send(Message::Text(
+                                        serde_json::json!({
+                                            "t": "tool_bonus",
+                                            "block_id": bonus_id,
+                                            "count": bonus_cnt
+                                        })
+                                        .to_string(),
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
@@ -11125,7 +11172,18 @@ mod tests {
     fn break_and_place_parse() {
         let b: ClientMsg = serde_json::from_str(r#"{"t":"break","x":3,"y":9,"z":-4}"#).unwrap();
         match b {
-            ClientMsg::Break { x, y, z } => assert_eq!((x, y, z), (3, 9, -4)),
+            // 工欲善其事 v1（790）：舊訊息不帶 tool 欄位 → 預設 None，向後相容。
+            ClientMsg::Break { x, y, z, tool } => {
+                assert_eq!((x, y, z), (3, 9, -4));
+                assert_eq!(tool, None);
+            }
+            _ => panic!("應解析成 Break"),
+        }
+        // 帶 tool 欄位（新前端）也要正確解析。
+        let bt: ClientMsg =
+            serde_json::from_str(r#"{"t":"break","x":1,"y":2,"z":3,"tool":33}"#).unwrap();
+        match bt {
+            ClientMsg::Break { tool, .. } => assert_eq!(tool, Some(33)),
             _ => panic!("應解析成 Break"),
         }
         let p: ClientMsg =
