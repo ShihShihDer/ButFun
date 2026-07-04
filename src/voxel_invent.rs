@@ -1509,6 +1509,23 @@ pub fn backoff_switch_feed(goal_name: &str) -> String {
     format!("連試 {INVENT_BACKOFF_THRESHOLD} 次都沒成功，暫時不再試{goal_name}，換個方向探索")
 }
 
+/// 連敗退避判定（#972 延伸）：把一次失敗計入該目標的連敗計數（`fail_count`），
+/// 達 [`INVENT_BACKOFF_THRESHOLD`] 就回 `true`（呼叫端該啟動退避）並把計數歸零
+/// （退避到期後可重新累計）；未達門檻回 `false`。
+///
+/// **首次發明**與**技能重用**兩條失敗路徑共用同一套判定——一個老是失敗的**已學會技能**
+/// （多半是身邊暫時沒料）若不退避，會讓她每個 build tick 重用同一技能、卡在同一步無限
+/// 鬼打牆（線上實見 `reuse=true step=0` 每 ~9 秒重試一次）。純函式、可窮舉測。
+pub fn note_fail_should_backoff(fail_count: &mut u8) -> bool {
+    *fail_count = fail_count.saturating_add(1);
+    if *fail_count >= INVENT_BACKOFF_THRESHOLD {
+        *fail_count = 0; // 退避後歸零，到期可重新累計
+        true
+    } else {
+        false
+    }
+}
+
 /// 測試注入口（**僅供隔離實測**）：設 `BUTFUN_INVENT_FIXED_PLAN` 時，發明流程改用
 /// 這串固定 JSON 當作「LLM 的輸出」——當測試環境打不到思考腦時，用來驗證
 /// 「執行→驗證→存→重用」的確定性鏈。prod 不設此變數，永遠走真便宜腦。
@@ -2706,6 +2723,29 @@ mod tests {
         assert!(INVENT_BACKOFF_THRESHOLD >= 2);
         // 退避時間 ≥ 1 小時（讓她有足夠時間換方向探索，不是秒回頭再撞）。
         assert!(INVENT_BACKOFF_SECS >= 3600.0);
+    }
+
+    #[test]
+    fn note_fail_backoff_triggers_at_threshold_and_resets() {
+        // 從零開始累計：未達門檻前每次回 false，計數遞增。
+        let mut count: u8 = 0;
+        let mut trips = 0;
+        for _ in 1..INVENT_BACKOFF_THRESHOLD {
+            assert!(!note_fail_should_backoff(&mut count), "未達門檻不該退避");
+            trips += 1;
+        }
+        assert_eq!(count, trips, "未退避前計數應等於失敗次數");
+        // 第 THRESHOLD 次失敗 → 回 true 並歸零（退避到期後可重新累計）。
+        assert!(note_fail_should_backoff(&mut count), "達門檻應退避");
+        assert_eq!(count, 0, "退避後計數歸零，供到期重新累計");
+    }
+
+    #[test]
+    fn note_fail_backoff_saturates_not_panics() {
+        // 極端：計數已在 u8 上限也不 panic（saturating_add）；達門檻仍歸零退避。
+        let mut count: u8 = u8::MAX;
+        assert!(note_fail_should_backoff(&mut count), "已達上限視為超過門檻，退避");
+        assert_eq!(count, 0);
     }
 
     #[test]
