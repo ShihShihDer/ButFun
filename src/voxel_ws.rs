@@ -131,6 +131,7 @@ use crate::voxel_morning as vmorning;
 use crate::voxel_daybreak as vdaybreak;
 use crate::voxel_reunion as vreunion;
 use crate::voxel_expedition as vexp;
+use crate::voxel_frontier_visit as vfvisit;
 use crate::voxel_welcome as vwelcome;
 use crate::voxel_resident_trade as vrtrade;
 use crate::voxel_share as vshare;
@@ -574,6 +575,16 @@ struct VoxelResident {
     /// 上次已慶祝過的誕辰週歲數（居民誕辰紀念 v1）：0＝還沒慶祝過。純記憶體、重啟歸零——
     /// 重啟後若當下週歲已慶祝過，至多重觸發一次誕辰紀念，非資料風險（比照其他純記憶體冷卻慣例）。
     birthday_last_year: u64,
+    /// 邊陲探友（居民千里跋涉去邊陲探望遠行的夥伴 v1，ROADMAP 821）：
+    /// Some(朋友邊陲落點 x, z, 方位名, 朋友顯示名) = 正跋涉前往／已抵達朋友的邊陲營地小聚；
+    /// None = 沒在探友（正常閒晃/採集/建造）。純記憶體、重啟歸零。
+    frontier_visit: Option<(f32, f32, String, String)>,
+    /// 抵達朋友邊陲落點後的小聚倒數（秒）：> 0 = 已找到朋友、正小聚，到 0 即啟程返家。
+    frontier_visit_stay: f32,
+    /// 邊陲探友去程逾時倒數（秒）：未抵達（朋友提前離開邊陲／地形擋路）就放棄，不無限跋涉。
+    frontier_visit_timer: f32,
+    /// 邊陲探友冷卻倒數（秒）：一次探友（尋得／放棄）後設定，稀少才有感、不洗版。各居民初始錯開。
+    frontier_visit_cooldown: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -1426,6 +1437,12 @@ fn build_resident(
             birth_unix,
             birth_parent_name,
             birthday_last_year: 0,
+            // 邊陲探友 v1（ROADMAP 821）：入場無探友任務；首次冷卻各自大幅錯開（前 15~25 分鐘不
+            // 跋涉，讓居民先在家域穩定下來、朋友也先累積出老朋友交情再說）。
+            frontier_visit: None,
+            frontier_visit_stay: 0.0,
+            frontier_visit_timer: 0.0,
+            frontier_visit_cooldown: vfvisit::COOLDOWN_SECS * 0.5 + i as f32 * 250.0,
     }
 }
 
@@ -6437,6 +6454,12 @@ fn tick_residents(dt: f32) {
     // 遠行探野 Feed（遠行探野 v1，ROADMAP 756）：鎖內收集「某居民啟程遠行／遠行歸來」事件，
     // 鎖釋放後統一 append_feed（不在持居民鎖時做 IO）。(居民名, 播報詳情)。
     let mut expedition_feed: Vec<(&'static str, String)> = Vec::new();
+    // 邊陲探友（居民千里跋涉去邊陲探望遠行的夥伴 v1，ROADMAP 821）：鎖內收集「訪客抵達朋友邊陲落點、
+    // 找到人」事件，記憶寫（雙方，朋友 id 於鎖外用名字查回）＋record_visit 加溫＋Feed 在居民鎖釋放後
+    // 統一落地（不持居民鎖做 IO，守死鎖鐵律）。(訪客 id, 訪客名, 朋友名, 方位名)。
+    let mut frontier_visit_arrive_events: Vec<(String, &'static str, String, String)> = Vec::new();
+    // 邊陲探友純 Feed 事件（啟程／小聚結束返家／半路撲空放棄），鎖釋放後統一 append_feed。
+    let mut frontier_visit_feed: Vec<(&'static str, String)> = Vec::new();
     // 繁星夜空·星夜共賞（v1，ROADMAP 783）：鎖內收集「某居民記得這位玩家愛看星星、在星夜喚他同賞」
     // 事件；記憶寫（add_memory）與 Feed（append_feed）全在居民鎖釋放後統一處理（不持居民鎖做 IO）。
     // (居民 id, 居民名, 玩家名)。
@@ -6633,6 +6656,26 @@ fn tick_residents(dt: f32) {
     // 格式：(rid, rname, requester, resource, delivered, requested)
     let mut fetch_deliver_events: Vec<(String, &'static str, String, vskill::GatherResource, u32, u32)> =
         Vec::new();
+
+    // 邊陲探友 v1（ROADMAP 821）：批次快照目前「正遠行、已抵達邊陲逗留中（非夜間過夜熟睡）」居民的
+    // id/落點/方位（名字 → id, 落點 x, z, 方位名），供下方 residents 寫鎖迴圈判斷「惦記的那位朋友，
+    // 現在人在邊陲哪裡」；也一併帶 id，讓迴圈內（已 mutably borrow `residents` 無法再 `iter()`）
+    // 仍能把驚喜回應塞進 `say_updates`——先讀後放，不與下方 residents 寫鎖巢狀（守死鎖鐵律）。
+    let outpost_snap: HashMap<&'static str, (String, f32, f32, String)> = {
+        let residents = hub().residents.read().unwrap();
+        residents
+            .iter()
+            .filter_map(|r| {
+                if r.expedition_stay > 0.0 && !r.asleep_at_outpost {
+                    r.expedition
+                        .clone()
+                        .map(|(tx, tz, bearing)| (r.name, (r.id.clone(), tx, tz, bearing)))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }; // residents 讀鎖釋放
 
     {
         let world = hub().deltas.read().unwrap();
@@ -8329,6 +8372,121 @@ fn tick_residents(dt: f32) {
                 }
             }
 
+            // ── 邊陲探友 v1（ROADMAP 821·PLAN_ETHERVOX item 4「居民↔居民關係」× item 7「散居」）───
+            // 散居（756~762）與探訪（671）至今互不相干：朋友遠行在邊陲時，跨域探訪仍只會走到牠
+            // 空無一人的家。本段讓留守主城的人格（市集人·露娜／廣場人·賽勒，`expedition_motive`
+            // 回 `None`）若跟正在邊陲逗留的老朋友交情夠深，偶爾放下手邊的事、跋涉去邊陲找她——
+            // 讀 `outpost_snap` 即時座標（不是家域座標），找到朋友那一刻兩人在荒野盡頭重聚。
+            // 鎖序：bonds 讀（即釋）；記憶寫＋Feed 走鎖外 frontier_visit_arrive_events／
+            // frontier_visit_feed，不巢狀、不持鎖 await（守死鎖鐵律）。
+            if r.frontier_visit_cooldown > 0.0 {
+                r.frontier_visit_cooldown -= dt;
+            }
+            if let Some((tx, tz, bearing, friend)) = r.frontier_visit.clone() {
+                if r.frontier_visit_stay > 0.0 {
+                    // 已找到朋友、正在邊陲小聚：倒數，歸零即道別啟程返家。
+                    r.frontier_visit_stay -= dt;
+                    if r.frontier_visit_stay <= 0.0 {
+                        r.frontier_visit = None;
+                        r.frontier_visit_cooldown = vfvisit::COOLDOWN_SECS;
+                        r.target_x = r.home_x;
+                        r.target_z = r.home_z;
+                        frontier_visit_feed.push((r.name, vfvisit::depart_home_feed_line(&friend)));
+                    }
+                } else if !outpost_snap.contains_key(friend.as_str()) {
+                    // 朋友半路已離開邊陲（提前歸來）：這趟撲空，放棄並回家。
+                    r.frontier_visit = None;
+                    r.frontier_visit_cooldown = vfvisit::COOLDOWN_SECS;
+                    r.target_x = r.home_x;
+                    r.target_z = r.home_z;
+                    frontier_visit_feed.push((r.name, vfvisit::giveup_feed_line(&friend)));
+                } else {
+                    // 去程：持續朝朋友的邊陲落點走。
+                    r.target_x = tx;
+                    r.target_z = tz;
+                    r.wait_timer = 0.0;
+                    let dx = r.body.x - tx;
+                    let dz = r.body.z - tz;
+                    if dx * dx + dz * dz < vfvisit::ARRIVE_DIST * vfvisit::ARRIVE_DIST {
+                        // 抵達，找到朋友了！沒在說別的話才冒相聚泡泡（正巧在說話就等下 tick）。
+                        if r.say.is_empty() {
+                            r.frontier_visit_stay = vfvisit::STAY_SECS;
+                            let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                            r.say = vfvisit::arrive_bubble(&friend, pick);
+                            r.say_timer = SAY_SECS;
+                            frontier_visit_arrive_events.push((
+                                r.id.clone(),
+                                r.name,
+                                friend.clone(),
+                                bearing.clone(),
+                            ));
+                            // 被找到的朋友驚喜回應（她原本沒在說話才冒出，走既有 say_updates 統一套用；
+                            // id 取自快照，不再向已被 iter_mut 借用的 residents 另要一次 iter()）。
+                            if let Some((friend_id, ..)) = outpost_snap.get(friend.as_str()) {
+                                say_updates
+                                    .push((friend_id.clone(), vfvisit::host_reply_bubble(r.name, pick)));
+                            }
+                        }
+                    } else {
+                        r.frontier_visit_timer -= dt;
+                        if r.frontier_visit_timer <= 0.0 {
+                            r.frontier_visit = None;
+                            r.frontier_visit_cooldown = vfvisit::COOLDOWN_SECS;
+                            frontier_visit_feed.push((r.name, vfvisit::giveup_feed_line(&friend)));
+                        }
+                    }
+                }
+            } else {
+                // 尚未探友：留守人格 + 閒置自由 + 冷卻到期 + 沒在說話 → 檢查是否有老朋友正在邊陲。
+                let town_bound = vexp::expedition_motive(r.persona).is_none();
+                let idle_free = r.gather.is_none()
+                    && r.fetch.is_none()
+                    && r.visiting.is_none()
+                    && r.cheer_target.is_none()
+                    && !r.seeking_comfort
+                    && r.clique_meet.is_none()
+                    && r.follow.is_none()
+                    && r.invent_run.is_none()
+                    && r.pilgrimage.is_none()
+                    && r.daybreak_seek.is_none()
+                    && r.reunion_seek.is_none()
+                    && !r.asleep;
+                if town_bound && idle_free && r.say.is_empty() && r.frontier_visit_cooldown <= 0.0 {
+                    // 挑第一位交情達老朋友、此刻確實在邊陲的朋友（本世界僅 4 位居民，遍歷成本可忽略）。
+                    // bonds 讀鎖只取一次（即釋，不巢狀）。
+                    let found = {
+                        let bonds = hub().bonds.read().unwrap();
+                        outpost_snap.iter().find(|(name, _)| {
+                            **name != r.name && bonds.tier_of(r.name, name) == vbonds::BondTier::Friend
+                        })
+                    }; // bonds 讀鎖釋放
+                    if let Some((&friend_name, (_id, fx, fz, fbearing))) = found {
+                        if vfvisit::should_seek_friend(
+                            town_bound,
+                            true,
+                            true,
+                            idle_free,
+                            r.frontier_visit_cooldown,
+                            r.say.is_empty(),
+                            rand::random::<f32>(),
+                        ) {
+                            r.frontier_visit =
+                                Some((*fx, *fz, fbearing.clone(), friend_name.to_string()));
+                            r.frontier_visit_stay = 0.0;
+                            r.frontier_visit_timer = vfvisit::TIMEOUT_SECS;
+                            r.target_x = *fx;
+                            r.target_z = *fz;
+                            r.wait_timer = 0.0;
+                            let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                            r.say = vfvisit::depart_bubble(friend_name, fbearing, pick);
+                            r.say_timer = SAY_SECS;
+                            frontier_visit_feed
+                                .push((r.name, vfvisit::depart_feed_line(friend_name, fbearing)));
+                        }
+                    }
+                }
+            }
+
             // 回禮 v1（ROADMAP 667）：好感達門檻 + 玩家靠近 + 尚未回贈 → 收集事件（鎖外落地）。
             // 鎖序：memory 讀（即釋）→ return_gifts 讀（即釋）→ 收集 event；
             // 實際 inventory 寫 / append / broadcast 在居民鎖釋放後進行（鎖紀律）。
@@ -9084,10 +9242,12 @@ fn tick_residents(dt: f32) {
                     let sheltering = r.visiting.is_none()
                         && r.expedition.is_none()
                         && r.clique_meet.is_none()
+                        && r.frontier_visit.is_none()
                         && vr::should_shelter(is_night, raining, house_locations.contains_key(&r.id));
                     // 探訪中：以目的地為閒晃中心（讓居民在鄰居家附近自然走動）；
                     // 遠行逗留中（ROADMAP 756）：以邊陲落點為中心，讓牠在遠方一小片範圍自然走動、不被拉回家；
                     // 聚會中（ROADMAP 711）：以聚會點為中心，讓一群人看起來聚在一塊；
+                    // 邊陲探友逗留中（ROADMAP 821）：以朋友的邊陲落點為中心，讓兩人在荒野一小片範圍相聚；
                     // 夜間遮蔽：以自己蓋的小屋為中心；否則：以自己家域中心為基準（正常行為）。
                     let (center_x, center_z) = if let Some((vx, vz, _)) = &r.visiting {
                         (*vx, *vz)
@@ -9095,6 +9255,8 @@ fn tick_residents(dt: f32) {
                         (*ex, *ez)
                     } else if let Some((gx, gz, _)) = &r.clique_meet {
                         (*gx, *gz)
+                    } else if let Some((fx, fz, _, _)) = &r.frontier_visit {
+                        (*fx, *fz)
                     } else if sheltering {
                         let (hx, _hy, hz) = house_locations[&r.id];
                         (hx as f32 + 0.5, hz as f32 + 0.5)
@@ -9102,13 +9264,16 @@ fn tick_residents(dt: f32) {
                         (r.home_x, r.home_z)
                     };
                     // 探訪中用探訪範圍；遠行逗留用遠行範圍（在邊陲一小片走動）；聚會中用更小的聚會範圍
-                    //（不散開）；夜間遮蔽用更小的遮蔽半徑（緊靠自家）；否則用家域半徑（正常行為）。
+                    //（不散開）；邊陲探友逗留用探友範圍；夜間遮蔽用更小的遮蔽半徑（緊靠自家）；
+                    // 否則用家域半徑（正常行為）。
                     let wander_r = if r.visiting.is_some() {
                         vvisit::VISIT_WANDER_RADIUS
                     } else if r.expedition.is_some() {
                         vexp::EXPEDITION_WANDER_RADIUS
                     } else if r.clique_meet.is_some() {
                         vclique::GATHER_WANDER_RADIUS
+                    } else if r.frontier_visit.is_some() {
+                        vfvisit::WANDER_RADIUS
                     } else if sheltering {
                         vr::SHELTER_WANDER_RADIUS
                     } else {
@@ -10382,6 +10547,49 @@ fn tick_residents(dt: f32) {
     // 讓沒在現場的玩家也讀得到「居民的足跡散進了荒野」——世界不再只圍著主城打轉。
     for (rname, detail) in &expedition_feed {
         vfeed::append_feed("遠行", rname, detail);
+    }
+
+    // 5c-2a') 邊陲探友（居民千里跋涉去邊陲探望遠行的夥伴 v1，ROADMAP 821）：純 Feed 事件
+    //（啟程／小聚結束返家／半路撲空放棄），讓沒在現場的玩家也讀得到「留守者追去邊陲找散居的朋友」。
+    for (rname, detail) in &frontier_visit_feed {
+        vfeed::append_feed("邊陲探友", rname, detail);
+    }
+    // 邊陲探友·抵達找到人（ROADMAP 821）：雙方各寫一筆 episodic 記憶（掛對方名下、累積情誼），
+    // 交情因這趟跋涉加溫一格（升級才 save + 播里程碑，比照 792/800 的鎖外處理）——留守與散居兩條線
+    // 第一次交織，訪客的心意與朋友的驚喜都被世界記下。朋友 id 以名字查回（residents 鎖此刻已釋放，
+    // 可安全再取）。
+    for (visitor_id, visitor_name, friend_name, bearing) in &frontier_visit_arrive_events {
+        let ev = hub().memory.write().unwrap().add_memory(
+            visitor_id,
+            friend_name,
+            &vfvisit::visitor_memory_line(friend_name, bearing),
+        ); // memory 寫鎖釋放
+        vmem::append_memory(&ev);
+        let friend_id = {
+            let residents = hub().residents.read().unwrap();
+            residents.iter().find(|r| r.name == friend_name.as_str()).map(|r| r.id.clone())
+        }; // residents 讀鎖釋放
+        if let Some(friend_id) = friend_id {
+            let eh = hub().memory.write().unwrap().add_memory(
+                &friend_id,
+                visitor_name,
+                &vfvisit::host_memory_line(visitor_name),
+            ); // memory 寫鎖釋放
+            vmem::append_memory(&eh);
+        }
+        let (tier, tier_changed) = {
+            let mut bonds = hub().bonds.write().unwrap();
+            bonds.record_visit(visitor_name, friend_name)
+        }; // bonds 寫鎖釋放
+        if tier_changed {
+            let bonds = hub().bonds.read().unwrap();
+            vbonds::save_bonds(&bonds);
+        } // bonds 讀鎖釋放
+        vfeed::append_feed(
+            "邊陲探友",
+            visitor_name,
+            &vfvisit::arrive_feed_line(visitor_name, friend_name, bearing),
+        );
     }
 
     // 5c-2a'') 星夜共賞（繁星夜空 v1，ROADMAP 783）：居民記得你愛看星星、在星夜喚你同賞時，
