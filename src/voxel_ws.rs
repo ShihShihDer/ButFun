@@ -141,6 +141,7 @@ use crate::voxel_milestones::{self as vmiles, MilestoneStore};
 use crate::voxel_player_pos as vpp;
 use crate::voxel_bottle::{self as vbottle, BottleStore};
 use crate::voxel_coop_gather as vcoop_gather;
+use crate::voxel_dropitem::{self as vdrop, DropStore};
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -1555,6 +1556,11 @@ struct VoxelHub {
     /// 持久化到 data/voxel_bottles.jsonl；內文絕不外流（連線同步只送座標），撿走即從世界移除
     /// （一次性拾起，非常駐可讀——序列化 RwLock 解決競爭）。
     bottle: RwLock<BottleStore>,
+    /// 掉落物 store（掉落物 v1，自主提案切片 828）：世界上還沒被撿走的實體材料。
+    /// 純記憶體、重啟歸零（比照 `bottle`/`giftgarden` 等世界暫態，掉落物本就是暫留地上等人
+    /// 撿的短命狀態，非玩家永久資產）。玩家丟下手上一件材料 → 落地存進這裡；任何玩家
+    /// （含自己）走近即自動撿起；沒人撿的話 `DESPAWN_SECS` 後安靜消失。
+    drops: RwLock<DropStore>,
     /// 禮物菜園 store（ROADMAP 755）：作物方塊世界座標 → 一畦「因你的種子而生」的田
     /// （居民 id、送種子的玩家名、作物種類）。持久化到 data/voxel_gift_gardens.jsonl；
     /// 那畦田熟了、種它的居民遇到你，會親手收成、把第一把收穫回贈給你。
@@ -1808,6 +1814,8 @@ fn hub() -> &'static VoxelHub {
             sign: RwLock::new(vsign::SignStore::from_entries(vsign::load_signs())),
             // 啟動時從 data/voxel_bottles.jsonl 載回尚未被撿走的瓶中信（重啟後瓶子還在水裡）。
             bottle: RwLock::new(BottleStore::from_entries(vbottle::load_bottles())),
+            // 掉落物 v1：純記憶體，重啟歸零（暫留地上等人撿的短命狀態，非玩家永久資產）。
+            drops: RwLock::new(DropStore::new()),
             // 啟動時從 data/voxel_gift_gardens.jsonl 載回未收成的禮物菜園（重啟後那畦田還在，
             // 待種它的居民遇到送種子的你時收成回贈）。
             giftgarden: RwLock::new(vgg::GiftGardenStore::from_entries(vgg::load_gift_gardens())),
@@ -2030,6 +2038,11 @@ enum ClientMsg {
     /// 撿到的玩家、從世界移除該瓶（一次性拾起），廣播座標讓所有人的世界同步移除浮標。
     #[serde(rename = "read_bottle")]
     ReadBottle { x: i32, y: i32, z: i32 },
+    /// 掉落物 v1：對著 `(x,y,z)` 丟下手上 `count` 個 `item_id`（自主提案切片 828）。伺服器驗
+    /// reach + 背包足量後扣下、落地存進世界（安靜留在原地），廣播讓所有人看見；任何玩家
+    /// （含自己）之後走近即自動撿起（見 `Move` handler）。
+    #[serde(rename = "drop_item")]
+    DropItem { x: i32, y: i32, z: i32, item_id: u8, count: u32 },
     /// 木門 v1：右鍵切換目標門的開/關狀態（ROADMAP 693）。
     /// DoorClosed(43)→DoorOpen(44) 或 DoorOpen(44)→DoorClosed(43)；伺服器驗 reach 後廣播。
     #[serde(rename = "toggle_door")]
@@ -2157,6 +2170,25 @@ fn broadcast_bottle_removed(x: i32, y: i32, z: i32) {
     let msg = Arc::new(
         serde_json::json!({ "t": "bottle_removed", "x": x, "y": y, "z": z }).to_string(),
     );
+    let _ = hub().tx.send(msg);
+}
+
+/// 廣播世界上出現一件新掉落物（掉落物 v1，自主提案切片 828）。與漂流瓶不同——
+/// 掉落物**不匿名**，帶上丟下者姓名供前端做懸浮提示（誰丟的一目了然，非驚喜巧遇）。
+fn broadcast_item_dropped(id: u64, x: f32, y: f32, z: f32, item_id: u8, count: u32, dropped_by: &str) {
+    let msg = Arc::new(
+        serde_json::json!({
+            "t": "item_dropped", "id": id, "x": x, "y": y, "z": z,
+            "item_id": item_id, "count": count, "dropped_by": dropped_by,
+        })
+        .to_string(),
+    );
+    let _ = hub().tx.send(msg);
+}
+
+/// 廣播一件掉落物從世界上消失（被撿走或逾時消散），所有人同步移除浮標（掉落物 v1）。
+fn broadcast_item_removed(id: u64) {
+    let msg = Arc::new(serde_json::json!({ "t": "item_removed", "id": id }).to_string());
     let _ = hub().tx.send(msg);
 }
 
@@ -2458,6 +2490,29 @@ async fn handle_socket(
         }
     }
 
+    // 掉落物 v1（自主提案切片 828）：連線時一次送出世界上所有還沒被撿走的掉落物，
+    // 讓前端立刻掛回浮標。
+    {
+        let items: Vec<serde_json::Value> = hub()
+            .drops
+            .read()
+            .unwrap()
+            .all()
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "id": d.id, "x": d.x, "y": d.y, "z": d.z,
+                    "item_id": d.item_id, "count": d.count, "dropped_by": d.dropped_by,
+                })
+            })
+            .collect();
+        let drop_sync = serde_json::json!({ "t": "drop_sync", "items": items }).to_string();
+        if out_tx.send(Message::Text(drop_sync)).await.is_err() {
+            cleanup(my_id, &writer);
+            return;
+        }
+    }
+
     // 久別重逢摘要 v1（ROADMAP 721）：離線夠久 + 期間有值得播報的事 → 私訊一句摘要，
     // 讓玩家一登入就感受到「世界在我不在時真的繼續活著」，不只是回來後一片死寂。
     {
@@ -2605,6 +2660,20 @@ async fn handle_socket(
                 };
                 if changed {
                     broadcast_players();
+                    // 掉落物 v1：走近自動撿起，含撿回自己剛丟下的東西（自主提案切片 828）。
+                    let picked = {
+                        let mut store = hub().drops.write().unwrap();
+                        store.nearest_in_range(x, y, z).and_then(|id| store.remove(id))
+                    };
+                    if let Some(item) = picked {
+                        let entry = hub().inventory.write().unwrap().give(&name, item.item_id, item.count);
+                        vinv::append_inv(&entry);
+                        let nc = hub().inventory.read().unwrap().count(&name, item.item_id);
+                        let _ = out_tx.send(Message::Text(serde_json::json!({
+                            "t": "inv_update", "block_id": item.item_id, "count": nc
+                        }).to_string())).await;
+                        broadcast_item_removed(item.id);
+                    }
                 }
                 // 位置持久化 v1：登入帳號每 30 秒存一次當前位置（訪客不存、IO 在鎖外）。
                 // 安全：key 綁後端解出的 email，不信客戶端自報的 x/y/z。
@@ -5558,6 +5627,61 @@ async fn handle_socket(
                 vfeed::append_feed("漂流瓶", "一位旅人", "在岸邊撿起了一封漂流瓶……");
             }
 
+            // ── 掉落物 v1：丟下手上一件材料（自主提案切片 828）───────────────────────
+            // 玩家↔玩家至今僅有漂流瓶（825，非同步/文字）與並肩協作（827，被動加成）——
+            // 本刀補上第一個主動的實體資源轉手：對著地面丟下一件材料，安靜留在原地，
+            // 撿起在 `Move` handler 裡自動判定（走近即撿，含撿回自己剛丟下的東西）。
+            Ok(ClientMsg::DropItem { x, y, z, item_id, count }) => {
+                let Some((px, py, pz)) = player_pos(my_id) else { continue; };
+                if !voxel::in_reach(px, py, pz, x, y, z) { continue; }
+                let want = vdrop::clamp_drop_count(count);
+                // 1) 先查全局上限（真的扣背包**之前**檢查，避免物品憑空消失）。
+                let at_cap = { hub().drops.read().unwrap().len() >= vdrop::MAX_ACTIVE_DROPS };
+                if at_cap {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "drop_fail", "reason": "地上的掉落物已經很多了，晚點再試試看。"
+                    }).to_string())).await;
+                    continue;
+                }
+                // 2) 背包要有足量的該材料（讀鎖即釋）。
+                let have = hub().inventory.read().unwrap().count(&name, item_id);
+                if have < want {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "drop_fail", "reason": "你手上沒有那麼多喔。"
+                    }).to_string())).await;
+                    continue;
+                }
+                // 3) 扣下材料（inventory 寫鎖即釋 → append 落地 → 單播新存量）。
+                let Some(inv_e) = hub().inventory.write().unwrap().take(&name, item_id, want) else {
+                    continue;
+                };
+                vinv::append_inv(&inv_e);
+                let nc = hub().inventory.read().unwrap().count(&name, item_id);
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "inv_update", "block_id": item_id, "count": nc
+                }).to_string())).await;
+                // 4) 落地存進世界（世界座標＝瞄準格頂面），廣播給所有人。
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let wx = x as f32 + 0.5;
+                let wy = y as f32 + 1.0;
+                let wz = z as f32 + 0.5;
+                let spawned = { hub().drops.write().unwrap().spawn(wx, wy, wz, item_id, want, &name, now_secs) };
+                if let Some(id) = spawned {
+                    broadcast_item_dropped(id, wx, wy, wz, item_id, want, &name);
+                } else {
+                    // 極端競態（多人同時丟到上限）：退還材料，別讓東西憑空消失。
+                    let refund = hub().inventory.write().unwrap().give(&name, item_id, want);
+                    vinv::append_inv(&refund);
+                    let nc2 = hub().inventory.read().unwrap().count(&name, item_id);
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "inv_update", "block_id": item_id, "count": nc2
+                    }).to_string())).await;
+                }
+            }
+
             // 木門 v1（ROADMAP 693）：右鍵切換門的開/關狀態。
             // 鎖序：delta 讀（驗方塊）→ delta 寫（toggle）→ drop；不嵌套、不持鎖 IO。
             Ok(ClientMsg::ToggleDoor { x, y, z }) => {
@@ -5951,9 +6075,23 @@ pub fn spawn_farm_tick() {
             tick_coop(); // 雞舍生蛋 v1（自主提案切片）：同節拍檢查雞舍是否生蛋。
             tick_smelt(); // 熔爐煨煮 v1（自主提案）：同節拍交付熟成的爐（成品入背包 + 廣播）。
             maybe_birth(); // 人口成長 v1：低頻檢查聚落是否有餘裕誕生一位新居民。
+            tick_dropitem_expire(); // 掉落物 v1（自主提案切片 828）：同節拍清掉沒人撿的過期掉落物。
         }
     });
     spawn_water_tick();
+}
+
+/// 掉落物 v1（自主提案切片 828）：清掉超過 `DESPAWN_SECS` 沒被撿走的掉落物，廣播移除
+/// （消散不點名是誰丟的，安靜地消失即可，比照漂流瓶消散精神）。
+fn tick_dropitem_expire() {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let expired = hub().drops.write().unwrap().expire(now_secs);
+    for item in expired {
+        broadcast_item_removed(item.id);
+    }
 }
 
 /// 人口成長 v1（世代傳承）：低頻（併入 15 秒農作節拍）檢查是否誕生一位新居民。

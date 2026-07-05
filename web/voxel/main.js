@@ -1506,6 +1506,47 @@ function removeBottleMarker(x, y, z) {
   if (sprite) { scene.remove(sprite); bottleMarkers.delete(key); } // 貼圖共用，不 dispose
 }
 
+// ── 掉落物 v1（自主提案切片 828）：世界上還沒被撿走的實體材料浮標 ───────────────────
+// 玩家↔玩家至今僅有漂流瓶（非同步/文字）與並肩協作（被動加成）——本刀補上第一個主動的
+// 實體資源轉手：按 Q 丟下一份手上材料，安靜留在原地；每顆掉落物用該材料自己的顏色畫成
+// 小方塊貼圖＋數量標籤（不像瓶子共用單一圖案，貼圖依 id 用完即 dispose）。
+const dropMarkers = new Map(); // id(number) -> THREE.Sprite
+function makeDropSprite(itemId, count) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 80; canvas.height = 80;
+  const ctx = canvas.getContext("2d");
+  const c = COLOR[itemId] || COLOR[STONE];
+  ctx.fillStyle = `rgb(${(c[0] * 255) | 0},${(c[1] * 255) | 0},${(c[2] * 255) | 0})`;
+  ctx.fillRect(18, 18, 44, 44);
+  ctx.strokeStyle = "rgba(0,0,0,0.4)"; ctx.lineWidth = 3;
+  ctx.strokeRect(18, 18, 44, 44);
+  ctx.font = "bold 20px system-ui, sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const label = "×" + count;
+  ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.7)"; ctx.strokeText(label, 40, 66);
+  ctx.fillStyle = "#fff"; ctx.fillText(label, 40, 66);
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, depthTest: true })
+  );
+  sprite.scale.set(0.5, 0.5, 1);
+  return sprite;
+}
+function addDropMarker(id, x, y, z, itemId, count) {
+  if (dropMarkers.has(id)) return;
+  const sprite = makeDropSprite(itemId, count);
+  sprite.position.set(x, y, z);
+  scene.add(sprite);
+  dropMarkers.set(id, sprite);
+}
+function removeDropMarker(id) {
+  const sprite = dropMarkers.get(id);
+  if (!sprite) return;
+  scene.remove(sprite);
+  if (sprite.material.map) sprite.material.map.dispose();
+  sprite.material.dispose();
+  dropMarkers.delete(id);
+}
+
 // ── embodied 靠近說話 v1：自己頭上的對話泡泡（本地驅動，說話立即冒、計時消失）─────
 // 不蓋住畫面、跟著角色在 3D 世界裡（「話活在世界裡」）。別人看到的版本走 players 廣播的 say。
 const MY_BUBBLE_SECS = 6;
@@ -3042,6 +3083,16 @@ function selectSlot(i) {
   }
 }
 function selectedBlock() { return HOTBAR[selectedSlot]; }
+
+// 掉落物 v1（自主提案切片 828）：丟下目前手上選取材料的 1 份到準星處（觸及範圍內，
+// 後端 reach 權威複驗）。空格／背包沒有那個材料 → 靜默忽略，不送空包。
+function dropSelectedItem() {
+  if (!target || !wsReady) return;
+  const item = selectedBlock();
+  if (item === AIR) return;
+  if ((myInv.get(item) || 0) < 1) return;
+  ws.send(JSON.stringify({ t: "drop_item", x: target.bx, y: target.by, z: target.bz, item_id: item, count: 1 }));
+}
 buildHotbar();
 // 數字鍵 1-9 切快捷欄（麥塊固定 9 格）
 addEventListener("keydown", (e) => {
@@ -3501,6 +3552,8 @@ addEventListener("keydown", (e) => {
     e.preventDefault();
     if (bagPanelVisible()) closeBagPanel(); else openBagPanel();
   }
+  // 掉落物 v1（自主提案切片 828）：Q 對準地面丟下一份目前手上選取的材料。
+  if (e.code === "KeyQ") { e.preventDefault(); dropSelectedItem(); }
   // Esc：關操作設定面板（也讓瀏覽器解除滑鼠鎖定，兩者不衝突）。
   if (e.code === "Escape" && settingsPanelVisible()) closeSettingsPanel();
   // Esc：也收起 ☰ 主選單抽屜（若正開著）。
@@ -4286,6 +4339,20 @@ function connect() {
     } else if (m.t === "bottle_fail") {
       // 漂流瓶 v1：丟瓶/撿瓶失敗（非水面、沒瓶子、需登入、已達上限等）。
       showErr(m.reason || "漂流瓶操作失敗");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "drop_sync") {
+      // 掉落物 v1（自主提案切片 828）：連線時一次收到世界上所有還沒被撿走的掉落物，全部掛上浮標。
+      for (const d of (m.items || [])) addDropMarker(d.id, d.x, d.y, d.z, d.item_id, d.count);
+    } else if (m.t === "item_dropped") {
+      // 掉落物 v1：有人丟下了一件材料——世界即時多一顆浮標。
+      addDropMarker(m.id, m.x, m.y, m.z, m.item_id, m.count);
+    } else if (m.t === "item_removed") {
+      // 掉落物 v1：一件掉落物消失了（被撿走或逾時消散），全場同步移除浮標；
+      // 撿走的那一份材料由既有 inv_update 補進撿到者的背包，不重造背包同步。
+      removeDropMarker(m.id);
+    } else if (m.t === "drop_fail") {
+      // 掉落物 v1：丟東西失敗（材料不夠、地上掉落物已達上限等）。
+      showErr(m.reason || "丟下材料失敗");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     }
   };
