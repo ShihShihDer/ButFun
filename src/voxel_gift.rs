@@ -82,6 +82,12 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         crate::voxel_coop::EGG_ID => "蛋",
         // 漂流瓶 v1（自主提案切片 825）：合成後可丟進水裡寫下一封瓶中信。
         crate::voxel_bottle::BOTTLE_ID => "空玻璃瓶",
+        // 建築藍圖 v1（自主提案切片）：送給居民直接指定她蓋哪一種建物。
+        crate::voxel_blueprint::BLUEPRINT_HOUSE => "小屋藍圖",
+        crate::voxel_blueprint::BLUEPRINT_WELL => "水井藍圖",
+        crate::voxel_blueprint::BLUEPRINT_TOWER => "瞭望台藍圖",
+        crate::voxel_blueprint::BLUEPRINT_GARDEN => "花圃藍圖",
+        crate::voxel_blueprint::BLUEPRINT_PAVILION => "涼亭藍圖",
         _ => "物品",
     }
 }
