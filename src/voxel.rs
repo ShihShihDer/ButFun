@@ -228,6 +228,16 @@ pub enum Block {
     /// 與營火（夜間圍暖）那條線對成白天／夜晚一對。實心、可放置、破壞回收自身。
     /// id 79：0~78 皆已用（純物品／方塊），79 是首個空號。
     Bench = 79,
+    /// 雞舍（空）（雞舍生蛋 v1，自主提案切片）——工作台合成：木頭(5)×4 + 葉片(6)×2 → 1 雞舍。
+    /// 世界至今所有可採資源都來自植物／礦物，唯獨沒有「動物產物」——本方塊補上這條空白資源軸：
+    /// 玩家蓋一座雞舍，靜候一段時間會生出一顆蛋（→ `CoopReady`），收下後就地空出繼續孵下一顆，
+    /// 像莓果叢（75/76）一樣可反覆利用、不必重蓋。實心、可放置、破壞回收自身。
+    /// id 80：0~79 皆已用（純物品／方塊），80 是首個空號。
+    Coop = 80,
+    /// 雞舍（有蛋）——由 `tick_coop` 從空雞舍長成，伺服器維護的狀態方塊，玩家不能手動放置。
+    /// 收下（Break）→ 蛋(82)×1 ＋ **就地回退成空雞舍(80)** ＋ 重啟計時：可反覆收成、不必重蓋。
+    /// id 81。
+    CoopReady = 81,
 }
 
 impl Block {
@@ -311,6 +321,8 @@ impl Block {
             75 => Some(Block::BerryBush),
             76 => Some(Block::BerryBushRipe),
             79 => Some(Block::Bench),
+            80 => Some(Block::Coop),
+            81 => Some(Block::CoopReady),
             _ => None,
         }
     }
@@ -327,8 +339,9 @@ impl Block {
             Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed | Block::Bed |
             Block::Cactus | Block::Snow | Block::IceCrystal | Block::IceLantern |
             Block::AetherOre | Block::AetherLamp | Block::Sapling | Block::Sign |
-            Block::Campfire | Block::Bell | Block::BerryBush | Block::Bench
-            // BerryBushRipe 是伺服器維護的狀態方塊（由 tick_berry 長成），玩家不能手動放置。
+            Block::Campfire | Block::Bell | Block::BerryBush | Block::Bench | Block::Coop
+            // BerryBushRipe / CoopReady 皆是伺服器維護的狀態方塊（由 tick_berry / tick_coop 長成），
+            // 玩家不能手動放置。
         )
     }
 }
@@ -1266,6 +1279,15 @@ mod tests {
         assert_eq!(Block::Bench as u8, 79);
         assert!(Block::Bench.is_placeable(), "木長椅應可放置");
         assert!(Block::Bench.is_solid(), "木長椅應為實心方塊");
+        // 雞舍生蛋 v1：空雞舍 id 80、可放置、實心；有蛋雞舍 id 81、伺服器維護不可手動放置、實心。
+        assert_eq!(Block::from_u8(80), Some(Block::Coop));
+        assert_eq!(Block::Coop as u8, 80);
+        assert!(Block::Coop.is_placeable(), "空雞舍應可放置");
+        assert!(Block::Coop.is_solid(), "空雞舍應為實心方塊");
+        assert_eq!(Block::from_u8(81), Some(Block::CoopReady));
+        assert_eq!(Block::CoopReady as u8, 81);
+        assert!(!Block::CoopReady.is_placeable(), "有蛋雞舍是伺服器狀態方塊，玩家不可手動放置");
+        assert!(Block::CoopReady.is_solid(), "有蛋雞舍應為實心方塊");
     }
 
     #[test]
