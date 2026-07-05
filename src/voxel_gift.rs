@@ -80,6 +80,8 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         78 => "莓果醬",
         // 雞舍生蛋 v1（自主提案切片）：雞舍生的蛋，世界第一種動物產物、可餽贈居民。
         crate::voxel_coop::EGG_ID => "蛋",
+        // 漂流瓶 v1（自主提案切片 825）：合成後可丟進水裡寫下一封瓶中信。
+        crate::voxel_bottle::BOTTLE_ID => "空玻璃瓶",
         _ => "物品",
     }
 }

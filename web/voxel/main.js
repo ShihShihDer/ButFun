@@ -128,6 +128,9 @@ const BENCH = 79;
 // 就地回退成空雞舍繼續孵，像莓果叢一樣可反覆利用、不必重蓋。空雞舍既是背包物品也是可放置
 // 方塊（item_id == block_id）；有蛋雞舍是伺服器狀態方塊（玩家不放置）；蛋是純物品（可餽贈居民）。
 const COOP = 80, COOP_READY = 81, EGG = 82;
+// 漂流瓶 v1（自主提案切片 825）——背包 2×2 合成：玻璃(10)×2 → 1 空玻璃瓶(83)。
+// 世界第一種「玩家↔玩家」的痕跡：對準水面丟下、寫上一句瓶中信；純物品不可放置。
+const BOTTLE = 83;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -231,6 +234,7 @@ const COLOR = {
   [COOP]:            [0.58, 0.42, 0.26], // 空雞舍——木架棕
   [COOP_READY]:      [0.80, 0.68, 0.32], // 有蛋雞舍——暖黃，一眼看出可收成
   [EGG]:             [0.92, 0.88, 0.76], // 蛋——溫潤米白
+  [BOTTLE]:          [0.78, 0.90, 0.86], // 空玻璃瓶——淡青綠玻璃感（背包圖示用，純物品不放置）
 };
 
 const DEBUG = location.search.includes("debug");
@@ -1459,6 +1463,39 @@ function applySign(x, y, z, text) {
   }
 }
 
+// ── 漂流瓶 v1（自主提案切片 825）：世界上飄著瓶子的位置浮標 ─────────────────────────
+// 只知道「這裡有一只瓶子」，內文絕不快取在前端——要真的右鍵撿起（read_bottle）才由伺服器
+// 單播揭曉。所有瓶子共用同一張 emoji 貼圖（圖案固定不變），不必像告示牌逐面生畫布。
+const bottleMarkers = new Map(); // "x,y,z" -> THREE.Sprite
+let bottleMarkerTex = null;
+function bottleMarkerTexture() {
+  if (bottleMarkerTex) return bottleMarkerTex;
+  const canvas = document.createElement("canvas");
+  canvas.width = 64; canvas.height = 64;
+  const ctx = canvas.getContext("2d");
+  ctx.font = "40px system-ui, sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("🍾", 32, 34);
+  bottleMarkerTex = new THREE.CanvasTexture(canvas);
+  return bottleMarkerTex;
+}
+function addBottleMarker(x, y, z) {
+  const key = x + "," + y + "," + z;
+  if (bottleMarkers.has(key)) return;
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: bottleMarkerTexture(), transparent: true, depthTest: true })
+  );
+  sprite.scale.set(0.6, 0.6, 1);
+  sprite.position.set(x + 0.5, y + 1.05, z + 0.5);
+  scene.add(sprite);
+  bottleMarkers.set(key, sprite);
+}
+function removeBottleMarker(x, y, z) {
+  const key = x + "," + y + "," + z;
+  const sprite = bottleMarkers.get(key);
+  if (sprite) { scene.remove(sprite); bottleMarkers.delete(key); } // 貼圖共用，不 dispose
+}
+
 // ── embodied 靠近說話 v1：自己頭上的對話泡泡（本地驅動，說話立即冒、計時消失）─────
 // 不蓋住畫面、跟著角色在 3D 世界裡（「話活在世界裡」）。別人看到的版本走 players 廣播的 say。
 const MY_BUBBLE_SECS = 6;
@@ -2357,6 +2394,7 @@ const KIND_EMOJI = {
   "蓋家完工": "🏠",
   "居民易物": "⇌",
   "重返":     "🪧",
+  "漂流瓶":   "🍾",
 };
 
 /** 把後端回傳的 FeedEvent 陣列渲染到 #feedBody。
@@ -2922,6 +2960,8 @@ const BLOCK_NAME = {
   [JAM]: "莓果醬",
   // 雞舍生蛋 v1（自主提案切片）
   [COOP]: "雞舍", [COOP_READY]: "有蛋的雞舍", [EGG]: "蛋",
+  // 漂流瓶 v1（自主提案切片 825）
+  [BOTTLE]: "空玻璃瓶",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -3291,6 +3331,12 @@ function placeAtTarget() {
   if (!target || !wsReady) return null;
   // 空的快捷欄格（AIR）：沒選任何方塊，靜默忽略（避免送出 place AIR 誤刪）。
   if (selectedBlock() === AIR) return null;
+  // 漂流瓶 v1（自主提案切片 825）：右鍵對準已有瓶子的水面（不論手上拿什麼）→ 撿起它。
+  //   伺服器單播內文揭曉、全場同步移除浮標；一次性拾起，最先高於一般放置判斷。
+  if (bottleMarkers.has(target.bx + "," + target.by + "," + target.bz)) {
+    ws.send(JSON.stringify({ t: "read_bottle", x: target.bx, y: target.by, z: target.bz }));
+    return null;
+  }
   // 工作台互動：右鍵對準工作台方塊 → 開啟 3×3 合成面板（不放置新方塊）。
   if (getRaw(target.bx, target.by, target.bz) === WORKBENCH) {
     openWbPanel();
@@ -3368,6 +3414,17 @@ function placeAtTarget() {
         (py === Math.floor(player.y) || py === Math.floor(player.y + 1))) return null;
     ws.send(JSON.stringify({ t: "bucket_pour", x: px, y: py, z: pz }));
     return { x: px, y: py, z: pz };
+  }
+  // 漂流瓶 v1（自主提案切片 825）：手持空玻璃瓶對準水面 → 跳出輸入框寫一句瓶中信丟下去。
+  //   複用同款 isWaterId 判定；非水面靜默忽略（後端仍會權威複驗目標＋登入身分＋真的持有瓶子）。
+  if (selectedBlock() === BOTTLE) {
+    if (isWaterId(getRaw(target.bx, target.by, target.bz))) {
+      const text = window.prompt("瓶中信要寫什麼？（最多 60 字，寫給某位路過水邊的陌生旅人）", "");
+      if (text !== null && text.trim() !== "") {
+        ws.send(JSON.stringify({ t: "throw_bottle", x: target.bx, y: target.by, z: target.bz, text }));
+      }
+    }
+    return null;
   }
   // 鋤頭 v1（自主提案切片）：手持鋤頭對準草地／泥土 → 就地開墾成農田土。目標是命中方塊本身
   //   （不偏移到面外側，比照沃肥）；非草／土靜默忽略——後端仍會權威複驗目標可鋤＋背包真持有鋤頭。
@@ -4193,6 +4250,25 @@ function connect() {
       // 玩家里程碑 v1（ROADMAP 724）：只有自己看得到的私人慶祝提示；若面板剛好開著同步刷新。
       showMsg((m.icon || "🏅") + " 成就達成：" + (m.name_zh || "里程碑") + "！");
       if (milesVisible) refreshMilestones();
+    } else if (m.t === "bottle_sync") {
+      // 漂流瓶 v1（自主提案切片 825）：連線時一次收到世界上所有尚未被撿走的瓶子座標，全部掛上浮標。
+      for (const b of (m.bottles || [])) addBottleMarker(b.x, b.y, b.z);
+    } else if (m.t === "bottle_dropped") {
+      // 漂流瓶 v1：有人丟了一只新瓶子——只知座標，內文絕不外流。
+      addBottleMarker(m.x, m.y, m.z);
+    } else if (m.t === "bottle_removed") {
+      // 漂流瓶 v1：一只瓶子被撿走了，全場同步移除浮標。
+      removeBottleMarker(m.x, m.y, m.z);
+    } else if (m.t === "bottle_read") {
+      // 漂流瓶 v1：撿起的瓶中信內文只單播給撿到的人——世界第一次有了陌生旅人留給你的話。
+      showMsg("🍾 瓶中信：「" + (m.text || "") + "」");
+    } else if (m.t === "bottle_throw_ok") {
+      // 漂流瓶 v1：丟瓶成功的溫柔回饋。
+      showMsg("🍾 瓶子漂走了，不知道會被誰撿到……");
+    } else if (m.t === "bottle_fail") {
+      // 漂流瓶 v1：丟瓶/撿瓶失敗（非水面、沒瓶子、需登入、已達上限等）。
+      showErr(m.reason || "漂流瓶操作失敗");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     }
   };
   ws.onclose = () => {
@@ -4575,6 +4651,8 @@ const RECIPES_JS = [
   { id: "berry_bush", name: "莓果叢苗", inputs: [[SAPLING, 1], [SEEDS, 2]], output_block: BERRY_BUSH, out_count: 1 },
   // 木長椅 v1（自主提案切片）：2 木頭 + 2 木板 → 1 木長椅（擺在世界裡→白天路過的居民會停下坐上去歇腳）
   { id: "bench", name: "木長椅", inputs: [[WOOD, 2], [PLANK, 2]], output_block: BENCH, out_count: 1 },
+  // 漂流瓶 v1（自主提案切片 825）：2 玻璃 → 1 空玻璃瓶（對準水面丟下、寫上一句瓶中信）
+  { id: "bottle", name: "空玻璃瓶", inputs: [[GLASS, 2]], output_block: BOTTLE, out_count: 1 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
@@ -5562,6 +5640,11 @@ window.__voxel = {
   get signTexts() { return Object.fromEntries(signTexts); },
   get signSpriteCount() { return signSprites.size; },
   wrapSignLines(text, per, max) { return wrapSignLines(text, per, max); },
+  // ── 漂流瓶 v1 QA 用（自主提案切片 825）──
+  BOTTLE,
+  get bottleMarkerCount() { return bottleMarkers.size; },
+  addBottleMarker(x, y, z) { addBottleMarker(x, y, z); },
+  removeBottleMarker(x, y, z) { removeBottleMarker(x, y, z); },
   // ── 操作設定 + 手把 QA 用（操作大改：準心+按鈕防誤觸、設定面板、鍵盤/手把）──
   get settings() { return { ...settings }; },
   setSetting(key, val) {

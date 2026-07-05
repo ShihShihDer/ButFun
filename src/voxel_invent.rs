@@ -553,22 +553,30 @@ const MATERIAL_KEYWORDS: [(&str, u8); 6] = [
 /// 偵測：這句心願是否提到某個「可合成材料」。命中回目標，否則 `None`。
 /// 純函式、確定性、可測——一般心願（想要小屋/水井）不會誤觸發。
 ///
-/// **好奇心第三刀擴充**：先查手工關鍵詞表，查無再掃**可發明配方的產物名**——
+/// **好奇心第三刀擴充**：查手工關鍵詞表 + 掃**可發明配方的產物名**，兩邊都命中時
+/// **取字數最長者**（漂流瓶 v1 修：「空玻璃瓶」若只查手工表會被「玻璃」子字串搶先
+/// 誤判成玻璃(10)——產物名越長代表越具體，理當贏過較短的通用關鍵詞）。
 /// 好奇心種下的心願（梯子/木鎬/釣竿…）與玩家順口提到的都接得住，
 /// 單一事實源在配方表：新配方上桌自動被涵蓋，不再手動同步關鍵詞。
 /// 不可發明的產物（火把要煤礦、床要葉片）仍誠實不觸發。
 pub fn detect_missing_material(desire: &str) -> Option<MaterialGoal> {
+    let mut best: Option<(usize, MaterialGoal)> = None;
+    let mut consider = |len: usize, goal: MaterialGoal| {
+        if best.as_ref().is_none_or(|(best_len, _)| len > *best_len) {
+            best = Some((len, goal));
+        }
+    };
     for (kw, bid) in MATERIAL_KEYWORDS {
         if desire.contains(kw) {
-            return Some(MaterialGoal { block_id: bid, name_zh: material_name(bid) });
+            consider(kw.chars().count(), MaterialGoal { block_id: bid, name_zh: material_name(bid) });
         }
     }
     for r in inventable_recipes().chain(inventable_wb_recipes()) {
         if desire.contains(r.name_zh) {
-            return Some(MaterialGoal { block_id: r.output_block, name_zh: r.name_zh });
+            consider(r.name_zh.chars().count(), MaterialGoal { block_id: r.output_block, name_zh: r.name_zh });
         }
     }
-    None
+    best.map(|(_, goal)| goal)
 }
 
 /// 材料 id → 繁中名（覆蓋目標材料＋站點方塊；單一事實源在 voxel_craft 的 name_zh，
@@ -2656,6 +2664,18 @@ mod tests {
         assert!(detect_missing_material("好想要火把").is_none());
         // 一般詩意心願照舊不誤觸發。
         assert!(detect_missing_material("願市集的水果攤永遠新鮮").is_none());
+    }
+
+    #[test]
+    fn detect_missing_material_prefers_longer_specific_match_over_substring_keyword() {
+        // 漂流瓶 v1 回歸測試：「空玻璃瓶」內含手工關鍵詞表的「玻璃」子字串，
+        // 但應偵測到更具體的瓶子(83)本身，而非被短關鍵詞搶先誤判成玻璃(10)。
+        assert_eq!(
+            detect_missing_material("好想自己做出一個空玻璃瓶試試").map(|g| g.block_id),
+            Some(crate::voxel_bottle::BOTTLE_ID)
+        );
+        // 沒有更長的具體產物名時，手工關鍵詞表仍照舊運作。
+        assert_eq!(detect_missing_material("好想要一扇玻璃窗").map(|g| g.block_id), Some(10));
     }
 
     #[test]
