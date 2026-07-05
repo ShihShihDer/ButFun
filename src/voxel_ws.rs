@@ -132,6 +132,7 @@ use crate::voxel_daybreak as vdaybreak;
 use crate::voxel_reunion as vreunion;
 use crate::voxel_expedition as vexp;
 use crate::voxel_frontier_visit as vfvisit;
+use crate::voxel_illness as villness;
 use crate::voxel_welcome as vwelcome;
 use crate::voxel_resident_trade as vrtrade;
 use crate::voxel_share as vshare;
@@ -585,6 +586,18 @@ struct VoxelResident {
     frontier_visit_timer: f32,
     /// 邊陲探友冷卻倒數（秒）：一次探友（尋得／放棄）後設定，稀少才有感、不洗版。各居民初始錯開。
     frontier_visit_cooldown: f32,
+    /// 病況（居民也會生病 v1，ROADMAP 自主提案）：0.0=健康、[`villness::ILLNESS_MAX`]=剛病倒。
+    /// 隨伺服器 tick 自然消退（[`villness::tick_recover`]）；鄰居陪伴／玩家送湯會加速消退。
+    /// 純記憶體、重啟歸零（生病是數分鐘的過場狀態，零資料風險、零 migration）。
+    illness_severity: f32,
+    /// 發病冷卻倒數（秒）：> 0 時不會再次病倒，讓「生病」稀少而有份量。純記憶體，各居民初始錯開。
+    illness_cooldown: f32,
+    /// 陪伴照顧冷卻倒數（秒，居民也會生病 v1）：這位居民**當陪伴者**陪過人後設
+    /// [`villness::CARE_COOLDOWN_SECS`]，歸零前不再對人陪伴，讓「停下來陪一會兒」稀少而有份量。
+    care_cooldown: f32,
+    /// 被鄰居陪伴後、延遲道謝的待辦：`Some((陪伴者名, 倒數))`，倒數歸零時冒一句專屬道謝泡泡
+    /// （比照 800 飢餓時的守望相助 `pending_meal_thanks` 一來一往機制）。純記憶體。
+    pending_care_thanks: Option<(String, f32)>,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -1443,6 +1456,12 @@ fn build_resident(
             frontier_visit_stay: 0.0,
             frontier_visit_timer: 0.0,
             frontier_visit_cooldown: vfvisit::COOLDOWN_SECS * 0.5 + i as f32 * 250.0,
+            // 居民也會生病 v1（自主提案）：入場健康；首次發病冷卻各自大幅錯開，
+            // 避免啟動後短時間全員扎堆病倒。
+            illness_severity: 0.0,
+            illness_cooldown: villness::onset_cd_offset(i),
+            care_cooldown: 0.0,
+            pending_care_thanks: None,
     }
 }
 
@@ -4548,19 +4567,22 @@ async fn handle_socket(
                 };
                 // 2) 短鎖取居民快照（residents 讀鎖即釋）。y 供紀念物 v1（732）找腳邊空位用；
                 //    open_request 供「拜託你幫個小忙 v1」判斷這份禮是否正中居民開口討的材料。
-                let res_snap: Option<(&'static str, f32, f32, f32, Option<u8>)> = {
+                let res_snap: Option<(&'static str, f32, f32, f32, Option<u8>, f32)> = {
                     let residents = hub().residents.read().unwrap();
                     residents
                         .iter()
                         .find(|r| r.id == resident_id)
-                        .map(|r| (r.name, r.body.x, r.body.y, r.body.z, r.open_request))
+                        .map(|r| (r.name, r.body.x, r.body.y, r.body.z, r.open_request, r.illness_severity))
                 };
-                let Some((rname, rx, ry, rz, open_request)) = res_snap else {
+                let Some((rname, rx, ry, rz, open_request, illness_severity)) = res_snap else {
                     continue; // 找不到居民
                 };
                 // 拜託你幫個小忙 v1（自主提案）：這位居民此刻是否正等著有人送這樣材料來？
                 // 送對了＝你在她開口時幫上了忙，值得一份更歡欣的道謝＋記進「你幫過我」的人情。
                 let request_fulfilled = open_request == Some(item_id);
+                // 居民也會生病 v1（自主提案）：送的正是野菜暖湯、且這位居民此刻正生病——
+                // 你在她最難受的時候端了碗湯來，值得一份更觸動的道謝＋病況大幅緩解＋深記憶。
+                let soup_care_hit = item_id == vcraft::STEW_ID && villness::is_sick(illness_severity);
                 // 3) 驗觸及範圍（水平 XZ）。
                 let dx = px - rx;
                 let dz = pz - rz;
@@ -4607,6 +4629,14 @@ async fn handle_socket(
                     };
                     vmem::append_memory(&entry3);
                 }
+                // 居民也會生病 v1：你在她正生病時端了碗熱湯來——這份暖她記得格外深（掛玩家名下累積好感）。
+                if soup_care_hit {
+                    let mem4 = villness::soup_care_memory(&name);
+                    let entry4 = {
+                        hub().memory.write().unwrap().add_memory(&resident_id, &name, &mem4)
+                    };
+                    vmem::append_memory(&entry4);
+                }
                 // 5b) 送對禮物 v1（ROADMAP 722）：這位居民是否正懷抱一句「送這個物品就能實現」的
                 // 非建造類心願（desires 讀鎖即釋，不與其他鎖巢狀）？建造類心願交給蓋家系統的
                 // 心願成真（720），這裡刻意不搶。
@@ -4626,6 +4656,9 @@ async fn handle_socket(
                 let pick = (vfarm::now_secs() as usize).wrapping_add(item_id as usize);
                 let thanks = if item_wish_hit {
                     vgift::item_wish_thanks_line(rname, iname, &name)
+                } else if soup_care_hit {
+                    // 送對了時機的暖湯——比一般贈禮更觸動的專屬道謝。
+                    villness::soup_care_thanks_line(&name, pick)
                 } else if request_fulfilled {
                     // 你採來了她開口討的材料——比一般贈禮更歡欣（「你在我開口時幫了我」）。
                     vrequest::fulfil_thanks_line(&name, iname, pick)
@@ -4670,6 +4703,11 @@ async fn handle_socket(
                             r.savoring =
                                 Some((item_id, name.clone(), vsavor::SAVOR_DELAY_SECS));
                         }
+                        // 居民也會生病 v1：這碗湯送對了時機——病況大幅緩解（比鄰居陪伴更大方）。
+                        if soup_care_hit {
+                            r.illness_severity =
+                                villness::apply_care(r.illness_severity, villness::SOUP_CARE_BOOST);
+                        }
                     }
                 }
                 // 9) 廣播讓所有人看到居民道謝泡泡。
@@ -4698,7 +4736,15 @@ async fn handle_socket(
                     try_unlock_milestone(&name, "first_bond", &out_tx);
                 }
                 // 11) Feed：記錄贈禮事件（鎖外 IO）。
-                if request_fulfilled {
+                if soup_care_hit {
+                    // 居民也會生病 v1：你在她正生病時送湯來——動態牆記成一則專屬的鄰里照應，
+                    // 讓小社會看見「有人在她難受時送了暖」。
+                    vfeed::append_feed(
+                        villness::FEED_KIND,
+                        rname,
+                        &villness::soup_care_feed_line(rname, &name),
+                    );
+                } else if request_fulfilled {
                     // 拜託你幫個小忙 v1：她開口討的材料被送到了——動態牆記成一則「求助達成」，
                     // 讓小社會看見「有人回應了某居民的請求」。
                     vfeed::append_feed(
@@ -6511,6 +6557,13 @@ fn tick_residents(dt: f32) {
     // 末欄 is_repay（知恩圖報 v1，801）：true=這頓是「回報當年那口飯」，鎖外落地時走專屬記憶/Feed
     // 並結清欠飯；false=一般守望相助分食，落地時登記「被分食者欠分食者一口飯」。
     let mut share_meal_events: Vec<(String, &'static str, String, &'static str, bool)> = Vec::new();
+    // 居民也會生病 v1（自主提案）：本 tick 自然痊癒事件（居民名），鎖外落地城鎮動態。
+    let mut illness_recovered_events: Vec<&'static str> = Vec::new();
+    // 居民也會生病 v1：本 tick 病倒事件（居民名），鎖外落地城鎮動態。
+    let mut illness_onset_events: Vec<&'static str> = Vec::new();
+    // 居民也會生病 v1：本 tick 鄰居陪伴事件 (陪伴者 id, 陪伴者名, 被陪伴者 id, 被陪伴者名)，
+    // 鎖外落地雙方記憶 + 情誼加溫 + 城鎮動態（比照 800 飢餓時的守望相助的鎖外處理，守死鎖鐵律）。
+    let mut illness_care_events: Vec<(String, &'static str, String, &'static str)> = Vec::new();
     // 乙太營火 v1：夜裡才需要一份營火座標快照。短鎖 clone 即釋，避免在 residents 寫鎖迴圈內
     // 再取 campfires 讀鎖（不巢狀鎖，守 prod 死鎖鐵律）；非夜晚時空 Vec，跳過整段判定。
     let campfire_spots: Vec<(i32, i32, i32)> = if matches!(phase, TimePhase::Night) {
@@ -7060,6 +7113,27 @@ fn tick_residents(dt: f32) {
                         vsharemeal::thanks_line(&sharer_name, pick)
                     };
                     r.say = line.chars().take(40).collect();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                }
+            }
+
+            // 居民也會生病 v1·被陪伴者道謝倒數：被鄰居留下來陪了一會兒後，延遲幾秒冒一句嵌陪伴者名的
+            // 專屬道謝泡泡（零 LLM、程式化台詞），心情也亮一格。倒數與 take 都在居民自身鎖內、不巢狀。
+            let care_thanks_ready = match &mut r.pending_care_thanks {
+                Some((_, cd)) => {
+                    *cd -= dt;
+                    *cd <= 0.0
+                }
+                None => false,
+            };
+            if care_thanks_ready && r.say.is_empty() {
+                if let Some((carer_name, _)) = r.pending_care_thanks.take() {
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    r.say = villness::cared_thanks_line(&carer_name, pick)
+                        .chars()
+                        .take(40)
+                        .collect();
                     r.say_timer = SAY_SECS;
                     r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                 }
@@ -7886,6 +7960,25 @@ fn tick_residents(dt: f32) {
             // 飢餓時的守望相助 v1（ROADMAP 800）：分食冷卻遞減（純記憶體、每 tick 一次）。
             if r.share_meal_cooldown > 0.0 {
                 r.share_meal_cooldown -= dt;
+            }
+            // 居民也會生病 v1（自主提案）：發病／陪伴冷卻遞減；生病中的病況自然消退
+            //（靠自己休息也會漸漸好轉，無論此刻在做什麼都持續消退，比照餓意持續累積）。
+            if r.illness_cooldown > 0.0 {
+                r.illness_cooldown -= dt;
+            }
+            if r.care_cooldown > 0.0 {
+                r.care_cooldown -= dt;
+            }
+            if villness::is_sick(r.illness_severity) {
+                r.illness_severity = villness::tick_recover(r.illness_severity, dt);
+                if !villness::is_sick(r.illness_severity) && r.say.is_empty() && !r.asleep {
+                    // 靠自己扛過去、自然痊癒（沒人陪伴/送湯也走到終點）。
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    r.say = villness::recovered_bubble(pick).to_string();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    illness_recovered_events.push(r.name);
+                }
             }
             // 集會鐘 v1：應召逾時遞減（純記憶體、每 tick 一次，不管居民此刻走哪條移動分支都算），
             // 逾時歸零即放棄應召（例如鐘被挖了、或被別的高優先任務卡著走不到）——守「卡住自救」。
@@ -8898,6 +8991,31 @@ fn tick_residents(dt: f32) {
                 }
             }
 
+            // 居民也會生病 v1（voxel_illness，自主提案）：閒著、醒著、目前健康、不在朝聖/遠行的居民，
+            // 偶爾**病倒**——身子不舒服、停下腳步歇一會兒（設 wait_timer 原地駐足）。零場地限制（生病
+            // 不挑地點），靠 [`villness::ONSET_CHANCE`]（極小）+ [`villness::ONSET_COOLDOWN_SECS`]（長）
+            // 天然節流，稀少而有份量。病況此後隨 tick 自然消退（見上方冷卻遞減段），也可能被鄰居陪伴／
+            // 玩家送湯加速好轉（見下方掃描／禮物特例）。全庫唯一還空白的「被照顧」情感深度第一次出現。
+            if r.say.is_empty()
+                && !r.asleep
+                && r.pilgrimage.is_none()
+                && r.expedition.is_none()
+                && villness::should_fall_ill(
+                    villness::is_sick(r.illness_severity),
+                    r.illness_cooldown,
+                    rand::random::<f32>(),
+                    villness::ONSET_CHANCE,
+                )
+            {
+                r.illness_severity = villness::ILLNESS_MAX;
+                r.illness_cooldown = villness::ONSET_COOLDOWN_SECS;
+                r.wait_timer = r.wait_timer.max(villness::ONSET_REST_SECS);
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                r.say = villness::onset_bubble(pick).to_string();
+                r.say_timer = SAY_SECS;
+                illness_onset_events.push(r.name);
+            }
+
             // 居民誕辰紀念 v1（voxel_birthday）：經世代傳承誕生的居民（`birth_unix > 0`）每滿一個
             // 乙太年就迎來一次誕辰紀念——回望來到這片天地多久、記得父母便謝過（點名感謝生下自己的
             // 居民），你也在近旁時特地點名和你分享這一刻並記進交情。初始四位居民 `birth_unix == 0`
@@ -9714,6 +9832,83 @@ fn tick_residents(dt: f32) {
             share_meal_events.push((sharer_id, sharer_name, hungry_id, hungry_name, is_repay));
         }
 
+        // 2c-4) 居民也會生病·鄰居陪伴掃描（自主提案）：一位正生病的居民恰好被一位此刻閒著、自己健康、
+        // 陪伴冷卻到期、且與她交情已到相識以上的鄰居路過時，鄰居偶爾停下腳步陪她一會兒——病況大幅緩解、
+        // 被陪伴者稍後道謝、雙方各記一筆暖記憶、情誼再加溫一格。每 tick 最多一對、有長冷卻 + 低機率，
+        // 天然節流、不干擾物理主迴圈。沿用 2c/2c-3 的 `snaps` 位置快照（i≠j 循序索引、不雙重借用）；
+        // 情誼層級以短讀鎖取一次即釋（比照 2c-3 飢餓時的守望相助的 bonds 讀取，鎖序 residents 寫→
+        // bonds 讀，不巢狀、不反向，守死鎖鐵律）。
+        let care_pair: Option<(usize, usize)> = {
+            // (陪伴者 si, 被陪伴者 hi)。bonds 讀鎖只在挑對期間持有、找到即釋。
+            let bonds = hub().bonds.read().unwrap();
+            let mut found: Option<(usize, usize)> = None;
+            'cscan: for hi in 0..snaps.len() {
+                // 被陪伴者：正生病、沒睡著（讀 live 病況，隨 tick 消退）。
+                if !villness::is_sick(residents[hi].illness_severity) || snaps[hi].7 {
+                    continue;
+                }
+                for si in 0..snaps.len() {
+                    if si == hi {
+                        continue;
+                    }
+                    // 陪伴者：此刻沒在說話（讀 live）、沒睡著、陪伴冷卻到期、自己沒生病、
+                    // 不在朝聖/遠行途中（不搶正事）。
+                    if !residents[si].say.is_empty() || snaps[si].7 {
+                        continue;
+                    }
+                    if residents[si].care_cooldown > 0.0 {
+                        continue;
+                    }
+                    if villness::is_sick(residents[si].illness_severity) {
+                        continue;
+                    }
+                    if residents[si].pilgrimage.is_some() || residents[si].expedition.is_some() {
+                        continue;
+                    }
+                    // 就在旁邊才陪（近距）。
+                    if !vrel::pair_within_range(
+                        snaps[si].3, snaps[si].4, snaps[hi].3, snaps[hi].4, villness::CARE_RADIUS,
+                    ) {
+                        continue;
+                    }
+                    // 只有交情到相識以上的鄰居才會停下來陪伴（記憶驅動行為）。
+                    if !villness::tier_allows_care(resident_tier_of(&bonds, &snaps[si].1, &snaps[hi].1)) {
+                        continue;
+                    }
+                    if villness::should_care(
+                        residents[si].care_cooldown,
+                        rand::random::<f32>(),
+                        villness::CARE_CHANCE,
+                    ) {
+                        found = Some((si, hi));
+                        break 'cscan;
+                    }
+                }
+            }
+            found
+        }; // bonds 讀鎖釋放
+        if let Some((si, hi)) = care_pair {
+            let carer_id = snaps[si].1.clone();
+            let carer_name = snaps[si].2;
+            let patient_id = snaps[hi].1.clone();
+            let patient_name = snaps[hi].2;
+            // 陪伴者停下來陪一會兒（冒暖泡泡、上陪伴冷卻、心情亮一格）。
+            let pick = (residents[si].body.x.to_bits() ^ residents[si].body.z.to_bits()) as usize;
+            residents[si].say = villness::carer_line(pick).chars().take(40).collect();
+            residents[si].say_timer = SAY_SECS;
+            residents[si].care_cooldown = villness::CARE_COOLDOWN_SECS;
+            residents[si].mood_boost_secs =
+                residents[si].mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            // 被陪伴者：病況大幅緩解（不一定當場全好，留一點餘韻）、稍後冒一句專屬道謝、心情亮一格。
+            residents[hi].illness_severity =
+                villness::apply_care(residents[hi].illness_severity, villness::CARE_BOOST);
+            residents[hi].pending_care_thanks =
+                Some((carer_name.to_string(), vsharemeal::THANKS_DELAY_SECS));
+            residents[hi].mood_boost_secs =
+                residents[hi].mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            illness_care_events.push((carer_id, carer_name, patient_id, patient_name));
+        }
+
         // 2d) 打氣到達處理（ROADMAP 679）：把到達事件轉化成 pending_response + 收集記憶/Feed data。
         // 在 per-resident 迴圈結束後處理，避免雙重 iter_mut 借用衝突。
         // 格式：(happy_id, happy_name, lonely_rid) → 找到 lonely → 設 pending_response。
@@ -10068,6 +10263,52 @@ fn tick_residents(dt: f32) {
                 &vsharemeal::share_feed_line(sharer_name, hungry_name),
             );
         }
+    }
+
+    // 4a-2c) 居民也會生病·病倒／自然痊癒落地（自主提案）：本 tick 病倒 / 痊癒的居民各廣播一則城鎮
+    // 動態（鎖外 IO），讓不在場 / 回來的玩家也讀到「這位居民今天不太舒服」的生活痕跡。
+    for name in &illness_onset_events {
+        vfeed::append_feed(villness::FEED_KIND, name, &villness::onset_feed_line(name));
+    }
+    for name in &illness_recovered_events {
+        vfeed::append_feed(villness::FEED_KIND, name, &villness::recovered_feed_line(name));
+    }
+
+    // 4a-2d) 居民也會生病·鄰居陪伴落地（自主提案）：陪伴者 + 被陪伴者各寫一筆 episodic 記憶
+    // （掛在對方名下，累積情誼、也能昇華進日記），情誼因這份陪伴再加溫一格（升級才 save + 播里程碑，
+    // 比照 800/782），並廣播一則城鎮動態。鎖序：memory 寫（即釋）×2 → bonds 寫（即釋）〔升級時〕→
+    // bonds 讀 save + memory 寫；不巢狀、append-only 不破壞既有資料，守死鎖鐵律。
+    for (carer_id, carer_name, patient_id, patient_name) in &illness_care_events {
+        // 被陪伴者的記憶（掛在陪伴者名下）。
+        let mem_p = villness::cared_memory_for_patient(carer_name);
+        let ep = {
+            hub().memory.write().unwrap().add_memory(patient_id, carer_name, &mem_p)
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&ep);
+        // 陪伴者的記憶（掛在被陪伴者名下）。
+        let mem_c = villness::cared_memory_for_carer(patient_name);
+        let ec = {
+            hub().memory.write().unwrap().add_memory(carer_id, patient_name, &mem_c)
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&ec);
+        // 情誼因這份陪伴加溫一格（bonds 以顯示名記帳）。
+        let (tier, tier_changed) = {
+            let mut bonds = hub().bonds.write().unwrap();
+            bonds.record_visit(carer_name, patient_name)
+        }; // bonds 寫鎖釋放
+        if tier_changed {
+            {
+                let bonds = hub().bonds.read().unwrap();
+                vbonds::save_bonds(&bonds);
+            } // bonds 讀鎖釋放
+            let milestone = vbonds::tier_up_line(tier, carer_name, patient_name);
+            vfeed::append_feed("居民情誼", carer_name, &milestone);
+        }
+        vfeed::append_feed(
+            villness::FEED_KIND,
+            carer_name,
+            &villness::care_feed_line(carer_name, patient_name),
+        );
     }
 
     // 4a-c) 打氣到達記憶落地（ROADMAP 679）：打氣者 + 被打氣者各寫一筆記憶、Feed 廣播。
