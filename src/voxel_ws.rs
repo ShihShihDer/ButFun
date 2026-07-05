@@ -58,6 +58,7 @@ use crate::voxel_bench as vbench;
 use crate::voxel_bench_chat as vbenchchat;
 use crate::voxel_anglerest as vangler;
 use crate::voxel_raincover as vrain;
+use crate::voxel_homegaze as vhome;
 use crate::voxel_campfire as vcamp;
 use crate::voxel_campfire_tale as vtale;
 use crate::voxel_bell as vbell;
@@ -463,6 +464,9 @@ struct VoxelResident {
     /// 雨天躲雨冷卻倒數（秒，雨天葉傘避雨 v1）：一次停步躲雨後設 [`vrain::SHELTER_COOLDOWN_SECS`]，
     /// 歸零前不再躲——一場雨裡偶爾停步避一會兒、不狂刷避雨泡泡。各居民初始錯開。純記憶體、重啟歸零。
     rain_shelter_cooldown: f32,
+    /// 顧家駐足冷卻倒數（秒，居民顧家駐足 v1）：一次在自家門前駐足後設 [`vhome::GAZE_COOLDOWN_SECS`]，
+    /// 歸零前不再駐足——白天路過自家偶爾停下望一望、不狂刷顧家泡泡。各居民初始錯開。純記憶體、重啟歸零。
+    homegaze_cooldown: f32,
     /// 正在應召循鐘聲趕來（集會鐘 v1）：玩家敲響集會鐘時，範圍內閒著的居民設此欄位，
     /// 移動鏈據此朝鐘走去、抵達即聚攏反應後清空；逾時（[`vbell::SUMMON_TIMEOUT_SECS`]）自動放棄。
     /// 純記憶體、重啟歸零。
@@ -1350,6 +1354,7 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             angler_cooldown: vangler::fish_cd_offset(i),
             // 雨天葉傘避雨 v1：首次躲雨冷卻各自錯開，避免一下雨同一 tick 一群人齊聲說避雨話。
             rain_shelter_cooldown: vrain::shelter_cd_offset(i),
+            homegaze_cooldown: vhome::gaze_cd_offset(i),
             pending_tale_reply: None,
             // 集會鐘 v1：入場沒有正在應召的鐘；應召冷卻歸零（一出生就聽得到第一次鐘聲）。
             summon: None,
@@ -6362,6 +6367,10 @@ fn tick_residents(dt: f32) {
     // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在近旁才記交情，否則 None 只上 Feed。
     // (居民 id, 居民名, 近旁玩家名 Option, pick)。
     let mut rain_shelter_events: Vec<(String, &'static str, Option<String>, usize)> = Vec::new();
+    // 顧家駐足事件（居民顧家駐足 v1）：某居民白天在自家門前停步望家時鎖內收集；記憶寫＋Feed 在居民鎖
+    // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在近旁才記交情，否則 None 只上 Feed。
+    // (居民 id, 居民名, 近旁玩家名 Option, pick)。
+    let mut homegaze_events: Vec<(String, &'static str, Option<String>, usize)> = Vec::new();
     // 集會鐘 v1：某位應召的居民走到鐘邊聚攏時，鎖內收集事件；「你敲鐘召我來」的交情記憶＋Feed
     // 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。(居民 id, 居民名, 敲鐘者名)。
     let mut bell_gather_events: Vec<(String, &'static str, String)> = Vec::new();
@@ -7726,6 +7735,10 @@ fn tick_residents(dt: f32) {
             if r.rain_shelter_cooldown > 0.0 {
                 r.rain_shelter_cooldown -= dt;
             }
+            // 居民顧家駐足 v1：顧家冷卻遞減（純記憶體、每 tick 一次）。
+            if r.homegaze_cooldown > 0.0 {
+                r.homegaze_cooldown -= dt;
+            }
             // 飢餓時的守望相助 v1（ROADMAP 800）：分食冷卻遞減（純記憶體、每 tick 一次）。
             if r.share_meal_cooldown > 0.0 {
                 r.share_meal_cooldown -= dt;
@@ -8576,6 +8589,53 @@ fn tick_residents(dt: f32) {
                     r.say_timer = SAY_SECS;
                     r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                     rain_shelter_events.push((r.id.clone(), r.name, None, pick));
+                }
+            }
+
+            // 居民顧家駐足 v1（voxel_homegaze）：白天，閒著、醒著、不在朝聖/遠行、且恰好走到自家門前
+            //（離家域中心 HOME_RADIUS 內）的居民，偶爾**停下腳步、望著自己一手安頓下來的家、湧起一股
+            // 踏實的歸屬感**（設 wait_timer 原地駐足＝這一拍的行為：居民第一次對「一個地點（自家）」生出
+            // 情感）、心情亮一格；你也在近旁（GAZE_PLAYER_RADIUS 內）時把「家的踏實有你相伴」記進交情。
+            // 白天限定（phase 為 Dawn/Day/Dusk）＝與夜歸就寢刻意區隔（夜睡／晝望，時段相反）。三閘（在家＋
+            // 冷卻＋機率）＋長冷卻＝天然節流。鎖序：純讀居民自身欄位，記憶寫＋Feed 走鎖外 `homegaze_events`。
+            if r.say.is_empty()
+                && !r.asleep
+                && r.homegaze_cooldown <= 0.0
+                && r.pilgrimage.is_none()
+                && r.expedition.is_none()
+                && matches!(phase, TimePhase::Dawn | TimePhase::Day | TimePhase::Dusk)
+                && vhome::should_gaze(
+                    vhome::near_home(r.body.x, r.body.z, r.home_x, r.home_z),
+                    0.0,
+                    rand::random::<f32>(),
+                    vhome::GAZE_CHANCE,
+                )
+            {
+                r.homegaze_cooldown = vhome::GAZE_COOLDOWN_SECS;
+                // 顧家＝停下移動、原地在自家門前望一會兒（移動分支讀到 wait_timer > 0 就讓她駐足）。
+                r.wait_timer = r.wait_timer.max(vhome::GAZE_PAUSE_SECS);
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                // 近旁最近的登入玩家（GAZE_PLAYER_RADIUS 內、名非空）→ 顧家話點你名、把家的踏實記交情。
+                let near_player = nearest_player_info(r.body.x, r.body.z, &player_pts)
+                    .filter(|(d2, pname)| {
+                        *d2 < vhome::GAZE_PLAYER_RADIUS * vhome::GAZE_PLAYER_RADIUS
+                            && !pname.is_empty()
+                    })
+                    .map(|(_, pname)| pname.to_string());
+                if let Some(pname) = near_player {
+                    r.say = vhome::gaze_bubble_with_player(&pname, pick)
+                        .chars()
+                        .take(vhome::SAY_CHARS)
+                        .collect();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    homegaze_events.push((r.id.clone(), r.name, Some(pname), pick));
+                } else {
+                    // 沒有玩家在近旁（或只有訪客）：獨自望家念句通用顧家話，上 Feed、不寫玩家交情。
+                    r.say = vhome::gaze_bubble(pick).to_string();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    homegaze_events.push((r.id.clone(), r.name, None, pick));
                 }
             }
 
@@ -10252,6 +10312,21 @@ fn tick_residents(dt: f32) {
                 .add_memory(rid, pname, &vrain::shelter_memory_line(pname)); // 記憶寫鎖即釋
         }
         vfeed::append_feed(vrain::FEED_KIND, rname, &vrain::shelter_feed_line(rname));
+    }
+
+    // 居民顧家駐足 v1：白天在自家門前望家出神的事件落地——玩家在近旁時把「家的踏實有你相伴」記進交情
+    //（掛玩家名下、日後浮進日記），無論有無玩家都上動態牆。記憶寫鎖短取即釋、Feed 走 IO，皆在 residents
+    // 鎖釋放後（守死鎖鐵律）。比照臨水垂釣／雨天避雨：顧家是輕鬆日常小拍，記憶只進記憶庫（in-memory、
+    // 重啟歸零），不額外持久化。
+    for (rid, rname, pname_opt, _pick) in &homegaze_events {
+        if let Some(pname) = pname_opt {
+            hub()
+                .memory
+                .write()
+                .unwrap()
+                .add_memory(rid, pname, &vhome::gaze_memory_line(pname)); // 記憶寫鎖即釋
+        }
+        vfeed::append_feed(vhome::FEED_KIND, rname, &vhome::gaze_feed_line(rname));
     }
 
     // 集會鐘 v1：應召走到鐘邊聚攏的居民，把「你敲鐘召我來」這份互動記進交情（掛敲鐘者名下、
