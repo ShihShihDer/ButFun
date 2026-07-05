@@ -439,6 +439,46 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
         output_block: crate::voxel_coop::COOP_ID,
         output_count: 1,
     },
+    // ── 建築藍圖 v1（自主提案切片）：直接指定居民蓋哪一種建物，不再只能猜關鍵詞 ──────────
+    // 五張藍圖各對應一種既有建物（House/Well/Tower/Garden/Pavilion），送給居民後直接改寫
+    // 她的心願（見 voxel_blueprint.rs + voxel_ws.rs Gift 接線）。材料呼應各建物的既有建材
+    // 色盤（小屋=木+石、水井=石磚+玻璃、瞭望台=大量石磚、花圃=葉片+種子、涼亭=木頭+火把），
+    // 五組多重集彼此互異、也與既有配方皆不相撞（見下方 all_recipes_output_crafted_block_ids）。
+    Recipe {
+        id: "blueprint_house",
+        name_zh: "小屋藍圖",
+        inputs: &[(8, 4), (3, 2)],  // 4 木板 + 2 石頭 → 1 小屋藍圖
+        output_block: crate::voxel_blueprint::BLUEPRINT_HOUSE,
+        output_count: 1,
+    },
+    Recipe {
+        id: "blueprint_well",
+        name_zh: "水井藍圖",
+        inputs: &[(9, 3), (10, 2)],  // 3 石磚 + 2 玻璃 → 1 水井藍圖（5 格，需工作台）
+        output_block: crate::voxel_blueprint::BLUEPRINT_WELL,
+        output_count: 1,
+    },
+    Recipe {
+        id: "blueprint_tower",
+        name_zh: "瞭望台藍圖",
+        inputs: &[(9, 5)],  // 5 石磚 → 1 瞭望台藍圖
+        output_block: crate::voxel_blueprint::BLUEPRINT_TOWER,
+        output_count: 1,
+    },
+    Recipe {
+        id: "blueprint_garden",
+        name_zh: "花圃藍圖",
+        inputs: &[(6, 3), (14, 2)],  // 3 葉片 + 2 種子 → 1 花圃藍圖
+        output_block: crate::voxel_blueprint::BLUEPRINT_GARDEN,
+        output_count: 1,
+    },
+    Recipe {
+        id: "blueprint_pavilion",
+        name_zh: "涼亭藍圖",
+        inputs: &[(5, 3), (31, 2)],  // 3 木頭 + 2 火把 → 1 涼亭藍圖（5 格，需工作台）
+        output_block: crate::voxel_blueprint::BLUEPRINT_PAVILION,
+        output_count: 1,
+    },
 ];
 
 /// 熔爐冶煉配方（需放置熔爐方塊後右鍵開啟冶煉面板才能使用）。
@@ -777,7 +817,12 @@ mod tests {
                 || r.output_block == crate::voxel_compost::FERTILIZER_ID // 乙太沃肥（純物品 id=69，ROADMAP 789）
                 || r.output_block == crate::voxel_campfire::CAMPFIRE_ID // 乙太營火（可放置發光方塊 id=70，自主提案切片）
                 || r.output_block == crate::voxel_bell::BELL_ID // 集會鐘（可放置方塊 id=74，自主提案切片）
-                || r.output_block == crate::voxel_coop::COOP_ID; // 雞舍（可放置方塊 id=80，自主提案切片）
+                || r.output_block == crate::voxel_coop::COOP_ID // 雞舍（可放置方塊 id=80，自主提案切片）
+                || r.output_block == crate::voxel_blueprint::BLUEPRINT_HOUSE // 小屋藍圖（純物品 id=84，自主提案切片）
+                || r.output_block == crate::voxel_blueprint::BLUEPRINT_WELL // 水井藍圖（純物品 id=85）
+                || r.output_block == crate::voxel_blueprint::BLUEPRINT_TOWER // 瞭望台藍圖（純物品 id=86）
+                || r.output_block == crate::voxel_blueprint::BLUEPRINT_GARDEN // 花圃藍圖（純物品 id=87）
+                || r.output_block == crate::voxel_blueprint::BLUEPRINT_PAVILION; // 涼亭藍圖（純物品 id=88）
             assert!(
                 ok,
                 "工作台配方「{}」產出 id={} 超出範圍",
@@ -962,6 +1007,8 @@ mod tests {
         store.give("旅人", 65, 10); // SAPLING（berry_bush 莓果叢苗配方用，樹苗，ROADMAP 806）
         store.give("旅人", 14, 10); // SEEDS（berry_bush 莓果叢苗配方用，種子，ROADMAP 806）
         store.give("旅人", crate::voxel_berry::BERRY_ID, 10); // BERRY（smelt_jam 莓果醬配方用，ROADMAP 808）
+        store.give("旅人", 9, 10);  // StoneBrick（建築藍圖·水井/瞭望台配方用）
+        store.give("旅人", 31, 10); // Torch（建築藍圖·涼亭配方用）
         // 火把配方：1 木頭(5) + 1 煤礦(20) → 4 火把（Wood/CoalOre 已加，數量足夠）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);

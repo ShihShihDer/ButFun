@@ -39,6 +39,7 @@ use self::voxel_directed_task::{self as vdt, CoordinatedLevelTask, DirectedTask}
 mod voxel_fetch;
 use self::voxel_fetch::{self as vfetch, FetchTask};
 use crate::voxel_building::{self as vbuild, BuildStore};
+use crate::voxel_blueprint as vblueprint;
 use crate::voxel_skills::{self as vskill, GatherSkill, GoalStore, NextActivity};
 use crate::voxel_invent as vinvent;
 use crate::voxel_desires::{self as vdes, DesireStore};
@@ -4640,6 +4641,9 @@ async fn handle_socket(
                 // 居民也會生病 v1（自主提案）：送的正是野菜暖湯、且這位居民此刻正生病——
                 // 你在她最難受的時候端了碗湯來，值得一份更觸動的道謝＋病況大幅緩解＋深記憶。
                 let soup_care_hit = item_id == vcraft::STEW_ID && villness::is_sick(illness_severity);
+                // 建築藍圖 v1（自主提案）：這份禮是不是一張藍圖？藍圖直接指定她接下來蓋哪一種建物
+                // （非猜關鍵詞），下方 5c) 據此改寫她的心願。
+                let blueprint_kind_hit = vblueprint::blueprint_kind(item_id);
                 // 3) 驗觸及範圍（水平 XZ）。
                 let dx = px - rx;
                 let dz = pz - rz;
@@ -4696,7 +4700,8 @@ async fn handle_socket(
                 }
                 // 5b) 送對禮物 v1（ROADMAP 722）：這位居民是否正懷抱一句「送這個物品就能實現」的
                 // 非建造類心願（desires 讀鎖即釋，不與其他鎖巢狀）？建造類心願交給蓋家系統的
-                // 心願成真（720），這裡刻意不搶。
+                // 心願成真（720），這裡刻意不搶。讀的是這份禮**送到之前**的舊心願狀態，故排在
+                // 5c) 藍圖改寫她的心願之前。
                 let item_wish_hit: bool = {
                     let desires = hub().desires.read().unwrap();
                     desires.get_desire(&resident_id).is_some_and(|d| {
@@ -4705,13 +4710,31 @@ async fn handle_socket(
                             && vgift::classify_item_desire(&d.desire) == Some(item_id)
                     })
                 };
+                // 5c) 建築藍圖 v1：藍圖直接改寫她的心願成藍圖指定的建物種類——沿用玩家聊天種
+                // 願望的同一套 `set_desire`（`sparked_by`=玩家名 → 完工時指名感謝，見既有
+                // 「無計畫」活動選擇段落）；零新狀態機，`voxel_building`/`voxel_skills` 不用改一行。
+                if let Some(kind) = blueprint_kind_hit {
+                    let entry = {
+                        let mut des = hub().desires.write().unwrap();
+                        des.set_desire(&resident_id, vblueprint::blueprint_desire_text(kind), &name)
+                    }; // desires 寫鎖釋放
+                    vdes::append_desire(&entry);
+                    let mem5 = vblueprint::blueprint_memory_line(&name, kind);
+                    let entry5 = {
+                        hub().memory.write().unwrap().add_memory(&resident_id, &name, &mem5)
+                    };
+                    vmem::append_memory(&entry5);
+                }
                 // 6) 讀好感度（memory 讀鎖即釋）。
                 let affinity = {
                     hub().memory.read().unwrap().affinity_count(&name, &resident_id)
                 };
-                // 7) 組道謝台詞（純函式，無鎖）——心願送到 > 食物(BREAD_ID=19) > 一般禮物。
+                // 7) 組道謝台詞（純函式，無鎖）——藍圖 > 心願送到 > 食物(BREAD_ID=19) > 一般禮物。
                 let pick = (vfarm::now_secs() as usize).wrapping_add(item_id as usize);
-                let thanks = if item_wish_hit {
+                let thanks = if let Some(kind) = blueprint_kind_hit {
+                    // 藍圖最優先：這句話點名「心願被直接指定」，非一般贈禮道謝可比。
+                    vblueprint::blueprint_thanks_line(kind, pick)
+                } else if item_wish_hit {
                     vgift::item_wish_thanks_line(rname, iname, &name)
                 } else if soup_care_hit {
                     // 送對了時機的暖湯——比一般贈禮更觸動的專屬道謝。
@@ -4793,7 +4816,14 @@ async fn handle_socket(
                     try_unlock_milestone(&name, "first_bond", &out_tx);
                 }
                 // 11) Feed：記錄贈禮事件（鎖外 IO）。
-                if soup_care_hit {
+                if let Some(kind) = blueprint_kind_hit {
+                    // 建築藍圖 v1：不在場的玩家回來也讀得到「誰指定了哪位居民蓋什麼」。
+                    vfeed::append_feed(
+                        "藍圖",
+                        rname,
+                        &vblueprint::blueprint_feed_line(&name, rname, kind),
+                    );
+                } else if soup_care_hit {
                     // 居民也會生病 v1：你在她正生病時送湯來——動態牆記成一則專屬的鄰里照應，
                     // 讓小社會看見「有人在她難受時送了暖」。
                     vfeed::append_feed(

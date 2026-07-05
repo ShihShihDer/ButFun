@@ -131,6 +131,10 @@ const COOP = 80, COOP_READY = 81, EGG = 82;
 // 漂流瓶 v1（自主提案切片 825）——背包 2×2 合成：玻璃(10)×2 → 1 空玻璃瓶(83)。
 // 世界第一種「玩家↔玩家」的痕跡：對準水面丟下、寫上一句瓶中信；純物品不可放置。
 const BOTTLE = 83;
+// 建築藍圖 v1（自主提案切片）——工作台合成：五張藍圖各對應一種既有建物，送給居民後直接
+// 改寫她的心願成你指定的建物種類（不再只能靠猜關鍵詞碰運氣）；純物品不可放置。
+const BLUEPRINT_HOUSE = 84, BLUEPRINT_WELL = 85, BLUEPRINT_TOWER = 86,
+      BLUEPRINT_GARDEN = 87, BLUEPRINT_PAVILION = 88;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -235,6 +239,12 @@ const COLOR = {
   [COOP_READY]:      [0.80, 0.68, 0.32], // 有蛋雞舍——暖黃，一眼看出可收成
   [EGG]:             [0.92, 0.88, 0.76], // 蛋——溫潤米白
   [BOTTLE]:          [0.78, 0.90, 0.86], // 空玻璃瓶——淡青綠玻璃感（背包圖示用，純物品不放置）
+  // 建築藍圖 v1：五張藍圖各自淺色系區隔，對應建物意象（背包圖示用，純物品不放置）
+  [BLUEPRINT_HOUSE]:    [0.90, 0.75, 0.55], // 小屋藍圖——暖木黃
+  [BLUEPRINT_WELL]:     [0.68, 0.80, 0.88], // 水井藍圖——石藍
+  [BLUEPRINT_TOWER]:    [0.72, 0.70, 0.68], // 瞭望台藍圖——灰石
+  [BLUEPRINT_GARDEN]:   [0.70, 0.88, 0.62], // 花圃藍圖——嫩綠
+  [BLUEPRINT_PAVILION]: [0.92, 0.68, 0.42], // 涼亭藍圖——溫橘
 };
 
 const DEBUG = location.search.includes("debug");
@@ -2962,6 +2972,9 @@ const BLOCK_NAME = {
   [COOP]: "雞舍", [COOP_READY]: "有蛋的雞舍", [EGG]: "蛋",
   // 漂流瓶 v1（自主提案切片 825）
   [BOTTLE]: "空玻璃瓶",
+  // 建築藍圖 v1（自主提案切片）
+  [BLUEPRINT_HOUSE]: "小屋藍圖", [BLUEPRINT_WELL]: "水井藍圖", [BLUEPRINT_TOWER]: "瞭望台藍圖",
+  [BLUEPRINT_GARDEN]: "花圃藍圖", [BLUEPRINT_PAVILION]: "涼亭藍圖",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -4911,6 +4924,12 @@ const WORKBENCH_RECIPES_JS = [
   { id: "bell",           name: "集會鐘",         inputs: [[IRON_INGOT, 4], [WOOD, 1]], output_block: BELL, out_count: 1 },
   // 雞舍生蛋 v1（自主提案切片）：4 木頭 + 2 葉片 → 1 雞舍（工作台；放下後靜候一段時間會生蛋）
   { id: "coop",           name: "雞舍",           inputs: [[WOOD, 4], [LEAVES, 2]], output_block: COOP, out_count: 1 },
+  // 建築藍圖 v1（自主提案切片）：五張藍圖各對應一種既有建物，送給居民後直接指定她蓋哪一種。
+  { id: "blueprint_house",    name: "小屋藍圖",   inputs: [[PLANK, 4], [STONE, 2]],  output_block: BLUEPRINT_HOUSE,    out_count: 1 },
+  { id: "blueprint_well",     name: "水井藍圖",   inputs: [[STONE_BRICK, 3], [GLASS, 2]], output_block: BLUEPRINT_WELL, out_count: 1 },
+  { id: "blueprint_tower",    name: "瞭望台藍圖", inputs: [[STONE_BRICK, 5]],        output_block: BLUEPRINT_TOWER,    out_count: 1 },
+  { id: "blueprint_garden",   name: "花圃藍圖",   inputs: [[LEAVES, 3], [SEEDS, 2]], output_block: BLUEPRINT_GARDEN,   out_count: 1 },
+  { id: "blueprint_pavilion", name: "涼亭藍圖",   inputs: [[WOOD, 3], [TORCH, 2]],   output_block: BLUEPRINT_PAVILION, out_count: 1 },
 ];
 
 // wbGrid[0..8]：3×3 共 9 格，0 代表空格，非零代表 block_id。
