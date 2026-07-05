@@ -256,6 +256,7 @@ mod voxel_gratitude; // 知恩圖報 v1·居民記得誰在牠餓時分過飯，
 mod voxel_ratelimit; // 對話 per-IP 速率限制 v1·上架前治安三件套①：per-connection 冷卻可被「開多條連線」繞過→以真實 IP 為鍵的 token bucket 設跨連線天花板，擋白嫖/燒爆免費 LLM（自主提案切片 802）
 mod voxel_moderation; // 對話內容審查 v1·上架前治安三件套②：文字長度/速率合格但「內容」無閘→純邏輯樣式審查攔 prompt injection/越獄注入與明顯辱罵，超線者收溫柔提示、絕不觸發 LLM/廣播原文（自主提案切片 803）
 mod voxel_frontier_visit; // 居民千里跋涉去邊陲探望遠行的夥伴 v1·留守主城的居民（露娜/賽勒）跟正在邊陲逗留的老朋友（奧瑞/諾娃）交情夠深時，偶爾放下手邊的事追去邊陲找她——散居（item 7）與情誼（item 4）第一次交織（自主提案切片 821）
+mod voxel_illness; // 居民也會生病、鄰居與你的照顧讓她好轉快 v1·全庫唯一空白的「被照顧」情感深度——偶爾病倒、動作慢下來，靠自己休息會漸漸好轉，但交情夠的鄰居恰好路過陪伴、或你送她一碗暖湯，會好得更快（自主提案切片，本輪）
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
