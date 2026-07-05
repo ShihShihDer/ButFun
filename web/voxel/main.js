@@ -2458,8 +2458,74 @@ export function compassRelativeDeg(px, pz, rx, rz, yaw) {
 let compassVisible = false;
 let compassTimer = null;
 
+// ── 雷達小地圖（ROADMAP 820）───────────────────────────────────────────────
+// 705 羅盤只有文字列表（方向＋距離），玩家仍得自己在腦中拼出「大家散得多開」的
+// 全貌。本刀在同一面板加一張圓形雷達畫布：玩家永遠朝上（螢幕正上方），居民依
+// 相對方位與距離畫成色點——同一組數學（compassRelativeDeg），只是換成視覺呈現，
+// 一眼看出「大家在哪一側、密集或分散」，與文字列表互補共存。
+const compassRadarEl = document.getElementById("compassRadar");
+const compassRadarCtx = compassRadarEl ? compassRadarEl.getContext("2d") : null;
+/** 雷達涵蓋半徑（遊戲單位）；超出此距離的居民仍顯示正確方向，但夾在圓周邊緣（半透明標示「在範圍外」）。 */
+const RADAR_RANGE_UNITS = 150;
+
+/** 把「相對玩家朝向的角度(deg)＋距離(遊戲單位)」換算成雷達畫布上的相對座標（純函式，可測）。
+ * 與 compassRelativeDeg 同一套慣例：0 度＝正前方（畫布正上方），順時針遞增。
+ * @returns {{x:number,y:number,clamped:boolean}} 相對雷達圓心的偏移（px）；clamped=true 表示已超出範圍、夾在邊緣。
+ */
+export function radarPoint(dist, relDeg, rangeUnits, radiusPx) {
+  const rad = relDeg * Math.PI / 180;
+  const clamped = dist > rangeUnits;
+  const r = clamped ? radiusPx : (dist / rangeUnits) * radiusPx;
+  return { x: r * Math.sin(rad), y: -r * Math.cos(rad), clamped };
+}
+
+/** 重繪雷達畫布：背景圓＋兩圈距離刻度＋每位居民一個色點（顏色沿用聊天窗同款穩定色）＋中心固定朝上的玩家三角。 */
+function renderCompassRadar() {
+  if (!compassRadarCtx || !compassRadarEl) return;
+  const ctx = compassRadarCtx;
+  const w = compassRadarEl.width, h = compassRadarEl.height;
+  const cx = w / 2, cy = h / 2;
+  const outerR = Math.min(w, h) / 2 - 6;
+  ctx.clearRect(0, 0, w, h);
+  ctx.beginPath();
+  ctx.arc(cx, cy, outerR, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(10,14,22,0.85)";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(200,184,255,0.25)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  for (const frac of [1 / 3, 2 / 3]) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, outerR * frac, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(200,184,255,0.12)";
+    ctx.stroke();
+  }
+  const dotR = outerR - 8;
+  for (const [rid, ent] of residents.entries()) {
+    const p = ent.group.position;
+    const dx = p.x - player.x, dz = p.z - player.z;
+    const dist = Math.hypot(dx, dz);
+    const relDeg = compassRelativeDeg(player.x, player.z, p.x, p.z, player.yaw);
+    const pt = radarPoint(dist, relDeg, RADAR_RANGE_UNITS, dotR);
+    ctx.globalAlpha = pt.clamped ? 0.55 : 1;
+    ctx.beginPath();
+    ctx.arc(cx + pt.x, cy + pt.y, pt.clamped ? 4 : 5, 0, Math.PI * 2);
+    ctx.fillStyle = chatLogColorFor(rid);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - 7);
+  ctx.lineTo(cx - 5, cy + 5);
+  ctx.lineTo(cx + 5, cy + 5);
+  ctx.closePath();
+  ctx.fillStyle = "#eaf2ff";
+  ctx.fill();
+}
+
 /** 重新計算並渲染羅盤列表：依所有居民的即時座標算方位＋距離，離玩家近的排前面。 */
 function renderCompassPanel() {
+  renderCompassRadar();
   if (!compassBodyEl) return;
   const rows = [...residents.values()].map((ent) => {
     const p = ent.group.position;
@@ -5315,6 +5381,8 @@ window.__voxel = {
   renderCompassPanel() { renderCompassPanel(); return compassBodyEl && compassBodyEl.innerHTML; },
   worldBearing(px, pz, rx, rz) { return worldBearing(px, pz, rx, rz); },
   compassRelativeDeg(px, pz, rx, rz, yaw) { return compassRelativeDeg(px, pz, rx, rz, yaw); },
+  // ── 雷達小地圖 QA 用（ROADMAP 820）──
+  radarPoint(dist, relDeg, rangeUnits, radiusPx) { return radarPoint(dist, relDeg, rangeUnits, radiusPx); },
   // ── 居民交情網 QA 用（ROADMAP 708）──
   openRelations() { return openRelations(); },
   closeRelations() { closeRelations(); },

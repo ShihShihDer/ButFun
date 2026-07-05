@@ -639,6 +639,9 @@
       cursor: pointer; user-select: none; font-size: 18px; line-height: 1;
       padding: 2px 8px; border-radius: 8px; background: rgba(255,255,255,0.10);
     }
+    #compassRadar {
+      display: block; margin: 10px auto 2px; max-width: 100%; height: auto;
+    }
     #compassBody {
       flex: 1; overflow-y: auto; padding: 10px 13px;
       display: flex; flex-direction: column; gap: 8px; font-size: 13px;
@@ -1443,11 +1446,13 @@
     <div id="diaryWallBody"></div>
   </div>
   <!-- 居民羅盤（ROADMAP 705）：4 位居民散居各地（653），此面板指出各自的方向與距離 -->
+  <!-- 雷達小地圖（ROADMAP 820）：文字列表之上加一眼看懂的視覺化方位圖 -->
   <div id="compassPanel">
     <div id="compassHead">
       <span id="compassTitle">🧭 居民羅盤</span>
       <span id="compassClose">✕</span>
     </div>
+    <canvas id="compassRadar" width="200" height="200"></canvas>
     <div id="compassBody"></div>
   </div>
   <!-- 居民交情網（ROADMAP 708）：情誼（672）早已驅動問候/八卦/互助蓋家，此面板讓玩家第一次看見 -->
