@@ -4130,6 +4130,11 @@ function connect() {
       const iname = BLOCK_NAME[m.block_id] || "材料";
       showMsg("⛏️ 好工具！多採到 " + iname + " ×" + (m.count || 1));
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 1600);
+    } else if (m.t === "coop_bonus") {
+      // 並肩協作 v1（自主提案切片 827）：附近有其他真人玩家一起採集，默契多收到材料——
+      // 跳一句小回饋（背包由 inv_update 更新）。
+      showMsg(m.line || "🤝 並肩採集，默契多收了一份！");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 1800);
     } else if (m.t === "fertilize_fail") {
       // 乙太沃肥 v1（789）：施不了（太遠 / 非幼苗 / 背包沒有沃肥）。
       showErr(m.reason || "現在沒法施肥");

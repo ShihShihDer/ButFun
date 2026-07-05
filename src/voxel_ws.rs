@@ -140,6 +140,7 @@ use crate::voxel_share as vshare;
 use crate::voxel_milestones::{self as vmiles, MilestoneStore};
 use crate::voxel_player_pos as vpp;
 use crate::voxel_bottle::{self as vbottle, BottleStore};
+use crate::voxel_coop_gather as vcoop_gather;
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -2945,6 +2946,49 @@ async fn handle_socket(
                                         .to_string(),
                                     ));
                                 }
+                            }
+                        }
+
+                        // 並肩協作 v1（自主提案切片 827）：挖天然方塊時，附近若有其他真人玩家
+                        // 一起忙活，默契讓這塊多掉一點——玩家↔玩家至今唯一互動是漂流瓶（825，
+                        // 非同步/匿名/一次性），本刀補上第一個即時/同步協作。只認天然採集方塊
+                        // （沿用 790 工具加成同一張適配表，不重立表，也不與工具/時令加成疊算判斷
+                        // 順序衝突——三者皆各自獨立附加，互不影響）。
+                        // 濫用防護：同伴數由伺服器讀既有 players map 權威判定（非客戶端自報）；
+                        // 只是額外一份既有材料、不觸發 LLM、封頂 MAX_PARTNERS，無經濟破壞面。
+                        if vcoop_gather::coop_eligible_block(target_block) {
+                            let others: Vec<(f32, f32, f32)> = hub()
+                                .players
+                                .read()
+                                .unwrap()
+                                .values()
+                                .filter(|p| p.id != my_id)
+                                .map(|p| (p.x, p.y, p.z))
+                                .collect();
+                            let partners = vcoop_gather::count_partners((px, py, pz), &others);
+                            let bonus = vcoop_gather::coop_yield_bonus(partners);
+                            if bonus > 0 {
+                                let bid = target_block as u8;
+                                let entry = hub().inventory.write().unwrap().give(&name, bid, bonus);
+                                vinv::append_inv(&entry);
+                                let new_count = hub().inventory.read().unwrap().count(&name, bid);
+                                let _ = out_tx.try_send(Message::Text(
+                                    serde_json::json!({
+                                        "t": "inv_update",
+                                        "block_id": bid,
+                                        "count": new_count
+                                    })
+                                    .to_string(),
+                                ));
+                                let _ = out_tx.try_send(Message::Text(
+                                    serde_json::json!({
+                                        "t": "coop_bonus",
+                                        "block_id": bid,
+                                        "count": bonus,
+                                        "line": vcoop_gather::coop_toast_line(partners, bonus)
+                                    })
+                                    .to_string(),
+                                ));
                             }
                         }
                     }
