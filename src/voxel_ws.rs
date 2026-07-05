@@ -60,6 +60,7 @@ use crate::voxel_bench_chat as vbenchchat;
 use crate::voxel_anglerest as vangler;
 use crate::voxel_raincover as vrain;
 use crate::voxel_homegaze as vhome;
+use crate::voxel_birthday as vbday;
 use crate::voxel_campfire as vcamp;
 use crate::voxel_campfire_tale as vtale;
 use crate::voxel_bell as vbell;
@@ -563,6 +564,16 @@ struct VoxelResident {
     /// 倒數歸零時冒一句專屬道謝泡泡（比照 792 圍火講古的 `pending_tale_reply` 一來一往機制）。純記憶體。
     /// 第三欄 `is_repay`（知恩圖報 v1，ROADMAP 801）：true=這頓是「回報當年那口飯」，道謝改用專屬語氣。
     pending_meal_thanks: Option<(String, f32, bool)>,
+    /// 出生 unix 秒（居民誕辰紀念 v1）：0＝沒有記錄在案的誕生時刻（初始四位居民），
+    /// >0＝經世代傳承誕生、[`vbday::age_years`] 據此算出滿幾週歲。純記憶體（來源＝
+    /// 名冊 `RosterEntry::birth_unix` 或誕生當下的 `now`，重啟由名冊/建構還原，非新持久化）。
+    birth_unix: u64,
+    /// 生下這位居民的父母顯示名（居民誕辰紀念 v1）：空字串＝沒有已知父母（初始四位居民）。
+    /// 誕辰紀念泡泡點名感謝父母時使用。純記憶體，來源同 `birth_unix`。
+    birth_parent_name: String,
+    /// 上次已慶祝過的誕辰週歲數（居民誕辰紀念 v1）：0＝還沒慶祝過。純記憶體、重啟歸零——
+    /// 重啟後若當下週歲已慶祝過，至多重觸發一次誕辰紀念，非資料風險（比照其他純記憶體冷卻慣例）。
+    birthday_last_year: u64,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -1208,13 +1219,14 @@ fn nearest_player_dist_sq(rx: f32, rz: f32, players: &[(f32, f32)]) -> Option<f3
 /// 初始化在世居民：初始 4 位（家域散布世界四方）＋ 人口成長 v1 名冊載回的出生居民。
 /// 舊世界無名冊檔＝只有初始 4 位（向後相容）。同時把在世人口寫進 `RESIDENT_POP`。
 fn init_residents() -> Vec<VoxelResident> {
-    // 先組「要建構哪些居民」的規格清單：(id 索引, 家域中心 x, z, 出生 body)。
-    let mut specs: Vec<(usize, f32, f32, Body)> = Vec::new();
+    // 先組「要建構哪些居民」的規格清單：(id 索引, 家域中心 x, z, 出生 body, 出生 unix 秒, 父母名)。
+    // 初始居民沒有記錄在案的誕生時刻／父母（居民誕辰紀念 v1恆 0/空字串，本刀不觸發她們）。
+    let mut specs: Vec<(usize, f32, f32, Body, u64, String)> = Vec::new();
     for i in 0..RESIDENT_COUNT {
         // 初始居民各有自己的家域基準點，分散世界四方（見 vr::resident_home_base）。
         let (hox, hoz) = vr::resident_home_base(i);
         let body = vr::dry_ground_spawn(hox, hoz);
-        specs.push((i, body.x, body.z, body));
+        specs.push((i, body.x, body.z, body, 0, String::new()));
     }
     // 人口成長 v1：載回出生居民（append-only 名冊）。索引須連續接在既有 id 之後、落在名字池內，
     // 否則跳過（斷號/壞行容忍，保住 id 連續性——resident_count 的 0..N 枚舉才安全）。
@@ -1224,11 +1236,11 @@ fn init_residents() -> Vec<VoxelResident> {
             continue;
         }
         let body = vr::dry_ground_spawn(entry.home_base_x, entry.home_base_z);
-        specs.push((i, body.x, body.z, body));
+        specs.push((i, body.x, body.z, body, entry.birth_unix, entry.parent_name.clone()));
     }
     let mut out = Vec::with_capacity(specs.len());
-    for (i, home_x, home_z, body) in specs {
-        out.push(build_resident(i, home_x, home_z, body));
+    for (i, home_x, home_z, body, birth_unix, parent_name) in specs {
+        out.push(build_resident(i, home_x, home_z, body, birth_unix, parent_name));
     }
     // 在世人口（含出生居民）→ resident_count() 無鎖回報的單一事實來源。
     RESIDENT_POP.store(out.len(), Ordering::Relaxed);
@@ -1239,7 +1251,14 @@ fn init_residents() -> Vec<VoxelResident> {
 /// `i`＝id 索引（決定名字 / persona / 各冷卻相位錯開），`home_x/home_z`＝家域中心、
 /// `body`＝出生位置。純建構、不碰鎖 / IO。人口成長 v1 讓出生走這條與初始完全相同的路，
 /// 新居民因此天生就有採集 / 蓋家 / 好奇心等既有零 / 低 LLM 行為，多幾位不爆成本。
-fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelResident {
+fn build_resident(
+    i: usize,
+    home_x: f32,
+    home_z: f32,
+    body: Body,
+    birth_unix: u64,
+    birth_parent_name: String,
+) -> VoxelResident {
     VoxelResident {
             id: format!("vox_res_{i}"),
             name: RESIDENT_NAMES[i],
@@ -1402,6 +1421,11 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             // 飢餓時的守望相助 v1（ROADMAP 800）：入場分食冷卻錯開，避免啟動後全員一起搶著分食。
             share_meal_cooldown: vsharemeal::share_cd_offset(i),
             pending_meal_thanks: None,
+            // 居民誕辰紀念 v1：出生時刻/父母由呼叫端傳入（初始四位居民恆 0/空字串，不觸發）；
+            // 入場還沒慶祝過任何週歲。
+            birth_unix,
+            birth_parent_name,
+            birthday_last_year: 0,
     }
 }
 
@@ -5715,7 +5739,7 @@ fn maybe_birth() {
     }
 
     // 建構新居民 + 冒出生泡泡；residents 寫鎖內 append 並把人口 +1。
-    let mut newcomer = build_resident(new_i, body.x, body.z, body);
+    let mut newcomer = build_resident(new_i, body.x, body.z, body, now, parent_name.to_string());
     let birth_say: String = if let Some(first) = inherited_names.first() {
         format!("我是{new_name}，剛來到這片天地～{parent_name}把「{first}」教給了我！")
     } else {
@@ -6273,6 +6297,9 @@ fn tick_residents(dt: f32) {
         vfeed::append_feed("季節", "乙太方界", vseason::season_feed_detail(current_season));
     }
 
+    // 0a-2) 居民誕辰紀念 v1：本 tick 的目前 unix 秒（純讀系統時鐘，無鎖），供下方逐居民算滿週歲數。
+    let now_unix = vfarm::now_secs();
+
     // 0b) 讀取目前時段 + 偵測時段轉換（日夜作息 v1）。
     //     短鎖讀 time → drop；短鎖寫 last_phase → drop，不與其他鎖巢狀。
     let phase = { hub().world_time.read().unwrap().phase() };
@@ -6440,6 +6467,11 @@ fn tick_residents(dt: f32) {
     // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在近旁才記交情，否則 None 只上 Feed。
     // (居民 id, 居民名, 近旁玩家名 Option, pick)。
     let mut homegaze_events: Vec<(String, &'static str, Option<String>, usize)> = Vec::new();
+    // 居民誕辰紀念事件（居民誕辰紀念 v1）：某位經世代傳承誕生的居民滿一個乙太年時鎖內收集；記憶寫＋
+    // Feed 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在近旁才記交情，否則 None 只上
+    // Feed。(居民 id, 居民名, 近旁玩家名 Option, 滿週歲數, 父母名, pick)。
+    let mut birthday_events: Vec<(String, &'static str, Option<String>, u64, String, usize)> =
+        Vec::new();
     // 集會鐘 v1：某位應召的居民走到鐘邊聚攏時，鎖內收集事件；「你敲鐘召我來」的交情記憶＋Feed
     // 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。(居民 id, 居民名, 敲鐘者名)。
     let mut bell_gather_events: Vec<(String, &'static str, String)> = Vec::new();
@@ -8708,6 +8740,69 @@ fn tick_residents(dt: f32) {
                 }
             }
 
+            // 居民誕辰紀念 v1（voxel_birthday）：經世代傳承誕生的居民（`birth_unix > 0`）每滿一個
+            // 乙太年就迎來一次誕辰紀念——回望來到這片天地多久、記得父母便謝過（點名感謝生下自己的
+            // 居民），你也在近旁時特地點名和你分享這一刻並記進交情。初始四位居民 `birth_unix == 0`
+            // 恆不觸發（誠實的取捨，見模組檔頭）。無機率門檻——年歲跨越是確定性的一次性事件（比照
+            // 780 彩虹／798 換季），靠 `birthday_last_year` 記帳防同一週歲重複觸發。say 為空、醒著、
+            // 不在朝聖/遠行才觸發（不搶正事）。鎖序：純讀居民自身欄位，記憶寫＋Feed 走鎖外
+            // `birthday_events`（守 prod 死鎖鐵律）。
+            if r.say.is_empty() && !r.asleep && r.pilgrimage.is_none() && r.expedition.is_none() {
+                let age = vbday::age_years(now_unix, r.birth_unix);
+                if vbday::is_birthday_moment(age, r.birthday_last_year) {
+                    r.birthday_last_year = age;
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    // 近旁最近的登入玩家（BIRTHDAY_PLAYER_RADIUS 內、名非空）→ 生日話點你名、記交情。
+                    let near_player = nearest_player_info(r.body.x, r.body.z, &player_pts)
+                        .filter(|(d2, pname)| {
+                            *d2 < vbday::BIRTHDAY_PLAYER_RADIUS * vbday::BIRTHDAY_PLAYER_RADIUS
+                                && !pname.is_empty()
+                        })
+                        .map(|(_, pname)| pname.to_string());
+                    if let Some(pname) = near_player {
+                        r.say = vbday::birthday_bubble_with_player(&pname, age, pick)
+                            .chars()
+                            .take(vbday::SAY_CHARS)
+                            .collect();
+                        r.say_timer = SAY_SECS;
+                        r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                        birthday_events.push((
+                            r.id.clone(),
+                            r.name,
+                            Some(pname),
+                            age,
+                            r.birth_parent_name.clone(),
+                            pick,
+                        ));
+                    } else if !r.birth_parent_name.is_empty() {
+                        // 沒有玩家在近旁、但記得是誰生下自己→念句謝過父母的生日話，上 Feed、不寫玩家交情。
+                        r.say = vbday::birthday_bubble_with_parent(&r.birth_parent_name, age, pick)
+                            .chars()
+                            .take(vbday::SAY_CHARS)
+                            .collect();
+                        r.say_timer = SAY_SECS;
+                        r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                        birthday_events.push((
+                            r.id.clone(),
+                            r.name,
+                            None,
+                            age,
+                            r.birth_parent_name.clone(),
+                            pick,
+                        ));
+                    } else {
+                        // 沒有玩家、也沒有已知父母：獨自念句通用生日話，上 Feed、不寫玩家交情。
+                        r.say = vbday::birthday_bubble(age, pick)
+                            .chars()
+                            .take(vbday::SAY_CHARS)
+                            .collect();
+                        r.say_timer = SAY_SECS;
+                        r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                        birthday_events.push((r.id.clone(), r.name, None, age, String::new(), pick));
+                    }
+                }
+            }
+
             // 心情自語 v1（ROADMAP 677）：冷卻到期且 say 為空時，依心情自發冒一句台詞。
             // 鎖序：bonds 讀（即釋）→ memory 讀（即釋），不巢狀，不持鎖 await。
             if r.say.is_empty() && r.mood_say_cooldown <= 0.0 {
@@ -10396,6 +10491,21 @@ fn tick_residents(dt: f32) {
                 .add_memory(rid, pname, &vhome::gaze_memory_line(pname)); // 記憶寫鎖即釋
         }
         vfeed::append_feed(vhome::FEED_KIND, rname, &vhome::gaze_feed_line(rname));
+    }
+
+    // 居民誕辰紀念 v1：滿一個乙太年的事件落地——玩家在近旁時把「和你一起過了第 N 個生日」記進交情
+    //（掛玩家名下、日後浮進日記），無論有無玩家都上動態牆（含父母名，若有）。記憶寫鎖短取即釋、Feed
+    // 走 IO，皆在 residents 鎖釋放後（守死鎖鐵律）。比照顧家駐足／臨水垂釣：記憶只進記憶庫
+    //（in-memory、重啟歸零），不額外持久化——`birth_unix`/`birthday_last_year` 本身才是這刀的狀態。
+    for (rid, rname, pname_opt, age, parent_name, _pick) in &birthday_events {
+        if let Some(pname) = pname_opt {
+            hub()
+                .memory
+                .write()
+                .unwrap()
+                .add_memory(rid, pname, &vbday::birthday_memory_line(pname, *age)); // 記憶寫鎖即釋
+        }
+        vfeed::append_feed(vbday::FEED_KIND, rname, &vbday::birthday_feed_line(rname, *age, parent_name));
     }
 
     // 集會鐘 v1：應召走到鐘邊聚攏的居民，把「你敲鐘召我來」這份互動記進交情（掛敲鐘者名下、
