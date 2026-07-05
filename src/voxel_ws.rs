@@ -391,6 +391,12 @@ struct VoxelResident {
     /// 發明退避計時（秒，記憶體，重啟歸零）：key = goal_block_id，value = 剩餘退避秒數。
     /// > 0 時好奇心的目錄排除此 goal_block、不種下心願；歸零後恢復可試。
     invent_backoff: HashMap<u8, f32>,
+    /// 發明採集·進行中的階梯礦井（記憶體、重啟歸零）：發明需要地下資源（石／泥）而地表無
+    /// 天然源時，就地開一口 [`vskill::staircase_well`] 階梯井往下採（永不自困），挖到的實心
+    /// 方塊誠實入背包。`finish_invent_run` 收尾時清空（每個 run 都經收尾，下個 run 起始必乾淨）。
+    invent_quarry: Option<vdt::QuarryDig>,
+    /// 本次發明已開的礦井數（守 [`vinvent::INVENT_MAX_WELLS`] 上限、並用來錯開每口井位置）。
+    invent_quarry_wells: u32,
     /// 是否正在睡覺（日夜作息·睡覺 v1，ROADMAP 739）：深夜回到自家附近會躺下睡著，
     /// 睡著時停下一切閒晃／社交／採集／建造、名牌旁顯示 💤，天亮（離開夜間時段）才醒。
     /// 記憶體前置、不持久化、零 migration（重啟後大不了當晚重睡一次，無資料風險）。
@@ -1316,6 +1322,9 @@ fn build_resident(i: usize, home_x: f32, home_z: f32, body: Body) -> VoxelReside
             // 退避（#972 防鬼打牆）：記憶體，重啟歸零，初始全空。
             invent_fail_counts: HashMap::new(),
             invent_backoff: HashMap::new(),
+            // 發明採集·階梯礦井：入場無進行中的井、井數歸零（隨每次 run 收尾重置）。
+            invent_quarry: None,
+            invent_quarry_wells: 0,
             // 出生時醒著；入睡由夜間作息迴圈決定（ROADMAP 739）。
             asleep: false,
             // 做夢 v1（ROADMAP 805）：入場沒在冷卻、還沒做過夢。
@@ -12057,8 +12066,71 @@ fn advance_invent_run(
                 run.step_idx += 1;
             }
             vinvent::StepAction::StartGather { resource } => {
-                // 指名採集該資源：找得到 → 設 GatherSkill（走既有安全機制，挖到入背包）；
-                // 附近真的沒有 → 誠實失敗（記教訓），不會為了執行計畫漫遊卡死。
+                // 指名採集該資源。優先序：①續挖進行中的階梯井（地下資源）→②地表天然源
+                // →③地表無源＋屬地下資源＋未達井上限 → 開新井往下採 →④其餘 → 誠實失敗。
+
+                // ① 已有進行中的階梯礦井、且這一步要的正是地下資源（石／泥）→ 續挖一批：
+                //    清出的實心方塊誠實入袋（body-safe，絕不挖她站的格），夠料後下輪 next_action
+                //    自然 Advance；這口挖完仍不夠 → 清掉它（③ 依上限決定再開一口或誠實失敗）。
+                let active_quarry = {
+                    let residents = hub().residents.read().unwrap();
+                    residents
+                        .iter()
+                        .find(|r| r.id == rid)
+                        .and_then(|r| r.invent_quarry.clone())
+                }; // residents 讀鎖釋放
+                if vinvent::resource_is_underground(resource) {
+                    if let Some(q) = active_quarry {
+                        let (cells, next_idx) = {
+                            let world = hub().deltas.read().unwrap();
+                            vdt::quarry_step(&world, &q, vdt::QUARRY_CELLS_PER_STEP)
+                        }; // deltas 讀鎖釋放
+                        // 身體格保護：絕不挖她自己站的柱（永不自挖站位、不自困）。
+                        let body = {
+                            let res = hub().residents.read().unwrap();
+                            res.iter()
+                                .find(|r| r.id == rid)
+                                .map(|r| (r.body.x, r.body.y, r.body.z))
+                        }; // residents 讀鎖釋放
+                        for (x, y, z, prev) in cells {
+                            if let Some((px, py, pz)) = body {
+                                if vdt::cell_in_body(x, y, z, px, py, pz) {
+                                    continue;
+                                }
+                            }
+                            {
+                                let mut world = hub().deltas.write().unwrap();
+                                voxel::set_block(&mut world, x, y, z, Block::Air);
+                            } // deltas 寫鎖釋放
+                            broadcast_block(x, y, z, Block::Air);
+                            // 挖穿水脈讓水流進坑道是誠實物理 → 喚醒鄰格重算。
+                            enqueue_water_around(x, y, z);
+                            vbuild::append_world_block(x, y, z, Block::Air as u8);
+                            {
+                                let mut inv = hub().res_inv.write().unwrap();
+                                *inv.entry(rid.to_string())
+                                    .or_default()
+                                    .entry(prev as u8)
+                                    .or_insert(0) += 1;
+                            } // res_inv 寫鎖釋放
+                        }
+                        let stepped = vdt::QuarryDig { cells: q.cells, idx: next_idx };
+                        let done = stepped.is_done();
+                        {
+                            let mut residents = hub().residents.write().unwrap();
+                            if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                                // 挖完這口 → 清掉（仍不夠的話 ③ 再開一口，受上限約束）。
+                                r.invent_quarry = if done { None } else { Some(stepped) };
+                                // 站定挖井（別邊挖邊晃）：站到下一批（一個建造間隔）。
+                                r.wait_timer = r.wait_timer.max(BUILD_INTERVAL_SECS);
+                                r.invent_run = Some(run);
+                            }
+                        } // residents 寫鎖釋放
+                        return; // 這輪挖井；料入袋後下個 agency tick 再推進。
+                    }
+                }
+
+                // ② 地表天然源優先：找得到 → 設 GatherSkill（走既有安全機制，挖到入背包）。
                 let found = {
                     let world = hub().deltas.read().unwrap();
                     vskill::find_nearest_resource_of(
@@ -12083,7 +12155,36 @@ fn advance_invent_run(
                         return; // 這輪去採；材料入背包後，下個 agency tick 再推進。
                     }
                     None => {
-                        // 擴大半徑後仍找不到資源 → 快速誠實失敗（別等逾時）。
+                        // ③ 地表無天然源、且這是「埋在底下」的資源（石／泥）、未達井上限
+                        //    → 就地開一口階梯井往下採（`staircase_well`，永遠走得回地面、不自困）。
+                        //    石器（石鎬／石斧／石鏟…）與需泥的配方第一次真的採得到料、走得完全程
+                        //    ——「居民真的學會用工具」這件北極星魔法不再卡在採料步（實測發明成功率 0%）。
+                        let wells = {
+                            let residents = hub().residents.read().unwrap();
+                            residents
+                                .iter()
+                                .find(|r| r.id == rid)
+                                .map_or(0, |r| r.invent_quarry_wells)
+                        }; // residents 讀鎖釋放
+                        if vinvent::resource_is_underground(resource)
+                            && wells < vinvent::INVENT_MAX_WELLS
+                        {
+                            let q = {
+                                let world = hub().deltas.read().unwrap();
+                                vdt::plan_quarry(&world, rx, rz, wells)
+                            }; // deltas 讀鎖釋放
+                            {
+                                let mut residents = hub().residents.write().unwrap();
+                                if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                                    r.invent_quarry = Some(q);
+                                    r.invent_quarry_wells = wells + 1;
+                                    r.wait_timer = r.wait_timer.max(BUILD_INTERVAL_SECS);
+                                    r.invent_run = Some(run);
+                                }
+                            } // residents 寫鎖釋放
+                            return; // 下個 agency tick 起逐批開挖。
+                        }
+                        // ④ 地表無源、且非地下資源或已達井上限 → 快速誠實失敗（別等逾時）。
                         // Feed 一句有人味的「這附近找不到…」，比沉默更有感。
                         let res_name = resource.display_name();
                         vfeed::append_feed(
@@ -12210,6 +12311,9 @@ fn finish_invent_run(
         let mut residents = hub().residents.write().unwrap();
         if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
             r.invent_run = None;
+            // 清掉發明採集的階梯礦井狀態：下一次發明從乾淨狀態起（井數歸零、無殘留半挖井）。
+            r.invent_quarry = None;
+            r.invent_quarry_wells = 0;
         }
     } // residents 寫鎖釋放
     if success {

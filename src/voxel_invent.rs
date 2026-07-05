@@ -56,6 +56,12 @@ pub const INVENT_COOLDOWN_SECS: f32 = 300.0;
 /// 56 格：群系更新後樹可能被劃到較遠處，給她走得到的空間。
 pub const INVENT_GATHER_RADIUS: i32 = 56;
 
+/// 一次發明採集最多開幾口階梯井（有界防呆）：需要地下資源（石／泥）而地表無天然源時，
+/// 就地往下挖一口階梯井採料（見 [`resource_is_underground`]）。一口井 depth 12、清出的實心
+/// 方塊誠實入袋，典型石料需求（×3～×8）一口即足；罕見不夠再開一口，達上限仍不夠 → 誠實失敗，
+/// 不無限挖。3 口＝夠寬裕又不失控。
+pub const INVENT_MAX_WELLS: u32 = 3;
+
 /// 同一發明目標連敗幾次後進退避（防「同一釣竿試了又試」的鬼打牆迴圈）。
 pub const INVENT_BACKOFF_THRESHOLD: u8 = 2;
 /// 退避持續時間（秒）：2 小時內好奇心不再挑這個目標，重啟歸零可接受。
@@ -671,6 +677,16 @@ pub fn next_action(
             }
         }
     }
+}
+
+/// 這種採集資源是否「埋在地表底下、地表 surface-mine 永遠碰不到」——需要改走階梯礦井
+/// 往下挖才採得到。**石頭／泥土**皆非草地世界的地表頂（頂層永遠是草／樹），surface 搜尋恆
+/// `None` → 石器（石鎬／石斧／石鏟…）與需泥的配方一到採料步就秒失敗（實測發明成功率 0%）；
+/// 本函式讓呼叫端在地表無源時，對這兩種資源改開一口 [`crate::voxel_skills::staircase_well`]
+/// 階梯井（永不自困）採料。**細沙**（灘地地表）／**草皮**（地表頂）／**木頭**（樹）維持地表採集
+/// ——它們本就在地表、或礦井底下根本挖不到。純函式、可測。
+pub fn resource_is_underground(res: GatherResource) -> bool {
+    matches!(res, GatherResource::Stone | GatherResource::Dirt)
 }
 
 /// 對背包套用一次合成：配料夠 → 扣配料、加產物、回 `true`；不夠 → 不動、回 `false`。
@@ -2079,6 +2095,25 @@ mod tests {
         assert!(!run.is_expired());
         run.deadline = 0.0;
         assert!(run.is_expired());
+    }
+
+    // ── 發明採集·地下資源改走階梯井（石器 0% 成功根治）─────────────────────────
+    #[test]
+    fn underground_resources_route_to_quarry() {
+        // 石／泥埋在地表底下、surface-mine 碰不到 → 改走礦井。
+        assert!(resource_is_underground(GatherResource::Stone));
+        assert!(resource_is_underground(GatherResource::Dirt));
+        // 木頭（樹）／細沙（灘地）／草皮（地表頂）本就在地表、或礦井挖不到 → 維持地表採集。
+        assert!(!resource_is_underground(GatherResource::Wood));
+        assert!(!resource_is_underground(GatherResource::Sand));
+        assert!(!resource_is_underground(GatherResource::Grass));
+    }
+
+    #[test]
+    fn invent_max_wells_is_bounded_and_positive() {
+        // 至少能開一口（否則地下資源永遠採不到）、又有界防呆（不無限挖）。
+        assert!(INVENT_MAX_WELLS >= 1);
+        assert!(INVENT_MAX_WELLS <= 8);
     }
 
     // ── 技能庫：個體性 / 去重 / 還原 ─────────────────────────────────────────
