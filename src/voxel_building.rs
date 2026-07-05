@@ -353,6 +353,20 @@ pub enum Decor {
     Pillar,
 }
 
+/// 附屬小棚（annex）貼在主屋的哪一側——建築創作第三刀：不只「有沒有」小棚，
+/// 連小棚長在哪一側都因居民而異，同一種房子第一次有不只一種輪廓變化。
+/// 三側皆貼在「背牆／側牆外一格」的後半部，數學上必與正面的門（z_max 側）分居兩端，
+/// 且左右兩側的 x 座標永遠落在主屋佔地之外，恆不與主屋本體重疊。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AnnexPos {
+    /// 貼在背牆（z_min 側）外一排——建築創作第二刀的原始位置。
+    Back,
+    /// 貼在左牆（x_min 側）外一排。
+    Left,
+    /// 貼在右牆（x_max 側）外一排。
+    Right,
+}
+
 /// 一座建物的樣式（由居民/群系/座標確定性決定）。純資料、無 IO。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BuildStyle {
@@ -373,10 +387,12 @@ pub struct BuildStyle {
     pub z_max: i32,
     /// 門口點綴。
     pub decor: Decor,
-    /// 建築創作第二刀：房子背後是否多長出一間小棚（annex）——第一次讓「同一種房子」
+    /// 建築創作第二刀：房子是否多長出一間小棚（annex）——第一次讓「同一種房子」
     /// 有不同的**形狀輪廓**，不只是換色/換尺寸（仍是既有零件：地板/牆/屋頂三種既有
     /// 建材再組一次，非新方塊種類）。
     pub annex: bool,
+    /// 建築創作第三刀：annex 貼在主屋的哪一側，只有 `annex` 為真時才有意義。
+    pub annex_pos: AnnexPos,
 }
 
 impl BuildStyle {
@@ -405,13 +421,19 @@ impl BuildStyle {
             _ => Decor::Pillar,
         };
         let annex = (h >> 10) & 1 == 1;
+        // annex 位置（建築創作第三刀）：背／左／右三選一，背牆機率較高（0、1 皆選背）。
+        let annex_pos = match (h >> 11) & 0b11 {
+            0 | 1 => AnnexPos::Back,
+            2 => AnnexPos::Left,
+            _ => AnnexPos::Right,
+        };
         // 地板由牆材質衍生（木系→木板、沙→沙、其餘→拋石），保持質感一致。
         let floor = match wall {
             Block::Wood | Block::Plank => Block::Plank,
             Block::Sand => Block::Sand,
             _ => Block::SmoothStone,
         };
-        BuildStyle { wall, roof, floor, peaked, windows, wall_h, x_max, z_max, decor, annex }
+        BuildStyle { wall, roof, floor, peaked, windows, wall_h, x_max, z_max, decor, annex, annex_pos }
     }
 }
 
@@ -531,22 +553,34 @@ fn generate_blocks(kind: BuildKind, cx: i32, cy: i32, cz: i32, style: &BuildStyl
                     }
                 }
             }
-            // 附屬小棚（annex，建築創作第二刀）：貼著背牆外側再長出一間矮棚，讓房子
-            // 第一次有不同的形狀輪廓——不是換色/換尺寸，是「同一種房子」也可能長得
-            // 不一樣。固定貼在背牆（z0 側，門在對面的 z1 側，永不相撞）外一排，
-            // 棚頂刻意比主屋矮一截（cy+2），與主屋屋頂線錯落，一眼看得出是後加的。
+            // 附屬小棚（annex，建築創作第二／三刀）：再長出一間矮棚，讓房子第一次有不同
+            // 的形狀輪廓——不是換色/換尺寸，是「同一種房子」也可能長得不一樣。
+            // 棚高＝主屋牆高少一層（`wall_h-1`，恆 ≥1），棚頂＝`annex_roof_y = cy+annex_wall_h`，
+            // 恆比主屋屋頂（`roof_y = cy+wall_h`）矮「整整一層」——無論主屋是 2 層牆還是
+            // 3 層牆的房子，錯落效果都一定看得出來（修正第二刀棚頂寫死 `cy+2`、當主屋恰好
+            // 也是 2 層牆時兩者同高、錯落效果失效的舊 bug）。
+            // annex_pos 決定貼在哪一側：背牆外（沿用第二刀原始位置）／左牆外／右牆外——
+            // 三側皆貼在房子的「後半段」（z0..=z0+1），數學上恆落在主屋佔地與正面門洞之外。
             if s.annex {
-                let az = cz + z0 - 1;
-                for ax in 0..=1 {
-                    add(&mut out, cx + ax, cy - 1, az, s.floor);
-                }
-                for layer in 0..2 {
-                    for ax in 0..=1 {
-                        add(&mut out, cx + ax, cy + layer, az, s.wall);
+                let annex_wall_h = (s.wall_h - 1).max(1);
+                let annex_roof_y = cy + annex_wall_h;
+                let mut lay_annex = |cells: [(i32, i32); 2]| {
+                    for (ax, az) in cells {
+                        add(&mut out, cx + ax, cy - 1, cz + az, s.floor);
                     }
-                }
-                for ax in 0..=1 {
-                    add(&mut out, cx + ax, cy + 2, az, s.roof);
+                    for layer in 0..annex_wall_h {
+                        for (ax, az) in cells {
+                            add(&mut out, cx + ax, cy + layer, cz + az, s.wall);
+                        }
+                    }
+                    for (ax, az) in cells {
+                        add(&mut out, cx + ax, annex_roof_y, cz + az, s.roof);
+                    }
+                };
+                match s.annex_pos {
+                    AnnexPos::Back => lay_annex([(0, z0 - 1), (1, z0 - 1)]),
+                    AnnexPos::Left => lay_annex([(x0 - 1, z0), (x0 - 1, z0 + 1)]),
+                    AnnexPos::Right => lay_annex([(x1 + 1, z0), (x1 + 1, z0 + 1)]),
                 }
             }
         }
@@ -932,6 +966,7 @@ mod tests {
             z_max: 1,
             decor: Decor::None,
             annex: false,
+            annex_pos: AnnexPos::Back,
         }
     }
 
@@ -1192,12 +1227,13 @@ mod tests {
         }
     }
 
-    // ── 附屬小棚（annex，建築創作第二刀）─────────────────────────────────────
+    // ── 附屬小棚（annex，建築創作第二／三刀）───────────────────────────────────
 
     #[test]
-    fn house_annex_adds_exactly_eight_blocks_and_no_overlap() {
-        // annex=true 應恰好比 annex=false 多 8 塊（地板 2 + 牆 2×2 + 棚頂 2），
+    fn house_annex_adds_expected_block_count_and_no_overlap() {
+        // annex 應恰好比無 annex 多 `4 + 2*annex_wall_h` 塊（地板 2 + 牆 2×annex_wall_h + 棚頂 2），
         // 且新增方塊不得與主屋任何方塊重疊（同一棟房子不能有兩塊落在同一格）。
+        // wall_h=2（style_small）→ annex_wall_h=1 → 多 6 塊。
         let mut without = style_small();
         without.annex = false;
         let mut with = style_small();
@@ -1205,7 +1241,7 @@ mod tests {
 
         let blocks_without = generate_blocks(BuildKind::House, 0, 5, 0, &without);
         let blocks_with = generate_blocks(BuildKind::House, 0, 5, 0, &with);
-        assert_eq!(blocks_with.len(), blocks_without.len() + 8, "annex 應恰好多 8 塊");
+        assert_eq!(blocks_with.len(), blocks_without.len() + 6, "wall_h=2 時 annex 應恰好多 6 塊");
 
         let mut seen = std::collections::HashSet::new();
         for b in &blocks_with {
@@ -1218,10 +1254,39 @@ mod tests {
     }
 
     #[test]
-    fn house_annex_sits_behind_back_wall_never_touches_door() {
-        // annex 貼在背牆（z0 側）外一排，門在正面 z_max 側——兩者座標不該有任何交集。
+    fn house_annex_roof_always_one_layer_below_main_roof() {
+        // 建築創作第三刀修正：annex 棚頂必須永遠比主屋屋頂矮「整整一層」，無論主屋
+        // 是 2 層牆還是 3 層牆——這是第二刀的舊 bug（棚頂寫死 cy+2，主屋恰好也是 2 層
+        // 牆時兩者同高、錯落效果失效，僅約半數房子看得出效果）。三種 annex_pos 皆驗。
+        for wall_h in [2, 3] {
+            for pos in [AnnexPos::Back, AnnexPos::Left, AnnexPos::Right] {
+                let mut s = style_small();
+                s.wall_h = wall_h;
+                s.annex = true;
+                s.annex_pos = pos;
+                let (cx, cy, cz) = (0, 5, 0);
+                let blocks = generate_blocks(BuildKind::House, cx, cy, cz, &s);
+                let main_roof_y = cy + wall_h;
+                let annex_roof_y = blocks
+                    .iter()
+                    .filter(|b| b.b == s.roof as u8 && b.y != main_roof_y)
+                    .map(|b| b.y)
+                    .max();
+                assert_eq!(
+                    annex_roof_y,
+                    Some(main_roof_y - 1),
+                    "wall_h={wall_h}/{pos:?}：annex 棚頂應恰好比主屋屋頂矮一層"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn house_annex_back_sits_behind_back_wall_never_touches_door() {
+        // annex（背牆位）貼在背牆（z0 側）外一排，門在正面 z_max 側——兩者座標不該有任何交集。
         let mut s = style_small();
         s.annex = true;
+        s.annex_pos = AnnexPos::Back;
         let blocks = generate_blocks(BuildKind::House, 10, 5, 20, &s);
         let door_z = 20 + s.z_max;
         let annex_z = 20 + BuildStyle::Z_MIN - 1;
@@ -1231,6 +1296,40 @@ mod tests {
             blocks.iter().filter(|b| b.z == annex_z).all(|b| b.b != Block::DoorClosed as u8),
             "annex 那一排不該混進門方塊"
         );
+    }
+
+    #[test]
+    fn house_annex_left_and_right_never_overlap_house_or_door() {
+        // annex 貼左／右牆外一格，x 座標數學上恆落在主屋佔地（x0..=x1）之外，
+        // 且落在房子「後半段」（z0..=z0+1），不可能碰到正面門洞（z_max）。
+        for pos in [AnnexPos::Left, AnnexPos::Right] {
+            for size_bits in 0..4u64 {
+                let mut s = style_small();
+                s.annex = true;
+                s.annex_pos = pos;
+                (s.x_max, s.z_max) = match size_bits {
+                    0 => (1, 1),
+                    1 => (2, 1),
+                    2 => (1, 2),
+                    _ => (2, 2),
+                };
+                let (cx, cy, cz) = (10, 5, 20);
+                let blocks = generate_blocks(BuildKind::House, cx, cy, cz, &s);
+                let door_x = cx;
+                let door_z = cz + s.z_max;
+                let mut seen = std::collections::HashSet::new();
+                for b in &blocks {
+                    assert!(
+                        seen.insert((b.x, b.y, b.z)),
+                        "{pos:?}/size={size_bits}：annex 與主屋出現重疊方塊於 ({},{},{})",
+                        b.x, b.y, b.z
+                    );
+                }
+                // 門確實仍存在且未被 annex 波及。
+                let door = blocks.iter().find(|b| b.x == door_x && b.z == door_z && b.y == cy);
+                assert_eq!(door.map(|b| b.b), Some(Block::DoorClosed as u8), "{pos:?}：門洞不該被 annex 影響");
+            }
+        }
     }
 
     #[test]
@@ -1249,6 +1348,24 @@ mod tests {
         }
         assert!(any_true, "8 位居民中應有人的房子帶 annex");
         assert!(any_false, "8 位居民中應有人的房子不帶 annex");
+    }
+
+    #[test]
+    fn house_annex_pos_varies_across_residents() {
+        // annex_pos 本身也要有變化（背/左/右都可能出現），否則第三刀等於沒做。
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..24 {
+            let rid = format!("vox_res_{i}");
+            let s = BuildStyle::for_resident(&rid, VoxelBiome::Grassland, 7, 0);
+            if s.annex {
+                seen.insert(s.annex_pos);
+            }
+        }
+        assert!(
+            seen.len() >= 2,
+            "24 位居民的 annex 位置太雷同（只有 {} 種）",
+            seen.len()
+        );
     }
 
     // ── BuildStore 純函式 ─────────────────────────────────────────────────────
