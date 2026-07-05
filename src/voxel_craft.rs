@@ -261,6 +261,16 @@ pub const RECIPES: &[Recipe] = &[
         output_block: crate::voxel_bench::BENCH_ID, // 79（可放置的家具方塊）
         output_count: 1,
     },
+    // ── 空玻璃瓶 v1（自主提案切片 825）：2 玻璃 → 1 空玻璃瓶（丟進水裡寫瓶中信）───────────
+    // {10:2} 為獨特多重集：玻璃本身的配方輸入是 {4:2}=2 沙（輸出才是玻璃 10），既有配方
+    // 沒有任何一條「吃 2 個玻璃」，不與任何配方相撞。
+    Recipe {
+        id: "bottle",
+        name_zh: "空玻璃瓶",
+        inputs: &[(10, 2)], // 2 玻璃 → 1 空玻璃瓶
+        output_block: crate::voxel_bottle::BOTTLE_ID, // 83（純物品，不可放置）
+        output_count: 1,
+    },
 ];
 
 /// 工作台 3×3 合成配方（需放置工作台方塊後右鍵開啟面板才能合成）。
@@ -747,7 +757,8 @@ mod tests {
                 || r.output_block == crate::voxel_bucket::BUCKET_ID // 水桶（純物品 id=71，自主提案切片）
                 || r.output_block == crate::voxel_hoe::HOE_ID // 木鋤頭（純物品 id=73，自主提案切片）
                 || r.output_block == crate::voxel_berry::BUSH_UNRIPE_ID // 莓果叢苗（可放置方塊 id=75，自主提案切片 806）
-                || r.output_block == crate::voxel_bench::BENCH_ID; // 木長椅（可放置家具方塊 id=79，自主提案切片）
+                || r.output_block == crate::voxel_bench::BENCH_ID // 木長椅（可放置家具方塊 id=79，自主提案切片）
+                || r.output_block == crate::voxel_bottle::BOTTLE_ID; // 空玻璃瓶（純物品 id=83，漂流瓶 v1 自主提案切片 825）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }

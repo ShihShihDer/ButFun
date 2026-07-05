@@ -138,6 +138,7 @@ use crate::voxel_resident_trade as vrtrade;
 use crate::voxel_share as vshare;
 use crate::voxel_milestones::{self as vmiles, MilestoneStore};
 use crate::voxel_player_pos as vpp;
+use crate::voxel_bottle::{self as vbottle, BottleStore};
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -237,6 +238,9 @@ const TALK_RATE_NOTICE: &str = "（說得太快啦，喘口氣、待會兒再聊
 /// 對話會觸發免費 LLM（居民的腦），匿名腳本可白嫖／燒爆額度；故要求登入才能聊，訪客可
 /// 自由逛逛與觀看。面向玩家字串、集中於此、i18n 友善。
 const TALK_GUEST_NOTICE: &str = "（登入之後就能和居民說話囉～先四處逛逛、看看這個世界吧！）";
+/// 訪客（未登入）試圖丟漂流瓶時，在自己頭上冒的溫柔提示（漂流瓶 v1）——瓶中信是玩家
+/// 留給玩家的自由文字，比照對話需登入的護欄，只有登入帳號才能寫、訪客可自由撿讀。
+const BOTTLE_GUEST_NOTICE: &str = "（登入之後就能丟漂流瓶囉～現在可以自由撿別人的瓶子看看！）";
 /// 協助建造感激記憶冷卻（秒，互動有後果 v2）：一次連續幫忙（放好幾塊方塊）只記**一筆**
 /// 感激記憶，隔這麼久後再幫才會再記一筆——避免好感（＝episodic 記憶筆數）被單次幫忙灌爆。
 const HELP_MEMORY_COOLDOWN_SECS: u64 = 90;
@@ -1545,6 +1549,10 @@ struct VoxelHub {
     /// 告示牌文字 store（ROADMAP 740）：世界座標 → 一行短字。
     /// 持久化到 data/voxel_signs.jsonl；文字浮在牌上、所有人看得見（序列化 RwLock 解決競爭）。
     sign: RwLock<vsign::SignStore>,
+    /// 漂流瓶 store（漂流瓶 v1，自主提案切片 825）：世界座標 → 一封尚未被撿走的瓶中信。
+    /// 持久化到 data/voxel_bottles.jsonl；內文絕不外流（連線同步只送座標），撿走即從世界移除
+    /// （一次性拾起，非常駐可讀——序列化 RwLock 解決競爭）。
+    bottle: RwLock<BottleStore>,
     /// 禮物菜園 store（ROADMAP 755）：作物方塊世界座標 → 一畦「因你的種子而生」的田
     /// （居民 id、送種子的玩家名、作物種類）。持久化到 data/voxel_gift_gardens.jsonl；
     /// 那畦田熟了、種它的居民遇到你，會親手收成、把第一把收穫回贈給你。
@@ -1796,6 +1804,8 @@ fn hub() -> &'static VoxelHub {
             chest: RwLock::new(vchest::ChestStore::from_entries(vchest::load_chests())),
             // 啟動時從 data/voxel_signs.jsonl 載回告示牌文字（重啟後牌面仍在）。
             sign: RwLock::new(vsign::SignStore::from_entries(vsign::load_signs())),
+            // 啟動時從 data/voxel_bottles.jsonl 載回尚未被撿走的瓶中信（重啟後瓶子還在水裡）。
+            bottle: RwLock::new(BottleStore::from_entries(vbottle::load_bottles())),
             // 啟動時從 data/voxel_gift_gardens.jsonl 載回未收成的禮物菜園（重啟後那畦田還在，
             // 待種它的居民遇到送種子的你時收成回贈）。
             giftgarden: RwLock::new(vgg::GiftGardenStore::from_entries(vgg::load_gift_gardens())),
@@ -2009,6 +2019,15 @@ enum ClientMsg {
     /// Sign(66) 後清洗文字、存檔並廣播 `sign` 給所有人。空字串＝清空牌面。
     #[serde(rename = "sign_set")]
     SignSet { x: i32, y: i32, z: i32, text: String },
+    /// 漂流瓶 v1：對準水面丟一只瓶中信（自主提案切片 825）。伺服器驗 reach + 目標為水面 +
+    /// 登入身分 + 手持空玻璃瓶(83) 後清洗文字、內容審查，扣一只瓶子並存檔，僅廣播座標
+    /// （內文絕不外流，只有撿到的人才讀得到）。
+    #[serde(rename = "throw_bottle")]
+    ThrowBottle { x: i32, y: i32, z: i32, text: String },
+    /// 漂流瓶 v1：撿起指定座標的瓶中信（自主提案切片 825）。伺服器驗 reach 後把內文單播給
+    /// 撿到的玩家、從世界移除該瓶（一次性拾起），廣播座標讓所有人的世界同步移除浮標。
+    #[serde(rename = "read_bottle")]
+    ReadBottle { x: i32, y: i32, z: i32 },
     /// 木門 v1：右鍵切換目標門的開/關狀態（ROADMAP 693）。
     /// DoorClosed(43)→DoorOpen(44) 或 DoorOpen(44)→DoorClosed(43)；伺服器驗 reach 後廣播。
     #[serde(rename = "toggle_door")]
@@ -2118,6 +2137,23 @@ fn broadcast_block(x: i32, y: i32, z: i32, b: Block) {
 fn broadcast_sign(x: i32, y: i32, z: i32, text: &str) {
     let msg = Arc::new(
         serde_json::json!({ "t": "sign", "x": x, "y": y, "z": z, "text": text }).to_string(),
+    );
+    let _ = hub().tx.send(msg);
+}
+
+/// 廣播世界上出現一只新漂流瓶（漂流瓶 v1，自主提案切片 825）。只送座標，**絕不**廣播內文——
+/// 內容只有真的撿起來的人才讀得到，讓「撿到」保有巧遇的驚喜。
+fn broadcast_bottle_dropped(x: i32, y: i32, z: i32) {
+    let msg = Arc::new(
+        serde_json::json!({ "t": "bottle_dropped", "x": x, "y": y, "z": z }).to_string(),
+    );
+    let _ = hub().tx.send(msg);
+}
+
+/// 廣播一只漂流瓶被撿走，所有人的世界同步移除該座標的浮標（漂流瓶 v1）。
+fn broadcast_bottle_removed(x: i32, y: i32, z: i32) {
+    let msg = Arc::new(
+        serde_json::json!({ "t": "bottle_removed", "x": x, "y": y, "z": z }).to_string(),
     );
     let _ = hub().tx.send(msg);
 }
@@ -2394,6 +2430,27 @@ async fn handle_socket(
             .collect();
         let sign_sync = serde_json::json!({ "t": "sign_sync", "signs": signs }).to_string();
         if out_tx.send(Message::Text(sign_sync)).await.is_err() {
+            cleanup(my_id, &writer);
+            return;
+        }
+    }
+
+    // 漂流瓶 v1（自主提案切片 825）：連線時一次送出世界上所有尚未被撿走的瓶子座標，
+    // 讓前端立刻掛回浮標——但**只送座標，絕不送內文**（內文只有真的撿起來才讀得到）。
+    {
+        let positions = hub().bottle.read().unwrap().all_positions();
+        let bottles: Vec<serde_json::Value> = positions
+            .iter()
+            .filter_map(|pos| {
+                let mut it = pos.split(',');
+                let bx = it.next()?.parse::<i32>().ok()?;
+                let by = it.next()?.parse::<i32>().ok()?;
+                let bz = it.next()?.parse::<i32>().ok()?;
+                Some(serde_json::json!({ "x": bx, "y": by, "z": bz }))
+            })
+            .collect();
+        let bottle_sync = serde_json::json!({ "t": "bottle_sync", "bottles": bottles }).to_string();
+        if out_tx.send(Message::Text(bottle_sync)).await.is_err() {
             cleanup(my_id, &writer);
             return;
         }
@@ -5307,6 +5364,124 @@ async fn handle_socket(
                 vsign::append_sign(&ev);
                 // 廣播給所有人（含自己），前端據此更新／移除該座標的浮字。
                 broadcast_sign(x, y, z, &clean);
+            }
+
+            // ── 漂流瓶 v1：丟瓶（自主提案切片 825）───────────────────────────────────
+            // 世界第一次有了「玩家↔玩家」的痕跡：合成一只空玻璃瓶、對準水面寫上一句話，
+            // 之後另一位路過水邊的玩家會撿起它、讀到陌生旅人的匿名留言。
+            Ok(ClientMsg::ThrowBottle { x, y, z, text }) => {
+                let Some((px, py, pz)) = player_pos(my_id) else { continue; };
+                // 1) 觸及範圍內（沿用互動統一 reach）。
+                if !voxel::in_reach(px, py, pz, x, y, z) { continue; }
+                // 2) 目標要是水面（來源水或流動水，同垂釣/水桶判定）。
+                let target_blk = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
+                if !vfish::is_water_block(target_blk as u8) {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "bottle_fail", "reason": "要對準水面才能丟瓶喔。"
+                    }).to_string())).await;
+                    continue;
+                }
+                // 3) 瓶中信需登入（比照對話需登入護欄）：是留給陌生玩家的自由文字，
+                //    只有登入帳號才能寫，訪客可自由撿讀（身分由後端 cookie 權威解出）。
+                if !talk_allowed_for_identity(is_account) {
+                    let mut players = hub().players.write().unwrap();
+                    if let Some(p) = players.get_mut(&my_id) {
+                        p.say = BOTTLE_GUEST_NOTICE.to_string();
+                        p.say_timer = PLAYER_SAY_SECS;
+                    }
+                    continue;
+                }
+                // 4) 清洗文字；拒空（清洗後等於沒寫就別丟）。
+                let clean = vbottle::sanitize_text(&text);
+                if clean.is_empty() {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "bottle_fail", "reason": "瓶中信不能是空的喔，寫點什麼吧。"
+                    }).to_string())).await;
+                    continue;
+                }
+                // 5) 內容審查（治安三件套②同款）：命中→溫柔提示、絕不存檔／絕不廣播原文。
+                {
+                    let verdict = vmod::screen(&clean);
+                    if verdict != vmod::Screen::Clean {
+                        let mut players = hub().players.write().unwrap();
+                        if let Some(p) = players.get_mut(&my_id) {
+                            p.say = vmod::gentle_notice(verdict).to_string();
+                            p.say_timer = PLAYER_SAY_SECS;
+                        }
+                        continue;
+                    }
+                }
+                // 6) 手上要有空玻璃瓶（inventory 讀鎖即釋）。
+                let has_bottle = hub().inventory.read().unwrap().count(&name, vbottle::BOTTLE_ID) >= 1;
+                if !has_bottle {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "bottle_fail", "reason": "你手上沒有空玻璃瓶——先合成一個吧（2 玻璃）。"
+                    }).to_string())).await;
+                    continue;
+                }
+                let pos = vbottle::pos_key(x, y, z);
+                // 7) 同座標已有瓶子、或全局瓶數已達上限 → 婉拒（bottle 讀鎖即釋，防無限堆積）。
+                //    先算好結果、放開鎖，再送訊息——絕不持鎖跨 await（守鎖紀律）。
+                let (pos_taken, at_cap) = {
+                    let store = hub().bottle.read().unwrap();
+                    (store.has(&pos), store.len() >= vbottle::MAX_ACTIVE_BOTTLES)
+                };
+                if pos_taken {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "bottle_fail", "reason": "這裡已經有一只瓶子了，換個地方丟吧。"
+                    }).to_string())).await;
+                    continue;
+                }
+                if at_cap {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "bottle_fail", "reason": "海上漂流瓶已經很多了，晚點再試試看。"
+                    }).to_string())).await;
+                    continue;
+                }
+                // 8) 扣一只空玻璃瓶（inventory 寫鎖即釋 → append 落地 → 單播新存量）。
+                let Some(inv_e) = hub().inventory.write().unwrap().take(&name, vbottle::BOTTLE_ID, 1) else {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "bottle_fail", "reason": "你手上沒有空玻璃瓶——先合成一個吧（2 玻璃）。"
+                    }).to_string())).await;
+                    continue;
+                };
+                vinv::append_inv(&inv_e);
+                let nc = hub().inventory.read().unwrap().count(&name, vbottle::BOTTLE_ID);
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "inv_update", "block_id": vbottle::BOTTLE_ID, "count": nc
+                }).to_string())).await;
+                // 9) 存進 store + 落地持久化（bottle 寫鎖即釋 → IO 在鎖外）。
+                let ev = hub().bottle.write().unwrap().set(&pos, clean);
+                vbottle::append_bottle(&ev);
+                // 10) 廣播座標給所有人（絕不廣播內文）+ 單播成功提示。
+                broadcast_bottle_dropped(x, y, z);
+                let _ = out_tx.send(Message::Text(
+                    serde_json::json!({ "t": "bottle_throw_ok" }).to_string(),
+                )).await;
+                // 11) 世界動態 feed：刻意匿名，不點名投瓶人是誰——保留「陌生旅人」的巧遇感。
+                vfeed::append_feed("漂流瓶", "神秘的旅人", "把一封瓶中信丟進了海裡，不知道會漂向誰……");
+            }
+
+            // ── 漂流瓶 v1：撿瓶（自主提案切片 825）───────────────────────────────────
+            // 讀不需要登入（訪客也能自由撿讀，只是不能寫）；一次性拾起，撿走後全場同步移除。
+            Ok(ClientMsg::ReadBottle { x, y, z }) => {
+                let Some((px, py, pz)) = player_pos(my_id) else { continue; };
+                if !voxel::in_reach(px, py, pz, x, y, z) { continue; }
+                let pos = vbottle::pos_key(x, y, z);
+                let claimed = { hub().bottle.write().unwrap().claim(&pos) };
+                let Some((text, ev)) = claimed else {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "bottle_fail", "reason": "這裡沒有瓶子。"
+                    }).to_string())).await;
+                    continue;
+                };
+                vbottle::append_bottle(&ev);
+                broadcast_bottle_removed(x, y, z);
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "bottle_read", "text": text
+                }).to_string())).await;
+                // 世界動態 feed：同樣刻意匿名，不點名撿到的人是誰。
+                vfeed::append_feed("漂流瓶", "一位旅人", "在岸邊撿起了一封漂流瓶……");
             }
 
             // 木門 v1（ROADMAP 693）：右鍵切換門的開/關狀態。
