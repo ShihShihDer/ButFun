@@ -1226,15 +1226,79 @@ let myAccountName = null;
 // key = resident_id, value = count (0=陌生人, 1-2=相識, 3+=友人)
 const myAffinity = new Map();
 
-// 玩家身體（第三人稱可見的小方塊角色）
-const bodyGeo = new THREE.BoxGeometry(0.6, PH, 0.6);
-const bodyMat = new THREE.MeshLambertMaterial({ color: 0xffcf6b });
-const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
+// ── 方塊小人 avatar（玩家 & 其他玩家共用造型）────────────────────────────────
+// 造型：頭 + 軀幹 + 兩臂 + 兩腿，低多邊形方塊感（原創幾何，非任何外部遊戲資產；
+// 「方塊人」是通用造型概念）。整體高度維持 PH=1.7、寬約 PW*2，只換視覺、碰撞盒不變。
+// 原點在「身體中心」（對齊既有 mesh.position = y + PH/2、稱號牌 y = PH/2 + 0.35）。
+// 手腳各掛在關節 pivot 上，繞 x 軸前後擺動＝走路動畫。幾何共用一份省記憶體，材質依配色建立。
+const AV_HEAD_GEO = new THREE.BoxGeometry(0.42, 0.4, 0.42);
+const AV_TORSO_GEO = new THREE.BoxGeometry(0.5, 0.55, 0.28);
+const AV_LEG_GEO = new THREE.BoxGeometry(0.18, 0.75, 0.22);
+const AV_ARM_GEO = new THREE.BoxGeometry(0.15, 0.6, 0.18);
+const AV_C = PH / 2; // 身體中心相對腳底的高度（group 原點就在此）；下面用 feetY - AV_C 換算部位位置
+
+// 建一具方塊小人。bodyColor=軀幹、headColor=頭、limbColor=手腳。回傳 group + 四肢 pivot 供動畫。
+function buildAvatar(bodyColor, headColor, limbColor) {
+  const group = new THREE.Group();
+  const bodyMat = new THREE.MeshLambertMaterial({ color: bodyColor });
+  const headMat = new THREE.MeshLambertMaterial({ color: headColor });
+  const limbMat = new THREE.MeshLambertMaterial({ color: limbColor });
+
+  // 軀幹：腳底起 0.75→1.30，中心在 feetY=1.025
+  const torso = new THREE.Mesh(AV_TORSO_GEO, bodyMat);
+  torso.position.y = 1.025 - AV_C;
+  group.add(torso);
+  // 頭：1.30→1.70，中心在 feetY=1.50（頭頂 1.70＝PH）
+  const head = new THREE.Mesh(AV_HEAD_GEO, headMat);
+  head.position.y = 1.50 - AV_C;
+  group.add(head);
+
+  // 四肢：pivot 掛在關節（髖/肩），部位往下垂、繞 pivot x 軸擺動＝抬腿擺臂
+  function limb(geo, x, jointFeetY, len) {
+    const pivot = new THREE.Group();
+    pivot.position.set(x, jointFeetY - AV_C, 0);
+    const m = new THREE.Mesh(geo, limbMat);
+    m.position.y = -len / 2; // 讓部位頂端貼在關節上、往下垂
+    pivot.add(m);
+    group.add(pivot);
+    return pivot;
+  }
+  // 腿：pivot 在髖部（feetY=0.75），腿長 0.75；臂：pivot 在肩部（feetY=1.30），臂長 0.6
+  const legL = limb(AV_LEG_GEO, -0.12, 0.75, 0.75);
+  const legR = limb(AV_LEG_GEO, 0.12, 0.75, 0.75);
+  const armL = limb(AV_ARM_GEO, -0.325, 1.30, 0.6);
+  const armR = limb(AV_ARM_GEO, 0.325, 1.30, 0.6);
+
+  return { group, legL, legR, armL, armR, phase: 0 };
+}
+
+// 走路動畫：移動時手腳前後擺（腿與同側手臂反相＝自然擺臂）；靜止平滑回正。
+// 純三角函數 + 每幀 dt，成本極低（守 FPS 鐵律）。
+function animateAvatar(av, moving, dt) {
+  if (moving) {
+    av.phase += dt * 9.0;               // 擺動頻率
+    const a = Math.sin(av.phase) * 0.7; // 擺幅（弧度）
+    av.legL.rotation.x = a;  av.legR.rotation.x = -a;
+    av.armL.rotation.x = -a; av.armR.rotation.x = a;
+  } else {
+    const k = Math.min(1, dt * 12);     // 平滑回正
+    av.legL.rotation.x += -av.legL.rotation.x * k;
+    av.legR.rotation.x += -av.legR.rotation.x * k;
+    av.armL.rotation.x += -av.armL.rotation.x * k;
+    av.armR.rotation.x += -av.armR.rotation.x * k;
+  }
+}
+
+// 玩家自己的身體（第三人稱可見）：金色系方塊小人，一眼認得是自己。
+const myAvatar = buildAvatar(0xffcf6b, 0xffe0b0, 0xe6b866);
+const bodyMesh = myAvatar.group; // 沿用 bodyMesh 名：.visible/.position/.rotation.y 都作用在 Group 上
+let myTitleSprite = null; // 僅 QA 用（_qaSetMyTitle）：正式流程玩家自己不掛稱號牌
 scene.add(bodyMesh);
 
-// 其他玩家：id -> { mesh, bubble, lastSay }（bubble = 頭上對話泡泡，embodied 靠近說話 v1）
+// 其他玩家：id -> { mesh, av, bubble, lastSay }（bubble = 頭上對話泡泡，embodied 靠近說話 v1）
 const others = new Map();
-const otherMat = new THREE.MeshLambertMaterial({ color: 0x8fd0ff });
+// 其他玩家配色：藍色系方塊小人（與自己金色一眼區分身分）。人數少，各自建一具成本可忽略。
+const OTHER_PALETTE = { body: 0x8fd0ff, head: 0xcbe9ff, limb: 0x6fb4e6 };
 
 // ── 乙太方界 AI 居民（切片③）────────────────────────────────────────────────
 // 後端權威：居民的位置/名字/說的話都由 /voxel/ws 的 players 快照帶來，前端只渲染。
@@ -3718,13 +3782,16 @@ function connect() {
         seen.add(p.id);
         let ent = others.get(p.id);
         if (!ent) {
-          const mesh = new THREE.Mesh(bodyGeo, otherMat); scene.add(mesh);
+          // 其他玩家也是方塊小人（藍色系）；mesh＝avatar 的 group，沿用既有 position/rotation/add 邏輯。
+          const av = buildAvatar(OTHER_PALETTE.body, OTHER_PALETTE.head, OTHER_PALETTE.limb);
+          const mesh = av.group; scene.add(mesh);
           // 頭上對話泡泡（child of mesh，sprite 永遠面向鏡頭、不受 mesh 旋轉影響）。
           const bubble = makeTextSprite("", true);
           bubble.position.y = PH / 2 + 1.7; // mesh 原點在身體中心，泡泡浮到頭頂上方
           bubble.visible = false;
           mesh.add(bubble);
-          ent = { mesh, bubble, lastSay: "", titleText: null, title: null };
+          // lastMoveT：最近一次位置有變化的時間戳，供 render 迴圈判斷「是否在走路」→ 擺手腳。
+          ent = { mesh, av, bubble, lastSay: "", titleText: null, title: null, lastMoveT: 0 };
           others.set(p.id, ent);
         }
         // 特殊身分稱號牌：後端 title 字串（引夢使者/築夢工匠…）為真才掛（不信客戶端自報）；
@@ -3738,6 +3805,9 @@ function connect() {
           }
           ent.titleText = ptitle;
         }
+        // 位置有明顯變化 → 記下時間戳，讓 render 迴圈判定「在走路」而擺手腳（快照間也持續動）。
+        const moved = Math.hypot(p.x - ent.mesh.position.x, p.z - ent.mesh.position.z);
+        if (moved > 0.002) ent.lastMoveT = performance.now();
         ent.mesh.position.set(p.x, p.y + PH / 2, p.z);
         ent.mesh.rotation.y = p.yaw || 0;
         // embodied：別人說話 → 頭上冒泡（你走過會「聽到」別人在聊，世界有人聲）。
@@ -4247,7 +4317,13 @@ function update(dt) {
   // 玩家身體 + 朝向（用 visualY 避免角色瞬跳一格）。第一人稱藏自己身體（相機在眼睛裡）。
   bodyMesh.visible = (viewMode !== "first");
   bodyMesh.position.set(player.x, visualY + PH / 2, player.z);
-  if (dir.lengthSq() > 1e-4) bodyMesh.rotation.y = Math.atan2(dir.x, dir.z);
+  const meMoving = dir.lengthSq() > 1e-4;
+  if (meMoving) bodyMesh.rotation.y = Math.atan2(dir.x, dir.z);
+  // 走路動畫：有移動意圖就擺手腳，靜止回正（第一人稱藏起來時算了也不可見、成本可忽略）。
+  animateAvatar(myAvatar, meMoving, dt);
+  // 其他玩家：近 250ms 內位置有變化＝在走路，各自擺手腳（快照間也持續動、不卡頓）。
+  const nowT = performance.now();
+  for (const ent of others.values()) animateAvatar(ent.av, nowT - ent.lastMoveT < 250, dt);
 
   // embodied 靠近說話 v1：自己頭上的對話泡泡跟隨角色 + 倒數消失（話活在世界裡）。
   if (myBubbleTimer > 0) {
@@ -5164,6 +5240,12 @@ window.__voxel = {
   get camPitch() { return camPitch; },
   get pointerLocked() { return pointerLocked; },
   get bodyVisible() { return bodyMesh.visible; },
+  // QA 用：把稱號牌掛到自己頭頂，驗證新 avatar 的頭頂貼合（正式流程稱號由後端 title 決定，不受影響）。
+  _qaSetMyTitle(t) {
+    if (myTitleSprite) { bodyMesh.remove(myTitleSprite); myTitleSprite = null; }
+    if (t) { myTitleSprite = makeTitleSprite(t); bodyMesh.add(myTitleSprite); }
+    return !!t;
+  },
   toggleViewMode() { toggleViewMode(); return viewMode; },
   setCamPitch(p) { camPitch = p; clampPitch(); return camPitch; },
   setYaw(y) { player.yaw = y; return player.yaw; },
