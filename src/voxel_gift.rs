@@ -78,6 +78,8 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         77 => "莓果",
         // 莓果醬 v1（808）：莓果熬成的甜點熟食。
         78 => "莓果醬",
+        // 雞舍生蛋 v1（自主提案切片）：雞舍生的蛋，世界第一種動物產物、可餽贈居民。
+        crate::voxel_coop::EGG_ID => "蛋",
         _ => "物品",
     }
 }
@@ -426,6 +428,12 @@ mod tests {
         // 806 漏補的莓果名、808 新增的莓果醬名——不再 fallback 成「物品」。
         assert_eq!(item_name_zh(77), "莓果");
         assert_eq!(item_name_zh(crate::voxel_berry::JAM_ID), "莓果醬");
+    }
+
+    #[test]
+    fn item_name_egg() {
+        // 雞舍生蛋 v1：蛋（82）有專屬名，不 fallback 成「物品」。
+        assert_eq!(item_name_zh(crate::voxel_coop::EGG_ID), "蛋");
     }
 
     #[test]

@@ -417,6 +417,18 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
         output_block: crate::voxel_bell::BELL_ID,
         output_count: 1,
     },
+    // ── 雞舍 v1（自主提案切片）：世界第一種「動物產物」資源節點 ──────────────────────
+    // 木頭(5)×4 + 葉片(6)×2 → 1 雞舍(COOP_ID=80)。木架撐頂、葉片鋪成溫暖的窩。6 格材料超出
+    // 背包 2×2 需工作台，{5:4,6:2} 為唯一多重集（床 {8:3,6:3} 用木板非木頭、木鎬 {5:3,8:1} 無葉片，
+    // 皆不相撞）；可放置的方塊，放下後靜候一段時間會生蛋，收下就地回退繼續孵（與莓果叢對成
+    // 植物／動物兩條可反覆採收的資源軸）。
+    Recipe {
+        id: "coop",
+        name_zh: "雞舍",
+        inputs: &[(5, 4), (6, 2)],  // 4 木頭 + 2 葉片 → 1 雞舍
+        output_block: crate::voxel_coop::COOP_ID,
+        output_count: 1,
+    },
 ];
 
 /// 熔爐冶煉配方（需放置熔爐方塊後右鍵開啟冶煉面板才能使用）。
@@ -640,6 +652,20 @@ mod tests {
     }
 
     #[test]
+    fn find_recipe_coop_in_workbench_list() {
+        // 雞舍是「動物產物」新資源軸的起點：走工作台 3×3（6 格材料）、不在背包 2×2 表。
+        assert!(find_recipe("coop").is_none(), "雞舍不該在背包配方表");
+        let r = find_workbench_recipe("coop").unwrap();
+        assert_eq!(r.output_block, crate::voxel_coop::COOP_ID, "雞舍 id 應為 80（Block::Coop）");
+        assert_eq!(r.output_count, 1);
+        assert_eq!(r.inputs, &[(5, 4), (6, 2)], "雞舍需 4 木頭 + 2 葉片");
+        // 多重集 {5:4,6:2} 獨一無二：沒有別條工作台配方剛好是「4 木頭 + 2 葉片」。
+        for other in WORKBENCH_RECIPES.iter().filter(|o| o.id != "coop") {
+            assert_ne!(other.inputs, r.inputs, "配方 {} 不該與雞舍多重集相撞", other.id);
+        }
+    }
+
+    #[test]
     fn find_recipe_returns_none_for_unknown() {
         assert!(find_recipe("unknown_xyz").is_none());
         assert!(find_recipe("").is_none());
@@ -739,7 +765,8 @@ mod tests {
                 || r.output_block == crate::voxel_firework::FIREWORK_ID // 乙太煙火（純物品 id=68，ROADMAP 785）
                 || r.output_block == crate::voxel_compost::FERTILIZER_ID // 乙太沃肥（純物品 id=69，ROADMAP 789）
                 || r.output_block == crate::voxel_campfire::CAMPFIRE_ID // 乙太營火（可放置發光方塊 id=70，自主提案切片）
-                || r.output_block == crate::voxel_bell::BELL_ID; // 集會鐘（可放置方塊 id=74，自主提案切片）
+                || r.output_block == crate::voxel_bell::BELL_ID // 集會鐘（可放置方塊 id=74，自主提案切片）
+                || r.output_block == crate::voxel_coop::COOP_ID; // 雞舍（可放置方塊 id=80，自主提案切片）
             assert!(
                 ok,
                 "工作台配方「{}」產出 id={} 超出範圍",

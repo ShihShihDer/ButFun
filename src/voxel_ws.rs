@@ -50,6 +50,7 @@ use crate::voxel_memory::{self as vmem, VoxelMemory};
 use crate::voxel_farm::{self as vfarm, FarmStore};
 use crate::voxel_grove::{self as vgrove, GroveStore};
 use crate::voxel_berry::{self as vberry, BerryStore};
+use crate::voxel_coop::{self as vcoop, CoopStore};
 use crate::voxel_gift as vgift;
 use crate::voxel_keepsake as vkeep;
 use crate::voxel_keepsake_recall as vkrecall;
@@ -1455,6 +1456,9 @@ struct VoxelHub {
     /// 莓果叢 store（莓果叢 v1·ROADMAP 806·純記憶體；重啟後未結果的苗重置計時，已結果的叢是 delta 方塊會持久）。
     /// 記錄哪些格子種下了莓果叢、何時起算，每 15 秒 tick（`tick_berry`）一次結果檢查；採收後回退重新登記計時。
     berry: RwLock<BerryStore>,
+    /// 雞舍 store（雞舍生蛋 v1·純記憶體；重啟後未生蛋的雞舍重置計時，已生蛋的雞舍是 delta 方塊會持久）。
+    /// 記錄哪些格子放了雞舍、何時起算，每 15 秒 tick（`tick_coop`）一次生蛋檢查；收蛋後回退重新登記計時。
+    coop: RwLock<CoopStore>,
     /// 居民回禮已送記錄（ROADMAP 667）：每對（居民, 玩家）一生只送一次。
     /// 持久化到 data/voxel_return_gifts.jsonl。
     return_gifts: RwLock<ReturnGiftStore>,
@@ -1713,6 +1717,7 @@ fn hub() -> &'static VoxelHub {
             smelt: RwLock::new(vsmelt::SmeltStore::from_events(vsmelt::load_smelt())),
             grove: RwLock::new(GroveStore::new()),
             berry: RwLock::new(BerryStore::new()),
+            coop: RwLock::new(CoopStore::new()),
             // 啟動時從 data/voxel_return_gifts.jsonl 載回已回贈紀錄（重啟後仍記得送過）。
             return_gifts: RwLock::new(ReturnGiftStore::from_entries(vret::load_return_gifts())),
             // 世界時鐘：從白天（time_of_day ≈ 0.42）開始，讓玩家一進遊戲就是白天。
@@ -2587,6 +2592,22 @@ async fn handle_socket(
                     if matches!(target_block, Block::BerryBush) {
                         hub().berry.write().unwrap().remove(x, y, z);
                     }
+                    // 雞舍生蛋 v1：收下「有蛋的雞舍」→ **不消失**，就地回退成空雞舍(80) ＋ 重啟生蛋計時
+                    //（可反覆收成，不必重蓋）。破壞流程上面已把這格設為空氣並廣播；這裡緊接著再放回
+                    // 空雞舍、廣播、重新登記計時。蛋本身走下面 is_solid 的 drops 特殊掉落規則給予。
+                    if matches!(target_block, Block::CoopReady) {
+                        {
+                            let mut world = hub().deltas.write().unwrap();
+                            voxel::set_block(&mut world, x, y, z, Block::Coop);
+                        } // delta 寫鎖即釋
+                        broadcast_block(x, y, z, Block::Coop);
+                        hub().coop.write().unwrap().plant(x, y, z, vfarm::now_secs());
+                    }
+                    // 雞舍生蛋 v1：拆除「空雞舍」（尚未生蛋）→ 清掉 coop 計時記錄（避免下輪 tick_coop
+                    // 在空格憑空生蛋）。空雞舍方塊本身走下面「其餘實心方塊掉落自身」通用路徑退還背包(80)。
+                    if matches!(target_block, Block::Coop) {
+                        hub().coop.write().unwrap().remove(x, y, z);
+                    }
                     // 木門（開）v1（ROADMAP 693）：非實心但可破壞 → 退還木門（關）。
                     if matches!(target_block, Block::DoorOpen) {
                         let bid = Block::DoorClosed as u8; // 43
@@ -2626,6 +2647,9 @@ async fn handle_socket(
                             // 莓果叢 v1（ROADMAP 806）：採收結果的莓果叢 → 莓果×2（叢本身上面已就地回退成
                             // 莓果叢苗、不掉落方塊）。未結果的莓果叢苗(75) 不在此表 → 走 else 掉落自身退還。
                             Block::BerryBushRipe   => &[(vberry::BERRY_ID, vberry::BERRY_YIELD)],
+                            // 雞舍生蛋 v1：收下有蛋的雞舍 → 蛋×1（雞舍本身上面已就地回退成空雞舍、
+                            // 不掉落方塊）。空雞舍(80) 不在此表 → 走 else 掉落自身退還。
+                            Block::CoopReady       => &[(vcoop::EGG_ID, vcoop::EGG_YIELD)],
                             _ => &[], // 後面用 else 分支處理
                         };
 
@@ -2892,6 +2916,11 @@ async fn handle_socket(
                     // 由 `tick_berry`（15 秒節拍）計時，約 100 秒後結果。
                     if block == Block::BerryBush {
                         hub().berry.write().unwrap().plant(x, y, z, vfarm::now_secs());
+                    }
+                    // 雞舍生蛋 v1（自主提案切片）：剛放下的空雞舍記進 coop store，
+                    // 由 `tick_coop`（15 秒節拍）計時，約 70 秒後生蛋。
+                    if block == Block::Coop {
+                        hub().coop.write().unwrap().plant(x, y, z, vfarm::now_secs());
                     }
                     // 乙太營火 v1：剛放下一座營火 → 記進取暖清單（居民夜裡靠它吸引），並持久化
                     // （走既有 world_blocks append-only log，重啟後火堆與取暖清單一併還原）。
@@ -5583,6 +5612,7 @@ pub fn spawn_farm_tick() {
             tick_farm();
             tick_grove(); // 植樹造林 v1（ROADMAP 738）：同節拍檢查樹苗是否長成。
             tick_berry(); // 莓果叢 v1（ROADMAP 806）：同節拍檢查莓果叢是否結果。
+            tick_coop(); // 雞舍生蛋 v1（自主提案切片）：同節拍檢查雞舍是否生蛋。
             tick_smelt(); // 熔爐煨煮 v1（自主提案）：同節拍交付熟成的爐（成品入背包 + 廣播）。
             maybe_birth(); // 人口成長 v1：低頻檢查聚落是否有餘裕誕生一位新居民。
         }
@@ -5996,6 +6026,36 @@ fn tick_berry() {
             voxel::set_block(&mut world, bx, by, bz, Block::BerryBushRipe);
         } // delta 寫鎖即釋
         broadcast_block(bx, by, bz, Block::BerryBushRipe);
+    }
+}
+
+/// 雞舍生蛋 tick（雞舍生蛋 v1·自主提案切片）——與 `tick_berry` 同 15 秒節拍、同鎖序精神。
+/// 鎖序：① coop 讀鎖取「已生蛋」座標即釋。② 每座：只在該格「還是空雞舍(80)」時
+/// 換成有蛋的雞舍(81)（防玩家已拆走／被別的方塊蓋掉時憑空生蛋），換好即把該格從
+/// coop store 移除（生蛋狀態不需再計時，收蛋時再重新登記回退計時）。零鎖巢狀、零 IO。
+fn tick_coop() {
+    let now = vfarm::now_secs();
+    // ① coop 讀鎖取已生蛋座標，馬上釋放。
+    let ready: Vec<(i32, i32, i32)> = hub().coop.read().unwrap().ready_coops(now);
+    if ready.is_empty() {
+        return;
+    }
+    for (cx, cy, cz) in ready {
+        // ② 短讀鎖確認該格仍是空雞舍（玩家可能已拆走／回退前被覆蓋），不是就跳過並清記錄。
+        let still_coop = {
+            let deltas = hub().deltas.read().unwrap();
+            voxel::effective_block_at(&deltas, cx, cy, cz) == Block::Coop
+        };
+        // 不論生蛋與否，先把這輪計時記錄清掉（避免下輪重複觸發）；生蛋後由收蛋重新登記回退計時。
+        hub().coop.write().unwrap().remove(cx, cy, cz);
+        if !still_coop {
+            continue;
+        }
+        {
+            let mut world = hub().deltas.write().unwrap();
+            voxel::set_block(&mut world, cx, cy, cz, Block::CoopReady);
+        } // delta 寫鎖即釋
+        broadcast_block(cx, cy, cz, Block::CoopReady);
     }
 }
 
