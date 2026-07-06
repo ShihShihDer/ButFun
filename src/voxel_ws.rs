@@ -8026,7 +8026,7 @@ fn tick_wildlife(dt: f32) {
         let nearest = player_pts.iter().min_by(|(x1, z1), (x2, z2)| {
             let d1 = (a.body.x - x1).powi(2) + (a.body.z - z1).powi(2);
             let d2 = (a.body.x - x2).powi(2) + (a.body.z - z2).powi(2);
-            d1.partial_cmp(&d2).unwrap()
+            d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
         });
         let nearest_dist_sq = nearest
             .map(|(px, pz)| (a.body.x - px).powi(2) + (a.body.z - pz).powi(2))
