@@ -6646,14 +6646,16 @@ async fn handle_socket(
                 }
                 // 5) 記下上鉤時刻（3~7 秒後，隨機有變化），存進 pending（寫鎖即釋）。
                 // roll 走真隨機（同專案其他機率骰慣例），避免玩家用時間/座標精算上鉤時機。
+                // 雨天垂釣 v1（自主提案切片 841）：下雨時魚更活躍，上鉤等得更快（只獎不罰）。
+                let raining = *hub().weather.read().unwrap();
                 let now = vfarm::now_secs();
-                let wait = vfish::bite_secs(rand::random::<u64>());
+                let wait = vfish::bite_secs_for(rand::random::<u64>(), raining);
                 let ready_at = now + wait;
                 {
                     hub().pending_fish.write().unwrap().insert(name.clone(), (ready_at, x, y, z));
                 }
                 let _ = out_tx.send(Message::Text(serde_json::json!({
-                    "t": "fish_cast_ok", "wait": wait, "hint": vfish::cast_hint()
+                    "t": "fish_cast_ok", "wait": wait, "hint": vfish::cast_hint_for(raining)
                 }).to_string())).await;
             }
 
@@ -6678,7 +6680,9 @@ async fn handle_socket(
                 // 3) 時機到——移除這竿（寫鎖即釋），釣起漁獲。
                 { hub().pending_fish.write().unwrap().remove(&name); }
                 // 稀有度走真隨機（同專案慣例），玩家無法用收竿時機精算穩定釣起稀有魚。
-                let fish_id = vfish::pick_catch(rand::random::<u64>());
+                // 雨天垂釣 v1（自主提案切片 841）：下雨時稀有乙太魚機率提高（只獎不罰）。
+                let raining = *hub().weather.read().unwrap();
+                let fish_id = vfish::pick_catch_for(rand::random::<u64>(), raining);
                 // 4) 漁獲進背包（inventory 寫鎖即釋 → append_inv → inv_update 單播）。
                 let entry = hub().inventory.write().unwrap().give(&name, fish_id, 1);
                 vinv::append_inv(&entry);

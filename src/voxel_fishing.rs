@@ -19,6 +19,13 @@
 //! **純邏輯層**：本模組只有確定性純函式（漁獲抽選、上鉤秒數、水體判定、台詞），
 //! 零 LLM、零鎖、零 async、零 IO、可單元測試。連線 / 鎖 / 背包寫入 / 廣播 / 持久化
 //! 觸發全留在 `voxel_ws.rs`（沿用採集/贈禮的短鎖循序慣例，守 prod 死鎖鐵律）。
+//!
+//! ## 雨天垂釣 v1（自主提案切片，ROADMAP 841）
+//! 天氣系統（700/701/780）至今只碰過農地灌溉／居民對話／彩虹視覺，垂釣完全沒接過
+//! 天氣——不管晴雨，浮標永遠等一樣久、稀有魚永遠一樣難釣。這一刀補上：**下雨天魚兒
+//! 更活躍**——上鉤等得更快、釣起乙太魚的機率也更高，讓「今天在下雨」第一次也成為
+//! 垂釣玩家會留意、會特地選在雨天出門釣魚的理由。**只獎不罰**（守療癒優先鐵律）：
+//! 晴天照舊是原本的 3~7 秒／1/5 機率，雨天只有加成、沒有懲罰。
 
 /// 釣竿物品 ID（32~41 已被鎬/斧/鏟佔用；60 是首個空號）。純物品，住背包不可放置。
 pub const FISHING_ROD_ID: u8 = 60;
@@ -35,6 +42,15 @@ pub const BITE_MIN_SECS: u64 = 3;
 /// 上鉤等待秒數的上界（最久等到這麼久，隨機落在 [MIN, MAX] 之間＝每次都不一樣）。
 pub const BITE_MAX_SECS: u64 = 7;
 
+/// 雨天上鉤等待秒數的下界——魚更活躍，最快只要這麼久就上鉤。
+pub const RAIN_BITE_MIN_SECS: u64 = 2;
+/// 雨天上鉤等待秒數的上界——整體比晴天緊湊，等待感依然存在但更快。
+pub const RAIN_BITE_MAX_SECS: u64 = 4;
+
+/// 雨天稀有魚判定的模數：`roll % RAIN_RARE_CATCH_MOD == 0` → 乙太魚。
+/// 平時是 1/5（`% 5`），雨天收窄成 1/3，稀有魚明顯更容易釣到、但仍非必得。
+pub const RAIN_RARE_CATCH_MOD: u64 = 3;
+
 /// 判斷某方塊 ID 是否為「水體」（可下竿）。
 ///
 /// 來源水 `Water=7`（無限、level 0）與流動水 `WaterFlow1..7 = 24..=30`（離源遞減）都算——
@@ -48,7 +64,19 @@ pub fn is_water_block(id: u8) -> bool {
 /// 確定性純函式（同一 `roll` 恆得同一結果）——`roll` 由伺服器用「時間 + 玩家 + 座標」
 /// 合成，讓每次收竿的結果自然分散又可測。
 pub fn pick_catch(roll: u64) -> u8 {
-    if roll % 5 == 0 {
+    pick_catch_for(roll, false)
+}
+
+/// 依 `roll` 抽選漁獲，`raining` 決定稀有機率門檻（雨天 1/3、晴天 1/5，只獎不罰）。
+///
+/// 確定性純函式（同一 `roll`＋`raining` 恆得同一結果）。
+pub fn pick_catch_for(roll: u64, raining: bool) -> u8 {
+    let hit = if raining {
+        roll % RAIN_RARE_CATCH_MOD == 0
+    } else {
+        roll % 5 == 0
+    };
+    if hit {
         AETHER_FISH_ID
     } else {
         FISH_ID
@@ -59,8 +87,20 @@ pub fn pick_catch(roll: u64) -> u8 {
 ///
 /// 隨機化上鉤時間＝每次拋竿的「等」都不太一樣，才有真釣魚的味道（不是固定倒數）。
 pub fn bite_secs(roll: u64) -> u64 {
-    let span = BITE_MAX_SECS - BITE_MIN_SECS + 1;
-    BITE_MIN_SECS + roll % span
+    bite_secs_for(roll, false)
+}
+
+/// 依 `roll` 決定這一竿要等幾秒才上鉤，`raining` 決定範圍（雨天更快，只獎不罰）。
+///
+/// 確定性純函式（同一 `roll`＋`raining` 恆得同一結果）。
+pub fn bite_secs_for(roll: u64, raining: bool) -> u64 {
+    let (min, max) = if raining {
+        (RAIN_BITE_MIN_SECS, RAIN_BITE_MAX_SECS)
+    } else {
+        (BITE_MIN_SECS, BITE_MAX_SECS)
+    };
+    let span = max - min + 1;
+    min + roll % span
 }
 
 /// 漁獲的中文名（自給自足，與 `voxel_gift::item_name_zh` 同步）。
@@ -76,7 +116,17 @@ pub fn fish_name_zh(id: u8) -> &'static str {
 
 /// 拋竿成功後給玩家看的提示（前端顯示，帶等待的期待感）。
 pub fn cast_hint() -> &'static str {
-    "🎣 拋竿了——浮標靜靜漂在水面，靜候魚兒上鉤…"
+    cast_hint_for(false)
+}
+
+/// 拋竿成功後給玩家看的提示，`raining` 為真時明講雨天魚更活躍——
+/// 讓玩家看得懂「這竿為什麼等得比平常快」，而不只是默默變快。
+pub fn cast_hint_for(raining: bool) -> &'static str {
+    if raining {
+        "🎣🌧️ 拋竿了——雨天魚兒特別活躍，浮標應該很快就有動靜…"
+    } else {
+        "🎣 拋竿了——浮標靜靜漂在水面，靜候魚兒上鉤…"
+    }
 }
 
 /// 太早收竿（魚還沒上鉤）給玩家看的提示。
@@ -171,6 +221,57 @@ mod tests {
         let feed = catch_feed_line("露米", AETHER_FISH_ID);
         assert!(feed.contains("露米") && feed.contains("乙太魚"));
         assert!(catch_feed_line("諾亞", FISH_ID).contains("諾亞"));
+    }
+
+    #[test]
+    fn rain_pick_catch_boosts_rare_chance_without_penalty() {
+        // 同一 roll，晴天/雨天恆與各自模式的原函式一致（無回歸）。
+        for r in 0..50u64 {
+            assert_eq!(pick_catch(r), pick_catch_for(r, false));
+        }
+        // 雨天門檻收窄成 1/3，掃一段連續 roll 驗證比例確實提高、且仍非必得（只獎不罰）。
+        let mut rain_rare = 0;
+        let mut sun_rare = 0;
+        for r in 0..300u64 {
+            if pick_catch_for(r, true) == AETHER_FISH_ID {
+                rain_rare += 1;
+            }
+            if pick_catch_for(r, false) == AETHER_FISH_ID {
+                sun_rare += 1;
+            }
+        }
+        assert_eq!(rain_rare, 100, "300 竿裡雨天稀有魚恰好 1/3");
+        assert_eq!(sun_rare, 60, "300 竿裡晴天稀有魚恰好 1/5");
+        assert!(rain_rare > sun_rare, "雨天稀有魚該比晴天更容易釣到");
+        assert!(rain_rare < 300, "雨天仍非必得，只是機率提高");
+    }
+
+    #[test]
+    fn rain_bite_secs_faster_but_still_bounded_and_no_regression() {
+        // 同一 roll，晴天恆與原函式一致（無回歸）。
+        for r in 0..50u64 {
+            assert_eq!(bite_secs(r), bite_secs_for(r, false));
+        }
+        for r in 0..1000u64 {
+            let s = bite_secs_for(r, true);
+            assert!(
+                (RAIN_BITE_MIN_SECS..=RAIN_BITE_MAX_SECS).contains(&s),
+                "雨天 roll {r} 的上鉤秒數 {s} 落在範圍外"
+            );
+        }
+        // 邊界都要搆得到。
+        assert!((0..1000u64).map(|r| bite_secs_for(r, true)).any(|s| s == RAIN_BITE_MIN_SECS));
+        assert!((0..1000u64).map(|r| bite_secs_for(r, true)).any(|s| s == RAIN_BITE_MAX_SECS));
+        // 雨天上界比晴天下界還快——整體明顯更緊湊（只獎不罰，不會比晴天慢）。
+        assert!(RAIN_BITE_MAX_SECS < BITE_MAX_SECS);
+        assert!(RAIN_BITE_MAX_SECS <= BITE_MIN_SECS + 1);
+    }
+
+    #[test]
+    fn cast_hint_mentions_rain_only_when_raining() {
+        assert_eq!(cast_hint(), cast_hint_for(false));
+        assert!(!cast_hint_for(false).contains("雨"));
+        assert!(cast_hint_for(true).contains("雨"));
     }
 
     #[test]
