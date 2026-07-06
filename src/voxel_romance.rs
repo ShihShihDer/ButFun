@@ -69,6 +69,20 @@ impl ResidentRomance {
         self.pairs.iter().any(|(x, y)| x == name || y == name)
     }
 
+    /// 這位居民的戀人是誰（沒有戀人回 `None`）。供「戀人牽掛」（ROADMAP 852）判斷分開的
+    /// 是不是自己的戀人、該去找誰。
+    pub fn partner_of(&self, name: &str) -> Option<String> {
+        self.pairs.iter().find_map(|(x, y)| {
+            if x == name {
+                Some(y.clone())
+            } else if y == name {
+                Some(x.clone())
+            } else {
+                None
+            }
+        })
+    }
+
     /// 記一次心動火花（冪等）：真正新締結才回傳 `true`——呼叫端只在回傳 `true` 時才落地
     /// 持久化 / 廣播 / 寫記憶，避免重複觸發洗版。
     pub fn record_spark(&mut self, a: &str, b: &str) -> bool {
@@ -207,6 +221,15 @@ mod tests {
         let feed = sweetheart_feed_line("露娜", "奧瑞");
         assert!(feed.contains("露娜"));
         assert!(feed.contains("奧瑞"));
+    }
+
+    #[test]
+    fn partner_of_returns_other_side_or_none() {
+        let mut r = ResidentRomance::new();
+        r.record_spark("露娜", "奧瑞");
+        assert_eq!(r.partner_of("露娜"), Some("奧瑞".to_string()));
+        assert_eq!(r.partner_of("奧瑞"), Some("露娜".to_string()));
+        assert_eq!(r.partner_of("諾娃"), None);
     }
 
     #[test]

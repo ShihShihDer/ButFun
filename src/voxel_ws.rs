@@ -88,6 +88,7 @@ use crate::voxel_time::{self as vt, WorldTime, TimePhase};
 use crate::voxel_announce as vannounce;
 use crate::voxel_bonds::{self as vbonds, ResidentBonds};
 use crate::voxel_romance::{self as vromance, ResidentRomance};
+use crate::voxel_lover_seek as vlover;
 use crate::voxel_wildlife as vwild;
 use crate::voxel_fish as vfishlife;
 use crate::voxel_player_recipe as vprecipe;
@@ -560,6 +561,12 @@ struct VoxelResident {
     /// 某位在線玩家久別歸來、由對他記憶最厚的這位居民放下手邊的事奔去迎接；抵達（暖暖迎接＋記一筆
     /// 與他的重逢記憶）或逾時／玩家離線即清空。純記憶體、重啟歸零。
     reunion_seek: Option<(String, f32)>,
+    /// 戀人牽掛（記憶驅動·戀人牽掛 v1，ROADMAP 852）：Some(戀人顯示名, 逾時剩餘秒) = 分開得夠遠、
+    /// 放下手邊的事正走去找戀人；抵達（暖暖相見＋雙方各記一筆重逢記憶）或戀人睡了／逾時即清空。
+    /// 純記憶體、重啟歸零。
+    lover_seek: Option<(String, f32)>,
+    /// 上次牽掛落幕（抵達或放棄）之後的靜置冷卻秒數，到期才會再次起念去找戀人（ROADMAP 852）。
+    lover_seek_cooldown: f32,
     /// 遠行探野（PLAN_ETHERVOX item 7 散居·遠行探野 v1，ROADMAP 756）：Some(邊陲落點 x, z, 方位名) =
     /// 正遠行前往遠離主城的荒野邊陲、或已抵達正在那逗留；None = 沒在遠行（正常閒晃/採集/建造）。
     /// 散居 v6（ROADMAP 762）起，能遠行的人格為 Wanderer（奧瑞·漂泊）與 FarmWorker（諾娃·尋地）
@@ -1604,6 +1611,9 @@ fn build_resident(
             // 晨間思念玩家（ROADMAP 746）：入場沒有進行中的思念（僅由清晨醒來時的睡前反思觸發）。
             daybreak_seek: None,
             reunion_seek: None,
+            // 戀人牽掛（ROADMAP 852）：入場沒有進行中的牽掛，冷卻歸零（真正觸發還需先締結戀人）。
+            lover_seek: None,
+            lover_seek_cooldown: 0.0,
             // 遠行探野（ROADMAP 756）：入場無遠行任務；首次冷卻各自大幅錯開（前 15~30 分鐘不遠行，
             // 讓居民先在家域安頓、也避免啟動後短時間內誰都往荒野跑）。新生兒也走這條，一併有遠行欄位。
             expedition: None,
@@ -8672,6 +8682,10 @@ fn tick_residents(dt: f32) {
     // 鎖外記 Feed + 補一筆重逢記憶（掛玩家名下、算情誼）。格式：(resident_id, resident_name, 玩家顯示名)。
     let mut reunion_arrivals: Vec<(String, &'static str, String)> = Vec::new();
 
+    // 戀人牽掛抵達事件（記憶驅動·戀人牽掛 v1，ROADMAP 852）：鎖內偵測，鎖外寫雙方記憶+Feed。
+    // 格式：(seeker_id, seeker_name, partner_id, partner_name)。
+    let mut lover_arrivals: Vec<(String, &'static str, String, String)> = Vec::new();
+
     // 居民回禮事件（ROADMAP 667）：鎖內偵測，鎖外執行（加入背包 + 廣播）。
     // 格式：(resident_id, resident_name, player_name, block_id, qty, message)
     let mut return_gift_events: Vec<(String, &'static str, String, u8, u32, String)> = Vec::new();
@@ -8777,6 +8791,20 @@ fn tick_residents(dt: f32) {
         // 避免在持 residents 寫鎖的迴圈裡再借用 residents 讀。座標在本 tick 內幾乎不變，快照安全。
         let resident_pos: Vec<(f32, f32)> =
             residents.iter().map(|r| (r.body.x, r.body.z)).collect();
+        // 戀人牽掛 v1（ROADMAP 852）：名字→(座標, 是否睡著, 居民id) 快照，供下方判斷戀人此刻在
+        // 哪、醒著沒（避免在持 residents 寫鎖的迴圈裡再借用 residents 讀，比照 745/752 快照慣例）。
+        let lover_status_by_name: HashMap<&'static str, (f32, f32, bool, String)> = residents
+            .iter()
+            .map(|r| (r.name, (r.body.x, r.body.z, r.asleep, r.id.clone())))
+            .collect();
+        // 名字→戀人名字快照（romance 讀鎖短取即釋、不巢狀不反向，比照下方 846 長椅段落的鎖序慣例）。
+        let sweetheart_of: HashMap<&'static str, String> = {
+            let romance = hub().romance.read().unwrap();
+            resident_names
+                .iter()
+                .filter_map(|&nm| romance.partner_of(nm).map(|p| (nm, p)))
+                .collect()
+        }; // romance 讀鎖釋放
 
         // 2b) 物理 + 閒晃 + 社交冷卻 + 思考排程。
         for r in residents.iter_mut() {
@@ -9829,6 +9857,53 @@ fn tick_residents(dt: f32) {
                 }
             }
 
+            // 戀人牽掛 v1（記憶驅動·戀人牽掛，ROADMAP 852）：846 讓兩位老朋友締結成戀人，但成了
+            // 戀人之後這份羈絆從沒有改變過任何行為——本刀讓「戀人」第一次真的影響行為：分開得夠遠、
+            // 冷卻到期、戀人醒著、過機率門檻，就放下手邊的事，起身去找對方。
+            if r.lover_seek.is_none()
+                && r.say.is_empty()
+                && !r.asleep
+                && !r.seeking_food
+                && !r.foraging_food
+                && !r.seeking_comfort
+                && r.cheer_target.is_none()
+                && r.visiting.is_none()
+                && r.clique_meet.is_none()
+                && r.approaching_esteem.is_none()
+                && r.expedition.is_none()
+                && r.pilgrimage.is_none()
+                && r.daybreak_seek.is_none()
+                && r.reunion_seek.is_none()
+                && r.follow.is_none()
+                && r.gather.is_none()
+                && r.fetch.is_none()
+                && r.invent_run.is_none()
+            {
+                if let Some(partner_name) = sweetheart_of.get(r.name) {
+                    if let Some(&(px, pz, partner_asleep, _)) =
+                        lover_status_by_name.get(partner_name.as_str())
+                    {
+                        let dx = r.body.x - px;
+                        let dz = r.body.z - pz;
+                        let dist_sq = dx * dx + dz * dz;
+                        if vlover::should_seek(
+                            dist_sq,
+                            r.lover_seek_cooldown,
+                            partner_asleep,
+                            rand::random::<f32>(),
+                        ) {
+                            let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                            r.target_x = px;
+                            r.target_z = pz;
+                            r.wait_timer = 0.0;
+                            r.lover_seek = Some((partner_name.clone(), vlover::SEEK_TIMEOUT_SECS));
+                            r.say = vlover::seek_bubble_line(pick).chars().take(40).collect();
+                            r.say_timer = SAY_SECS;
+                        }
+                    }
+                }
+            }
+
             // 回家吃自己種的／存的 v2（飢餓接農田／倉庫，ROADMAP 799）：餓了就放下閒晃、朝自己的
             // 家域中心走去；到家後**檢查小背包真的有沒有吃的**（小麥／麵包／胡蘿蔔／馬鈴薯／莓果…），
             // 有就吃掉一份、真的扣量、餓意歸零、冒一句點名「吃了什麼」的滿足暖泡泡；**沒有就真的餓著**
@@ -10028,11 +10103,73 @@ fn tick_residents(dt: f32) {
                 }
             }
 
+            // 戀人牽掛走動 v1（記憶驅動·戀人牽掛，ROADMAP 852）：lover_seek 有效時，持續朝那位
+            // 戀人此刻所在位置走去（她可能在移動，故每 tick 依名字重查快照座標步步逼近）；抵達
+            // （XZ 距離 < ARRIVE_DIST 且 say 空）→ 暖暖相見、收集抵達事件（鎖外補雙方各一筆重逢
+            // 記憶+Feed）、清除牽掛並上冷卻。戀人睡了／逾時奔太久則放下這份牽掛。狀態機比照久別
+            // 重逢奔迎（747，每 tick 覆寫 target、抵達即清空）。
+            if let Some((partner_name, remaining)) = r.lover_seek.clone() {
+                let remaining = remaining - dt;
+                // 依名字重查戀人此刻的座標與是否睡著（可能已移動／已入睡）。
+                let here = lover_status_by_name
+                    .get(partner_name.as_str())
+                    .map(|&(x, z, asleep, _)| (x, z, asleep));
+                match here {
+                    Some((px, pz, false)) if remaining > 0.0 => {
+                        let dx = r.body.x - px;
+                        let dz = r.body.z - pz;
+                        let arrived = dx * dx + dz * dz < vlover::ARRIVE_DIST * vlover::ARRIVE_DIST;
+                        if arrived {
+                            // 找到戀人：沒在說別的話就暖暖相見、收集雙方重逢記憶事件，收工＋上冷卻。
+                            if r.say.is_empty() {
+                                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                                r.say = vlover::arrive_greet_line(pick).chars().take(40).collect();
+                                r.say_timer = SAY_SECS;
+                                if let Some(entry) = lover_status_by_name.get(partner_name.as_str())
+                                {
+                                    let partner_id = entry.3.clone();
+                                    lover_arrivals.push((
+                                        r.id.clone(),
+                                        r.name,
+                                        partner_id,
+                                        partner_name.clone(),
+                                    ));
+                                }
+                                r.lover_seek = None;
+                                r.lover_seek_cooldown = vlover::SEEK_COOLDOWN_SECS;
+                            } else {
+                                // 站定等說完話：保持目標、續留這份牽掛（逾時照遞減，不至無限等）。
+                                r.target_x = px;
+                                r.target_z = pz;
+                                r.wait_timer = 0.0;
+                                r.lover_seek = Some((partner_name, remaining));
+                            }
+                        } else {
+                            // 還在路上：步步逼近、清小歇，讓玩家看得到她專程走過去。
+                            r.target_x = px;
+                            r.target_z = pz;
+                            r.wait_timer = 0.0;
+                            r.lover_seek = Some((partner_name, remaining));
+                        }
+                    }
+                    // 戀人睡了／逾時奔太久 → 放下這份牽掛，回到平常的一天（短冷卻，避免立刻又觸發）。
+                    _ => {
+                        r.lover_seek = None;
+                        r.lover_seek_cooldown = vlover::SEEK_COOLDOWN_SECS * 0.25;
+                    }
+                }
+            }
+
             // 重返心中的牌子 v3（ROADMAP 743）：讀牌記憶第一次改變居民的去向。
             // 冷卻遞減；正在朝聖時持續朝牌子走、抵達即駐足念一句、逾時則放棄。
             // 鎖序：memory 寫（短鎖即釋，比照 v2），Feed 走鎖外 pilgrimage_feed，不巢狀、不持鎖 await。
             if r.pilgrimage_cooldown > 0.0 {
                 r.pilgrimage_cooldown -= dt;
+            }
+
+            // 戀人牽掛 v1（ROADMAP 852）：牽掛冷卻遞減（純記憶體、每 tick 一次）。
+            if r.lover_seek_cooldown > 0.0 {
+                r.lover_seek_cooldown -= dt;
             }
 
             // 繁星夜空 v1（ROADMAP 783）：望星冷卻遞減（純記憶體、每 tick 一次）。
@@ -13952,6 +14089,30 @@ fn tick_residents(dt: f32) {
                 .add_memory(rid, player, &vreunion::reunion_memory_summary(player))
         };
         vmem::append_memory(&entry);
+    }
+
+    // 5c-8) 戀人牽掛·抵達 Feed + 補雙方記憶（記憶驅動·戀人牽掛 v1，ROADMAP 852）：846 讓兩位
+    // 老朋友締結成戀人，但這份羈絆從沒有改變過任何行為——本刀第一次讓「戀人」真的影響行為：
+    // 找到彼此那一刻，雙方各自留一筆重逢記憶（掛在對方名下），世界看板也播報。
+    // 鎖序：memory 寫鎖各自短取即釋、不巢狀，append_memory 的 IO 在鎖外進行（守死鎖鐵律）。
+    for (seeker_id, seeker_name, partner_id, partner_name) in &lover_arrivals {
+        vfeed::append_feed("戀人牽掛", seeker_name, &vlover::arrive_feed_line(seeker_name, partner_name));
+        let entry_seeker = {
+            hub()
+                .memory
+                .write()
+                .unwrap()
+                .add_memory(seeker_id, partner_name, &vlover::arrive_memory_line(partner_name))
+        };
+        vmem::append_memory(&entry_seeker);
+        let entry_partner = {
+            hub()
+                .memory
+                .write()
+                .unwrap()
+                .add_memory(partner_id, seeker_name, &vlover::arrive_memory_line(seeker_name))
+        };
+        vmem::append_memory(&entry_partner);
     }
 
     // 5d) 探訪 Feed（ROADMAP 671）：抵達 / 返家各一筆，讓離線玩家也知道居民在往來。
