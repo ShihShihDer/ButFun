@@ -4338,9 +4338,12 @@ function connect() {
       if (m.text) appendMsg("sys", m.text);
     } else if (m.t === "build_complete") {
       // 建物完工廣播 v1（ROADMAP 669）：全員可見，世界在長大。
+      // 合力蓋家 v1（ROADMAP 834）：有協力者（additive helpers 欄位）就多提一句與誰合力。
       const who = m.resident || "居民";
       const what = m.kind || "建物";
-      appendMsg("sys", "🏗️ " + who + " 完成了「" + what + "」的建造！走近去看看吧。");
+      const helpers = Array.isArray(m.helpers) ? m.helpers : [];
+      const credit = helpers.length ? "（與" + helpers.join("、") + "合力）" : "";
+      appendMsg("sys", "🏗️ " + who + " 完成了「" + what + credit + "」的建造！走近去看看吧。");
     } else if (m.t === "wish_come_true") {
       // 心願真的成真 v1（ROADMAP 720）：這座建物是某位玩家的話種下的心願，全員可見；
       // 啟發者本人看到會格外有感（「我隨口說的話，真的被記住、被實現了」）。

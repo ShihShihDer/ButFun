@@ -12400,8 +12400,15 @@ fn tick_residents(dt: f32) {
                 if vbuild::should_help_build(remaining_before, rand::random::<f32>()) {
                     let popped = {
                         let mut builds = hub().builds.write().unwrap();
-                        builds.get_plan_mut(&host_id)
-                            .and_then(|p| p.pop_next().map(|bb| (bb, p.kind_name.clone())))
+                        builds.get_plan_mut(&host_id).and_then(|p| {
+                            let bb = p.pop_next();
+                            // 合力蓋家 v1（ROADMAP 834）：記下這位協力者，完工時一起感謝
+                            // （零額外鎖，沿用這段本就持有的 builds 寫鎖）。
+                            if bb.is_some() {
+                                p.add_helper(visitor_name);
+                            }
+                            bb.map(|bb| (bb, p.kind_name.clone()))
+                        })
                     }; // builds 寫鎖釋放
                     if let Some((bb, kind_name)) = popped {
                         if let Some(block) = Block::from_u8(bb.b) {
@@ -13026,7 +13033,7 @@ fn tick_residents(dt: f32) {
         }
 
         // ── 有計畫：彈下一塊放置 + 持久化 + 進度冒泡 ──────────────────────────
-        let (next_block, kind_name, kind_str, progress_pct, plan_done, plan_anchor, plan_expansion, plan_inspired_by) = {
+        let (next_block, kind_name, kind_str, progress_pct, plan_done, plan_anchor, plan_expansion, plan_inspired_by, plan_helpers) = {
             let mut builds = hub().builds.write().unwrap();
             if let Some(plan) = builds.get_plan_mut(&rid) {
                 let bb = plan.pop_next();
@@ -13037,9 +13044,10 @@ fn tick_residents(dt: f32) {
                 let anchor = (plan.cx, plan.cy, plan.cz);
                 let exp = plan.expansion;
                 let inspired = plan.inspired_by.clone();
-                (bb, kn, ks, pct, done, anchor, exp, inspired)
+                let helpers = plan.helpers.clone();
+                (bb, kn, ks, pct, done, anchor, exp, inspired, helpers)
             } else {
-                (None, String::new(), String::new(), 100, true, (0, 0, 0), false, None)
+                (None, String::new(), String::new(), 100, true, (0, 0, 0), false, None, Vec::new())
             }
         }; // builds 寫鎖釋放
 
@@ -13107,14 +13115,17 @@ fn tick_residents(dt: f32) {
                     vskill::append_goal(&ar);
                 }
             }
-            // 完工 Feed（每個建物只發一次，不洗版）。
+            // 完工 Feed（每個建物只發一次，不洗版）。合力蓋家 v1（ROADMAP 834）：有協力者
+            // 就在建物名後標注「（與 X、Y 合力）」，讓 696 的幫忙在完工瞬間也被看見。
             vfeed::append_feed(
                 if plan_expansion { "蓋家擴建完工" } else { "蓋家完工" },
                 &rname,
-                &kind_name,
+                &vbuild::build_credit_detail(&kind_name, &plan_helpers),
             );
             // 完工廣播：WS 廣播給所有在線玩家（看得到「世界在長大」），慶賀泡泡同步排入 say_updates。
-            let _ = hub().tx.send(std::sync::Arc::new(vannounce::build_complete_msg(&rname, &kind_name)));
+            let _ = hub().tx.send(std::sync::Arc::new(vannounce::build_complete_msg_with_helpers(
+                &rname, &kind_name, &plan_helpers,
+            )));
             if let Some(kind) = vbuild::BuildKind::from_str(&kind_str) {
                 match &plan_inspired_by {
                     // 心願真的成真 v1（ROADMAP 720）：這座建物是某位玩家的話種下的心願，
@@ -13132,7 +13143,7 @@ fn tick_residents(dt: f32) {
                         vmem::append_memory(&entry);
                     }
                     None => {
-                        say_updates.push((rid.clone(), vannounce::build_complete_say(&rname, kind)));
+                        say_updates.push((rid.clone(), vannounce::build_complete_say_with_helpers(&rname, kind, &plan_helpers)));
                     }
                 }
             }

@@ -73,6 +73,45 @@ pub fn build_complete_msg(resident_name: &str, kind_name: &str) -> String {
     .to_string()
 }
 
+// ── 合力蓋家完工功勞 v1（ROADMAP 834）───────────────────────────────────────────
+//
+// 696「居民互助蓋家」讓老朋友到訪時順手幫忙推進一塊，但完工那一刻此前只有屋主一人
+// 被祝賀／被廣播——本節補上「有人幫忙就一起感謝」，讓小社會的集體行動在完工瞬間可見。
+
+/// 建物完工時的慶賀泡泡：有協力者就改口一起感謝，沒有則與 [`build_complete_say`] 完全相同
+/// （零協力者時行為不變，舊呼叫端／既有測試不受影響）。
+pub fn build_complete_say_with_helpers(resident_name: &str, kind: BuildKind, helpers: &[String]) -> String {
+    if helpers.is_empty() {
+        return build_complete_say(resident_name, kind);
+    }
+    let idx = resident_name.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize));
+    let names = helpers.join("、");
+    let pool: &[&str] = &[
+        "{k}蓋好了！多虧{h}幫忙，一起完成的！",
+        "跟{h}一起把{k}蓋好啦，謝謝你們！",
+        "{k}完工！這是我和{h}一起蓋的。",
+        "有{h}幫忙，{k}蓋得特別快，謝謝！",
+    ];
+    pool[idx % pool.len()]
+        .replace("{h}", &names)
+        .replace("{k}", kind.display_name())
+        .chars()
+        .take(40)
+        .collect()
+}
+
+/// 建物完工廣播的 WS JSON 字串，額外帶上協力者名單（additive `helpers` 欄位，
+/// 舊前端安全忽略；新前端可據此在系統訊息裡多提一句「與誰合力」）。
+pub fn build_complete_msg_with_helpers(resident_name: &str, kind_name: &str, helpers: &[String]) -> String {
+    serde_json::json!({
+        "t": "build_complete",
+        "resident": resident_name,
+        "kind": kind_name,
+        "helpers": helpers,
+    })
+    .to_string()
+}
+
 // ── 心願真的成真 v1（ROADMAP 720）──────────────────────────────────────────────
 //
 // 玩家的話種下居民的心願（`voxel_desires`），居民照著心願蓋（`voxel_building`），
@@ -205,5 +244,50 @@ mod tests {
         let msg = wish_come_true_memory("瞭望台");
         assert!(msg.contains("瞭望台"));
         assert!(msg.chars().count() <= 80, "在 SUMMARY_MAX_CHARS 之內：{}", msg.chars().count());
+    }
+
+    // ── 合力蓋家完工功勞（ROADMAP 834）────────────────────────────────────────────
+
+    #[test]
+    fn say_with_no_helpers_matches_original() {
+        let a = build_complete_say_with_helpers("露娜", BuildKind::House, &[]);
+        let b = build_complete_say("露娜", BuildKind::House);
+        assert_eq!(a, b, "零協力者時應與原函式完全相同，舊行為不變");
+    }
+
+    #[test]
+    fn say_with_helpers_mentions_helper_and_kind_within_limit() {
+        let helpers = vec!["賽勒".to_string()];
+        let say = build_complete_say_with_helpers("露娜", BuildKind::Well, &helpers);
+        assert!(say.contains("賽勒"), "應提到協力者：{say}");
+        assert!(say.contains("水井"), "應提到建物種類：{say}");
+        assert!(say.chars().count() <= 40, "不超過泡泡上限 40 字：{}", say.chars().count());
+    }
+
+    #[test]
+    fn say_with_multiple_helpers_joined_and_bounded() {
+        let helpers = vec!["賽勒".to_string(), "諾娃".to_string()];
+        for kind in [BuildKind::Garden, BuildKind::House, BuildKind::Well, BuildKind::Tower, BuildKind::Pavilion] {
+            let say = build_complete_say_with_helpers("奧瑞", kind, &helpers);
+            assert!(say.chars().count() <= 40, "不超過泡泡上限 40 字：{}", say.chars().count());
+        }
+    }
+
+    #[test]
+    fn msg_with_helpers_is_valid_json_and_lists_helpers() {
+        let helpers = vec!["賽勒".to_string(), "諾娃".to_string()];
+        let msg = build_complete_msg_with_helpers("露娜", "小木屋", &helpers);
+        let v: serde_json::Value = serde_json::from_str(&msg).expect("應為合法 JSON");
+        assert_eq!(v["t"], "build_complete");
+        assert_eq!(v["resident"], "露娜");
+        assert_eq!(v["kind"], "小木屋");
+        assert_eq!(v["helpers"], serde_json::json!(["賽勒", "諾娃"]));
+    }
+
+    #[test]
+    fn msg_with_no_helpers_has_empty_array() {
+        let msg = build_complete_msg_with_helpers("諾娃", "水井", &[]);
+        let v: serde_json::Value = serde_json::from_str(&msg).expect("應為合法 JSON");
+        assert_eq!(v["helpers"], serde_json::json!([]));
     }
 }
