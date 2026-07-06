@@ -4692,6 +4692,15 @@ function connect() {
         // 顯示溫馨提示（比一般系統訊息更暖、附愛心）。
         appendMsg("sys", "💛 " + (m.resident_name || "居民") + " 把 " + iname + " ×" + m.qty + " 送給你了！");
       }
+    } else if (m.t === "player_care") {
+      // 居民關心你挨餓 v1（自主提案切片，ROADMAP 845）：只有當事玩家才顯示提示並更新背包。
+      if (m.player === myName) {
+        const iname = BLOCK_NAME[m.item_id] || m.item_name || "麵包";
+        if (m.new_count > 0) myInv.set(m.item_id, m.new_count);
+        updateInvHud();
+        updateGiftBtn();
+        appendMsg("sys", "🍞 " + (m.resident_name || "居民") + " 見你餓著肚子，遞了份 " + iname + " ×" + m.qty + " 給你！");
+      }
     } else if (m.t === "fetch_delivered") {
       // 跑腿採集 v1（指令→任務第三刀）：只有下單的當事玩家才顯示提示並更新背包。
       if (m.player === myName) {
