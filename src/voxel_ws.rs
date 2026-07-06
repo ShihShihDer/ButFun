@@ -1816,7 +1816,8 @@ fn migrate_lay_out_village(deltas: &mut WorldDelta, residents: &[VoxelResident])
     let road_surface = vvillage::road_surface(biome);
     let plaza_surface = vvillage::plaza_surface(biome);
 
-    // 就地鋪一格路面：找地表 y，只有當該格地表方塊是「自然地表」時才鋪（絕不覆蓋作品）。
+    // 就地鋪一格路面：找地表 y，只有當「該格地表方塊是自然地表、且其上方是空氣」時才鋪
+    // （絕不覆蓋作品；上方被牆體/樹幹/水佔著＝路遇到東西了，在此打住、不鑽進建築底下）。
     // 回傳是否真的鋪了（供計數）。
     let mut lay_surface = |deltas: &mut WorldDelta, x: i32, z: i32, surf: Block| -> bool {
         let sy = vbuild::surface_y(x, z); // 地面正上方一格
@@ -1824,6 +1825,10 @@ fn migrate_lay_out_village(deltas: &mut WorldDelta, residents: &[VoxelResident])
         let cur = voxel::effective_block_at(deltas, x, gy, z);
         if !vvillage::is_natural_ground(cur) {
             return false; // 遇建築/樹/水/農田等 → 不鋪、不拆
+        }
+        // 上方必須是空氣：牆/樹幹/水佔著＝遇到東西，路到此為止（不鑽建築、不入水）。
+        if voxel::effective_block_at(deltas, x, sy, z) != Block::Air {
+            return false;
         }
         if cur == surf {
             return false; // 已是同材質（重跑冪等）→ 不重複落地
@@ -14116,7 +14121,6 @@ fn claim_or_reuse_plot(rid: &str, hx: i32, hz: i32) -> (i32, i32) {
             vvillage::village_center(&home_bases)
         }
     };
-    let biome = voxel::biome_at_voxel(vcx, vcz);
     let plots = vvillage::plot_layout(vcx, vcz); // 純函式、鎖外算
     // village 寫鎖：挑最近空地塊 + 認領（double-check 併發安全：進鎖後再確認一次沒被別的 tick 搶認）。
     let (claim, plot) = {

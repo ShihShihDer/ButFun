@@ -17,11 +17,13 @@
 // 不抄外部碼；全繁中註解；node --check 過。
 
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, cpSync, appendFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, appendFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const BIN = process.env.VILLAGE_QA_BIN || "target/release/butfun-server";
+// 伺服器在各自 cwd（隔離 temp 目錄）啟動 → BIN 必須是絕對路徑，否則相對路徑在 temp cwd 下解不到。
+const BIN = resolve(process.env.VILLAGE_QA_BIN || "target/release/butfun-server");
 const OUT = process.env.VILLAGE_QA_OUT || "/tmp/village-qa-out";
 const CHROME = process.env.BFQA_CHROME || "/usr/bin/google-chrome";
 const PORT = Number(process.env.VILLAGE_QA_PORT || 3971);
@@ -35,6 +37,11 @@ const check = (cond, msg) => { if (cond) console.log("  ✅ " + msg); else { con
 // ── 隔離啟動一台伺服器（記憶體模式、指定 cwd/port），回 {proc, dir} ────────────────
 function launchServer(dir, extraEnv = {}) {
   mkdirSync(join(dir, "data"), { recursive: true });
+  // 伺服器用相對路徑讀前端資產（web/voxel/index.html 等）→ 隔離 cwd 要 symlink 回 repo 的 web/。
+  const repoRoot = resolve(join(dirname(fileURLToPath(import.meta.url)), "..", ".."));
+  for (const asset of ["web", "site"]) {
+    try { symlinkSync(join(repoRoot, asset), join(dir, asset)); } catch { /* 已存在即略過 */ }
+  }
   const proc = spawn(BIN, [], {
     cwd: dir,
     env: {
@@ -229,33 +236,42 @@ async function scenarioScreenshots() {
     await page.goto(`http://127.0.0.1:${PORT}/voxel/?debug=1`, { waitUntil: "domcontentloaded", timeout: 30000 });
     await sleep(7000); // 等 chunk 載入 + mesh
 
-    // 把玩家抬到村莊中心（0,0）正上方高空、鏡頭朝下俯視（用既有 __voxel 除錯鉤子）。
+    // 把玩家抬到指定點正上方高空、鏡頭朝下俯視（用既有 __voxel 除錯鉤子）。
+    // 鏡頭幾何：camy = ty + dist·sin(camPitch) → **正 pitch = 鏡頭在上往下看**（第三人稱夾 [-0.2, 1.3]）。
+    // 重力會把玩家往下拉 → 用 interval 每 60ms 釘住位置，直到截圖完才解除。
     async function lookDownAt(px, pz, height, pitch) {
       await page.evaluate(({ px, pz, height, pitch }) => {
         const v = window.__voxel;
         if (!v || !v.player) return;
-        v.player.x = px; v.player.z = pz; v.player.y = height; v.player.vy = 0;
-        if (v.setCamPitch) v.setCamPitch(pitch); // 負值＝往下看
+        if (window.__qaPin) clearInterval(window.__qaPin);
+        const pin = () => {
+          v.player.x = px; v.player.z = pz; v.player.y = height; v.player.vy = 0;
+        };
+        pin();
+        window.__qaPin = setInterval(pin, 60);
+        if (v.setCamPitch) v.setCamPitch(pitch); // 正值＝鏡頭在上往下看
         if (v.setYaw) v.setYaw(0);
       }, { px, pz, height, pitch });
-      await sleep(2500); // 等 chunk 依新位置載入 + 重繪
+      await sleep(3000); // 等 chunk 依新位置載入 + 重繪
     }
 
-    // 俯視全村（高、幾乎正俯視）。
-    await lookDownAt(0.5, 0.5, 48, -1.3);
+    // 俯視全村（村莊中心 (0,19)，高、近正俯視）。
+    await lookDownAt(0.5, 19.5, 42, 1.3);
     await sleep(1500);
     await page.screenshot({ path: join(OUT, "village-topdown.png") });
     console.log("  📸 village-topdown.png（俯視全村）");
 
-    // 廣場近觀（低一點、斜俯）。
-    await lookDownAt(0.5, 0.5, 22, -0.9);
+    // 廣場近觀（鏡頭在玩家後上方、朝 -z 看 → 釘在廣場**南側**回望，廣場入鏡）。
+    await lookDownAt(0.5, 29, 18, 0.85);
     await page.screenshot({ path: join(OUT, "village-plaza.png") });
     console.log("  📸 village-plaza.png（中央廣場）");
 
-    // 路連既有建築（移到既有木屋方向斜看）。
-    await lookDownAt(18, 6, 26, -0.8);
+    // 路連既有建築（既有木屋在 (30,8)：釘在其南側回望，木屋＋路入鏡）。
+    await lookDownAt(29, 20, 22, 0.95);
     await page.screenshot({ path: join(OUT, "village-road-to-house.png") });
     console.log("  📸 village-road-to-house.png（路連既有建築）");
+    // 解除釘住。
+    await page.evaluate(() => { if (window.__qaPin) clearInterval(window.__qaPin); });
 
     const state = await page.evaluate(() => {
       const v = window.__voxel || {};
