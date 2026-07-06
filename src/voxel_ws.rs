@@ -69,6 +69,7 @@ use crate::voxel_bell as vbell;
 use crate::voxel_seedgift as vseed;
 use crate::voxel_giftgarden as vgg;
 use crate::voxel_fishing as vfish;
+use crate::voxel_player_stats as vstats;
 use crate::voxel_smelt as vsmelt;
 use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
 use crate::voxel_admire as vadmire;
@@ -1671,6 +1672,11 @@ struct VoxelHub {
     /// 讓舊連線的 select! 觸發、優雅退出（幽靈分身消失）。
     /// 短鎖即釋、所有操作在鎖外 await，守 prod 死鎖鐵律。
     conn_kick: RwLock<HashMap<Uuid, oneshot::Sender<()>>>,
+    /// 玩家生存指標（飢餓度＋血量，溫和版·後端權威）：玩家名 → PlayerStats。
+    /// 只在伺服器算（tick 衰減/傷害、吃回復），廣播給玩家自己（別人看不到你的條，減噪）。
+    /// 登入玩家持久化到 data/voxel_player_stats.jsonl（比照 #1024 位置持久化風格，重登保留）；
+    /// 訪客 session 內有效即可（斷線清）。鍵用玩家顯示名（登入玩家綁帳號名，穩定）。
+    player_stats: RwLock<HashMap<String, vstats::PlayerStats>>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -1740,6 +1746,39 @@ fn try_unlock_milestone(player: &str, id: &str, out_tx: &mpsc::Sender<Message>) 
 }
 
 static HUB: OnceLock<VoxelHub> = OnceLock::new();
+
+// ============================================================
+// 玩家生存指標持久化（血/飢跨重登，比照 #1024 位置持久化：jsonl 一行一玩家）
+// ============================================================
+/// 玩家血/飢存檔路徑（`data/` 已 gitignore，執行期產生；重啟後登入玩家血/飢還在）。
+const VOXEL_PLAYER_STATS_PATH: &str = "data/voxel_player_stats.jsonl";
+
+/// 啟動時從磁碟載回玩家血/飢（檔缺＝首次啟動，回空）。純 IO：解析走 vstats 純函式。
+/// 韌性：讀檔失敗／髒行都不 panic（比照其他 voxel store 載入慣例）。
+fn load_player_stats() -> HashMap<String, vstats::PlayerStats> {
+    let text = std::fs::read_to_string(VOXEL_PLAYER_STATS_PATH).unwrap_or_default();
+    let mut map = HashMap::new();
+    for row in vstats::parse_rows(&text) {
+        map.insert(row.player.clone(), row.to_stats());
+    }
+    map
+}
+
+/// 把目前玩家血/飢快照落地（原子寫：寫暫存檔再 rename，避免半截檔）。
+/// 呼叫端在鎖外呼叫（此函式自己短取讀鎖組快照即釋，不持鎖寫檔）。
+fn persist_player_stats() {
+    let rows: Vec<vstats::StatsRow> = {
+        let map = hub().player_stats.read().unwrap();
+        map.iter()
+            .map(|(name, s)| vstats::StatsRow::from_stats(name, s))
+            .collect()
+    }; // 讀鎖釋放
+    let text = vstats::serialize_rows(&rows);
+    let tmp = format!("{VOXEL_PLAYER_STATS_PATH}.tmp");
+    if std::fs::write(&tmp, text.as_bytes()).is_ok() {
+        let _ = std::fs::rename(&tmp, VOXEL_PLAYER_STATS_PATH);
+    }
+}
 
 /// 舊坑一次性修復標記（存在即代表已跑過，冪等不再跑；`data/` 已 gitignore）。
 const GATHER_HOLES_MIGRATED_MARKER: &str = "data/.gather_holes_migrated_v1";
@@ -2018,6 +2057,8 @@ fn hub() -> &'static VoxelHub {
             milestones: RwLock::new(MilestoneStore::from_entries(vmiles::load_milestones())),
             // 同帳號去重：啟動空，每條連線進場時登記、離場時清除。純記憶體、無需持久化。
             conn_kick: RwLock::new(HashMap::new()),
+            // 玩家生存指標：啟動時從 data/voxel_player_stats.jsonl 載回血/飢（重登保留，比照 #1024）。
+            player_stats: RwLock::new(load_player_stats()),
             tx,
         }
     })
@@ -2465,6 +2506,112 @@ fn player_pos(id: Uuid) -> Option<(f32, f32, f32)> {
     players.get(&id).map(|p| (p.x, p.y, p.z))
 }
 
+/// 玩家生存指標 v1（溫和版）：把 PlayerStats 組成單播給玩家自己的 `player_stats` 訊息。
+/// 只送血/飢/上限/是否餓瘋（前端據此顯示條＋餓瘋提示＋移動懲罰視覺）。
+/// **後端權威**：這串永遠從伺服器狀態組出，客戶端無法自報。
+fn player_stats_msg(s: &vstats::PlayerStats) -> String {
+    serde_json::json!({
+        "t": "player_stats",
+        "health": s.health,
+        "max_health": vstats::MAX_HEALTH,
+        "hunger": s.hunger.round() as i32,
+        "max_hunger": vstats::MAX_HUNGER as i32,
+        "starving": s.is_starving(),
+    })
+    .to_string()
+}
+
+/// 對玩家套用傷害（溫和版·後端權威）：扣血、清飽食回血累加器（受傷打斷自癒）、
+/// 廣播新指標；血歸零 → 觸發溫柔重生（滿血飢＋回床/廣場＋暖心提示，**背包不動**）。
+///
+/// - `bed` / `pick`：重生點選擇與提示輪替由呼叫端（per-connection）提供，血歸零時用。
+/// - 回是否發生了重生（呼叫端可據此重設 fall 追蹤等）。
+/// **鎖紀律**：短取 player_stats 寫鎖組出新值即釋，送訊息/持久化在鎖外。
+async fn apply_player_damage(
+    name: &str,
+    dmg: u32,
+    out_tx: &mpsc::Sender<Message>,
+) {
+    let new_stats = {
+        let mut m = hub().player_stats.write().unwrap();
+        let s = m.entry(name.to_string()).or_insert_with(vstats::PlayerStats::default);
+        s.health = vstats::apply_damage(s.health, dmg);
+        s.regen_acc = 0.0; // 受傷打斷自癒的節奏
+        *s
+    }; // 寫鎖釋放
+    // 先送受傷（含扣血量，前端據此閃輕紅暈）＋新指標。
+    let _ = out_tx.send(Message::Text(serde_json::json!({
+        "t": "player_hurt", "damage": dmg
+    }).to_string())).await;
+    let _ = out_tx.send(Message::Text(player_stats_msg(&new_stats))).await;
+    persist_player_stats(); // 血變動落地（登入玩家重登保留）
+}
+
+/// 溫柔重生（療癒世界·血歸零時）：血飢回滿、傳送回床邊或村莊廣場、送暖心提示——
+/// **背包不掉落**（本函式完全不碰 inventory）。畫面柔和淡出由前端收到 `respawn` 時處理。
+///
+/// - `bed`：這條連線最近睡過的床（優先）；沒有則回 `spawn_pos()`（村莊廣場）。
+/// - `pick`：暖心提示輪替指標（確定性）。
+/// **鎖紀律**：分別短取 player_stats／players 寫鎖即釋，送訊息在鎖外。
+async fn do_gentle_respawn(
+    my_id: Uuid,
+    name: &str,
+    bed: Option<(f32, f32, f32)>,
+    pick: usize,
+    out_tx: &mpsc::Sender<Message>,
+) {
+    // 1) 選重生點（床優先，否則廣場）。
+    let (rx, ry, rz) = vstats::respawn_point(bed, spawn_pos());
+    // 2) 血飢回滿（清所有累加器）。
+    let full = {
+        let mut m = hub().player_stats.write().unwrap();
+        let s = m.entry(name.to_string()).or_insert_with(vstats::PlayerStats::default);
+        *s = vstats::revived_stats();
+        *s
+    };
+    // 3) 把權威位置也搬到重生點（別人看到你瞬移回村；也避免下一個 Move 從死亡點又掉一次）。
+    {
+        let mut players = hub().players.write().unwrap();
+        if let Some(p) = players.get_mut(&my_id) {
+            p.x = rx;
+            p.y = ry;
+            p.z = rz;
+        }
+    }
+    broadcast_players(); // 讓所有人看到你回到了村莊
+    // 4) 送 respawn（帶座標讓前端把相機/預測位置拉回＋柔和淡出）＋暖心提示＋新滿血指標。
+    let _ = out_tx.send(Message::Text(serde_json::json!({
+        "t": "respawn",
+        "x": rx, "y": ry, "z": rz,
+        "message": vstats::respawn_message(pick),
+    }).to_string())).await;
+    let _ = out_tx.send(Message::Text(player_stats_msg(&full))).await;
+    persist_player_stats();
+    vfeed::append_feed("重生", name, "在溫暖的爐火邊醒來，重新出發。");
+}
+
+/// 睡覺／溫柔重生時把血飢回滿並廣播（療癒世界）。短鎖即釋、送訊息在鎖外。
+async fn heal_to_full_on_sleep(name: &str, out_tx: &mpsc::Sender<Message>) {
+    let full = {
+        let mut m = hub().player_stats.write().unwrap();
+        let s = m.entry(name.to_string()).or_insert_with(vstats::PlayerStats::default);
+        *s = vstats::revived_stats();
+        *s
+    };
+    let _ = out_tx.send(Message::Text(player_stats_msg(&full))).await;
+    persist_player_stats();
+}
+
+/// 依玩家頭部（腳底 + EYE_HEIGHT）採樣的方塊，判定頭是否泡在水裡（溺水判定用）。
+/// 短取 delta 讀鎖即釋，不巢狀。
+fn head_in_water(x: f32, y: f32, z: f32) -> bool {
+    let hx = x.floor() as i32;
+    let hy = (y + crate::voxel::EYE_HEIGHT).floor() as i32;
+    let hz = z.floor() as i32;
+    let blk = voxel::effective_block_at(&hub().deltas.read().unwrap(), hx, hy, hz);
+    vfish::is_water_block(blk as u8)
+}
+
 pub async fn voxel_ws_handler(
     ws: WebSocketUpgrade,
     State(app): State<AppState>,
@@ -2667,6 +2814,21 @@ async fn handle_socket(
         }
     }
 
+    // 玩家生存指標 v1（溫和版）：登入玩家從存檔載回血/飢（重登保留，比照 #1024）；
+    // 訪客／首次登入 → 預設滿血滿飢。取得後單播 player_stats 給玩家自己（別人看不到，減噪）。
+    // **後端權威**：這裡從伺服器狀態組出，客戶端只顯示、不自報。
+    {
+        let stats = {
+            let mut m = hub().player_stats.write().unwrap();
+            *m.entry(name.clone()).or_insert_with(vstats::PlayerStats::default)
+        }; // 寫鎖釋放
+        let msg = player_stats_msg(&stats);
+        if out_tx.send(Message::Text(msg)).await.is_err() {
+            cleanup(my_id, &writer);
+            return;
+        }
+    }
+
     // 告示牌 v1（ROADMAP 740）：連線時一次送出世界上所有告示牌的文字，
     // 讓前端立刻把浮字掛回牌上（牌面文字是每個人都看得見的世界狀態，非私有面板）。
     {
@@ -2852,6 +3014,21 @@ async fn handle_socket(
     // 位置持久化 v1：上次存位置的 unix 秒（0 = 從未存；第一次 Move 後 30 秒內觸發第一次存）。
     let mut last_pos_save_ts: u64 = 0;
 
+    // 跌落傷害 v1（玩家生存指標·溫和版）：per-connection 追「這一趟下墜的最高點」。
+    // Move 是前端權威預測、逐幀上報，故用「y 上升＝離地/爬升 → 記新峰值；y 停止下降＝落地
+    // → 用（峰值 − 落地 y）算落差」偵測著陸事件。落地一結算就清峰值，等下一次起跳/下墜。
+    // `None` = 尚未開始追（剛進場或剛落地）。純記憶體、per-player、斷線即清。
+    let mut fall_peak_y: Option<f32> = None;
+    let mut last_move_y: f32 = f32::NAN;
+
+    // 溫柔重生 v1（玩家生存指標·溫和版）：這條連線最近睡過的床座標（站上去的位置）。
+    // 血歸零時優先在床邊醒來，沒床則回村莊廣場（spawn_pos）。per-connection、斷線即清。
+    let mut last_bed: Option<(f32, f32, f32)> = None;
+    // 溺水扣血跨 tick 的本地累加器（伺服器 tick 在別的 task，故溺水在這條連線收 Move 時
+    // 順帶推進——但用玩家 stats 內的 drown 累加器保存，這裡不另存；見 apply/tick 呼叫）。
+    // 重生提示輪替指標（確定性、不走 random）。
+    let mut respawn_pick: usize = 0;
+
     // 居民會注意到你親手蓋的東西 v1（773）：這條連線的「建造連段」（連續放置的塊數＋
     // 上一塊位置與時刻，見 voxel_admire）＋這條連線對每位居民的讚賞冷卻（per-connection，
     // 天然 per-player、零跨連線鎖；斷線即清、無持久化需求）。
@@ -2868,6 +3045,14 @@ async fn handle_socket(
     // 零跨連線鎖；斷線即清）。施放會廣播給全場，此冷卻擋連放洗爆所有人畫面（濫用防護①）。
     let mut last_firework: Option<std::time::Instant> = None;
 
+    // 玩家生存指標 tick（溫和版）：per-connection 每秒推進一次飢餓衰減／溺水／飽食回血，
+    // 並在指標變動時單播 player_stats（只給玩家自己，減噪）。放這條連線的 select loop 裡跑，
+    // 天然拿得到 out_tx／位置／床，避免居民 tick 那條 task 沒有 per-connection 送訊息管道。
+    // 1 Hz 夠：療癒節奏本就慢（飢餓幾十分鐘見底），也省廣播頻寬。
+    const STATS_TICK_DT: f32 = 1.0;
+    let mut stats_ticker = tokio::time::interval(std::time::Duration::from_secs_f32(STATS_TICK_DT));
+    stats_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     // 讀取迴圈：處理 move / req / break / place / talk。
     // 同時監聽同帳號去重的踢信號（kick_rx）：新連線進來時 send(())，此 arm 觸發後 break，
     // 優雅退出——幽靈分身從 players 表消失，廣播讓所有人看到它不見。
@@ -2875,6 +3060,47 @@ async fn handle_socket(
         let msg = tokio::select! {
             biased; // 踢信號優先（低頻但時效性高），避免 select 平等隨機時延遲踢除
             _ = &mut kick_rx => break, // 被同帳號新連線踢出，退出即結束
+            _ = stats_ticker.tick() => {
+                // ── 玩家生存指標 tick（溫和版·後端權威）──────────────────────────
+                // 取當前位置（判定頭是否在水裡）。取不到（剛斷線）就跳過這 tick。
+                let Some((px, py, pz)) = player_pos(my_id) else { continue; };
+                let in_water = head_in_water(px, py, pz);
+                // 短取寫鎖：推進飢餓衰減／溺水累加／飽食回血，算出這 tick 的傷害與回血。
+                let (new_stats, drown_dmg, heal, changed) = {
+                    let mut m = hub().player_stats.write().unwrap();
+                    let s = m.entry(name.clone()).or_insert_with(vstats::PlayerStats::default);
+                    let before = *s;
+                    // 飢餓慢慢降。
+                    s.hunger = vstats::decay_hunger(s.hunger, STATS_TICK_DT);
+                    // 溺水：頭在水中久了扣血（有緩衝，離水即歸零）。
+                    let (da, ta, ddmg) = vstats::tick_drown(in_water, s.drown_acc, s.drown_tick_acc, STATS_TICK_DT);
+                    s.drown_acc = da;
+                    s.drown_tick_acc = ta;
+                    // 飽食回血：飢餓 > 門檻且未滿血，緩慢回一點。
+                    let (ra, h) = vstats::tick_regen(s.hunger, s.health, s.regen_acc, STATS_TICK_DT);
+                    s.regen_acc = ra;
+                    if h > 0 { s.health = (s.health + h).min(vstats::MAX_HEALTH); }
+                    let changed = *s != before;
+                    (*s, ddmg, h, changed)
+                }; // 寫鎖釋放
+                let _ = heal;
+                // 溺水扣血走統一傷害路徑（含死亡→重生判定、廣播、持久化）。
+                if drown_dmg > 0 {
+                    apply_player_damage(&name, drown_dmg, &out_tx).await;
+                } else if changed {
+                    // 只是飢餓/回血變動：單播新指標（若剛好血歸零由下方重生統一處理）。
+                    let _ = out_tx.send(Message::Text(player_stats_msg(&new_stats))).await;
+                }
+                // 死亡 → 溫柔重生（血歸零。fall/eat 路徑扣完血也會走到這條 tick 檢查）。
+                let is_down = { hub().player_stats.read().unwrap().get(&name).map(|s| s.is_down()).unwrap_or(false) };
+                if is_down {
+                    do_gentle_respawn(my_id, &name, last_bed, respawn_pick, &out_tx).await;
+                    respawn_pick = respawn_pick.wrapping_add(1);
+                    fall_peak_y = None;
+                    last_move_y = f32::NAN;
+                }
+                continue;
+            },
             v = receiver.next() => match v {
                 Some(Ok(m)) => m,
                 _ => break, // WebSocket 斷開或錯誤，正常離線
@@ -2917,6 +3143,38 @@ async fn handle_socket(
                         broadcast_item_removed(item.id);
                     }
                 }
+                // 跌落傷害 v1（溫和版）：偵測著陸事件並結算落差。
+                // 追蹤這趟下墜的最高點：y 上升 → 更新峰值（起跳/爬升/被推高）；
+                // y 由降轉平/升 → 視為落地，用（峰值 − 落地 y）算落差 → fall_damage。
+                // **後端權威**：落差由伺服器收到的位置序列推算，客戶端不自報傷害。
+                if !last_move_y.is_nan() {
+                    let dy = y - last_move_y;
+                    if dy > 0.05 {
+                        // 上升中：重設/抬高峰值（起跳或被地形推高，開始新一段可能的下墜）。
+                        fall_peak_y = Some(fall_peak_y.map_or(y, |p| p.max(y)));
+                    } else if dy < -0.02 {
+                        // 下降中：確保有在追峰值（若之前是平移才開始下墜，用上一點當峰值）。
+                        fall_peak_y = Some(fall_peak_y.unwrap_or(last_move_y));
+                    } else {
+                        // 幾乎沒垂直位移（落地站定/平地走）：若剛從高處掉下 → 結算落差。
+                        if let Some(peak) = fall_peak_y.take() {
+                            let fall = peak - y;
+                            let dmg = vstats::fall_damage(fall);
+                            if dmg > 0 {
+                                apply_player_damage(&name, dmg, &out_tx).await;
+                                // 這一摔若讓血歸零 → 立刻溫柔重生（別等下一個 stats tick）。
+                                let is_down = { hub().player_stats.read().unwrap().get(&name).map(|s| s.is_down()).unwrap_or(false) };
+                                if is_down {
+                                    do_gentle_respawn(my_id, &name, last_bed, respawn_pick, &out_tx).await;
+                                    respawn_pick = respawn_pick.wrapping_add(1);
+                                    last_move_y = f32::NAN;
+                                }
+                            }
+                        }
+                    }
+                }
+                last_move_y = y;
+
                 // 位置持久化 v1：登入帳號每 30 秒存一次當前位置（訪客不存、IO 在鎖外）。
                 // 安全：key 綁後端解出的 email，不信客戶端自報的 x/y/z。
                 if let Some(ref email) = account_email {
@@ -6150,8 +6408,13 @@ async fn handle_socket(
                 { hub().world_time.write().unwrap().skip_to_dawn(); }
                 broadcast_players(); // 讓所有人立刻看到跳到黎明的天色（time_of_day 隨快照廣播）
                 vfeed::append_feed("睡覺", &name, "睡了一覺，天亮了！");
+                // 溫柔重生 v1：記下這張床——日後血歸零時優先在這裡的床邊醒來。
+                // 站到床頂面上方（by+1）＋格中心，避免重生卡進床方塊。
+                last_bed = Some((x as f32 + 0.5, (y + 1) as f32, z as f32 + 0.5));
                 let msg = serde_json::json!({ "t": "sleep_ok" }).to_string();
                 let _ = out_tx.send(Message::Text(msg)).await;
+                // 睡覺也順帶回滿血飢（一覺好眠，療癒世界）。
+                heal_to_full_on_sleep(&name, &out_tx).await;
                 // 玩家里程碑 v1（ROADMAP 724）：人生第一次在床上睡到天亮。
                 try_unlock_milestone(&name, "first_sleep", &out_tx);
             }
@@ -6240,11 +6503,29 @@ async fn handle_socket(
 
             Ok(ClientMsg::Eat { item_id }) => {
                 // 親手煮的暖食自己也能享用 v1（779）。
-                // 1) 只有「自己親手煮的熟食」才吃得下（純函式判定，生食/原料/非食物擋掉）。
-                if !vmeal::is_edible_dish(item_id) {
+                // 玩家生存指標 v1（溫和版·後端權威）：吃東西真的回復飢餓、扣背包。
+                //   ── 可吃範圍擴大：不只熟食，所有食物（生穀/蔬果/魚/熟食/加工）都能填飽肚子
+                //      （vstats::food_nutrition 定義），但只有「自己親手煮的熟食」才有那份暖意
+                //      social 交織（is_edible_dish 才觸發居民感染／暖句）。
+                // 1) 後端權威判定：是食物 ＆ 背包有 ＆ 沒吃飽 → 才吃。客戶端只發 item_id，不自報飢餓/血。
+                let is_dish = vmeal::is_edible_dish(item_id);
+                let have = hub().inventory.read().unwrap().count(&name, item_id);
+                let cur_hunger = {
+                    hub().player_stats.read().unwrap()
+                        .get(&name).map(|s| s.hunger).unwrap_or(vstats::MAX_HUNGER)
+                };
+                let new_hunger = vstats::try_eat(item_id, have, cur_hunger);
+                if new_hunger.is_none() {
+                    let reason = if !vstats::is_edible(item_id) {
+                        "這個沒法吃，先煮一道熱食吧～".to_string()
+                    } else if have == 0 {
+                        let iname = vgift::item_name_zh(item_id);
+                        format!("背包裡沒有{iname}")
+                    } else {
+                        "你已經很飽了，吃不下～".to_string()
+                    };
                     let _ = out_tx.send(Message::Text(serde_json::json!({
-                        "t": "eat_fail",
-                        "reason": "這個沒法吃，先煮一道熱食吧～"
+                        "t": "eat_fail", "reason": reason
                     }).to_string())).await;
                     continue;
                 }
@@ -6259,11 +6540,25 @@ async fn handle_socket(
                     continue;
                 };
                 vinv::append_inv(&inv_entry);
+                // 2b) 更新飢餓（後端權威）＋單播新指標。飽食下一次 stats tick 會自動緩慢回血。
+                if let Some(nh) = new_hunger {
+                    let new_stats = {
+                        let mut m = hub().player_stats.write().unwrap();
+                        let s = m.entry(name.clone()).or_insert_with(vstats::PlayerStats::default);
+                        s.hunger = nh;
+                        *s
+                    };
+                    let _ = out_tx.send(Message::Text(player_stats_msg(&new_stats))).await;
+                    persist_player_stats();
+                }
                 let dish = vgift::item_name_zh(item_id);
                 let pick = (vfarm::now_secs() as usize).wrapping_add(item_id as usize);
                 // 3) 玩家自享的暖意回饋（純函式）＋回 inv_update / eat_ok。
-                //    莓果醬是甜點、不是熱食，用甜味專屬暖句；其餘熟食走「熱騰騰」暖句（莓果醬 v1 ROADMAP 808）。
-                let cozy = if item_id == crate::voxel_berry::JAM_ID {
+                //    莓果醬是甜點、不是熱食，用甜味專屬暖句；其餘熟食走「熱騰騰」暖句（莓果醬 v1 ROADMAP 808）；
+                //    生食／原料（非熟食）就只有樸實的「填了肚子」回饋，沒有那份精心料理的暖意。
+                let cozy = if !is_dish {
+                    String::new()
+                } else if item_id == crate::voxel_berry::JAM_ID {
                     vmeal::savor_sweet_line(pick)
                 } else {
                     vmeal::savor_self_line(dish, pick)
@@ -6275,11 +6570,13 @@ async fn handle_socket(
                 let _ = out_tx.send(Message::Text(serde_json::json!({
                     "t": "eat_ok", "item_id": item_id, "item_name": dish, "line": cozy,
                 }).to_string())).await;
-                // 4) 里程碑：人生第一次嚐一口自己親手煮的料理。
-                try_unlock_milestone(&name, "first_taste", &out_tx);
-                // 5) 交織點：若剛好站在某位居民身邊、且分享冷卻就緒，居民被你的滿足感染
-                //    （心情點亮＋暖泡泡＋交情記憶＋動態牆）。分享冷卻只節流這一拍、不影響吃本身。
-                let share_ready = last_eat_share
+                // 4) 里程碑：人生第一次嚐一口自己親手煮的料理（只算熟食，生嚼原料不算）。
+                if is_dish {
+                    try_unlock_milestone(&name, "first_taste", &out_tx);
+                }
+                // 5) 交織點：只有熟食才有那份「暖意分享」——若剛好站在某位居民身邊、且分享冷卻就緒，
+                //    居民被你的滿足感染（心情點亮＋暖泡泡＋交情記憶＋動態牆）。生食不觸發社交交織。
+                let share_ready = is_dish && last_eat_share
                     .map(|t| t.elapsed().as_secs_f32() >= vmeal::SHARE_COOLDOWN_SECS)
                     .unwrap_or(true);
                 if share_ready {
@@ -6455,6 +6752,13 @@ async fn handle_socket(
         if let Some((px, py, pz, pyaw)) = final_pos {
             vpp::save_player_pos(email, px, py, pz, pyaw); // IO 在鎖外
         }
+    }
+
+    // 玩家生存指標持久化：斷線前把最後血/飢落地（登入玩家重登保留最新狀態）。
+    // 訪客的 stats 留在記憶體、下次重啟／清空即散（session 內有效即可），此存檔只影響登入玩家。
+    // 存檔以玩家名為鍵，訪客名不穩定不會誤蓋登入玩家（比照 inventory 綁名慣例）。
+    if account_email.is_some() {
+        persist_player_stats(); // IO 在鎖外（函式內短取讀鎖組快照即釋）
     }
 
     // 收攤：移除玩家、廣播、收掉任務。

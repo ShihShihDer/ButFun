@@ -118,7 +118,7 @@ const BELL = 74;
 // 結果的莓果叢是伺服器狀態方塊（玩家不放置）；莓果是純物品（採收掉落、可餽贈居民）。
 const BERRY_BUSH = 75, BERRY_BUSH_RIPE = 76, BERRY = 77;
 // 莓果醬 v1（自主提案切片 808）——熔爐煨煮：莓果(77)×3 → 1 莓果醬(78)。
-// 乙太方界第一種「甜點」熟食：可自己享用（EDIBLE_DISHES）或餽贈居民（居民對甜食格外雀躍）。純物品不可放置。
+// 乙太方界第一種「甜點」熟食：可自己享用（EDIBLE_FOODS）或餽贈居民（居民對甜食格外雀躍）。純物品不可放置。
 const JAM = 78;
 // 木長椅 v1（自主提案切片）——背包 2×2 合成：木頭(5)×2 + 木板(8)×2 → 1 木長椅(79)。
 // 玩家擺在世界裡的家具方塊；白天路過閒著的居民會停下腳步坐上去歇一會兒。可放置、破壞回收自身。
@@ -2178,16 +2178,32 @@ function trySendGift() {
 // ── 居民以物易物（ROADMAP 670）───────────────────────────────────────────────
 // 玩家點「⇌ 交易」→ 伺服器回 trade_offer → 前端顯示提案橫幅 → 玩家點接受 → 伺服器執行交易。
 
-// ── 親手煮的暖食自己也能享用 v1（779）────────────────────────────────────────
-// 只有「自己親手煮的熟食」吃得下（對齊後端 voxel_meal::is_edible_dish：麵包/烤魚/烤地薯/野菜暖湯）。
-const EDIBLE_DISHES = new Set([BREAD, COOKED_FISH, BAKED_POTATO, STEW, JAM]);
+// ── 吃東西回復飢餓 v1（玩家生存指標·溫和版）+ 親手煮的暖食自己也能享用 v1（779）──────
+// 所有食物都能填飽肚子（對齊後端 voxel_player_stats::food_nutrition）：生穀/蔬果/魚
+// ＋熟食（麵包/烤魚/烤地薯/野菜暖湯）＋加工（莓果醬）。熟食另有那份暖意 social 交織（後端判定）。
+// 註：68=乙太煙火不是食物。
+const EDIBLE_FOODS = new Set([
+  WHEAT, BREAD, CARROT, POTATO, BAKED_POTATO,
+  FISH, AETHER_FISH, COOKED_FISH, STEW, BERRY, JAM,
+]);
 
-/** 從背包挑一份可享用的熟食（存量最多者、同量取 id 小者，確定性）。無則回 null。 */
+/** 目前手持的方塊是否食物（手持食物時放置鈕會變「吃」）。 */
+function heldIsFood() {
+  const b = (typeof selectedBlock === "function") ? selectedBlock() : AIR;
+  return EDIBLE_FOODS.has(b) && (myInv.get(b) || 0) > 0;
+}
+
+/** 挑要吃的食物：優先「手持的食物」（順手），否則背包裡存量最多者（同量取 id 小，確定性）。無則 null。 */
 function eatPickItem(inv) {
   if (!(inv instanceof Map)) return null;
+  // 手持食物優先——玩家選了那格就是想吃它。
+  const held = (typeof selectedBlock === "function") ? selectedBlock() : AIR;
+  if (EDIBLE_FOODS.has(held) && (inv.get(held) || 0) > 0) {
+    return { blockId: held, count: inv.get(held) };
+  }
   let best = null;
   for (const [bid, cnt] of inv) {
-    if (!EDIBLE_DISHES.has(bid) || cnt <= 0) continue;
+    if (!EDIBLE_FOODS.has(bid) || cnt <= 0) continue;
     if (!best || cnt > best.count || (cnt === best.count && bid < best.blockId)) {
       best = { blockId: bid, count: cnt };
     }
@@ -2195,7 +2211,7 @@ function eatPickItem(inv) {
   return best;
 }
 
-/** 更新「🍲 享用」按鈕：手上有熟食才浮現，並顯示要吃的是哪道菜。 */
+/** 更新「🍽 吃」按鈕：背包有任何食物才浮現，顯示要吃的是哪樣。 */
 function updateEatBtn() {
   const el = document.getElementById("eatBtn");
   if (!el) return;
@@ -2204,21 +2220,69 @@ function updateEatBtn() {
     el.style.display = "none";
   } else {
     el.style.display = "inline-flex";
-    el.textContent = "🍲 享用" + (BLOCK_NAME[pick.blockId] || "熱食");
+    el.textContent = "🍽 吃" + (BLOCK_NAME[pick.blockId] || "食物");
   }
 }
 
 let lastEatMs = 0; // 享用本地冷卻（防連按）
 
-/** 執行享用：吃下一份自己煮的熟食（伺服器仍權威驗證存量）。 */
+/** 執行吃：吃下一份食物（伺服器權威驗證是否食物＋存量＋是否已飽）。 */
 function tryEatDish() {
   if (!wsReady) return;
   const now = Date.now();
   if (now - lastEatMs < 1200) return; // 1.2 秒本地冷卻
   const pick = eatPickItem(myInv);
-  if (!pick) { showMsg("先煮一道熱食吧～（麵包/烤魚/烤地薯/野菜暖湯）"); return; }
+  if (!pick) { showMsg("背包裡沒有能吃的東西～去採點作物或煮頓飯吧"); return; }
   lastEatMs = now;
   ws.send(JSON.stringify({ t: "eat", item_id: pick.blockId }));
+}
+
+// ── 玩家生存指標 HUD（玩家生存指標 v1·溫和版）──────────────────────────────────
+// 快捷欄正上方一條窄列：左半血、右半飢。純顯示——所有數值來自後端 player_stats（後端權威）。
+let _lastStarvingMsgMs = 0; // 餓瘋提示的本地節流（別洗版）
+
+/** 依 player_stats 訊息更新血/飢窄列（寬度百分比＋餓瘋樣式＋餓瘋一次性提示）。 */
+function updateStatsHud(m) {
+  const hp = document.getElementById("statHealthFill");
+  const food = document.getElementById("statHungerFill");
+  const hungerBox = document.getElementById("statHunger");
+  if (hp && typeof m.health === "number" && typeof m.max_health === "number" && m.max_health > 0) {
+    hp.style.width = Math.max(0, Math.min(100, (m.health / m.max_health) * 100)) + "%";
+  }
+  if (food && typeof m.hunger === "number" && typeof m.max_hunger === "number" && m.max_hunger > 0) {
+    food.style.width = Math.max(0, Math.min(100, (m.hunger / m.max_hunger) * 100)) + "%";
+  }
+  if (hungerBox) hungerBox.classList.toggle("starving", !!m.starving);
+  // 餓瘋（飢餓見底）：移動變慢，給一句溫和提示（本地節流 12 秒，別煩人）。
+  if (m.starving) {
+    const now = Date.now();
+    if (now - _lastStarvingMsgMs > 12000) {
+      _lastStarvingMsgMs = now;
+      showMsg("肚子餓得走不動了……找點吃的吧🍽");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+    }
+  }
+}
+
+/** 受傷輕紅暈：淡入極輕微紅色再淡出（別嚇人）。 */
+function flashDamage() {
+  const el = document.getElementById("damageFlash");
+  if (!el) return;
+  el.classList.add("show");
+  // 淡入後移除 .show → 走 CSS 的 0.5s 淡出。
+  setTimeout(() => { el.classList.remove("show"); }, 120);
+}
+
+/** 溫柔重生：把相機/預測位置拉回重生點（後端已搬權威位置），顯示溫暖提示。背包不掉落。 */
+function doGentleRespawn(x, y, z, message) {
+  if (typeof x === "number" && typeof y === "number" && typeof z === "number") {
+    player.x = x; player.y = y; player.z = z;
+    player.vy = 0; player.grounded = false;
+    // 重生點 chunk 可能還沒到、地表把人埋住，脫困一次頂出來（沿用出生瞬間慣例）。
+    if (typeof unstuckIfNeeded === "function") { try { unstuckIfNeeded(); } catch (e) {} }
+  }
+  showMsg("🌙 " + (message || "你在溫暖的爐火邊醒來……"));
+  setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 4000);
 }
 
 // ── 乙太煙火 v1（ROADMAP 785）─────────────────────────────────────────────────
@@ -3148,8 +3212,17 @@ function selectSlot(i) {
   for (let k = 0; k < hotbarEl.children.length; k++) {
     hotbarEl.children[k].classList.toggle("sel", k === selectedSlot);
   }
+  // 手持食物時：放置鈕改標「吃」，提示放置＝吃（玩家生存指標 v1·溫和版）。
+  refreshPlaceBtnLabel();
 }
 function selectedBlock() { return HOTBAR[selectedSlot]; }
+
+/** 依手持物是否食物，把放置鈕標示成「吃」或「放置」（提示放置鈕此刻會吃）。 */
+function refreshPlaceBtnLabel() {
+  const pb = document.getElementById("place");
+  if (!pb) return;
+  pb.textContent = (typeof heldIsFood === "function" && heldIsFood()) ? "🍽 吃" : "放置";
+}
 
 // 掉落物 v1（自主提案切片 828）：丟下目前手上選取材料的 1 份到準星處（觸及範圍內，
 // 後端 reach 權威複驗）。空格／背包沒有那個材料 → 靜默忽略，不送空包。
@@ -3618,6 +3691,9 @@ function placeAtTarget() {
     // 種子只能種在農田土上——其他方塊靜默忽略。
     return null;
   }
+  // 手持食物時「放置」＝「吃」（玩家生存指標 v1·溫和版）：右鍵/放置鈕在手持食物時直接吃掉，
+  // 回復飢餓（後端權威驗證）。順手：不用另外找按鈕，拿著就能吃。
+  if (heldIsFood()) { tryEatDish(); return null; }
   // 麵包 v1（ROADMAP 668）+ 胡蘿蔔（第二種作物 v1）+ 馬鈴薯（第三種作物 v1）+ 漁獲（垂釣 v1）：純物品，不可放置——靜默忽略。
   if (selectedBlock() === WHEAT || selectedBlock() === BREAD || selectedBlock() === CARROT || selectedBlock() === POTATO
       || selectedBlock() === FISH || selectedBlock() === AETHER_FISH) return null;
@@ -4163,7 +4239,8 @@ function connect() {
       }
       updateInvHud();
       updateGiftBtn(); // 贈禮 v1：背包恢復後同步更新按鈕
-      updateEatBtn();  // 享用 v1（779）：背包恢復後同步更新享用鈕
+      updateEatBtn();  // 吃 v1：背包恢復後同步更新吃鈕
+      refreshPlaceBtnLabel(); // 手持食物 → 放置鈕標「吃」
       updateFireworkBtn(); // 乙太煙火 v1（785）：背包變動同步更新施放鈕
     } else if (m.t === "inv_update") {
       // 採集 v1：單一材料增減後的新存量（伺服器回傳 total，非 delta）。
@@ -4171,7 +4248,8 @@ function connect() {
       else myInv.delete(m.block_id);
       updateInvHud();
       updateGiftBtn(); // 贈禮 v1：材料變動後同步更新按鈕
-      updateEatBtn();  // 享用 v1（779）：材料變動後同步更新享用鈕
+      updateEatBtn();  // 吃 v1：材料變動後同步更新吃鈕
+      refreshPlaceBtnLabel(); // 手持食物存量變動 → 更新放置/吃鈕標示
       updateFireworkBtn(); // 乙太煙火 v1（785）：背包變動同步更新施放鈕
       if (chestPanelVisible()) renderChestPanel(); // 箱子 v1：背包變動後同步更新箱子面板背包區
     } else if (m.t === "inv_denied") {
@@ -4242,15 +4320,27 @@ function connect() {
       showErr(m.reason || "無法送禮");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "eat_ok") {
-      // 親手煮的暖食自己也能享用 v1（779）：吃下一份自己煮的熟食——畫面浮出暖意回饋句。
-      showMsg("🍲 " + (m.line || "暖意從指尖一路暖到心底……"));
+      // 吃東西回復飢餓 v1：熟食帶暖意回饋句（m.line）；生食沒有那份料理暖意，就給樸實的填飽提示。
+      const iname = BLOCK_NAME[m.item_id] || m.item_name || "食物";
+      showMsg(m.line ? ("🍲 " + m.line) : ("🍽 吃了" + iname + "，肚子暖了一點。"));
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3000);
-      updateEatBtn(); // 背包已由 inv_update 更新，重算享用鈕（吃完可能沒了）
+      updateEatBtn(); // 背包已由 inv_update 更新，重算吃鈕（吃完可能沒了）
       updateFireworkBtn(); // 乙太煙火 v1（785）：背包變動同步更新施放鈕
     } else if (m.t === "eat_fail") {
-      // 享用 v1（779）：吃不了（非熟食 / 背包沒有）。
-      showErr(m.reason || "現在沒法享用");
+      // 吃 v1：吃不了（非食物 / 背包沒有 / 已飽）。
+      showErr(m.reason || "現在沒法吃");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "player_stats") {
+      // 玩家生存指標 v1（溫和版·後端權威）：更新快捷欄正上方的血/飢窄列。
+      // 只有自己收得到（別人看不到你的條，減噪）。數值變化由 CSS width transition 平滑。
+      updateStatsHud(m);
+    } else if (m.t === "player_hurt") {
+      // 受傷 v1：扣血時閃一層極輕微紅暈（別嚇人）。傷害量僅供視覺參考、血量以 player_stats 為準。
+      flashDamage();
+    } else if (m.t === "respawn") {
+      // 溫柔重生 v1：血歸零 → 醒在村莊廣場/床邊。柔和淡出後把相機/預測位置拉回重生點，
+      // 顯示一句溫暖提示；背包不掉落（後端保證）。
+      doGentleRespawn(m.x, m.y, m.z, m.message);
     } else if (m.t === "firework") {
       // 乙太煙火 v1（785）：全場任一玩家施放的煙火——在該座標上方綻放一朵火花（人人可見）。
       spawnFirework(m.x, m.y, m.z, m.palette | 0);
