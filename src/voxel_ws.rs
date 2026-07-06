@@ -690,6 +690,9 @@ struct WildlifeAnimal {
     /// 此刻是否受驚逃跑中（遲滯判定見 `voxel_wildlife::should_flee`）。只有野兔會用到；
     /// 魚恆為 `false`（魚不怕人，見 `voxel_fish` 模組說明）。
     fleeing: bool,
+    /// 是否已被玩家餵食馴服（餵野兔馴服 v1，自主提案切片）。一次性、永久生效——
+    /// 馴服後永遠不再受驚逃跑。只有野兔會用到；魚恆為 `false`（無馴服機制）。
+    tamed: bool,
 }
 
 /// 野兔家域點（世界座標偏移，散布在村莊周圍，玩家出生後很快就有機會撞見）。
@@ -717,6 +720,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             yaw: 0.0,
             wait_timer: 0.0,
             fleeing: false,
+            tamed: false,
         }
     });
     let fish = FISH_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
@@ -732,6 +736,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             yaw: 0.0,
             wait_timer: 0.0,
             fleeing: false,
+            tamed: false,
         }
     });
     rabbits.chain(fish).collect()
@@ -2570,6 +2575,12 @@ enum ClientMsg {
     /// 居民贈禮 v1：把背包裡的一件材料送給附近居民（ROADMAP 660）。
     /// 伺服器驗證觸及範圍 + 背包存量後，扣材料、加記憶 ×2、居民冒泡道謝。
     Gift { resident_id: String, item_id: u8 },
+    /// 餵野兔馴服 v1（自主提案切片）：手持胡蘿蔔、準心對準一隻野兔 → 就地餵食。
+    /// 伺服器驗證（種類必須是野兔＋觸及範圍夠近＋尚未馴服過＋背包真持有胡蘿蔔）後
+    /// 消耗 1 根胡蘿蔔，永久馴服這隻兔子（此後不再受驚逃跑）。`id` 是 wildlife 系統 id
+    /// （"vox_wld_N"，見 `WildlifeAnimal.id`）。
+    #[serde(rename = "feed_wildlife")]
+    FeedWildlife { id: String },
     /// 居民交易 v1：向指定居民請求以物易物（ROADMAP 670）。
     /// 伺服器回 `trade_offer`，玩家再傳 TradeAccept 接受；提案 30 秒後自動過期。
     #[serde(rename = "trade_request")]
@@ -5621,6 +5632,58 @@ async fn handle_socket(
                     serde_json::json!({ "t": "hoe_ok", "say": vhoe::till_ok_line(pick) }).to_string(),
                 ));
             }
+            // ── 餵野兔馴服 v1（自主提案切片）：世界環境軸線(847/848)與玩家互動軸線首次交會 ──
+            Ok(ClientMsg::FeedWildlife { id }) => {
+                // 鎖序：players 讀位置 → wildlife 讀鎖驗種類/距離/是否已馴服 → inventory 寫鎖
+                // 消耗胡蘿蔔 → wildlife 寫鎖落地馴服狀態，循序取放不巢狀（守死鎖鐵律）。
+                let Some((px, _py, pz)) = player_pos(my_id) else {
+                    continue;
+                };
+                let snap: Option<(bool, bool, f32)> = {
+                    let animals = hub().wildlife.read().unwrap();
+                    animals.iter().find(|a| a.id == id).map(|a| {
+                        let dx = px - a.body.x;
+                        let dz = pz - a.body.z;
+                        (matches!(a.kind, WildlifeKind::Rabbit), a.tamed, dx * dx + dz * dz)
+                    })
+                };
+                let Some((is_rabbit, already_tamed, dist_sq)) = snap else {
+                    continue; // 這隻動物已消失（id 過期）——靜默忽略
+                };
+                if !is_rabbit {
+                    continue; // 目前只有野兔可餵（魚不需要馴服）——靜默忽略，非錯誤
+                }
+                if !vwild::should_tame(already_tamed, dist_sq) {
+                    let reason = if already_tamed { "牠已經不怕你了，不用再餵" } else { "走近一點再餵" };
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "feed_wildlife_fail", "reason": reason }).to_string(),
+                    ));
+                    continue;
+                }
+                // 背包必須真持有胡蘿蔔（前端不自報合法性·濫用防護：伺服器必查真實庫存）。
+                let Some(inv_entry) = hub().inventory.write().unwrap().take(&name, vfarm::CARROT_ID, 1) else {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "feed_wildlife_fail", "reason": "背包裡沒有胡蘿蔔" }).to_string(),
+                    ));
+                    continue;
+                };
+                vinv::append_inv(&inv_entry);
+                {
+                    let mut animals = hub().wildlife.write().unwrap();
+                    if let Some(a) = animals.iter_mut().find(|a| a.id == id) {
+                        a.tamed = true;
+                    }
+                }
+                try_unlock_milestone(&name, "first_tame", &out_tx);
+                let remain = hub().inventory.read().unwrap().count(&name, vfarm::CARROT_ID);
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "inv_update", "block_id": vfarm::CARROT_ID, "count": remain }).to_string(),
+                ));
+                let pick = rand::random::<u64>() as usize;
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "feed_wildlife_ok", "say": vwild::tame_line(pick) }).to_string(),
+                ));
+            }
             // ── 集會鐘 v1（自主提案切片）：敲響一座鐘，把附近閒著的居民召到身邊 ─────────
             Ok(ClientMsg::RingBell { x, y, z }) => {
                 // 鎖序：players 讀位置 → delta 讀目標型別 → residents 寫設應召，循序不巢狀（守死鎖鐵律）。
@@ -8144,7 +8207,8 @@ fn tick_wildlife(dt: f32) {
                 let nearest_dist_sq = nearest
                     .map(|(px, pz)| (a.body.x - px).powi(2) + (a.body.z - pz).powi(2))
                     .unwrap_or(f32::MAX);
-                a.fleeing = vwild::should_flee(a.fleeing, nearest_dist_sq);
+                // 已被馴服的兔子永遠不再受驚（餵野兔馴服 v1，自主提案切片）。
+                a.fleeing = !a.tamed && vwild::should_flee(a.fleeing, nearest_dist_sq);
                 if a.fleeing {
                     // 受驚中：每 tick 重算逃跑方向（玩家持續逼近時，逃跑目標跟著即時調整）。
                     if let Some((px, pz)) = nearest {

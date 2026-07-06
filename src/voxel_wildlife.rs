@@ -12,6 +12,12 @@
 //! `wander_target`/`wander_center`/`step_toward`/`gravity_step`/`dry_ground_spawn`，
 //! 本模組只補野兔專屬的「受驚偵測」與「逃跑方向」兩個確定性純函式，
 //! 零 LLM、零鎖、零 IO，鎖/連線/tick 驅動全在 `voxel_ws.rs`。
+//!
+//! **餵野兔馴服 v1（自主提案切片）**：847/848 讓世界第一次看得出有生機，但那份生機
+//! 至今只能遠遠看——玩家從沒有一條路能真正「碰」到牠。本刀補上世界環境軸線與玩家互動
+//! 軸線第一次的交會：手持胡蘿蔔靠近一隻野兔並餵食，牠就此**永遠不再怕你**。因為
+//! [`FLEE_RADIUS`] 大於 [`TAME_REACH`]，這一刀是刻意的——要餵到牠，得先追上一隻正在
+//! 受驚逃跑的兔子，第一次成功的餵食因此帶著「追上牠」的小小成就感。
 
 /// 野兔閒晃速度（方塊/秒）——比居民散步（2.6）更悠閒，符合小動物碎步的觀感。
 pub const WANDER_SPEED: f32 = 1.4;
@@ -28,6 +34,29 @@ pub const FLEE_DIST: f32 = 6.0;
 pub const WANDER_MIN_R: f32 = 1.5;
 /// 野兔閒晃半徑上限（方塊）。
 pub const WANDER_MAX_R: f32 = 6.0;
+
+/// 餵食馴服的觸及範圍（方塊）——刻意小於 [`FLEE_RADIUS`]：要餵到牠就得先追上正在
+/// 受驚逃跑的兔子，第一次成功馴服因此帶著「追上牠」的小小成就感。
+pub const TAME_REACH: f32 = 3.0;
+
+/// 判斷這次餵食是否能成功馴服：距離要夠近、且這隻兔子還沒被馴服過（馴服是一次性、
+/// 永久的——重複餵已馴服的兔子不會有任何效果，避免玩家對著同一隻兔子洗馴服訊息）。
+pub fn should_tame(already_tamed: bool, player_dist_sq: f32) -> bool {
+    !already_tamed && player_dist_sq < TAME_REACH * TAME_REACH
+}
+
+/// 馴服成功那一刻的回饋句（確定性輪替，`pick` 由呼叫端提供隨機源）。
+const TAME_LINES: [&str; 4] = [
+    "🥕 牠湊近你的手心，安心地嚼了起來——牠好像不再那麼怕你了。",
+    "🥕 牠豎起耳朵愣了一下，接著才小口小口啃了起來，眼神放鬆了不少。",
+    "🥕 牠終於停下逃跑的腳步，就地啃起你遞出的胡蘿蔔。",
+    "🥕 牠蹭了蹭你的手，往後看見你也不會再拔腿就跑了。",
+];
+
+/// 依 `pick` 取一句馴服回饋（越界安全取模，永不 panic）。
+pub fn tame_line(pick: usize) -> &'static str {
+    TAME_LINES[pick % TAME_LINES.len()]
+}
 
 /// 依「目前是否已受驚」+「與最近玩家的距離平方」，判斷這一 tick 該不該受驚（或維持受驚）。
 ///
@@ -105,5 +134,43 @@ mod tests {
         // 對角逃跑距離仍應是 FLEE_DIST（正規化過的方向向量）。
         let dist = (tx * tx + tz * tz).sqrt();
         assert!((dist - FLEE_DIST).abs() < 1e-3);
+    }
+
+    #[test]
+    fn should_tame_requires_close_enough() {
+        assert!(should_tame(false, 2.9 * 2.9));
+        assert!(!should_tame(false, 3.1 * 3.1));
+    }
+
+    #[test]
+    fn should_tame_boundary_is_exclusive() {
+        assert!(!should_tame(false, TAME_REACH * TAME_REACH));
+    }
+
+    #[test]
+    fn should_tame_rejects_already_tamed_regardless_of_distance() {
+        assert!(!should_tame(true, 0.0));
+    }
+
+    #[test]
+    fn tame_reach_tighter_than_flee_radius() {
+        // 刻意設計：要餵到牠，得先追上正在逃跑的兔子（見模組說明）。
+        assert!(TAME_REACH < FLEE_RADIUS);
+    }
+
+    #[test]
+    fn tame_line_picks_vary_and_stay_nonempty() {
+        let seen: std::collections::HashSet<&str> =
+            (0..TAME_LINES.len()).map(tame_line).collect();
+        assert_eq!(seen.len(), TAME_LINES.len(), "四句應各不相同");
+        for pick in 0..TAME_LINES.len() {
+            assert!(!tame_line(pick).is_empty());
+        }
+    }
+
+    #[test]
+    fn tame_line_pick_wraps_without_panic() {
+        // 越界 pick 應安全取模，不 panic。
+        let _ = tame_line(usize::MAX);
     }
 }

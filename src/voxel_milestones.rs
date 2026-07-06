@@ -64,6 +64,8 @@ pub const MILESTONES: &[MilestoneDef] = &[
     // 探索紀事 v1（自主提案切片，接續 828）：838 遺跡／839 溫泉上線時漏補對應里程碑，本刀補齊。
     MilestoneDef { id: "first_ruin", name_zh: "初探遺跡", desc_zh: "走遠找到一處古代遺跡，敲下柱頂裸露的乙太礦", icon: "🏛️" },
     MilestoneDef { id: "first_hotspring", name_zh: "初次泡湯", desc_zh: "巧遇一泓暖泉，泡進去歇了口氣", icon: "♨️" },
+    // 餵野兔馴服 v1（自主提案切片）：世界環境軸線（847/848）第一次能被玩家親手觸碰。
+    MilestoneDef { id: "first_tame", name_zh: "初次馴服", desc_zh: "用一根胡蘿蔔馴服了一隻野兔", icon: "🐇" },
 ];
 
 /// 查表確認是否為已知里程碑 id（守 store 資料乾淨，未知 id 不寫入）。
