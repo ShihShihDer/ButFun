@@ -88,6 +88,11 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         crate::voxel_blueprint::BLUEPRINT_TOWER => "瞭望台藍圖",
         crate::voxel_blueprint::BLUEPRINT_GARDEN => "花圃藍圖",
         crate::voxel_blueprint::BLUEPRINT_PAVILION => "涼亭藍圖",
+        // 染色建材 v1（自主提案切片）：用天然礦物染色的四款彩色建材，可餽贈居民。
+        89 => "紅陶磚",
+        90 => "黑陶磚",
+        91 => "白陶磚",
+        92 => "青陶磚",
         _ => "物品",
     }
 }
@@ -436,6 +441,15 @@ mod tests {
         // 806 漏補的莓果名、808 新增的莓果醬名——不再 fallback 成「物品」。
         assert_eq!(item_name_zh(77), "莓果");
         assert_eq!(item_name_zh(crate::voxel_berry::JAM_ID), "莓果醬");
+    }
+
+    #[test]
+    fn item_name_terracotta_colors() {
+        // 染色建材 v1（自主提案切片）：四色陶磚皆有專屬中文名，不 fallback 成「物品」。
+        assert_eq!(item_name_zh(89), "紅陶磚");
+        assert_eq!(item_name_zh(90), "黑陶磚");
+        assert_eq!(item_name_zh(91), "白陶磚");
+        assert_eq!(item_name_zh(92), "青陶磚");
     }
 
     #[test]

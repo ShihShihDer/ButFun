@@ -135,6 +135,10 @@ const BOTTLE = 83;
 // 改寫她的心願成你指定的建物種類（不再只能靠猜關鍵詞碰運氣）；純物品不可放置。
 const BLUEPRINT_HOUSE = 84, BLUEPRINT_WELL = 85, BLUEPRINT_TOWER = 86,
       BLUEPRINT_GARDEN = 87, BLUEPRINT_PAVILION = 88;
+// 染色建材 v1（自主提案切片）——背包 2×2 合成：2 沙 + 1 礦物 → 2 陶磚。建造近 200 刀以來，
+// 純建材幾乎全是灰棕色系，本刀用天然礦物（鐵礦鏽紅/煤礦炭黑/雪原純白/乙太礦青藍）給沙子
+// 染色，燒出世界第一批彩色建材。皆可放置、破壞回收自身。
+const TERRACOTTA_RED = 89, TERRACOTTA_BLACK = 90, TERRACOTTA_WHITE = 91, TERRACOTTA_BLUE = 92;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -245,6 +249,11 @@ const COLOR = {
   [BLUEPRINT_TOWER]:    [0.72, 0.70, 0.68], // 瞭望台藍圖——灰石
   [BLUEPRINT_GARDEN]:   [0.70, 0.88, 0.62], // 花圃藍圖——嫩綠
   [BLUEPRINT_PAVILION]: [0.92, 0.68, 0.42], // 涼亭藍圖——溫橘
+  // 染色建材 v1（自主提案切片）——世界第一批彩色建材，四色皆飽和鮮明，一眼與灰棕建材分開。
+  [TERRACOTTA_RED]:   [0.72, 0.24, 0.16], // 紅陶磚——鐵鏽紅，飽和磚紅
+  [TERRACOTTA_BLACK]: [0.16, 0.15, 0.16], // 黑陶磚——深炭黑
+  [TERRACOTTA_WHITE]: [0.92, 0.90, 0.86], // 白陶磚——溫潤米白（比雪更暖，一眼分辨建材與地表）
+  [TERRACOTTA_BLUE]:  [0.18, 0.42, 0.72], // 青陶磚——沉穩靛藍，呼應乙太礦色系但更飽和內斂
 };
 
 const DEBUG = location.search.includes("debug");
@@ -3016,6 +3025,9 @@ const BLOCK_NAME = {
   // 建築藍圖 v1（自主提案切片）
   [BLUEPRINT_HOUSE]: "小屋藍圖", [BLUEPRINT_WELL]: "水井藍圖", [BLUEPRINT_TOWER]: "瞭望台藍圖",
   [BLUEPRINT_GARDEN]: "花圃藍圖", [BLUEPRINT_PAVILION]: "涼亭藍圖",
+  // 染色建材 v1（自主提案切片）
+  [TERRACOTTA_RED]: "紅陶磚", [TERRACOTTA_BLACK]: "黑陶磚",
+  [TERRACOTTA_WHITE]: "白陶磚", [TERRACOTTA_BLUE]: "青陶磚",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -3284,12 +3296,15 @@ const BLOCK_HARDNESS = {
   [AETHER_LAMP]: 0.3,  // 乙太燈——玻璃燈罩，輕鬆敲下回收
   [SAPLING]: 0.2,      // 樹苗——嫩苗一敲即落（比照作物幼苗），輕鬆回收重種
   [SIGN]: 0.5,         // 告示牌——一塊木牌，輕鬆敲下回收（文字一併消失）
+  // 染色建材 v1（自主提案切片）——燒製陶磚，比照石磚硬度（同為精緻建材）
+  [TERRACOTTA_RED]: 1.6, [TERRACOTTA_BLACK]: 1.6, [TERRACOTTA_WHITE]: 1.6, [TERRACOTTA_BLUE]: 1.6,
 };
 function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
 
 // 鎬具加速倍率（持特定鎬對石/礦類方塊的速度倍數）。
 function pickaxeBonus(bid) {
-  const stoneTypes = [STONE, STONE_BRICK, SMOOTH_STONE, COAL_ORE, IRON_ORE, IRON_BLOCK, IRON_INGOT, WORKBENCH, FURNACE, AETHER_ORE];
+  const stoneTypes = [STONE, STONE_BRICK, SMOOTH_STONE, COAL_ORE, IRON_ORE, IRON_BLOCK, IRON_INGOT, WORKBENCH, FURNACE, AETHER_ORE,
+    TERRACOTTA_RED, TERRACOTTA_BLACK, TERRACOTTA_WHITE, TERRACOTTA_BLUE];
   if (!stoneTypes.includes(bid)) return 1.0;
   if ((myInv.get(PICKAXE_IRON) || 0) > 0) return 6.0;   // 鐵鎬：最快
   if ((myInv.get(PICKAXE_STONE) || 0) > 0) return 4.0;  // 石鎬：快
@@ -4738,6 +4753,11 @@ const RECIPES_JS = [
   { id: "bench", name: "木長椅", inputs: [[WOOD, 2], [PLANK, 2]], output_block: BENCH, out_count: 1 },
   // 漂流瓶 v1（自主提案切片 825）：2 玻璃 → 1 空玻璃瓶（對準水面丟下、寫上一句瓶中信）
   { id: "bottle", name: "空玻璃瓶", inputs: [[GLASS, 2]], output_block: BOTTLE, out_count: 1 },
+  // 染色建材 v1（自主提案切片）：2 沙 + 1 礦物 → 2 陶磚（世界第一批彩色建材）
+  { id: "terracotta_red",   name: "紅陶磚", inputs: [[SAND, 2], [IRON_ORE, 1]],  output_block: TERRACOTTA_RED,   out_count: 2 },
+  { id: "terracotta_black", name: "黑陶磚", inputs: [[SAND, 2], [COAL_ORE, 1]],  output_block: TERRACOTTA_BLACK, out_count: 2 },
+  { id: "terracotta_white", name: "白陶磚", inputs: [[SAND, 2], [SNOW, 1]],      output_block: TERRACOTTA_WHITE, out_count: 2 },
+  { id: "terracotta_blue",  name: "青陶磚", inputs: [[SAND, 2], [AETHER_ORE, 1]], output_block: TERRACOTTA_BLUE,  out_count: 2 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
