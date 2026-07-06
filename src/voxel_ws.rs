@@ -75,6 +75,7 @@ use crate::voxel_smelt as vsmelt;
 use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
 use crate::voxel_playercare as vcare;
 use crate::voxel_admire as vadmire;
+use crate::voxel_structure_name as vstructname;
 use crate::voxel_confide as vconfide;
 use crate::voxel_request as vrequest;
 use crate::voxel_witness as vwit;
@@ -857,6 +858,14 @@ fn talk_allowed_for_identity(is_account: bool) -> bool {
 fn ip_talk_limiter() -> &'static std::sync::Mutex<vrl::IpTalkLimiter> {
     static L: std::sync::OnceLock<std::sync::Mutex<vrl::IpTalkLimiter>> = std::sync::OnceLock::new();
     L.get_or_init(|| std::sync::Mutex::new(vrl::IpTalkLimiter::new()))
+}
+
+/// 全域「作品命名」儲存（居民為你的建造作品取名字 v1）：以分格座標為鍵記已取過的名字，
+/// 純記憶體、重啟歸零（作品本身不受影響，只是重啟後可再被重新命名一次，v1 刻意收斂）。
+fn structure_names() -> &'static std::sync::Mutex<std::collections::HashMap<(i32, i32), String>> {
+    static N: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<(i32, i32), String>>> =
+        std::sync::OnceLock::new();
+    N.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
 /// 當前 UNIX 毫秒時間戳（餵給 token bucket；時鐘不可用時退 0，限流器內部對回退安全）。
@@ -4253,18 +4262,35 @@ async fn handle_socket(
                                 };
                                 if vadmire::admire_triggers(streak, dist_sq, cooldown_ok) {
                                     admire_cd.insert(rid.clone(), now);
-                                    // 讚賞泡泡（residents 寫鎖即釋；不覆寫既有泡泡＝上面已濾 say 空）。
+                                    // 居民為你的建造作品取名字 v1：這一格是不是第一次被讚賞過——
+                                    // 有就沿用既有名字（喚出來、證明「記得」），沒有就當場取一個
+                                    // 新名字並記住（短鎖即釋，不與其他鎖巢狀）。
+                                    let cell = vstructname::cell_key(x as f32, z as f32);
                                     let pick = now_secs as usize;
+                                    let (structure_name, just_named) = {
+                                        let mut names = structure_names().lock().unwrap();
+                                        match names.get(&cell) {
+                                            Some(n) => (n.clone(), false),
+                                            None => {
+                                                let n = vstructname::pick_name(pick).to_string();
+                                                names.insert(cell, n.clone());
+                                                (n, true)
+                                            }
+                                        }
+                                    }; // structure_names 鎖釋放
+                                    // 讚賞泡泡（residents 寫鎖即釋；不覆寫既有泡泡＝上面已濾 say 空）。
+                                    let say_line = if just_named {
+                                        vstructname::name_announce_line(&name, &structure_name, pick)
+                                    } else {
+                                        vstructname::named_revisit_line(&name, &structure_name, pick)
+                                    };
                                     let said = {
                                         let mut residents = hub().residents.write().unwrap();
                                         residents
                                             .iter_mut()
                                             .find(|r| r.id == rid)
                                             .map(|r| {
-                                                r.say = vadmire::admire_say_line(&name, pick)
-                                                    .chars()
-                                                    .take(50)
-                                                    .collect();
+                                                r.say = say_line.chars().take(50).collect();
                                                 r.say_timer = SAY_SECS;
                                                 r.mood_boost_secs = r
                                                     .mood_boost_secs
@@ -4276,18 +4302,35 @@ async fn handle_socket(
                                         broadcast_players();
                                         // 把「看著你蓋起了東西」寫進記憶（episodic，累積好感）——
                                         // 記憶寫鎖即釋、append 的 IO 在鎖外（守死鎖鐵律）。
-                                        let summary = vadmire::admire_memory_line(&name);
+                                        let summary = vstructname::admire_memory_line_named(
+                                            &name,
+                                            Some(&structure_name),
+                                        );
                                         let entry = hub()
                                             .memory
                                             .write()
                                             .unwrap()
                                             .add_memory(&rid, &name, &summary);
                                         vmem::append_memory(&entry);
-                                        vfeed::append_feed(
-                                            "居民讚賞",
-                                            rname,
-                                            &format!("{rname}讚賞了{name}親手蓋的東西"),
-                                        );
+                                        if just_named {
+                                            vfeed::append_feed(
+                                                "居民命名",
+                                                rname,
+                                                &vstructname::name_feed_line(
+                                                    rname,
+                                                    &name,
+                                                    &structure_name,
+                                                ),
+                                            );
+                                        } else {
+                                            vfeed::append_feed(
+                                                "居民讚賞",
+                                                rname,
+                                                &format!(
+                                                    "{rname}又看了一眼「{structure_name}」"
+                                                ),
+                                            );
+                                        }
                                     }
                                 }
                             }
