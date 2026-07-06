@@ -968,6 +968,22 @@ fn hot_spring_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
     }
 }
 
+/// 探索紀事 v1（自主提案切片，接續 838/839）：這個確切座標是否正是某處遺跡柱頂裸露的乙太礦。
+///
+/// 遺跡的乙太礦每處恰有一塊、位置固定——挖掉即成空氣、不會再生——所以「破壞方塊時這裡曾是
+/// 遺跡乙太礦」本身就是天然、不必額外去重的「發現一處新遺跡」信號，供 `voxel_ws.rs` 在破壞
+/// 成功那一刻記一筆探索紀事。純函式、確定性、零狀態。
+pub fn ruin_ore_at(wx: i32, wy: i32, wz: i32) -> bool {
+    ruin_block_at(wx, wy, wz) == Some(Block::AetherOre)
+}
+
+/// 探索紀事 v1：把世界座標換算成這處溫泉所屬的格子座標（`(cellx, cellz)`）——同一泓溫泉、
+/// 不論從哪個角度踏進去，換算出的格子座標永遠相同，可當「這是哪一處溫泉」的穩定去重鍵，
+/// 避免玩家在同一泓溫泉裡反覆進出時，探索紀事被同一處灌爆。純函式、確定性、零狀態。
+pub fn hot_spring_cell_of(wx: i32, wz: i32) -> (i32, i32) {
+    (wx.div_euclid(HOT_SPRING_CELL), wz.div_euclid(HOT_SPRING_CELL))
+}
+
 /// 任一世界座標的方塊（確定性程序生成）。這是「無狀態世界」的核心查詢。
 pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
     // 地心一律基岩石頭（避免從世界底掉出去；本輪只生成 y>=0 的 chunk）。
@@ -2174,6 +2190,44 @@ mod tests {
         // 地表以下（含地表本身）一律不該被柱腳覆蓋（遺跡只長在地表之上）。
         assert_eq!(ruin_block_at(tx - 2, h, tz - 2), None);
         assert_eq!(ruin_block_at(tx - 2, h - 1, tz - 2), None);
+    }
+
+    #[test]
+    fn ruin_ore_at_true_only_for_the_actual_ore_block() {
+        // 探索紀事 v1：ruin_ore_at 只該在「真的是遺跡乙太礦」的那一格回 true，
+        // 其餘三根石磚柱、以及遺跡以外的座標都該回 false。
+        let (_, (tx, tz)) = find_a_ruin();
+        const CORNERS: [(i32, i32); 4] = [(-2, -2), (2, -2), (-2, 2), (2, 2)];
+        let mut true_count = 0;
+        for (cdx, cdz) in CORNERS {
+            let (wx, wz) = (tx + cdx, tz + cdz);
+            let h = height_at(wx, wz);
+            for wy in (h + 2)..=(h + 4) {
+                if ruin_ore_at(wx, wy, wz) {
+                    true_count += 1;
+                    assert_eq!(block_at(wx, wy, wz), Block::AetherOre, "ruin_ore_at 為真時該格必為乙太礦");
+                }
+            }
+        }
+        assert_eq!(true_count, 1, "四根柱應恰有一格被 ruin_ore_at 判定為真");
+        // 遺跡範圍外一點：不該誤判。
+        assert!(!ruin_ore_at(tx + 100, height_at(tx + 100, tz) + 1, tz));
+    }
+
+    #[test]
+    fn hot_spring_cell_of_matches_div_euclid_and_is_stable() {
+        // 同一世界座標永遠換算出同一格；換算結果就是 (wx,wz) 對 HOT_SPRING_CELL 的 div_euclid
+        //（不必知道內部實作細節，只驗證這個公開契約——供 voxel_ws 探索紀事去重使用）。
+        for (wx, wz) in [(0, 0), (56, 0), (-1, 0), (-57, 123), (999, -999)] {
+            let a = hot_spring_cell_of(wx, wz);
+            let b = hot_spring_cell_of(wx, wz);
+            assert_eq!(a, b, "同座標應永遠算出同一格");
+            assert_eq!(a, (wx.div_euclid(HOT_SPRING_CELL), wz.div_euclid(HOT_SPRING_CELL)));
+        }
+        // 同一格內的不同座標應換算出同一格座標。
+        assert_eq!(hot_spring_cell_of(10, 10), hot_spring_cell_of(20, 20));
+        // 跨到下一格的座標應換算出不同格座標。
+        assert_ne!(hot_spring_cell_of(10, 10), hot_spring_cell_of(10 + HOT_SPRING_CELL, 10));
     }
 
     #[test]

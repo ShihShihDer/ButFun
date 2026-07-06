@@ -3027,6 +3027,74 @@ if (milesEl) {
   if (closeBtn) closeBtn.addEventListener("click", closeMilestones);
 }
 
+// ── 探索紀事（自主提案切片，接續 838 古代遺跡／839 溫泉遺跡）───────────────────
+// 838/839 讓世界第一次有了值得走遠尋訪的地標，但找到之後除了那一拍的驚喜什麼都沒留下——
+// 玩家找過幾處、位置在哪，全無管道回頭翻閱。跟里程碑互補：里程碑記「有沒有做過」，
+// 這裡記「在哪裡做到的」（可能多筆、每筆帶座標）。本面板純讀取既有 `/voxel/discoveries` 資料。
+const discEl = document.getElementById("discPanel");
+const discBodyEl = document.getElementById("discBody");
+const discBtnEl = document.getElementById("discBtn");
+
+/** 重新渲染探索紀事清單。
+ * @param {{items:Array<{kind:string,label:string,icon:string,x:number,y:number,z:number}>,ruins:number,springs:number}} data
+ */
+function renderDiscoveryPanel(data) {
+  if (!discBodyEl) return;
+  const items = (data && data.items) || [];
+  if (items.length === 0) {
+    discBodyEl.innerHTML = '<div class="skills-empty">還沒有探索紀事——走遠去找找古代遺跡或溫泉吧。</div>';
+    return;
+  }
+  const ruins = (data && data.ruins) || 0;
+  const springs = (data && data.springs) || 0;
+  let html = '<div class="disc-progress">🏛️ 遺跡 ' + ruins + ' 處 · ♨️ 溫泉 ' + springs + ' 處</div>';
+  for (const it of items) {
+    html += '<div class="disc-row">' +
+      '<span class="disc-icon">' + escHtml(it.icon || "📍") + '</span>' +
+      '<span class="disc-text"><span class="disc-name">' + escHtml(it.label) + '</span>' +
+      '<span class="disc-coord">(' + it.x + ', ' + it.z + ')</span></span>' +
+      '</div>';
+  }
+  discBodyEl.innerHTML = html;
+}
+
+/** 向後端抓這位玩家最新的探索紀事並重新渲染。 */
+async function refreshDiscoveries() {
+  if (!discBodyEl) return;
+  try {
+    const resp = await fetch(`/voxel/discoveries?player=${encodeURIComponent(myName)}`);
+    if (!resp.ok) throw new Error("discoveries fetch failed: " + resp.status);
+    const data = await resp.json();
+    renderDiscoveryPanel(data);
+  } catch (err) {
+    discBodyEl.innerHTML = '<div class="skills-empty">無法讀取探索紀事。</div>';
+  }
+}
+
+let discVisible = false;
+
+/** 開啟探索紀事面板（低頻資料，開啟時抓一次即可，不必背景輪詢）。 */
+function openDiscoveries() {
+  if (!discEl) return;
+  discVisible = true;
+  discEl.style.display = "flex";
+  refreshDiscoveries();
+}
+
+/** 關閉探索紀事面板。 */
+function closeDiscoveries() {
+  discVisible = false;
+  if (discEl) discEl.style.display = "none";
+}
+
+if (discBtnEl) discBtnEl.addEventListener("click", () => {
+  discVisible ? closeDiscoveries() : openDiscoveries();
+});
+if (discEl) {
+  const closeBtn = document.getElementById("discClose");
+  if (closeBtn) closeBtn.addEventListener("click", closeDiscoveries);
+}
+
 // ── 村莊地圖（自主提案切片，ROADMAP 837）────────────────────────────────────────
 // 村莊系統（835）早把居民的家收攏成中央廣場＋十字主路＋沿路地塊的實體佈局，玩家也
 // 走在真正鋪好的石板路上——但那份佈局只活在腳下：玩家從沒有任何管道一眼看到「村子
@@ -4171,7 +4239,7 @@ if (menuDrawerEl) {
   // 點抽屜內任一功能鈕後收起抽屜——它開的面板（z-index 20）就不會被抽屜（z-index 21）擋住。
   // 各鈕自身的開面板/切人稱監聽器照樣先觸發，這裡只負責關抽屜。
   menuDrawerEl.addEventListener("click", (e) => {
-    const item = e.target.closest("#feedBtn, #diaryWallBtn, #compassBtn, #relationsBtn, #skillsBtn, #milestonesBtn, #mapBtn, #viewBtn, #gearBtn");
+    const item = e.target.closest("#feedBtn, #diaryWallBtn, #compassBtn, #relationsBtn, #skillsBtn, #milestonesBtn, #mapBtn, #discBtn, #viewBtn, #gearBtn");
     if (item) closeMenuDrawer();
   });
 }
@@ -5958,6 +6026,12 @@ window.__voxel = {
     return villageMapPoint(worldX, worldZ, centerX, centerZ, rangeUnits, radiusPx);
   },
   setVillageMapDataForTest(data) { mapData = data; },
+  // ── 探索紀事 QA 用（自主提案切片，接續 838/839）──
+  openDiscoveries() { return openDiscoveries(); },
+  closeDiscoveries() { closeDiscoveries(); },
+  get discoveriesVisible() { return discVisible; },
+  refreshDiscoveries() { return refreshDiscoveries(); },
+  renderDiscoveryPanel(data) { renderDiscoveryPanel(data); return discBodyEl && discBodyEl.innerHTML; },
   // ── 好感度 QA 用（ROADMAP 656）──
   affinityEmoji(count) { return affinityEmoji(count); },
   get myAffinity() { return Object.fromEntries(myAffinity); },

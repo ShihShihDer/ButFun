@@ -61,6 +61,9 @@ pub const MILESTONES: &[MilestoneDef] = &[
     MilestoneDef { id: "first_coop", name_zh: "初次協作", desc_zh: "和其他真人玩家一起採集、多得了一份默契", icon: "🤝" },
     MilestoneDef { id: "first_dropitem", name_zh: "初次轉手", desc_zh: "把手上一件材料親手交給另一位真人", icon: "🤲" },
     MilestoneDef { id: "first_market", name_zh: "初次擺攤", desc_zh: "在自由市集和另一位真人玩家議定成一筆以物易物", icon: "🏪" },
+    // 探索紀事 v1（自主提案切片，接續 828）：838 遺跡／839 溫泉上線時漏補對應里程碑，本刀補齊。
+    MilestoneDef { id: "first_ruin", name_zh: "初探遺跡", desc_zh: "走遠找到一處古代遺跡，敲下柱頂裸露的乙太礦", icon: "🏛️" },
+    MilestoneDef { id: "first_hotspring", name_zh: "初次泡湯", desc_zh: "巧遇一泓暖泉，泡進去歇了口氣", icon: "♨️" },
 ];
 
 /// 查表確認是否為已知里程碑 id（守 store 資料乾淨，未知 id 不寫入）。
