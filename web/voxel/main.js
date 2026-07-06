@@ -1884,6 +1884,7 @@ function updateWildlife(list) {
     let ent = wildlifeEnts.get(w.id);
     if (!ent) {
       ent = w.kind === "fish" ? buildFish() : buildRabbit();
+      ent.group.userData.wid = w.id; // 餵野兔馴服 v1：raycast 命中後回查 id 用。
       wildlifeEnts.set(w.id, ent);
     }
     ent.group.position.set(w.x, w.y, w.z);
@@ -1919,6 +1920,28 @@ function pickResident(clientX, clientY) {
   let obj = hits[0].object;
   while (obj && !(obj.userData && obj.userData.rid)) obj = obj.parent;
   return obj && obj.userData ? obj.userData.rid : null;
+}
+
+// 餵野兔馴服 v1（自主提案切片）：同款 raycast 挑選，改對象為 wildlife（野兔/魚）實體。
+// 只是「準心對到誰」的前端提示，伺服器仍會權威複驗真正的觸及範圍（vwild::TAME_REACH）。
+const WILDLIFE_PICK_REACH = 8;
+function pickWildlife(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((clientX - rect.left) / rect.width) * 2 - 1,
+    -((clientY - rect.top) / rect.height) * 2 + 1
+  );
+  raycaster.setFromCamera(ndc, camera);
+  const pickables = [];
+  for (const ent of wildlifeEnts.values()) {
+    if (ent.group.visible) ent.group.traverse((o) => { if (o.isMesh) pickables.push(o); });
+  }
+  if (!pickables.length) return null;
+  const hits = raycaster.intersectObjects(pickables, false);
+  if (!hits.length || hits[0].distance > WILDLIFE_PICK_REACH) return null;
+  let obj = hits[0].object;
+  while (obj && !(obj.userData && obj.userData.wid)) obj = obj.parent;
+  return obj && obj.userData ? obj.userData.wid : null;
 }
 
 // 對話框 DOM + 狀態。
@@ -4040,6 +4063,15 @@ function placeAtTarget() {
     // 種子只能種在農田土上——其他方塊靜默忽略。
     return null;
   }
+  // 餵野兔馴服 v1（自主提案切片）：手持胡蘿蔔、準心對準一隻野兔 → 優先「餵」而非「吃」；
+  // 沒對準野兔就落到下面 heldIsFood 分支正常吃掉，不改變既有吃食物手感。
+  if (selectedBlock() === CARROT) {
+    const wid = pickWildlife(window.innerWidth / 2, window.innerHeight / 2);
+    if (wid) {
+      ws.send(JSON.stringify({ t: "feed_wildlife", id: wid }));
+      return null;
+    }
+  }
   // 手持食物時「放置」＝「吃」（玩家生存指標 v1·溫和版）：右鍵/放置鈕在手持食物時直接吃掉，
   // 回復飢餓（後端權威驗證）。順手：不用另外找按鈕，拿著就能吃。
   if (heldIsFood()) { tryEatDish(); return null; }
@@ -4759,6 +4791,14 @@ function connect() {
     } else if (m.t === "hoe_fail") {
       // 鋤頭 v1：開墾不了（太遠 / 目標非草地泥土 / 背包沒有鋤頭）。
       showErr(m.reason || "現在沒法開墾");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "feed_wildlife_ok") {
+      // 餵野兔馴服 v1（自主提案切片）：馴服成功——浮出回饋句（背包由 inv_update 更新）。
+      showMsg(m.say || "🥕 牠不再怕你了～");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2400);
+    } else if (m.t === "feed_wildlife_fail") {
+      // 餵野兔馴服 v1：餵不成（太遠／已經馴服過／背包沒有胡蘿蔔）。
+      showErr(m.reason || "現在沒法餵食");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "return_gift") {
       // 居民回禮 v1（ROADMAP 667）：只有當事玩家才顯示提示並更新背包。
