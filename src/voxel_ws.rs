@@ -107,6 +107,7 @@ use crate::voxel_ratelimit as vrl;
 use crate::voxel_moderation as vmod;
 use crate::voxel_cheer as vcheer;
 use crate::voxel_chest as vchest;
+use crate::voxel_chest_contribute as vchestgive;
 use crate::voxel_sign as vsign;
 use crate::voxel_readsign as vreadsign;
 use crate::voxel_tend as vtend;
@@ -331,6 +332,9 @@ struct VoxelResident {
     /// 主動教學冷卻倒數（秒，居民教你一道獨門配方 v1）：> 0 表示最近才教過某位玩家一道獨門配方，
     /// 暫不再教，讓「教你一道能跟著你一輩子的本事」稀有有份量、天然防洗版。
     teach_timer: f32,
+    /// 回饋糧倉冷卻倒數（秒，居民回饋糧倉 v1）：> 0 表示最近才把餘裕材料存進箱子過，
+    /// 暫不再存，讓「回頭往箱子添東西」稀有有份量、天然防洗版。
+    contribute_timer: f32,
     /// 主動討東西冷卻倒數（秒，居民拜託你幫個小忙 v1）：> 0 表示最近才向某位玩家開口討過材料，
     /// 暫不再開口，讓「反過來拜託你」稀有有份量、天然防洗版。
     request_timer: f32,
@@ -1492,6 +1496,9 @@ fn build_resident(
             // 主動教學冷卻（居民教你一道獨門配方 v1）：錯開初始冷卻，避免啟動後同時觸發；
             // 也讓一上線不會立刻教配方，得先累積起足夠交情才有這一刻。
             teach_timer: vprecipe::TEACH_COOLDOWN_SECS + i as f32 * 120.0,
+            // 回饋糧倉冷卻（居民回饋糧倉 v1）：錯開初始冷卻，避免啟動後同時往箱子塞東西；
+            // 也讓一上線不會立刻存料，先累積一點採集所得再說。
+            contribute_timer: vchestgive::CONTRIBUTE_COOLDOWN_SECS + i as f32 * 100.0,
             // 主動討東西冷卻（居民拜託你幫個小忙 v1）：錯開初始冷卻，避免啟動後同時開口；
             // 也讓一上線不會立刻伸手要東西，先熟起來、玩家有材料在手時再說。
             request_timer: vrequest::REQUEST_COOLDOWN_SECS + i as f32 * 75.0,
@@ -8821,6 +8828,10 @@ fn tick_residents(dt: f32) {
     // 教你一道獨門配方」→ 收集 (居民 id, 居民顯示名, 玩家顯示名)；residents 寫鎖釋放後才
     // 落地學會（player_recipes 寫鎖）+ 記憶（memory 寫鎖）+ Feed + 廣播，守死鎖鐵律。
     let mut recipe_teach_events: Vec<(String, &'static str, String)> = Vec::new();
+    // 居民回饋糧倉 v1（自主提案）：鎖內偵測「有餘裕材料＋附近有一口已知箱子」→ 決定要存的
+    // (item_id, qty)（泡泡已於鎖內設好 r.say），鎖外統一執行真正的轉移（res_inv 寫→chest 寫，
+    // 各自短鎖循序不巢狀）。格式：(居民 id, 居民顯示名, wx, wy, wz, item_id, qty)。
+    let mut chest_contribute_events: Vec<(String, &'static str, i32, i32, i32, u8, u32)> = Vec::new();
     // 把昨晚的夢說給你聽 v1（自主提案，807）：招呼時序內偵測「做過夢的居民把昨晚的夢分享給你」
     // → 收集 (居民 id, 玩家顯示名) 記一筆 episodic 記憶（累積好感），與 (居民顯示名, 玩家顯示名)
     // 補一則城鎮動態；同樣 residents 寫鎖釋放後才開 memory 寫鎖 / 動態 IO，守死鎖鐵律。
@@ -9524,6 +9535,47 @@ fn tick_residents(dt: f32) {
                             }
                         }
                     }
+                }
+            }
+
+            // 居民回饋糧倉 v1（自主提案）：共用糧倉至今只讓居民向箱子「取」，本刀補上「存」的另一半——
+            // 手上材料有餘裕、附近又有一口你已經用過的箱子時，居民閒晃途中偶爾順手把多的那份存進去。
+            // 與招呼／掏心／教配方同款：只在這一 tick `r.say` 仍空時才可能發生，不同幀、不互蓋泡泡。
+            if r.contribute_timer > 0.0 {
+                r.contribute_timer -= dt;
+            } else if r.say.is_empty() && !r.seeking_comfort && r.approaching_esteem.is_none() {
+                // 先讀居民自己的採集背包挑一份餘裕材料（讀鎖即釋、不巢狀）；沒有餘料就不必再查箱子省鎖。
+                let bag_pick = {
+                    let bags = hub().res_inv.read().unwrap();
+                    bags.get(&r.id).and_then(|b| vchestgive::pick_contribution(b))
+                }; // res_inv 讀鎖釋放
+                let chest_hit = bag_pick.and_then(|_| {
+                    hub().chest.read().unwrap().nearest_known_chest(
+                        r.body.x.floor() as i32,
+                        r.body.z.floor() as i32,
+                        vchestgive::CONTRIBUTE_RADIUS,
+                    )
+                }); // chest 讀鎖釋放
+                if vchestgive::should_contribute(
+                    bag_pick.is_some(),
+                    chest_hit.is_some(),
+                    rand::random::<f32>(),
+                    vchestgive::CONTRIBUTE_CHANCE_PER_TICK,
+                ) {
+                    let (item_id, qty) = bag_pick.expect("should_contribute 已保證 bag_pick 為 Some");
+                    let (cx, cy, cz) =
+                        chest_hit.expect("should_contribute 已保證 chest_hit 為 Some");
+                    let item_name = vgift::item_name_zh(item_id);
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    r.say = vchestgive::contribute_bubble(item_name, qty, pick)
+                        .chars()
+                        .take(vchestgive::CONTRIBUTE_SAY_MAX_CHARS)
+                        .collect();
+                    r.say_timer = SAY_SECS;
+                    r.contribute_timer = vchestgive::CONTRIBUTE_COOLDOWN_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    // 真正的材料轉移 + 持久化 + Feed 留到鎖外統一做（守死鎖鐵律）。
+                    chest_contribute_events.push((r.id.clone(), r.name, cx, cy, cz, item_id, qty));
                 }
             }
 
@@ -13297,6 +13349,42 @@ fn tick_residents(dt: f32) {
         vfeed::append_feed("糧倉", rname, &format!("{rname}餓著肚子，翻了村裡的箱子借到了{food}"));
         let pick = (cx as usize) ^ (cz as usize);
         say_updates.push((rid.clone(), vhunger::borrowed_say_line(food, pick)));
+    }
+
+    // 居民回饋糧倉 v1（自主提案）：把決定拍時選中的材料，真的從居民背包移進箱子（零和守恆、
+    // 不憑空生料，鏡像 748 分享的雙重確認精神）。鎖序：deltas 讀（即釋，確認箱子沒被同 tick
+    // 破壞掉）→ res_inv 寫（即釋，再次確認居民此刻仍握有足量）→ chest 寫（即釋）→ 持久化/Feed（鎖外）。
+    for (rid, rname, cx, cy, cz, item_id, qty) in chest_contribute_events {
+        let still_chest = {
+            let world = hub().deltas.read().unwrap();
+            voxel::effective_block_at(&world, cx, cy, cz) == Block::Chest
+        }; // deltas 讀鎖釋放
+        if !still_chest {
+            continue; // 箱子恰好在同一 tick 被破壞：誠實放棄這次回饋
+        }
+        let taken = {
+            let mut bags = hub().res_inv.write().unwrap();
+            let has = bags.get(&rid).and_then(|b| b.get(&item_id)).copied().unwrap_or(0);
+            let actual = has.min(qty);
+            if actual > 0 {
+                if let Some(b) = bags.get_mut(&rid) {
+                    *b.entry(item_id).or_insert(0) -= actual; // 安全：actual <= has
+                }
+            }
+            actual
+        }; // res_inv 寫鎖釋放
+        if taken == 0 {
+            continue; // 材料同 tick 被別的行為（如發明/建造）先耗盡：誠實放棄
+        }
+        let pos = vchest::pos_key(cx, cy, cz);
+        let entry = { hub().chest.write().unwrap().put(&pos, item_id, taken) }; // chest 寫鎖釋放
+        vchest::append_chest(&entry);
+        let item_name = vgift::item_name_zh(item_id);
+        vfeed::append_feed(
+            vchestgive::FEED_KIND,
+            rname,
+            &vchestgive::contribute_feed_line(rname, item_name, taken),
+        );
     }
 
     // 5b-1a) 跑腿採集·找下一個目標（指令→任務第三刀收尾）：還沒鎖定資源的居民，

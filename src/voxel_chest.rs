@@ -167,6 +167,28 @@ impl ChestStore {
         }
         best.map(|(x, y, z, fid, _)| (x, y, z, fid))
     }
+
+    /// 乙太方界·居民回饋糧倉 v1：從 (ox,oz) 起，`max_radius`（XZ 距離）內找一口「你已經用過」的箱子
+    /// （曾被 `put`/`take` 過，即使現在剛好清空也算——只要位置留在 map 裡就代表這是玩家真的在用
+    /// 的儲藏點，不是隨便一個裝飾用的箱子方塊），供有餘裕材料的居民就近存回一份。找不到 → `None`
+    /// （誠實失敗，鏡像 [`Self::nearest_food_chest`] 的態度）。純邏輯、可測。
+    pub fn nearest_known_chest(&self, ox: i32, oz: i32, max_radius: i32) -> Option<(i32, i32, i32)> {
+        let max_d2 = i64::from(max_radius) * i64::from(max_radius);
+        let mut best: Option<(i32, i32, i32, i64)> = None;
+        for pos in self.chests.keys() {
+            let Some((x, y, z)) = parse_pos_key(pos) else { continue };
+            let dx = i64::from(x - ox);
+            let dz = i64::from(z - oz);
+            let d2 = dx * dx + dz * dz;
+            if d2 > max_d2 {
+                continue;
+            }
+            if best.is_none_or(|(_, _, _, best_d2)| d2 < best_d2) {
+                best = Some((x, y, z, d2));
+            }
+        }
+        best.map(|(x, y, z, _)| (x, y, z))
+    }
 }
 
 /// [`pos_key`] 的反函式：把 "wx,wy,wz" 字串解析回座標。格式不符（理論上不會，所有鍵皆由
@@ -321,5 +343,42 @@ mod tests {
     fn nearest_food_chest_empty_store_returns_none() {
         let store = ChestStore::new();
         assert_eq!(store.nearest_food_chest(0, 0, 16, &[19, 77]), None);
+    }
+
+    #[test]
+    fn nearest_known_chest_finds_within_radius() {
+        let mut store = ChestStore::new();
+        store.put("5,64,5", 8, 3);
+        assert_eq!(store.nearest_known_chest(0, 0, 16), Some((5, 64, 5)));
+    }
+
+    #[test]
+    fn nearest_known_chest_ignores_out_of_radius() {
+        let mut store = ChestStore::new();
+        store.put("100,64,0", 8, 3);
+        assert_eq!(store.nearest_known_chest(0, 0, 16), None);
+    }
+
+    #[test]
+    fn nearest_known_chest_counts_emptied_chest() {
+        // 曾被互動過（即使現在剛好被掏空）仍算「已知箱子」——位置留在 map 裡。
+        let mut store = ChestStore::new();
+        store.put("5,64,5", 8, 2);
+        store.take("5,64,5", 8, 2);
+        assert_eq!(store.nearest_known_chest(0, 0, 16), Some((5, 64, 5)));
+    }
+
+    #[test]
+    fn nearest_known_chest_picks_the_closest() {
+        let mut store = ChestStore::new();
+        store.put("10,64,0", 8, 1);
+        store.put("3,64,0", 8, 1);
+        assert_eq!(store.nearest_known_chest(0, 0, 16), Some((3, 64, 0)));
+    }
+
+    #[test]
+    fn nearest_known_chest_empty_store_returns_none() {
+        let store = ChestStore::new();
+        assert_eq!(store.nearest_known_chest(0, 0, 16), None);
     }
 }

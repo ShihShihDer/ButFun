@@ -172,6 +172,8 @@ mod voxel_comfort;
 mod voxel_cheer;
 // 乙太方界·箱子儲存 v1：合成箱子→放置→右鍵儲存材料（ROADMAP 692）。
 mod voxel_chest;
+// 乙太方界·居民回饋糧倉 v1：居民閒晃途中偶爾把手上多餘材料存回你已用過的箱子，箱子第一次雙向（自主提案切片）。
+mod voxel_chest_contribute;
 // 乙太方界·告示牌 v1：合成告示牌→放置→右鍵寫短字，浮在牌上人人看得見（ROADMAP 740）。
 mod voxel_sign;
 mod voxel_readsign; // 居民讀牌 v1：居民路過告示牌（740）時念出牌面、回應——玩家寫的字被 AI 看見
