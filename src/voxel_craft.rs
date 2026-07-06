@@ -48,6 +48,11 @@ pub const SHOVEL_IRON_ID: u8 = 41;
 /// 是「種田→料理→餽贈→享用」循環的頂點，居民收到時比任何食物都珍視。
 pub const STEW_ID: u8 = 67;
 
+// ── 獨門配方物品 ID（純物品，不可放置於世界，居民教你一道獨門配方 v1，自主提案切片）───
+/// 護身符（ROADMAP 849）——物品 ID 97；居民好感夠深時主動教你的獨門配方，貼身佩戴的
+/// 心意信物。純物品、不可放置。96（野花藍花）是目前最大已用 id，97 是首個空號。
+pub const AMULET_ID: u8 = 97;
+
 use crate::voxel_inventory::InvStore;
 
 /// 一條合成配方（靜態常數，不含任何鎖或 IO 呼叫）。
@@ -579,6 +584,31 @@ pub const FURNACE_RECIPES: &[Recipe] = &[
     },
 ];
 
+/// 居民教你的獨門配方池（`voxel_player_recipe`，居民教你一道獨門配方 v1，自主提案切片）。
+///
+/// 與 `RECIPES`/`WORKBENCH_RECIPES`/`FURNACE_RECIPES` 三張表刻意分開、**不併入**
+/// `find_any_recipe` 的搜尋鏈——這裡的配方要先被居民教過才能合成，`voxel_ws.rs` 的
+/// Craft handler 對這張表要額外查 `PlayerRecipeStore::knows` 才放行，見 [`is_taught_recipe`]。
+/// v1 先放一道（護身符），機制驗證通過、日後可再往這個池子加更多獨門配方。
+pub const TAUGHT_RECIPES: &[Recipe] = &[Recipe {
+    id: "amulet",
+    name_zh: "護身符",
+    inputs: &[(3, 1), (94, 1)], // 1 石頭(Stone=3) + 1 紅花(WildflowerRed=94)
+    output_block: AMULET_ID,
+    output_count: 1,
+}];
+
+/// 依 id 找獨門配方（找不到回 None）。**不**代表玩家已學會——呼叫端仍須另查
+/// `PlayerRecipeStore::knows` 才能放行合成。
+pub fn find_taught_recipe(id: &str) -> Option<&'static Recipe> {
+    TAUGHT_RECIPES.iter().find(|r| r.id == id)
+}
+
+/// 此 id 是否屬於「需要居民教過才能合成」的獨門配方池。
+pub fn is_taught_recipe(id: &str) -> bool {
+    TAUGHT_RECIPES.iter().any(|r| r.id == id)
+}
+
 /// 依 id 找背包配方（2×2，找不到回 None）。
 pub fn find_recipe(id: &str) -> Option<&'static Recipe> {
     RECIPES.iter().find(|r| r.id == id)
@@ -786,6 +816,19 @@ mod tests {
         assert!(find_any_recipe("stone_wood_mix").is_some());
         // 不存在的
         assert!(find_any_recipe("does_not_exist").is_none());
+    }
+
+    #[test]
+    fn amulet_recipe_exists_in_taught_pool_only() {
+        // 護身符：1 石頭(3) + 1 紅花(94) → 1 護身符(AMULET_ID=97)（居民教你一道獨門配方 v1）。
+        let r = find_taught_recipe("amulet").unwrap();
+        assert_eq!(r.output_block, AMULET_ID);
+        assert_eq!(r.output_count, 1);
+        assert_eq!(r.inputs, &[(3, 1), (94, 1)]);
+        assert!(is_taught_recipe("amulet"));
+        assert!(!is_taught_recipe("does_not_exist"));
+        // 獨門配方刻意不併入一般三張表的搜尋鏈——沒學過不該直接查得到能合成。
+        assert!(find_any_recipe("amulet").is_none(), "護身符不該出現在一般配方搜尋鏈裡");
     }
 
     #[test]
