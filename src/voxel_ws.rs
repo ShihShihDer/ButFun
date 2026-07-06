@@ -111,6 +111,7 @@ use crate::voxel_epithet_spread as vespread;
 use crate::voxel_epithet_esteem as vesteem;
 use crate::voxel_epithet_sign as vepisign;
 use crate::voxel_hosted_visit as vhosted;
+use crate::voxel_player_home as vplayerhome;
 use crate::voxel_weather as vweather;
 use crate::voxel_season as vseason;
 use crate::voxel_timely as vtimely;
@@ -439,6 +440,14 @@ struct VoxelResident {
     /// 這趟朝聖走向的其實是「哪位鄰居的家」（登門串門子 v1，ROADMAP 751）：啟程時從 `cherished_neighbor`
     /// 快照，讓途中即使又讀到別的牌也不影響抵達判定。Some(鄰居名) = 抵達時當成登門拜訪；None = 獨自朝聖玩家的牌。
     pilgrimage_neighbor: Option<String>,
+    /// 心中地標其實是「哪位玩家的家」（居民認得你的家 v1，自主提案切片，ROADMAP 830）：Some(玩家名) =
+    /// 上面 `cherished_sign` 那塊牌是該玩家親手署名、且牌面語氣被判成「家」的牌（`owner` 由伺服器權威
+    /// 記下）；與 `cherished_neighbor` 互斥（一塊牌若是居民自建銘牌就走 750/751 那條路，不會同時是玩家的
+    /// 家）。None = 不是任何玩家的家（訪客的牌／指路牌／舊資料等）。純記憶體、重啟歸零。
+    cherished_player: Option<String>,
+    /// 這趟朝聖走向的其實是「哪位玩家的家」（居民認得你的家 v1）：啟程時從 `cherished_player` 快照，
+    /// 讓途中即使又讀到別的牌也不影響抵達判定。Some(玩家名) = 抵達時登門拜訪你；None = 走既有路徑。
+    pilgrimage_player: Option<String>,
     /// 朝聖逾時倒數（秒，讀牌 v3）：啟程時設 [`vreadsign::PILGRIMAGE_TIMEOUT`]；未抵達時遞減，
     /// 歸零仍沒到（地形擋路等）即放棄，避免無限走。
     pilgrimage_timer: f32,
@@ -1390,8 +1399,11 @@ fn build_resident(
             cherished_sign: None,
             // 登門串門子 v1（ROADMAP 751）：入場心裡還沒認得任何鄰居家、沒在登門途中。
             cherished_neighbor: None,
+            // 居民認得你的家 v1（自主提案切片，ROADMAP 830）：入場心裡還沒認得任何玩家的家。
+            cherished_player: None,
             pilgrimage: None,
             pilgrimage_neighbor: None,
+            pilgrimage_player: None,
             pilgrimage_timer: 0.0,
             pilgrimage_cooldown: 180.0 + i as f32 * 60.0,
             // 繁星夜空 v1（ROADMAP 783）：望星冷卻各自錯開，避免同一個星夜大家一起邀。
@@ -5511,7 +5523,11 @@ async fn handle_socket(
                 if !voxel::can_break(&hub().deltas.read().unwrap(), px, py, pz, x, y, z) { continue; }
                 // 清洗玩家輸入（去控制字元、截長度）；空字串＝清空牌面。
                 let clean = vsign::sanitize_text(&text);
-                let ev = hub().sign.write().unwrap().set(&vsign::pos_key(x, y, z), clean.clone());
+                // 居民認得你的家 v1（自主提案切片，ROADMAP 830）：伺服器權威記下這塊牌是哪位
+                // 玩家立的——只有已登入帳號才記名（比照瓶中信的登入護欄），訪客的牌 owner 永遠
+                // None，行為與今日完全一致；清空牌面（clean 為空）也不必記歸屬。
+                let owner = if is_account && !clean.is_empty() { Some(name.clone()) } else { None };
+                let ev = hub().sign.write().unwrap().set(&vsign::pos_key(x, y, z), clean.clone(), owner);
                 vsign::append_sign(&ev);
                 // 廣播給所有人（含自己），前端據此更新／移除該座標的浮字。
                 broadcast_sign(x, y, z, &clean);
@@ -6995,6 +7011,12 @@ fn tick_residents(dt: f32) {
     // 格式：(resident_id, resident_name, 被登門的鄰居顯示名)。
     let mut neighbor_visit_arrivals: Vec<(String, &'static str, String)> = Vec::new();
 
+    // 居民認得你的家·登門拜訪你抵達事件（居民認得你的家 v1，自主提案切片，ROADMAP 830）：鎖內偵測
+    // 「朝聖抵達的其實是你親手署名的家牌」，鎖外統一處理掛在你名下的記憶＋Feed（不需要 763 那樣的
+    // 「回家感應」延遲，動態牆本就是你隨時能讀到的非同步 channel）。
+    // 格式：(resident_id, resident_name, 被登門的玩家顯示名, 是否碰上本人)。
+    let mut home_visit_events: Vec<(String, &'static str, String, bool)> = Vec::new();
+
     // 登門遇主人在家·迎客事件（登門遇主人在家 v1，ROADMAP 752）：鎖內偵測「訪客登門抵達時，
     // 那位鄰居正好也在家」，鎖外統一處理主人側的迎客泡泡 + 「在家迎客」記憶 + Feed。
     // 情誼不在此重複記帳（751 抵達時已 record_visit 過這對），只補上當面互動與主人側痕跡。
@@ -7759,16 +7781,30 @@ fn tick_residents(dt: f32) {
                     .read()
                     .unwrap()
                     .nearest_within_xz(r.body.x, r.body.z, vreadsign::READ_RANGE); // sign 讀鎖在此釋放
-                if let Some((sx, sz, text, _)) = nearby.filter(|(_, _, t, _)| !t.is_empty()) {
+                if let Some((sx, sz, text, _, owner)) = nearby.filter(|(_, _, t, _, _)| !t.is_empty()) {
                     let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                     let quote = vreadsign::display_quote(&text);
                     // 居民認得鄰居的家 v1（ROADMAP 750）：先看這塊牌是不是**別的居民**立的自建
                     // 銘牌（749，格式「{名}的{建物}」）。是的話認出鄰居、念一句更親暱的招呼；
                     // 否則落回既有的世界級讀牌路徑（741/742/743），行為完全不變。
                     let neighbor = vneighsign::identify_nameplate(&text, r.name, &RESIDENT_NAMES);
+                    // 居民認得你的家 v1（自主提案切片，ROADMAP 830）：不是鄰居自建銘牌時，再看這塊
+                    // 牌是不是**某位玩家**親手署名（`owner`，伺服器權威記下）、且牌面語氣被判成
+                    // 「家」（[`vreadsign::SignTone::Home`]，含「家/屋/窩/居/巢」）——避免玩家隨手寫的
+                    // 路標／留言也被誤認成家。兩者互斥：是鄰居的牌就不會又是玩家的家。
+                    let home_owner = if neighbor.is_none()
+                        && vreadsign::classify(&text) == vreadsign::SignTone::Home
+                    {
+                        owner.clone()
+                    } else {
+                        None
+                    };
                     r.say = match neighbor {
                         Some(nb) => vneighsign::neighbor_sign_line(nb, &quote, pick),
-                        None => vreadsign::read_sign_line(&text, pick),
+                        None => match &home_owner {
+                            Some(player) => vplayerhome::recognized_line(player, pick),
+                            None => vreadsign::read_sign_line(&text, pick),
+                        },
                     };
                     r.say_timer = SAY_SECS;
                     r.read_sign_timer = vreadsign::READ_COOLDOWN;
@@ -7792,15 +7828,33 @@ fn tick_residents(dt: f32) {
                                 );
                                 e
                             }
-                            // 既有路徑：玩家寫的字，掛世界級哨兵鍵，不污染真實玩家好感。
-                            None => {
-                                let summary = vreadsign::sign_memory_summary(&text);
-                                hub().memory.write().unwrap().add_memory(
-                                    &r.id,
-                                    vreadsign::SIGN_MEMORY_PLAYER,
-                                    &summary,
-                                )
-                            }
+                            None => match &home_owner {
+                                // 830：認出是某位玩家親手署名的家牌 → 記憶**掛在那位玩家名下**，
+                                // 讓「你的互動有後果」第一次伸向「你在世界裡安的家」。
+                                Some(player) => {
+                                    let mem = vplayerhome::recognized_memory(player);
+                                    let e = hub()
+                                        .memory
+                                        .write()
+                                        .unwrap()
+                                        .add_memory(&r.id, player, &mem);
+                                    vfeed::append_feed(
+                                        "認得你的家",
+                                        r.name,
+                                        &vplayerhome::recognized_feed(r.name, player),
+                                    );
+                                    e
+                                }
+                                // 既有路徑：玩家寫的字（非家牌／訪客），掛世界級哨兵鍵，不污染真實玩家好感。
+                                None => {
+                                    let summary = vreadsign::sign_memory_summary(&text);
+                                    hub().memory.write().unwrap().add_memory(
+                                        &r.id,
+                                        vreadsign::SIGN_MEMORY_PLAYER,
+                                        &summary,
+                                    )
+                                }
+                            },
                         };
                         vmem::append_memory(&entry);
                         // 居民讀牌 v3（ROADMAP 743）：把這塊「不同於上次」的牌記成心中的地標，
@@ -7811,6 +7865,9 @@ fn tick_residents(dt: f32) {
                         // 是鄰居家牌就存鄰居名，是玩家的牌就清成 None，讓日後朝聖抵達能把「重返」
                         // 升級成一次真正的「登門拜訪」（與 cherished_sign 同一處更新、恆保持一致）。
                         r.cherished_neighbor = neighbor.map(|s| s.to_string());
+                        // 居民認得你的家 v1（830）：同步記下「這塊地標其實是哪位玩家的家」——與
+                        // `cherished_neighbor` 互斥，讓日後朝聖抵達能第一次把「重返」升級成登門拜訪你。
+                        r.cherished_player = home_owner;
                     }
                 }
             }
@@ -8473,6 +8530,25 @@ fn tick_residents(dt: f32) {
                             }
                             r.say_timer = SAY_SECS;
                             neighbor_visit_arrivals.push((r.id.clone(), r.name, nb));
+                        } else if let Some(player) = r.pilgrimage_player.clone() {
+                            // 居民認得你的家 v1（自主提案切片，ROADMAP 830）：這趟走向的其實是你親手
+                            // 署名的家牌（830 認得的、啟程時快照進 pilgrimage_player），抵達就不再只是
+                            // 對牌自言自語，而是一趟真正的「登門拜訪你」——你在家（此刻在線且站在牌子
+                            // 附近，複用 752 的在家半徑）就碰上本人暖招呼；你不在（離線或離得遠）就撲空，
+                            // 在城鎮動態留一句「今天繞去找過你」（鎖外 home_visit_events 統一處理記憶／Feed，
+                            // 不需要像 763 那樣等你「回家感應」——動態牆本就是你隨時能讀到的非同步channel）。
+                            let player_here = player_pts
+                                .iter()
+                                .find(|(_, _, n)| n == &player)
+                                .map(|&(px, pz, _)| vplayerhome::player_is_home(px, pz, tx, tz))
+                                .unwrap_or(false);
+                            r.say = if player_here {
+                                vplayerhome::visit_present_line(&player, pick)
+                            } else {
+                                vplayerhome::visit_missed_line(&player, pick)
+                            };
+                            r.say_timer = SAY_SECS;
+                            home_visit_events.push((r.id.clone(), r.name, player, player_here));
                         } else {
                             // 既有路徑（743）：獨自朝聖玩家立的牌，駐足念一句、寫「又回來看看」記憶。
                             r.say = vreadsign::revisit_sign_line(&quote, pick);
@@ -8488,6 +8564,7 @@ fn tick_residents(dt: f32) {
                         }
                         r.pilgrimage = None;
                         r.pilgrimage_neighbor = None;
+                        r.pilgrimage_player = None;
                         r.pilgrimage_cooldown = vreadsign::PILGRIMAGE_COOLDOWN;
                     }
                 } else {
@@ -8496,6 +8573,7 @@ fn tick_residents(dt: f32) {
                     if r.pilgrimage_timer <= 0.0 {
                         r.pilgrimage = None;
                         r.pilgrimage_neighbor = None;
+                        r.pilgrimage_player = None;
                         r.pilgrimage_cooldown = vreadsign::PILGRIMAGE_COOLDOWN;
                     }
                 }
@@ -8530,6 +8608,8 @@ fn tick_residents(dt: f32) {
                             // 登門串門子 v1（ROADMAP 751）：啟程時快照「這趟走向的是哪位鄰居的家」，
                             // 途中即使又讀到別的牌改了 cherished_neighbor 也不影響這趟抵達的判定。
                             r.pilgrimage_neighbor = r.cherished_neighbor.clone();
+                            // 居民認得你的家 v1（830）：同理快照「這趟走向的是哪位玩家的家」。
+                            r.pilgrimage_player = r.cherished_player.clone();
                             r.pilgrimage_timer = vreadsign::PILGRIMAGE_TIMEOUT;
                             r.wait_timer = 0.0;
                         }
@@ -11613,6 +11693,32 @@ fn tick_residents(dt: f32) {
         vfeed::append_feed("回家發現", rname, &vcard::notice_feed(rname, guest));
     }
 
+    // 5c-2e-2) 居民登門拜訪你·抵達處理（居民認得你的家 v1，自主提案切片，ROADMAP 830）：居民朝聖
+    // 抵達的其實是你親手署名的家牌時，把這趟走過去當成一趟真正的「登門拜訪你」——① 掛在你名下的
+    // 記憶（碰面／撲空文案不同，日後回想／日記可引用）；② 一則登門／撲空 Feed，讓你回來就讀得到
+    // 「今天有人繞去找過你」。不需要 763 那樣的「回家感應」延遲：Feed 本就是你隨時能讀到的非同步
+    // channel。鎖序：memory 寫鎖短取即釋、IO 在鎖外——不巢狀、守死鎖鐵律。
+    for (rid, rname, player, met) in &home_visit_events {
+        let (mem, feed_kind, feed_line) = if *met {
+            (
+                vplayerhome::visit_present_memory(player),
+                "登門拜訪你",
+                vplayerhome::visit_present_feed(rname, player),
+            )
+        } else {
+            (
+                vplayerhome::visit_missed_memory(player),
+                "撲空拜訪你",
+                vplayerhome::visit_missed_feed(rname, player),
+            )
+        };
+        let entry = {
+            hub().memory.write().unwrap().add_memory(rid, player, &mem)
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&entry);
+        vfeed::append_feed(feed_kind, rname, &feed_line);
+    }
+
     // 5c-2f) 你送的食物她會細細享用 Feed（ROADMAP 765）：居民在閒暇時真的享用了玩家稍早送的食物
     //（泡泡與心情補助已於鎖內設好）——鎖外補一則城鎮動態，讓不在線上的玩家回來也讀得到「牠好好享用了
     // 你的心意」。餵食第一次有了「被好好享用」的溫暖回響。鎖外純 IO、不巢狀、守死鎖鐵律。
@@ -11716,8 +11822,9 @@ fn tick_residents(dt: f32) {
         } // deltas 寫鎖釋放
         broadcast_block(sx, sy, sz, Block::Sign);
         vbuild::append_world_block(sx, sy, sz, Block::Sign as u8);
-        // ④ 設牌面文字（sign 寫鎖短取即釋）→ 持久化 → 廣播浮字。
-        let ev = hub().sign.write().unwrap().set(&vsign::pos_key(sx, sy, sz), text.clone());
+        // ④ 設牌面文字（sign 寫鎖短取即釋）→ 持久化 → 廣播浮字。居民自己刻的名號牌
+        // owner 恆 None（不是玩家立的，居民認得你的家 v1 只認玩家親手署名的牌）。
+        let ev = hub().sign.write().unwrap().set(&vsign::pos_key(sx, sy, sz), text.clone(), None);
         vsign::append_sign(&ev);
         broadcast_sign(sx, sy, sz, &text);
         // ⑤ 城鎮動態牆：讓玩家（與離線回來者）讀到「某居民把我刻成了這一帶的名號」。
@@ -12722,12 +12829,14 @@ fn tick_residents(dt: f32) {
                             } // deltas 寫鎖釋放
                             broadcast_block(sx, sy, sz, Block::Sign);
                             vbuild::append_world_block(sx, sy, sz, Block::Sign as u8);
-                            // ② 設牌面文字（sign 寫鎖短取即釋）→ 持久化 → 廣播浮字。
+                            // ② 設牌面文字（sign 寫鎖短取即釋）→ 持久化 → 廣播浮字。居民自己
+                            // 蓋完家立的署名牌 owner 恆 None（不是玩家立的，只有 740 玩家親手寫
+                            // 的牌才會被居民認得你的家 v1 認成「你的家」）。
                             let ev = hub()
                                 .sign
                                 .write()
                                 .unwrap()
-                                .set(&vsign::pos_key(sx, sy, sz), text.clone());
+                                .set(&vsign::pos_key(sx, sy, sz), text.clone(), None);
                             vsign::append_sign(&ev);
                             broadcast_sign(sx, sy, sz, &text);
                             // ③ 動態牆 + 立牌泡泡（讓玩家一眼看到居民署了名）。
