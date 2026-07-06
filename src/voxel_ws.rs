@@ -580,6 +580,13 @@ struct VoxelResident {
     /// 正走回家找吃的（居民也會肚子餓 v1）：true = 已放下閒晃、目標設向家域中心，
     /// 到家即吃飽重置。純記憶體，鏡像 678 尋伴的「逐 tick 重設目標→抵達即結」機制。
     seeking_food: bool,
+    /// 正為了吃而去收成／覓食（飢餓接農田 v2）：true = 餓了、家裡卻沒存糧，於是放下閒晃、走去
+    /// 把附近熟了的作物收進小背包（收成→存糧→之後餓了吃它）。純記憶體，鏡像 `seeking_food` 的
+    /// 「逐 tick 重設目標→抵達即收成」機制；沒糧的餓意由此驅動出「為了吃而去種田收成」的行為。
+    foraging_food: bool,
+    /// 目前鎖定要去收成的成熟作物座標（飢餓接農田 v2）：`Some((wx,wy,wz))`＝已找到一畦熟作物、
+    /// 正朝它走去；`None`＝尚未鎖定（下個 agency tick 再找）。純記憶體。
+    forage_target: Option<(i32, i32, i32)>,
     /// 分食冷卻倒數（秒，飢餓時的守望相助 v1，ROADMAP 800）：一次分食後設
     /// [`vsharemeal::SHARE_COOLDOWN_SECS`]，歸零前不再對人分食，讓「分一口飯」稀少而有份量。純記憶體。
     share_meal_cooldown: f32,
@@ -804,6 +811,17 @@ fn dream_envoy_list() -> Vec<String> {
         .map(|s| parse_envoy_list(&s))
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| parse_envoy_list(DREAM_ENVOY_DEFAULT))
+}
+
+/// 飢餓速率倍率（飢餓接農田 v2·QA 用）：讀 `BUTFUN_HUNGER_RATE_MULT`，未設 / 解析失敗 / ≤0
+/// → 回 1.0（維持原速）。**僅供隔離測試**把「數分鐘才餓」壓成「數秒就餓」以便觀察餓→吃／收成，
+/// 正式線上不設此環境變數，對玩家零影響（不改任何預設常數、無資料風險）。
+fn hunger_rate_mult() -> f32 {
+    std::env::var("BUTFUN_HUNGER_RATE_MULT")
+        .ok()
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .filter(|&m| m > 0.0 && m.is_finite())
+        .unwrap_or(1.0)
 }
 
 /// 純函式：某鍵是否命中某連線帳號——email 忽略大小寫（email 本就大小寫不敏感），
@@ -1468,6 +1486,9 @@ fn build_resident(
             hunger: 0.0,
             hunger_say_cd: vhunger::hunger_cd_offset(i),
             seeking_food: false,
+            // 飢餓接農田 v2：入場不在覓食收成途中。
+            foraging_food: false,
+            forage_target: None,
             // 飢餓時的守望相助 v1（ROADMAP 800）：入場分食冷卻錯開，避免啟動後全員一起搶著分食。
             share_meal_cooldown: vsharemeal::share_cd_offset(i),
             pending_meal_thanks: None,
@@ -7312,6 +7333,11 @@ fn tick_residents(dt: f32) {
     // 居民也會肚子餓 v1（ROADMAP 799）：鎖內偵測「居民在餓著的時候被玩家餵了食物」（餓意已於鎖內
     // 歸零），鎖外統一補一則掛玩家名下的深記憶＋城鎮動態。格式：(居民 id, 送食物的玩家名, 居民顯示名)。
     let mut hunger_fed: Vec<(String, String, &'static str)> = Vec::new();
+    // 飢餓接農田／倉庫 v2（ROADMAP 799）：鎖內偵測「餓著沒存糧的居民走到一畦熟作物旁、要為了吃而收成」，
+    // 鎖外統一執行（作物方塊 Mature→Seeded 退回可再長＋廣播＋持久化、食物入她小背包、清收成狀態、冒收成泡泡）。
+    // 走鎖外是為守 prod 死鎖鐵律——收成要寫 deltas，而本迴圈全程持著 deltas 讀 guard（line 7441）。
+    // 格式：(居民 id, 居民顯示名, wx, wy, wz, 作物方塊)。
+    let mut forage_harvest_events: Vec<(String, &'static str, i32, i32, i32, Block)> = Vec::new();
     // 自我印象 v1（ROADMAP 770）：鎖內偵測「居民閒下來、回望自己昇華出一句自我印象」（泡泡已於鎖內設好），
     // 鎖外統一補一則城鎮動態 Feed（第三人稱旁白，已是純模板、無記憶原文）。
     let mut self_image_feeds: Vec<(&'static str, String)> = Vec::new();
@@ -7495,7 +7521,9 @@ fn tick_residents(dt: f32) {
                 r.esteem_approach_cooldown -= dt;
             }
             // 餓意累積（居民也會肚子餓 v1，ROADMAP 799）：每 tick 慢慢餓一點；靜默冷卻同步倒數。
-            r.hunger = vhunger::tick_hunger(r.hunger, dt);
+            // QA 加速：`BUTFUN_HUNGER_RATE_MULT`（預設 1.0）僅供隔離測試把數分鐘的餓意壓成數秒觀察，
+            // 正式線上不設此環境變數→維持原速（15 分鐘餓極），對玩家零影響。
+            r.hunger = vhunger::tick_hunger(r.hunger, dt * hunger_rate_mult());
             if r.hunger_say_cd > 0.0 {
                 r.hunger_say_cd -= dt;
             }
@@ -8471,24 +8499,50 @@ fn tick_residents(dt: f32) {
                 }
             }
 
-            // 回家吃存糧 v1（居民也會肚子餓 v1，ROADMAP 799）：餓意越過門檻、又沒別的要事在身，
-            // 就放下閒晃、朝自己的家域中心走去找點存糧吃；到家即吃飽、餓意歸零、冒一句滿足暖泡泡。
-            // 純自理、不黏玩家（別於 678 尋伴走向玩家）。鏡像尋伴／致意的「逐 tick 重設目標→抵達
-            // 即結」機制：零 LLM、零持久化、零新協議欄位、零新實體（只是換個目標走、換句泡泡）。
+            // 回家吃自己種的／存的 v2（飢餓接農田／倉庫，ROADMAP 799）：餓了就放下閒晃、朝自己的
+            // 家域中心走去；到家後**檢查小背包真的有沒有吃的**（小麥／麵包／胡蘿蔔／馬鈴薯／莓果…），
+            // 有就吃掉一份、真的扣量、餓意歸零、冒一句點名「吃了什麼」的滿足暖泡泡；**沒有就真的餓著**
+            // ——誠實心聲「家裡什麼吃的都沒有…」，改去把附近熟了的作物收成進背包（見下方 foraging_food）。
+            // 建築（田／倉）第一次有真正的功能：吃的是自己種的、存的，不是憑空。純自理、不黏玩家。
+            // 鏡像尋伴／致意的「逐 tick 重設目標→抵達即結」機制。res_inv 短鎖即釋（守 prod 死鎖鐵律：
+            // residents 寫→res_inv 寫，比照本檔既有回禮/合成處對 res_inv 的短取即釋慣例）。
             if r.seeking_food {
                 let dx = r.home_x - r.body.x;
                 let dz = r.home_z - r.body.z;
                 if dx * dx + dz * dz
                     < vhunger::EAT_ARRIVE_DIST * vhunger::EAT_ARRIVE_DIST
                 {
-                    // 到家、吃上存糧：餓意歸零、結束覓食、上靜默冷卻，閒下來時冒滿足暖泡泡。
-                    r.hunger = 0.0;
+                    // 到家：查小背包挑一份食物、真的吃掉（扣量）；沒得吃回 None。
+                    let eaten: Option<u8> = {
+                        let mut inv = hub().res_inv.write().unwrap();
+                        let bag = inv.entry(r.id.clone()).or_default();
+                        match vhunger::pick_food(bag) {
+                            Some(fid) if vhunger::consume_one(bag, fid) => Some(fid),
+                            _ => None,
+                        }
+                    }; // res_inv 寫鎖釋放
                     r.seeking_food = false;
-                    r.hunger_say_cd = vhunger::HUNGER_SAY_COOLDOWN;
-                    if r.say.is_empty() {
-                        let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                        r.say = vhunger::sated_say_line(pick).chars().take(40).collect();
-                        r.say_timer = SAY_SECS;
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    if let Some(fid) = eaten {
+                        // 吃上了自己種的／存的：餓意歸零、上靜默冷卻，冒一句點名「吃了什麼」的暖泡泡。
+                        r.hunger = 0.0;
+                        r.hunger_say_cd = vhunger::HUNGER_SAY_COOLDOWN;
+                        if r.say.is_empty() {
+                            let food = vhunger::food_name_zh(fid).unwrap_or("東西");
+                            r.say = vhunger::ate_say_line(food, pick).chars().take(40).collect();
+                            r.say_timer = SAY_SECS;
+                        }
+                    } else {
+                        // 家裡什麼吃的都沒有——真的餓著（餓意**不歸零**）：冒一句誠實心聲，轉去收成覓食。
+                        // 仍上靜默冷卻，只是為了避免同一輪又立刻落回「餓了喊一句回家」的碎念；覓食由
+                        // `foraging_food` 旗接手驅動（不受冷卻影響），冷卻過後若還沒吃到會再想辦法。
+                        r.hunger_say_cd = vhunger::HUNGER_SAY_COOLDOWN;
+                        r.foraging_food = true;
+                        r.forage_target = None;
+                        if r.say.is_empty() {
+                            r.say = vhunger::no_food_say_line(pick).chars().take(40).collect();
+                            r.say_timer = SAY_SECS;
+                        }
                     }
                 } else {
                     // 還沒到家：持續把目標釘在家域中心（純自走回家，不受玩家/世界牽引）。
@@ -8497,6 +8551,7 @@ fn tick_residents(dt: f32) {
                     r.wait_timer = 0.0;
                 }
             } else if vhunger::is_hungry(r.hunger)
+                && !r.foraging_food
                 && r.hunger_say_cd <= 0.0
                 && r.say.is_empty()
                 && r.gather.is_none()
@@ -10025,6 +10080,58 @@ fn tick_residents(dt: f32) {
                     ));
                 }
                 vr::gravity_step(&world, &mut r.body, dt);
+            } else if r.foraging_food {
+                // 飢餓接農田／倉庫 v2·為了吃而去收成：家裡沒存糧的餓著居民，走去把最近一畦熟作物收進背包。
+                // 收成即入存糧、退回可再長的田——之後餓了就吃它，整條「餓→收成→存糧→吃」在世界裡真實跑通。
+                // 找不到熟作物（半徑內沒得收）→ 誠實放棄本輪覓食（不鬼打牆漫遊），餓意還在、下輪再想辦法。
+                let target = match r.forage_target {
+                    Some(t) => Some(t),
+                    None => vskill::find_nearest_ripe_crop(
+                        &world,
+                        r.body.x.floor() as i32,
+                        r.body.z.floor() as i32,
+                        vskill::GATHER_MAX_RADIUS,
+                    )
+                    .map(|(x, y, z, _)| (x, y, z)),
+                };
+                match target {
+                    None => {
+                        // 半徑內沒有熟作物可收：老實收手（清覓食旗），餓著等下一輪（可能有作物長熟、
+                        // 或鄰居分食、或玩家餵食）。不無窮漫遊、不鬼打牆。
+                        r.foraging_food = false;
+                        r.forage_target = None;
+                        vr::gravity_step(&world, &mut r.body, dt);
+                    }
+                    Some((tx, ty, tz)) => {
+                        r.forage_target = Some((tx, ty, tz));
+                        // 目標作物此刻是否仍是熟的（可能被玩家/tick 先收走）→ 沒了就重找。
+                        let still_ripe = vhunger::is_harvestable_food_block(
+                            voxel::effective_block_at(&world, tx, ty, tz),
+                        );
+                        if !still_ripe {
+                            r.forage_target = None;
+                            vr::gravity_step(&world, &mut r.body, dt);
+                        } else if vskill::within_gather_reach(r.body.x, r.body.z, tx, tz) {
+                            // 走到作物旁：排程鎖外收成（收成入背包、田退回可再長、冒收成泡泡），結束本輪覓食。
+                            let crop = voxel::effective_block_at(&world, tx, ty, tz);
+                            forage_harvest_events.push((r.id.clone(), r.name, tx, ty, tz, crop));
+                            r.foraging_food = false;
+                            r.forage_target = None;
+                            vr::gravity_step(&world, &mut r.body, dt);
+                        } else {
+                            // 朝那畦作物中心走（沿牆滑行、踏階由物理處理）。
+                            let (bx, bz) = (r.body.x, r.body.z);
+                            vr::step_toward(
+                                &world, &mut r.body,
+                                tx as f32 + 0.5, tz as f32 + 0.5,
+                                dt, vr::RES_SPEED * speed_mult,
+                            );
+                            if let Some(yaw) = vr::yaw_from_move(r.body.x - bx, r.body.z - bz) {
+                                r.yaw = yaw;
+                            }
+                        }
+                    }
+                }
             } else if r.gather.is_some() {
                 let (tx, ty, tz, reached, timed_out) = {
                     let g = r.gather.as_mut().unwrap();
@@ -11296,6 +11403,53 @@ fn tick_residents(dt: f32) {
         vfeed::append_feed("採集", rname, &format!("採集了{}", res.display_name()));
         // 冒一句採集泡泡（不打斷其他話）。
         say_updates.push((rid.clone(), format!("採到{}了～", res.display_name())));
+    }
+
+    // 5b-2) 為了吃而去收成執行（飢餓接農田／倉庫 v2，ROADMAP 799）：餓著沒存糧的居民走到一畦熟作物旁後，
+    //   真的把它收成進小背包（收成→存糧），田退回「已播種」狀態能再長一輪（療癒的可持續農業）。
+    //   鎖序：deltas 讀（驗仍熟，即釋）→ deltas 寫（退回種子態，即釋）→ broadcast → 持久化 → farm 短鎖清計時
+    //   → res_inv 寫（食物入袋，即釋）→ Feed / say（鎖外）。全在 residents 寫鎖釋放後、不巢狀，守死鎖鐵律。
+    for (rid, rname, gx, gy, gz, crop) in forage_harvest_events {
+        // 只在目標「現在仍是那株熟作物」時才收（防別人/別的 tick 先收走 → 空收）。
+        let still_ripe = {
+            let world = hub().deltas.read().unwrap();
+            voxel::effective_block_at(&world, gx, gy, gz) == crop
+        }; // deltas 讀鎖釋放
+        if !still_ripe {
+            continue;
+        }
+        let Some((food_id, qty, regrow)) = vhunger::harvest_food_of(crop) else {
+            continue; // 理論上不會（能排進來就一定是熟作物），保險略過
+        };
+        // 收成：作物方塊換成收成後的退回態（Mature→Seeded 能再長／莓果叢退回結果前的苗），廣播 + 持久化。
+        {
+            let mut world = hub().deltas.write().unwrap();
+            voxel::set_block(&mut world, gx, gy, gz, regrow);
+        } // deltas 寫鎖釋放
+        broadcast_block(gx, gy, gz, regrow);
+        vbuild::append_world_block(gx, gy, gz, regrow as u8);
+        // 農地計時：小麥/胡蘿蔔/馬鈴薯退回已播種態要重新起算「再長一輪」（比照玩家收割後續種）。
+        // 莓果叢由 tick_berry 自行管理（退回苗即重啟計時），這裡只處理犁田三作物。
+        if matches!(regrow, Block::FarmSoilSeeded | Block::CarrotSeeded | Block::PotatoSeeded) {
+            let kind = match regrow {
+                Block::CarrotSeeded => vfarm::CropKind::Carrot,
+                Block::PotatoSeeded => vfarm::CropKind::Potato,
+                _ => vfarm::CropKind::Wheat,
+            };
+            let farm_e =
+                { hub().farm.write().unwrap().plant(gx, gy, gz, vfarm::now_secs(), kind) };
+            vfarm::append_farm(&farm_e);
+        }
+        // 收穫入居民小背包（res_inv 短鎖即釋）——收成→存糧，之後餓了就吃它。
+        {
+            let mut inv = hub().res_inv.write().unwrap();
+            *inv.entry(rid.clone()).or_default().entry(food_id).or_insert(0) += qty;
+        } // res_inv 寫鎖釋放
+        let food = vhunger::food_name_zh(food_id).unwrap_or("作物");
+        // Feed（真實事件、低頻）＋ 收成泡泡（她餓著、剛把吃的收進袋子）。
+        vfeed::append_feed("收成", rname, &format!("{rname}餓著肚子，把熟了的{food}收進了袋子"));
+        let pick = (gx as usize) ^ (gz as usize);
+        say_updates.push((rid.clone(), vhunger::foraged_say_line(food, pick)));
     }
 
     // 5b-1a) 跑腿採集·找下一個目標（指令→任務第三刀收尾）：還沒鎖定資源的居民，
