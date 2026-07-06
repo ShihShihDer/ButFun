@@ -178,11 +178,22 @@ pub struct BuildPlan {
     /// `#[serde(default)]` 供舊 jsonl 向後相容（舊行沒有這欄，一律視為 `None`，維持原通用完工行為）。
     #[serde(default)]
     pub inspired_by: Option<String>,
+    /// 合力蓋家 v1（ROADMAP 834）：老朋友到訪順手幫忙推進（696）時記下的協力者名字（去重）。
+    /// `#[serde(default)]` 供舊 jsonl 向後相容（舊行沒有這欄，一律視為空、維持原單人完工行為）。
+    #[serde(default)]
+    pub helpers: Vec<String>,
 }
 
 impl BuildPlan {
     pub fn is_done(&self) -> bool {
         self.remaining.is_empty()
+    }
+
+    /// 記一位協力者（去重、排除屋主本人）。合力蓋家 v1：讓完工功勞不再只算一人。
+    pub fn add_helper(&mut self, name: &str) {
+        if self.resident != name && !self.helpers.iter().any(|h| h == name) {
+            self.helpers.push(name.to_string());
+        }
     }
 
     /// 完成百分比 0..=100。
@@ -268,6 +279,7 @@ impl BuildStore {
             seq: self.next_seq,
             expansion,
             inspired_by,
+            helpers: Vec::new(),
         };
         self.next_seq += 1;
         self.plans.insert(resident.to_string(), plan.clone());
@@ -735,6 +747,20 @@ pub fn should_help_build(remaining_before_pop: usize, roll: f32) -> bool {
 /// 幫忙放了一塊後，幫忙者冒出的台詞。
 pub fn help_say_line(helper: &str, kind_name: &str) -> String {
     format!("看到在蓋{kind_name}，{helper}順手也幫忙放了一塊！")
+}
+
+// ── 合力蓋家完工功勞（純函式，零 LLM）────────────────────────────────────────────
+// ROADMAP 834：696 讓老朋友到訪時順手幫忙推進一塊，但完工那一刻（Feed／慶賀泡泡／廣播）
+// 此前不管幫了幾次忙，功勞永遠只算屋主一人——協力者的付出在最有感的收尾時刻反而隱形。
+// 本節補上「完工時列出所有協力者」的顯示文字，讓小社會的集體行動第一次在完工瞬間被看見。
+
+/// 建物完工時的 Feed 詳情文字：有協力者就在建物名後標注「（與 X、Y 合力）」，沒有則原樣不變。
+pub fn build_credit_detail(kind_name: &str, helpers: &[String]) -> String {
+    if helpers.is_empty() {
+        kind_name.to_string()
+    } else {
+        format!("{}（與{}合力）", kind_name, helpers.join("、"))
+    }
 }
 
 // ── 玩家協助居民蓋家（純函式，零 LLM）──────────────────────────────────────────
@@ -1414,6 +1440,7 @@ mod tests {
             seq: 0,
             expansion: false,
             inspired_by: None,
+            helpers: Vec::new(),
         };
         let s = BuildStore::from_entries(vec![plan]);
         assert!(s.has_plan("vox_res_0"));
@@ -1433,6 +1460,7 @@ mod tests {
             seq: 0,
             expansion: false,
             inspired_by: None,
+            helpers: Vec::new(),
         };
         let s = BuildStore::from_entries(vec![plan]);
         assert!(!s.has_plan("vox_res_0"), "已完成的計畫不應載回");
@@ -1452,6 +1480,7 @@ mod tests {
             seq: 0,
             expansion: false,
             inspired_by: None,
+            helpers: Vec::new(),
         };
         let new = BuildPlan {
             resident: "vox_res_0".into(),
@@ -1465,6 +1494,7 @@ mod tests {
             seq: 5,
             expansion: false,
             inspired_by: None,
+            helpers: Vec::new(),
         };
         let s = BuildStore::from_entries(vec![old, new]);
         assert_eq!(s.plans["vox_res_0"].kind, "tower", "應保留 seq 較大的計畫");
@@ -1603,6 +1633,72 @@ mod tests {
                 assert!(!line.contains(kw), "感激記憶不該含語意關鍵詞「{kw}」：{line}");
             }
         }
+    }
+
+    // ── 合力蓋家完工功勞（ROADMAP 834）────────────────────────────────────────────
+
+    #[test]
+    fn new_plan_starts_with_no_helpers() {
+        let s = store_with_plan("vox_res_0", BuildKind::House);
+        assert!(s.plans["vox_res_0"].helpers.is_empty());
+    }
+
+    #[test]
+    fn add_helper_records_name() {
+        let mut s = store_with_plan("vox_res_0", BuildKind::House);
+        s.get_plan_mut("vox_res_0").unwrap().add_helper("賽勒");
+        assert_eq!(s.plans["vox_res_0"].helpers, vec!["賽勒".to_string()]);
+    }
+
+    #[test]
+    fn add_helper_dedupes_same_name() {
+        let mut s = store_with_plan("vox_res_0", BuildKind::House);
+        let plan = s.get_plan_mut("vox_res_0").unwrap();
+        plan.add_helper("賽勒");
+        plan.add_helper("賽勒");
+        assert_eq!(s.plans["vox_res_0"].helpers.len(), 1, "同一人重複幫忙不應重複記名");
+    }
+
+    #[test]
+    fn add_helper_ignores_owner_self() {
+        let mut s = store_with_plan("露娜", BuildKind::House);
+        s.get_plan_mut("露娜").unwrap().add_helper("露娜");
+        assert!(s.plans["露娜"].helpers.is_empty(), "屋主本人不算協力者");
+    }
+
+    #[test]
+    fn add_helper_supports_multiple_distinct_names() {
+        let mut s = store_with_plan("vox_res_0", BuildKind::House);
+        let plan = s.get_plan_mut("vox_res_0").unwrap();
+        plan.add_helper("賽勒");
+        plan.add_helper("諾娃");
+        assert_eq!(s.plans["vox_res_0"].helpers, vec!["賽勒".to_string(), "諾娃".to_string()]);
+    }
+
+    #[test]
+    fn build_credit_detail_unchanged_when_no_helpers() {
+        assert_eq!(build_credit_detail("小木屋", &[]), "小木屋");
+    }
+
+    #[test]
+    fn build_credit_detail_lists_single_helper() {
+        let helpers = vec!["賽勒".to_string()];
+        assert_eq!(build_credit_detail("小木屋", &helpers), "小木屋（與賽勒合力）");
+    }
+
+    #[test]
+    fn build_credit_detail_lists_multiple_helpers_joined() {
+        let helpers = vec!["賽勒".to_string(), "諾娃".to_string()];
+        assert_eq!(build_credit_detail("水井", &helpers), "水井（與賽勒、諾娃合力）");
+    }
+
+    #[test]
+    fn build_plan_deserializes_without_helpers_field() {
+        // 向後相容：舊 jsonl 沒有 helpers 欄位，載回應預設空陣列、不 panic。
+        let old_json = r#"{"resident":"vox_res_0","kind":"house","kind_name":"小木屋",
+            "cx":0,"cy":64,"cz":0,"remaining":[],"total":0,"seq":1}"#;
+        let plan: BuildPlan = serde_json::from_str(old_json).expect("舊格式應可解析");
+        assert!(plan.helpers.is_empty());
     }
 
     // ── surface_y 純函式 ──────────────────────────────────────────────────────
