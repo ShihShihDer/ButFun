@@ -510,6 +510,94 @@ pub fn village_center(home_bases: &[(i32, i32)]) -> (i32, i32) {
     (round_div(sx, n), round_div(sz, n))
 }
 
+// ── 村莊大修復 + 挖掘紀律（純函式、確定性、可測）─────────────────────────────────
+//
+// 背景：居民為鋪路/合成挖石（階梯礦井）、採集、水邊整地，把村莊中心一帶挖出大坑、挖穿
+// 水脈導致大面積淹水灌進村區（實測地表 7000+ 個洞、相機會掉進坑）。維護者拍板：**修復 + 防再犯**。
+//
+// 兩件事，都收斂成這裡的純函式，方便單元測試釘死、voxel_ws 只做世界 IO：
+//   ① 一次性大修復 migration：村莊半徑內把「被挖低於自然地表」的坑回填成基底材料、
+//      把灌進來的流動水清成空氣——但**絕不動保留清單**（建築/道路/農田/功能方塊/樹）。
+//   ② 挖掘紀律：居民**自主**挖資源（階梯礦井/採石/採集/發明）的選址，村內一律拒絕，
+//      逼他們去村外找。玩家指定的工地（整地/鋪面）不受此限——那是玩家要的。
+
+/// 村莊大修復半徑（格，歐氏）：以村莊中心為心，這半徑內的地表坑洞才回填、流動水才清。
+/// 取 60：涵蓋實測被挖爛的村莊中心區（廣場＋十字主路 reach 72 的近段＋沿路地塊），
+/// 又不至於掃到遠方玩家/居民合理改動的荒野。
+pub const VILLAGE_RESTORE_RADIUS: i32 = 60;
+
+/// 挖掘紀律：居民自主開挖的**離村禁區**半徑（格，歐氏），略小於修復半徑（45 < 60）——
+/// 修復把坑填了，禁區確保居民不會馬上在同一片村區再挖新坑（治本）。村外仍可自由開採。
+pub const VILLAGE_DIG_EXCLUSION_RADIUS: i32 = 45;
+
+/// 大修復只回填「地表層」的坑：y 落在此下界（含）以上才回填。
+/// 深於此的洞（真正的礦道/地下室）保留——那是合理採礦，不是把村容挖爛的地表坑。
+/// 取 3：與自然海平面(5)、基底地形高度(BASE_HEIGHT=8)相稱，只補暴露在村容上的地表坑。
+pub const VILLAGE_REFILL_MIN_Y: i32 = 3;
+
+/// 大修復回填的「地表層」上界：y 落在此上界（含）以下才回填。
+/// 取 BASE_HEIGHT + 6 = 14，涵蓋正常地形峰值；再高的格不可能是「被挖低於地表」的坑。
+pub const VILLAGE_REFILL_MAX_Y: i32 = 14;
+
+/// (x,z) 是否落在村莊大修復半徑內（歐氏圓，確定性純函式）。
+pub fn in_village_restore_range(vcx: i32, vcz: i32, x: i32, z: i32) -> bool {
+    let dx = (x - vcx) as i64;
+    let dz = (z - vcz) as i64;
+    let r = VILLAGE_RESTORE_RADIUS as i64;
+    dx * dx + dz * dz <= r * r
+}
+
+/// (x,z) 是否落在居民自主開挖的離村禁區內（歐氏圓，確定性純函式）。
+/// **true = 禁止在此自主開挖**（居民要去村外找資源）；false = 村外，可開採。
+pub fn in_village_dig_exclusion(vcx: i32, vcz: i32, x: i32, z: i32) -> bool {
+    let dx = (x - vcx) as i64;
+    let dz = (z - vcz) as i64;
+    let r = VILLAGE_DIG_EXCLUSION_RADIUS as i64;
+    dx * dx + dz * dz <= r * r
+}
+
+/// **大修復·地形回填判定**（純函式、可測）：給定一格座標，若它是「被挖低於自然地表的坑」
+/// 就回傳該回填的基底材料，否則 `None`（保守：絕不動保留清單）。
+///
+/// 判定五條**同時**成立才回填（把建築/道路/農田/功能方塊/樹/深礦道全排除在外）：
+/// 1. y 落在地表層 [`VILLAGE_REFILL_MIN_Y`]..=[`VILLAGE_REFILL_MAX_Y`]（深礦道 y<3 保留）。
+/// 2. 該格目前有效方塊是 `Air` 或**流動水**——真的是個被挖空/被水灌的洞。
+///    （**非** Air／非流動水＝那裡有東西：建材/農田/功能方塊/樹/源水湖 → 一律不動。）
+/// 3. 該格的**自然程序基底**是實心（`block_at` 為固體）——原本就該是地（草/土/沙/石），
+///    現在卻空了＝被挖低於地表。自然本就是 Air/水的格（地表之上、天然湖）→ 不回填。
+/// 4. 回填材料本身可放置且為實心（基底＝草→回填草皮以維持地表感；土/沙/石回填自身）。
+///
+/// 回傳的方塊即該格自然基底材料（草→Grass 維持地表草皮；其餘回填基底自身）。
+pub fn village_hole_refill(base: Block, current: Block, y: i32) -> Option<Block> {
+    // 1) 只補地表層坑；深礦道（y<VILLAGE_REFILL_MIN_Y）與過高格保留/略過。
+    if y < VILLAGE_REFILL_MIN_Y || y > VILLAGE_REFILL_MAX_Y {
+        return None;
+    }
+    // 2) 目前須是空氣或流動水（真的是個洞/被灌水的洞）；有東西的格（建築/源水湖/農田/樹）不動。
+    if !(current == Block::Air || current.is_flowing_water()) {
+        return None;
+    }
+    // 3) 自然基底須是實心（原本就該是地，現在空了＝被挖低於地表）。
+    if !base.is_solid() {
+        return None;
+    }
+    // 4) 回填材料：基底是草→回填草皮（地表感）；其餘回填基底自身。且須可放置＋實心。
+    let fill = if base == Block::Grass { Block::Grass } else { base };
+    (fill.is_solid() && fill.is_placeable()).then_some(fill)
+}
+
+/// **大修復·排水判定**（純函式、可測）：某格目前方塊是否為「該清成空氣的流動水」。
+/// 只清**流動水**(24–30)：地形恢復後不該再有灌進來的流動水；天然海平面湖的**來源水**(7)不動
+/// （那是自然湖的源頭，清了會把湖也抽乾）。回 `true`＝清成 Air。
+pub fn village_should_drain(current: Block) -> bool {
+    current.is_flowing_water()
+}
+
+/// 大修復動工的 Feed 文字（面向玩家、i18n 友善集中此處）。
+pub fn village_restore_feed_line() -> &'static str {
+    "村裡的大坑填平了，灌進來的水也退了——路面重見天日，村子恢復了模樣。"
+}
+
 // ── 單元測試 ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -885,6 +973,142 @@ mod tests {
                 .is_some();
             // 只有 "1,2,3" 這種前兩段合法者會 parse 成功（多餘段被忽略）——確認不會 panic。
             let _ = ok;
+        }
+    }
+
+    // ── 村莊大修復·離村範圍判定（歐氏圓、確定性）─────────────────────────────────
+
+    #[test]
+    fn restore_range_is_euclidean_circle() {
+        // 中心 (0,19)（實測 prod 村莊中心）。
+        let (vcx, vcz) = (0, 19);
+        assert!(in_village_restore_range(vcx, vcz, vcx, vcz), "中心一定在範圍內");
+        // 邊界內（半徑 60）。
+        assert!(in_village_restore_range(vcx, vcz, vcx + 50, vcz));
+        // 剛好半徑上。
+        assert!(in_village_restore_range(vcx, vcz, vcx + VILLAGE_RESTORE_RADIUS, vcz));
+        // 圓外（正半徑+1）。
+        assert!(!in_village_restore_range(vcx, vcz, vcx + VILLAGE_RESTORE_RADIUS + 1, vcz));
+        // 對角遠處（超出圓）。
+        assert!(!in_village_restore_range(vcx, vcz, vcx + 50, vcz + 50));
+    }
+
+    #[test]
+    fn dig_exclusion_is_smaller_than_restore() {
+        // 禁區半徑須嚴格小於修復半徑（先填坑，再讓禁區防再犯，見常數說明）。
+        assert!(VILLAGE_DIG_EXCLUSION_RADIUS < VILLAGE_RESTORE_RADIUS);
+    }
+
+    // ── 挖掘紀律·離村禁區判定（村內拒、村外准）─────────────────────────────────────
+
+    #[test]
+    fn dig_exclusion_rejects_inside_allows_outside() {
+        let (vcx, vcz) = (0, 19);
+        // 村內（中心、近處）→ true＝禁止自主開挖。
+        assert!(in_village_dig_exclusion(vcx, vcz, vcx, vcz), "村中心禁挖");
+        assert!(in_village_dig_exclusion(vcx, vcz, vcx + 20, vcz), "村內禁挖");
+        assert!(in_village_dig_exclusion(vcx, vcz, vcx + VILLAGE_DIG_EXCLUSION_RADIUS, vcz), "禁區邊界仍禁");
+        // 村外（超出禁區半徑）→ false＝准許開挖。
+        assert!(!in_village_dig_exclusion(vcx, vcz, vcx + VILLAGE_DIG_EXCLUSION_RADIUS + 1, vcz), "村外准挖");
+        assert!(!in_village_dig_exclusion(vcx, vcz, vcx + 100, vcz), "遠處荒野准挖");
+    }
+
+    #[test]
+    fn skills_exclusion_helper_matches_village_geometry() {
+        // voxel_skills::in_dig_exclusion（內聯幾何）須與此處的圓一致。
+        let (vcx, vcz) = (0, 19);
+        let r = VILLAGE_DIG_EXCLUSION_RADIUS;
+        for (x, z) in [(vcx, vcz), (vcx + 20, vcz), (vcx + 44, vcz), (vcx + 46, vcz), (vcx + 100, vcz)] {
+            assert_eq!(
+                crate::voxel_skills::in_dig_exclusion(Some((vcx, vcz, r)), x, z),
+                in_village_dig_exclusion(vcx, vcz, x, z),
+                "skills 內聯禁區判定應與 village 幾何一致：({x},{z})"
+            );
+        }
+        // None ＝不設限，永遠回 false。
+        assert!(!crate::voxel_skills::in_dig_exclusion(None, vcx, vcz));
+    }
+
+    // ── 村莊大修復·地形回填判定（保留建築/回填基底/深礦道保留）─────────────────────
+
+    #[test]
+    fn refill_backfills_dug_hole_to_base_material() {
+        // 基底是土、現為 Air（被挖空的地表坑）、y 在地表層 → 回填成土。
+        assert_eq!(village_hole_refill(Block::Dirt, Block::Air, 7), Some(Block::Dirt));
+        // 基底是草 → 回填草皮（維持地表草感）。
+        assert_eq!(village_hole_refill(Block::Grass, Block::Air, 8), Some(Block::Grass));
+        // 基底是沙（沙漠/近水）→ 回填沙。
+        assert_eq!(village_hole_refill(Block::Sand, Block::Air, 6), Some(Block::Sand));
+        // 基底是石 → 回填石（可放置且實心）。
+        assert_eq!(village_hole_refill(Block::Stone, Block::Air, 5), Some(Block::Stone));
+    }
+
+    #[test]
+    fn refill_backfills_water_flooded_hole() {
+        // 被灌進來的流動水佔著、基底原是實心 → 回填基底（把淹水處填回地）。
+        assert_eq!(village_hole_refill(Block::Dirt, Block::WaterFlow3, 6), Some(Block::Dirt));
+    }
+
+    #[test]
+    fn refill_preserves_buildings_and_functional_blocks() {
+        // 保留清單：該格目前是建材/功能方塊/農田/樹（非 Air、非流動水）→ 絕不回填（回 None）。
+        for cur in [
+            Block::Plank, Block::StoneBrick, Block::SmoothStone, Block::Wood, Block::Leaves,
+            Block::DoorClosed, Block::Torch, Block::Glass, Block::FarmSoil, Block::Workbench,
+            Block::Furnace, Block::Chest, Block::Bed, Block::Sign, Block::Bench,
+        ] {
+            assert_eq!(
+                village_hole_refill(Block::Dirt, cur, 8), None,
+                "保留清單方塊 {cur:?} 絕不被回填覆蓋"
+            );
+        }
+    }
+
+    #[test]
+    fn refill_preserves_source_water_lake() {
+        // 天然海平面湖的**來源水**(7) 不是流動水、非 Air → 不回填（不把湖填成地）。
+        assert_eq!(village_hole_refill(Block::Sand, Block::Water, 5), None);
+    }
+
+    #[test]
+    fn refill_preserves_deep_mine_shaft() {
+        // 深礦道（y < VILLAGE_REFILL_MIN_Y）→ 不回填（合理採礦，非村容坑）。
+        assert_eq!(village_hole_refill(Block::Stone, Block::Air, 2), None);
+        assert_eq!(village_hole_refill(Block::Stone, Block::Air, 0), None);
+        // 過高格（y > MAX）→ 不回填。
+        assert_eq!(village_hole_refill(Block::Dirt, Block::Air, VILLAGE_REFILL_MAX_Y + 1), None);
+    }
+
+    #[test]
+    fn refill_skips_where_base_is_air() {
+        // 自然本就是空氣（地表之上）→ 不回填（不憑空造地）。
+        assert_eq!(village_hole_refill(Block::Air, Block::Air, 10), None);
+        // 自然本就是水（天然湖水面）→ 基底非實心 → 不回填。
+        assert_eq!(village_hole_refill(Block::Water, Block::Air, 5), None);
+    }
+
+    #[test]
+    fn refill_is_idempotent_when_hole_already_filled() {
+        // 冪等：已回填（現為實心土）→ current 非 Air/流動水 → 回 None、不重覆補。
+        assert_eq!(village_hole_refill(Block::Dirt, Block::Dirt, 7), None);
+    }
+
+    // ── 村莊大修復·排水判定（只清流動水、源水不動）──────────────────────────────
+
+    #[test]
+    fn drain_clears_flowing_water_only() {
+        // 流動水(24–30) → 清。
+        for b in [
+            Block::WaterFlow1, Block::WaterFlow2, Block::WaterFlow3, Block::WaterFlow4,
+            Block::WaterFlow5, Block::WaterFlow6, Block::WaterFlow7,
+        ] {
+            assert!(village_should_drain(b), "流動水 {b:?} 應清成空氣");
+        }
+        // 來源水(7) → 不清（天然湖源頭）。
+        assert!(!village_should_drain(Block::Water), "來源水湖不動");
+        // 其餘方塊 → 不清。
+        for b in [Block::Air, Block::Dirt, Block::Plank, Block::Grass] {
+            assert!(!village_should_drain(b), "{b:?} 非流動水、不清");
         }
     }
 }
