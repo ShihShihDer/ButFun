@@ -395,9 +395,28 @@ mod tests {
         // 騎乘巡採（ROADMAP 544）：採集臂範圍比徒步寬，貼著節點開過就採得到、回基礎產量。
         let mut f = NodeField::new();
         f.ensure_chunks_around(0.0, 0.0, 2000.0);
-        let target = f.nodes()[0].clone();
-        // 站在「徒步搆不到、但採集臂搆得到」的距離外側採（GATHER_REACH < d <= VEHICLE_COLLECT_REACH）。
         let d = (GATHER_REACH + VEHICLE_COLLECT_REACH) / 2.0;
+        let nodes = f.nodes();
+        // `nodes()` 走訪 HashMap、順序不保證（跨執行緒/跨次執行可能不同）——
+        // 先前直接拿 `nodes()[0]` 當 target 是 flaky bug：在節點密集處，
+        // 隨機選到的 target 偏移後的採點 (target.x+d, target.y) 有機率恰好落進
+        // 「另一個」節點的徒步範圍內，導致「此距離徒步搆不到」的前提斷言隨機失敗
+        // （已實測：全套件下約 1/3~1/8 機率炸；單獨跑該測試又必過，是典型 flaky）。
+        // 修法：顯式挑一個「孤立」節點——偏移後的採點在 GATHER_REACH 內找不到任何節點，
+        // 不依賴 HashMap 迭代順序，讓斷言在任何雜湊種子下都成立。
+        let target = nodes
+            .iter()
+            .find(|cand| {
+                let (px, py) = (cand.x + d, cand.y);
+                !nodes.iter().any(|n| {
+                    let dx = n.x - px;
+                    let dy = n.y - py;
+                    dx * dx + dy * dy <= GATHER_REACH * GATHER_REACH
+                })
+            })
+            .cloned()
+            .expect("2000 半徑內應能找到至少一個孤立節點");
+        // 站在「徒步搆不到、但採集臂搆得到」的距離外側採（GATHER_REACH < d <= VEHICLE_COLLECT_REACH）。
         let (px, py) = (target.x + d, target.y);
         assert!(
             f.gather_near(px, py).is_none(),
