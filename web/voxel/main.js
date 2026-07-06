@@ -2846,10 +2846,13 @@ function renderRelationsPanel(rows) {
   for (const row of sorted) {
     const div = document.createElement("div");
     div.className = "relations-row tier-" + (row.tier || "stranger");
+    // 居民戀愛心動 v1（ROADMAP 846）：戀人對在情誼層級之外多標一顆 ❤️，一眼認出誰跟誰在一起。
+    const icon = row.sweetheart ? "❤️" : (RELATION_TIER_ICON[row.tier] || "·");
+    const label = row.sweetheart ? "戀人" : (RELATION_TIER_LABEL[row.tier] || "陌生");
     div.innerHTML =
-      '<span class="relations-icon">' + (RELATION_TIER_ICON[row.tier] || "·") + '</span>' +
+      '<span class="relations-icon">' + icon + '</span>' +
       '<span class="relations-names">' + escHtml(row.a) + ' ↔ ' + escHtml(row.b) + '</span>' +
-      '<span class="relations-tier">' + (RELATION_TIER_LABEL[row.tier] || "陌生") + '</span>';
+      '<span class="relations-tier">' + label + '</span>';
     relationsBodyEl.appendChild(div);
   }
 }

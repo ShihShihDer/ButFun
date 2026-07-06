@@ -87,6 +87,7 @@ use crate::voxel_roster as vroster;
 use crate::voxel_time::{self as vt, WorldTime, TimePhase};
 use crate::voxel_announce as vannounce;
 use crate::voxel_bonds::{self as vbonds, ResidentBonds};
+use crate::voxel_romance::{self as vromance, ResidentRomance};
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
@@ -1602,6 +1603,9 @@ struct VoxelHub {
     /// 居民情誼帳本（ROADMAP 672）：拜訪次數累積情誼（陌生→相識→老朋友），持久化跨重啟。
     /// 每次探訪到達時 record_visit → 若升級則 Feed 廣播 + 問候語更換。
     bonds: RwLock<ResidentBonds>,
+    /// 居民戀愛帳本（ROADMAP 846）：老朋友並坐閒聊時偶爾擦出心動火花，締結成一對戀人（一生
+    /// 只有一位），持久化跨重啟。與 `bonds` 並行、鎖各自獨立短取即釋。
+    romance: RwLock<ResidentRomance>,
     /// 欠飯帳本（知恩圖報 v1，ROADMAP 801）：記錄「誰欠誰一口飯」——被分過飯的居民（欠飯者 id）→
     /// 牠欠著一口飯的一群恩人（分食者 id）集合。純記憶體、重啟歸零（過場恩情、零 migration）；
     /// 800 分食 → owe，日後回報 → repay。以居民 id 記帳、與情誼帳本並行、鎖各自獨立短取即釋。
@@ -2208,6 +2212,8 @@ fn hub() -> &'static VoxelHub {
             pending_fish: RwLock::new(HashMap::new()),
             // 居民情誼 v1（ROADMAP 672）：啟動時從 data/voxel_bonds.jsonl 載回情誼記錄。
             bonds: RwLock::new(ResidentBonds::from_entries(vbonds::load_bonds())),
+            // 居民戀愛 v1（ROADMAP 846）：啟動時從 data/voxel_romance.jsonl 載回已締結的戀人對。
+            romance: RwLock::new(ResidentRomance::from_entries(vromance::load_romance())),
             // 知恩圖報 v1（ROADMAP 801）：欠飯帳本純記憶體、啟動時空的（過場恩情、重啟歸零、零持久化）。
             meal_debts: RwLock::new(vgrat::MealDebts::default()),
             // 啟動時從 data/voxel_chests.jsonl 載回箱子存量（重啟後仍保留儲存物品）。
@@ -7699,6 +7705,8 @@ pub async fn voxel_affinity_handler(
 /// 決策邏輯裡，從未攤開給人看過。本端點把它讀出來，供前端「交情網」面板呈現。
 pub async fn voxel_relations_handler() -> axum::response::Response {
     use axum::http::header;
+    // 戀愛心動 v1（ROADMAP 846）：romance 讀鎖獨立快照後即釋放，不與 bonds 鎖巢狀。
+    let romance = hub().romance.read().unwrap().to_entries();
     let rows: Vec<serde_json::Value> = {
         // 短讀鎖一次性快照全部兩兩組合 → 立即釋放，不與其他鎖巢狀。
         let bonds = hub().bonds.read().unwrap();
@@ -7709,11 +7717,17 @@ pub async fn voxel_relations_handler() -> axum::response::Response {
                 let id_a = format!("vox_res_{i}");
                 let id_b = format!("vox_res_{j}");
                 let tier = resident_tier_of(&bonds, &id_a, &id_b);
+                let name_a = resident_name_of(&id_a);
+                let name_b = resident_name_of(&id_b);
+                let sweetheart = romance.iter().any(|e| {
+                    (e.id_a == name_a && e.id_b == name_b) || (e.id_a == name_b && e.id_b == name_a)
+                });
                 out.push(serde_json::json!({
-                    "a": resident_name_of(&id_a),
-                    "b": resident_name_of(&id_b),
+                    "a": name_a,
+                    "b": name_b,
                     "tier": vbonds::tier_key(tier),
-                    "visits": bonds.visit_count(resident_name_of(&id_a), resident_name_of(&id_b)),
+                    "visits": bonds.visit_count(name_a, name_b),
+                    "sweetheart": sweetheart,
                 }));
             }
         }
@@ -12081,6 +12095,52 @@ fn tick_residents(dt: f32) {
             opener_name,
             &vbenchchat::chat_feed_line(opener_name, other_name),
         );
+
+        // 居民戀愛心動 v1（ROADMAP 846）：僅老朋友（並坐前已是、或這場閒聊剛升到老朋友）才可能
+        // 擦出火花，且雙方都還沒有戀人（一生只有一位，見 voxel_romance 模組說明）。鎖序：romance
+        // 讀（即釋）判斷資格 → 過關才 romance 寫（即釋）→〔真正新締結才〕romance 讀 save +
+        // memory 寫 ×2 + Feed；與 bonds 鎖各自獨立、不巢狀，守死鎖鐵律。
+        if tier == vbonds::BondTier::Friend {
+            let eligible = {
+                let romance = hub().romance.read().unwrap();
+                !romance.is_sweetheart(opener_name, other_name)
+                    && !romance.has_partner(opener_name)
+                    && !romance.has_partner(other_name)
+            }; // romance 讀鎖釋放
+            if eligible && vromance::spark_roll(rand::random::<f32>()) {
+                let newly_sparked = {
+                    let mut romance = hub().romance.write().unwrap();
+                    romance.record_spark(opener_name, other_name)
+                }; // romance 寫鎖釋放
+                if newly_sparked {
+                    {
+                        let romance = hub().romance.read().unwrap();
+                        vromance::save_romance(&romance);
+                    } // romance 讀鎖釋放
+                    let mo = {
+                        hub().memory.write().unwrap().add_memory(
+                            opener_id,
+                            other_name,
+                            &vromance::sweetheart_memory_line(other_name),
+                        )
+                    }; // memory 寫鎖釋放
+                    vmem::append_memory(&mo);
+                    let mt = {
+                        hub().memory.write().unwrap().add_memory(
+                            other_id,
+                            opener_name,
+                            &vromance::sweetheart_memory_line(opener_name),
+                        )
+                    }; // memory 寫鎖釋放
+                    vmem::append_memory(&mt);
+                    vfeed::append_feed(
+                        "心動時刻",
+                        opener_name,
+                        &vromance::sweetheart_feed_line(opener_name, other_name),
+                    );
+                }
+            }
+        }
     }
 
     // 4a-2b) 飢餓時的守望相助落地（飢餓時的守望相助 v1，ROADMAP 800）：分食者 + 被分食者各寫一筆
