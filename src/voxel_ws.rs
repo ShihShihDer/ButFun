@@ -73,6 +73,7 @@ use crate::voxel_fishing as vfish;
 use crate::voxel_player_stats as vstats;
 use crate::voxel_smelt as vsmelt;
 use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
+use crate::voxel_playercare as vcare;
 use crate::voxel_admire as vadmire;
 use crate::voxel_confide as vconfide;
 use crate::voxel_request as vrequest;
@@ -634,6 +635,10 @@ struct VoxelResident {
     /// 被鄰居陪伴後、延遲道謝的待辦：`Some((陪伴者名, 倒數))`，倒數歸零時冒一句專屬道謝泡泡
     /// （比照 800 飢餓時的守望相助 `pending_meal_thanks` 一來一往機制）。純記憶體。
     pending_care_thanks: Option<(String, f32)>,
+    /// 關心玩家挨餓冷卻倒數（秒，居民關心你挨餓 v1）：一次上前遞麵包關心後設
+    /// [`vcare::CARE_COOLDOWN_SECS`]，歸零前不再重複關心同一次挨餓——你若持續挨餓，過了這麼久
+    /// 才會再被同一位居民注意到一次。各居民初始錯開。純記憶體、重啟歸零。
+    hunger_care_cooldown: f32,
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -1519,6 +1524,8 @@ fn build_resident(
             illness_cooldown: villness::onset_cd_offset(i),
             care_cooldown: 0.0,
             pending_care_thanks: None,
+            // 居民關心你挨餓 v1：首次關心冷卻各自錯開，避免伺服器剛啟動、你剛好挨餓時一群居民同時衝過來。
+            hunger_care_cooldown: vcare::care_cd_offset(i),
     }
 }
 
@@ -8029,6 +8036,13 @@ fn tick_residents(dt: f32) {
         players.values().map(|p| (p.x, p.z, p.name.clone())).collect()
     }; // 玩家讀鎖在此釋放
 
+    // 居民關心你挨餓 v1：短鎖快照所有玩家目前是否挨餓（is_starving）→ drop（循序取放、不與
+    // 居民鎖巢狀）。只記名字→bool，不外洩其他生存數值，供下方逐居民判定用。
+    let player_starving: std::collections::HashMap<String, bool> = {
+        let stats = hub().player_stats.read().unwrap();
+        stats.iter().map(|(name, s)| (name.clone(), s.is_starving())).collect()
+    }; // player_stats 讀鎖在此釋放
+
     // embodied 靠近說話 v1：玩家對話泡泡倒數（短鎖、不巢狀）。say_timer 歸零就清空 say，
     // 下方 broadcast_players 自然把「泡泡消失」推給所有人。
     {
@@ -8268,6 +8282,10 @@ fn tick_residents(dt: f32) {
     // 居民回禮事件（ROADMAP 667）：鎖內偵測，鎖外執行（加入背包 + 廣播）。
     // 格式：(resident_id, resident_name, player_name, block_id, qty, message)
     let mut return_gift_events: Vec<(String, &'static str, String, u8, u32, String)> = Vec::new();
+
+    // 居民關心你挨餓事件（自主提案切片，ROADMAP 845）：鎖內偵測「你在附近挨餓」，鎖外執行
+    // （麵包入背包 + 廣播 + 記憶 + Feed）。格式：(resident_id, resident_name, player_name, block_id, qty)
+    let mut hunger_care_events: Vec<(String, &'static str, String, u8, u32)> = Vec::new();
 
     // 收成回贈事件（ROADMAP 755）：鎖內偵測「那畦因你而生的田熟了、種它的居民遇到送種子的你」，
     // 鎖外執行（收成方塊→FarmSoil + 廣播 + 果實入你背包 + 移除這畦 + 持久化 + Feed）。
@@ -9619,6 +9637,10 @@ fn tick_residents(dt: f32) {
             if r.homegaze_cooldown > 0.0 {
                 r.homegaze_cooldown -= dt;
             }
+            // 居民關心你挨餓 v1：關心冷卻遞減（純記憶體、每 tick 一次）。
+            if r.hunger_care_cooldown > 0.0 {
+                r.hunger_care_cooldown -= dt;
+            }
             // 邊陲巧遇 v1：巧遇冷卻遞減（純記憶體、每 tick 一次）。
             if r.frontier_find_cooldown > 0.0 {
                 r.frontier_find_cooldown -= dt;
@@ -10337,6 +10359,49 @@ fn tick_residents(dt: f32) {
                                 msg,
                             ));
                         }
+                    }
+                }
+            }
+
+            // 居民關心你挨餓 v1（自主提案切片，ROADMAP 845）：你在近旁挨餓（`is_starving`）、
+            // 這位居民恰好閒著醒著、不在朝聖/遠行、冷卻到期 → 主動上前遞一份麵包、記進她心裡。
+            // 「你的互動有後果」第一次反過來——不必你先送禮，居民自己會注意到你過得好不好。
+            // 鎖序：純讀居民自身欄位＋鎖前備好的 `player_starving` 快照，背包寫/記憶寫/Feed 走
+            // 鎖外 `hunger_care_events`（守 prod 死鎖鐵律）。
+            if r.say.is_empty()
+                && !r.asleep
+                && r.hunger_care_cooldown <= 0.0
+                && r.pilgrimage.is_none()
+                && r.expedition.is_none()
+            {
+                if let Some((d2, pname)) = nearest_player_info(r.body.x, r.body.z, &player_pts) {
+                    let in_reach = d2 < vcare::CARE_REACH * vcare::CARE_REACH;
+                    let starving = !pname.is_empty()
+                        && *player_starving.get(pname).unwrap_or(&false);
+                    if in_reach
+                        && starving
+                        && vcare::should_notice_hunger(
+                            true,
+                            0.0,
+                            rand::random::<f32>(),
+                            vcare::CARE_CHANCE,
+                        )
+                    {
+                        r.hunger_care_cooldown = vcare::CARE_COOLDOWN_SECS;
+                        let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                        r.say = vcare::care_bubble_with_player(pname, pick)
+                            .chars()
+                            .take(vcare::SAY_CHARS)
+                            .collect();
+                        r.say_timer = SAY_SECS;
+                        r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                        hunger_care_events.push((
+                            r.id.clone(),
+                            r.name,
+                            pname.to_string(),
+                            vfarm::BREAD_ID,
+                            vcare::CARE_GIFT_QTY,
+                        ));
                     }
                 }
             }
@@ -12216,6 +12281,33 @@ fn tick_residents(dt: f32) {
             rname,
             &format!("把{}份{}送給了{}", qty, iname, pname),
         );
+    }
+
+    // 居民關心你挨餓事件落地（自主提案切片，ROADMAP 845）：鎖已全釋放；加背包 → 廣播 → 記憶 → Feed。
+    // 鎖序：inventory 寫（即釋）→ memory 寫（即釋）→ tx broadcast，皆短取即釋、不巢狀（守死鎖鐵律）。
+    for (rid, rname, pname, bid, qty) in &hunger_care_events {
+        let inv_entry = { hub().inventory.write().unwrap().give(pname, *bid, *qty) }; // inventory 寫鎖在此釋放
+        vinv::append_inv(&inv_entry);
+        let new_count = hub().inventory.read().unwrap().count(pname, *bid);
+        let iname = vgift::item_name_zh(*bid);
+        let msg = serde_json::json!({
+            "t": "player_care",
+            "resident_id": rid,
+            "resident_name": rname,
+            "player": pname,
+            "item_id": bid,
+            "item_name": iname,
+            "qty": qty,
+            "new_count": new_count,
+        })
+        .to_string();
+        let _ = hub().tx.send(std::sync::Arc::new(msg));
+        hub()
+            .memory
+            .write()
+            .unwrap()
+            .add_memory(rid, pname, &vcare::care_memory_line(pname)); // 記憶寫鎖即釋
+        vfeed::append_feed(vcare::FEED_KIND, rname, &vcare::care_feed_line(rname, pname));
     }
 
     // 收成回贈 v1（ROADMAP 755）：套用「那畦熟了的禮物菜園」事件——收成方塊回土、果實入你
