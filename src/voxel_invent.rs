@@ -88,6 +88,11 @@ pub enum PrimStep {
     /// 放置（第二刀）：把背包裡的一個站點方塊（工作台／熔爐）放到自己旁邊的合理位置。
     /// **後置條件語意**：該型站點已在附近就跳過（不重複放、不白耗背包存量）。
     Place { block: String },
+    /// 引用自己已經學會的技能（第三刀·技能組合技能）：把她之前發明過、已經存進技能庫
+    /// 的一整段步驟當一步用——「已經會的事」不用每次重新拆成一串原語。只在
+    /// [`expand_step`] 展開（查她自己的技能庫換成具體原語序列），[`check_step`] 對它
+    /// 一律回 `None`（單獨出現視為無效——必須先展開才是合法的執行單位）。
+    UseSkill { name: String },
 }
 
 /// 通過白名單驗證後的一步（執行引擎吃這個；配方指標指回 `voxel_craft` 靜態表）。
@@ -232,6 +237,10 @@ pub fn check_step(s: &PrimStep) -> Option<CheckedStep> {
             let bid = place_block_from_token(block)?;
             Some(CheckedStep::Place { block_id: bid })
         }
+        // 單獨出現一律無效——`UseSkill` 只能透過 [`expand_step`] 展開成具體原語序列，
+        // 不是可執行的原子步（也保證存檔技能永遠不會殘留一顆沒展開的 `UseSkill`：
+        // 一旦不慎混進 raw_steps，`check_stored_steps` 會在這裡誠實判它失效）。
+        PrimStep::UseSkill { .. } => None,
     }
 }
 
@@ -257,6 +266,63 @@ pub fn check_stored_steps(steps: &[PrimStep]) -> Option<Vec<CheckedStep>> {
     check_steps_with_cap(steps, MAX_STORED_STEPS)
 }
 
+// ── 技能組合技能（第三刀·真進化）：已學會的技能可當一塊積木疊進新計畫 ───────────
+//
+// 動機（線上真實日誌驅動）：複雜目標（水井藍圖／瞭望台藍圖…）攤開成純原語常常
+// 一路超過 [`MAX_STEPS`]（8），發明從沒機會走到執行就先在解析階段被拒絕——但如果
+// 她已經學過「自製木板」「蓋工作台」這類子技能，理應可以直接**引用**、不必每次
+// 重新拆成一串 gather/craft。`UseSkill` 就是這塊拼圖：LLM 提案裡的一步可以是
+// 「用某個我已經會的技能」，展開時查她自己的技能庫換成具體原語序列——一個 op
+// 換來好幾個原語，讓深度鏈第一次有機會塞進淺淺的 raw op 上限裡。
+
+/// 展開一步：一般原語照舊過 [`check_step`] 白名單、包成單元素 `Vec`；`UseSkill`
+/// 則查 `known`（呼叫端傳入的「這位居民自己會的技能」`(名字, 原語序列)` 清單）換成
+/// 該技能已存好的原語序列，並**逐步再驗證一次**白名單（配方表可能已變動，不盲信舊檔）。
+///
+/// **只展開一層**：引用的技能若自己內部又含 `UseSkill`（理論上到不了——存檔前一律
+/// 已展平，見 [`expand_steps_with_cap`] 的呼叫端），一律拒絕整段引用，防循環引用／
+/// 防深遞迴（v1 保守邊界）。名字比對去頭尾空白、精確相符（她引用的必須是自己技能庫
+/// 裡一字不差的名字，不猜測相似度）。純函式、可測。
+pub fn expand_step(s: &PrimStep, known: &[(String, Vec<PrimStep>)]) -> Result<Vec<CheckedStep>, String> {
+    match s {
+        PrimStep::UseSkill { name } => {
+            let key = name.trim();
+            let (_, sub_steps) = known
+                .iter()
+                .find(|(n, _)| n.trim() == key)
+                .ok_or_else(|| format!("你還沒學會「{key}」這個技能，不能引用它"))?;
+            if sub_steps.iter().any(|ss| matches!(ss, PrimStep::UseSkill { .. })) {
+                return Err(format!("「{key}」本身也引用了別的技能，暫不支援疊兩層"));
+            }
+            sub_steps.iter().map(|ss| check_step(ss).ok_or_else(|| explain_bad_step(ss))).collect()
+        }
+        other => check_step(other).map(|c| vec![c]).ok_or_else(|| explain_bad_step(other)),
+    }
+}
+
+/// 展開整串步驟（含 `UseSkill` 展開）→ flatten 成 `CheckedStep` 序列，並驗展開後總長
+/// 落在 `[1, cap]`——**raw op 數仍卡 [`MAX_STEPS`]**（她只需列出少少幾個 op，含
+/// `use_skill`）；本函式驗的是**展開後**的具體步數，用較寬的 `cap`（呼叫端傳
+/// [`MAX_STORED_STEPS`]），讓組合已學技能的深度鏈有空間塞得下，同時仍然有界。
+/// 純函式、可測。
+pub fn expand_steps_with_cap(
+    steps: &[PrimStep],
+    known: &[(String, Vec<PrimStep>)],
+    cap: usize,
+) -> Result<Vec<CheckedStep>, String> {
+    let mut out = Vec::new();
+    for s in steps {
+        out.extend(expand_step(s, known)?);
+    }
+    if out.is_empty() {
+        return Err("steps 展開後不可為空".to_string());
+    }
+    if out.len() > cap {
+        return Err(format!("展開後步數 {} 超過上限 {cap}", out.len()));
+    }
+    Ok(out)
+}
+
 // ── LLM 計畫解析（grounded：只能用原語白名單，壞輸出一律拒絕、絕不 panic）────────
 
 /// LLM 回傳的原始計畫（serde 直接對應要求的 JSON 格式）。
@@ -278,7 +344,9 @@ pub struct InventedPlan {
 }
 
 /// 從 LLM 輸出解析計畫：抽出第一個 `{`..最後一個 `}` 的 JSON、serde 解析、白名單驗證。
-/// 任何一步失敗都回 `None`（本次發明放棄、記冷卻），絕不 panic。
+/// 任何一步失敗都回 `None`（本次發明放棄、記冷卻），絕不 panic。不支援 `use_skill`
+/// 展開（等同 [`parse_plan_detailed_with_skills`] 傳 `&[]`）——保留給沒有技能庫context
+/// 的舊呼叫點，行為與第三刀之前完全一致。
 pub fn parse_plan(raw: &str) -> Option<InventedPlan> {
     parse_plan_detailed(raw).ok()
 }
@@ -287,7 +355,21 @@ pub fn parse_plan(raw: &str) -> Option<InventedPlan> {
 /// Voyager 式重試的關鍵回饋。實測（qwen2.5:3b 真便宜腦）看到小模型把隨身配方用
 /// craft_wb 做（`craft_wb workbench`），籠統的「輸出不合法」讓它修正時瞎猜；
 /// 具體指出「workbench 是隨身配方，要用 craft」才修得回來。純函式、可測。
+/// 不含技能組合展開（`known` 傳 `&[]`）；要展開 `use_skill` 請用
+/// [`parse_plan_detailed_with_skills`]。
 pub fn parse_plan_detailed(raw: &str) -> Result<InventedPlan, String> {
+    parse_plan_detailed_with_skills(raw, &[])
+}
+
+/// [`parse_plan_detailed`] 的技能組合版（第三刀）：`known` 是這位居民自己技能庫裡
+/// 「(技能名, 原語序列)」清單——計畫裡的 `use_skill` 步驟會查這份清單展開成具體原語。
+/// **raw op 數仍卡 [`MAX_STEPS`]**（prompt 只要求她列少少幾步）；展開後的具體步數改驗
+/// 較寬的 [`MAX_STORED_STEPS`]（見 [`expand_steps_with_cap`]），讓「組合已學技能」的
+/// 深度鏈有機會塞得下。純函式、可測。
+pub fn parse_plan_detailed_with_skills(
+    raw: &str,
+    known: &[(String, Vec<PrimStep>)],
+) -> Result<InventedPlan, String> {
     let start = raw.find('{').ok_or("輸出裡找不到 JSON 物件")?;
     let end = raw.rfind('}').ok_or("輸出裡找不到 JSON 物件")?;
     if end <= start {
@@ -314,11 +396,7 @@ pub fn parse_plan_detailed(raw: &str) -> Result<InventedPlan, String> {
     if plan.steps.len() > MAX_STEPS {
         return Err(format!("步數 {} 超過上限 {MAX_STEPS}", plan.steps.len()));
     }
-    let steps: Vec<CheckedStep> = plan
-        .steps
-        .iter()
-        .map(|s| check_step(s).ok_or_else(|| explain_bad_step(s)))
-        .collect::<Result<_, _>>()?;
+    let steps = expand_steps_with_cap(&plan.steps, known, MAX_STORED_STEPS)?;
     Ok(InventedPlan { name, raw_steps: plan.steps, steps })
 }
 
@@ -499,6 +577,11 @@ fn explain_bad_step(s: &PrimStep) -> String {
         PrimStep::Place { block } => {
             format!("place 只能放 workbench 或 furnace，「{block}」不在白名單")
         }
+        // 實務上到不了這裡（[`expand_step`] 攔在更前面、給出更具體的原因）；
+        // 保留這支只為了讓 `explain_bad_step` 對 `PrimStep` 保持窮舉、防禦未來改動。
+        PrimStep::UseSkill { name } => {
+            format!("「{name}」需要展開成技能庫裡的具體步驟，不能單獨當一步")
+        }
     }
 }
 
@@ -517,7 +600,23 @@ pub fn accept_proposal(
     goal_block: u8,
     wb_nearby: bool,
 ) -> Result<InventedPlan, String> {
-    let plan = parse_plan_detailed(raw)?;
+    accept_proposal_with_skills(raw, bag, goal_block, wb_nearby, &[])
+}
+
+/// [`accept_proposal`] 的技能組合版（第三刀）：`known` 是這位居民自己技能庫裡
+/// 「(技能名, 原語序列)」清單，供計畫裡的 `use_skill` 步驟展開。展開發生在
+/// [`parse_plan_detailed_with_skills`]，之後 `use_skill` 已經變回具體的
+/// Gather/Craft/CraftWb/Place，`canonicalize_steps`／`simulate_plan` 完全不必
+/// 知道「技能組合」這回事——**存下來的技能永遠是自足的具體原語序列**，
+/// 就算日後引用的那個子技能被遺忘或改變，這個新技能仍照樣能跑。純函式、可測。
+pub fn accept_proposal_with_skills(
+    raw: &str,
+    bag: &HashMap<u8, u32>,
+    goal_block: u8,
+    wb_nearby: bool,
+    known: &[(String, Vec<PrimStep>)],
+) -> Result<InventedPlan, String> {
+    let plan = parse_plan_detailed_with_skills(raw, known)?;
     // 正規化成自足鏈（從空背包/沒工作台也可行）；步數用存檔上限（正規化會變長，仍有界）。
     let canon = canonicalize_steps(&plan.steps);
     let steps = check_stored_steps(&canon)
@@ -1172,6 +1271,17 @@ impl InventedSkillStore {
             .collect()
     }
 
+    /// 這位居民自己會的技能，`(名字, 原語序列)` 清單（第三刀·技能組合技能用）：
+    /// 供 `expand_step` 展開她計畫裡的 `use_skill` 步驟、供 [`invention_prompt`]
+    /// 列出她能引用的名字。回傳 clone 快照，供呼叫端在鎖外使用。
+    pub fn known_steps_for(&self, resident: &str) -> Vec<(String, Vec<PrimStep>)> {
+        self.skills
+            .iter()
+            .filter(|k| k.resident == resident)
+            .map(|k| (k.name.clone(), k.steps.clone()))
+            .collect()
+    }
+
     /// `teacher` 是否有一個 `student` 還不會的技能——可教（ROADMAP 717）。
     /// 依技能庫既有順序找第一筆符合的（決定性、非隨機）；教哪一筆、教誰由此決定，
     /// 呼叫端只負責機率門檻與台詞。
@@ -1255,10 +1365,30 @@ pub fn invention_prompt(
     desire: &str,
     bag_note: &str,
     wb_nearby: bool,
+    known_skill_names: &[String],
 ) -> (String, String) {
     // 配方節錄：只列可發明配方（配料她弄得到的），每條含 id 與配料事實。
     let recipe_lines: Vec<String> = inventable_recipes().map(recipe_fact).collect();
     let wb_recipe_lines: Vec<String> = inventable_wb_recipes().map(recipe_fact).collect();
+    // 第三刀·技能組合技能：她自己已經會的技能可以直接引用當一步，省得每次重新拆解。
+    // 沒學過任何技能（多半是新生兒或還沒發明成功過）就不提這個 op，避免她引用不存在的名字。
+    let use_skill_line = if known_skill_names.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "5. 使用已學會的技能：{{\"op\":\"use_skill\",\"name\":\"<你已經會的技能名>\"}}——\
+            把你之前發明過、已經會的技能整段當一步用，不必重新拆解成原語。\n\
+            你已經學會的技能（事實，只能引用這些名字，不可捏造）：{}\n",
+            known_skill_names.join("、"),
+        )
+    };
+    // 「優先用 use_skill 引用」這句提示只在她真的有技能可引用時才講，
+    // 否則會叫她用一個系統根本沒教過她的 op（觸發沒學過技能就提 use_skill 的誤導）。
+    let use_skill_wb_hint = if known_skill_names.is_empty() {
+        ""
+    } else {
+        "若你已經會做工作台這件事，優先用 use_skill 引用，別重新拆解。"
+    };
     let system = format!(
         "你是{resident_name}，乙太方界的居民。你要自己想辦法解決一個處境：把你會的基礎動作\
         組合成一個新技能。你只會這幾種基礎動作（原語）：\n\
@@ -1269,6 +1399,7 @@ pub fn invention_prompt(
         **必須先有工作台放在你旁邊**才能執行。\n\
         4. 放置：{{\"op\":\"place\",\"block\":\"workbench\"}}——把背包裡的工作台放到腳邊\
         （會消耗背包裡那一個）。\n\
+        {use_skill_line}\
         你知道的隨身合成配方（事實，不可捏造別的）：\n{recipes}\n\
         你知道的工作台配方（要先有工作台在旁邊，才能用 craft_wb 做這些）：\n{wb_recipes}\n\
         注意：\n\
@@ -1278,7 +1409,7 @@ pub fn invention_prompt(
         清單裡的 id——兩張清單不可混用（workbench 在隨身清單，要用 craft 做）。\n\
         - 工作台本身的正確做法：先 craft plank（木頭×2→木板×4）、再 craft workbench\
         （木板×4→工作台）、再 place 放置到腳邊；\
-        若你附近已經有工作台，就不必再做一個、直接 craft_wb。\n\
+        若你附近已經有工作台，就不必再做一個、直接 craft_wb。{use_skill_wb_hint}\n\
         請只輸出一個 JSON 物件（不要任何其他文字或說明）：\n\
         {{\"name\":\"<你給這個技能取的名字，繁體中文，最多{max_n}字>\",\"steps\":[<原語序列，最多{max_s}步>]}}",
         max_c = MAX_GATHER_COUNT,
@@ -1642,6 +1773,165 @@ mod tests {
         // 兩張表都查無此 id → 拒絕。
         let raw = r#"{"name":"亂","steps":[{"op":"craft","recipe":"no_such_recipe"}]}"#;
         assert!(parse_plan(raw).is_none());
+    }
+
+    // ── 技能組合技能（use_skill 展開，第三刀）────────────────────────────────────
+
+    #[test]
+    fn expand_step_passes_through_ordinary_primitives() {
+        // 非 use_skill 的原語照舊 1:1 展開成單元素 Vec，行為與展開前完全一致。
+        let out = expand_step(&PrimStep::Gather { resource: "wood".into(), count: 2 }, &[])
+            .expect("普通原語應展開成功");
+        assert_eq!(out, vec![CheckedStep::Gather { resource: GatherResource::Wood, count: 2 }]);
+    }
+
+    #[test]
+    fn expand_step_use_skill_flattens_known_skill() {
+        let known = vec![(
+            "自製木板".to_string(),
+            vec![
+                PrimStep::Gather { resource: "wood".into(), count: 2 },
+                PrimStep::Craft { recipe: "plank".into() },
+            ],
+        )];
+        let out = expand_step(&PrimStep::UseSkill { name: "自製木板".to_string() }, &known)
+            .expect("已學會的技能應展開成具體原語");
+        assert_eq!(
+            out,
+            vec![
+                CheckedStep::Gather { resource: GatherResource::Wood, count: 2 },
+                CheckedStep::Craft { recipe_id: "plank" },
+            ]
+        );
+    }
+
+    #[test]
+    fn expand_step_use_skill_trims_name_and_rejects_unknown() {
+        let known = vec![("木板".to_string(), vec![PrimStep::Craft { recipe: "plank".into() }])];
+        // 頭尾空白容忍。
+        assert!(expand_step(&PrimStep::UseSkill { name: " 木板 ".to_string() }, &known).is_ok());
+        // 引用一個她根本沒學過的名字 → 具體拒絕原因，不是靜默失敗。
+        let err = expand_step(&PrimStep::UseSkill { name: "隱形斗篷".to_string() }, &known)
+            .expect_err("沒學過的技能名應被拒絕");
+        assert!(err.contains("隱形斗篷") && err.contains("還沒學會"));
+        // 空清單（新生兒/從沒發明成功過）一樣誠實拒絕，不 panic。
+        assert!(expand_step(&PrimStep::UseSkill { name: "木板".to_string() }, &[]).is_err());
+    }
+
+    #[test]
+    fn expand_step_rejects_nested_use_skill() {
+        // 引用的技能自己內部又含 use_skill（理論上到不了——存檔前一律展平；
+        // 這裡直接構造來驗證防線本身有效）→ 拒絕整段引用，不遞迴展開。
+        let known = vec![(
+            "疊疊樂".to_string(),
+            vec![PrimStep::UseSkill { name: "木板".to_string() }],
+        )];
+        let err = expand_step(&PrimStep::UseSkill { name: "疊疊樂".to_string() }, &known)
+            .expect_err("巢狀 use_skill 應被拒絕");
+        assert!(err.contains("疊兩層"));
+    }
+
+    #[test]
+    fn check_step_rejects_bare_use_skill() {
+        // UseSkill 單獨出現（沒展開）一律無效——必須透過 expand_step。
+        assert!(check_step(&PrimStep::UseSkill { name: "隨便".to_string() }).is_none());
+    }
+
+    #[test]
+    fn parse_plan_with_skills_expands_use_skill_beyond_raw_step_cap() {
+        // 三個 use_skill 步驟（raw op 數＝3，遠低於 MAX_STEPS），各自展開成多步，
+        // 疊起來超過 MAX_STEPS——證明「組合已學技能」真的能讓深度鏈塞進淺淺的 raw 上限。
+        let known = vec![
+            (
+                "備木板".to_string(),
+                vec![
+                    PrimStep::Gather { resource: "wood".into(), count: 2 },
+                    PrimStep::Craft { recipe: "plank".into() },
+                ],
+            ),
+            (
+                "蓋工作台".to_string(),
+                vec![
+                    PrimStep::Gather { resource: "wood".into(), count: 2 },
+                    PrimStep::Craft { recipe: "plank".into() },
+                    PrimStep::Craft { recipe: "workbench".into() },
+                    PrimStep::Place { block: "workbench".into() },
+                ],
+            ),
+        ];
+        let raw = r#"{"name":"組合技","steps":[
+            {"op":"use_skill","name":"備木板"},
+            {"op":"use_skill","name":"備木板"},
+            {"op":"use_skill","name":"蓋工作台"}]}"#;
+        let plan = parse_plan_detailed_with_skills(raw, &known)
+            .expect("引用三個已學技能應展開成功");
+        assert_eq!(plan.steps.len(), 8, "2+2+4 步展開後應是 8 步（遠超過 3 個 raw op）");
+        assert!(plan.steps.len() > 3, "展開後步數應遠超過 raw op 數（3）");
+        // 這一層的 raw_steps 刻意保留她原話（含 use_skill，供重試提示回顯用）；
+        // 真正落地存檔前的展平在 accept_proposal_with_skills（見該測試）。
+        assert_eq!(plan.raw_steps.len(), 3, "這一層 raw_steps 應保留原始 3 個 use_skill 呼叫");
+    }
+
+    #[test]
+    fn parse_plan_detailed_unchanged_when_no_skills_passed() {
+        // 舊呼叫端（&[]）行為與第三刀之前完全一致：普通計畫照舊解析、無回歸。
+        let p = parse_plan_detailed(glass_plan_json()).expect("普通計畫不受影響");
+        assert_eq!(p.steps.len(), 2);
+    }
+
+    #[test]
+    fn accept_proposal_with_skills_end_to_end() {
+        // 完整鏈：她已經會「備木板」，這次發明目標是熔爐——直接引用備木板蓋工作台，
+        // 放置後再用工作台合熔爐（目標材料是熔爐，而非中途被放置消耗掉的工作台本身）。
+        let known = vec![(
+            "備木板".to_string(),
+            vec![
+                PrimStep::Gather { resource: "wood".into(), count: 2 },
+                PrimStep::Craft { recipe: "plank".into() },
+            ],
+        )];
+        let raw = r#"{"name":"快速蓋熔爐","steps":[
+            {"op":"use_skill","name":"備木板"},
+            {"op":"craft","recipe":"workbench"},
+            {"op":"place","block":"workbench"},
+            {"op":"gather","resource":"stone","count":8},
+            {"op":"craft_wb","recipe":"furnace_wb"}]}"#;
+        let plan = accept_proposal_with_skills(raw, &HashMap::new(), FURNACE_BLOCK_ID, false, &known)
+            .expect("組合已學技能的計畫應通過完整驗證管線");
+        assert!(simulate_plan(&plan.steps, &HashMap::new(), FURNACE_BLOCK_ID, false).is_ok());
+        // 存檔版本已完全展平，不依賴「備木板」這個名字繼續存在。
+        assert!(plan.raw_steps.iter().all(|s| !matches!(s, PrimStep::UseSkill { .. })));
+    }
+
+    #[test]
+    fn accept_proposal_backward_compatible_with_empty_skills() {
+        // accept_proposal（舊 API）等同 accept_proposal_with_skills(..., &[])，
+        // 不受影響——既有呼叫端與既有測試皆不需要跟著改。
+        let raw = r#"{"name":"燒玻璃","steps":[{"op":"gather","resource":"sand","count":2},{"op":"craft","recipe":"glass"}]}"#;
+        let a = accept_proposal(raw, &HashMap::new(), 10, false).unwrap();
+        let b = accept_proposal_with_skills(raw, &HashMap::new(), 10, false, &[]).unwrap();
+        assert_eq!(a.steps, b.steps);
+    }
+
+    #[test]
+    fn known_steps_for_returns_only_that_residents_skills() {
+        let mut store = InventedSkillStore::new();
+        store.add("露娜", "燒玻璃", 10, vec![PrimStep::Craft { recipe: "glass".into() }]);
+        store.add("諾娃", "備木板", 8, vec![PrimStep::Craft { recipe: "plank".into() }]);
+        let luna_known = store.known_steps_for("露娜");
+        assert_eq!(luna_known.len(), 1);
+        assert_eq!(luna_known[0].0, "燒玻璃");
+        assert!(store.known_steps_for("奧瑞").is_empty(), "沒發明過任何技能的居民應回空清單");
+    }
+
+    #[test]
+    fn invention_prompt_mentions_use_skill_only_when_known_nonempty() {
+        let goal = MaterialGoal { block_id: 10, name_zh: "玻璃" };
+        let (sys_empty, _) = invention_prompt("露娜", &goal, "想要玻璃", "", false, &[]);
+        assert!(!sys_empty.contains("use_skill"), "沒學過任何技能就不該提這個 op");
+        let names = vec!["備木板".to_string(), "燒玻璃".to_string()];
+        let (sys_known, _) = invention_prompt("露娜", &goal, "想要玻璃", "", false, &names);
+        assert!(sys_known.contains("use_skill") && sys_known.contains("備木板"));
     }
 
     #[test]
@@ -2554,7 +2844,7 @@ mod tests {
     #[test]
     fn invention_prompt_is_grounded_and_strict() {
         let goal = MaterialGoal { block_id: 10, name_zh: "玻璃" };
-        let (sys, user) = invention_prompt("露娜", &goal, "好想要一塊玻璃", "木頭×1", false);
+        let (sys, user) = invention_prompt("露娜", &goal, "好想要一塊玻璃", "木頭×1", false, &[]);
         // 原語白名單與嚴格輸出格式都在 system。
         assert!(sys.contains("gather") && sys.contains("craft"));
         assert!(sys.contains("JSON"));
@@ -2567,7 +2857,7 @@ mod tests {
     #[test]
     fn invention_prompt_teaches_workbench_chain() {
         let goal = MaterialGoal { block_id: FURNACE_BLOCK_ID, name_zh: "熔爐" };
-        let (sys, user) = invention_prompt("露娜", &goal, "想要一座熔爐", "", false);
+        let (sys, user) = invention_prompt("露娜", &goal, "想要一座熔爐", "", false, &[]);
         // 新原語與工作台規則都在 system。
         assert!(sys.contains("craft_wb") && sys.contains("place"));
         assert!(sys.contains("workbench"), "要教她工作台配方 id");
@@ -2577,7 +2867,7 @@ mod tests {
         assert!(!sys.contains("iron_pickaxe"), "鐵鎬要冶煉，不該列給她");
         // user 帶「附近沒有工作台」的世界事實。
         assert!(user.contains("沒有工作台"));
-        let (_, user2) = invention_prompt("露娜", &goal, "想要一座熔爐", "", true);
+        let (_, user2) = invention_prompt("露娜", &goal, "想要一座熔爐", "", true, &[]);
         assert!(user2.contains("已經有一座放置好的工作台"));
     }
 

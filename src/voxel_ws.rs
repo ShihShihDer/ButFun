@@ -14019,12 +14019,19 @@ fn tick_residents(dt: f32) {
                                     &world, rx, ry, rz, vinvent::WORKBENCH_BLOCK_ID,
                                 )
                             }; // deltas 讀鎖釋放
+                            // 她自己已經會的技能（第三刀·技能組合技能）：讓計畫的 use_skill
+                            // 步驟能查表展開——已經會的事，不用每次重新拆成一串原語。
+                            let known_skills = {
+                                let inv = hub().invented.read().unwrap();
+                                inv.known_steps_for(&rid)
+                            }; // invented 讀鎖釋放
                             spawn_invention(
                                 rid.clone(),
                                 rname,
                                 goal,
                                 desire_text.clone().unwrap_or_default(),
                                 wb_nearby,
+                                known_skills,
                             );
                         }
                     }
@@ -14999,12 +15006,15 @@ fn finish_invent_run(
 /// 設 `BUTFUN_INVENT_FIXED_PLAN` 時改用固定計畫（**僅隔離實測用**，prod 不設）。
 /// `wb_nearby`（第二刀）：她附近是否已有放置好的工作台——世界事實快照，由呼叫端
 /// 查好傳入（prompt 據此告訴腦「不必再做一個」；可行性模擬據此判 3×3 依賴順序）。
+/// `known_skills`（第三刀·技能組合技能）：她自己技能庫裡「(名字, 原語序列)」清單——
+/// 讓計畫裡的 `use_skill` 步驟能查表展開成具體原語，已經會的事不必重新拆解。
 fn spawn_invention(
     rid: String,
     rname: &'static str,
     goal: vinvent::MaterialGoal,
     desire: String,
     wb_nearby: bool,
+    known_skills: Vec<(String, Vec<vinvent::PrimStep>)>,
 ) {
     // 防重入：這位居民已有一筆發明在等腦回來，就不再發（LLM 可能比冷卻慢）。
     {
@@ -15025,14 +15035,19 @@ fn spawn_invention(
         .map(|(bid, c)| format!("{}×{}", block_name_zh(*bid), c))
         .collect::<Vec<_>>()
         .join("、");
+    let known_names: Vec<String> = known_skills.iter().map(|(n, _)| n.clone()).collect();
     tokio::spawn(async move {
         // 解析 + 白名單 + 正規化 + 可行性模擬 → Ok(計畫) 或 Err(可回饋給腦的繁中原因)。
         let validate = |raw: &str| -> Result<vinvent::InventedPlan, String> {
-            // 提案接受管線（見 accept_proposal）：腦出**結構**（選對配方、排對依賴、
-            // 取名字），引擎補**算術**（確定性備料）；失敗回具體錯處（Voyager 式回饋）。
-            vinvent::accept_proposal(raw, &bag_snap, goal.block_id, wb_nearby)
+            // 提案接受管線（見 accept_proposal_with_skills）：腦出**結構**（選對配方、
+            // 排對依賴、取名字，可引用她已學會的技能），引擎補**算術**（確定性備料）；
+            // 失敗回具體錯處（Voyager 式回饋）。
+            vinvent::accept_proposal_with_skills(
+                raw, &bag_snap, goal.block_id, wb_nearby, &known_skills,
+            )
         };
-        let (sys, user) = vinvent::invention_prompt(rname, &goal, &desire, &bag_note, wb_nearby);
+        let (sys, user) =
+            vinvent::invention_prompt(rname, &goal, &desire, &bag_note, wb_nearby, &known_names);
         let (raw, injected) = if let Some(fixed) = vinvent::fixed_plan_env() {
             // 測試注入（僅隔離實測；日誌標明，方便回報時區分「真腦」與「注入」）。
             tracing::info!(resident = %rid, "技能發明：使用 BUTFUN_INVENT_FIXED_PLAN 測試注入計畫");
