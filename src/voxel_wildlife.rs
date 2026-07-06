@@ -28,6 +28,16 @@
 //! 往你身上擠；你若越走越遠，牠會安心跟丟、回到原本的閒晃。**v1 刻意收斂**：不分玩家
 //! 身份（任何靠近的玩家都能被跟）、不繁殖、不能召回/放開、無寵物 UI——第一次讓「馴服」
 //! 這件事在世界裡真的看得出差異，就是最小、最有感的一步。
+//!
+//! **馴服兔子生寶寶 v1（自主提案切片，ROADMAP 855）**：850/851 明講 v1 刻意不做「繁殖」——
+//! 但那正是「世界環境」軸線唯一還空著的一格：野兔/游魚至今是固定數量的點綴生物，
+//! 世界本身從沒有「自己長大」過。本刀補上：兩隻已馴服的兔子只要湊得夠近
+//! （[`BREED_RADIUS`] 內），隔一段夠久的節流時間（[`BREED_INTERVAL_SECS`]）就有機率
+//! （[`BREED_CHANCE`]）誕生一隻小兔子——牠一出生就是**已馴服**的（跟父母一樣認得你、
+//! 立刻跟著走），世界第一次因為「你馴服了牠們」而自己長出新的生命。**刻意收斂**：
+//! 全域節流（不分哪一對，同一時間全世界至多生一隻）、population 天花板
+//! （[`MAX_RABBITS`]）防止無限增長、寶寶落在雙親中點附近最近的乾地、純記憶體
+//! （重啟歸零，比照 wildlife 系統既有慣例）——不做基因/外觀差異，最小、最有感的一步。
 
 /// 野兔閒晃速度（方塊/秒）——比居民散步（2.6）更悠閒，符合小動物碎步的觀感。
 pub const WANDER_SPEED: f32 = 1.4;
@@ -101,6 +111,58 @@ pub fn should_close_follow_gap(player_dist_sq: f32) -> bool {
 pub fn should_flee(currently_fleeing: bool, nearest_player_dist_sq: f32) -> bool {
     let threshold = if currently_fleeing { CALM_RADIUS } else { FLEE_RADIUS };
     nearest_player_dist_sq < threshold * threshold
+}
+
+/// 兔群數量天花板（世界初始 6 隻 + 最多再生 6 隻）——馴服兔子生寶寶 v1 防止無限增長。
+pub const MAX_RABBITS: usize = 12;
+/// 兩隻已馴服的兔子要湊到多近才算「在一起」、有機會生寶寶（方塊）。
+pub const BREED_RADIUS: f32 = 3.0;
+/// 全域生育節流：至少間隔這麼久才會再檢查一次生育（秒）——比照人口成長 v1 的
+/// elapsed 節流手法，避免同一對兔子黏在一起就無限連生。
+pub const BREED_INTERVAL_SECS: f32 = 90.0;
+/// 節流窗口到了、且找得到湊近的一對時，這次判定的生育機率。
+pub const BREED_CHANCE: f32 = 0.35;
+
+/// 判斷這一輪節流窗口是否該誕生一隻小兔子（純函式、可測）：
+/// 兔群數未達天花板 + 距上次生育夠久 + 機率骰命中。
+pub fn should_breed(current_rabbit_count: usize, elapsed_since_last: f32, roll: f32) -> bool {
+    current_rabbit_count < MAX_RABBITS
+        && elapsed_since_last >= BREED_INTERVAL_SECS
+        && roll < BREED_CHANCE
+}
+
+/// 在目前所有已馴服兔子的座標（`(索引, x, z)`）裡，找出第一對距離在 [`BREED_RADIUS`]
+/// 內的親代、回傳兩者的索引。純函式、零隨機、O(n²) 但 n 極小（兔群天花板僅 12）。
+pub fn find_breeding_pair(tamed_positions: &[(usize, f32, f32)]) -> Option<(usize, usize)> {
+    for i in 0..tamed_positions.len() {
+        for j in (i + 1)..tamed_positions.len() {
+            let (ia, ax, az) = tamed_positions[i];
+            let (ib, bx, bz) = tamed_positions[j];
+            let dx = ax - bx;
+            let dz = az - bz;
+            if dx * dx + dz * dz <= BREED_RADIUS * BREED_RADIUS {
+                return Some((ia, ib));
+            }
+        }
+    }
+    None
+}
+
+/// 由一對親代座標算出寶寶的落地點（兩者中點，純幾何、無隨機性）。
+pub fn baby_spawn_point(ax: f32, az: f32, bx: f32, bz: f32) -> (f32, f32) {
+    ((ax + bx) / 2.0, (az + bz) / 2.0)
+}
+
+/// 小兔子誕生那一刻的回饋句（確定性輪替，`pick` 由呼叫端提供隨機源）。
+const BABY_LINES: [&str; 3] = [
+    "🐇 草地上多了一隻毛茸茸的小兔子，正跌跌撞撞地跟著爸媽學走路。",
+    "🐇 兩隻兔子依偎了一會兒，不知不覺間，身邊多了一隻怯生生的小兔子。",
+    "🐇 一隻剛出生的小兔子睜開眼，第一眼就認出了你——牠也不怕你。",
+];
+
+/// 依 `pick` 取一句誕生回饋（越界安全取模，永不 panic）。
+pub fn baby_line(pick: usize) -> &'static str {
+    BABY_LINES[pick % BABY_LINES.len()]
 }
 
 /// 由兔子座標與（最近）玩家座標算出「逃離玩家」的目標點（純幾何、無隨機性、可測）。
@@ -245,5 +307,76 @@ mod tests {
     #[test]
     fn should_close_follow_gap_boundary_is_exclusive() {
         assert!(!should_close_follow_gap(FOLLOW_STOP_DIST * FOLLOW_STOP_DIST));
+    }
+
+    // ── 馴服兔子生寶寶 v1 ────────────────────────────────────────────────
+
+    #[test]
+    fn should_breed_requires_all_three_conditions() {
+        assert!(should_breed(4, BREED_INTERVAL_SECS, 0.0));
+        assert!(!should_breed(MAX_RABBITS, BREED_INTERVAL_SECS, 0.0), "到天花板不該再生");
+        assert!(!should_breed(4, BREED_INTERVAL_SECS - 1.0, 0.0), "節流未到不該生");
+        assert!(!should_breed(4, BREED_INTERVAL_SECS, BREED_CHANCE), "機率沒中不該生");
+    }
+
+    #[test]
+    fn should_breed_boundary_is_inclusive_for_elapsed() {
+        // elapsed 恰好等於節流秒數應可生（>= 而非 >）。
+        assert!(should_breed(0, BREED_INTERVAL_SECS, 0.0));
+    }
+
+    #[test]
+    fn should_breed_chance_boundary_is_exclusive() {
+        assert!(should_breed(0, BREED_INTERVAL_SECS, BREED_CHANCE - 0.001));
+        assert!(!should_breed(0, BREED_INTERVAL_SECS, BREED_CHANCE));
+    }
+
+    #[test]
+    fn find_breeding_pair_finds_close_pair() {
+        let positions = vec![(0usize, 0.0, 0.0), (2usize, 100.0, 100.0), (5usize, 1.0, 1.0)];
+        let pair = find_breeding_pair(&positions);
+        assert_eq!(pair, Some((0, 5)), "索引 0 與 5 距離夠近應配成一對");
+    }
+
+    #[test]
+    fn find_breeding_pair_none_when_all_far_apart() {
+        let positions = vec![(0usize, 0.0, 0.0), (1usize, 100.0, 0.0), (2usize, 0.0, 100.0)];
+        assert_eq!(find_breeding_pair(&positions), None);
+    }
+
+    #[test]
+    fn find_breeding_pair_none_when_fewer_than_two() {
+        assert_eq!(find_breeding_pair(&[]), None);
+        assert_eq!(find_breeding_pair(&[(0usize, 0.0, 0.0)]), None);
+    }
+
+    #[test]
+    fn find_breeding_pair_boundary_is_inclusive() {
+        // 恰好等於 BREED_RADIUS 應算「湊近」（<= 而非 <，與 should_tame 等距離判定刻意不同——
+        // 這裡沒有「先受驚再馴服」那種需要嚴格小於的追逐設計，純粹「夠近就算」）。
+        let positions = vec![(0usize, 0.0, 0.0), (1usize, BREED_RADIUS, 0.0)];
+        assert_eq!(find_breeding_pair(&positions), Some((0, 1)));
+    }
+
+    #[test]
+    fn baby_spawn_point_is_midpoint() {
+        let (x, z) = baby_spawn_point(0.0, 0.0, 4.0, 2.0);
+        assert!((x - 2.0).abs() < 1e-4);
+        assert!((z - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn baby_line_picks_vary_and_stay_nonempty() {
+        let seen: std::collections::HashSet<&str> =
+            (0..BABY_LINES.len()).map(baby_line).collect();
+        assert_eq!(seen.len(), BABY_LINES.len(), "三句應各不相同");
+        for pick in 0..BABY_LINES.len() {
+            assert!(!baby_line(pick).is_empty());
+        }
+    }
+
+    #[test]
+    fn baby_line_pick_wraps_without_panic() {
+        let _ = baby_line(usize::MAX);
     }
 }

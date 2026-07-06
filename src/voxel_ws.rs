@@ -7411,6 +7411,7 @@ pub fn spawn_farm_tick() {
             tick_coop(); // 雞舍生蛋 v1（自主提案切片）：同節拍檢查雞舍是否生蛋。
             tick_smelt(); // 熔爐煨煮 v1（自主提案）：同節拍交付熟成的爐（成品入背包 + 廣播）。
             maybe_birth(); // 人口成長 v1：低頻檢查聚落是否有餘裕誕生一位新居民。
+            maybe_breed_rabbits(); // 馴服兔子生寶寶 v1（自主提案切片 855）：同節拍檢查是否誕生一隻小兔子。
             tick_dropitem_expire(); // 掉落物 v1（自主提案切片 828）：同節拍清掉沒人撿的過期掉落物。
             tick_stall_expire(); // 玩家自由市集 v1（自主提案切片 832）：同節拍清掉逾時沒人接手的攤位、退還材料。
         }
@@ -8388,6 +8389,62 @@ fn tick_wildlife(dt: f32) {
             a.yaw = yaw;
         }
     }
+}
+
+/// 全域生育節流時間戳記（馴服兔子生寶寶 v1，自主提案切片，ROADMAP 855）。
+/// 純記憶體、重啟歸零——比照 wildlife 系統本身「重啟即重新生成」的既有慣例。
+static LAST_BREED_UNIX: AtomicU64 = AtomicU64::new(0);
+/// 小兔子 id 流水號（馴服兔子生寶寶 v1），與 `vox_wld_{i}`（初始兔子）/`vox_fsh_{i}`
+/// （魚）兩個既有命名空間分開，避免新生兒與初始生物 id 撞號。
+static NEXT_BABY_RABBIT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// 馴服兔子生寶寶 v1（自主提案切片，ROADMAP 855）：低頻（併入 15 秒節拍）檢查已馴服的
+/// 兔子裡有沒有兩隻湊得夠近，機率誕生一隻小兔子（見 `voxel_wildlife` 模組說明）。
+///
+/// **鎖紀律**：全程只碰 `wildlife` 一把寫鎖、短取即釋，不與其他 store 巢狀；
+/// Feed 落地在鎖外（同既有 `tick_coop`/`maybe_birth` 慣例）。
+fn maybe_breed_rabbits() {
+    let now = vfarm::now_secs();
+    let elapsed = now.saturating_sub(LAST_BREED_UNIX.load(Ordering::Relaxed)) as f32;
+    let feed_line = {
+        let mut animals = hub().wildlife.write().unwrap();
+        let rabbit_count = animals.iter().filter(|a| a.kind == WildlifeKind::Rabbit).count();
+        let tamed_positions: Vec<(usize, f32, f32)> = animals
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.kind == WildlifeKind::Rabbit && a.tamed)
+            .map(|(i, a)| (i, a.body.x, a.body.z))
+            .collect();
+        let Some((ia, ib)) = vwild::find_breeding_pair(&tamed_positions) else {
+            return;
+        };
+        if !vwild::should_breed(rabbit_count, elapsed, rand::random::<f32>()) {
+            return;
+        }
+        LAST_BREED_UNIX.store(now, Ordering::Relaxed);
+
+        let (ax, az) = (animals[ia].body.x, animals[ia].body.z);
+        let (bx, bz) = (animals[ib].body.x, animals[ib].body.z);
+        let (sx, sz) = vwild::baby_spawn_point(ax, az, bx, bz);
+        let body = vr::dry_ground_spawn(sx.round() as i32, sz.round() as i32);
+        let seq = NEXT_BABY_RABBIT_SEQ.fetch_add(1, Ordering::Relaxed);
+        animals.push(WildlifeAnimal {
+            id: format!("vox_wld_baby_{seq}"),
+            kind: WildlifeKind::Rabbit,
+            home_x: body.x,
+            home_z: body.z,
+            target_x: body.x,
+            target_z: body.z,
+            body,
+            yaw: 0.0,
+            wait_timer: 0.0,
+            fleeing: false,
+            tamed: true, // 一出生就認得你、立刻跟父母一樣跟著走。
+            following: false,
+        });
+        vwild::baby_line(rand::random::<u64>() as usize).to_string()
+    }; // wildlife 寫鎖釋放
+    vfeed::append_feed("兔子誕生", "野兔", &feed_line);
 }
 
 /// 一次居民世界推進：套用上輪思考的決策 → 物理/閒晃 → 社交互動 → 廣播 → 排程新一輪思考。
