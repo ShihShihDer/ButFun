@@ -142,8 +142,10 @@ pub fn try_eat(block_id: u8, have: u32, hunger: f32) -> Option<f32> {
     if have == 0 {
         return None;
     }
-    if hunger >= MAX_HUNGER {
-        return None; // 已全飽，吃不下（不浪費食物）
+    // 已全飽就吃不下（不浪費食物）。用小 epsilon：飢餓顯示會四捨五入成整數，
+    // 若只差不到 0.5 就當作滿了——顯示 100 時吃不下，與畫面一致（不造成「明明滿卻能吃」的困惑）。
+    if hunger >= MAX_HUNGER - 0.5 {
+        return None;
     }
     Some((hunger + nutrition).min(MAX_HUNGER))
 }

@@ -2296,6 +2296,11 @@ enum ClientMsg {
     /// 野菜暖湯）。伺服器驗證確為可享用料理＋背包存量後，扣一份、回 `eat_ok`（暖意回饋），
     /// 並感染附近居民（心情點亮＋暖泡泡＋交情記憶＋動態牆，受每連線冷卻節流防洗版）。
     Eat { item_id: u8 },
+    /// QA 專用授予物品（只在環境變數 `BUTFUN_QA_DEBUG=1` 時生效，正式線上完全惰性/被忽略）：
+    /// 讓隔離 QA 伺服器能給測試玩家幾個食物來驗「吃→飢餓回復＋背包扣」的真實往返。
+    /// 濫用防護：未設 QA flag 時伺服器直接無視此訊息（不授予、不回應），故正式環境無法靠它刷物品。
+    #[serde(rename = "qa_grant")]
+    QaGrant { item_id: u8, count: u32 },
     /// 乙太煙火 v1（ROADMAP 785）：朝夜空施放一束背包裡的乙太煙火(68)。伺服器驗每連線
     /// 冷卻＋消耗一份煙火後，廣播 `firework`（施放者頭頂上方位置＋火花配色）給全場，附近
     /// 醒著的居民抬頭歡呼。無座標欄位——火花在施放者頭頂夜空綻放，位置由伺服器取施放者當前
@@ -6499,6 +6504,20 @@ async fn handle_socket(
                 }).to_string())).await;
                 // 玩家里程碑 v1（ROADMAP 724）：人生第一次在水邊釣起魚。
                 try_unlock_milestone(&name, "first_fish", &out_tx);
+            }
+
+            // QA 專用授予（只在 BUTFUN_QA_DEBUG=1 生效；正式線上直接忽略，無法刷物品）。
+            Ok(ClientMsg::QaGrant { item_id, count }) => {
+                if std::env::var("BUTFUN_QA_DEBUG").as_deref() != Ok("1") {
+                    continue; // 未開 QA flag → 惰性忽略（濫用防護）
+                }
+                let n = count.min(64); // 上限保護
+                let entry = hub().inventory.write().unwrap().give(&name, item_id, n);
+                vinv::append_inv(&entry);
+                let nc = hub().inventory.read().unwrap().count(&name, item_id);
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "inv_update", "block_id": item_id, "count": nc
+                }).to_string())).await;
             }
 
             Ok(ClientMsg::Eat { item_id }) => {

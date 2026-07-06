@@ -5711,6 +5711,35 @@ window.__voxel = {
   get camPitch() { return camPitch; },
   get pointerLocked() { return pointerLocked; },
   get bodyVisible() { return bodyMesh.visible; },
+  // 玩家生存指標 QA 用：讀目前血/飢窄列的顯示寬度（%）＋餓瘋樣式，驗 HUD 真的隨 player_stats 動。
+  get statsHud() {
+    const hp = document.getElementById("statHealthFill");
+    const food = document.getElementById("statHungerFill");
+    const box = document.getElementById("statHunger");
+    return {
+      healthPct: hp ? parseFloat(hp.style.width) || 0 : -1,
+      hungerPct: food ? parseFloat(food.style.width) || 0 : -1,
+      starving: box ? box.classList.contains("starving") : false,
+      placeLabel: document.getElementById("place")?.textContent || "",
+    };
+  },
+  // 玩家生存指標 QA 用：直接餵一則 player_stats 給 HUD（驗顯示隨後端狀態動；正式一律走 ws）。
+  _qaFeedStats(m) { updateStatsHud(m); return this.statsHud; },
+  // 玩家生存指標 QA 用：觸發一次受傷紅暈。
+  _qaFlashDamage() { flashDamage(); return true; },
+  // 玩家生存指標 QA 用：觸發溫柔重生覆蓋（顯示暖心提示、拉回座標）。
+  _qaRespawn(x, y, z, msg) { doGentleRespawn(x, y, z, msg); return true; },
+  // 玩家生存指標 QA 用：走真實吃流程（發 eat 給伺服器；伺服器權威回 eat_ok/inv_update/player_stats）。
+  _qaEat() { tryEatDish(); return true; },
+  // 玩家生存指標 QA 用：授予食物並選到手上（把食物塞進一個空快捷格再選它），驗「手持食物→放置鈕變吃」。
+  _qaGrantAndHold(itemId, count) {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: "qa_grant", item_id: itemId, count: count || 1 }));
+    // 找一個空格塞食物並選它。
+    let slot = HOTBAR.indexOf(itemId);
+    if (slot < 0) { slot = HOTBAR.indexOf(AIR); if (slot < 0) slot = 0; assignToHotbar(slot, itemId); buildHotbar(); }
+    selectSlot(slot);
+    return { slot, held: selectedBlock() };
+  },
   // QA 用：把稱號牌掛到自己頭頂，驗證新 avatar 的頭頂貼合（正式流程稱號由後端 title 決定，不受影響）。
   _qaSetMyTitle(t) {
     if (myTitleSprite) { bodyMesh.remove(myTitleSprite); myTitleSprite = null; }
