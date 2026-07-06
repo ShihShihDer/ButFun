@@ -143,6 +143,7 @@ use crate::voxel_player_pos as vpp;
 use crate::voxel_bottle::{self as vbottle, BottleStore};
 use crate::voxel_coop_gather as vcoop_gather;
 use crate::voxel_dropitem::{self as vdrop, DropStore};
+use crate::voxel_stall::{self as vstall, StallStore};
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -1573,6 +1574,11 @@ struct VoxelHub {
     /// 撿的短命狀態，非玩家永久資產）。玩家丟下手上一件材料 → 落地存進這裡；任何玩家
     /// （含自己）走近即自動撿起；沒人撿的話 `DESPAWN_SECS` 後安靜消失。
     drops: RwLock<DropStore>,
+    /// 交易攤 store（玩家自由市集 v1，自主提案切片 832）：世界座標 → 一攤待人接手的以物易物
+    /// 提案。純記憶體、重啟歸零（比照 `bottle`/`drops` 慣例）。擺攤者的給出材料在擺攤當下
+    /// 就已 escrow 進攤位本身（非其背包）；任何身上有攤位所求材料的玩家路過都能接手成交，
+    /// 哪怕擺攤者早已離線；擺攤者可隨時自行收攤退還，逾時未接手也會自動收攤。
+    stalls: RwLock<StallStore>,
     /// 禮物菜園 store（ROADMAP 755）：作物方塊世界座標 → 一畦「因你的種子而生」的田
     /// （居民 id、送種子的玩家名、作物種類）。持久化到 data/voxel_gift_gardens.jsonl；
     /// 那畦田熟了、種它的居民遇到你，會親手收成、把第一把收穫回贈給你。
@@ -1828,6 +1834,8 @@ fn hub() -> &'static VoxelHub {
             bottle: RwLock::new(BottleStore::from_entries(vbottle::load_bottles())),
             // 掉落物 v1：純記憶體，重啟歸零（暫留地上等人撿的短命狀態，非玩家永久資產）。
             drops: RwLock::new(DropStore::new()),
+            // 交易攤 v1：純記憶體，重啟歸零（比照 drops，世界暫態，非玩家永久資產）。
+            stalls: RwLock::new(StallStore::new()),
             // 啟動時從 data/voxel_gift_gardens.jsonl 載回未收成的禮物菜園（重啟後那畦田還在，
             // 待種它的居民遇到送種子的你時收成回贈）。
             giftgarden: RwLock::new(vgg::GiftGardenStore::from_entries(vgg::load_gift_gardens())),
@@ -2055,6 +2063,24 @@ enum ClientMsg {
     /// （含自己）之後走近即自動撿起（見 `Move` handler）。
     #[serde(rename = "drop_item")]
     DropItem { x: i32, y: i32, z: i32, item_id: u8, count: u32 },
+    /// 玩家自由市集 v1：在瞄準座標擺一個交易攤（自主提案切片 832）。伺服器驗 reach + 該格
+    /// 可擺攤（空氣＋腳下實心）+ 給出/要求物品有效 + 背包足量 give_item 後扣下（escrow）、
+    /// 存進世界並廣播 `stall_open` 給所有人。
+    #[serde(rename = "stall_open")]
+    StallOpen {
+        x: i32,
+        y: i32,
+        z: i32,
+        give_item: u8,
+        give_count: u32,
+        want_item: u8,
+        want_count: u32,
+    },
+    /// 玩家自由市集 v1：與瞄準座標上的攤位互動（自主提案切片 832）。伺服器驗 reach 後判斷：
+    /// 若互動者正是擺攤者本人 → 視為收攤（退還 escrow 材料）；否則視為接手成交
+    /// （需背包持有 want_item×want_count，成交後雙方各自入帳）。
+    #[serde(rename = "stall_interact")]
+    StallInteract { x: i32, y: i32, z: i32 },
     /// 木門 v1：右鍵切換目標門的開/關狀態（ROADMAP 693）。
     /// DoorClosed(43)→DoorOpen(44) 或 DoorOpen(44)→DoorClosed(43)；伺服器驗 reach 後廣播。
     #[serde(rename = "toggle_door")]
@@ -2201,6 +2227,32 @@ fn broadcast_item_dropped(id: u64, x: f32, y: f32, z: f32, item_id: u8, count: u
 /// 廣播一件掉落物從世界上消失（被撿走或逾時消散），所有人同步移除浮標（掉落物 v1）。
 fn broadcast_item_removed(id: u64) {
     let msg = Arc::new(serde_json::json!({ "t": "item_removed", "id": id }).to_string());
+    let _ = hub().tx.send(msg);
+}
+
+/// 廣播世界上出現一個新交易攤（玩家自由市集 v1，自主提案切片 832）。不匿名——
+/// 標明擺攤者姓名，讓路過的人知道是誰擺的（非驚喜巧遇，是明擺著的交易看板）。
+#[allow(clippy::too_many_arguments)]
+fn broadcast_stall_open(
+    x: i32, y: i32, z: i32,
+    give_item: u8, give_count: u32, want_item: u8, want_count: u32, owner: &str,
+) {
+    let msg = Arc::new(
+        serde_json::json!({
+            "t": "stall_open", "x": x, "y": y, "z": z,
+            "give_item": give_item, "give_count": give_count,
+            "want_item": want_item, "want_count": want_count, "owner": owner,
+        })
+        .to_string(),
+    );
+    let _ = hub().tx.send(msg);
+}
+
+/// 廣播一個交易攤從世界上消失（成交、收攤或逾時），所有人同步移除浮標（玩家自由市集 v1）。
+fn broadcast_stall_removed(x: i32, y: i32, z: i32) {
+    let msg = Arc::new(
+        serde_json::json!({ "t": "stall_removed", "x": x, "y": y, "z": z }).to_string(),
+    );
     let _ = hub().tx.send(msg);
 }
 
@@ -2520,6 +2572,29 @@ async fn handle_socket(
             .collect();
         let drop_sync = serde_json::json!({ "t": "drop_sync", "items": items }).to_string();
         if out_tx.send(Message::Text(drop_sync)).await.is_err() {
+            cleanup(my_id, &writer);
+            return;
+        }
+    }
+
+    // 玩家自由市集 v1（自主提案切片 832）：連線時一次送出世界上所有還在等人接手的攤位。
+    {
+        let stalls: Vec<serde_json::Value> = hub()
+            .stalls
+            .read()
+            .unwrap()
+            .all()
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "x": s.x, "y": s.y, "z": s.z,
+                    "give_item": s.give_item, "give_count": s.give_count,
+                    "want_item": s.want_item, "want_count": s.want_count, "owner": s.owner,
+                })
+            })
+            .collect();
+        let stall_sync = serde_json::json!({ "t": "stall_sync", "stalls": stalls }).to_string();
+        if out_tx.send(Message::Text(stall_sync)).await.is_err() {
             cleanup(my_id, &writer);
             return;
         }
@@ -5710,6 +5785,184 @@ async fn handle_socket(
                 }
             }
 
+            // ── 玩家自由市集 v1：擺攤（自主提案切片 832）────────────────────────────
+            Ok(ClientMsg::StallOpen { x, y, z, give_item, give_count, want_item, want_count }) => {
+                let Some((px, py, pz)) = player_pos(my_id) else { continue; };
+                if !voxel::in_reach(px, py, pz, x, y, z) { continue; }
+                // 1) 瞄準格必須是空氣、腳下要是實心（攤位才站得住），比照掉落物/立牌落地判定。
+                let placeable = {
+                    let world = hub().deltas.read().unwrap();
+                    let here = voxel::effective_block_at(&world, x, y, z);
+                    let below = voxel::effective_block_at(&world, x, y - 1, z);
+                    matches!(here, Block::Air) && below.is_solid()
+                };
+                if !placeable {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "stall_fail", "reason": "這裡不能擺攤，換個腳下有地面的空位吧。"
+                    }).to_string())).await;
+                    continue;
+                }
+                // 2) 給出/要求物品需有效（非 Air、彼此不同）。
+                if !vstall::valid_stall_items(give_item, want_item) {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "stall_fail", "reason": "擺攤的物品不合法（不能兩邊選一樣的東西）。"
+                    }).to_string())).await;
+                    continue;
+                }
+                let gcount = vstall::clamp_stall_count(give_count);
+                let wcount = vstall::clamp_stall_count(want_count);
+                // 3) 先查全局上限 + 該座標是否已有攤位（真的扣背包**之前**檢查，避免材料憑空消失）。
+                let (at_cap, pos_taken) = {
+                    let store = hub().stalls.read().unwrap();
+                    (store.len() >= vstall::MAX_ACTIVE_STALLS, store.has((x, y, z)))
+                };
+                if pos_taken {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "stall_fail", "reason": "這裡已經有一個攤位了，換個地方擺吧。"
+                    }).to_string())).await;
+                    continue;
+                }
+                if at_cap {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "stall_fail", "reason": "市集的攤位已經很多了，晚點再試試看。"
+                    }).to_string())).await;
+                    continue;
+                }
+                // 4) 背包要有足量的給出材料（讀鎖即釋）。
+                let have = hub().inventory.read().unwrap().count(&name, give_item);
+                if have < gcount {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "stall_fail", "reason": "你手上沒有那麼多喔。"
+                    }).to_string())).await;
+                    continue;
+                }
+                // 5) 扣下給出材料（escrow 進攤位；inventory 寫鎖即釋 → append 落地 → 單播新存量）。
+                let Some(inv_e) = hub().inventory.write().unwrap().take(&name, give_item, gcount) else {
+                    continue;
+                };
+                vinv::append_inv(&inv_e);
+                let nc = hub().inventory.read().unwrap().count(&name, give_item);
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "inv_update", "block_id": give_item, "count": nc
+                }).to_string())).await;
+                // 6) 存進世界（stalls 寫鎖即釋），廣播給所有人。
+                let now_secs = vfarm::now_secs();
+                let opened = {
+                    hub().stalls.write().unwrap()
+                        .open((x, y, z), give_item, gcount, want_item, wcount, &name, now_secs)
+                };
+                if opened {
+                    broadcast_stall_open(x, y, z, give_item, gcount, want_item, wcount, &name);
+                    try_unlock_milestone(&name, "first_market", &out_tx);
+                } else {
+                    // 極端競態（多人同時擺到同座標/上限）：退還材料，別讓東西憑空消失。
+                    let refund = hub().inventory.write().unwrap().give(&name, give_item, gcount);
+                    vinv::append_inv(&refund);
+                    let nc2 = hub().inventory.read().unwrap().count(&name, give_item);
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "inv_update", "block_id": give_item, "count": nc2
+                    }).to_string())).await;
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "stall_fail", "reason": "剛好被人搶先擺了，換個地方吧。"
+                    }).to_string())).await;
+                }
+            }
+
+            // ── 玩家自由市集 v1：互動（接手成交／收攤）（自主提案切片 832）─────────────
+            Ok(ClientMsg::StallInteract { x, y, z }) => {
+                let Some((px, py, pz)) = player_pos(my_id) else { continue; };
+                if !voxel::in_reach(px, py, pz, x, y, z) { continue; }
+                // 1) 攤位是否存在（讀鎖即釋）。
+                let exists = { hub().stalls.read().unwrap().has((x, y, z)) };
+                if !exists {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "stall_fail", "reason": "這裡沒有攤位。"
+                    }).to_string())).await;
+                    continue;
+                }
+                // 2) 先偷看擁有者是誰（不移除），決定走「收攤」還是「接手」分支。
+                let owner = { hub().stalls.read().unwrap().get((x, y, z)).map(|s| s.owner.clone()) };
+                let Some(owner) = owner else { continue; };
+                if owner == name {
+                    // ── 收攤：只有擺攤者本人能收回，退還 escrow 材料 ──
+                    let removed = { hub().stalls.write().unwrap().remove((x, y, z)) };
+                    let Some(stall) = removed else {
+                        let _ = out_tx.send(Message::Text(serde_json::json!({
+                            "t": "stall_fail", "reason": "攤位剛好被人接手了，來不及收回。"
+                        }).to_string())).await;
+                        continue;
+                    };
+                    let refund = hub().inventory.write().unwrap().give(&name, stall.give_item, stall.give_count);
+                    vinv::append_inv(&refund);
+                    let nc = hub().inventory.read().unwrap().count(&name, stall.give_item);
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "inv_update", "block_id": stall.give_item, "count": nc
+                    }).to_string())).await;
+                    broadcast_stall_removed(x, y, z);
+                    let _ = out_tx.send(Message::Text(
+                        serde_json::json!({ "t": "stall_cancel_ok" }).to_string(),
+                    )).await;
+                    continue;
+                }
+                // ── 接手成交：需背包持有 want_item×want_count ──
+                let (want_item, want_count) = {
+                    let store = hub().stalls.read().unwrap();
+                    match store.get((x, y, z)) {
+                        Some(s) => (s.want_item, s.want_count),
+                        None => continue,
+                    }
+                };
+                let have = hub().inventory.read().unwrap().count(&name, want_item);
+                if have < want_count {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "stall_fail", "reason": "你身上沒有這攤要換的東西喔。"
+                    }).to_string())).await;
+                    continue;
+                }
+                // 驗證通過才真的取出攤位（原子移除；race 時只有一人搶得到，另一人乾淨落空）。
+                let removed = { hub().stalls.write().unwrap().remove((x, y, z)) };
+                let Some(stall) = removed else {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "stall_fail", "reason": "攤位剛好被別人接手走了，晚一步。"
+                    }).to_string())).await;
+                    continue;
+                };
+                // 再驗一次接手者存量（雙重確認，防競態下夾在中間的極端狀況）；不足就整攤放回去。
+                let have2 = hub().inventory.read().unwrap().count(&name, stall.want_item);
+                if have2 < stall.want_count {
+                    hub().stalls.write().unwrap().put_back(stall);
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "stall_fail", "reason": "你身上沒有這攤要換的東西喔。"
+                    }).to_string())).await;
+                    continue;
+                }
+                let Some(taken) = hub().inventory.write().unwrap().take(&name, stall.want_item, stall.want_count) else {
+                    hub().stalls.write().unwrap().put_back(stall);
+                    continue;
+                };
+                vinv::append_inv(&taken);
+                let owner_credit = hub().inventory.write().unwrap().give(&stall.owner, stall.want_item, stall.want_count);
+                vinv::append_inv(&owner_credit);
+                let acceptor_credit = hub().inventory.write().unwrap().give(&name, stall.give_item, stall.give_count);
+                vinv::append_inv(&acceptor_credit);
+                let nc_want = hub().inventory.read().unwrap().count(&name, stall.want_item);
+                let nc_give = hub().inventory.read().unwrap().count(&name, stall.give_item);
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "inv_update", "block_id": stall.want_item, "count": nc_want
+                }).to_string())).await;
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "inv_update", "block_id": stall.give_item, "count": nc_give
+                }).to_string())).await;
+                broadcast_stall_removed(x, y, z);
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "stall_trade_ok", "got_item": stall.give_item, "got_count": stall.give_count,
+                }).to_string())).await;
+                try_unlock_milestone(&name, "first_market", &out_tx);
+                vfeed::append_feed("自由市集", &name, &format!(
+                    "在市集用材料和{}的攤位成交了一筆交易", stall.owner
+                ));
+            }
+
             // 木門 v1（ROADMAP 693）：右鍵切換門的開/關狀態。
             // 鎖序：delta 讀（驗方塊）→ delta 寫（toggle）→ drop；不嵌套、不持鎖 IO。
             Ok(ClientMsg::ToggleDoor { x, y, z }) => {
@@ -6104,6 +6357,7 @@ pub fn spawn_farm_tick() {
             tick_smelt(); // 熔爐煨煮 v1（自主提案）：同節拍交付熟成的爐（成品入背包 + 廣播）。
             maybe_birth(); // 人口成長 v1：低頻檢查聚落是否有餘裕誕生一位新居民。
             tick_dropitem_expire(); // 掉落物 v1（自主提案切片 828）：同節拍清掉沒人撿的過期掉落物。
+            tick_stall_expire(); // 玩家自由市集 v1（自主提案切片 832）：同節拍清掉逾時沒人接手的攤位、退還材料。
         }
     });
     spawn_water_tick();
@@ -6119,6 +6373,18 @@ fn tick_dropitem_expire() {
     let expired = hub().drops.write().unwrap().expire(now_secs);
     for item in expired {
         broadcast_item_removed(item.id);
+    }
+}
+
+/// 玩家自由市集 v1（自主提案切片 832）：清掉超過 `STALL_TTL_SECS` 沒人接手的攤位，
+/// 材料退還擺攤者（哪怕擺攤者早已離線，`give` 不需要對方在線），並廣播移除浮標。
+fn tick_stall_expire() {
+    let now_secs = vfarm::now_secs();
+    let expired = hub().stalls.write().unwrap().expire(now_secs);
+    for stall in expired {
+        let refund = hub().inventory.write().unwrap().give(&stall.owner, stall.give_item, stall.give_count);
+        vinv::append_inv(&refund);
+        broadcast_stall_removed(stall.x, stall.y, stall.z);
     }
 }
 
