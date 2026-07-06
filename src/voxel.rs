@@ -868,10 +868,14 @@ fn ruin_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
     let oz = (8 + (hash2(cellx, cellz, RUIN_SEED ^ 0x_AAAA_AAAA) * 32.0) as i32).clamp(8, 40);
     let tx = cellx * RUIN_CELL + ox;
     let tz = cellz * RUIN_CELL + oz;
-    // 離出生點/主城太近一律不生成，把驚喜留給走遠的人（i64 防溢位：座標可能遠達數萬格）。
-    let (tx64, tz64) = (tx as i64, tz as i64);
-    if tx64 * tx64 + tz64 * tz64 < (RUIN_MIN_DIST as i64) * (RUIN_MIN_DIST as i64) {
-        return None;
+    // 離任一出生點/主城錨點太近一律不生成，把驚喜留給走遠的人——比照 tree_in_cell_seeded
+    // 逐一檢查全部 SPAWN_ANCHORS（不能只驗原點：另外三個居民家域中心一樣算「主城」，
+    // i64 防溢位，座標可能遠達數萬格）。
+    for (ax, az) in SPAWN_ANCHORS {
+        let (ddx, ddz) = ((tx - ax) as i64, (tz - az) as i64);
+        if ddx * ddx + ddz * ddz < (RUIN_MIN_DIST as i64) * (RUIN_MIN_DIST as i64) {
+            return None;
+        }
     }
     let (dx, dz) = (wx - tx, wz - tz);
     // 四根殘柱固定落在遺跡中心四角（半徑 2），非柱腳座標一律不命中。
@@ -2025,10 +2029,11 @@ mod tests {
                 let ox = (8 + (hash2(cellx, cellz, RUIN_SEED ^ 0x_9999_9999) * 32.0) as i32).clamp(8, 40);
                 let oz = (8 + (hash2(cellx, cellz, RUIN_SEED ^ 0x_AAAA_AAAA) * 32.0) as i32).clamp(8, 40);
                 let (tx, tz) = (cellx * RUIN_CELL + ox, cellz * RUIN_CELL + oz);
-                if (tx as i64) * (tx as i64) + (tz as i64) * (tz as i64)
-                    < (RUIN_MIN_DIST as i64) * (RUIN_MIN_DIST as i64)
-                {
-                    continue; // 離出生點太近，實際不會生成，找下一格。
+                if SPAWN_ANCHORS.iter().any(|&(ax, az)| {
+                    let (ddx, ddz) = ((tx - ax) as i64, (tz - az) as i64);
+                    ddx * ddx + ddz * ddz < (RUIN_MIN_DIST as i64) * (RUIN_MIN_DIST as i64)
+                }) {
+                    continue; // 離任一出生點/主城錨點太近，實際不會生成，找下一格。
                 }
                 let h = height_at(tx, tz);
                 if h <= SEA_LEVEL + 1 {
@@ -2077,14 +2082,18 @@ mod tests {
 
     #[test]
     fn ruin_never_generates_near_spawn() {
-        // 出生點/主城周遭（半徑 < RUIN_MIN_DIST）掃描一輪，不該有任何柱腳方塊冒出。
-        for x in (-150..150i32).step_by(11) {
-            for z in (-150..150i32).step_by(11) {
-                for wy in 0..30 {
-                    assert_eq!(
-                        ruin_block_at(x, wy, z), None,
-                        "出生點附近不該生成遺跡 @ ({x},{wy},{z})"
-                    );
+        // 全部四個出生點/主城錨點周遭（半徑 < RUIN_MIN_DIST）各掃描一輪，不該有任何柱腳
+        // 方塊冒出——不能只驗原點：另外三個居民家域中心一樣算「主城」（回歸此前只驗原點
+        // 漏掉另外三個錨點的一致性 bug）。
+        for (ax, az) in SPAWN_ANCHORS {
+            for x in ((ax - 150)..(ax + 150)).step_by(11) {
+                for z in ((az - 150)..(az + 150)).step_by(11) {
+                    for wy in 0..30 {
+                        assert_eq!(
+                            ruin_block_at(x, wy, z), None,
+                            "出生點附近不該生成遺跡 @ ({x},{wy},{z})，錨點=({ax},{az})"
+                        );
+                    }
                 }
             }
         }
