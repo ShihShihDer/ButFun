@@ -541,6 +541,25 @@ pub fn find_nearest_resource_of(
     })
 }
 
+/// 從 (ox,oz) 螺旋向外找最近一畦「熟了、可為了吃而收成」的食物作物（飢餓接農田／倉庫 v2）：
+/// 成熟小麥／胡蘿蔔／馬鈴薯、或結果的莓果叢。回傳 `Some((x, y, z, block))`＝那格作物的世界座標
+/// 與方塊型別（呼叫端據此決定收成產出與退回方塊）；半徑內沒有熟作物 → `None`（誠實：沒得收就餓著）。
+///
+/// 這些作物都是農田土／地面上的**地表頂實心方塊**，故走既有 `surface_block` 判定即可撈到；
+/// 用 `is_harvestable_food_block` 判斷是否成熟可收（未成熟的幼苗 Seeded 不會被選中）。
+/// min_radius=0：站在自家田邊也找得到眼前那畦（無盲區）。純函式（吃 &WorldDelta）、可測。
+pub fn find_nearest_ripe_crop(
+    world: &WorldDelta,
+    ox: i32,
+    oz: i32,
+    max_radius: i32,
+) -> Option<(i32, i32, i32, Block)> {
+    spiral_find(ox, oz, 0, max_radius, |x, z| {
+        let (y, b) = surface_block(world, x, z)?;
+        crate::voxel_hunger::is_harvestable_food_block(b).then_some((x, y, z, b))
+    })
+}
+
 // ── 已完成目標 store（持久化：不重複的記憶土壤）──────────────────────────────
 
 /// 一筆「居民完成了某建物」記錄（jsonl 落地單位）。
@@ -1082,6 +1101,45 @@ mod tests {
         let (_, _, _, res) = find_nearest_resource(&w2, ox, oz, GATHER_MAX_RADIUS).unwrap();
         // 至少能找到某個可採資源（不 panic、有結果）。
         assert!(!res.display_name().is_empty());
+    }
+
+    // ── find_nearest_ripe_crop：飢餓接農田 v2·為了吃而去收成 ──────────────────
+
+    #[test]
+    fn find_nearest_ripe_crop_finds_mature_and_skips_unripe() {
+        let (ox, oz) = land_point();
+        // 空世界（沒作物）→ 沒得收。
+        let world = WorldDelta::new();
+        assert!(find_nearest_ripe_crop(&world, ox, oz, GATHER_MAX_RADIUS).is_none());
+        // 在幾格外放一株「未成熟」的已播種農田 → 不算熟、不會被選。
+        let mut w2 = world.clone();
+        let (cx, cz) = (ox + 5, oz);
+        let h = height_at(cx, cz);
+        voxel::set_block(&mut w2, cx, h + 1, cz, Block::FarmSoilSeeded);
+        assert!(
+            find_nearest_ripe_crop(&w2, ox, oz, GATHER_MAX_RADIUS).is_none(),
+            "未成熟作物不該被選為可收成目標"
+        );
+        // 換成成熟小麥 → 找得到、座標與型別正確。
+        let mut w3 = world.clone();
+        voxel::set_block(&mut w3, cx, h + 1, cz, Block::WheatMature);
+        let (fx, _fy, fz, b) =
+            find_nearest_ripe_crop(&w3, ox, oz, GATHER_MAX_RADIUS).expect("該找到成熟小麥");
+        assert_eq!((fx, fz), (cx, cz));
+        assert_eq!(b, Block::WheatMature);
+    }
+
+    #[test]
+    fn find_nearest_ripe_crop_finds_ripe_berry_bush() {
+        let (ox, oz) = land_point();
+        let world = WorldDelta::new();
+        let mut w = world.clone();
+        let (cx, cz) = (ox + 3, oz);
+        let h = height_at(cx, cz);
+        voxel::set_block(&mut w, cx, h + 1, cz, Block::BerryBushRipe);
+        let (_, _, _, b) =
+            find_nearest_ripe_crop(&w, ox, oz, GATHER_MAX_RADIUS).expect("該找到結果的莓果叢");
+        assert_eq!(b, Block::BerryBushRipe);
     }
 
     // ── is_natural_resource：自然資源判定（核心安全保證：不採建物）───────────────
