@@ -60,6 +60,7 @@ pub const MILESTONES: &[MilestoneDef] = &[
     MilestoneDef { id: "first_bottle", name_zh: "初次寄信", desc_zh: "把寫著心裡話的漂流瓶丟進水裡", icon: "🍾" },
     MilestoneDef { id: "first_coop", name_zh: "初次協作", desc_zh: "和其他真人玩家一起採集、多得了一份默契", icon: "🤝" },
     MilestoneDef { id: "first_dropitem", name_zh: "初次轉手", desc_zh: "把手上一件材料親手交給另一位真人", icon: "🤲" },
+    MilestoneDef { id: "first_market", name_zh: "初次擺攤", desc_zh: "在自由市集和另一位真人玩家議定成一筆以物易物", icon: "🏪" },
 ];
 
 /// 查表確認是否為已知里程碑 id（守 store 資料乾淨，未知 id 不寫入）。

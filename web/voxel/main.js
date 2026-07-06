@@ -1556,6 +1556,61 @@ function removeDropMarker(id) {
   dropMarkers.delete(id);
 }
 
+// ── 玩家自由市集 v1（自主提案切片 832）：世界上還在等人接手的交易攤浮標 ─────────────
+// 玩家↔玩家至今僅有漂流瓶（文字/匿名）、並肩協作（被動加成）、掉落物（單向轉手）——
+// 攤位是第一種「雙向議定」的以物易物：畫兩個顏色方塊（給出／要求）中間夾一個箭頭，
+// 一眼看出「拿右邊換左邊」，貼圖依攤位內容生成、移除時 dispose（不像瓶子共用單一圖案）。
+const stallMarkers = new Map(); // "x,y,z" -> THREE.Sprite
+function makeStallSprite(giveItem, giveCount, wantItem, wantCount) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 160; canvas.height = 80;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "rgba(40,30,16,0.55)";
+  ctx.fillRect(4, 4, 152, 72);
+  ctx.strokeStyle = "rgba(255,235,180,0.9)"; ctx.lineWidth = 3;
+  ctx.strokeRect(4, 4, 152, 72);
+  const drawItem = (cx, itemId, count) => {
+    const c = COLOR[itemId] || COLOR[STONE];
+    ctx.fillStyle = `rgb(${(c[0] * 255) | 0},${(c[1] * 255) | 0},${(c[2] * 255) | 0})`;
+    ctx.fillRect(cx - 22, 14, 44, 44);
+    ctx.strokeStyle = "rgba(0,0,0,0.4)"; ctx.lineWidth = 2;
+    ctx.strokeRect(cx - 22, 14, 44, 44);
+    ctx.font = "bold 18px system-ui, sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    const label = "×" + count;
+    ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.7)"; ctx.strokeText(label, cx, 62);
+    ctx.fillStyle = "#fff"; ctx.fillText(label, cx, 62);
+  };
+  drawItem(112, giveItem, giveCount); // 攤主給出的（換到手上這份）
+  ctx.font = "bold 24px system-ui, sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = "#ffe9b0";
+  ctx.fillText("←", 80, 40);
+  drawItem(48, wantItem, wantCount); // 攤主想換的（接手者要交出）
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, depthTest: true })
+  );
+  sprite.scale.set(1.1, 0.55, 1);
+  return sprite;
+}
+function addStallMarker(x, y, z, giveItem, giveCount, wantItem, wantCount) {
+  const key = x + "," + y + "," + z;
+  if (stallMarkers.has(key)) return;
+  const sprite = makeStallSprite(giveItem, giveCount, wantItem, wantCount);
+  sprite.position.set(x + 0.5, y + 1.1, z + 0.5);
+  scene.add(sprite);
+  stallMarkers.set(key, sprite);
+}
+function removeStallMarker(x, y, z) {
+  const key = x + "," + y + "," + z;
+  const sprite = stallMarkers.get(key);
+  if (!sprite) return;
+  scene.remove(sprite);
+  if (sprite.material.map) sprite.material.map.dispose();
+  sprite.material.dispose();
+  stallMarkers.delete(key);
+}
+
 // ── embodied 靠近說話 v1：自己頭上的對話泡泡（本地驅動，說話立即冒、計時消失）─────
 // 不蓋住畫面、跟著角色在 3D 世界裡（「話活在世界裡」）。別人看到的版本走 players 廣播的 say。
 const MY_BUBBLE_SECS = 6;
@@ -3105,6 +3160,33 @@ function dropSelectedItem() {
   if ((myInv.get(item) || 0) < 1) return;
   ws.send(JSON.stringify({ t: "drop_item", x: target.bx, y: target.by, z: target.bz, item_id: item, count: 1 }));
 }
+
+// 玩家自由市集 v1（自主提案切片 832）：把手上選取的材料擺成一攤交易看板，問清楚想換的東西
+// 後送出——擺在瞄準格的面外側（比照一般放置的偏移，攤子立在你腳下踏實的地面上）。
+function openStallAtTarget() {
+  if (!target || !wsReady) return;
+  const giveItem = selectedBlock();
+  if (giveItem === AIR) return;
+  if ((myInv.get(giveItem) || 0) < 1) return;
+  const wantName = (window.prompt("這攤想換什麼？（輸入物品中文名，如：木頭）", "") || "").trim();
+  if (!wantName) return;
+  const wantItem = Number(Object.keys(BLOCK_NAME).find((id) => BLOCK_NAME[id] === wantName));
+  if (!wantItem || Number.isNaN(wantItem)) {
+    showErr("不認得這個物品名字，換個名字試試？");
+    setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    return;
+  }
+  if (wantItem === giveItem) {
+    showErr("不能拿同一種東西換自己喔。");
+    setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    return;
+  }
+  const px = target.bx + target.nx, py = target.by + target.ny, pz = target.bz + target.nz;
+  ws.send(JSON.stringify({
+    t: "stall_open", x: px, y: py, z: pz,
+    give_item: giveItem, give_count: 1, want_item: wantItem, want_count: 1,
+  }));
+}
 buildHotbar();
 // 數字鍵 1-9 切快捷欄（麥塊固定 9 格）
 addEventListener("keydown", (e) => {
@@ -3410,6 +3492,13 @@ function placeAtTarget() {
   if (!target || !wsReady) return null;
   // 空的快捷欄格（AIR）：沒選任何方塊，靜默忽略（避免送出 place AIR 誤刪）。
   if (selectedBlock() === AIR) return null;
+  // 玩家自由市集 v1（自主提案切片 832）：右鍵對準已有攤位（不論手上拿什麼）→ 互動它
+  //   （你自己的攤位＝收攤退還；別人的攤位＝有你要換的東西就成交）。伺服器權威判定，
+  //   最先於一般放置判斷（比照漂流瓶讀瓶）。
+  if (stallMarkers.has(target.bx + "," + target.by + "," + target.bz)) {
+    ws.send(JSON.stringify({ t: "stall_interact", x: target.bx, y: target.by, z: target.bz }));
+    return null;
+  }
   // 漂流瓶 v1（自主提案切片 825）：右鍵對準已有瓶子的水面（不論手上拿什麼）→ 撿起它。
   //   伺服器單播內文揭曉、全場同步移除浮標；一次性拾起，最先高於一般放置判斷。
   if (bottleMarkers.has(target.bx + "," + target.by + "," + target.bz)) {
@@ -3569,6 +3658,7 @@ addEventListener("keydown", (e) => {
   }
   // 掉落物 v1（自主提案切片 828）：Q 對準地面丟下一份目前手上選取的材料。
   if (e.code === "KeyQ") { e.preventDefault(); dropSelectedItem(); }
+  if (e.code === "KeyM") { e.preventDefault(); openStallAtTarget(); }
   // Esc：關操作設定面板（也讓瀏覽器解除滑鼠鎖定，兩者不衝突）。
   if (e.code === "Escape" && settingsPanelVisible()) closeSettingsPanel();
   // Esc：也收起 ☰ 主選單抽屜（若正開著）。
@@ -4368,6 +4458,25 @@ function connect() {
     } else if (m.t === "drop_fail") {
       // 掉落物 v1：丟東西失敗（材料不夠、地上掉落物已達上限等）。
       showErr(m.reason || "丟下材料失敗");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "stall_sync") {
+      // 玩家自由市集 v1（自主提案切片 832）：連線時一次收到世界上所有還在等人接手的攤位。
+      for (const s of (m.stalls || [])) addStallMarker(s.x, s.y, s.z, s.give_item, s.give_count, s.want_item, s.want_count);
+    } else if (m.t === "stall_open") {
+      // 玩家自由市集 v1：有人擺了個新攤位——世界即時多一個交易看板。
+      addStallMarker(m.x, m.y, m.z, m.give_item, m.give_count, m.want_item, m.want_count);
+    } else if (m.t === "stall_removed") {
+      // 玩家自由市集 v1：一個攤位消失了（成交、收攤或逾時退還），全場同步移除浮標。
+      removeStallMarker(m.x, m.y, m.z);
+    } else if (m.t === "stall_trade_ok") {
+      // 玩家自由市集 v1：接手成交成功——你換到了攤主給出的那份材料（背包已由 inv_update 更新）。
+      showMsg("🏪 成交！你換到了 " + (BLOCK_NAME[m.got_item] || "材料") + " ×" + m.got_count);
+    } else if (m.t === "stall_cancel_ok") {
+      // 玩家自由市集 v1：收攤成功，材料已退回背包。
+      showMsg("🏪 攤位收回了，材料退回背包。");
+    } else if (m.t === "stall_fail") {
+      // 玩家自由市集 v1：擺攤/接手/收攤失敗（位置不合法、材料不夠、攤位已被搶等）。
+      showErr(m.reason || "市集操作失敗");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     }
   };
