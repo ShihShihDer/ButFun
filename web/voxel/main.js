@@ -40,7 +40,7 @@ const IRON_BLOCK = 23;
 // 非實心（可穿越、水面渲染同來源水），玩家不可放置（伺服器模擬維護的狀態方塊）。
 const WATER_FLOW_BASE = 24, WATER_FLOW_MAX_LVL = 7;
 // 任一方塊 id 是否為「水」（來源或流動）——渲染與碰撞都把兩者當水看待。
-function isWaterId(b) { return b === WATER || (b >= WATER_FLOW_BASE && b < WATER_FLOW_BASE + WATER_FLOW_MAX_LVL); }
+function isWaterId(b) { return b === WATER || b === HOT_SPRING_WATER || (b >= WATER_FLOW_BASE && b < WATER_FLOW_BASE + WATER_FLOW_MAX_LVL); }
 // 火把 v1（ROADMAP 685）——背包合成（1 木頭 + 1 煤礦 → 4 火把）；橘黃光源，礦坑標記用
 const TORCH = 31;
 // 鎬具 v1（ROADMAP 687）——純物品，不可放置；提升石/礦採集速度
@@ -139,6 +139,10 @@ const BLUEPRINT_HOUSE = 84, BLUEPRINT_WELL = 85, BLUEPRINT_TOWER = 86,
 // 純建材幾乎全是灰棕色系，本刀用天然礦物（鐵礦鏽紅/煤礦炭黑/雪原純白/乙太礦青藍）給沙子
 // 染色，燒出世界第一批彩色建材。皆可放置、破壞回收自身。
 const TERRACOTTA_RED = 89, TERRACOTTA_BLACK = 90, TERRACOTTA_WHITE = 91, TERRACOTTA_BLUE = 92;
+// 溫泉遺跡 v1（世界第二種可探索地標，自主提案切片，接續古代遺跡）——伺服器維護的世界生成
+// 方塊，玩家不可放置/破壞（同來源水）；當作一種水處理（isWaterId／collision/游泳），
+// 只是上色走暖橘泉水而非冷藍，一眼與普通水分開。
+const HOT_SPRING_WATER = 93;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -1173,7 +1177,7 @@ function emitFace(pos, norm, col, idx, lx, ly, lz, f, c) {
 
 // 水面高度（0..1）：來源水滿格；流動水依 level 遞減，形成往低處的階梯。純視覺、不動後端。
 function waterTopH(b) {
-  if (b === WATER) return 1.0;              // 來源水滿格
+  if (b === WATER || b === HOT_SPRING_WATER) return 1.0; // 來源水／溫泉滿格
   const lvl = b - WATER_FLOW_BASE + 1;      // 1..7（越大＝離源越遠＝越矮）
   return Math.max(0.12, 1.0 - lvl * 0.11);  // level1≈0.89 … level7≈0.23
 }
@@ -1181,6 +1185,7 @@ function waterTopH(b) {
 // 水體顏色：依流動等級深淺——來源水深藍，level 越高越淺越透明（一眼看出流向）。
 // 回傳 [r, g, b]（0..1 線性），由 emitWaterFace 注入頂點色。
 function waterColor(b) {
+  if (b === HOT_SPRING_WATER) return [0.90, 0.56, 0.24]; // 溫泉：暖橘泉水，一眼與冷藍水分開
   if (b === WATER) return [0.13, 0.38, 0.80];   // 來源水：飽和深藍
   const lvl = b - WATER_FLOW_BASE + 1;            // 1..7
   const t = lvl / WATER_FLOW_MAX_LVL;             // 0..1（越大=越遠=越淡）
@@ -4458,6 +4463,10 @@ function connect() {
       // 溫柔重生 v1：血歸零 → 醒在村莊廣場/床邊。柔和淡出後把相機/預測位置拉回重生點，
       // 顯示一句溫暖提示；背包不掉落（後端保證）。
       doGentleRespawn(m.x, m.y, m.z, m.message);
+    } else if (m.t === "hot_spring_enter") {
+      // 溫泉遺跡 v1（自主提案切片）：剛踏進溫泉那一刻，浮出一句暖意提示（只給自己看）。
+      showMsg(m.line || "暖流環繞全身，泡進溫泉舒服多了～");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
     } else if (m.t === "firework") {
       // 乙太煙火 v1（785）：全場任一玩家施放的煙火——在該座標上方綻放一朵火花（人人可見）。
       spawnFirework(m.x, m.y, m.z, m.palette | 0);

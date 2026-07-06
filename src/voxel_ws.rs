@@ -2750,6 +2750,17 @@ fn head_in_water(x: f32, y: f32, z: f32) -> bool {
     vfish::is_water_block(blk as u8)
 }
 
+/// 溫泉遺跡 v1（世界第二種可探索地標，自主提案切片）：玩家腳下是否正踩進溫泉水裡。
+/// 與 [`head_in_water`]（溺水判定，看頭部是否沒頂）刻意分開——泡溫泉看腳底這格，
+/// 站進去就算，不必整個人沒頂（溫泉池本就淺，不會也不該讓人溺水）。
+/// 短取 delta 讀鎖即釋，不巢狀。
+fn feet_in_hot_spring(x: f32, y: f32, z: f32) -> bool {
+    let hx = x.floor() as i32;
+    let hy = y.floor() as i32;
+    let hz = z.floor() as i32;
+    voxel::effective_block_at(&hub().deltas.read().unwrap(), hx, hy, hz) == Block::HotSpringWater
+}
+
 pub async fn voxel_ws_handler(
     ws: WebSocketUpgrade,
     State(app): State<AppState>,
@@ -3183,6 +3194,10 @@ async fn handle_socket(
     // 零跨連線鎖；斷線即清）。施放會廣播給全場，此冷卻擋連放洗爆所有人畫面（濫用防護①）。
     let mut last_firework: Option<std::time::Instant> = None;
 
+    // 溫泉遺跡 v1（世界第二種可探索地標，自主提案切片）：這條連線上一 tick 是否正泡在溫泉裡，
+    // 用來偵測「剛踏進去」的那一刻只提示一次（per-connection、斷線即清，不必持久化）。
+    let mut was_soaking = false;
+
     // 玩家生存指標 tick（溫和版）：per-connection 每秒推進一次飢餓衰減／溺水／飽食回血，
     // 並在指標變動時單播 player_stats（只給玩家自己，減噪）。放這條連線的 select loop 裡跑，
     // 天然拿得到 out_tx／位置／床，避免居民 tick 那條 task 沒有 per-connection 送訊息管道。
@@ -3203,25 +3218,38 @@ async fn handle_socket(
                 // 取當前位置（判定頭是否在水裡）。取不到（剛斷線）就跳過這 tick。
                 let Some((px, py, pz)) = player_pos(my_id) else { continue; };
                 let in_water = head_in_water(px, py, pz);
+                // 溫泉遺跡 v1（自主提案切片）：泡在溫泉裡 → 門檻寬鬆得多、節奏更快地回血，飢餓消耗打折。
+                let soaking = feet_in_hot_spring(px, py, pz);
                 // 短取寫鎖：推進飢餓衰減／溺水累加／飽食回血，算出這 tick 的傷害與回血。
                 let (new_stats, drown_dmg, heal, changed) = {
                     let mut m = hub().player_stats.write().unwrap();
                     let s = m.entry(name.clone()).or_insert_with(vstats::PlayerStats::default);
                     let before = *s;
-                    // 飢餓慢慢降。
-                    s.hunger = vstats::decay_hunger(s.hunger, STATS_TICK_DT);
+                    // 飢餓慢慢降（泡溫泉時打折）。
+                    s.hunger = vstats::decay_hunger_soaking(s.hunger, STATS_TICK_DT, soaking);
                     // 溺水：頭在水中久了扣血（有緩衝，離水即歸零）。
                     let (da, ta, ddmg) = vstats::tick_drown(in_water, s.drown_acc, s.drown_tick_acc, STATS_TICK_DT);
                     s.drown_acc = da;
                     s.drown_tick_acc = ta;
-                    // 飽食回血：飢餓 > 門檻且未滿血，緩慢回一點。
-                    let (ra, h) = vstats::tick_regen(s.hunger, s.health, s.regen_acc, STATS_TICK_DT);
+                    // 飽食回血（泡溫泉時門檻寬鬆、回得更快）。
+                    let (ra, h) = vstats::tick_regen_soaking(s.hunger, s.health, s.regen_acc, STATS_TICK_DT, soaking);
                     s.regen_acc = ra;
                     if h > 0 { s.health = (s.health + h).min(vstats::MAX_HEALTH); }
                     let changed = *s != before;
                     (*s, ddmg, h, changed)
                 }; // 寫鎖釋放
                 let _ = heal;
+                // 溫泉遺跡 v1：剛踏進去那一刻單播一句暖意提示（只在「上一 tick 沒泡、這一 tick 泡了」時提一次）。
+                if soaking && !was_soaking {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({
+                            "t": "hot_spring_enter",
+                            "line": "暖流環繞全身，泡進溫泉舒服多了～"
+                        })
+                        .to_string(),
+                    ));
+                }
+                was_soaking = soaking;
                 // 溺水扣血走統一傷害路徑（含死亡→重生判定、廣播、持久化）。
                 if drown_dmg > 0 {
                     apply_player_damage(&name, drown_dmg, &out_tx).await;
