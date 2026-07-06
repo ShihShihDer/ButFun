@@ -76,6 +76,7 @@ use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
 use crate::voxel_playercare as vcare;
 use crate::voxel_admire as vadmire;
 use crate::voxel_structure_name as vstructname;
+use crate::voxel_village_milestone as vvillms;
 use crate::voxel_confide as vconfide;
 use crate::voxel_request as vrequest;
 use crate::voxel_witness as vwit;
@@ -1849,6 +1850,10 @@ struct VoxelHub {
     /// 居民教過、永久解鎖的獨門配方 id 集合。持久化到 data/voxel_player_recipes.jsonl
     /// （append-only，重啟後學會的配方仍在）。
     player_recipes: RwLock<vprecipe::PlayerRecipeStore>,
+    /// 村莊集體里程碑 v1（自主提案切片，ROADMAP 856）：全域一份（不分玩家）的「村莊達成過
+    /// 哪些集體門檻」帳本，與 `milestones`（per-player）刻意區隔。持久化到
+    /// `data/voxel_village_milestones.jsonl`（append-only，重啟後仍記得）。
+    village_milestones: RwLock<vvillms::VillageMilestoneStore>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -2425,6 +2430,10 @@ fn hub() -> &'static VoxelHub {
             player_stats: RwLock::new(load_player_stats()),
             // 啟動時從 data/voxel_player_recipes.jsonl 載回玩家已被教過的獨門配方（重啟後仍記得）。
             player_recipes: RwLock::new(vprecipe::PlayerRecipeStore::from_entries(vprecipe::load_player_recipes())),
+            // 啟動時從 data/voxel_village_milestones.jsonl 載回村莊已達成的集體門檻（重啟後仍記得）。
+            village_milestones: RwLock::new(vvillms::VillageMilestoneStore::from_entries(
+                vvillms::load_village_milestones(),
+            )),
             tx,
         }
     })
@@ -4322,6 +4331,50 @@ async fn handle_socket(
                                                     &structure_name,
                                                 ),
                                             );
+                                            // 村莊集體里程碑 v1（自主提案切片，ROADMAP 856）：
+                                            // 剛命名的這座地標，讓累計地標數跨過門檻了嗎？
+                                            // 檢查＋解鎖一氣呵成（單一寫鎖內），與個人里程碑
+                                            // （只通知該玩家）刻意區隔——這是全村一起慶祝的事件。
+                                            let landmark_count = structure_names().lock().unwrap().len();
+                                            let new_tier = hub()
+                                                .village_milestones
+                                                .write()
+                                                .unwrap()
+                                                .try_unlock_new_tier(landmark_count);
+                                            if let Some(tier) = new_tier {
+                                                vvillms::append_village_milestone(
+                                                    &vvillms::VillageMilestoneEntry {
+                                                        id: tier.id.to_string(),
+                                                    },
+                                                );
+                                                // 全體居民一起歡呼；不覆寫正忙著別的事的居民
+                                                // （say 非空＝正在忙），比照既有「不覆寫既有泡泡」慣例。
+                                                {
+                                                    let mut residents =
+                                                        hub().residents.write().unwrap();
+                                                    for (i, r) in residents.iter_mut().enumerate() {
+                                                        if r.say.is_empty() {
+                                                            r.say = vvillms::celebrate_say_line(
+                                                                landmark_count + i,
+                                                            )
+                                                            .to_string();
+                                                            r.say_timer = SAY_SECS;
+                                                            r.mood_boost_secs = r
+                                                                .mood_boost_secs
+                                                                .max(voxel_mood::MOOD_BOOST_TALK);
+                                                        }
+                                                    }
+                                                } // residents 寫鎖釋放
+                                                broadcast_players();
+                                                vfeed::append_feed(
+                                                    "村莊里程碑",
+                                                    "全村",
+                                                    &vvillms::celebrate_feed_line(
+                                                        tier.name_zh,
+                                                        landmark_count,
+                                                    ),
+                                                );
+                                            }
                                         } else {
                                             vfeed::append_feed(
                                                 "居民讚賞",
