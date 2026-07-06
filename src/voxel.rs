@@ -623,6 +623,16 @@ const ICE_CELL: i32 = 7;
 /// 約 18% 的雪原格有一株 → 比仙人掌更稀疏，符合「珍稀寶物」定位。
 const ICE_CHANCE: f32 = 0.18;
 
+/// 遺跡噪聲種子（世界第一種可探索地標，與樹/地形/仙人掌/冰晶獨立）。
+const RUIN_SEED: u32 = SEED ^ 0x_012D_51E5;
+/// 遺跡格邊長——遠比樹/仙人掌/冰晶格大得多，讓遺跡在世界裡真的「稀少、值得走遠去找」。
+const RUIN_CELL: i32 = 48;
+/// 一格藏有遺跡的機率門檻（per-cell hash < 此值才有）。
+/// 約 5% 的格有一處，平均相隔 200+ 格，是遠行才會巧遇的珍稀地標。
+const RUIN_CHANCE: f32 = 0.05;
+/// 遺跡不可能出現在出生點/主城附近（格距，非半徑平方）——把探索的驚喜留給走遠的人。
+const RUIN_MIN_DIST: i32 = 180;
+
 /// 世界座標 → 生物群系。確定性純函式，同座標永遠同群系。
 /// 出生保護圈（BIOME_SPAWN_RADIUS 內）強制草原，確保玩家出生有樹有草。
 pub fn biome_at_voxel(wx: i32, wz: i32) -> VoxelBiome {
@@ -836,6 +846,61 @@ fn ice_crystal_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
     }
 }
 
+/// 乙太方界·古代遺跡 v1——世界第一種可探索的程序生成地標（自主提案切片）。
+///
+/// **真缺口**：至今世界生成只有地形＋樹／仙人掌／冰晶這類「原地小點綴」，玩家走到哪都是
+/// 同一種草原/森林/沙漠/雪原地表，沒有任何「特地走遠去找」的理由——探索本身沒有回報。
+/// 本函式補上世界第一個離散地標：四根殘破石磚柱圍成的小遺跡，其中一根柱頂嵌著一塊裸露的
+/// 乙太礦，走近就能直接敲下（不必深挖到世界最底層）。
+///
+/// 比照仙人掌／冰晶的格設計（每格至多一處、点位落格內側避免跨格），但格邊長遠大於樹木/
+/// 仙人掌/冰晶，且強制離出生點/主城 [`RUIN_MIN_DIST`] 格以上，讓遺跡真的稀少、只有走遠的
+/// 旅人才會巧遇——與村莊系統（835）的「主城越蓋越熱鬧」恰成對比：世界邊陲也有東西等你發現。
+/// 純函式、確定性、零狀態、零 IO；同座標永遠同結果。
+fn ruin_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
+    let cellx = wx.div_euclid(RUIN_CELL);
+    let cellz = wz.div_euclid(RUIN_CELL);
+    if hash2(cellx, cellz, RUIN_SEED) >= RUIN_CHANCE {
+        return None;
+    }
+    // 遺跡中心落在格內側（offset 8..=40 of 0..=48），確保柱腳（半徑 2）不跨格。
+    let ox = (8 + (hash2(cellx, cellz, RUIN_SEED ^ 0x_9999_9999) * 32.0) as i32).clamp(8, 40);
+    let oz = (8 + (hash2(cellx, cellz, RUIN_SEED ^ 0x_AAAA_AAAA) * 32.0) as i32).clamp(8, 40);
+    let tx = cellx * RUIN_CELL + ox;
+    let tz = cellz * RUIN_CELL + oz;
+    // 離出生點/主城太近一律不生成，把驚喜留給走遠的人（i64 防溢位：座標可能遠達數萬格）。
+    let (tx64, tz64) = (tx as i64, tz as i64);
+    if tx64 * tx64 + tz64 * tz64 < (RUIN_MIN_DIST as i64) * (RUIN_MIN_DIST as i64) {
+        return None;
+    }
+    let (dx, dz) = (wx - tx, wz - tz);
+    // 四根殘柱固定落在遺跡中心四角（半徑 2），非柱腳座標一律不命中。
+    const CORNERS: [(i32, i32); 4] = [(-2, -2), (2, -2), (-2, 2), (2, 2)];
+    let corner_idx = CORNERS.iter().position(|&(cdx, cdz)| cdx == dx && cdz == dz)?;
+    // 只在乾燥陸地上生成（水邊/水下皆略過，同樹/仙人掌/冰晶慣例）；用本柱腳自己的地表高度
+    // （非遺跡中心的高度），免得地形略有起伏時柱子懸空或埋進土裡。
+    let h = height_at(wx, wz);
+    if h <= SEA_LEVEL + 1 {
+        return None;
+    }
+    if wy <= h {
+        return None;
+    }
+    // 每根柱高 2..=4 格，錯落才像「殘破」而非完整方陣。
+    let pillar_h = 2 + (hash2(cellx, cellz, RUIN_SEED ^ (0x_B000_0000 + corner_idx as u32)) * 3.0) as i32;
+    let pillar_h = pillar_h.clamp(2, 4);
+    if wy > h + pillar_h {
+        return None;
+    }
+    // 哪根柱藏著裸露的乙太礦（確定性挑一根、只在柱頂），其餘皆是殘破石磚。
+    let ore_corner = (hash2(cellx, cellz, RUIN_SEED ^ 0x_C0FF_EE00) * 4.0) as usize % 4;
+    if corner_idx == ore_corner && wy == h + pillar_h {
+        Some(Block::AetherOre)
+    } else {
+        Some(Block::StoneBrick)
+    }
+}
+
 /// 任一世界座標的方塊（確定性程序生成）。這是「無狀態世界」的核心查詢。
 pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
     // 地心一律基岩石頭（避免從世界底掉出去；本輪只生成 y>=0 的 chunk）。
@@ -847,6 +912,11 @@ pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
         // 地表之上：海平面（含）以下補水。
         if wy <= SEA_LEVEL {
             return Block::Water;
+        }
+        // 古代遺跡（世界第一種可探索地標）：極稀有、離出生點夠遠，優先於樹——
+        // 巧合命中同一柱腳座標時，殘柱理應蓋過恰好路過的樹苗。
+        if let Some(rb) = ruin_block_at(wx, wy, wz) {
+            return rb;
         }
         // 再看是否為樹（樹幹/樹冠，只填到原本是空氣的格；樹只長在草地、樹塊恆高於海平面）。
         if let Some(tb) = tree_block_at(wx, wy, wz) {
@@ -1943,6 +2013,90 @@ mod tests {
                 assert_eq!(a, b, "冰晶生成應確定性 @ ({x},{z})");
             }
         }
+    }
+
+    /// 掃格找一處「真的有遺跡」的格座標（回傳格座標＋遺跡中心世界座標）——供下面幾個測試共用。
+    fn find_a_ruin() -> ((i32, i32), (i32, i32)) {
+        for cellx in -200..200 {
+            for cellz in -200..200 {
+                if hash2(cellx, cellz, RUIN_SEED) >= RUIN_CHANCE {
+                    continue;
+                }
+                let ox = (8 + (hash2(cellx, cellz, RUIN_SEED ^ 0x_9999_9999) * 32.0) as i32).clamp(8, 40);
+                let oz = (8 + (hash2(cellx, cellz, RUIN_SEED ^ 0x_AAAA_AAAA) * 32.0) as i32).clamp(8, 40);
+                let (tx, tz) = (cellx * RUIN_CELL + ox, cellz * RUIN_CELL + oz);
+                if (tx as i64) * (tx as i64) + (tz as i64) * (tz as i64)
+                    < (RUIN_MIN_DIST as i64) * (RUIN_MIN_DIST as i64)
+                {
+                    continue; // 離出生點太近，實際不會生成，找下一格。
+                }
+                let h = height_at(tx, tz);
+                if h <= SEA_LEVEL + 1 {
+                    continue; // 水邊/水下，實際不會生成，找下一格。
+                }
+                return ((cellx, cellz), (tx, tz));
+            }
+        }
+        panic!("掃描範圍內應能找到至少一處遺跡（RUIN_CHANCE={RUIN_CHANCE}）");
+    }
+
+    #[test]
+    fn ruin_generation_is_deterministic() {
+        let (_, (tx, tz)) = find_a_ruin();
+        let h = height_at(tx - 2, tz - 2);
+        let a = block_at(tx - 2, h + 1, tz - 2);
+        let b = block_at(tx - 2, h + 1, tz - 2);
+        assert_eq!(a, b, "遺跡生成應確定性 @ ({tx},{tz})");
+    }
+
+    #[test]
+    fn ruin_has_exactly_one_ore_corner_rest_stone_brick() {
+        let (_, (tx, tz)) = find_a_ruin();
+        const CORNERS: [(i32, i32); 4] = [(-2, -2), (2, -2), (-2, 2), (2, 2)];
+        let mut ore_count = 0;
+        let mut brick_count = 0;
+        for (cdx, cdz) in CORNERS {
+            let (wx, wz) = (tx + cdx, tz + cdz);
+            let h = height_at(wx, wz);
+            // 柱頂在 h+2..=h+4 其中一格（pillar_h clamp 2..=4），逐格找柱頂方塊。
+            let top = (h + 2..=h + 4)
+                .rev()
+                .find_map(|wy| match block_at(wx, wy, wz) {
+                    Block::AetherOre | Block::StoneBrick => Some(block_at(wx, wy, wz)),
+                    _ => None,
+                });
+            match top {
+                Some(Block::AetherOre) => ore_count += 1,
+                Some(Block::StoneBrick) => brick_count += 1,
+                _ => panic!("四角柱腳應命中石磚或乙太礦 @ ({wx},{wz})"),
+            }
+        }
+        assert_eq!(ore_count, 1, "四根柱應恰有一根柱頂裸露乙太礦（尋寶感）");
+        assert_eq!(brick_count, 3, "其餘三根應是殘破石磚");
+    }
+
+    #[test]
+    fn ruin_never_generates_near_spawn() {
+        // 出生點/主城周遭（半徑 < RUIN_MIN_DIST）掃描一輪，不該有任何柱腳方塊冒出。
+        for x in (-150..150i32).step_by(11) {
+            for z in (-150..150i32).step_by(11) {
+                for wy in 0..30 {
+                    assert_eq!(
+                        ruin_block_at(x, wy, z), None,
+                        "出生點附近不該生成遺跡 @ ({x},{wy},{z})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ruin_pillars_never_appear_underground() {
+        let (_, (tx, tz)) = find_a_ruin();
+        let h = height_at(tx - 2, tz - 2);
+        // 地表以下（含地表本身）一律不該被柱腳覆蓋（遺跡只長在地表之上）。
+        assert_eq!(ruin_block_at(tx - 2, h, tz - 2), None);
+        assert_eq!(ruin_block_at(tx - 2, h - 1, tz - 2), None);
     }
 
     #[test]
