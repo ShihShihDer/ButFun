@@ -104,6 +104,7 @@ pub fn classify_desire(desire: &str) -> Option<BuildKind> {
         || desire.contains("房子")
         || desire.contains("房屋")
         || desire.contains("住")
+        || desire.contains("屋")
     {
         return Some(BuildKind::House);
     }
