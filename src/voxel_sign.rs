@@ -65,12 +65,19 @@ pub struct SignEntry {
     pub text: String,
     /// 單調遞增序號（replay 時取每座標最大 seq 者為現況）。
     pub seq: u64,
+    /// 這塊牌是哪位玩家立的（居民認得你的家 v1，自主提案切片，ROADMAP 830）：伺服器在你
+    /// 送出 `SignSet` 那刻權威記下你已登入的帳號顯示名；訪客／舊資料一律 `None`（不影響既有
+    /// 讀牌／認鄰居行為，只是不會被認成「某位玩家的家」）。additive、`#[serde(default)]`
+    /// 向後相容——舊 JSONL 沒有這個欄位，載回時自動補 `None`。
+    #[serde(default)]
+    pub owner: Option<String>,
 }
 
-/// 全局告示牌 store：pos_key → 文字（只存非空）。
+/// 全局告示牌 store：pos_key → 文字（只存非空）；`owners` 只存「有主」的牌（居民認得你的家 v1）。
 #[derive(Default)]
 pub struct SignStore {
     signs: HashMap<String, String>,
+    owners: HashMap<String, String>,
     next_seq: u64,
 }
 
@@ -93,12 +100,16 @@ impl SignStore {
             }
         }
         let mut signs = HashMap::new();
+        let mut owners = HashMap::new();
         for (pos, e) in latest {
             if !e.text.is_empty() {
-                signs.insert(pos, e.text.clone());
+                signs.insert(pos.clone(), e.text.clone());
+                if let Some(o) = &e.owner {
+                    owners.insert(pos, o.clone());
+                }
             }
         }
-        Self { signs, next_seq: max_seq.saturating_add(1) }
+        Self { signs, owners, next_seq: max_seq.saturating_add(1) }
     }
 
     /// 查詢某座標的告示牌文字（無牌子回 None）。
@@ -106,17 +117,23 @@ impl SignStore {
         self.signs.get(pos).map(|s| s.as_str())
     }
 
-    /// 寫入／改寫告示牌文字（傳入已清洗文字）。空字串＝清除。
-    /// 回傳持久化事件供呼叫方 append。
-    pub fn set(&mut self, pos: &str, text: String) -> SignEntry {
+    /// 寫入／改寫告示牌文字（傳入已清洗文字）＋這塊牌是哪位玩家立的（`owner`，居民認得你的家
+    /// v1；`None`＝訪客或非玩家親手寫的牌，行為與既有一致）。空字串＝清除。回傳持久化事件供
+    /// 呼叫方 append。
+    pub fn set(&mut self, pos: &str, text: String, owner: Option<String>) -> SignEntry {
         if text.is_empty() {
             self.signs.remove(pos);
+            self.owners.remove(pos);
         } else {
             self.signs.insert(pos.to_string(), text.clone());
+            match &owner {
+                Some(o) => { self.owners.insert(pos.to_string(), o.clone()); }
+                None => { self.owners.remove(pos); }
+            }
         }
         let seq = self.next_seq;
         self.next_seq += 1;
-        SignEntry { pos: pos.to_string(), text, seq }
+        SignEntry { pos: pos.to_string(), text, seq, owner }
     }
 
     /// 清除指定座標的牌子（破壞方塊時呼叫）。有牌子才回傳清除事件（供 append）。
@@ -124,20 +141,27 @@ impl SignStore {
         if self.signs.remove(pos).is_none() {
             return None;
         }
+        self.owners.remove(pos);
         let seq = self.next_seq;
         self.next_seq += 1;
-        Some(SignEntry { pos: pos.to_string(), text: String::new(), seq })
+        Some(SignEntry { pos: pos.to_string(), text: String::new(), seq, owner: None })
     }
 
     /// 找 XZ 平面上距 (x, z) 最近、且水平距離在 `range`（方塊）內的告示牌文字
     /// （供居民「讀牌」偵測附近牌子）。回傳 (牌面文字, 水平平方距離)。純查詢、無副作用。
     /// 牌子稀疏（玩家手動立，數量少），全掃成本可忽略。座標取方塊中心 +0.5 比對。
-    /// 找 `range` 內最近的一塊牌，回傳 `(牌子中心 x, 牌子中心 z, 牌面文字, 平方距離)`。
+    /// 找 `range` 內最近的一塊牌，回傳 `(牌子中心 x, 牌子中心 z, 牌面文字, 平方距離, 立牌玩家)`。
     /// 帶座標是為了居民讀牌 v3「重返心中的牌子」——讀到印象深刻的牌子時得記下它在哪，
-    /// 日後才走得回去。無牌在範圍內回 None。
-    pub fn nearest_within_xz(&self, x: f32, z: f32, range: f32) -> Option<(f32, f32, String, f32)> {
+    /// 日後才走得回去；帶立牌玩家是為了居民認得你的家 v1（830）——讀到玩家親手署名的牌時
+    /// 認出這是誰的家。無牌在範圍內回 None。
+    pub fn nearest_within_xz(
+        &self,
+        x: f32,
+        z: f32,
+        range: f32,
+    ) -> Option<(f32, f32, String, f32, Option<String>)> {
         let r2 = range * range;
-        let mut best: Option<(f32, f32, String, f32)> = None;
+        let mut best: Option<(f32, f32, String, f32, Option<String>)> = None;
         for (k, text) in &self.signs {
             let Some((sx, _sy, sz)) = parse_key(k) else { continue };
             let cx = sx as f32 + 0.5;
@@ -145,8 +169,8 @@ impl SignStore {
             let dx = cx - x;
             let dz = cz - z;
             let d2 = dx * dx + dz * dz;
-            if d2 <= r2 && best.as_ref().is_none_or(|(_, _, _, bd)| d2 < *bd) {
-                best = Some((cx, cz, text.clone(), d2));
+            if d2 <= r2 && best.as_ref().is_none_or(|(_, _, _, bd, _)| d2 < *bd) {
+                best = Some((cx, cz, text.clone(), d2, self.owners.get(k).cloned()));
             }
         }
         best
@@ -208,7 +232,7 @@ mod tests {
     #[test]
     fn set_and_get() {
         let mut store = SignStore::new();
-        store.set("1,2,3", "家".to_string());
+        store.set("1,2,3", "家".to_string(), None);
         assert_eq!(store.get("1,2,3"), Some("家"));
         assert_eq!(store.get("9,9,9"), None);
     }
@@ -216,15 +240,15 @@ mod tests {
     #[test]
     fn set_empty_clears() {
         let mut store = SignStore::new();
-        store.set("0,0,0", "臨時".to_string());
-        store.set("0,0,0", String::new());
+        store.set("0,0,0", "臨時".to_string(), None);
+        store.set("0,0,0", String::new(), None);
         assert_eq!(store.get("0,0,0"), None);
     }
 
     #[test]
     fn clear_removes_and_returns_event() {
         let mut store = SignStore::new();
-        store.set("5,5,5", "礦坑".to_string());
+        store.set("5,5,5", "礦坑".to_string(), None);
         let ev = store.clear("5,5,5").expect("有牌子應回清除事件");
         assert_eq!(ev.text, "");
         assert_eq!(store.get("5,5,5"), None);
@@ -235,9 +259,9 @@ mod tests {
     #[test]
     fn from_entries_takes_latest_seq() {
         let entries = vec![
-            SignEntry { pos: "0,0,0".into(), text: "舊".into(), seq: 0 },
-            SignEntry { pos: "0,0,0".into(), text: "新".into(), seq: 2 },
-            SignEntry { pos: "0,0,0".into(), text: "中".into(), seq: 1 },
+            SignEntry { pos: "0,0,0".into(), text: "舊".into(), seq: 0, owner: None },
+            SignEntry { pos: "0,0,0".into(), text: "新".into(), seq: 2, owner: None },
+            SignEntry { pos: "0,0,0".into(), text: "中".into(), seq: 1, owner: None },
         ];
         let store = SignStore::from_entries(entries);
         assert_eq!(store.get("0,0,0"), Some("新"), "應取 seq 最大者");
@@ -247,8 +271,8 @@ mod tests {
     #[test]
     fn from_entries_empty_text_removes() {
         let entries = vec![
-            SignEntry { pos: "0,0,0".into(), text: "立牌".into(), seq: 0 },
-            SignEntry { pos: "0,0,0".into(), text: "".into(), seq: 1 }, // 破壞
+            SignEntry { pos: "0,0,0".into(), text: "立牌".into(), seq: 0, owner: None },
+            SignEntry { pos: "0,0,0".into(), text: "".into(), seq: 1, owner: None }, // 破壞
         ];
         let store = SignStore::from_entries(entries);
         assert_eq!(store.get("0,0,0"), None, "最新是空＝已清除");
@@ -257,11 +281,64 @@ mod tests {
     #[test]
     fn all_sorted_and_excludes_empty() {
         let mut store = SignStore::new();
-        store.set("2,0,0", "乙".to_string());
-        store.set("1,0,0", "甲".to_string());
-        store.set("3,0,0", "".to_string()); // 空的不列
+        store.set("2,0,0", "乙".to_string(), None);
+        store.set("1,0,0", "甲".to_string(), None);
+        store.set("3,0,0", "".to_string(), None); // 空的不列
         let all = store.all();
         assert_eq!(all, vec![("1,0,0".into(), "甲".into()), ("2,0,0".into(), "乙".into())]);
+    }
+
+    // ── 立牌玩家 owner（居民認得你的家 v1，自主提案切片，ROADMAP 830）──────────────────────
+
+    #[test]
+    fn set_records_owner_and_nearest_within_xz_returns_it() {
+        let mut store = SignStore::new();
+        store.set("2,4,2", "阿宅的家".to_string(), Some("阿宅".to_string()));
+        let hit = store.nearest_within_xz(2.5, 2.5, 3.0).expect("範圍內應有牌");
+        assert_eq!(hit.4, Some("阿宅".to_string()), "應帶回立牌玩家");
+    }
+
+    #[test]
+    fn set_without_owner_returns_none() {
+        let mut store = SignStore::new();
+        store.set("2,4,2", "往礦坑↓".to_string(), None);
+        let hit = store.nearest_within_xz(2.5, 2.5, 3.0).expect("範圍內應有牌");
+        assert_eq!(hit.4, None, "無主的牌（訪客／指路牌）應回 None");
+    }
+
+    #[test]
+    fn rewriting_sign_without_owner_clears_previous_owner() {
+        let mut store = SignStore::new();
+        store.set("0,0,0", "阿宅的家".to_string(), Some("阿宅".to_string()));
+        // 改寫成別的內容、這次沒帶 owner（比照訪客改寫或程式內部改寫）——舊 owner 應被清掉，
+        // 不留孤兒歸屬（誤導居民認錯家）。
+        store.set("0,0,0", "往礦坑↓".to_string(), None);
+        let hit = store.nearest_within_xz(0.5, 0.5, 3.0).expect("範圍內應有牌");
+        assert_eq!(hit.4, None);
+    }
+
+    #[test]
+    fn clear_removes_owner_too() {
+        let mut store = SignStore::new();
+        store.set("5,5,5", "阿宅的家".to_string(), Some("阿宅".to_string()));
+        store.clear("5,5,5");
+        store.set("5,5,5", "新的牌".to_string(), None);
+        let hit = store.nearest_within_xz(5.5, 5.5, 3.0).expect("範圍內應有牌");
+        assert_eq!(hit.4, None, "破壞後重立不應殘留舊 owner");
+    }
+
+    #[test]
+    fn from_entries_restores_owner_from_latest_seq() {
+        let entries = vec![
+            SignEntry { pos: "0,0,0".into(), text: "阿宅的家".into(), seq: 0, owner: Some("阿宅".into()) },
+            SignEntry { pos: "1,0,0".into(), text: "舊資料無主".into(), seq: 0, owner: None },
+        ];
+        let store = SignStore::from_entries(entries);
+        assert_eq!(
+            store.nearest_within_xz(0.5, 0.5, 1.0).and_then(|h| h.4),
+            Some("阿宅".to_string())
+        );
+        assert_eq!(store.nearest_within_xz(1.5, 0.5, 1.0).and_then(|h| h.4), None);
     }
 
     #[test]
@@ -281,13 +358,13 @@ mod tests {
     #[test]
     fn nearest_within_finds_closest_in_range() {
         let mut store = SignStore::new();
-        store.set("10,4,10", "遠牌".to_string());
-        store.set("2,4,2", "近牌".to_string());
+        store.set("10,4,10", "遠牌".to_string(), None);
+        store.set("2,4,2", "近牌".to_string(), None);
         // 站在 (2.5, 2.5)：近牌在腳下、遠牌 ~11 格外。範圍 3 只找得到近牌。
         let hit = store.nearest_within_xz(2.5, 2.5, 3.0);
-        assert_eq!(hit.as_ref().map(|(_, _, t, _)| t.clone()), Some("近牌".to_string()));
+        assert_eq!(hit.as_ref().map(|(_, _, t, _, _)| t.clone()), Some("近牌".to_string()));
         // 回傳的座標應為牌子中心（2,2 → 2.5, 2.5）。
-        let (cx, cz, _, _) = hit.unwrap();
+        let (cx, cz, _, _, _) = hit.unwrap();
         assert_eq!((cx, cz), (2.5, 2.5));
         // 站得離兩牌都很遠：範圍內沒牌。
         assert!(store.nearest_within_xz(50.0, 50.0, 3.0).is_none());
@@ -296,11 +373,11 @@ mod tests {
     #[test]
     fn nearest_within_picks_the_closer_of_two() {
         let mut store = SignStore::new();
-        store.set("0,4,0", "A".to_string());
-        store.set("4,4,0", "B".to_string());
+        store.set("0,4,0", "A".to_string(), None);
+        store.set("4,4,0", "B".to_string(), None);
         // 站在 (3.6, 0.5)：離 B(4.5,0.5) 比離 A(0.5,0.5) 近。
         assert_eq!(
-            store.nearest_within_xz(3.6, 0.5, 8.0).map(|(_, _, t, _)| t),
+            store.nearest_within_xz(3.6, 0.5, 8.0).map(|(_, _, t, _, _)| t),
             Some("B".to_string())
         );
     }
