@@ -88,6 +88,7 @@ use crate::voxel_time::{self as vt, WorldTime, TimePhase};
 use crate::voxel_announce as vannounce;
 use crate::voxel_bonds::{self as vbonds, ResidentBonds};
 use crate::voxel_romance::{self as vromance, ResidentRomance};
+use crate::voxel_wildlife as vwild;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
@@ -642,6 +643,54 @@ struct VoxelResident {
     hunger_care_cooldown: f32,
 }
 
+/// 野兔 v1（自主提案切片，ROADMAP 847）：世界第一種環境生物。純點綴、無 AI 大腦、
+/// 無戰鬥、無記憶——只有「閒晃」與「見到玩家靠近就受驚逃開」兩件事。
+/// 純記憶體，重啟於固定家域點重新生成（比照既有 `drops`/`stalls` 世界暫態慣例，零 migration）。
+struct WildlifeAnimal {
+    /// 系統 id（"vox_wld_0"…），與居民 id 體系無交集。
+    id: String,
+    body: Body,
+    yaw: f32,
+    /// 家域中心（世界座標）：平靜時的閒晃圍繞這一點打轉，範圍遠比居民家域小。
+    home_x: f32,
+    home_z: f32,
+    /// 當前水平移動目標（閒晃目的地，或受驚時的逃跑落點）。
+    target_x: f32,
+    target_z: f32,
+    /// 抵達閒晃目標後的小歇秒數（> 0 = 在歇、原地落重力）。受驚時忽略（不歇息）。
+    wait_timer: f32,
+    /// 此刻是否受驚逃跑中（遲滯判定見 `voxel_wildlife::should_flee`）。
+    fleeing: bool,
+}
+
+/// 野兔家域點（世界座標偏移，散布在村莊周圍，玩家出生後很快就有機會撞見）。
+/// 沿用居民 `dry_ground_spawn` 找最近陸地，故偏移不需精確落在草地，找到最近乾地即可。
+const WILDLIFE_HOMES: [(i32, i32); 6] = [
+    (12, 6), (-10, 14), (18, -8), (-14, -12), (6, -20), (-20, 4),
+];
+
+/// 建出初始野兔群（hub 初始化時呼叫一次）。
+fn init_wildlife() -> Vec<WildlifeAnimal> {
+    WILDLIFE_HOMES
+        .iter()
+        .enumerate()
+        .map(|(i, (ox, oz))| {
+            let body = vr::dry_ground_spawn(*ox, *oz);
+            WildlifeAnimal {
+                id: format!("vox_wld_{i}"),
+                home_x: body.x,
+                home_z: body.z,
+                target_x: body.x,
+                target_z: body.z,
+                body,
+                yaw: 0.0,
+                wait_timer: 0.0,
+                fleeing: false,
+            }
+        })
+        .collect()
+}
+
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
 #[derive(Serialize)]
 struct ResidentView {
@@ -659,6 +708,16 @@ struct ResidentView {
     /// 居民當前心情 emoji（None / 省略 = 跳過更新）。ROADMAP 676。
     #[serde(skip_serializing_if = "Option::is_none")]
     mood: Option<String>,
+}
+
+/// 野兔序列化視圖（廣播給客戶端渲染：位置/朝向。野兔 v1，ROADMAP 847）。
+#[derive(Serialize)]
+struct WildlifeView {
+    id: String,
+    x: f32,
+    y: f32,
+    z: f32,
+    yaw: f32,
 }
 
 /// 居民名字池（取自 resident_npc 的近城居民風格名，柔和轉寫式、與主要 NPC 一致）。
@@ -1537,6 +1596,10 @@ struct VoxelHub {
     /// 方塊改動 delta 層（疊在程序生成地形之上）。切片②先記憶體存，session 內正確套用+廣播。
     /// 之後切片可把它接 DB 持久化；AI 蓋家也會共用這層。
     deltas: RwLock<WorldDelta>,
+    /// 野兔 v1（自主提案切片，ROADMAP 847）：世界第一種環境生物。純記憶體、啟動時於
+    /// 固定家域點生成（見 `init_wildlife`），重啟即重新生成（比照 `drops`/`stalls` 世界暫態慣例，
+    /// 零 migration、零持久化）。tick 節奏與 `residents` 相同（10Hz）但各自獨立鎖，不巢狀。
+    wildlife: RwLock<Vec<WildlifeAnimal>>,
     /// 乙太營火 v1（自主提案切片）：世界中所有營火方塊座標。放置時 push、破壞時 retain，
     /// 啟動時由 `vcamp::scan_campfires` 從 delta 重建（篝火持久化，重啟後居民仍記得去哪圍暖）。
     /// tick 時先短鎖 clone 一份快照再進 residents 寫鎖迴圈用，不巢狀鎖（守 prod 死鎖鐵律）。
@@ -2174,6 +2237,8 @@ fn hub() -> &'static VoxelHub {
             deltas: RwLock::new(deltas),
             campfires: RwLock::new(campfires),
             benches: RwLock::new(benches),
+            // 野兔 v1：啟動時於固定家域點生成（純記憶體、重啟即重新生成，零持久化）。
+            wildlife: RwLock::new(init_wildlife()),
             residents: RwLock::new(residents),
             agent_bus: AgentBus::new(),
             // 啟動時從 data/voxel_memory.jsonl 載回長期記憶（檔缺 = 首次啟動，回空），
@@ -2373,10 +2438,18 @@ fn players_snapshot_json() -> String {
         let day = hub().world_time.read().unwrap().days_elapsed();
         vseason::season_for_day(day).as_str()
     };
+    // 野兔快照（野兔 v1，ROADMAP 847，短鎖、不巢狀）：純位置/朝向，前端渲染環境點綴用。
+    let wildlife: Vec<WildlifeView> = {
+        let a = hub().wildlife.read().unwrap();
+        a.iter()
+            .map(|w| WildlifeView { id: w.id.clone(), x: w.body.x, y: w.body.y, z: w.body.z, yaw: w.yaw })
+            .collect()
+    }; // 野兔讀鎖在此釋放
     serde_json::json!({
         "t": "players",
         "players": players,
         "residents": residents,
+        "wildlife": wildlife,
         "time_of_day": time_of_day,
         "raining": raining,
         "rainbow": rainbow,
@@ -7119,6 +7192,7 @@ pub fn spawn_residents() {
         loop {
             ticker.tick().await;
             tick_residents(RESIDENT_DT);
+            tick_wildlife(RESIDENT_DT); // 野兔 v1：同節拍，各自獨立鎖，不與居民鎖巢狀。
         }
     });
 }
@@ -7932,6 +8006,60 @@ pub async fn voxel_village_map_handler() -> axum::response::Response {
         .header(header::CACHE_CONTROL, "no-cache")
         .body(axum::body::Body::from(body))
         .unwrap()
+}
+
+/// 野兔 tick（野兔 v1，自主提案切片 ROADMAP 847）：與 `tick_residents` 同節拍（10Hz）。
+/// 純點綴生物——沒有思考/記憶/社交，只有兩件事：閒晃、見到玩家靠近就受驚逃開。
+/// 鎖序：`players`(read) → `deltas`(read) → `wildlife`(write)，循序取放、與 `residents`
+/// 鎖各自獨立、不巢狀（守 prod 死鎖鐵律）。
+fn tick_wildlife(dt: f32) {
+    // 玩家座標快照（短鎖即釋，不與 wildlife 鎖巢狀）。
+    let player_pts: Vec<(f32, f32)> = {
+        let players = hub().players.read().unwrap();
+        players.values().map(|p| (p.x, p.z)).collect()
+    }; // 玩家讀鎖在此釋放
+    let world = hub().deltas.read().unwrap();
+    let mut animals = hub().wildlife.write().unwrap();
+    for a in animals.iter_mut() {
+        let (bx, bz) = (a.body.x, a.body.z);
+        // 找最近玩家（沒有玩家在線 = 視為無限遠，永遠不受驚）。
+        let nearest = player_pts.iter().min_by(|(x1, z1), (x2, z2)| {
+            let d1 = (a.body.x - x1).powi(2) + (a.body.z - z1).powi(2);
+            let d2 = (a.body.x - x2).powi(2) + (a.body.z - z2).powi(2);
+            d1.partial_cmp(&d2).unwrap()
+        });
+        let nearest_dist_sq = nearest
+            .map(|(px, pz)| (a.body.x - px).powi(2) + (a.body.z - pz).powi(2))
+            .unwrap_or(f32::MAX);
+        a.fleeing = vwild::should_flee(a.fleeing, nearest_dist_sq);
+        if a.fleeing {
+            // 受驚中：每 tick 重算逃跑方向（玩家持續逼近時，逃跑目標跟著即時調整）。
+            if let Some((px, pz)) = nearest {
+                let (tx, tz) = vwild::flee_target(a.body.x, a.body.z, *px, *pz);
+                a.target_x = tx;
+                a.target_z = tz;
+            }
+            vr::step_toward(&world, &mut a.body, a.target_x, a.target_z, dt, vwild::FLEE_SPEED);
+            a.wait_timer = 0.0; // 受驚時不歇息。
+        } else if a.wait_timer > 0.0 {
+            a.wait_timer -= dt;
+            vr::gravity_step(&world, &mut a.body, dt);
+        } else {
+            let reached = vr::step_toward(&world, &mut a.body, a.target_x, a.target_z, dt, vwild::WANDER_SPEED);
+            if reached {
+                let angle = rand::random::<f32>() * std::f32::consts::TAU;
+                let radius = vwild::WANDER_MIN_R
+                    + rand::random::<f32>() * (vwild::WANDER_MAX_R - vwild::WANDER_MIN_R);
+                let (tx, tz) = vr::wander_target(a.home_x, a.home_z, angle, radius);
+                a.target_x = tx;
+                a.target_z = tz;
+                a.wait_timer = 0.5 + rand::random::<f32>() * 1.5;
+            }
+        }
+        if let Some(yaw) = vr::yaw_from_move(a.body.x - bx, a.body.z - bz) {
+            a.yaw = yaw;
+        }
+    }
 }
 
 /// 一次居民世界推進：套用上輪思考的決策 → 物理/閒晃 → 社交互動 → 廣播 → 排程新一輪思考。

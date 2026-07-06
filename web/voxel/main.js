@@ -1357,6 +1357,16 @@ const RES_TORSO_GEO = new THREE.BoxGeometry(0.5, 1.0, 0.32);
 const RES_HEAD_GEO = new THREE.BoxGeometry(0.42, 0.42, 0.42);
 const RES_VISIBLE_DIST = 110; // 超過此距離（接近霧盡頭）隱藏，省繪製
 
+// ── 野兔 v1（自主提案切片，ROADMAP 847）──────────────────────────────────────
+// 世界第一種環境生物：純點綴、無名牌無泡泡，只有身體+兩隻耳朵。數量少（6 隻）、
+// 共用幾何/材質，與居民同款「距離超過即整個 group 隱藏」省繪製（FPS 鐵律）。
+const wildlifeEnts = new Map(); // id -> { group }
+const RABBIT_BODY_MAT = new THREE.MeshLambertMaterial({ color: 0xc9a876 });
+const RABBIT_EAR_MAT = new THREE.MeshLambertMaterial({ color: 0xdcc09a });
+const RABBIT_BODY_GEO = new THREE.BoxGeometry(0.32, 0.24, 0.4);
+const RABBIT_EAR_GEO = new THREE.BoxGeometry(0.06, 0.22, 0.06);
+const WILDLIFE_VISIBLE_DIST = 60; // 兔子體型小，遠處看不清也不必畫，比居民更早隱藏
+
 // 文字貼圖 sprite（名牌/泡泡共用工廠）。bubble=true 用柔色圓底（像在說話），否則白描邊名牌。
 function makeTextSprite(text, bubble) {
   const canvas = document.createElement("canvas");
@@ -1823,6 +1833,39 @@ function updateResidents(list) {
   }
   for (const [id, ent] of residents) {
     if (!seen.has(id)) { scene.remove(ent.group); residents.delete(id); }
+  }
+}
+
+// 建一隻野兔（純點綴：身體 + 兩隻立耳，無名牌無泡泡）。
+function buildRabbit() {
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(RABBIT_BODY_GEO, RABBIT_BODY_MAT);
+  body.position.y = 0.14;
+  group.add(body);
+  const earL = new THREE.Mesh(RABBIT_EAR_GEO, RABBIT_EAR_MAT);
+  earL.position.set(-0.08, 0.36, 0.05);
+  group.add(earL);
+  const earR = new THREE.Mesh(RABBIT_EAR_GEO, RABBIT_EAR_MAT);
+  earR.position.set(0.08, 0.36, 0.05);
+  group.add(earR);
+  scene.add(group);
+  return { group };
+}
+
+// 依伺服器快照更新所有野兔（位置/朝向）。新出現的就建、消失的就移除（同構 updateResidents）。
+function updateWildlife(list) {
+  const seen = new Set();
+  for (const w of list) {
+    seen.add(w.id);
+    let ent = wildlifeEnts.get(w.id);
+    if (!ent) { ent = buildRabbit(); wildlifeEnts.set(w.id, ent); }
+    ent.group.position.set(w.x, w.y, w.z);
+    ent.group.rotation.y = w.yaw || 0;
+    const dx = w.x - player.x, dz = w.z - player.z;
+    ent.group.visible = (dx * dx + dz * dz) < (WILDLIFE_VISIBLE_DIST * WILDLIFE_VISIBLE_DIST);
+  }
+  for (const [id, ent] of wildlifeEnts) {
+    if (!seen.has(id)) { scene.remove(ent.group); wildlifeEnts.delete(id); }
   }
 }
 
@@ -4483,6 +4526,8 @@ function connect() {
       for (const [id, ent] of others) if (!seen.has(id)) { scene.remove(ent.mesh); others.delete(id); }
       // 乙太方界 AI 居民（與玩家分開的陣列）：位置/名字/說的話。
       if (m.residents) updateResidents(m.residents);
+      // 野兔 v1（自主提案切片，ROADMAP 847）：世界第一種環境生物，純位置/朝向。
+      if (m.wildlife) updateWildlife(m.wildlife);
       // 晝夜循環 v1：伺服器每幀帶 time_of_day(0.0–1.0)，前端據此更新天空/光照。
       // 下雨天氣 v1（ROADMAP 700）：raining 隨同一份快照送達，一併觸發天空重繪。
       let skyDirty = false;
