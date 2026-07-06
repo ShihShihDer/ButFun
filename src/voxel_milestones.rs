@@ -10,6 +10,12 @@
 //! 本切片換到全新角度——**玩家自己的旅程**，把療癒循環裡每個「第一次」變成一枚
 //! 可回頭翻閱、達成當下有小小慶祝感的徽章。
 //!
+//! **里程碑追上新系統 v1（自主提案切片，接續 828）**：724 上線後，箱子儲存(692)、植樹
+//! 造林(738)、建築藍圖(826)、漂流瓶(825)、並肩協作(827)、掉落物轉手(828) 六個系統陸續
+//! 上線，玩家做這些系統裡的「第一次」卻從未被里程碑牆看見——本刀補上對應六枚徽章，讓
+//! 里程碑牆跟上世界已經長出的新內容，不留下「做過了卻沒被看見」的縫。零新架構、只是
+//! append 定義 + 在既有成功路徑接上 `try_unlock_milestone`（沿用同一套冪等機制）。
+//!
 //! 純邏輯層（`MilestoneStore` 同步資料結構，無鎖/IO/async），IO 與觸發點在 `voxel_ws.rs`。
 //! 持久化格式：`data/voxel_milestones.jsonl`（每行一筆 `(player, id)`，append-only、
 //! `unlock` 本身冪等——已達成的里程碑重複呼叫不會重複寫檔，因為呼叫端只在 `unlock` 回
@@ -48,6 +54,12 @@ pub const MILESTONES: &[MilestoneDef] = &[
     MilestoneDef { id: "first_fish",  name_zh: "初次垂釣", desc_zh: "在水邊釣起第一尾魚", icon: "🎣" },
     MilestoneDef { id: "first_taste", name_zh: "初次品嚐", desc_zh: "嚐一口自己親手煮的料理", icon: "🍲" },
     MilestoneDef { id: "first_firework", name_zh: "初次煙火", desc_zh: "朝夜空施放第一束乙太煙火", icon: "🎆" },
+    MilestoneDef { id: "first_chest", name_zh: "初次收納", desc_zh: "把多餘的材料收進第一座箱子", icon: "📦" },
+    MilestoneDef { id: "first_grove", name_zh: "初次造林", desc_zh: "親手種下第一株樹苗", icon: "🌳" },
+    MilestoneDef { id: "first_blueprint", name_zh: "初次藍圖", desc_zh: "把建築藍圖交給居民、指定她蓋什麼", icon: "📐" },
+    MilestoneDef { id: "first_bottle", name_zh: "初次寄信", desc_zh: "把寫著心裡話的漂流瓶丟進水裡", icon: "🍾" },
+    MilestoneDef { id: "first_coop", name_zh: "初次協作", desc_zh: "和其他真人玩家一起採集、多得了一份默契", icon: "🤝" },
+    MilestoneDef { id: "first_dropitem", name_zh: "初次轉手", desc_zh: "把手上一件材料親手交給另一位真人", icon: "🤲" },
 ];
 
 /// 查表確認是否為已知里程碑 id（守 store 資料乾淨，未知 id 不寫入）。
@@ -223,6 +235,16 @@ mod tests {
         assert!(is_known("first_sleep"));
         assert!(!is_known(""));
         assert!(!is_known("first_win_lottery"));
+    }
+
+    #[test]
+    fn catchup_milestones_known() {
+        for id in [
+            "first_chest", "first_grove", "first_blueprint",
+            "first_bottle", "first_coop", "first_dropitem",
+        ] {
+            assert!(is_known(id), "追上新系統的里程碑 {id} 應已登記");
+        }
     }
 
     #[test]

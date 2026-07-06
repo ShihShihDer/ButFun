@@ -3037,6 +3037,8 @@ async fn handle_socket(
                             let partners = vcoop_gather::count_partners((px, py, pz), &others);
                             let bonus = vcoop_gather::coop_yield_bonus(partners);
                             if bonus > 0 {
+                                // 玩家里程碑（自主提案切片，追上 827）：第一次因協作多得一份。
+                                try_unlock_milestone(&name, "first_coop", &out_tx);
                                 let bid = target_block as u8;
                                 let entry = hub().inventory.write().unwrap().give(&name, bid, bonus);
                                 vinv::append_inv(&entry);
@@ -3142,6 +3144,8 @@ async fn handle_socket(
                     // 由 `tick_grove`（15 秒節拍）計時，約 150 秒後長成一株樹。
                     if block == Block::Sapling {
                         hub().grove.write().unwrap().plant(x, y, z, vfarm::now_secs());
+                        // 玩家里程碑（自主提案切片，追上 738）：第一次親手種下樹苗。
+                        try_unlock_milestone(&name, "first_grove", &out_tx);
                     }
                     // 莓果叢 v1（ROADMAP 806）：剛種下的莓果叢苗記進 berry store，
                     // 由 `tick_berry`（15 秒節拍）計時，約 100 秒後結果。
@@ -4837,6 +4841,8 @@ async fn handle_socket(
                         hub().memory.write().unwrap().add_memory(&resident_id, &name, &mem5)
                     };
                     vmem::append_memory(&entry5);
+                    // 玩家里程碑（自主提案切片，追上 826）：第一次用藍圖指定居民蓋什麼。
+                    try_unlock_milestone(&name, "first_blueprint", &out_tx);
                 }
                 // 6) 讀好感度（memory 讀鎖即釋）。
                 let affinity = {
@@ -5443,6 +5449,8 @@ async fn handle_socket(
                 // 2) 放入箱子（chest 寫鎖即釋）。
                 let chest_e = hub().chest.write().unwrap().put(&pos, item_id, count);
                 vchest::append_chest(&chest_e);
+                // 玩家里程碑（自主提案切片，追上 692）：第一次把材料收進箱子。
+                try_unlock_milestone(&name, "first_chest", &out_tx);
                 // 3) 回傳最新 inv_update + chest_view。
                 let new_inv_count = hub().inventory.read().unwrap().count(&name, item_id);
                 let _ = out_tx.try_send(Message::Text(
@@ -5596,6 +5604,8 @@ async fn handle_socket(
                 // 9) 存進 store + 落地持久化（bottle 寫鎖即釋 → IO 在鎖外）。
                 let ev = hub().bottle.write().unwrap().set(&pos, clean);
                 vbottle::append_bottle(&ev);
+                // 玩家里程碑（自主提案切片，追上 825）：第一次把心裡話丟進漂流瓶。
+                try_unlock_milestone(&name, "first_bottle", &out_tx);
                 // 10) 廣播座標給所有人（絕不廣播內文）+ 單播成功提示。
                 broadcast_bottle_dropped(x, y, z);
                 let _ = out_tx.send(Message::Text(
@@ -5671,6 +5681,8 @@ async fn handle_socket(
                 let spawned = { hub().drops.write().unwrap().spawn(wx, wy, wz, item_id, want, &name, now_secs) };
                 if let Some(id) = spawned {
                     broadcast_item_dropped(id, wx, wy, wz, item_id, want, &name);
+                    // 玩家里程碑（自主提案切片，追上 828）：第一次把材料親手轉交給另一位真人。
+                    try_unlock_milestone(&name, "first_dropitem", &out_tx);
                 } else {
                     // 極端競態（多人同時丟到上限）：退還材料，別讓東西憑空消失。
                     let refund = hub().inventory.write().unwrap().give(&name, item_id, want);
