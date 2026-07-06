@@ -2042,14 +2042,19 @@ enum ClientMsg {
     Gift { resident_id: String, item_id: u8 },
     /// 居民交易 v1：向指定居民請求以物易物（ROADMAP 670）。
     /// 伺服器回 `trade_offer`，玩家再傳 TradeAccept 接受；提案 30 秒後自動過期。
+    #[serde(rename = "trade_request")]
     TradeRequest { resident_id: String },
     /// 居民交易 v1：接受當前待確認的交易提案（ROADMAP 670）。
+    #[serde(rename = "trade_accept")]
     TradeAccept { resident_id: String },
     /// 箱子 v1：開啟指定座標的箱子，伺服器回傳 `chest_view`（ROADMAP 692）。
+    #[serde(rename = "open_chest")]
     OpenChest { x: i32, y: i32, z: i32 },
     /// 箱子 v1：把背包中的 `count` 個 `item_id` 放入箱子（ROADMAP 692）。
+    #[serde(rename = "chest_put")]
     ChestPut { x: i32, y: i32, z: i32, item_id: u8, count: u32 },
     /// 箱子 v1：從箱子取出 `count` 個 `item_id` 到背包（ROADMAP 692）。
+    #[serde(rename = "chest_take")]
     ChestTake { x: i32, y: i32, z: i32, item_id: u8, count: u32 },
     /// 告示牌 v1：寫／改寫目標告示牌的文字（ROADMAP 740）。伺服器驗 reach + 目標為
     /// Sign(66) 後清洗文字、存檔並廣播 `sign` 給所有人。空字串＝清空牌面。
@@ -14660,6 +14665,54 @@ mod tests {
         match p {
             ClientMsg::Place { x, y, z, b } => assert_eq!((x, y, z, b), (1, 10, 2, 3)),
             _ => panic!("應解析成 Place"),
+        }
+    }
+
+    /// 修回歸測試（真 bug）：`TradeRequest`/`TradeAccept`/`OpenChest`/`ChestPut`/`ChestTake`
+    /// 這 5 個多詞 variant 過去沒加 `#[serde(rename=...)]`，`rename_all="lowercase"` 不分詞會
+    /// 期待 `"tradeaccept"`/`"openchest"` 等無底線 tag，但前端 `web/voxel/main.js` 一直送的是
+    /// `"trade_request"`/`"open_chest"` 等底線寫法——兩邊對不上，解析全數悄悄失敗、被最後的
+    /// `_ => {}` 吞掉，箱子開/存/取與玩家向居民請求交易因此**完全不通但零錯誤訊息**。
+    /// 這裡直接餵前端實際會送的字串，鎖死正確 tag，防止日後重構又漏了 rename。
+    #[test]
+    fn chest_and_trade_tags_match_frontend() {
+        let m: ClientMsg =
+            serde_json::from_str(r#"{"t":"open_chest","x":1,"y":2,"z":3}"#).unwrap();
+        match m {
+            ClientMsg::OpenChest { x, y, z } => assert_eq!((x, y, z), (1, 2, 3)),
+            _ => panic!("應解析成 OpenChest"),
+        }
+        let m: ClientMsg = serde_json::from_str(
+            r#"{"t":"chest_put","x":1,"y":2,"z":3,"item_id":8,"count":2}"#,
+        )
+        .unwrap();
+        match m {
+            ClientMsg::ChestPut { x, y, z, item_id, count } => {
+                assert_eq!((x, y, z, item_id, count), (1, 2, 3, 8, 2))
+            }
+            _ => panic!("應解析成 ChestPut"),
+        }
+        let m: ClientMsg = serde_json::from_str(
+            r#"{"t":"chest_take","x":1,"y":2,"z":3,"item_id":8,"count":2}"#,
+        )
+        .unwrap();
+        match m {
+            ClientMsg::ChestTake { x, y, z, item_id, count } => {
+                assert_eq!((x, y, z, item_id, count), (1, 2, 3, 8, 2))
+            }
+            _ => panic!("應解析成 ChestTake"),
+        }
+        let m: ClientMsg =
+            serde_json::from_str(r#"{"t":"trade_request","resident_id":"vox_res_0"}"#).unwrap();
+        match m {
+            ClientMsg::TradeRequest { resident_id } => assert_eq!(resident_id, "vox_res_0"),
+            _ => panic!("應解析成 TradeRequest"),
+        }
+        let m: ClientMsg =
+            serde_json::from_str(r#"{"t":"trade_accept","resident_id":"vox_res_0"}"#).unwrap();
+        match m {
+            ClientMsg::TradeAccept { resident_id } => assert_eq!(resident_id, "vox_res_0"),
+            _ => panic!("應解析成 TradeAccept"),
         }
     }
 
