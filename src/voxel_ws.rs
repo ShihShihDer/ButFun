@@ -7177,6 +7177,60 @@ pub async fn voxel_milestones_handler(
         .unwrap()
 }
 
+/// 乙太方界·村莊地圖 v1（自主提案切片，ROADMAP 837）：回傳村莊中心＋廣場/主路尺寸常數＋
+/// 每塊沿路地塊（座標＋認領者，未認領則 None）。
+///
+/// 村莊系統（835）早就把居民的家收攏成中央廣場＋十字主路＋沿路地塊的實體佈局，玩家也能
+/// 走在真正鋪好的石板路上——但那份佈局只活在腳下：玩家從沒有任何管道能一眼看到「村子
+/// 多大、廣場在哪、誰住哪塊地」，只能靠雙腳一格格丈量。跟 708 交情網／719 技能簿同一手法：
+/// 讓早已存在的系統第一次被看見，而非新造一套村莊系統；本端點純讀取、零副作用。
+pub async fn voxel_village_map_handler() -> axum::response::Response {
+    use axum::http::header;
+    // 村莊中心：優先用一次性整理時釘死的中心，缺（村莊尚未規劃）才退回即時質心——
+    // 與 `claim_or_reuse_plot` 同一套判斷，確保地圖與居民實際認領的地塊完全對齊。
+    let (vcx, vcz) = match vvillage::load_village_center() {
+        Some(c) => c,
+        None => {
+            let home_bases: Vec<(i32, i32)> = {
+                let residents = hub().residents.read().unwrap();
+                residents
+                    .iter()
+                    .map(|r| (r.home_x.floor() as i32, r.home_z.floor() as i32))
+                    .collect()
+            }; // residents 讀鎖釋放
+            vvillage::village_center(&home_bases)
+        }
+    };
+    let layout = vvillage::plot_layout(vcx, vcz); // 純函式、鎖外算
+    let plots: Vec<serde_json::Value> = {
+        // 短讀鎖一次性反查每塊地的認領者 → 立即釋放，不與其他鎖巢狀。
+        let village = hub().village.read().unwrap();
+        layout
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "cx": p.cx,
+                    "cz": p.cz,
+                    "resident": village.resident_at(p.cx, p.cz).map(resident_name_of),
+                })
+            })
+            .collect()
+    };
+    let body = serde_json::json!({
+        "cx": vcx,
+        "cz": vcz,
+        "plaza_radius": vvillage::PLAZA_RADIUS,
+        "road_reach": vvillage::ROAD_REACH,
+        "plots": plots,
+    })
+    .to_string();
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
 /// 一次居民世界推進：套用上輪思考的決策 → 物理/閒晃 → 社交互動 → 廣播 → 排程新一輪思考。
 fn tick_residents(dt: f32) {
     // 0) 推進世界時鐘（短鎖即釋，不巢狀）。晝夜循環 v1。

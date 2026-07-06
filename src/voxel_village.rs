@@ -296,6 +296,15 @@ impl PlotRegistry {
         self.taken.iter().any(|&(x, z)| x == cx && z == cz)
     }
 
+    /// 反查：這塊地塊中心目前是哪位居民認領的（沒人認領回 None）。純資料查詢、零副作用，
+    /// 供村莊地圖等唯讀展示端點使用（`claim_of` 反方向：地塊→居民，而非居民→地塊）。
+    pub fn resident_at(&self, cx: i32, cz: i32) -> Option<&str> {
+        self.claims
+            .iter()
+            .find(|&(_, &(x, z))| x == cx && z == cz)
+            .map(|(rid, _)| rid.as_str())
+    }
+
     /// 為某居民登記認領一塊地；回傳落地記錄供 append。
     /// 同居民重複認領同一塊＝冪等（回原記錄、不重複佔位）；認領新塊會覆蓋舊登記。
     pub fn claim(&mut self, resident: &str, cx: i32, cz: i32) -> PlotClaim {
@@ -659,6 +668,26 @@ mod tests {
         assert_eq!(r.claim_of("vox_res_0"), Some((0, 20)));
         assert!(!r.is_taken(20, 0), "換塊後舊塊應釋放，可被別人認領");
         assert!(r.is_taken(0, 20));
+    }
+
+    #[test]
+    fn resident_at_reverse_looks_up_owner() {
+        let mut r = PlotRegistry::new();
+        assert_eq!(r.resident_at(20, 0), None, "沒人認領的地塊查無居民");
+        r.claim("vox_res_0", 20, 0);
+        r.claim("vox_res_1", 0, 20);
+        assert_eq!(r.resident_at(20, 0), Some("vox_res_0"));
+        assert_eq!(r.resident_at(0, 20), Some("vox_res_1"));
+        assert_eq!(r.resident_at(99, 99), None, "非地塊座標查無居民");
+    }
+
+    #[test]
+    fn resident_at_follows_reclaim() {
+        let mut r = PlotRegistry::new();
+        r.claim("vox_res_0", 20, 0);
+        r.claim("vox_res_0", 0, 20); // 換塊
+        assert_eq!(r.resident_at(20, 0), None, "舊塊已釋放，反查應查無居民");
+        assert_eq!(r.resident_at(0, 20), Some("vox_res_0"));
     }
 
     #[test]

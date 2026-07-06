@@ -608,6 +608,8 @@ async fn main() {
         .route("/voxel/skills", get(voxel_ws::voxel_skills_handler))
         // 乙太方界·玩家里程碑（ROADMAP 724）：玩家自己的成就徽章清單 JSON。
         .route("/voxel/milestones", get(voxel_ws::voxel_milestones_handler))
+        // 乙太方界·村莊地圖（自主提案切片，ROADMAP 837）：中心/廣場/主路尺寸＋沿路地塊認領 JSON。
+        .route("/voxel/village-map", get(voxel_ws::voxel_village_map_handler))
         // 其餘路徑（game.js、assets、wasm…）交給靜態前端（web/）。game.js 維持可
         // 快取——它的 URL 帶內容雜湊，內容一變 URL 就變，CF/瀏覽器自然抓新版。
         .fallback_service(ServeDir::new("web"))
