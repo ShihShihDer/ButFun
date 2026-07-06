@@ -693,6 +693,9 @@ struct WildlifeAnimal {
     /// 是否已被玩家餵食馴服（餵野兔馴服 v1，自主提案切片）。一次性、永久生效——
     /// 馴服後永遠不再受驚逃跑。只有野兔會用到；魚恆為 `false`（無馴服機制）。
     tamed: bool,
+    /// 已馴服的兔子此刻是否正在跟隨附近的玩家（馴服兔子跟隨你 v1，自主提案切片）。
+    /// 只有 `tamed` 的野兔會用到；魚恆為 `false`（無跟隨機制）。
+    following: bool,
 }
 
 /// 野兔家域點（世界座標偏移，散布在村莊周圍，玩家出生後很快就有機會撞見）。
@@ -721,6 +724,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             wait_timer: 0.0,
             fleeing: false,
             tamed: false,
+            following: false,
         }
     });
     let fish = FISH_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
@@ -737,6 +741,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             wait_timer: 0.0,
             fleeing: false,
             tamed: false,
+            following: false,
         }
     });
     rabbits.chain(fish).collect()
@@ -8207,8 +8212,43 @@ fn tick_wildlife(dt: f32) {
                 let nearest_dist_sq = nearest
                     .map(|(px, pz)| (a.body.x - px).powi(2) + (a.body.z - pz).powi(2))
                     .unwrap_or(f32::MAX);
-                // 已被馴服的兔子永遠不再受驚（餵野兔馴服 v1，自主提案切片）。
-                a.fleeing = !a.tamed && vwild::should_flee(a.fleeing, nearest_dist_sq);
+                // 已馴服的兔子走完全不同的分支：不再受驚，改成跟隨附近玩家
+                // （馴服兔子跟隨你 v1，自主提案切片，ROADMAP 851）。
+                if a.tamed {
+                    a.fleeing = false;
+                    a.following = vwild::should_follow(a.following, nearest_dist_sq);
+                    if a.following {
+                        if let Some((px, pz)) = nearest {
+                            if vwild::should_close_follow_gap(nearest_dist_sq) {
+                                vr::step_toward(&world, &mut a.body, *px, *pz, dt, vwild::FOLLOW_SPEED);
+                            } else {
+                                vr::gravity_step(&world, &mut a.body, dt);
+                            }
+                        }
+                        a.wait_timer = 0.0;
+                    } else if a.wait_timer > 0.0 {
+                        a.wait_timer -= dt;
+                        vr::gravity_step(&world, &mut a.body, dt);
+                    } else {
+                        let reached = vr::step_toward(
+                            &world, &mut a.body, a.target_x, a.target_z, dt, vwild::WANDER_SPEED,
+                        );
+                        if reached {
+                            let angle = rand::random::<f32>() * std::f32::consts::TAU;
+                            let radius = vwild::WANDER_MIN_R
+                                + rand::random::<f32>() * (vwild::WANDER_MAX_R - vwild::WANDER_MIN_R);
+                            let (tx, tz) = vr::wander_target(a.home_x, a.home_z, angle, radius);
+                            a.target_x = tx;
+                            a.target_z = tz;
+                            a.wait_timer = 0.5 + rand::random::<f32>() * 1.5;
+                        }
+                    }
+                    if let Some(yaw) = vr::yaw_from_move(a.body.x - bx, a.body.z - bz) {
+                        a.yaw = yaw;
+                    }
+                    continue;
+                }
+                a.fleeing = vwild::should_flee(a.fleeing, nearest_dist_sq);
                 if a.fleeing {
                     // 受驚中：每 tick 重算逃跑方向（玩家持續逼近時，逃跑目標跟著即時調整）。
                     if let Some((px, pz)) = nearest {

@@ -17,7 +17,17 @@
 //! 至今只能遠遠看——玩家從沒有一條路能真正「碰」到牠。本刀補上世界環境軸線與玩家互動
 //! 軸線第一次的交會：手持胡蘿蔔靠近一隻野兔並餵食，牠就此**永遠不再怕你**。因為
 //! [`FLEE_RADIUS`] 大於 [`TAME_REACH`]，這一刀是刻意的——要餵到牠，得先追上一隻正在
-//! 受驚逃跑的兔子，第一次成功的餵食因此帶著「追上牠」的小小成就感。
+//! 受驚逃跑的兔子，第一次成功的餵食因此帶著「追上牠」的小小成就感。**850 v1 說明裡
+//! 明講「刻意只做『不再逃跑』，不做跟隨/寵物/繁殖」——跟隨正是本刀要補的那一半。**
+//!
+//! **馴服兔子跟隨你 v1（自主提案切片，ROADMAP 851）**：馴服至今只讓兔子「原地不怕你」，
+//! 牠依舊只在自己的家域打轉，追上牠的那份成就感沒有下文——馴服一隻兔子和沒馴服看起來
+//! 幾乎沒兩樣（除了牠不逃）。本刀讓馴服真正產生看得見的羈絆：**已馴服的兔子只要你靠近，
+//! 就會像隻小跟班一樣跟上你走**（[`FOLLOW_RADIUS`] 內起跟、[`FOLLOW_LOSE_RADIUS`] 外才
+//! 走失遲滯 hysteresis，同 [`should_flee`] 手法），跟到 [`FOLLOW_STOP_DIST`] 就停下不再
+//! 往你身上擠；你若越走越遠，牠會安心跟丟、回到原本的閒晃。**v1 刻意收斂**：不分玩家
+//! 身份（任何靠近的玩家都能被跟）、不繁殖、不能召回/放開、無寵物 UI——第一次讓「馴服」
+//! 這件事在世界裡真的看得出差異，就是最小、最有感的一步。
 
 /// 野兔閒晃速度（方塊/秒）——比居民散步（2.6）更悠閒，符合小動物碎步的觀感。
 pub const WANDER_SPEED: f32 = 1.4;
@@ -56,6 +66,32 @@ const TAME_LINES: [&str; 4] = [
 /// 依 `pick` 取一句馴服回饋（越界安全取模，永不 panic）。
 pub fn tame_line(pick: usize) -> &'static str {
     TAME_LINES[pick % TAME_LINES.len()]
+}
+
+/// 已馴服的兔子開始跟隨的距離（方塊）——比 [`FLEE_RADIUS`] 寬鬆許多：不必刻意逼近，
+/// 平常靠近牠就會主動跟上。
+pub const FOLLOW_RADIUS: f32 = 8.0;
+/// 已在跟隨時，玩家要遠到超過這個距離才安心跟丟（遲滯，避免臨界距離上跟隨/走失來回抖動，
+/// 手法同 [`should_flee`] 的 `FLEE_RADIUS`/`CALM_RADIUS` 兩段式門檻）。
+pub const FOLLOW_LOSE_RADIUS: f32 = 14.0;
+/// 跟隨速度——比閒晃（[`WANDER_SPEED`]）快一些才追得上你的腳步，但不到受驚逃跑那麼急。
+pub const FOLLOW_SPEED: f32 = 2.4;
+/// 跟到這個距離就停下，不再往玩家身上擠（方塊）。
+pub const FOLLOW_STOP_DIST: f32 = 2.5;
+
+/// 依「目前是否正在跟隨」+「與最近玩家的距離平方」，判斷這一 tick 該不該跟隨（或維持跟隨）。
+///
+/// 遲滯避免抖動：還沒跟上時要近到 [`FOLLOW_RADIUS`] 內才起跟；已在跟隨時要遠到
+/// [`FOLLOW_LOSE_RADIUS`] 外才安心跟丟——與 [`should_flee`] 同一手法，只是換了一組半徑。
+pub fn should_follow(currently_following: bool, nearest_player_dist_sq: f32) -> bool {
+    let threshold = if currently_following { FOLLOW_LOSE_RADIUS } else { FOLLOW_RADIUS };
+    nearest_player_dist_sq < threshold * threshold
+}
+
+/// 已在跟隨時，這一 tick 是否還要再往玩家的方向邁一步——跟到 [`FOLLOW_STOP_DIST`] 內
+/// 就別再擠過去（純距離判定，供呼叫端決定要 `step_toward` 還是原地 `gravity_step`）。
+pub fn should_close_follow_gap(player_dist_sq: f32) -> bool {
+    player_dist_sq > FOLLOW_STOP_DIST * FOLLOW_STOP_DIST
 }
 
 /// 依「目前是否已受驚」+「與最近玩家的距離平方」，判斷這一 tick 該不該受驚（或維持受驚）。
@@ -172,5 +208,42 @@ mod tests {
     fn tame_line_pick_wraps_without_panic() {
         // 越界 pick 應安全取模，不 panic。
         let _ = tame_line(usize::MAX);
+    }
+
+    #[test]
+    fn should_follow_triggers_within_follow_radius_when_not_following() {
+        assert!(should_follow(false, 7.9 * 7.9));
+        assert!(!should_follow(false, 8.1 * 8.1));
+    }
+
+    #[test]
+    fn should_follow_hysteresis_keeps_following_until_lose_radius() {
+        // 已在跟隨：距離落在 follow~lose 之間仍算跟著（遲滯，不提早跟丟）。
+        assert!(should_follow(true, 10.0 * 10.0));
+        // 遠到超過走失半徑才真正跟丟。
+        assert!(!should_follow(true, 14.1 * 14.1));
+    }
+
+    #[test]
+    fn should_follow_exact_boundary_is_exclusive() {
+        assert!(!should_follow(false, FOLLOW_RADIUS * FOLLOW_RADIUS));
+        assert!(!should_follow(true, FOLLOW_LOSE_RADIUS * FOLLOW_LOSE_RADIUS));
+    }
+
+    #[test]
+    fn follow_radius_tighter_than_lose_radius() {
+        // 遲滯設計前提：起跟半徑必須小於走失半徑，否則兩段式門檻無意義。
+        assert!(FOLLOW_RADIUS < FOLLOW_LOSE_RADIUS);
+    }
+
+    #[test]
+    fn should_close_follow_gap_stops_within_stop_dist() {
+        assert!(should_close_follow_gap(2.6 * 2.6));
+        assert!(!should_close_follow_gap(2.4 * 2.4));
+    }
+
+    #[test]
+    fn should_close_follow_gap_boundary_is_exclusive() {
+        assert!(!should_close_follow_gap(FOLLOW_STOP_DIST * FOLLOW_STOP_DIST));
     }
 }
