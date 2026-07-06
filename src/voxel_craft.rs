@@ -271,6 +271,40 @@ pub const RECIPES: &[Recipe] = &[
         output_block: crate::voxel_bottle::BOTTLE_ID, // 83（純物品，不可放置）
         output_count: 1,
     },
+    // ── 染色建材 v1（自主提案切片）：用天然礦物給沙子染色，燒出彩色建材 ────────────────
+    // 建造近 200 刀以來，玩家能放的純建材幾乎全是灰棕色系（木板/石磚/玻璃/拋光石/鐵磚），
+    // 本刀補上世界第一批**彩色**建材：礦物本身的天然色澤正是現實赤陶/黑陶染料的來源。
+    // 四組多重集 {4:2,21:1}/{4:2,20:1}/{4:2,55:1}/{4:2,58:1} 彼此互異，也與既有配方
+    // （玻璃 {4:2} 單一材料、乙太煙火 {58:1,20:2,4:2} 三料）皆不相撞。每色皆 3 格，比照
+    // 冰晶燈（3 格用到雪原限定材料）precedent 留在背包 2×2，不因材料稀有就硬塞進工作台。
+    Recipe {
+        id: "terracotta_red",
+        name_zh: "紅陶磚",
+        inputs: &[(4, 2), (21, 1)], // 2 沙 + 1 鐵礦 → 2 紅陶磚（鐵鏽紅顏料）
+        output_block: 89,           // Block::TerracottaRed = 89
+        output_count: 2,
+    },
+    Recipe {
+        id: "terracotta_black",
+        name_zh: "黑陶磚",
+        inputs: &[(4, 2), (20, 1)], // 2 沙 + 1 煤礦 → 2 黑陶磚（煤炭黑顏料）
+        output_block: 90,           // Block::TerracottaBlack = 90
+        output_count: 2,
+    },
+    Recipe {
+        id: "terracotta_white",
+        name_zh: "白陶磚",
+        inputs: &[(4, 2), (55, 1)], // 2 沙 + 1 雪 → 2 白陶磚（雪原限定純白顏料）
+        output_block: 91,           // Block::TerracottaWhite = 91
+        output_count: 2,
+    },
+    Recipe {
+        id: "terracotta_blue",
+        name_zh: "青陶磚",
+        inputs: &[(4, 2), (58, 1)], // 2 沙 + 1 乙太礦 → 2 青陶磚（世界最深最稀有的顏料）
+        output_block: 92,           // Block::TerracottaBlue = 92
+        output_count: 2,
+    },
 ];
 
 /// 工作台 3×3 合成配方（需放置工作台方塊後右鍵開啟面板才能合成）。
@@ -798,7 +832,8 @@ mod tests {
                 || r.output_block == crate::voxel_hoe::HOE_ID // 木鋤頭（純物品 id=73，自主提案切片）
                 || r.output_block == crate::voxel_berry::BUSH_UNRIPE_ID // 莓果叢苗（可放置方塊 id=75，自主提案切片 806）
                 || r.output_block == crate::voxel_bench::BENCH_ID // 木長椅（可放置家具方塊 id=79，自主提案切片）
-                || r.output_block == crate::voxel_bottle::BOTTLE_ID; // 空玻璃瓶（純物品 id=83，漂流瓶 v1 自主提案切片 825）
+                || r.output_block == crate::voxel_bottle::BOTTLE_ID // 空玻璃瓶（純物品 id=83，漂流瓶 v1 自主提案切片 825）
+                || (r.output_block >= 89 && r.output_block <= 92); // 四色陶磚（染色建材 v1，自主提案切片）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
@@ -1009,6 +1044,7 @@ mod tests {
         store.give("旅人", crate::voxel_berry::BERRY_ID, 10); // BERRY（smelt_jam 莓果醬配方用，ROADMAP 808）
         store.give("旅人", 9, 10);  // StoneBrick（建築藍圖·水井/瞭望台配方用）
         store.give("旅人", 31, 10); // Torch（建築藍圖·涼亭配方用）
+        store.give("旅人", 55, 10); // Snow（terracotta_white 白陶磚配方用，染色建材 v1）
         // 火把配方：1 木頭(5) + 1 煤礦(20) → 4 火把（Wood/CoalOre 已加，數量足夠）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);
@@ -1433,5 +1469,76 @@ mod tests {
     #[test]
     fn veggie_stew_in_find_any_recipe() {
         assert!(find_any_recipe("veggie_stew").is_some());
+    }
+
+    #[test]
+    fn terracotta_recipes_in_bag_list_not_workbench() {
+        // 染色建材 v1：四色陶磚皆為 3 格配方，比照冰晶燈慣例留在背包 2×2，不因材料稀有硬塞工作台。
+        for id in ["terracotta_red", "terracotta_black", "terracotta_white", "terracotta_blue"] {
+            assert!(find_recipe(id).is_some(), "「{id}」應在背包配方表");
+            assert!(find_workbench_recipe(id).is_none(), "「{id}」不該在工作台配方表");
+        }
+    }
+
+    #[test]
+    fn terracotta_recipes_correct_inputs_and_outputs() {
+        let red = find_recipe("terracotta_red").unwrap();
+        assert_eq!(red.inputs, &[(4, 2), (21, 1)], "紅陶磚需 2 沙 + 1 鐵礦");
+        assert_eq!(red.output_block, 89);
+        assert_eq!(red.output_count, 2);
+
+        let black = find_recipe("terracotta_black").unwrap();
+        assert_eq!(black.inputs, &[(4, 2), (20, 1)], "黑陶磚需 2 沙 + 1 煤礦");
+        assert_eq!(black.output_block, 90);
+        assert_eq!(black.output_count, 2);
+
+        let white = find_recipe("terracotta_white").unwrap();
+        assert_eq!(white.inputs, &[(4, 2), (55, 1)], "白陶磚需 2 沙 + 1 雪");
+        assert_eq!(white.output_block, 91);
+        assert_eq!(white.output_count, 2);
+
+        let blue = find_recipe("terracotta_blue").unwrap();
+        assert_eq!(blue.inputs, &[(4, 2), (58, 1)], "青陶磚需 2 沙 + 1 乙太礦");
+        assert_eq!(blue.output_block, 92);
+        assert_eq!(blue.output_count, 2);
+    }
+
+    #[test]
+    fn terracotta_recipes_have_unique_input_multisets() {
+        // 四色互不相撞，也不與既有配方（玻璃 {4:2}、乙太煙火 {58:1,20:2,4:2}）相撞。
+        let sets: Vec<Vec<(u8, u32)>> = ["terracotta_red", "terracotta_black", "terracotta_white", "terracotta_blue"]
+            .iter()
+            .map(|id| {
+                let mut v = find_recipe(id).unwrap().inputs.to_vec();
+                v.sort();
+                v
+            })
+            .collect();
+        for i in 0..sets.len() {
+            for j in (i + 1)..sets.len() {
+                assert_ne!(sets[i], sets[j], "陶磚配方彼此不應共用同一多重集");
+            }
+        }
+        for r in RECIPES {
+            if r.id.starts_with("terracotta_") {
+                continue;
+            }
+            let mut other = r.inputs.to_vec();
+            other.sort();
+            assert!(!sets.contains(&other), "配方「{}」不該與陶磚多重集相撞", r.id);
+        }
+    }
+
+    #[test]
+    fn terracotta_craft_requires_correct_materials() {
+        let r = find_recipe("terracotta_red").unwrap();
+        let mut short = InvStore::default();
+        short.give("旅人", 4, 2); // 沙夠，缺鐵礦
+        assert!(!can_craft(r, &short, "旅人"), "缺鐵礦不能合紅陶磚");
+
+        let mut ok = InvStore::default();
+        ok.give("旅人", 4, 2);
+        ok.give("旅人", 21, 1);
+        assert!(can_craft(r, &ok, "旅人"), "2 沙 + 1 鐵礦應可合紅陶磚");
     }
 }

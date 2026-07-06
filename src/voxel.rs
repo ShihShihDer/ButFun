@@ -238,6 +238,22 @@ pub enum Block {
     /// 收下（Break）→ 蛋(82)×1 ＋ **就地回退成空雞舍(80)** ＋ 重啟計時：可反覆收成、不必重蓋。
     /// id 81。
     CoopReady = 81,
+    /// 紅陶磚（染色建材 v1，自主提案切片）——背包 2×2 合成：2 沙(4) + 1 鐵礦(21) → 2 紅陶磚。
+    /// 建造近 200 刀以來，玩家能放的純建材只有木板/石磚/玻璃/拋光石/鐵磚等寥寥數種、色彩
+    /// 幾乎全是灰棕色系——本方塊給世界補上第一批**用天然礦物染色**的彩色建材：鐵礦的鏽紅
+    /// 正是現實裡赤陶（terracotta）的紅色顏料來源。實心、可放置、破壞回收自身。
+    /// id 89：82~88 已被純物品（蛋/漂流瓶/藍圖）佔用，89 是首個空號。
+    TerracottaRed = 89,
+    /// 黑陶磚（染色建材 v1）——背包 2×2 合成：2 沙(4) + 1 煤礦(20) → 2 黑陶磚。
+    /// 煤礦的深黑正是燒製黑陶的天然顏料。實心、可放置、破壞回收自身。id 90。
+    TerracottaBlack = 90,
+    /// 白陶磚（染色建材 v1）——背包 2×2 合成：2 沙(4) + 1 雪(55) → 2 白陶磚。
+    /// 雪原限定素材染出純白建材，讓遠征雪原多一份「帶顏色回家」的建造回報。id 91。
+    TerracottaWhite = 91,
+    /// 青陶磚（染色建材 v1）——背包 2×2 合成：2 沙(4) + 1 乙太礦(58) → 2 青陶磚。
+    /// 用世界最深最稀有的乙太礦染色，是這套色系中最珍貴的一款，呼應乙太燈同樣「深掘换珍色」
+    /// 的設計精神。id 92。
+    TerracottaBlue = 92,
 }
 
 impl Block {
@@ -323,6 +339,10 @@ impl Block {
             79 => Some(Block::Bench),
             80 => Some(Block::Coop),
             81 => Some(Block::CoopReady),
+            89 => Some(Block::TerracottaRed),
+            90 => Some(Block::TerracottaBlack),
+            91 => Some(Block::TerracottaWhite),
+            92 => Some(Block::TerracottaBlue),
             _ => None,
         }
     }
@@ -339,7 +359,8 @@ impl Block {
             Block::Torch | Block::Ladder | Block::Chest | Block::DoorClosed | Block::Bed |
             Block::Cactus | Block::Snow | Block::IceCrystal | Block::IceLantern |
             Block::AetherOre | Block::AetherLamp | Block::Sapling | Block::Sign |
-            Block::Campfire | Block::Bell | Block::BerryBush | Block::Bench | Block::Coop
+            Block::Campfire | Block::Bell | Block::BerryBush | Block::Bench | Block::Coop |
+            Block::TerracottaRed | Block::TerracottaBlack | Block::TerracottaWhite | Block::TerracottaBlue
             // BerryBushRipe / CoopReady 皆是伺服器維護的狀態方塊（由 tick_berry / tick_coop 長成），
             // 玩家不能手動放置。
         )
@@ -1288,6 +1309,22 @@ mod tests {
         assert_eq!(Block::CoopReady as u8, 81);
         assert!(!Block::CoopReady.is_placeable(), "有蛋雞舍是伺服器狀態方塊，玩家不可手動放置");
         assert!(Block::CoopReady.is_solid(), "有蛋雞舍應為實心方塊");
+    }
+
+    #[test]
+    fn terracotta_colors_roundtrip_placeable_and_solid() {
+        // 染色建材 v1（自主提案切片）：四色陶磚皆可放置、皆實心、id/enum 往返一致。
+        for (id, block) in [
+            (89u8, Block::TerracottaRed),
+            (90u8, Block::TerracottaBlack),
+            (91u8, Block::TerracottaWhite),
+            (92u8, Block::TerracottaBlue),
+        ] {
+            assert_eq!(Block::from_u8(id), Some(block), "id {id} 應還原成對應陶磚");
+            assert_eq!(block as u8, id, "陶磚 enum 值應與 id 一致");
+            assert!(block.is_placeable(), "陶磚應可放置");
+            assert!(block.is_solid(), "陶磚應為實心方塊");
+        }
     }
 
     #[test]
