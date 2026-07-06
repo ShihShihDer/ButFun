@@ -7971,6 +7971,34 @@ pub async fn voxel_relations_handler() -> axum::response::Response {
         .unwrap()
 }
 
+/// 乙太方界·小圈子攤開（自主提案切片，接續 708 交情網 + 711 小圈子聚會）：
+///
+/// 711 讓互為老朋友的居民不時相約碰面，靠的正是 `find_friend_cliques` 這個「看整張
+/// 關係網、找出彼此皆為老朋友的一群」的判定——但這份判定至今只活在伺服器內部驅動
+/// 聚會行為，玩家從沒有任何管道能直接看見「這幾位其實是感情要好的一群」，交情網
+/// （708）也只攤開兩兩之間的數字，看不出誰跟誰其實是一夥的。本端點純讀取、零副
+/// 作用，直接複用 `voxel_clique::find_friend_cliques`（與觸發聚會用的同一份邏輯），
+/// 把 id 換成顯示名後回傳；不是新造一套群體判定，是讓早已存在的系統第一次被看見。
+pub async fn voxel_cliques_handler() -> axum::response::Response {
+    use axum::http::header;
+    let cliques: Vec<Vec<&'static str>> = {
+        // 短讀鎖一次性算完全部圈子 → 立即釋放，不與其他鎖巢狀（比照交情網手法）。
+        let bonds = hub().bonds.read().unwrap();
+        let n = resident_count();
+        let ids: Vec<String> = (0..n).map(|i| format!("vox_res_{i}")).collect();
+        vclique::find_friend_cliques(&ids, |a, b| resident_tier_of(&bonds, a, b))
+            .into_iter()
+            .map(|group| group.iter().map(|id| resident_name_of(id)).collect())
+            .collect()
+    };
+    let body = serde_json::to_string(&cliques).unwrap_or_else(|_| "[]".into());
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
 /// 乙太方界·居民技能簿（ROADMAP 719）：回傳每位居民已發明／學會的技能名清單。
 ///
 /// 技能發明（716）與傳授（717）一路都靠 Feed 一次性文字曝光（「露娜教了我『燒

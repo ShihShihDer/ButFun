@@ -760,6 +760,16 @@
     .relations-names { flex: 1; color: #eaf2ff; }
     .relations-tier { color: #ffb0c8; font-size: 12px; }
     .relations-empty { color: #506070; font-size: 12px; font-style: italic; text-align: center; padding: 8px 0; }
+    /* 小圈子攤開（自主提案切片，接續 708+711）：沒有圈子時整段不渲染，不佔面板空間。 */
+    #cliquesBody:empty { display: none; }
+    #cliquesBody { display: flex; flex-direction: column; gap: 6px; padding: 10px 13px 0; }
+    .clique-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 8px; border-radius: 10px; background: rgba(255,208,120,0.10);
+      border: 1px solid rgba(255,208,120,0.25);
+    }
+    .clique-icon { font-size: 15px; }
+    .clique-names { flex: 1; color: #ffdca0; font-size: 12.5px; }
     @media (orientation: portrait) {
       #relationsBtn { top: auto; bottom: 264px; right: 10px; }
       #relationsPanel { top: auto; bottom: 308px; right: 10px; max-height: 45vh; }
@@ -1675,6 +1685,7 @@
       <span id="relationsTitle">🧑‍🤝‍🧑 居民交情網</span>
       <span id="relationsClose">✕</span>
     </div>
+    <div id="cliquesBody"></div>
     <div id="relationsBody"></div>
   </div>
   <!-- 居民技能簿（ROADMAP 719）：真進化（716）+ 傳授（717）只靠 Feed 一次性播報，此面板讓玩家第一次能回頭查「誰會什麼」 -->

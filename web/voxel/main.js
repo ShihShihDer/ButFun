@@ -2908,6 +2908,7 @@ if (compassEl) {
 const relationsEl = document.getElementById("relationsPanel");
 const relationsBodyEl = document.getElementById("relationsBody");
 const relationsBtnEl = document.getElementById("relationsBtn");
+const cliquesBodyEl = document.getElementById("cliquesBody");
 
 const RELATION_TIER_ICON = { friend: "🤝", acquaintance: "🙂", stranger: "·" };
 const RELATION_TIER_LABEL = { friend: "老朋友", acquaintance: "相識", stranger: "陌生" };
@@ -2950,7 +2951,28 @@ function renderRelationsPanel(rows) {
   }
 }
 
-/** 向後端抓最新交情資料並重新渲染。 */
+/**
+ * 小圈子攤開（自主提案切片，接續 708 交情網 + 711 小圈子聚會）：711 早已判定「這幾位
+ * 彼此皆為老朋友」來驅動小聚會，卻只在伺服器內部使用；本函式把同一份資料渲染成
+ * 交情網面板頂端的一段小標籤，讓玩家第一次看見「這座小社會裡誰跟誰其實是一夥的」。
+ * 沒有圈子時整段留白（CSS `:empty` 隱藏），不佔面板空間、不干擾原本的兩兩列表。
+ * @param {Array<Array<string>>} cliques 每個元素是一組彼此皆為老朋友的居民名字。
+ */
+function renderCliquesSection(cliques) {
+  if (!cliquesBodyEl) return;
+  cliquesBodyEl.innerHTML = "";
+  if (!cliques || cliques.length === 0) return;
+  for (const members of cliques) {
+    const div = document.createElement("div");
+    div.className = "clique-row";
+    div.innerHTML =
+      '<span class="clique-icon">🤝</span>' +
+      '<span class="clique-names">' + members.map(escHtml).join("・") + '</span>';
+    cliquesBodyEl.appendChild(div);
+  }
+}
+
+/** 向後端抓最新交情資料（兩兩情誼 + 小圈子）並重新渲染。 */
 async function refreshRelations() {
   if (!relationsBodyEl) return;
   try {
@@ -2960,6 +2982,12 @@ async function refreshRelations() {
     renderRelationsPanel(rows);
   } catch (err) {
     relationsBodyEl.innerHTML = '<div class="relations-empty">無法讀取交情資料。</div>';
+  }
+  try {
+    const cResp = await fetch("/voxel/cliques");
+    if (cResp.ok) renderCliquesSection(await cResp.json());
+  } catch (err) {
+    // 小圈子是錦上添花的附加資訊，讀取失敗不影響主要的兩兩交情列表。
   }
 }
 
@@ -6255,6 +6283,8 @@ window.__voxel = {
   refreshRelations() { return refreshRelations(); },
   renderRelationsPanel(rows) { renderRelationsPanel(rows); return relationsBodyEl && relationsBodyEl.innerHTML; },
   sortRelationRows(rows) { return sortRelationRows(rows); },
+  // ── 小圈子攤開 QA 用（自主提案切片，接續 708+711）──
+  renderCliquesSection(cliques) { renderCliquesSection(cliques); return cliquesBodyEl && cliquesBodyEl.innerHTML; },
   // ── 居民技能簿 QA 用（ROADMAP 719）──
   openSkills() { return openSkills(); },
   closeSkills() { closeSkills(); },
