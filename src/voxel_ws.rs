@@ -5647,6 +5647,10 @@ async fn handle_socket(
                     vrequest::fulfil_thanks_line(&name, iname, pick)
                 } else if vgift::is_treasure_gift(item_id) {
                     vgift::treasure_gift_thanks_line(&name, affinity, pick)
+                } else if vgift::is_flower_gift(item_id) {
+                    // 野花 v1（自主提案切片）：世界第一句「收到花」的心動道謝——與珍寶（礦物向
+                    // 驚喜）、食物（實用向感謝）都不同的情感register，純粹送禮示好的心意。
+                    vgift::flower_gift_thanks_line(&name, affinity, pick)
                 } else if item_id == vfish::COOKED_FISH_ID {
                     // 烤魚是玩家「釣起→烤熟」的一道熱佳餚，用專屬台詞（比一般食物更歡欣）。
                     vgift::cooked_fish_thanks_line(&name, affinity, pick)
