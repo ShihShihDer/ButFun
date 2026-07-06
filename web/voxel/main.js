@@ -3095,6 +3095,79 @@ if (discEl) {
   if (closeBtn) closeBtn.addEventListener("click", closeDiscoveries);
 }
 
+// ── 玩家熟練度（自主提案切片，ROADMAP 842）──────────────────────────────────────
+// 玩家里程碑（724）補上了「回頭看看走了多遠」的一次性徽章牆，但徽章是二元的（做過一次
+// 沒），一次解鎖後就靜止——玩家日復一日反覆採集/耕種/垂釣，除了徽章牆上早已勾滿的勾勾，
+// 持續投入本身從沒有任何看得見的累積成長。本面板顯示⛏️採集／🌾耕種／🎣垂釣三條連續
+// 熟練度的經驗條，練到 Lv.5 起解鎖產出加成（後端已在背後生效，前端只忠實呈現進度）。
+const masteryEl = document.getElementById("masteryPanel");
+const masteryBodyEl = document.getElementById("masteryBody");
+const masteryBtnEl = document.getElementById("masteryBtn");
+
+/** 重新渲染熟練度清單。
+ * @param {Array<{kind:string,name_zh:string,icon:string,xp:number,level:number,title:string,next_level_xp:number,bonus_unlocked:boolean}>} rows
+ */
+function renderMasteryPanel(rows) {
+  if (!masteryBodyEl) return;
+  if (!rows || rows.length === 0) {
+    masteryBodyEl.innerHTML = '<div class="skills-empty">還沒有熟練度紀錄——去採集/耕種/垂釣練練手吧。</div>';
+    return;
+  }
+  let html = "";
+  for (const r of rows) {
+    // 每級固定 60 xp（比照後端 LEVEL_XP_STEP）：本級起點 = level*60，滿級（10）恆滿條。
+    const levelFloorXp = r.level * 60;
+    const pct = r.level >= 10 ? 100 : Math.max(0, Math.min(100, Math.round(((r.xp - levelFloorXp) / 60) * 100)));
+    const bonusTag = r.bonus_unlocked ? " · 🎁加成中" : "";
+    html += '<div class="mastery-row">' +
+      '<div class="mastery-row-head">' +
+      '<span class="mastery-name">' + escHtml(r.icon || "") + " " + escHtml(r.name_zh) + '</span>' +
+      '<span class="mastery-level">Lv.' + r.level + " " + escHtml(r.title) + bonusTag + '</span>' +
+      '</div>' +
+      '<div class="mastery-bar-track"><div class="mastery-bar-fill" style="width:' + pct + '%"></div></div>' +
+      '<div class="mastery-xp">' + r.xp + ' / ' + r.next_level_xp + ' xp</div>' +
+      '</div>';
+  }
+  masteryBodyEl.innerHTML = html;
+}
+
+/** 向後端抓這位玩家最新的熟練度並重新渲染。 */
+async function refreshMastery() {
+  if (!masteryBodyEl) return;
+  try {
+    const resp = await fetch(`/voxel/mastery?player=${encodeURIComponent(myName)}`);
+    if (!resp.ok) throw new Error("mastery fetch failed: " + resp.status);
+    const rows = await resp.json();
+    renderMasteryPanel(rows);
+  } catch (err) {
+    masteryBodyEl.innerHTML = '<div class="skills-empty">無法讀取熟練度資料。</div>';
+  }
+}
+
+let masteryVisible = false;
+
+/** 開啟熟練度面板（低頻資料，開啟時抓一次即可，不必背景輪詢）。 */
+function openMastery() {
+  if (!masteryEl) return;
+  masteryVisible = true;
+  masteryEl.style.display = "flex";
+  refreshMastery();
+}
+
+/** 關閉熟練度面板。 */
+function closeMastery() {
+  masteryVisible = false;
+  if (masteryEl) masteryEl.style.display = "none";
+}
+
+if (masteryBtnEl) masteryBtnEl.addEventListener("click", () => {
+  masteryVisible ? closeMastery() : openMastery();
+});
+if (masteryEl) {
+  const closeBtn = document.getElementById("masteryClose");
+  if (closeBtn) closeBtn.addEventListener("click", closeMastery);
+}
+
 // ── 村莊地圖（自主提案切片，ROADMAP 837）────────────────────────────────────────
 // 村莊系統（835）早把居民的家收攏成中央廣場＋十字主路＋沿路地塊的實體佈局，玩家也
 // 走在真正鋪好的石板路上——但那份佈局只活在腳下：玩家從沒有任何管道一眼看到「村子
@@ -4239,7 +4312,7 @@ if (menuDrawerEl) {
   // 點抽屜內任一功能鈕後收起抽屜——它開的面板（z-index 20）就不會被抽屜（z-index 21）擋住。
   // 各鈕自身的開面板/切人稱監聽器照樣先觸發，這裡只負責關抽屜。
   menuDrawerEl.addEventListener("click", (e) => {
-    const item = e.target.closest("#feedBtn, #diaryWallBtn, #compassBtn, #relationsBtn, #skillsBtn, #milestonesBtn, #mapBtn, #discBtn, #viewBtn, #gearBtn");
+    const item = e.target.closest("#feedBtn, #diaryWallBtn, #compassBtn, #relationsBtn, #skillsBtn, #milestonesBtn, #mapBtn, #discBtn, #masteryBtn, #viewBtn, #gearBtn");
     if (item) closeMenuDrawer();
   });
 }
@@ -4713,6 +4786,13 @@ function connect() {
       // 玩家里程碑 v1（ROADMAP 724）：只有自己看得到的私人慶祝提示；若面板剛好開著同步刷新。
       showMsg((m.icon || "🏅") + " 成就達成：" + (m.name_zh || "里程碑") + "！");
       if (milesVisible) refreshMilestones();
+    } else if (m.t === "mastery_levelup") {
+      // 玩家熟練度 v1（自主提案切片，ROADMAP 842）：私人慶祝提示；面板開著就同步刷新。
+      showMsg(m.line || "熟練度升級了！");
+      if (masteryVisible) refreshMastery();
+    } else if (m.t === "mastery_bonus") {
+      // 玩家熟練度 v1：練到 Lv.5 起的產出加成揭曉句（背包已由 inv_update 更新，此處只揭曉）。
+      showMsg(m.line || "練出來的手法，多收了一份！");
     } else if (m.t === "bottle_sync") {
       // 漂流瓶 v1（自主提案切片 825）：連線時一次收到世界上所有尚未被撿走的瓶子座標，全部掛上浮標。
       for (const b of (m.bottles || [])) addBottleMarker(b.x, b.y, b.z);

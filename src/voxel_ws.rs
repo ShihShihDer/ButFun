@@ -148,6 +148,7 @@ use crate::voxel_coop_gather as vcoop_gather;
 use crate::voxel_dropitem::{self as vdrop, DropStore};
 use crate::voxel_stall::{self as vstall, StallStore};
 use crate::voxel_frontier_find as vffind;
+use crate::voxel_mastery::{self as vmastery, MasteryKind, MasteryStore};
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -1677,6 +1678,9 @@ struct VoxelHub {
     /// 探索紀事 v1（自主提案切片，接續 838/839）：玩家找到的地標座標與種類，可回頭翻閱。
     /// 持久化到 data/voxel_discoveries.jsonl（append-only，重啟後紀事仍在）。
     discovery: RwLock<vdisc::DiscoveryStore>,
+    /// 玩家熟練度 v1（自主提案切片，ROADMAP 842）：⛏️採集／🌾耕種／🎣垂釣三條連續經驗值。
+    /// 持久化到 data/voxel_mastery.jsonl（append-only，重啟後熟練度仍在）。
+    mastery: RwLock<MasteryStore>,
     /// 同帳號去重——踢舊連線用的 oneshot 信號表（ROADMAP fix 幽靈分身）。
     /// 連線 UUID → 踢信號發送端；有同 email 的新連線進來時，從此表取出舊 UUID 的發送端並送 ()，
     /// 讓舊連線的 select! 觸發、優雅退出（幽靈分身消失）。
@@ -1753,6 +1757,64 @@ fn try_unlock_milestone(player: &str, id: &str, out_tx: &mpsc::Sender<Message>) 
             .to_string(),
         ));
     }
+}
+
+/// 玩家熟練度 v1（自主提案切片，ROADMAP 842）：累加一次動作的經驗值，落地持久化；
+/// 若剛好升級，單播 `mastery_levelup` 慶祝訊息給玩家自己（不廣播全員，同里程碑同為私人旅程）。
+/// 回傳升級後目前等級，供呼叫端判斷是否已解鎖產出加成（`vmastery::mastery_yield_bonus`）。
+/// **鎖紀律**：mastery 寫鎖短取即釋，append/送訊息都在鎖外，不巢狀、不持鎖 await。
+fn award_mastery(player: &str, kind: MasteryKind, out_tx: &mpsc::Sender<Message>) -> u32 {
+    let delta = kind.xp_per_action();
+    let (_xp, leveled_up, level) = { hub().mastery.write().unwrap().add_xp(player, kind, delta) };
+    vmastery::append_mastery(&vmastery::MasteryEntry {
+        player: player.to_string(),
+        kind: kind.as_str().to_string(),
+        xp_delta: delta,
+    });
+    if leveled_up {
+        let _ = out_tx.try_send(Message::Text(
+            serde_json::json!({
+                "t": "mastery_levelup",
+                "kind": kind.as_str(),
+                "level": level,
+                "title": vmastery::title_for_level(level),
+                "line": vmastery::levelup_line(kind, level),
+            })
+            .to_string(),
+        ));
+    }
+    level
+}
+
+/// 玩家熟練度產出加成 v1：若這條熟練度已練到解鎖門檻，給玩家額外一份指定材料（與工具加成
+/// 790／並肩協作 827 同量級 +1，各自獨立疊加）＋單播 `mastery_bonus` 揭曉句。
+/// **鎖紀律**：inventory 寫鎖短取即釋，append/送訊息都在鎖外，呼叫端須確保未持有其他鎖。
+fn give_mastery_bonus(
+    player: &str,
+    kind: MasteryKind,
+    level: u32,
+    item_id: u8,
+    out_tx: &mpsc::Sender<Message>,
+) {
+    let bonus = vmastery::mastery_yield_bonus(level);
+    if bonus == 0 {
+        return;
+    }
+    let entry = hub().inventory.write().unwrap().give(player, item_id, bonus);
+    vinv::append_inv(&entry);
+    let new_count = hub().inventory.read().unwrap().count(player, item_id);
+    let _ = out_tx.try_send(Message::Text(
+        serde_json::json!({ "t": "inv_update", "block_id": item_id, "count": new_count }).to_string(),
+    ));
+    let _ = out_tx.try_send(Message::Text(
+        serde_json::json!({
+            "t": "mastery_bonus",
+            "block_id": item_id,
+            "count": bonus,
+            "line": vmastery::bonus_line(kind),
+        })
+        .to_string(),
+    ));
 }
 
 static HUB: OnceLock<VoxelHub> = OnceLock::new();
@@ -2194,6 +2256,7 @@ fn hub() -> &'static VoxelHub {
             milestones: RwLock::new(MilestoneStore::from_entries(vmiles::load_milestones())),
             // 啟動時從 data/voxel_discoveries.jsonl 載回玩家的探索紀事（重啟後仍記得）。
             discovery: RwLock::new(vdisc::DiscoveryStore::from_entries(vdisc::load_discoveries())),
+            mastery: RwLock::new(MasteryStore::from_entries(vmastery::load_mastery())),
             // 同帳號去重：啟動空，每條連線進場時登記、離場時清除。純記憶體、無需持久化。
             conn_kick: RwLock::new(HashMap::new()),
             // 玩家生存指標：啟動時從 data/voxel_player_stats.jsonl 載回血/飢（重登保留，比照 #1024）。
@@ -3655,6 +3718,18 @@ async fn handle_socket(
                                     .to_string(),
                                 ));
                             }
+
+                            // 玩家熟練度 v1（自主提案切片，ROADMAP 842）：收割成熟作物累積🌾耕種
+                            // 熟練度；練到 Lv.5 起額外多收一份剛收成的作物（與上面的時令豐收各自
+                            // 獨立判斷、不互相取代，兩者可同時觸發）。
+                            let level = award_mastery(&name, MasteryKind::Farming, &out_tx);
+                            give_mastery_bonus(
+                                &name,
+                                MasteryKind::Farming,
+                                level,
+                                vbounty::crop_item_id(kind),
+                                &out_tx,
+                            );
                         }
 
                         // 植樹造林 v1（ROADMAP 738）：砍天然樹葉（Leaves）除了原本掉種子，
@@ -3758,6 +3833,18 @@ async fn handle_socket(
                                     .to_string(),
                                 ));
                             }
+
+                            // 玩家熟練度 v1（自主提案切片，ROADMAP 842）：挖天然方塊累積⛏️採集
+                            // 熟練度；練到 Lv.5 起額外多收一份剛挖到的方塊（與上面工具加成 790／
+                            // 並肩協作 827 各自獨立判斷、可同時觸發）。
+                            let level = award_mastery(&name, MasteryKind::Gathering, &out_tx);
+                            give_mastery_bonus(
+                                &name,
+                                MasteryKind::Gathering,
+                                level,
+                                target_block as u8,
+                                &out_tx,
+                            );
                         }
                     }
                 }
@@ -6700,6 +6787,10 @@ async fn handle_socket(
                 }).to_string())).await;
                 // 玩家里程碑 v1（ROADMAP 724）：人生第一次在水邊釣起魚。
                 try_unlock_milestone(&name, "first_fish", &out_tx);
+                // 玩家熟練度 v1（自主提案切片，ROADMAP 842）：每次收竿累積🎣垂釣熟練度；
+                // 練到 Lv.5 起額外多釣起一尾同種魚。
+                let level = award_mastery(&name, MasteryKind::Fishing, &out_tx);
+                give_mastery_bonus(&name, MasteryKind::Fishing, level, fish_id, &out_tx);
             }
 
             // QA 專用授予（只在 BUTFUN_QA_DEBUG=1 生效；正式線上直接忽略，無法刷物品）。
@@ -7721,6 +7812,42 @@ pub async fn voxel_discoveries_handler(
         (list, r, s)
     };
     let body = serde_json::json!({ "items": items, "ruins": ruins, "springs": springs }).to_string();
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
+/// 乙太方界·玩家熟練度 v1（自主提案切片，ROADMAP 842）：回傳這位玩家三條熟練度目前的
+/// 經驗值／等級／稱號／是否已解鎖產出加成，供前端 📈 熟練度面板顯示。
+pub async fn voxel_mastery_handler(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    use axum::http::header;
+    let player_name = params.get("player").map(|s| s.as_str()).unwrap_or("").trim().to_string();
+    let rows: Vec<serde_json::Value> = {
+        // 短讀鎖一次性快照這位玩家的熟練度 → 立即釋放，不與其他鎖巢狀。
+        let store = hub().mastery.read().unwrap();
+        MasteryKind::ALL
+            .iter()
+            .map(|&k| {
+                let xp = if player_name.is_empty() { 0 } else { store.xp_for(&player_name, k) };
+                let level = vmastery::level_for_xp(xp);
+                serde_json::json!({
+                    "kind": k.as_str(),
+                    "name_zh": k.display_name_zh(),
+                    "icon": k.icon(),
+                    "xp": xp,
+                    "level": level,
+                    "title": vmastery::title_for_level(level),
+                    "next_level_xp": (level.min(vmastery::MAX_LEVEL - 1) + 1) * vmastery::LEVEL_XP_STEP,
+                    "bonus_unlocked": vmastery::mastery_yield_bonus(level) > 0,
+                })
+            })
+            .collect()
+    };
+    let body = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into());
     axum::response::Response::builder()
         .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-cache")
