@@ -1357,14 +1357,19 @@ const RES_TORSO_GEO = new THREE.BoxGeometry(0.5, 1.0, 0.32);
 const RES_HEAD_GEO = new THREE.BoxGeometry(0.42, 0.42, 0.42);
 const RES_VISIBLE_DIST = 110; // 超過此距離（接近霧盡頭）隱藏，省繪製
 
-// ── 野兔 v1（自主提案切片，ROADMAP 847）──────────────────────────────────────
-// 世界第一種環境生物：純點綴、無名牌無泡泡，只有身體+兩隻耳朵。數量少（6 隻）、
-// 共用幾何/材質，與居民同款「距離超過即整個 group 隱藏」省繪製（FPS 鐵律）。
+// ── 野兔 v1（自主提案切片，ROADMAP 847）＋水中游魚 v1（ROADMAP 848）──────────
+// 世界環境生物：純點綴、無名牌無泡泡。野兔=身體+兩隻耳朵、魚=身體+尾鰭，
+// 依伺服器快照的 `kind` 欄位挑選對應模型。數量少、共用幾何/材質，與居民同款
+// 「距離超過即整個 group 隱藏」省繪製（FPS 鐵律）。
 const wildlifeEnts = new Map(); // id -> { group }
 const RABBIT_BODY_MAT = new THREE.MeshLambertMaterial({ color: 0xc9a876 });
 const RABBIT_EAR_MAT = new THREE.MeshLambertMaterial({ color: 0xdcc09a });
 const RABBIT_BODY_GEO = new THREE.BoxGeometry(0.32, 0.24, 0.4);
 const RABBIT_EAR_GEO = new THREE.BoxGeometry(0.06, 0.22, 0.06);
+const FISH_BODY_MAT = new THREE.MeshLambertMaterial({ color: 0x4a90c2 });
+const FISH_TAIL_MAT = new THREE.MeshLambertMaterial({ color: 0x3a7aa8 });
+const FISH_BODY_GEO = new THREE.BoxGeometry(0.14, 0.14, 0.34);
+const FISH_TAIL_GEO = new THREE.BoxGeometry(0.16, 0.16, 0.06);
 const WILDLIFE_VISIBLE_DIST = 60; // 兔子體型小，遠處看不清也不必畫，比居民更早隱藏
 
 // 文字貼圖 sprite（名牌/泡泡共用工廠）。bubble=true 用柔色圓底（像在說話），否則白描邊名牌。
@@ -1852,13 +1857,29 @@ function buildRabbit() {
   return { group };
 }
 
-// 依伺服器快照更新所有野兔（位置/朝向）。新出現的就建、消失的就移除（同構 updateResidents）。
+// 建一條魚（水中游魚 v1，ROADMAP 848：身體 + 尾鰭，無名牌無泡泡，比野兔更小更扁）。
+function buildFish() {
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(FISH_BODY_GEO, FISH_BODY_MAT);
+  group.add(body);
+  const tail = new THREE.Mesh(FISH_TAIL_GEO, FISH_TAIL_MAT);
+  tail.position.set(0, 0, -0.2);
+  group.add(tail);
+  scene.add(group);
+  return { group };
+}
+
+// 依伺服器快照更新所有環境生物（位置/朝向）。新出現的依 `kind` 建對應模型、
+// 消失的就移除（同構 updateResidents）。
 function updateWildlife(list) {
   const seen = new Set();
   for (const w of list) {
     seen.add(w.id);
     let ent = wildlifeEnts.get(w.id);
-    if (!ent) { ent = buildRabbit(); wildlifeEnts.set(w.id, ent); }
+    if (!ent) {
+      ent = w.kind === "fish" ? buildFish() : buildRabbit();
+      wildlifeEnts.set(w.id, ent);
+    }
     ent.group.position.set(w.x, w.y, w.z);
     ent.group.rotation.y = w.yaw || 0;
     const dx = w.x - player.x, dz = w.z - player.z;
