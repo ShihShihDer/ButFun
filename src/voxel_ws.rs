@@ -89,6 +89,7 @@ use crate::voxel_announce as vannounce;
 use crate::voxel_bonds::{self as vbonds, ResidentBonds};
 use crate::voxel_romance::{self as vromance, ResidentRomance};
 use crate::voxel_wildlife as vwild;
+use crate::voxel_fish as vfishlife;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
@@ -643,12 +644,31 @@ struct VoxelResident {
     hunger_care_cooldown: f32,
 }
 
-/// 野兔 v1（自主提案切片，ROADMAP 847）：世界第一種環境生物。純點綴、無 AI 大腦、
-/// 無戰鬥、無記憶——只有「閒晃」與「見到玩家靠近就受驚逃開」兩件事。
+/// 環境生物的種類（水中游魚 v1，ROADMAP 848 起 wildlife 系統擴充為可延伸的多種類）。
+/// 序列化成字串給前端據以挑選對應模型（"rabbit"/"fish"）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WildlifeKind {
+    Rabbit,
+    Fish,
+}
+
+impl WildlifeKind {
+    fn wire(self) -> &'static str {
+        match self {
+            WildlifeKind::Rabbit => "rabbit",
+            WildlifeKind::Fish => "fish",
+        }
+    }
+}
+
+/// 野兔 v1（自主提案切片，ROADMAP 847）＋水中游魚 v1（ROADMAP 848）：世界環境生物。
+/// 純點綴、無 AI 大腦、無戰鬥、無記憶——陸地上的野兔會閒晃＋見到玩家靠近就受驚逃開；
+/// 水裡的魚只悠游（見 `voxel_fish` 模組說明：魚不怕人，行為樹刻意與野兔不同）。
 /// 純記憶體，重啟於固定家域點重新生成（比照既有 `drops`/`stalls` 世界暫態慣例，零 migration）。
 struct WildlifeAnimal {
     /// 系統 id（"vox_wld_0"…），與居民 id 體系無交集。
     id: String,
+    kind: WildlifeKind,
     body: Body,
     yaw: f32,
     /// 家域中心（世界座標）：平靜時的閒晃圍繞這一點打轉，範圍遠比居民家域小。
@@ -657,9 +677,10 @@ struct WildlifeAnimal {
     /// 當前水平移動目標（閒晃目的地，或受驚時的逃跑落點）。
     target_x: f32,
     target_z: f32,
-    /// 抵達閒晃目標後的小歇秒數（> 0 = 在歇、原地落重力）。受驚時忽略（不歇息）。
+    /// 抵達閒晃目標後的小歇秒數（> 0 = 在歇、原地落重力/靜止）。野兔受驚時忽略（不歇息）。
     wait_timer: f32,
-    /// 此刻是否受驚逃跑中（遲滯判定見 `voxel_wildlife::should_flee`）。
+    /// 此刻是否受驚逃跑中（遲滯判定見 `voxel_wildlife::should_flee`）。只有野兔會用到；
+    /// 魚恆為 `false`（魚不怕人，見 `voxel_fish` 模組說明）。
     fleeing: bool,
 }
 
@@ -669,26 +690,43 @@ const WILDLIFE_HOMES: [(i32, i32); 6] = [
     (12, 6), (-10, 14), (18, -8), (-14, -12), (6, -20), (-20, 4),
 ];
 
-/// 建出初始野兔群（hub 初始化時呼叫一次）。
+/// 魚家域點（世界座標偏移）：沿用 `voxel_fish::wet_spot_spawn` 向外螺旋找最近的深水域，
+/// 偏移不需精確落在水裡，找到附近夠深的水塘即可（地形起伏必然生出窪地/湖泊，見模組說明）。
+const FISH_HOMES: [(i32, i32); 4] = [(30, 30), (-30, 30), (30, -30), (-30, -30)];
+
+/// 建出初始環境生物群（hub 初始化時呼叫一次）：野兔（陸地）+ 魚（水域）。
 fn init_wildlife() -> Vec<WildlifeAnimal> {
-    WILDLIFE_HOMES
-        .iter()
-        .enumerate()
-        .map(|(i, (ox, oz))| {
-            let body = vr::dry_ground_spawn(*ox, *oz);
-            WildlifeAnimal {
-                id: format!("vox_wld_{i}"),
-                home_x: body.x,
-                home_z: body.z,
-                target_x: body.x,
-                target_z: body.z,
-                body,
-                yaw: 0.0,
-                wait_timer: 0.0,
-                fleeing: false,
-            }
-        })
-        .collect()
+    let rabbits = WILDLIFE_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
+        let body = vr::dry_ground_spawn(*ox, *oz);
+        WildlifeAnimal {
+            id: format!("vox_wld_{i}"),
+            kind: WildlifeKind::Rabbit,
+            home_x: body.x,
+            home_z: body.z,
+            target_x: body.x,
+            target_z: body.z,
+            body,
+            yaw: 0.0,
+            wait_timer: 0.0,
+            fleeing: false,
+        }
+    });
+    let fish = FISH_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
+        let (x, y, z) = vfishlife::wet_spot_spawn(*ox, *oz);
+        WildlifeAnimal {
+            id: format!("vox_fsh_{i}"),
+            kind: WildlifeKind::Fish,
+            home_x: x,
+            home_z: z,
+            target_x: x,
+            target_z: z,
+            body: Body::at(x, y, z),
+            yaw: 0.0,
+            wait_timer: 0.0,
+            fleeing: false,
+        }
+    });
+    rabbits.chain(fish).collect()
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -710,10 +748,12 @@ struct ResidentView {
     mood: Option<String>,
 }
 
-/// 野兔序列化視圖（廣播給客戶端渲染：位置/朝向。野兔 v1，ROADMAP 847）。
+/// 環境生物序列化視圖（廣播給客戶端渲染：位置/朝向/種類。野兔 v1 ROADMAP 847
+/// ＋水中游魚 v1 ROADMAP 848）。`kind` 讓前端據以挑選對應模型（"rabbit"/"fish"）。
 #[derive(Serialize)]
 struct WildlifeView {
     id: String,
+    kind: &'static str,
     x: f32,
     y: f32,
     z: f32,
@@ -2442,7 +2482,7 @@ fn players_snapshot_json() -> String {
     let wildlife: Vec<WildlifeView> = {
         let a = hub().wildlife.read().unwrap();
         a.iter()
-            .map(|w| WildlifeView { id: w.id.clone(), x: w.body.x, y: w.body.y, z: w.body.z, yaw: w.yaw })
+            .map(|w| WildlifeView { id: w.id.clone(), kind: w.kind.wire(), x: w.body.x, y: w.body.y, z: w.body.z, yaw: w.yaw })
             .collect()
     }; // 野兔讀鎖在此釋放
     serde_json::json!({
@@ -8008,12 +8048,13 @@ pub async fn voxel_village_map_handler() -> axum::response::Response {
         .unwrap()
 }
 
-/// 野兔 tick（野兔 v1，自主提案切片 ROADMAP 847）：與 `tick_residents` 同節拍（10Hz）。
-/// 純點綴生物——沒有思考/記憶/社交，只有兩件事：閒晃、見到玩家靠近就受驚逃開。
+/// 環境生物 tick（野兔 v1 ROADMAP 847 ＋水中游魚 v1 ROADMAP 848）：與 `tick_residents`
+/// 同節拍（10Hz）。純點綴生物——沒有思考/記憶/社交；野兔閒晃＋見到玩家靠近就受驚逃開，
+/// 魚只在自己的水塘裡悠游（不怕人、無陸地碰撞，見 `voxel_fish` 模組說明）。
 /// 鎖序：`players`(read) → `deltas`(read) → `wildlife`(write)，循序取放、與 `residents`
 /// 鎖各自獨立、不巢狀（守 prod 死鎖鐵律）。
 fn tick_wildlife(dt: f32) {
-    // 玩家座標快照（短鎖即釋，不與 wildlife 鎖巢狀）。
+    // 玩家座標快照（短鎖即釋，不與 wildlife 鎖巢狀）。只有野兔需要，魚不怕人不查。
     let player_pts: Vec<(f32, f32)> = {
         let players = hub().players.read().unwrap();
         players.values().map(|p| (p.x, p.z)).collect()
@@ -8022,38 +8063,70 @@ fn tick_wildlife(dt: f32) {
     let mut animals = hub().wildlife.write().unwrap();
     for a in animals.iter_mut() {
         let (bx, bz) = (a.body.x, a.body.z);
-        // 找最近玩家（沒有玩家在線 = 視為無限遠，永遠不受驚）。
-        let nearest = player_pts.iter().min_by(|(x1, z1), (x2, z2)| {
-            let d1 = (a.body.x - x1).powi(2) + (a.body.z - z1).powi(2);
-            let d2 = (a.body.x - x2).powi(2) + (a.body.z - z2).powi(2);
-            d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let nearest_dist_sq = nearest
-            .map(|(px, pz)| (a.body.x - px).powi(2) + (a.body.z - pz).powi(2))
-            .unwrap_or(f32::MAX);
-        a.fleeing = vwild::should_flee(a.fleeing, nearest_dist_sq);
-        if a.fleeing {
-            // 受驚中：每 tick 重算逃跑方向（玩家持續逼近時，逃跑目標跟著即時調整）。
-            if let Some((px, pz)) = nearest {
-                let (tx, tz) = vwild::flee_target(a.body.x, a.body.z, *px, *pz);
-                a.target_x = tx;
-                a.target_z = tz;
+        match a.kind {
+            WildlifeKind::Rabbit => {
+                // 找最近玩家（沒有玩家在線 = 視為無限遠，永遠不受驚）。
+                let nearest = player_pts.iter().min_by(|(x1, z1), (x2, z2)| {
+                    let d1 = (a.body.x - x1).powi(2) + (a.body.z - z1).powi(2);
+                    let d2 = (a.body.x - x2).powi(2) + (a.body.z - z2).powi(2);
+                    d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let nearest_dist_sq = nearest
+                    .map(|(px, pz)| (a.body.x - px).powi(2) + (a.body.z - pz).powi(2))
+                    .unwrap_or(f32::MAX);
+                a.fleeing = vwild::should_flee(a.fleeing, nearest_dist_sq);
+                if a.fleeing {
+                    // 受驚中：每 tick 重算逃跑方向（玩家持續逼近時，逃跑目標跟著即時調整）。
+                    if let Some((px, pz)) = nearest {
+                        let (tx, tz) = vwild::flee_target(a.body.x, a.body.z, *px, *pz);
+                        a.target_x = tx;
+                        a.target_z = tz;
+                    }
+                    vr::step_toward(&world, &mut a.body, a.target_x, a.target_z, dt, vwild::FLEE_SPEED);
+                    a.wait_timer = 0.0; // 受驚時不歇息。
+                } else if a.wait_timer > 0.0 {
+                    a.wait_timer -= dt;
+                    vr::gravity_step(&world, &mut a.body, dt);
+                } else {
+                    let reached =
+                        vr::step_toward(&world, &mut a.body, a.target_x, a.target_z, dt, vwild::WANDER_SPEED);
+                    if reached {
+                        let angle = rand::random::<f32>() * std::f32::consts::TAU;
+                        let radius = vwild::WANDER_MIN_R
+                            + rand::random::<f32>() * (vwild::WANDER_MAX_R - vwild::WANDER_MIN_R);
+                        let (tx, tz) = vr::wander_target(a.home_x, a.home_z, angle, radius);
+                        a.target_x = tx;
+                        a.target_z = tz;
+                        a.wait_timer = 0.5 + rand::random::<f32>() * 1.5;
+                    }
+                }
             }
-            vr::step_toward(&world, &mut a.body, a.target_x, a.target_z, dt, vwild::FLEE_SPEED);
-            a.wait_timer = 0.0; // 受驚時不歇息。
-        } else if a.wait_timer > 0.0 {
-            a.wait_timer -= dt;
-            vr::gravity_step(&world, &mut a.body, dt);
-        } else {
-            let reached = vr::step_toward(&world, &mut a.body, a.target_x, a.target_z, dt, vwild::WANDER_SPEED);
-            if reached {
-                let angle = rand::random::<f32>() * std::f32::consts::TAU;
-                let radius = vwild::WANDER_MIN_R
-                    + rand::random::<f32>() * (vwild::WANDER_MAX_R - vwild::WANDER_MIN_R);
-                let (tx, tz) = vr::wander_target(a.home_x, a.home_z, angle, radius);
-                a.target_x = tx;
-                a.target_z = tz;
-                a.wait_timer = 0.5 + rand::random::<f32>() * 1.5;
+            WildlifeKind::Fish => {
+                // 魚不怕人：無視玩家、無重力/無陸地碰撞——只在自己的水塘裡悠游。
+                if a.wait_timer > 0.0 {
+                    a.wait_timer -= dt;
+                } else {
+                    let (nx, nz, reached) =
+                        vfishlife::swim_step(a.body.x, a.body.z, a.target_x, a.target_z, dt);
+                    a.body.x = nx;
+                    a.body.z = nz;
+                    if reached {
+                        let angle = rand::random::<f32>() * std::f32::consts::TAU;
+                        let radius = vfishlife::WANDER_MIN_R
+                            + rand::random::<f32>() * (vfishlife::WANDER_MAX_R - vfishlife::WANDER_MIN_R);
+                        let (tx, tz) = vr::wander_target(a.home_x, a.home_z, angle, radius);
+                        // 複驗候選目標仍在夠深的水域裡，避免魚游出水塘擱淺在陸地上。
+                        if vfishlife::is_deep_water(tx.round() as i32, tz.round() as i32) {
+                            a.target_x = tx;
+                            a.target_z = tz;
+                        } else {
+                            a.target_x = a.home_x;
+                            a.target_z = a.home_z;
+                        }
+                        a.wait_timer = 0.5 + rand::random::<f32>() * 1.5;
+                    }
+                }
+                a.body.y = vfishlife::clamp_swim_y(a.body.x.round() as i32, a.body.z.round() as i32, a.body.y);
             }
         }
         if let Some(yaw) = vr::yaw_from_move(a.body.x - bx, a.body.z - bz) {
