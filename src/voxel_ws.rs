@@ -45,6 +45,7 @@ use crate::voxel_invent as vinvent;
 use crate::voxel_desires::{self as vdes, DesireStore};
 use crate::voxel_diary;
 use crate::voxel_feed as vfeed;
+use crate::voxel_village as vvillage;
 use crate::voxel_craft as vcraft;
 use crate::voxel_inventory::{self as vinv, InvStore};
 use crate::voxel_memory::{self as vmem, VoxelMemory};
@@ -1525,6 +1526,9 @@ struct VoxelHub {
     /// 居民已完成目標 store（agency v1）：每居民「蓋過哪些建物」。持久化到 data/voxel_goals.jsonl。
     /// 讓挑目標永不重選蓋過的種類（不鬼打牆）、蓋完自然生出下一個（進展）。
     goals: RwLock<GoalStore>,
+    /// 村莊地塊認領註冊表（村莊系統 v1）：誰認領了哪塊沿路地塊。持久化到 data/voxel_village_plots.jsonl。
+    /// 居民新建築（含新生兒的家）改成「認領最近的空地塊」當錨點 → 蓋在地塊上自動沿路對齊、不再散落。
+    village: RwLock<vvillage::PlotRegistry>,
     /// 居民小背包（agency v1·純記憶體）：採集挖到的材料進這裡（rid → block_id → 數量）。
     /// 「她真的在做事」的成果；與玩家背包（inventory）分開，互不干涉。
     res_inv: RwLock<HashMap<String, HashMap<u8, u32>>>,
@@ -1770,6 +1774,112 @@ fn migrate_fill_surface_holes(deltas: &mut WorldDelta, loaded: &[vbuild::BuildBl
     tracing::info!("舊坑修復完成：回填了 {filled} 個採集地表淺坑（保守判定，未動深洞/水井/礦道）");
 }
 
+/// 村莊系統 v1 一次性整理（冪等、保守、只加不拆）：把散落的居民家連成一座有街廓的村莊。
+///
+/// **資料安全鐵律**（絕不刪居民已蓋的作品）：
+/// - 動檔前先備份 `voxel_resident_blocks.jsonl`（備份失敗即中止本次、下次啟動再試）。
+/// - 只走 append-only 持久化路徑（`append_world_block`），不改寫既有行。
+/// - **每一格路面都先查該格地表方塊是否為「自然地表」**（[`vvillage::is_natural_ground`]）——
+///   遇既有建築 / 樹 / 水 / 農田 / 任何建材就跳過那格（不覆蓋、不拆）。
+/// - 旗標檔冪等：跑過一次就寫 `data/voxel_village_done`，之後啟動直接跳過。
+///
+/// 做法：以居民 home_base 群聚中心定村莊中心 → 生成廣場鋪面＋四角燈＋十字主路 →
+/// 再從廣場鋪 L 形路連到每個既有建築（home_base）。全部只鋪在自然地表、放發光燈點綴。
+fn migrate_lay_out_village(deltas: &mut WorldDelta, residents: &[VoxelResident]) {
+    // ① 已跑過就跳過（冪等）。
+    if vvillage::village_done() {
+        return;
+    }
+    // ② 動檔前備份（僅在原檔存在時）。備份失敗就中止本次整理（不冒險改資料），下次啟動再試。
+    let src = vbuild::VOXEL_RES_BLOCKS_PATH;
+    if std::path::Path::new(src).exists() {
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let bak = format!("{src}.bak-village-{epoch}");
+        if let Err(e) = std::fs::copy(src, &bak) {
+            tracing::warn!("村莊整理：備份 {src} 失敗，本次略過（下次啟動再試）：{e}");
+            return;
+        }
+        tracing::info!("村莊整理：已備份世界改動到 {bak}");
+    }
+
+    // 村莊中心 = 居民 home_base 群聚質心（空則退回出生點 0,0）。
+    let home_bases: Vec<(i32, i32)> = residents
+        .iter()
+        .map(|r| (r.home_x.floor() as i32, r.home_z.floor() as i32))
+        .collect();
+    let (vcx, vcz) = vvillage::village_center(&home_bases);
+    let biome = voxel::biome_at_voxel(vcx, vcz);
+    let plan = vvillage::plan_village(vcx, vcz, biome);
+    let road_surface = vvillage::road_surface(biome);
+    let plaza_surface = vvillage::plaza_surface(biome);
+
+    // 就地鋪一格路面：找地表 y，只有當該格地表方塊是「自然地表」時才鋪（絕不覆蓋作品）。
+    // 回傳是否真的鋪了（供計數）。
+    let mut lay_surface = |deltas: &mut WorldDelta, x: i32, z: i32, surf: Block| -> bool {
+        let sy = vbuild::surface_y(x, z); // 地面正上方一格
+        let gy = sy - 1; // 地表方塊本身
+        let cur = voxel::effective_block_at(deltas, x, gy, z);
+        if !vvillage::is_natural_ground(cur) {
+            return false; // 遇建築/樹/水/農田等 → 不鋪、不拆
+        }
+        if cur == surf {
+            return false; // 已是同材質（重跑冪等）→ 不重複落地
+        }
+        voxel::set_block(deltas, x, gy, z, surf);
+        vbuild::append_world_block(x, gy, z, surf as u8);
+        true
+    };
+
+    let mut paved = 0usize;
+    // 廣場鋪面（中央除外——中央留給水井）。
+    for &(x, z) in &plan.plaza {
+        if (x, z) == plan.well_center {
+            continue;
+        }
+        if lay_surface(deltas, x, z, plaza_surface) {
+            paved += 1;
+        }
+    }
+    // 十字主路。
+    for &(x, z) in &plan.road {
+        if lay_surface(deltas, x, z, road_surface) {
+            paved += 1;
+        }
+    }
+    // 從廣場鋪 L 形路連到每個既有建築（居民 home_base）。
+    for &(hx, hz) in &home_bases {
+        for (x, z) in vvillage::pave_path_cells(vcx, vcz, hx, hz) {
+            if lay_surface(deltas, x, z, road_surface) {
+                paved += 1;
+            }
+        }
+    }
+
+    // 廣場四角燈（火把）：放在廣場鋪面「之上」一格（發光點綴，也讓村莊遠處認得出）。
+    // 僅在該格目前為空氣時放（不覆蓋任何既有方塊）。
+    let mut lanterns = 0usize;
+    for &(x, z) in &plan.lantern_cells {
+        let sy = vbuild::surface_y(x, z);
+        if voxel::effective_block_at(deltas, x, sy, z) == Block::Air {
+            voxel::set_block(deltas, x, sy, z, Block::Torch);
+            vbuild::append_world_block(x, sy, z, Block::Torch as u8);
+            lanterns += 1;
+        }
+    }
+
+    // ③ 寫旗標檔（冪等）。
+    vvillage::mark_village_done(vcx, vcz);
+    // Feed 一句（面向玩家）：村裡鋪起了石板路。
+    vfeed::append_feed("村莊整理", "村子", vvillage::village_feed_line());
+    tracing::info!(
+        "村莊整理完成：中心 ({vcx},{vcz})／{}，鋪了 {paved} 格石板路、點了 {lanterns} 盞廣場燈（只鋪自然地表、未覆蓋任何既有建築）",
+        voxel::biome_name(biome)
+    );
+}
+
 fn hub() -> &'static VoxelHub {
     HUB.get_or_init(|| {
         let (tx, _rx) = broadcast::channel(256);
@@ -1783,6 +1893,12 @@ fn hub() -> &'static VoxelHub {
         }
         // 舊坑一次性修復（冪等）：把早期採集留下的地表淺坑回填成裸土，讓地表恢復平整。
         migrate_fill_surface_holes(&mut deltas, &loaded);
+        // 居民先建好（村莊整理需要各家家域中心當「既有建築」的位置參考）。
+        let residents = init_residents();
+        // 村莊系統 v1 一次性整理（冪等、備份後）：以居民 home_base 群聚中心定村莊中心，
+        // 鋪出中央廣場＋十字主路，並從廣場鋪 L 形路連到每個既有建築——只加不拆、遇非地表方塊即停，
+        // 把散落的家連成一座有街廓的村莊。這一步只在乾淨/舊世界啟動時跑一次（旗標檔冪等）。
+        migrate_lay_out_village(&mut deltas, &residents);
         // 乙太營火 v1：從已 replay 的 delta 掃出所有既存營火座標，重建取暖清單（重啟後居民
         // 仍會被重啟前蓋的火堆吸引）。掃描發生在 deltas 被 move 進 RwLock 之前，一次性、非熱路徑。
         let campfires = vcamp::scan_campfires(&deltas);
@@ -1794,7 +1910,7 @@ fn hub() -> &'static VoxelHub {
             deltas: RwLock::new(deltas),
             campfires: RwLock::new(campfires),
             benches: RwLock::new(benches),
-            residents: RwLock::new(init_residents()),
+            residents: RwLock::new(residents),
             agent_bus: AgentBus::new(),
             // 啟動時從 data/voxel_memory.jsonl 載回長期記憶（檔缺 = 首次啟動，回空），
             // 重啟後居民仍記得跟誰聊過、聊到什麼。
@@ -1807,6 +1923,8 @@ fn hub() -> &'static VoxelHub {
             builds: RwLock::new(BuildStore::from_entries(vbuild::load_builds())),
             // 啟動時從 data/voxel_goals.jsonl 載回已完成目標（重啟後不重蓋蓋過的）。
             goals: RwLock::new(GoalStore::from_entries(vskill::load_goals())),
+            // 村莊系統 v1：啟動時從 data/voxel_village_plots.jsonl 載回地塊認領（重啟後仍記得誰住哪塊）。
+            village: RwLock::new(vvillage::PlotRegistry::from_entries(vvillage::load_plot_claims())),
             // 居民小背包純記憶體（採集成果；重啟重置，與農地一致）。
             res_inv: RwLock::new(HashMap::new()),
             // 啟動時從 data/voxel_inventory.jsonl 載回玩家背包（重啟後存量還在）。
@@ -13971,6 +14089,57 @@ fn spawn_invention(
 /// `offset_seq`：一般建造傳「已蓋數量」（0..4）；擴建傳 `BUILD_PROGRESSION.len() + 已擴建次數`
 /// （落在 `build_offset` 原本就多留的第 5/6 格位，不與基礎四座重疊）。
 /// `is_expansion`：完工時要記到 `GoalStore::mark_expansion` 而非 `mark_done`。
+/// 村莊系統 v1：替居民取得「蓋家的地塊中心」當建址基準（取代舊的家域中心）。
+/// - 已認領過地塊 → 直接回原地塊中心（同一位居民所有建築都聚在自己那塊地上）。
+/// - 尚未認領 → 由村莊規劃（以居民 home_base 群聚中心定村莊）挑「離自家最近的空地塊」認領、
+///   持久化，並 Feed 一句「某某在村子某方向安了新家」。
+/// - 村莊全滿 / 找不到空地塊 → 保守退回傳入的家域中心 (hx,hz)（維持既有散落行為，零回歸）。
+/// 鎖序（嚴守短鎖即釋、鎖外 IO）：residents 讀鎖快照家域清單 → drop → village 寫鎖認領 → drop →
+/// 鎖外 append 落地 jsonl + Feed。純規劃函式在鎖外算。
+fn claim_or_reuse_plot(rid: &str, hx: i32, hz: i32) -> (i32, i32) {
+    // 已認領過 → 沿用（鎖外只讀一次）。
+    if let Some((cx, cz)) = hub().village.read().unwrap().claim_of(rid) {
+        return (cx, cz);
+    }
+    // 村莊中心：優先用一次性整理時**釘死的中心**（旗標檔），讓認領的地塊與已鋪的道路網對齊、
+    // 不隨新生兒改變質心而漂移；旗標缺（極少：整理尚未跑）才退回即時質心。
+    let (vcx, vcz) = match vvillage::load_village_center() {
+        Some(c) => c,
+        None => {
+            let home_bases: Vec<(i32, i32)> = {
+                let residents = hub().residents.read().unwrap();
+                residents
+                    .iter()
+                    .map(|r| (r.home_x.floor() as i32, r.home_z.floor() as i32))
+                    .collect()
+            }; // residents 讀鎖釋放
+            vvillage::village_center(&home_bases)
+        }
+    };
+    let biome = voxel::biome_at_voxel(vcx, vcz);
+    let plots = vvillage::plot_layout(vcx, vcz); // 純函式、鎖外算
+    // village 寫鎖：挑最近空地塊 + 認領（double-check 併發安全：進鎖後再確認一次沒被別的 tick 搶認）。
+    let (claim, plot) = {
+        let mut village = hub().village.write().unwrap();
+        if let Some((cx, cz)) = village.claim_of(rid) {
+            return (cx, cz); // 併發下別的 tick 已幫這居民認領
+        }
+        match village.nearest_free_plot(&plots, hx, hz) {
+            Some(p) => (Some(village.claim(rid, p.cx, p.cz)), Some(p)),
+            None => (None, None), // 村莊全滿 → 退回家域中心
+        }
+    }; // village 寫鎖釋放
+    match (claim, plot) {
+        (Some(rec), Some(p)) => {
+            vvillage::append_plot_claim(&rec); // 鎖外落地
+            let rname = resident_name_of(rid);
+            vfeed::append_feed("村莊安家", rname, &vvillage::plot_claim_feed_line(rname, &p, vcx, vcz));
+            (p.cx, p.cz)
+        }
+        _ => (hx, hz), // 保守退回家域中心（村莊全滿）
+    }
+}
+
 fn start_build(
     rid: &str,
     rname: &str,
@@ -13989,8 +14158,13 @@ fn start_build(
             .map(|r| (r.home_x, r.home_z))
             .unwrap_or((0.0, 0.0))
     }; // residents 讀鎖釋放
-    let bx = hx.floor() as i32 + ox;
-    let bz = hz.floor() as i32 + oz;
+    // 村莊系統 v1：建址基準改用「認領的地塊中心」而非家域中心——蓋在地塊上＝自動沿路、對齊、
+    // 不再散落一地。首次蓋家時就近認領一塊尚未被佔的空地塊並持久化；之後所有建築（含擴建）都以
+    // 同一塊地塊中心當基準，用 `build_offset` 在地塊周圍散開（沿用原偏移，防鬼打牆 #967 不變）。
+    // 找不到空地塊（村莊全滿或村莊未規劃）→ 保守退回原家域中心，維持既有行為（零回歸）。
+    let (base_x, base_z) = claim_or_reuse_plot(rid, hx.floor() as i32, hz.floor() as i32);
+    let bx = base_x + ox;
+    let bz = base_z + oz;
     let by = vbuild::surface_y(bx, bz);
     // 蓋家鬼打牆根治（機制性硬閘）：這個確切錨點若已完工過這種建物，直接不動工。
     // 這是「地上已有這座 → 就不再蓋」的硬事實，不倚賴 done_kinds/expansion_count 每 tick 重推

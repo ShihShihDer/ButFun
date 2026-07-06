@@ -129,6 +129,8 @@ mod voxel_building;
 mod voxel_overhear;
 // 乙太方界·城鎮動態 Feed v1：居民活動事件日誌，讓玩家回來時讀到「缺席時世界發生了什麼」（ROADMAP 655）。
 mod voxel_feed;
+// 乙太方界·村莊系統 v1：中央廣場+道路網+沿路地塊，居民新建築認領地塊沿路，一次性鋪路整理既有散落。
+mod voxel_village;
 // 乙太方界·採集背包 v1：挖方塊得材料、放置消耗存量，療癒「採集→蓋造」循環第一刀（ROADMAP 657）。
 mod voxel_inventory;
 // 乙太方界·合成台 v1：採集材料→合成木板/石磚/玻璃，「採集→合成→建造」循環（ROADMAP 658）。
