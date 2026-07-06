@@ -146,6 +146,10 @@ const HOT_SPRING_WATER = 93;
 // 野花 v1（自主提案切片）——草原／森林群系疏落生長的三色野花，世界第一種「花」；
 // 可採、可放置（比照仙人掌/冰晶），送給居民換來世界第一句「收到花」的心動道謝。
 const WILDFLOWER_RED = 94, WILDFLOWER_YELLOW = 95, WILDFLOWER_BLUE = 96;
+// 居民教你一道獨門配方 v1（自主提案切片，ROADMAP 849）——與某位居民感情深厚時她會主動教你
+// 的獨門配方：1 石頭 + 1 紅花 → 護身符(97)。純物品、不可放置。跟一般配方不同，這道配方要
+// 先被居民教過（伺服器權威判定好感度）才能合成，見 `knownRecipes` + `matchBagRecipe`。
+const AMULET = 97;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -265,6 +269,8 @@ const COLOR = {
   [WILDFLOWER_RED]:    [0.86, 0.20, 0.28], // 紅花——飽和玫瑰紅
   [WILDFLOWER_YELLOW]: [0.95, 0.80, 0.18], // 黃花——明豔向日葵黃
   [WILDFLOWER_BLUE]:   [0.30, 0.46, 0.88], // 藍花——清亮矢車菊藍
+  // 護身符 v1（居民教你一道獨門配方，自主提案切片）——溫潤琥珀色，一眼與其餘物品分開。
+  [AMULET]: [0.78, 0.58, 0.22],
 };
 
 const DEBUG = location.search.includes("debug");
@@ -3486,6 +3492,8 @@ const BLOCK_NAME = {
   [TERRACOTTA_WHITE]: "白陶磚", [TERRACOTTA_BLUE]: "青陶磚",
   // 野花 v1（自主提案切片）
   [WILDFLOWER_RED]: "紅花", [WILDFLOWER_YELLOW]: "黃花", [WILDFLOWER_BLUE]: "藍花",
+  // 居民教你一道獨門配方 v1（自主提案切片，ROADMAP 849）
+  [AMULET]: "護身符",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -4485,6 +4493,8 @@ function connect() {
       unstuckIfNeeded();
       // 好感度 v1：連線後立即拉取與各居民的好感度，讓指示燈盡快亮起。
       refreshAffinity();
+      // 居民教你一道獨門配方 v1（自主提案切片 849）：連線後拉一次已學會的獨門配方。
+      refreshKnownRecipes();
     } else if (m.t === "chunks") {
       for (const c of m.chunks) {
         const key = ckey(c.cx, c.cy, c.cz);
@@ -4769,6 +4779,14 @@ function connect() {
         updateInvHud();
         updateGiftBtn();
         appendMsg("sys", "🍞 " + (m.resident_name || "居民") + " 見你餓著肚子，遞了份 " + iname + " ×" + m.qty + " 給你！");
+      }
+    } else if (m.t === "recipe_taught") {
+      // 居民教你一道獨門配方 v1（自主提案切片，ROADMAP 849）：只有當事玩家才記到 knownRecipes
+      // 並顯示提示；當下若正打開背包面板，重繪一次讓合成格立刻反映「學會了」。
+      if (m.player === myName) {
+        knownRecipes.add(m.recipe_id);
+        if (bagPanelVisible()) renderBagPanel();
+        appendMsg("sys", "📜 " + (m.resident_name || "居民") + " 教了你一道獨門配方：" + (m.name_zh || "護身符") + "！");
       }
     } else if (m.t === "fetch_delivered") {
       // 跑腿採集 v1（指令→任務第三刀）：只有下單的當事玩家才顯示提示並更新背包。
@@ -5323,6 +5341,10 @@ const RECIPES_JS = [
   { id: "terracotta_black", name: "黑陶磚", inputs: [[SAND, 2], [COAL_ORE, 1]],  output_block: TERRACOTTA_BLACK, out_count: 2 },
   { id: "terracotta_white", name: "白陶磚", inputs: [[SAND, 2], [SNOW, 1]],      output_block: TERRACOTTA_WHITE, out_count: 2 },
   { id: "terracotta_blue",  name: "青陶磚", inputs: [[SAND, 2], [AETHER_ORE, 1]], output_block: TERRACOTTA_BLUE,  out_count: 2 },
+  // 護身符 v1（居民教你一道獨門配方，自主提案切片 849）：1 石頭 + 1 紅花 → 1 護身符。
+  // `taught: true`——與其餘配方不同，湊對材料還不夠，要先被某位感情夠深的居民教過
+  // （`knownRecipes` 由伺服器權威回報）才真正合成得出來，見 matchBagRecipe。
+  { id: "amulet", name: "護身符", inputs: [[STONE, 1], [WILDFLOWER_RED, 1]], output_block: AMULET, out_count: 1, taught: true },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
@@ -5330,6 +5352,22 @@ const RECIPES_JS = [
 const bagGrid = [0, 0, 0, 0];
 // 目前被「拿起」的 block_id（0 = 沒拿任何東西）。
 let bagPick = 0;
+// 居民教你一道獨門配方 v1（自主提案切片 849）：這位玩家已被居民教過的獨門配方 id 集合，
+// 連線時向 `/voxel/known_recipes` 拉一次 + 收到 `recipe_taught` 廣播即時更新（見 refreshKnownRecipes）。
+const knownRecipes = new Set();
+
+/** 向後端抓這位玩家已被教過的獨門配方（居民教你一道獨門配方 v1，849）。 */
+async function refreshKnownRecipes() {
+  if (!myName || myName === "旅人") return;
+  try {
+    const resp = await fetch(`/voxel/known_recipes?player=${encodeURIComponent(myName)}`);
+    if (!resp.ok) throw new Error("known_recipes fetch failed: " + resp.status);
+    const rows = await resp.json();
+    for (const r of rows) if (r.known) knownRecipes.add(r.id);
+  } catch (err) {
+    // 拉取失敗不阻斷遊戲——只是這次連線暫時看不到已學會的獨門配方，下次重連再試。
+  }
+}
 
 const bagPanelEl = document.getElementById("bagPanel");
 const bagInvGridEl = document.getElementById("bagInvGrid");
@@ -5354,7 +5392,8 @@ function bagPanelVisible() {
 /**
  * matchBagRecipe——無順序配方比對（純函式，確定性）。
  * 統計格子裡的 block_id 出現次數，比對 RECIPES_JS，回傳 {recipe, canCraft} 或 null。
- * canCraft = 玩家實際背包材料足夠（格子放入是「預覽意圖」，不實際扣除）。
+ * canCraft = 玩家實際背包材料足夠 ＋（若是獨門配方）已被居民教過（格子放入是「預覽意圖」，
+ * 不實際扣除；居民教你一道獨門配方 v1，自主提案切片 849）。
  */
 function matchBagRecipe() {
   const gridCounts = new Map();
@@ -5370,8 +5409,9 @@ function matchBagRecipe() {
       if ((gridCounts.get(b) || 0) !== c) { match = false; break; }
     }
     if (!match) continue;
-    const canCraft = r.inputs.every(([b, c]) => (myInv.get(b) || 0) >= c);
-    return { recipe: r, canCraft };
+    const hasMaterials = r.inputs.every(([b, c]) => (myInv.get(b) || 0) >= c);
+    const taughtOk = !r.taught || knownRecipes.has(r.id);
+    return { recipe: r, canCraft: hasMaterials && taughtOk, taughtOk };
   }
   return null;
 }
@@ -5475,7 +5515,9 @@ function renderBagCraftArea() {
     if (!match.canCraft) {
       const warn = document.createElement("div");
       warn.style.cssText = "font-size:9px;color:#ff8060;margin-top:2px";
-      warn.textContent = "材料不足";
+      // 居民教你一道獨門配方 v1（849）：材料足夠但沒學過 → 專屬提示，跟材料不足分開，
+      // 讓玩家知道「不是缺材料，是還沒被教過」，去找感情夠深的居民多聊聊。
+      warn.textContent = match.taughtOk ? "材料不足" : "你還沒學會這道配方";
       bagResultEl.appendChild(warn);
     }
   } else {
