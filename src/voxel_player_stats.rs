@@ -218,6 +218,45 @@ pub fn revived_stats() -> PlayerStats {
     PlayerStats::default()
 }
 
+// ── 溫泉遺跡 v1（世界第二種可探索地標，自主提案切片）─────────────────────────
+// 走遠巧遇溫泉、泡進去有實際功能回饋：不必等飽食就能回血、回得更快，飢餓也消耗得慢——
+// 像在休息。與一般飽食回血（療癒但被動）刻意區隔：這是「走遠探索換來的主動獎賞」。
+
+/// 泡溫泉時的回血門檻：比一般飽食回血（[`REGEN_HUNGER_THRESHOLD`]=70）寬鬆得多——
+/// 只要沒餓到瀕臨見底就能回，不必特地先吃飽才能去泡。
+pub const HOT_SPRING_REGEN_HUNGER_THRESHOLD: f32 = 20.0;
+/// 泡溫泉時的回血間隔（秒）：比一般（[`REGEN_INTERVAL_SECS`]=4.0）快上不少，泡一下子就有感。
+pub const HOT_SPRING_REGEN_INTERVAL_SECS: f32 = 1.5;
+/// 泡溫泉時飢餓消耗的倍率：只剩正常速率的 35%，像在暖泉裡歇著、不太耗體力。
+pub const HOT_SPRING_HUNGER_DECAY_MULT: f32 = 0.35;
+
+/// 飢餓衰減（泡溫泉版）：`soaking=true` 時消耗速率打折（見 [`HOT_SPRING_HUNGER_DECAY_MULT`]），
+/// 否則與 [`decay_hunger`] 完全一致（零回歸）。
+pub fn decay_hunger_soaking(hunger: f32, dt: f32, soaking: bool) -> f32 {
+    if !soaking {
+        return decay_hunger(hunger, dt);
+    }
+    (hunger - HUNGER_DECAY_PER_SEC * HOT_SPRING_HUNGER_DECAY_MULT * dt).max(0.0)
+}
+
+/// 飽食回血推進一 tick（泡溫泉版）：`soaking=true` 時門檻更寬鬆、回血更快
+/// （見 [`HOT_SPRING_REGEN_HUNGER_THRESHOLD`]／[`HOT_SPRING_REGEN_INTERVAL_SECS`]），
+/// 否則與 [`tick_regen`] 完全一致（零回歸）。
+pub fn tick_regen_soaking(hunger: f32, health: u32, regen_acc: f32, dt: f32, soaking: bool) -> (f32, u32) {
+    if !soaking {
+        return tick_regen(hunger, health, regen_acc, dt);
+    }
+    if hunger <= HOT_SPRING_REGEN_HUNGER_THRESHOLD || health >= MAX_HEALTH {
+        return (0.0, 0);
+    }
+    let acc = regen_acc + dt;
+    if acc >= HOT_SPRING_REGEN_INTERVAL_SECS {
+        (acc - HOT_SPRING_REGEN_INTERVAL_SECS, 1)
+    } else {
+        (acc, 0)
+    }
+}
+
 /// 溫暖的重生提示語（i18n：目前繁中，字串集中此處便於日後在地化）。
 /// `pick` 由呼叫端提供（確定性、不走 random），輪替幾句避免每次一樣。
 pub fn respawn_message(pick: usize) -> &'static str {
@@ -560,5 +599,52 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[1].player, "乙");
         assert_eq!(parsed[1].health, 5);
+    }
+
+    // ── 溫泉遺跡 v1（自主提案切片）───────────────────────────────────────────
+
+    #[test]
+    fn soaking_false_matches_plain_functions_exactly() {
+        // soaking=false 時兩個新函式必須與原函式逐位元一致（零回歸保證）。
+        assert_eq!(decay_hunger_soaking(50.0, 3.0, false), decay_hunger(50.0, 3.0));
+        assert_eq!(
+            tick_regen_soaking(80.0, 10, REGEN_INTERVAL_SECS, 0.1, false),
+            tick_regen(80.0, 10, REGEN_INTERVAL_SECS, 0.1)
+        );
+    }
+
+    #[test]
+    fn soaking_slows_hunger_decay() {
+        // 同樣 dt 下，泡溫泉的飢餓消耗應明顯少於平常（約 35%）。
+        let normal = decay_hunger(100.0, 10.0);
+        let soaking = decay_hunger_soaking(100.0, 10.0, true);
+        assert!(soaking > normal, "泡溫泉時飢餓消耗應變慢：soaking={soaking} normal={normal}");
+        let normal_drop = 100.0 - normal;
+        let soaking_drop = 100.0 - soaking;
+        assert!(
+            (soaking_drop - normal_drop * HOT_SPRING_HUNGER_DECAY_MULT).abs() < 1e-4,
+            "泡溫泉消耗應恰為平常的 {HOT_SPRING_HUNGER_DECAY_MULT} 倍"
+        );
+    }
+
+    #[test]
+    fn soaking_regens_below_normal_threshold_and_faster() {
+        // 沒吃飽（低於一般 70 門檻，但高於溫泉寬鬆門檻 20）平常不會回血，泡溫泉會。
+        let (_acc, heal_normal) = tick_regen(40.0, 10, REGEN_INTERVAL_SECS, 0.1);
+        assert_eq!(heal_normal, 0, "沒吃飽時一般回血不該觸發");
+        let (acc_soak, heal_soak) =
+            tick_regen_soaking(40.0, 10, HOT_SPRING_REGEN_INTERVAL_SECS, 0.1, true);
+        assert_eq!(heal_soak, 1, "泡溫泉門檻寬鬆，同樣飢餓值應能回血");
+        assert!(acc_soak < HOT_SPRING_REGEN_INTERVAL_SECS);
+
+        // 太餓（低於溫泉門檻 20）連泡溫泉也不回，飢餓仍是硬底線。
+        let (_acc2, heal_too_hungry) =
+            tick_regen_soaking(10.0, 10, HOT_SPRING_REGEN_INTERVAL_SECS, 0.1, true);
+        assert_eq!(heal_too_hungry, 0, "太餓時泡溫泉也不該回血");
+
+        // 已滿血：泡溫泉也不該多回（不是無上限外掛）。
+        let (_acc3, heal_full) =
+            tick_regen_soaking(80.0, MAX_HEALTH, HOT_SPRING_REGEN_INTERVAL_SECS, 0.1, true);
+        assert_eq!(heal_full, 0);
     }
 }

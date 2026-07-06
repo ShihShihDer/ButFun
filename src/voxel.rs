@@ -254,12 +254,16 @@ pub enum Block {
     /// 用世界最深最稀有的乙太礦染色，是這套色系中最珍貴的一款，呼應乙太燈同樣「深掘换珍色」
     /// 的設計精神。id 92。
     TerracottaBlue = 92,
+    /// 溫泉水（溫泉遺跡 v1，世界第二種可探索地標，自主提案切片）——伺服器維護的世界生成方塊，
+    /// 玩家不可手動放置/破壞（同來源水）；泡在裡面加速回血、緩解飢餓消耗。非實心、視為
+    /// 一種水（`is_any_water`），共用既有水的碰撞/游泳/水桶互動。id 93：0~92 皆已用。
+    HotSpringWater = 93,
 }
 
 impl Block {
     /// 是否為「實心、可站立／會擋路」的方塊（碰撞與面剔除用）。空氣、來源水、流動水、梯子、開門皆非實心。
     pub fn is_solid(self) -> bool {
-        !matches!(self, Block::Air | Block::Water | Block::Ladder | Block::DoorOpen)
+        !matches!(self, Block::Air | Block::Water | Block::Ladder | Block::DoorOpen | Block::HotSpringWater)
             && !self.is_flowing_water()
     }
 
@@ -278,9 +282,9 @@ impl Block {
         )
     }
 
-    /// 是否為「任何水」（來源或流動）——放置驗證用（水格可被覆蓋）。
+    /// 是否為「任何水」（來源、流動、或溫泉）——放置驗證用（水格可被覆蓋）。
     pub fn is_any_water(self) -> bool {
-        matches!(self, Block::Water) || self.is_flowing_water()
+        matches!(self, Block::Water | Block::HotSpringWater) || self.is_flowing_water()
     }
 
     /// 由 u8 還原方塊型別（解析客戶端 place 的方塊 id）；越界回 None。
@@ -343,6 +347,7 @@ impl Block {
             90 => Some(Block::TerracottaBlack),
             91 => Some(Block::TerracottaWhite),
             92 => Some(Block::TerracottaBlue),
+            93 => Some(Block::HotSpringWater),
             _ => None,
         }
     }
@@ -633,6 +638,17 @@ const RUIN_CHANCE: f32 = 0.05;
 /// 遺跡不可能出現在出生點/主城附近（格距，非半徑平方）——把探索的驚喜留給走遠的人。
 const RUIN_MIN_DIST: i32 = 180;
 
+/// 溫泉噪聲種子（世界第二種可探索地標，與遺跡/樹/地形獨立）。
+const HOT_SPRING_SEED: u32 = SEED ^ 0x_5117_5099;
+/// 溫泉格邊長——比遺跡（48）略大，避免兩種地標的格狀分佈疊出規律感。
+const HOT_SPRING_CELL: i32 = 56;
+/// 一格藏有溫泉的機率門檻（per-cell hash < 此值才有）。約 4.5%，比遺跡稍稀（見面時更珍貴）。
+const HOT_SPRING_CHANCE: f32 = 0.045;
+/// 溫泉不可能出現在出生點/主城附近（格距）——與遺跡同精神，但門檻不同數值避免「換皮重複」觀感。
+const HOT_SPRING_MIN_DIST: i32 = 140;
+/// 池心半徑（含中心，不含池緣矮牆那圈）。
+const HOT_SPRING_RADIUS: i32 = 2;
+
 /// 世界座標 → 生物群系。確定性純函式，同座標永遠同群系。
 /// 出生保護圈（BIOME_SPAWN_RADIUS 內）強制草原，確保玩家出生有樹有草。
 pub fn biome_at_voxel(wx: i32, wz: i32) -> VoxelBiome {
@@ -905,6 +921,53 @@ fn ruin_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
     }
 }
 
+/// 溫泉遺跡（世界第二種可探索地標，自主提案切片，接續古代遺跡）——同一手法（格狀機率、
+/// 強制遠離出生點、純函式在地表之上疊加、不改動地形本身），但換一種「有功能性回饋」的
+/// 地標型別：不是挖礦驚喜，而是一泓暖水池——泡進去能加速回血、緩解飢餓消耗（見
+/// `voxel_player_stats` 接線），讓「走遠探索」除了礦藏，也可能巧遇歇腳的暖泉。
+/// 純函式、確定性、零狀態、零 IO；同座標永遠同結果。
+fn hot_spring_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
+    let cellx = wx.div_euclid(HOT_SPRING_CELL);
+    let cellz = wz.div_euclid(HOT_SPRING_CELL);
+    if hash2(cellx, cellz, HOT_SPRING_SEED) >= HOT_SPRING_CHANCE {
+        return None;
+    }
+    // 池心落在格內側，確保池緣（半徑 HOT_SPRING_RADIUS+1）不跨格。
+    let ox = (6 + (hash2(cellx, cellz, HOT_SPRING_SEED ^ 0x_1111_1111) * 44.0) as i32).clamp(6, 50);
+    let oz = (6 + (hash2(cellx, cellz, HOT_SPRING_SEED ^ 0x_2222_2222) * 44.0) as i32).clamp(6, 50);
+    let tx = cellx * HOT_SPRING_CELL + ox;
+    let tz = cellz * HOT_SPRING_CELL + oz;
+    // 離任一出生點/主城錨點太近一律不生成——比照遺跡逐一檢查全部 SPAWN_ANCHORS
+    // （i64 防溢位，座標可能遠達數萬格）。
+    for (ax, az) in SPAWN_ANCHORS {
+        let (ddx, ddz) = ((tx - ax) as i64, (tz - az) as i64);
+        if ddx * ddx + ddz * ddz < (HOT_SPRING_MIN_DIST as i64) * (HOT_SPRING_MIN_DIST as i64) {
+            return None;
+        }
+    }
+    let (dx, dz) = (wx - tx, wz - tz);
+    let dist2 = dx * dx + dz * dz;
+    let outer2 = (HOT_SPRING_RADIUS + 1) * (HOT_SPRING_RADIUS + 1);
+    if dist2 > outer2 {
+        return None; // 超出池身＋池緣範圍，非本地標
+    }
+    // 只在乾燥陸地上生成（水邊/水下皆略過，同遺跡慣例）；用本欄位自己的地表高度
+    // （非池心的高度），免得地形略有起伏時池水懸空或埋進土裡。
+    let h = height_at(wx, wz);
+    if h <= SEA_LEVEL + 1 {
+        return None;
+    }
+    if wy != h + 1 {
+        return None; // 池水／池緣矮牆只在地表正上方一層成形
+    }
+    let r2 = HOT_SPRING_RADIUS * HOT_SPRING_RADIUS;
+    if dist2 <= r2 {
+        Some(Block::HotSpringWater)
+    } else {
+        Some(Block::StoneBrick) // 池緣矮石牆，圈住溫泉，一眼認出是個特別的地方
+    }
+}
+
 /// 任一世界座標的方塊（確定性程序生成）。這是「無狀態世界」的核心查詢。
 pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
     // 地心一律基岩石頭（避免從世界底掉出去；本輪只生成 y>=0 的 chunk）。
@@ -921,6 +984,11 @@ pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
         // 巧合命中同一柱腳座標時，殘柱理應蓋過恰好路過的樹苗。
         if let Some(rb) = ruin_block_at(wx, wy, wz) {
             return rb;
+        }
+        // 溫泉遺跡（世界第二種可探索地標）：與遺跡同優先序，巧合命中同一欄位時遺跡優先
+        // （上面已 return），溫泉才輪到查。
+        if let Some(hb) = hot_spring_block_at(wx, wy, wz) {
+            return hb;
         }
         // 再看是否為樹（樹幹/樹冠，只填到原本是空氣的格；樹只長在草地、樹塊恆高於海平面）。
         if let Some(tb) = tree_block_at(wx, wy, wz) {
