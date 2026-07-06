@@ -144,6 +144,7 @@ use crate::voxel_bottle::{self as vbottle, BottleStore};
 use crate::voxel_coop_gather as vcoop_gather;
 use crate::voxel_dropitem::{self as vdrop, DropStore};
 use crate::voxel_stall::{self as vstall, StallStore};
+use crate::voxel_frontier_find as vffind;
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -561,6 +562,9 @@ struct VoxelResident {
     /// 主城的家。與 `asleep` 並存（`asleep` 管「正在睡」，本旗標管「睡在哪」）——醒來時據此分岔：邊陲
     /// 過夜醒來要結束遠行、啟程返家（跳過家用晨間探友），家裡睡醒才走既有晨間流程。純記憶體、重啟歸零。
     asleep_at_outpost: bool,
+    /// 邊陲巧遇冷卻倒數（秒，玩家追到邊陲找到我 v1）：> 0 表示最近才在邊陲被玩家巧遇過，
+    /// 暫不再驚喜反應（防你賴在原地不動時每 tick 狂刷驚喜台詞）。純記憶體、重啟歸零。
+    frontier_find_cooldown: f32,
     /// 手中捧著、還沒享用的食物餽贈（你送的食物她會細細享用 v1，ROADMAP 765）：
     /// `Some((食物 item_id, 送禮玩家名, 剩餘延遲秒))` = 玩家剛送了一份食物，居民收下但還沒吃，
     /// 倒數歸零後在一個閒下來的安靜片刻**真的享用**（冒暖泡泡＋動態牆＋重新點亮心情）；
@@ -1455,6 +1459,8 @@ fn build_resident(
             expedition_timer: 0.0,
             expedition_cooldown: vexp::EXPEDITION_COOLDOWN + i as f32 * 300.0,
             asleep_at_outpost: false,
+            // 邊陲巧遇 v1：入場沒有正在冷卻的巧遇，反正沒在遠行也用不到，隨遠行一起就緒即可。
+            frontier_find_cooldown: 0.0,
             // 你送的食物她會細細享用 v1（ROADMAP 765）：入場手中沒有待享用的食物。
             savoring: None,
             // 居民也會肚子餓 v1（ROADMAP 799）：入場剛吃飽，餓意從 0 起累積；
@@ -7217,6 +7223,10 @@ fn tick_residents(dt: f32) {
     // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在近旁才記交情，否則 None 只上 Feed。
     // (居民 id, 居民名, 近旁玩家名 Option, pick)。
     let mut homegaze_events: Vec<(String, &'static str, Option<String>, usize)> = Vec::new();
+    // 邊陲巧遇事件（玩家追到邊陲、巧遇正在遠行的居民 v1）：某位遠行居民在邊陲逗留時被玩家撞見，鎖內
+    // 收集；記憶寫＋Feed 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。
+    // (居民 id, 居民名, 巧遇玩家名, 遠行方位, pick)。
+    let mut frontier_find_events: Vec<(String, &'static str, String, String, usize)> = Vec::new();
     // 居民誕辰紀念事件（居民誕辰紀念 v1）：某位經世代傳承誕生的居民滿一個乙太年時鎖內收集；記憶寫＋
     // Feed 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在近旁才記交情，否則 None 只上
     // Feed。(居民 id, 居民名, 近旁玩家名 Option, 滿週歲數, 父母名, pick)。
@@ -8679,6 +8689,10 @@ fn tick_residents(dt: f32) {
             if r.homegaze_cooldown > 0.0 {
                 r.homegaze_cooldown -= dt;
             }
+            // 邊陲巧遇 v1：巧遇冷卻遞減（純記憶體、每 tick 一次）。
+            if r.frontier_find_cooldown > 0.0 {
+                r.frontier_find_cooldown -= dt;
+            }
             // 飢餓時的守望相助 v1（ROADMAP 800）：分食冷卻遞減（純記憶體、每 tick 一次）。
             if r.share_meal_cooldown > 0.0 {
                 r.share_meal_cooldown -= dt;
@@ -9733,6 +9747,37 @@ fn tick_residents(dt: f32) {
                     r.say_timer = SAY_SECS;
                     r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                     homegaze_events.push((r.id.clone(), r.name, None, pick));
+                }
+            }
+
+            // 邊陲巧遇 v1（voxel_frontier_find，PLAN_ETHERVOX item 7×item 3 交會）：正在邊陲逗留
+            // （expedition 已抵達、stay > 0，非睡眠中）的居民，若你恰好走到牠身邊，會認出「你是特地
+            // 追這麼遠來的」，比在主城相遇更驚喜的一句招呼——821 讓居民追去邊陲找老朋友，本刀把同一種
+            // 「追到荒野盡頭找到你」的驚喜第一次伸向玩家。三閘（在邊陲逗留＋你在近旁＋冷卻＋機率）皆過
+            // 才觸發；鎖序：純讀居民自身欄位＋player_pts 快照，記憶寫＋Feed 走鎖外 frontier_find_events。
+            if r.say.is_empty()
+                && !r.asleep
+                && r.frontier_find_cooldown <= 0.0
+                && r.expedition_stay > 0.0
+            {
+                if let Some((_, _, bearing)) = r.expedition.clone() {
+                    let near_player = nearest_player_info(r.body.x, r.body.z, &player_pts)
+                        .filter(|(d2, pname)| {
+                            *d2 < vffind::FIND_PLAYER_RADIUS * vffind::FIND_PLAYER_RADIUS
+                                && !pname.is_empty()
+                        })
+                        .map(|(_, pname)| pname.to_string());
+                    if let Some(pname) = near_player {
+                        if vffind::should_find(true, true, 0.0, rand::random::<f32>(), vffind::FIND_CHANCE)
+                        {
+                            r.frontier_find_cooldown = vffind::FIND_COOLDOWN_SECS;
+                            let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                            r.say = vffind::found_bubble(&pname, &bearing, pick);
+                            r.say_timer = SAY_SECS;
+                            r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                            frontier_find_events.push((r.id.clone(), r.name, pname, bearing.clone(), pick));
+                        }
+                    }
                 }
             }
 
@@ -11685,6 +11730,18 @@ fn tick_residents(dt: f32) {
                 .add_memory(rid, pname, &vhome::gaze_memory_line(pname)); // 記憶寫鎖即釋
         }
         vfeed::append_feed(vhome::FEED_KIND, rname, &vhome::gaze_feed_line(rname));
+    }
+
+    // 邊陲巧遇 v1：玩家追到邊陲、被正在遠行的居民認出的事件落地——把「你千里迢迢追到邊陲找到我」
+    // 記進交情（掛玩家名下、日後浮進日記），並上動態牆讓沒跟去的其他玩家也讀得到。記憶寫鎖短取即釋、
+    // Feed 走 IO，皆在 residents 鎖釋放後（守死鎖鐵律）。純記憶體（比照顧家駐足／臨水垂釣），不額外持久化。
+    for (rid, rname, pname, bearing, _pick) in &frontier_find_events {
+        hub()
+            .memory
+            .write()
+            .unwrap()
+            .add_memory(rid, pname, &vffind::found_memory_line(pname, bearing)); // 記憶寫鎖即釋
+        vfeed::append_feed(vffind::FEED_KIND, rname, &vffind::found_feed_line(rname, pname, bearing));
     }
 
     // 居民誕辰紀念 v1：滿一個乙太年的事件落地——玩家在近旁時把「和你一起過了第 N 個生日」記進交情
