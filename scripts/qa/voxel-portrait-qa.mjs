@@ -114,6 +114,8 @@ function noOverlap(a, b) {
     const placeBox  = await getBoundingBox(page, "#place");
     const joyBox    = await getBoundingBox(page, "#joy");
     const crossBox  = await getBoundingBox(page, "#crosshair");
+    // 玩家生存指標列（玩家生存指標 v1·溫和版）：快捷欄正上方一條窄列，納入兩兩不相交檢查。
+    const statsBox  = await getBoundingBox(page, "#statsBar");
 
     // 驗收項目
     const hotbarFits  = hotbarBox && hotbarBox.width <= vw;                        // 快捷欄不超寬
@@ -124,6 +126,12 @@ function noOverlap(a, b) {
     const jumpHotOk   = noOverlap(jumpBox, hotbarBox);                            // 跳鈕與快捷欄不重疊
     const placeHotOk  = noOverlap(placeBox, hotbarBox);                           // 放置鈕與快捷欄不重疊
     const joyHotOk    = noOverlap(joyBox, hotbarBox);                             // 搖桿與快捷欄不重疊
+    // 生存指標列：存在、在螢幕內，且與底部所有元素兩兩不相交（別弄亂 #1017 佈局）。
+    const statsShown   = !!(statsBox && statsBox.width > 0 && statsBox.bottom <= vh);
+    const statsHotOk   = noOverlap(statsBox, hotbarBox);                          // 指標列↔快捷欄不重疊
+    const statsJumpOk  = noOverlap(statsBox, jumpBox);                            // 指標列↔跳鈕不重疊
+    const statsPlaceOk = noOverlap(statsBox, placeBox);                           // 指標列↔放置鈕不重疊
+    const statsJoyOk   = noOverlap(statsBox, joyBox);                             // 指標列↔搖桿不重疊
     // 準心在畫面中央（±30px 容差）
     const crossOk = crossBox &&
       Math.abs(crossBox.left + crossBox.width / 2 - vw / 2) < 30 &&
@@ -132,7 +140,8 @@ function noOverlap(a, b) {
     const st = await readState(page);
     const portraitPass = pixPortrait.ok && st.chunks > 0 && st.fpsAvg > 15 &&
       hotbarFits && jumpOk && placeOk && joyOk &&
-      jumpPlaceOk && jumpHotOk && placeHotOk && joyHotOk && crossOk;
+      jumpPlaceOk && jumpHotOk && placeHotOk && joyHotOk && crossOk &&
+      statsShown && statsHotOk && statsJumpOk && statsPlaceOk && statsJoyOk;
 
     console.log(`  FPS: ${st.fpsAvg.toFixed(1)} (自報: ${st.selfFps.toFixed(1)})  chunks: ${st.chunks}  meshes: ${st.meshes}`);
     console.log(`  非黑屏: ${pixPortrait.ok ? "✓" : "✗"}  PNG ${pixPortrait.pngBytes} bytes  顏色多樣: ${pixPortrait.distinct}`);
@@ -141,6 +150,8 @@ function noOverlap(a, b) {
     console.log(`  搖桿在螢幕內: ${joyOk ? "✓" : "✗"}`);
     console.log(`  跳鈕↔放置鈕不重疊: ${jumpPlaceOk ? "✓" : "✗"}`);
     console.log(`  跳鈕↔快捷欄不重疊: ${jumpHotOk ? "✓" : "✗"}  放置鈕↔快捷欄: ${placeHotOk ? "✓" : "✗"}  搖桿↔快捷欄: ${joyHotOk ? "✓" : "✗"}`);
+    console.log(`  生存指標列出現: ${statsShown ? "✓" : "✗"}  (${statsBox ? `y=${statsBox.top.toFixed(0)}~${statsBox.bottom.toFixed(0)}, x=${statsBox.left.toFixed(0)}~${statsBox.right.toFixed(0)}` : "缺"})`);
+    console.log(`  指標列↔快捷欄: ${statsHotOk ? "✓" : "✗"}  ↔跳鈕: ${statsJumpOk ? "✓" : "✗"}  ↔放置鈕: ${statsPlaceOk ? "✓" : "✗"}  ↔搖桿: ${statsJoyOk ? "✓" : "✗"}`);
     console.log(`  準心置中: ${crossOk ? "✓" : "✗"}`);
     console.log(`  截圖: ${portraitShot}`);
     if (logs.length) console.log("  頁面訊息:\n  " + logs.slice(0, 10).join("\n  "));
@@ -149,6 +160,7 @@ function noOverlap(a, b) {
     results.portrait = {
       pass: portraitPass, fpsAvg: st.fpsAvg, chunks: st.chunks, meshes: st.meshes,
       hotbarFits, jumpOk, placeOk, joyOk, jumpPlaceOk, jumpHotOk, placeHotOk, joyHotOk, crossOk,
+      statsShown, statsHotOk, statsJumpOk, statsPlaceOk, statsJoyOk,
       screenshot: portraitShot, pixStat: pixPortrait,
     };
     await page.close();

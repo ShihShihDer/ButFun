@@ -132,6 +132,35 @@
     .slot.empty { opacity: 0.55; }
     .slot.empty.sel { opacity: 1; border-color: #ff8f5a; box-shadow: 0 0 8px rgba(255,143,90,0.5); }
 
+    /* ── 玩家生存指標列（玩家生存指標 v1·溫和版）：快捷欄正上方一條窄的、半透明 ──
+       置中、窄（不觸及左右拇指鈕）、小、低干擾；左半血、右半飢。數值變化用 width transition 平滑。 */
+    #statsBar {
+      position: fixed; left: 50%; bottom: 72px; transform: translateX(-50%); z-index: 8;
+      display: flex; gap: 10px; padding: 3px 8px; border-radius: 10px;
+      background: rgba(20,28,40,0.42); pointer-events: none; user-select: none;
+    }
+    .statHalf { display: flex; align-items: center; gap: 4px; }
+    .statIcon { font-size: 12px; line-height: 1; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.6)); }
+    .statTrack {
+      width: 72px; height: 7px; border-radius: 4px; overflow: hidden;
+      background: rgba(0,0,0,0.45); border: 1px solid rgba(255,255,255,0.18);
+    }
+    .statFill { height: 100%; width: 100%; border-radius: 4px; transition: width 0.35s ease, background 0.3s ease; }
+    /* 血：飽滿時柔紅，低血偏暗紅（由 JS 調色）。飢：琥珀。 */
+    .statFill.hp   { background: linear-gradient(90deg, #ff6b7a, #e2384a); }
+    .statFill.food { background: linear-gradient(90deg, #ffcf6b, #f0a030); }
+    /* 餓瘋（飢餓見底）：飢餓條閃暗，提示該吃了。 */
+    #statHunger.starving .statFill.food { background: linear-gradient(90deg, #a86a3a, #7a4a24); }
+    #statHunger.starving .statIcon { opacity: 0.6; }
+
+    /* 受傷輕紅暈（扣血時）：極輕微、快速淡出，別嚇人。JS 切 .show 觸發。 */
+    #damageFlash {
+      position: fixed; inset: 0; z-index: 4; pointer-events: none;
+      background: radial-gradient(ellipse at center, rgba(200,30,30,0) 45%, rgba(200,30,30,0.28) 100%);
+      opacity: 0; transition: opacity 0.5s ease-out;
+    }
+    #damageFlash.show { opacity: 1; transition: opacity 0.08s ease-in; }
+
     /* ═══════════════════════════════════════════════════════════
        響應式排版：直式（portrait）優先、橫式（landscape）相容
        ═══════════════════════════════════════════════════════════
@@ -159,6 +188,12 @@
       .slot   { width: 32px; height: 32px; font-size: 8px; border-radius: 6px; }
       .slot .sw { width: 14px; height: 14px; margin-bottom: 1px; }
       /* 快捷欄總高：38+5×2=48px；頂邊距底：8+48=56px from bottom */
+
+      /* 生存指標列：快捷欄正上方（56px），置中且窄，不與拇指鈕（左右 16~108px）相交。
+         條再窄一點、bottom 落在快捷欄頂面上一點點，總寬約 152px 置中不觸兩側鈕。 */
+      #statsBar { bottom: 58px; gap: 8px; padding: 2px 6px; }
+      .statTrack { width: 54px; height: 6px; }
+      .statIcon { font-size: 11px; }
 
       /* 搖桿：左下角，快捷欄上方（76 > 56，留 20px 間距）*/
       #joy { left: 16px; bottom: 76px; }
@@ -1298,6 +1333,8 @@
   <div id="app"></div>
   <!-- 水下氛圍覆蓋層：相機在水方塊內時顯示淡藍色，JS 控制 opacity -->
   <div id="underwaterOverlay"></div>
+  <!-- 受傷輕紅暈（玩家生存指標 v1·溫和版）：扣血時淡入一層極輕微紅色再淡出，別嚇人 -->
+  <div id="damageFlash"></div>
   <div id="hud">載入中…</div>
   <!-- Google 登入帳號 chip（內容由 main.js 依登入態填）-->
   <div id="acct"></div>
@@ -1307,6 +1344,12 @@
   <div id="crosshair"></div>
   <!-- 採礦進度條（ROADMAP 687）——準心正下方，持鎬挖掘時由 JS 控制顯示 -->
   <div id="miningBar"><div id="miningBarFill"></div></div>
+  <!-- 玩家生存指標列（玩家生存指標 v1·溫和版）：快捷欄正上方一條窄的、半透明，
+       左半 ❤️ 血、右半 🍗 飢；小、不擋畫面、手機優先。內容由 main.js 依 player_stats 更新。 -->
+  <div id="statsBar">
+    <div id="statHealth" class="statHalf"><span class="statIcon">❤️</span><div class="statTrack"><div id="statHealthFill" class="statFill hp"></div></div></div>
+    <div id="statHunger" class="statHalf"><span class="statIcon">🍗</span><div class="statTrack"><div id="statHungerFill" class="statFill food"></div></div></div>
+  </div>
   <!-- 快捷欄槽位由 main.js 依方塊型別動態生成 -->
   <div id="hotbar"></div>
   <div id="touch">
