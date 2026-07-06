@@ -449,6 +449,21 @@ pub fn find_nearest_resource(
     oz: i32,
     max_radius: i32,
 ) -> Option<(i32, i32, i32, GatherResource)> {
+    // 無離村禁區（既有呼叫語意不變；autonomous 路徑改呼 `_excl` 帶禁區）。
+    find_nearest_resource_excl(world, ox, oz, max_radius, None)
+}
+
+/// [`find_nearest_resource`] 的**離村禁區**版（挖掘紀律·治本）：`excl = Some((vcx, vcz, radius))`
+/// 時，選址螺旋**跳過禁區內的柱**（居民自主挖資源不准在村內開挖，去村外找）——選址搜尋逕自
+/// 略過村內格、繼續往外圈找村外資源。`excl = None` ＝不設限（等同原函式）。純函式、可測。
+/// 註：只擋**自主**採集（發明/備料）；玩家指定的工地（整地/鋪面）不走這條、傳 None。
+pub fn find_nearest_resource_excl(
+    world: &WorldDelta,
+    ox: i32,
+    oz: i32,
+    max_radius: i32,
+    excl: Option<(i32, i32, i32)>,
+) -> Option<(i32, i32, i32, GatherResource)> {
     // 居民站立柱的地表頂 → 推估腳底層（fy），用來剔除「挖了會把自己困住」的目標
     // （腳下那柱、明顯低於腳底的坑底）。找不到站立柱（不該發生）就不過濾、退回原行為。
     let foot_fy = surface_block(world, ox, oz).map(|(y, _)| y + 1);
@@ -461,6 +476,9 @@ pub fn find_nearest_resource(
     // 加自然資源過濾：只有「無 delta 覆蓋」的樹幹方塊才採——帶 delta 的代表玩家或居民放置的木牆，
     // 不能採（否則建物被居民挖掉）。
     if let Some(w) = spiral_find(ox, oz, GATHER_MIN_RADIUS, max_radius, |x, z| {
+        if in_dig_exclusion(excl, x, z) {
+            return None; // 挖掘紀律：村內禁自主開挖 → 跳過，往村外找
+        }
         let (_, b) = surface_block(world, x, z)?;
         if !matches!(b, Block::Leaves | Block::Wood) {
             return None;
@@ -479,6 +497,9 @@ pub fn find_nearest_resource(
     // 加自然資源過濾：只採無 delta 的地表方塊——帶 delta 的代表玩家鋪設的地板／改地形，
     // 不應被採走（否則玩家精心鋪好的地面會被居民挖掉）。
     spiral_find(ox, oz, GATHER_MIN_RADIUS, max_radius, |x, z| {
+        if in_dig_exclusion(excl, x, z) {
+            return None; // 挖掘紀律：村內禁自主開挖 → 跳過，往村外找
+        }
         let (y, b) = surface_block(world, x, z)?;
         if matches!(b, Block::Leaves | Block::Wood) {
             return None; // 樹柱已在木頭階段處理（砍不到就不採其地表）
@@ -490,6 +511,20 @@ pub fn find_nearest_resource(
         }
         escapable(x, y, z).then_some((x, y, z, res))
     })
+}
+
+/// 挖掘紀律共用小判定（純函式、可測）：某 (x,z) 是否落在離村禁區內（`excl = Some((vcx,vcz,r))`）。
+/// `None`＝不設限，永遠回 false（等同無禁區）。歐氏圓，與 [`crate::voxel_village::in_village_dig_exclusion`]
+/// 同一套幾何（此處內聯以免 skills 依賴 village 模組；半徑由呼叫端從 village 常數傳入）。
+pub fn in_dig_exclusion(excl: Option<(i32, i32, i32)>, x: i32, z: i32) -> bool {
+    match excl {
+        Some((cx, cz, r)) => {
+            let dx = (x - cx) as i64;
+            let dz = (z - cz) as i64;
+            dx * dx + dz * dz <= (r as i64) * (r as i64)
+        }
+        None => false,
+    }
 }
 
 /// 從 (ox,oz) 螺旋向外找**指定型別**的最近可採資源（技能發明 v1：發明計畫的採集步驟
@@ -505,6 +540,21 @@ pub fn find_nearest_resource_of(
     max_radius: i32,
     want: GatherResource,
 ) -> Option<(i32, i32, i32)> {
+    // 無離村禁區（既有呼叫語意不變；autonomous 路徑改呼 `_excl` 帶禁區）。
+    find_nearest_resource_of_excl(world, ox, oz, max_radius, want, None)
+}
+
+/// [`find_nearest_resource_of`] 的**離村禁區**版（挖掘紀律·治本）：`excl = Some((vcx, vcz, radius))`
+/// 時選址螺旋跳過禁區內的柱（居民自主挖資源不准在村內開挖）。`None`＝不設限。純函式、可測。
+/// 註：只擋**自主**採集（發明步驟）；玩家指定的工地（鋪面備料）不走這條、傳 None。
+pub fn find_nearest_resource_of_excl(
+    world: &WorldDelta,
+    ox: i32,
+    oz: i32,
+    max_radius: i32,
+    want: GatherResource,
+    excl: Option<(i32, i32, i32)>,
+) -> Option<(i32, i32, i32)> {
     let foot_fy = surface_block(world, ox, oz).map(|(y, _)| y + 1);
     let escapable = |x: i32, y: i32, z: i32| {
         foot_fy.map_or(true, |fy| is_escapable_after_dig(world, ox, fy, oz, x, y, z))
@@ -514,6 +564,9 @@ pub fn find_nearest_resource_of(
         // min_radius=0：目標導向採集，站在資源旁也找得到（無盲區）。
         // 自然資源過濾：樹幹帶 delta → 放置的木牆，不採。
         return spiral_find(ox, oz, 0, max_radius, |x, z| {
+            if in_dig_exclusion(excl, x, z) {
+                return None; // 挖掘紀律：村內禁自主開挖 → 跳過，往村外找
+            }
             let (_, b) = surface_block(world, x, z)?;
             if !matches!(b, Block::Leaves | Block::Wood) {
                 return None;
@@ -529,6 +582,9 @@ pub fn find_nearest_resource_of(
     // 地表材料：找最近一柱「地表頂正是該型別」且挖了可逃的。
     // 自然資源過濾：地表頂帶 delta → 玩家鋪設的地板，不採。
     spiral_find(ox, oz, 0, max_radius, |x, z| {
+        if in_dig_exclusion(excl, x, z) {
+            return None; // 挖掘紀律：村內禁自主開挖 → 跳過，往村外找
+        }
         let (y, b) = surface_block(world, x, z)?;
         if b != want.block() {
             return None;
@@ -1088,6 +1144,68 @@ mod tests {
         // 距原點至少 GATHER_MIN_RADIUS（讓居民走幾步）。
         let d = (x - ox).abs().max((z - oz).abs());
         assert!(d >= GATHER_MIN_RADIUS, "資源應在最小半徑外：d={d}");
+    }
+
+    // ── 挖掘紀律：離村禁區（村內選址被跳過、找到的資源必在村外）────────────────────
+
+    #[test]
+    fn in_dig_exclusion_none_is_unrestricted() {
+        // None ＝不設限，任何座標都回 false。
+        assert!(!in_dig_exclusion(None, 0, 0));
+        assert!(!in_dig_exclusion(None, 999, -999));
+    }
+
+    #[test]
+    fn in_dig_exclusion_circle_rejects_inside_allows_outside() {
+        let excl = Some((0, 19, 45));
+        assert!(in_dig_exclusion(excl, 0, 19), "村中心禁挖");
+        assert!(in_dig_exclusion(excl, 30, 19), "村內禁挖");
+        assert!(in_dig_exclusion(excl, 45, 19), "禁區邊界仍禁");
+        assert!(!in_dig_exclusion(excl, 46, 19), "村外准挖");
+        assert!(!in_dig_exclusion(excl, 100, 100), "遠處准挖");
+    }
+
+    #[test]
+    fn find_nearest_resource_excl_skips_village_picks_outside() {
+        let world = WorldDelta::new();
+        let (ox, oz) = land_point();
+        // 以居民站位為村莊中心、禁區半徑蓋住整個方形採集範圍（含對角，需 √2 倍餘裕）
+        // → 村內全禁 → 找不到（逼她去更遠村外）。
+        let excl_all = Some((ox, oz, GATHER_MAX_RADIUS * 2 + 2));
+        assert!(
+            find_nearest_resource_excl(&world, ox, oz, GATHER_MAX_RADIUS, excl_all).is_none(),
+            "整個採集半徑都在禁區內 → 自主採集找不到（不在村內開挖）"
+        );
+        // 禁區只蓋住近處一小圈 → 找得到、且找到的資源必在禁區外。
+        let excl_small = Some((ox, oz, GATHER_MIN_RADIUS + 1));
+        if let Some((x, _, z, _)) = find_nearest_resource_excl(&world, ox, oz, GATHER_MAX_RADIUS, excl_small) {
+            assert!(
+                !in_dig_exclusion(excl_small, x, z),
+                "找到的資源必在離村禁區外：({x},{z})"
+            );
+        }
+    }
+
+    #[test]
+    fn find_nearest_resource_of_excl_skips_village() {
+        let world = WorldDelta::new();
+        let (ox, oz) = land_point();
+        let want = GatherResource::from_block(voxel::block_at(ox, height_at(ox, oz), oz));
+        if let Some(want) = want {
+            // 禁區蓋住整個方形搜尋範圍（含對角，需 √2 倍餘裕）→ 找不到（村內不自主開挖）。
+            let excl_all = Some((ox, oz, GATHER_MAX_RADIUS * 2 + 2));
+            assert!(
+                find_nearest_resource_of_excl(&world, ox, oz, GATHER_MAX_RADIUS, want, excl_all).is_none(),
+                "村內全禁 → 指定型別自主採集也找不到"
+            );
+            // 不設限（None）→ 等同原函式，找得到就好。
+            let unrestricted = find_nearest_resource_of_excl(&world, ox, oz, GATHER_MAX_RADIUS, want, None);
+            assert_eq!(
+                unrestricted,
+                find_nearest_resource_of(&world, ox, oz, GATHER_MAX_RADIUS, want),
+                "None 禁區應與原函式同結果（零回歸）"
+            );
+        }
     }
 
     #[test]

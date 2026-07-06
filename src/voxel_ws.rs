@@ -1951,6 +1951,117 @@ fn migrate_lay_out_village(deltas: &mut WorldDelta, residents: &[VoxelResident])
     );
 }
 
+/// 村莊大修復一次性標記（存在即代表已跑過，冪等不再跑；`data/` 已 gitignore）。
+const VILLAGE_RESTORE_MARKER: &str = "data/.village_restored_v1";
+
+/// **村莊大修復（migration，動玩家/居民資料——保守、冪等、備份後動）**。
+///
+/// 背景：居民為鋪路/合成挖石（階梯礦井）、採集、水邊整地，把村莊中心 (0,19) 一帶挖出大坑
+/// （相機會掉進去）、挖穿水脈導致大面積淹水灌進村區（實測地表 7000+ 個洞）。此函式一次性
+/// 掃村莊半徑 [`vvillage::VILLAGE_RESTORE_RADIUS`] 內的柱，**回填被挖低於自然地表的坑**
+/// （回基底材料）、**清掉灌進來的流動水**——但**絕不動保留清單**。
+///
+/// **保留清單（絕不回填/絕不清）**：靠「只動 Air／流動水格、且該格自然基底是實心」這道
+/// 判定天然把建築/道路/廣場/農田/告示牌/箱子/床/火把/工作台/熔爐/樹/源水湖全排除在外——
+/// 那些格目前有東西（非 Air、非流動水），[`vvillage::village_hole_refill`] 一律回 `None`。
+/// 深礦道（y < [`vvillage::VILLAGE_REFILL_MIN_Y`]）也保留（合理採礦，非村容坑）。
+///
+/// **回傳**：需喚醒水流重算的邊界格（呼叫端把它們預先排入水流佇列，讓殘餘水穩定）。
+///
+/// **資料安全**：① 有 marker 就直接跳過（只跑一次）。② 動檔前先把
+/// `voxel_resident_blocks.jsonl` 備份成 `.bak-restore-<epoch>`。③ 回填/清水走既有
+/// `append_world_block` append-only 路徑（不改寫、不刪任何既有行）。④ 冪等：即便 marker
+/// 被刪重跑，已回填的格現為實心／已清的水格現為 Air → 判定回 None/false → 不重覆動、不再 append。
+fn migrate_restore_village(deltas: &mut WorldDelta, residents: &[VoxelResident]) -> Vec<(i32, i32, i32)> {
+    // ① 已跑過就跳過。
+    if std::path::Path::new(VILLAGE_RESTORE_MARKER).exists() {
+        return Vec::new();
+    }
+    // ② 動檔前備份（僅在原檔存在時）。備份失敗就中止本次修復（不冒險改資料），下次啟動再試。
+    let src = vbuild::VOXEL_RES_BLOCKS_PATH;
+    if std::path::Path::new(src).exists() {
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let bak = format!("{src}.bak-restore-{epoch}");
+        if let Err(e) = std::fs::copy(src, &bak) {
+            tracing::warn!("村莊大修復：備份 {src} 失敗，本次略過（下次啟動再試）：{e}");
+            return Vec::new();
+        }
+        tracing::info!("村莊大修復：已備份世界改動到 {bak}");
+    }
+
+    // 村莊中心：優先用一次性整理釘死的中心（load_village_center，prod 即 (0,19)），
+    // 缺檔（極舊世界）→ 退回居民 home_base 群聚質心（與 migrate_lay_out_village 同源）。
+    let (vcx, vcz) = vvillage::load_village_center().unwrap_or_else(|| {
+        let home_bases: Vec<(i32, i32)> = residents
+            .iter()
+            .map(|r| (r.home_x.floor() as i32, r.home_z.floor() as i32))
+            .collect();
+        vvillage::village_center(&home_bases)
+    });
+
+    let r = vvillage::VILLAGE_RESTORE_RADIUS;
+    let mut refilled = 0usize;
+    let mut drained = 0usize;
+    // 需喚醒水流的邊界格：清水/回填後，讓殘餘水在鎖外由水流模擬重算穩定。
+    let mut wake: Vec<(i32, i32, i32)> = Vec::new();
+
+    // 掃村莊半徑內每一柱、每一層地表格（y 3..=14），逐格判定回填/排水。
+    for x in (vcx - r)..=(vcx + r) {
+        for z in (vcz - r)..=(vcz + r) {
+            if !vvillage::in_village_restore_range(vcx, vcz, x, z) {
+                continue; // 只動歐氏圓內（角落不掃）
+            }
+            for y in vvillage::VILLAGE_REFILL_MIN_Y..=vvillage::VILLAGE_REFILL_MAX_Y {
+                let cur = voxel::effective_block_at(deltas, x, y, z);
+                let base = voxel::block_at(x, y, z);
+                // ── 地形回填：被挖低於自然地表的坑 → 回基底材料（保留清單天然被濾掉）──
+                if let Some(fill) = vvillage::village_hole_refill(base, cur, y) {
+                    voxel::set_block(deltas, x, y, z, fill);
+                    vbuild::append_world_block(x, y, z, fill as u8);
+                    refilled += 1;
+                    wake.push((x, y, z)); // 填了坑＝改了水路，喚醒鄰格重算
+                    continue; // 這格已回填成實心，不會再是流動水
+                }
+                // ── 排水：灌進來的流動水 → 空氣（源水湖 7 不動）──
+                if vvillage::village_should_drain(cur) {
+                    voxel::set_block(deltas, x, y, z, Block::Air);
+                    vbuild::append_world_block(x, y, z, Block::Air as u8);
+                    drained += 1;
+                    wake.push((x, y, z)); // 清了水＝改了水路，喚醒鄰格重算殘餘穩定
+                }
+            }
+        }
+    }
+
+    // ③ 寫 marker（冪等）。
+    if let Some(parent) = std::path::Path::new(VILLAGE_RESTORE_MARKER).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(VILLAGE_RESTORE_MARKER, b"1");
+    // Feed 一句溫暖的（面向玩家）。
+    vfeed::append_feed("村莊修復", "村子", vvillage::village_restore_feed_line());
+    tracing::info!(
+        "村莊大修復完成：中心 ({vcx},{vcz})，回填 {refilled} 個地表坑、清 {drained} 格灌進來的流動水（保守判定，未動任何建築/道路/農田/功能方塊/樹/源水湖/深礦道）"
+    );
+    wake
+}
+
+/// 挖掘紀律：居民自主開挖的**離村禁區**（快取一次）。
+/// 回 `Some((vcx, vcz, radius))`＝村中心與禁區半徑，供 [`vskill::find_nearest_resource_excl`]
+/// 等選址跳過村內格；`None`＝村莊尚未規劃/釘死中心（極舊/乾淨世界，不設限）。
+/// **只擋居民自主挖資源**（採集/發明/自主備料）；玩家指定的工地（整地/鋪面）不查此、傳 None。
+/// 快取：村莊中心一旦釘死就不變（見 voxel_village 旗標檔），啟動載一次即可，熱路徑零 IO。
+fn village_dig_exclusion() -> Option<(i32, i32, i32)> {
+    static CACHE: OnceLock<Option<(i32, i32, i32)>> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        vvillage::load_village_center()
+            .map(|(vcx, vcz)| (vcx, vcz, vvillage::VILLAGE_DIG_EXCLUSION_RADIUS))
+    })
+}
+
 fn hub() -> &'static VoxelHub {
     HUB.get_or_init(|| {
         let (tx, _rx) = broadcast::channel(256);
@@ -1970,6 +2081,11 @@ fn hub() -> &'static VoxelHub {
         // 鋪出中央廣場＋十字主路，並從廣場鋪 L 形路連到每個既有建築——只加不拆、遇非地表方塊即停，
         // 把散落的家連成一座有街廓的村莊。這一步只在乾淨/舊世界啟動時跑一次（旗標檔冪等）。
         migrate_lay_out_village(&mut deltas, &residents);
+        // 村莊大修復（冪等、備份後）：居民把村莊中心一帶挖爛（大坑＋灌水），此步一次性回填
+        // 被挖低於自然地表的坑、清掉灌進來的流動水——絕不動任何建築/道路/農田/功能方塊/樹/源水湖。
+        // 回傳需喚醒水流重算的邊界格，預先排入水流佇列讓殘餘水穩定（hub 尚未成形，不能呼叫
+        // enqueue_water_around；改成建構時就把這些格塞進 water_queue 初值）。
+        let water_wake = migrate_restore_village(&mut deltas, &residents);
         // 乙太營火 v1：從已 replay 的 delta 掃出所有既存營火座標，重建取暖清單（重啟後居民
         // 仍會被重啟前蓋的火堆吸引）。掃描發生在 deltas 被 move 進 RwLock 之前，一次性、非熱路徑。
         let campfires = vcamp::scan_campfires(&deltas);
@@ -2034,8 +2150,19 @@ fn hub() -> &'static VoxelHub {
             // 啟動時從 data/voxel_gift_gardens.jsonl 載回未收成的禮物菜園（重啟後那畦田還在，
             // 待種它的居民遇到送種子的你時收成回贈）。
             giftgarden: RwLock::new(vgg::GiftGardenStore::from_entries(vgg::load_gift_gardens())),
-            // 水流佇列：啟動空；玩家/居民挖破地形時排入缺口鄰格，水才開始流。
-            water_queue: std::sync::Mutex::new(WaterQueue::default()),
+            // 水流佇列：啟動一般空；玩家/居民挖破地形時排入缺口鄰格，水才開始流。
+            // 例外：村莊大修復回填/清水後留下的邊界格先預排進來（含 6 鄰格），
+            // 讓水流模擬一啟動就把殘餘水重算穩定（此時 hub 尚未成形，不能呼叫 enqueue_water_around）。
+            water_queue: std::sync::Mutex::new({
+                let mut q = WaterQueue::default();
+                for (x, y, z) in &water_wake {
+                    q.push(*x, *y, *z);
+                    for (dx, dy, dz) in vwater::PROPAGATE_OFFSETS {
+                        q.push(x + dx, y + dy, z + dz);
+                    }
+                }
+                q
+            }),
             // 天氣：啟動時永遠從晴天開始，之後靠 tick_farm 的機率擲骰自然演變。
             weather: RwLock::new(false),
             // 雨剛開始旗標：啟動時無雨無旗標。
@@ -14199,9 +14326,11 @@ fn pave_worker_tick(
 /// 開始一次採集任務：以 (rx,rz) 為原點找最近資源 → 設居民的 gather 技能狀態。
 /// 找不到資源（罕見）→ 視為已備料（gathered=配額），下個 agency tick 直接蓋，避免卡死。
 fn start_gather(rid: &str, rx: i32, rz: i32) {
+    // 挖掘紀律：這是居民**自主**備料採集（蓋家前的自發採集）→ 帶離村禁區，選址跳過村內、往村外找。
+    let excl = village_dig_exclusion();
     let found = {
         let world = hub().deltas.read().unwrap();
-        vskill::find_nearest_resource(&world, rx, rz, vskill::GATHER_MAX_RADIUS)
+        vskill::find_nearest_resource_excl(&world, rx, rz, vskill::GATHER_MAX_RADIUS, excl)
     }; // deltas 讀鎖釋放
     let mut residents = hub().residents.write().unwrap();
     if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
@@ -14341,10 +14470,12 @@ fn advance_invent_run(
                 }
 
                 // ② 地表天然源優先：找得到 → 設 GatherSkill（走既有安全機制，挖到入背包）。
+                //    挖掘紀律：發明採集是居民**自主**行為 → 帶離村禁區，選址跳過村內、往村外找。
+                let excl = village_dig_exclusion();
                 let found = {
                     let world = hub().deltas.read().unwrap();
-                    vskill::find_nearest_resource_of(
-                        &world, rx, rz, vinvent::INVENT_GATHER_RADIUS, resource,
+                    vskill::find_nearest_resource_of_excl(
+                        &world, rx, rz, vinvent::INVENT_GATHER_RADIUS, resource, excl,
                     )
                 }; // deltas 讀鎖釋放
                 match found {
@@ -14376,8 +14507,12 @@ fn advance_invent_run(
                                 .find(|r| r.id == rid)
                                 .map_or(0, |r| r.invent_quarry_wells)
                         }; // residents 讀鎖釋放
+                        // 挖掘紀律：自主開礦井也受離村禁區約束——居民站在村內就不准就地開井
+                        //   （井口在 rx+1，仍是村內），改成快速誠實失敗（下方 ④），逼她去村外找。
+                        let in_village = vskill::in_dig_exclusion(excl, rx, rz);
                         if vinvent::resource_is_underground(resource)
                             && wells < vinvent::INVENT_MAX_WELLS
+                            && !in_village
                         {
                             let q = {
                                 let world = hub().deltas.read().unwrap();
