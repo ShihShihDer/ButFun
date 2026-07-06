@@ -93,6 +93,10 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         90 => "黑陶磚",
         91 => "白陶磚",
         92 => "青陶磚",
+        // 野花 v1（自主提案切片）：草原/森林群系疏落生長的三色野花，可餽贈居民。
+        94 => "紅花",
+        95 => "黃花",
+        96 => "藍花",
         _ => "物品",
     }
 }
@@ -101,6 +105,36 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
 /// 冰晶是雪原群系獨有、稀疏難尋的結晶，居民收到會有格外驚喜的珍愛反應。
 pub fn is_treasure_gift(block_id: u8) -> bool {
     block_id == 56 // ICE_CRYSTAL（對齊 voxel::Block::IceCrystal）
+}
+
+/// 是否為「野花」類禮物（紅/黃/藍三色野花，id 94~96，對齊 `voxel::Block::WildflowerRed/Yellow/Blue`）。
+///
+/// 與「雪原珍寶」（冰晶）刻意區隔情感register：珍寶是「哇這是稀有礦物」的驚喜讚嘆，
+/// 野花是世界第一種**純粹送禮示好**的心意——不稀有、不值錢，但帶著情意，居民收到
+/// 會是心動而非驚豔。
+pub fn is_flower_gift(block_id: u8) -> bool {
+    matches!(block_id, 94 | 95 | 96) // WildflowerRed / WildflowerYellow / WildflowerBlue
+}
+
+/// 居民收到野花時的心動道謝台詞（零 LLM，確定性）——世界第一句「收到花」的道謝。
+/// `pick` 由呼叫端提供（unix 秒 % 句池長度），確定性輪替。
+/// `player_name` 空字串 = 訪客模式，回不帶名字的句池。
+pub fn flower_gift_thanks_line(player_name: &str, affinity: usize, pick: usize) -> String {
+    if affinity == 0 || player_name.is_empty() {
+        let pool: &[&str] = &[
+            "給我的花？謝謝你，好漂亮。",
+            "沒想到會收到花，謝謝你的心意。",
+            "這叢野花襯著你的笑容，真好看，謝謝你。",
+        ];
+        pool[pick % pool.len()].to_string()
+    } else {
+        let pool: &[&str] = &[
+            "{name}……你特地摘花給我？我會好好插著它。",
+            "{name}送的花，是我收過最讓人心動的禮物，謝謝你。",
+            "有{name}想著我、還摘了花，比花本身還讓我開心。",
+        ];
+        pool[pick % pool.len()].replace("{name}", player_name)
+    }
 }
 
 /// 居民收到「雪原珍寶」（冰晶）時的珍愛道謝台詞（零 LLM，確定性）。
@@ -756,6 +790,65 @@ mod tests {
         let s = treasure_gift_thanks_line("", 0, 1);
         assert!(!s.contains("{name}"), "訪客句不應有佔位");
         assert!(!s.is_empty());
+    }
+
+    // ── 野花 v1（自主提案切片）─────────────────────────────────────────────────
+
+    #[test]
+    fn is_flower_gift_only_wildflowers() {
+        assert!(is_flower_gift(94), "紅花應為野花禮物");
+        assert!(is_flower_gift(95), "黃花應為野花禮物");
+        assert!(is_flower_gift(96), "藍花應為野花禮物");
+        // 其餘常見禮物都不是野花（食物/建材/礦石/珍寶）。
+        for id in [19u8, 49, 53, 8, 9, 10, 20, 21, 54, 55, 56] {
+            assert!(!is_flower_gift(id), "id={id} 不應被判為野花");
+        }
+    }
+
+    #[test]
+    fn item_name_wildflowers() {
+        assert_eq!(item_name_zh(94), "紅花");
+        assert_eq!(item_name_zh(95), "黃花");
+        assert_eq!(item_name_zh(96), "藍花");
+    }
+
+    #[test]
+    fn flower_gift_thanks_non_empty_no_placeholders() {
+        // 所有好感等級、多個 pick、含訪客（空名）都不得留下未替換佔位或回空，且皆點出「花」。
+        for name in ["旅人", ""] {
+            for affinity in [0, 1, 2, 3, 5] {
+                for pick in 0..4 {
+                    let s = flower_gift_thanks_line(name, affinity, pick);
+                    assert!(!s.is_empty(), "name={name} affinity={affinity} pick={pick} 回空");
+                    assert!(!s.contains("{name}"), "name={name} affinity={affinity} pick={pick} 未替換 name");
+                    assert!(s.contains('花'), "野花道謝應提到花 @ affinity={affinity} pick={pick}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn flower_gift_thanks_friend_contains_name() {
+        let s = flower_gift_thanks_line("小星", 5, 0);
+        assert!(s.contains("小星"), "友人等級應含玩家名");
+    }
+
+    #[test]
+    fn flower_gift_thanks_stranger_no_name_when_empty() {
+        // 訪客（空名）不得把空字串塞進句子留下突兀空缺，且不含 {name}。
+        let s = flower_gift_thanks_line("", 0, 1);
+        assert!(!s.contains("{name}"), "訪客句不應有佔位");
+        assert!(!s.is_empty());
+    }
+
+    #[test]
+    fn flower_gift_distinct_register_from_treasure() {
+        // 野花的情感register刻意與雪原珍寶不同：珍寶句提「冰晶」，野花句不該提「冰晶」，
+        // 兩套句池不該互相污染（razor-sharp 區隔驗證）。
+        for pick in 0..4 {
+            let flower = flower_gift_thanks_line("小星", 5, pick);
+            assert!(!flower.contains("冰晶"), "野花道謝不應提到冰晶");
+        }
     }
 
     // ── 送對禮物 v1（ROADMAP 722）───────────────────────────────────────────────

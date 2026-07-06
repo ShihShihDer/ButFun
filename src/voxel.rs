@@ -258,6 +258,14 @@ pub enum Block {
     /// 玩家不可手動放置/破壞（同來源水）；泡在裡面加速回血、緩解飢餓消耗。非實心、視為
     /// 一種水（`is_any_water`），共用既有水的碰撞/游泳/水桶互動。id 93：0~92 皆已用。
     HotSpringWater = 93,
+    /// 紅野花（野花 v1，自主提案切片）——草原／森林群系疏落生長的程序生成點綴，
+    /// 世界第一種「花」。可採、可移植到任何草地上妝點自己的家園；送給居民換來
+    /// 世界第一句「拿到花」的心動道謝（`voxel_gift::is_flower_gift`）。id 94。
+    WildflowerRed = 94,
+    /// 黃野花（野花 v1）——與紅/藍野花同一套格狀確定性生成，只是花色不同（同座標永遠同色）。id 95。
+    WildflowerYellow = 95,
+    /// 藍野花（野花 v1）——與紅/黃野花同一套格狀確定性生成，只是花色不同（同座標永遠同色）。id 96。
+    WildflowerBlue = 96,
 }
 
 impl Block {
@@ -348,6 +356,9 @@ impl Block {
             91 => Some(Block::TerracottaWhite),
             92 => Some(Block::TerracottaBlue),
             93 => Some(Block::HotSpringWater),
+            94 => Some(Block::WildflowerRed),
+            95 => Some(Block::WildflowerYellow),
+            96 => Some(Block::WildflowerBlue),
             _ => None,
         }
     }
@@ -365,9 +376,10 @@ impl Block {
             Block::Cactus | Block::Snow | Block::IceCrystal | Block::IceLantern |
             Block::AetherOre | Block::AetherLamp | Block::Sapling | Block::Sign |
             Block::Campfire | Block::Bell | Block::BerryBush | Block::Bench | Block::Coop |
-            Block::TerracottaRed | Block::TerracottaBlack | Block::TerracottaWhite | Block::TerracottaBlue
+            Block::TerracottaRed | Block::TerracottaBlack | Block::TerracottaWhite | Block::TerracottaBlue |
+            Block::WildflowerRed | Block::WildflowerYellow | Block::WildflowerBlue
             // BerryBushRipe / CoopReady 皆是伺服器維護的狀態方塊（由 tick_berry / tick_coop 長成），
-            // 玩家不能手動放置。
+            // 玩家不能手動放置。HotSpringWater 是世界生成的溫泉水，同來源水不可手動放置。
         )
     }
 }
@@ -628,6 +640,16 @@ const ICE_CELL: i32 = 7;
 /// 約 18% 的雪原格有一株 → 比仙人掌更稀疏，符合「珍稀寶物」定位。
 const ICE_CHANCE: f32 = 0.18;
 
+/// 野花噪聲種子（草原／森林群系隨機野花，與樹/地形/仙人掌/冰晶獨立）。
+const WILDFLOWER_SEED: u32 = SEED ^ 0x_F10_9E12;
+/// 野花格邊長（比照仙人掌／冰晶的格設計：每格至多一株、株位落格內側 →
+/// 相鄰兩株至少隔 3 格，永遠是孤立小叢，不會連成花海擋路）。
+const WILDFLOWER_CELL: i32 = 6;
+/// 一格長出野花的機率門檻（per-cell hash < 此值才長）。
+/// 約 26% 的草原/森林格有一叢 → 介於仙人掌(30%)與冰晶(18%)之間，
+/// 常見到走幾步就能撞見、又不至於密到失去點綴感。
+const WILDFLOWER_CHANCE: f32 = 0.26;
+
 /// 遺跡噪聲種子（世界第一種可探索地標，與樹/地形/仙人掌/冰晶獨立）。
 const RUIN_SEED: u32 = SEED ^ 0x_012D_51E5;
 /// 遺跡格邊長——遠比樹/仙人掌/冰晶格大得多，讓遺跡在世界裡真的「稀少、值得走遠去找」。
@@ -862,6 +884,55 @@ fn ice_crystal_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
     }
 }
 
+/// 乙太方界·野花 v1——草原／森林群系地表偶有的野花叢（自主提案切片）。
+///
+/// **真缺口**：仙人掌（沙漠）／冰晶（雪原）各自是所屬群系獨有的地表點綴，草原與森林這兩個
+/// 玩家待得最久的群系，至今卻只有草和樹，沒有任何「軟性、帶點顏色」的裝飾——花，這個最直覺
+/// 的裝飾元素，世界至今從未出現過。
+///
+/// 比照仙人掌／冰晶的格設計（每格至多一株、株位落格內側避免跨格，本柱查詢 O(1)）；花色由獨立
+/// hash 在三色間確定性挑一（同座標永遠同色，多人/前後端天然一致）。純函式、確定性、零狀態、
+/// 零 IO；同座標永遠同結果。
+fn wildflower_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
+    let cellx = wx.div_euclid(WILDFLOWER_CELL);
+    let cellz = wz.div_euclid(WILDFLOWER_CELL);
+    // 以格座標 hash 擲骰：本格是否有一叢。
+    if hash2(cellx, cellz, WILDFLOWER_SEED) >= WILDFLOWER_CHANCE {
+        return None;
+    }
+    // 株位落在格內側，確保跨格株距 ≥3、本柱查詢 O(1)（只查自己這格）。
+    let ox = (1 + (hash2(cellx, cellz, WILDFLOWER_SEED ^ 0x_1111_2222) * 4.0) as i32).clamp(1, 4);
+    let oz = (1 + (hash2(cellx, cellz, WILDFLOWER_SEED ^ 0x_3333_4444) * 4.0) as i32).clamp(1, 4);
+    let tx = cellx * WILDFLOWER_CELL + ox;
+    let tz = cellz * WILDFLOWER_CELL + oz;
+    if wx != tx || wz != tz {
+        return None;
+    }
+    // 只在草原／森林群系（以株位查，同株永遠同判定）——沙漠/雪原不長野花，符合花不屬於
+    // 乾旱/酷寒地帶的直覺，也讓四大群系各有一種獨有的地表點綴（沙漠仙人掌／雪原冰晶／
+    // 草原森林野花）。
+    let biome = biome_at_voxel(tx, tz);
+    if biome != VoxelBiome::Grassland && biome != VoxelBiome::Forest {
+        return None;
+    }
+    // 非水邊的草地才長野花（近海平面是沙，視覺上不搭）。
+    let h = height_at(tx, tz);
+    if h <= SEA_LEVEL + 1 {
+        return None;
+    }
+    // 野花高 1 格（地表上方第 1 格），非柱狀——一叢矮花，不擋視線。
+    if wy != h + 1 {
+        return None;
+    }
+    // 花色由第三支獨立 hash 在三色間確定性挑一。
+    let pick = (hash2(cellx, cellz, WILDFLOWER_SEED ^ 0x_5555_6666) * 3.0) as u32 % 3;
+    match pick {
+        0 => Some(Block::WildflowerRed),
+        1 => Some(Block::WildflowerYellow),
+        _ => Some(Block::WildflowerBlue),
+    }
+}
+
 /// 乙太方界·古代遺跡 v1——世界第一種可探索的程序生成地標（自主提案切片）。
 ///
 /// **真缺口**：至今世界生成只有地形＋樹／仙人掌／冰晶這類「原地小點綴」，玩家走到哪都是
@@ -1017,6 +1088,11 @@ pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
         // 雪原群系：偶有冰晶簇（地表上方第 1 格）。
         if let Some(ib) = ice_crystal_block_at(wx, wy, wz) {
             return ib;
+        }
+        // 草原／森林群系：偶有野花叢（地表上方第 1 格）——樹/仙人掌/冰晶皆優先，
+        // 巧合命中同一欄位時它們蓋過恰好路過的花。
+        if let Some(wb) = wildflower_block_at(wx, wy, wz) {
+            return wb;
         }
         return Block::Air;
     }
@@ -2101,6 +2177,123 @@ mod tests {
                 assert_eq!(a, b, "冰晶生成應確定性 @ ({x},{z})");
             }
         }
+    }
+
+    fn is_wildflower(b: Block) -> bool {
+        matches!(b, Block::WildflowerRed | Block::WildflowerYellow | Block::WildflowerBlue)
+    }
+
+    #[test]
+    fn wildflower_is_solid_placeable_roundtrips() {
+        // 野花 v1：三色皆實心、可放置、u8 往返一致（比照仙人掌/冰晶慣例）。
+        assert!(Block::WildflowerRed.is_solid(), "紅野花應為實心");
+        assert!(Block::WildflowerRed.is_placeable(), "紅野花應可放置");
+        assert_eq!(Block::from_u8(94), Some(Block::WildflowerRed));
+        assert_eq!(Block::WildflowerRed as u8, 94);
+
+        assert!(Block::WildflowerYellow.is_solid(), "黃野花應為實心");
+        assert!(Block::WildflowerYellow.is_placeable(), "黃野花應可放置");
+        assert_eq!(Block::from_u8(95), Some(Block::WildflowerYellow));
+        assert_eq!(Block::WildflowerYellow as u8, 95);
+
+        assert!(Block::WildflowerBlue.is_solid(), "藍野花應為實心");
+        assert!(Block::WildflowerBlue.is_placeable(), "藍野花應可放置");
+        assert_eq!(Block::from_u8(96), Some(Block::WildflowerBlue));
+        assert_eq!(Block::WildflowerBlue as u8, 96);
+    }
+
+    #[test]
+    fn grassland_or_forest_has_wildflowers() {
+        // 草原／森林群系中應能找到野花（地表上方第 1 格）。
+        let mut found = false;
+        'outer: for x in -800..800i32 {
+            for z in -800..800i32 {
+                let biome = biome_at_voxel(x, z);
+                if biome == VoxelBiome::Grassland || biome == VoxelBiome::Forest {
+                    let h = height_at(x, z);
+                    if h > SEA_LEVEL + 1 && is_wildflower(block_at(x, h + 1, z)) {
+                        found = true;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        assert!(found, "草原/森林群系中應能找到野花");
+    }
+
+    #[test]
+    fn wildflower_only_in_grassland_or_forest() {
+        // 野花只生在草原/森林，沙漠/雪原不得出現。
+        for x in -600..600i32 {
+            for z in (-600..600i32).step_by(37) {
+                let h = height_at(x, z);
+                for dy in 1..=2 {
+                    if is_wildflower(block_at(x, h + dy, z)) {
+                        let biome = biome_at_voxel(x, z);
+                        assert!(
+                            biome == VoxelBiome::Grassland || biome == VoxelBiome::Forest,
+                            "野花只能在草原/森林 @ ({}, {})", x, z
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wildflowers_are_isolated() {
+        // 設計不變量：野花是「孤立小叢」——任兩叢水平距離（Chebyshev）≥ 2，
+        // 永不相鄰連成花海（格內側落點保證跨格株距 ≥3；同格只一叢）。
+        let mut flowers: Vec<(i32, i32)> = Vec::new();
+        for x in -400..400i32 {
+            for z in -400..400i32 {
+                let h = height_at(x, z);
+                if h > SEA_LEVEL + 1 && is_wildflower(block_at(x, h + 1, z)) {
+                    flowers.push((x, z));
+                }
+            }
+        }
+        assert!(!flowers.is_empty(), "掃描範圍內應找得到野花");
+        for (i, &(x1, z1)) in flowers.iter().enumerate() {
+            for &(x2, z2) in &flowers[i + 1..] {
+                let cheb = (x1 - x2).abs().max((z1 - z2).abs());
+                assert!(cheb >= 2, "野花不得相鄰 @ ({x1},{z1}) vs ({x2},{z2})");
+            }
+        }
+    }
+
+    #[test]
+    fn wildflower_generation_is_deterministic() {
+        // 同座標重複查詢永遠同結果（無狀態世界的核心不變量），花色亦不例外。
+        for x in [-333, -50, 0, 77, 512] {
+            for z in [-421, -12, 5, 199, 640] {
+                let h = height_at(x, z);
+                let a = block_at(x, h + 1, z);
+                let b = block_at(x, h + 1, z);
+                assert_eq!(a, b, "野花生成應確定性 @ ({x},{z})");
+            }
+        }
+    }
+
+    #[test]
+    fn wildflower_colors_are_all_reachable() {
+        // 三色花皆能被生成到（掃夠大範圍應三色都出現過，避免 hash 分色寫錯導致某色永不出現）。
+        let mut seen = [false; 3];
+        for x in -800..800i32 {
+            for z in -800..800i32 {
+                let h = height_at(x, z);
+                if h <= SEA_LEVEL + 1 {
+                    continue;
+                }
+                match block_at(x, h + 1, z) {
+                    Block::WildflowerRed => seen[0] = true,
+                    Block::WildflowerYellow => seen[1] = true,
+                    Block::WildflowerBlue => seen[2] = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(seen.iter().all(|&s| s), "紅/黃/藍三色野花皆應出現過 {:?}", seen);
     }
 
     /// 掃格找一處「真的有遺跡」的格座標（回傳格座標＋遺跡中心世界座標）——供下面幾個測試共用。

@@ -143,6 +143,9 @@ const TERRACOTTA_RED = 89, TERRACOTTA_BLACK = 90, TERRACOTTA_WHITE = 91, TERRACO
 // 方塊，玩家不可放置/破壞（同來源水）；當作一種水處理（isWaterId／collision/游泳），
 // 只是上色走暖橘泉水而非冷藍，一眼與普通水分開。
 const HOT_SPRING_WATER = 93;
+// 野花 v1（自主提案切片）——草原／森林群系疏落生長的三色野花，世界第一種「花」；
+// 可採、可放置（比照仙人掌/冰晶），送給居民換來世界第一句「收到花」的心動道謝。
+const WILDFLOWER_RED = 94, WILDFLOWER_YELLOW = 95, WILDFLOWER_BLUE = 96;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -258,6 +261,10 @@ const COLOR = {
   [TERRACOTTA_BLACK]: [0.16, 0.15, 0.16], // 黑陶磚——深炭黑
   [TERRACOTTA_WHITE]: [0.92, 0.90, 0.86], // 白陶磚——溫潤米白（比雪更暖，一眼分辨建材與地表）
   [TERRACOTTA_BLUE]:  [0.18, 0.42, 0.72], // 青陶磚——沉穩靛藍，呼應乙太礦色系但更飽和內斂
+  // 野花 v1（自主提案切片）——世界第一批「花」，三色皆鮮明飽和，一眼與草地/樹葉區分。
+  [WILDFLOWER_RED]:    [0.86, 0.20, 0.28], // 紅花——飽和玫瑰紅
+  [WILDFLOWER_YELLOW]: [0.95, 0.80, 0.18], // 黃花——明豔向日葵黃
+  [WILDFLOWER_BLUE]:   [0.30, 0.46, 0.88], // 藍花——清亮矢車菊藍
 };
 
 const DEBUG = location.search.includes("debug");
@@ -3410,6 +3417,8 @@ const BLOCK_NAME = {
   // 染色建材 v1（自主提案切片）
   [TERRACOTTA_RED]: "紅陶磚", [TERRACOTTA_BLACK]: "黑陶磚",
   [TERRACOTTA_WHITE]: "白陶磚", [TERRACOTTA_BLUE]: "青陶磚",
+  // 野花 v1（自主提案切片）
+  [WILDFLOWER_RED]: "紅花", [WILDFLOWER_YELLOW]: "黃花", [WILDFLOWER_BLUE]: "藍花",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -3716,6 +3725,8 @@ const BLOCK_HARDNESS = {
   [SIGN]: 0.5,         // 告示牌——一塊木牌，輕鬆敲下回收（文字一併消失）
   // 染色建材 v1（自主提案切片）——燒製陶磚，比照石磚硬度（同為精緻建材）
   [TERRACOTTA_RED]: 1.6, [TERRACOTTA_BLACK]: 1.6, [TERRACOTTA_WHITE]: 1.6, [TERRACOTTA_BLUE]: 1.6,
+  // 野花 v1（自主提案切片）——一叢嬌嫩野花，比照樹苗一敲即落，輕鬆採下帶走。
+  [WILDFLOWER_RED]: 0.2, [WILDFLOWER_YELLOW]: 0.2, [WILDFLOWER_BLUE]: 0.2,
 };
 function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
 
