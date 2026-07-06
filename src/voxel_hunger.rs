@@ -250,6 +250,19 @@ pub fn foraged_say_line(food: &str, pick: usize) -> String {
     TAILS[pick % TAILS.len()].replace("{food}", food)
 }
 
+/// 共用糧倉 v1（村莊互助）：附近找不到熟作物，改去一個有人存了食物的箱子借一份後的心聲
+/// （四句輪替）。措辭刻意與 [`foraged_say_line`]（自己種的、自己收）區隔——這份是**借**來的、
+/// 靠的是村裡有人存了糧，凸顯「共用糧倉」與「自己田裡收成」是兩件事。
+pub fn borrowed_say_line(food: &str, pick: usize) -> String {
+    const TAILS: [&str; 4] = [
+        "田裡沒熟的，翻了村裡的箱子，借了點{food}",
+        "找不到熟作物，幸好箱子裡還有{food}",
+        "跟大家的糧倉借了份{food}，先墊墊肚子",
+        "自己田裡沒得收，村裡的箱子有{food}，先拿了",
+    ];
+    TAILS[pick % TAILS.len()].replace("{food}", food)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,5 +470,16 @@ mod tests {
         // 溢位取模包回、不 panic。
         assert_eq!(no_food_say_line(0), no_food_say_line(4));
         assert_eq!(forage_say_line(1), forage_say_line(5));
+    }
+
+    #[test]
+    fn borrowed_say_line_rotates_bounded_and_names_food() {
+        for pick in 0..8 {
+            let line = borrowed_say_line("麵包", pick);
+            assert!(line.contains("麵包") && line.chars().count() <= 40);
+        }
+        assert_eq!(borrowed_say_line("麵包", 0), borrowed_say_line("麵包", 4)); // 溢位取模包回
+        // 措辭與「自己田裡收成」的 foraged_say_line 不同（凸顯「借的」與「自己收的」有別）。
+        assert_ne!(borrowed_say_line("莓果", 0), foraged_say_line("莓果", 0));
     }
 }

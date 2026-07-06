@@ -132,6 +132,54 @@ impl ChestStore {
         self.chests.remove(pos);
         contents
     }
+
+    /// 乙太方界共用糧倉 v1：從 (ox,oz) 起，`max_radius`（XZ 距離）內找一個「存有食物」的箱子——
+    /// 讓找不到熟作物可收的餓居民，還能走去任何一個玩家存了食物的箱子借一份。`food_ids` 依偏好序
+    /// 傳入，命中箱子裡第一個存量 >0 的即算數；箱子彼此都沒存糧、或半徑內根本沒箱子 → `None`
+    /// （誠實失敗，鏡像 `voxel_skills::find_nearest_ripe_crop` 找不到熟作物時的態度）。
+    /// 純邏輯（只讀既有 map，零 IO/鎖；呼叫端已持有 `chest` 讀鎖），可測。
+    pub fn nearest_food_chest(
+        &self,
+        ox: i32,
+        oz: i32,
+        max_radius: i32,
+        food_ids: &[u8],
+    ) -> Option<(i32, i32, i32, u8)> {
+        let max_d2 = i64::from(max_radius) * i64::from(max_radius);
+        let mut best: Option<(i32, i32, i32, u8, i64)> = None;
+        for (pos, contents) in &self.chests {
+            let Some((x, y, z)) = parse_pos_key(pos) else { continue };
+            let dx = i64::from(x - ox);
+            let dz = i64::from(z - oz);
+            let d2 = dx * dx + dz * dz;
+            if d2 > max_d2 {
+                continue;
+            }
+            let Some(&fid) = food_ids
+                .iter()
+                .find(|id| contents.get(id).copied().unwrap_or(0) > 0)
+            else {
+                continue;
+            };
+            if best.is_none_or(|(_, _, _, _, best_d2)| d2 < best_d2) {
+                best = Some((x, y, z, fid, d2));
+            }
+        }
+        best.map(|(x, y, z, fid, _)| (x, y, z, fid))
+    }
+}
+
+/// [`pos_key`] 的反函式：把 "wx,wy,wz" 字串解析回座標。格式不符（理論上不會，所有鍵皆由
+/// `pos_key` 生成）時回 `None`，呼叫端安全跳過而非 panic。
+fn parse_pos_key(pos: &str) -> Option<(i32, i32, i32)> {
+    let mut it = pos.split(',');
+    let x = it.next()?.parse().ok()?;
+    let y = it.next()?.parse().ok()?;
+    let z = it.next()?.parse().ok()?;
+    if it.next().is_some() {
+        return None;
+    }
+    Some((x, y, z))
 }
 
 // ── 持久化 IO（在 voxel_ws.rs 的鎖外呼叫）────────────────────────────────────────────
@@ -219,5 +267,59 @@ mod tests {
     #[test]
     fn pos_key_format() {
         assert_eq!(pos_key(1, -2, 300), "1,-2,300");
+    }
+
+    #[test]
+    fn parse_pos_key_roundtrip() {
+        assert_eq!(parse_pos_key(&pos_key(1, -2, 300)), Some((1, -2, 300)));
+        assert_eq!(parse_pos_key("garbage"), None);
+        assert_eq!(parse_pos_key("1,2"), None);
+        assert_eq!(parse_pos_key("1,2,3,4"), None);
+    }
+
+    #[test]
+    fn nearest_food_chest_finds_within_radius() {
+        let mut store = ChestStore::new();
+        store.put("10,64,0", 19, 3); // 麵包
+        let found = store.nearest_food_chest(0, 0, 16, &[19]);
+        assert_eq!(found, Some((10, 64, 0, 19)));
+    }
+
+    #[test]
+    fn nearest_food_chest_ignores_out_of_radius() {
+        let mut store = ChestStore::new();
+        store.put("100,64,0", 19, 3);
+        assert_eq!(store.nearest_food_chest(0, 0, 16, &[19]), None);
+    }
+
+    #[test]
+    fn nearest_food_chest_ignores_non_food_items() {
+        let mut store = ChestStore::new();
+        store.put("5,64,5", 8, 10); // 木板，非食物 id
+        assert_eq!(store.nearest_food_chest(0, 0, 16, &[19, 77]), None);
+    }
+
+    #[test]
+    fn nearest_food_chest_ignores_emptied_stock() {
+        let mut store = ChestStore::new();
+        store.put("5,64,5", 19, 2);
+        let (_, e) = store.take("5,64,5", 19, 2); // 掏空
+        assert_eq!(e.delta, -2);
+        assert_eq!(store.nearest_food_chest(0, 0, 16, &[19]), None);
+    }
+
+    #[test]
+    fn nearest_food_chest_picks_the_closest() {
+        let mut store = ChestStore::new();
+        store.put("10,64,0", 19, 1);
+        store.put("3,64,0", 19, 1);
+        let found = store.nearest_food_chest(0, 0, 16, &[19]);
+        assert_eq!(found, Some((3, 64, 0, 19)));
+    }
+
+    #[test]
+    fn nearest_food_chest_empty_store_returns_none() {
+        let store = ChestStore::new();
+        assert_eq!(store.nearest_food_chest(0, 0, 16, &[19, 77]), None);
     }
 }

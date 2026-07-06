@@ -588,6 +588,10 @@ struct VoxelResident {
     /// 目前鎖定要去收成的成熟作物座標（飢餓接農田 v2）：`Some((wx,wy,wz))`＝已找到一畦熟作物、
     /// 正朝它走去；`None`＝尚未鎖定（下個 agency tick 再找）。純記憶體。
     forage_target: Option<(i32, i32, i32)>,
+    /// 共用糧倉 v1：附近找不到熟作物時，鎖定要去借一份存糧的箱子座標——`Some((wx,wy,wz))`＝
+    /// 已找到一個有食物庫存的箱子、正朝它走去；`None`＝尚未鎖定或本輪未觸發。純記憶體，
+    /// 鏡像 `forage_target` 的「逐 tick 走→抵達即收」機制，作物優先、箱子是找不到熟作物時的備援。
+    larder_target: Option<(i32, i32, i32)>,
     /// 分食冷卻倒數（秒，飢餓時的守望相助 v1，ROADMAP 800）：一次分食後設
     /// [`vsharemeal::SHARE_COOLDOWN_SECS`]，歸零前不再對人分食，讓「分一口飯」稀少而有份量。純記憶體。
     share_meal_cooldown: f32,
@@ -1490,6 +1494,8 @@ fn build_resident(
             // 飢餓接農田 v2：入場不在覓食收成途中。
             foraging_food: false,
             forage_target: None,
+            // 共用糧倉 v1：入場不在借糧途中。
+            larder_target: None,
             // 飢餓時的守望相助 v1（ROADMAP 800）：入場分食冷卻錯開，避免啟動後全員一起搶著分食。
             share_meal_cooldown: vsharemeal::share_cd_offset(i),
             pending_meal_thanks: None,
@@ -7466,6 +7472,11 @@ fn tick_residents(dt: f32) {
     // 走鎖外是為守 prod 死鎖鐵律——收成要寫 deltas，而本迴圈全程持著 deltas 讀 guard（line 7441）。
     // 格式：(居民 id, 居民顯示名, wx, wy, wz, 作物方塊)。
     let mut forage_harvest_events: Vec<(String, &'static str, i32, i32, i32, Block)> = Vec::new();
+    // 共用糧倉 v1：鎖內偵測「找不到熟作物、走到一個有存糧的箱子旁，要借一份」，鎖外統一執行
+    // （箱子扣量＋持久化、食物入她小背包、冒借糧泡泡）。走鎖外是同一條 prod 死鎖鐵律——扣箱子
+    // 要拿 `chest` 寫鎖，本迴圈全程只短取（讀鎖找目標即釋），寫入留到鎖外統一做。
+    // 格式：(居民 id, 居民顯示名, wx, wy, wz)。
+    let mut larder_take_events: Vec<(String, &'static str, i32, i32, i32)> = Vec::new();
     // 自我印象 v1（ROADMAP 770）：鎖內偵測「居民閒下來、回望自己昇華出一句自我印象」（泡泡已於鎖內設好），
     // 鎖外統一補一則城鎮動態 Feed（第三人稱旁白，已是純模板、無記憶原文）。
     let mut self_image_feeds: Vec<(&'static str, String)> = Vec::new();
@@ -10211,51 +10222,98 @@ fn tick_residents(dt: f32) {
             } else if r.foraging_food {
                 // 飢餓接農田／倉庫 v2·為了吃而去收成：家裡沒存糧的餓著居民，走去把最近一畦熟作物收進背包。
                 // 收成即入存糧、退回可再長的田——之後餓了就吃它，整條「餓→收成→存糧→吃」在世界裡真實跑通。
-                // 找不到熟作物（半徑內沒得收）→ 誠實放棄本輪覓食（不鬼打牆漫遊），餓意還在、下輪再想辦法。
-                let target = match r.forage_target {
-                    Some(t) => Some(t),
-                    None => vskill::find_nearest_ripe_crop(
-                        &world,
-                        r.body.x.floor() as i32,
-                        r.body.z.floor() as i32,
-                        vskill::GATHER_MAX_RADIUS,
-                    )
-                    .map(|(x, y, z, _)| (x, y, z)),
-                };
-                match target {
-                    None => {
-                        // 半徑內沒有熟作物可收：老實收手（清覓食旗），餓著等下一輪（可能有作物長熟、
-                        // 或鄰居分食、或玩家餵食）。不無窮漫遊、不鬼打牆。
-                        r.foraging_food = false;
-                        r.forage_target = None;
+                // 找不到熟作物 → 共用糧倉 v1 備援：改去借村裡有人存了食物的箱子一份；兩者皆無才誠實放棄
+                // 本輪覓食（不鬼打牆漫遊），餓意還在、下輪再想辦法。
+                if let Some((cx, cy, cz)) = r.larder_target {
+                    // 已鎖定一個有存糧的箱子，鏡像作物覓食同一套「逐 tick 走→抵達即收」節奏。
+                    let still_has_food = {
+                        let contents =
+                            hub().chest.read().unwrap().contents(&vchest::pos_key(cx, cy, cz));
+                        contents.iter().any(|&(id, cnt)| vhunger::FOOD_IDS.contains(&id) && cnt > 0)
+                    }; // chest 讀鎖即釋（比照 res_inv 短取即釋慣例）
+                    if !still_has_food {
+                        // 箱子存糧被別人先拿走／清空：老實放棄這次借糧，餓意仍在、下輪再想辦法。
+                        r.larder_target = None;
                         vr::gravity_step(&world, &mut r.body, dt);
-                    }
-                    Some((tx, ty, tz)) => {
-                        r.forage_target = Some((tx, ty, tz));
-                        // 目標作物此刻是否仍是熟的（可能被玩家/tick 先收走）→ 沒了就重找。
-                        let still_ripe = vhunger::is_harvestable_food_block(
-                            voxel::effective_block_at(&world, tx, ty, tz),
+                    } else if vskill::within_gather_reach(r.body.x, r.body.z, cx, cz) {
+                        // 走到箱子旁：排程鎖外取糧（扣箱子存量、入背包、冒借糧泡泡），結束本輪覓食。
+                        larder_take_events.push((r.id.clone(), r.name, cx, cy, cz));
+                        r.foraging_food = false;
+                        r.larder_target = None;
+                        vr::gravity_step(&world, &mut r.body, dt);
+                    } else {
+                        // 朝那口箱子走（沿牆滑行、踏階由物理處理）。
+                        let (bx, bz) = (r.body.x, r.body.z);
+                        vr::step_toward(
+                            &world, &mut r.body,
+                            cx as f32 + 0.5, cz as f32 + 0.5,
+                            dt, vr::RES_SPEED * speed_mult,
                         );
-                        if !still_ripe {
-                            r.forage_target = None;
-                            vr::gravity_step(&world, &mut r.body, dt);
-                        } else if vskill::within_gather_reach(r.body.x, r.body.z, tx, tz) {
-                            // 走到作物旁：排程鎖外收成（收成入背包、田退回可再長、冒收成泡泡），結束本輪覓食。
-                            let crop = voxel::effective_block_at(&world, tx, ty, tz);
-                            forage_harvest_events.push((r.id.clone(), r.name, tx, ty, tz, crop));
-                            r.foraging_food = false;
-                            r.forage_target = None;
-                            vr::gravity_step(&world, &mut r.body, dt);
-                        } else {
-                            // 朝那畦作物中心走（沿牆滑行、踏階由物理處理）。
-                            let (bx, bz) = (r.body.x, r.body.z);
-                            vr::step_toward(
-                                &world, &mut r.body,
-                                tx as f32 + 0.5, tz as f32 + 0.5,
-                                dt, vr::RES_SPEED * speed_mult,
+                        if let Some(yaw) = vr::yaw_from_move(r.body.x - bx, r.body.z - bz) {
+                            r.yaw = yaw;
+                        }
+                    }
+                } else {
+                    let target = match r.forage_target {
+                        Some(t) => Some(t),
+                        None => vskill::find_nearest_ripe_crop(
+                            &world,
+                            r.body.x.floor() as i32,
+                            r.body.z.floor() as i32,
+                            vskill::GATHER_MAX_RADIUS,
+                        )
+                        .map(|(x, y, z, _)| (x, y, z)),
+                    };
+                    match target {
+                        None => {
+                            // 半徑內沒有熟作物可收：共用糧倉 v1 備援，找一口有存糧的箱子借一份。
+                            let chest_hit = hub().chest.read().unwrap().nearest_food_chest(
+                                r.body.x.floor() as i32,
+                                r.body.z.floor() as i32,
+                                vskill::GATHER_MAX_RADIUS,
+                                &vhunger::FOOD_IDS,
+                            ); // chest 讀鎖即釋（比照 res_inv 短取即釋慣例）
+                            match chest_hit {
+                                Some((cx, cy, cz, _fid)) => {
+                                    r.larder_target = Some((cx, cy, cz));
+                                    vr::gravity_step(&world, &mut r.body, dt);
+                                }
+                                None => {
+                                    // 熟作物與糧倉皆無：老實收手（清覓食旗），餓著等下一輪（可能有作物
+                                    // 長熟、有人存了糧、鄰居分食、或玩家餵食）。不無窮漫遊、不鬼打牆。
+                                    r.foraging_food = false;
+                                    r.forage_target = None;
+                                    vr::gravity_step(&world, &mut r.body, dt);
+                                }
+                            }
+                        }
+                        Some((tx, ty, tz)) => {
+                            r.forage_target = Some((tx, ty, tz));
+                            // 目標作物此刻是否仍是熟的（可能被玩家/tick 先收走）→ 沒了就重找。
+                            let still_ripe = vhunger::is_harvestable_food_block(
+                                voxel::effective_block_at(&world, tx, ty, tz),
                             );
-                            if let Some(yaw) = vr::yaw_from_move(r.body.x - bx, r.body.z - bz) {
-                                r.yaw = yaw;
+                            if !still_ripe {
+                                r.forage_target = None;
+                                vr::gravity_step(&world, &mut r.body, dt);
+                            } else if vskill::within_gather_reach(r.body.x, r.body.z, tx, tz) {
+                                // 走到作物旁：排程鎖外收成（收成入背包、田退回可再長、冒收成泡泡），結束本輪覓食。
+                                let crop = voxel::effective_block_at(&world, tx, ty, tz);
+                                forage_harvest_events.push((r.id.clone(), r.name, tx, ty, tz, crop));
+                                r.foraging_food = false;
+                                r.forage_target = None;
+                                vr::gravity_step(&world, &mut r.body, dt);
+                            } else {
+                                // 朝那畦作物中心走（沿牆滑行、踏階由物理處理）。
+                                let (bx, bz) = (r.body.x, r.body.z);
+                                vr::step_toward(
+                                    &world, &mut r.body,
+                                    tx as f32 + 0.5, tz as f32 + 0.5,
+                                    dt, vr::RES_SPEED * speed_mult,
+                                );
+                                if let Some(yaw) = vr::yaw_from_move(r.body.x - bx, r.body.z - bz) {
+                                    r.yaw = yaw;
+                                }
                             }
                         }
                     }
@@ -11578,6 +11636,38 @@ fn tick_residents(dt: f32) {
         vfeed::append_feed("收成", rname, &format!("{rname}餓著肚子，把熟了的{food}收進了袋子"));
         let pick = (gx as usize) ^ (gz as usize);
         say_updates.push((rid.clone(), vhunger::foraged_say_line(food, pick)));
+    }
+
+    // 共用糧倉 v1：找不到熟作物、走到一口有存糧的箱子旁——扣箱子 1 份存量、入居民小背包。
+    for (rid, rname, cx, cy, cz) in larder_take_events {
+        // 只在箱子此刻仍有食物時才取（防別人/別的居民先取走 → 空取）；扣 1 份、生持久化事件。
+        let pos = vchest::pos_key(cx, cy, cz);
+        let taken = {
+            let mut store = hub().chest.write().unwrap();
+            let contents = store.contents(&pos);
+            let fid = contents
+                .iter()
+                .map(|&(id, _)| id)
+                .find(|id| vhunger::FOOD_IDS.contains(id));
+            fid.and_then(|fid| {
+                let (got, entry) = store.take(&pos, fid, 1);
+                (got > 0).then_some((fid, entry))
+            })
+        }; // chest 寫鎖釋放
+        let Some((food_id, chest_e)) = taken else {
+            continue; // 箱子已被別人先掏空：誠實放棄這次借糧
+        };
+        vchest::append_chest(&chest_e);
+        // 借到的糧食入居民小背包（res_inv 短鎖即釋）——下次餓了就吃它，鏡像收成→存糧的既有節奏。
+        {
+            let mut inv = hub().res_inv.write().unwrap();
+            *inv.entry(rid.clone()).or_default().entry(food_id).or_insert(0) += 1;
+        } // res_inv 寫鎖釋放
+        let food = vhunger::food_name_zh(food_id).unwrap_or("吃的");
+        // Feed（真實事件、低頻）＋ 借糧泡泡（她餓著、找不到熟作物，靠村裡的箱子撐過去）。
+        vfeed::append_feed("糧倉", rname, &format!("{rname}餓著肚子，翻了村裡的箱子借到了{food}"));
+        let pick = (cx as usize) ^ (cz as usize);
+        say_updates.push((rid.clone(), vhunger::borrowed_say_line(food, pick)));
     }
 
     // 5b-1a) 跑腿採集·找下一個目標（指令→任務第三刀收尾）：還沒鎖定資源的居民，
