@@ -2958,6 +2958,123 @@ if (milesEl) {
   if (closeBtn) closeBtn.addEventListener("click", closeMilestones);
 }
 
+// ── 村莊地圖（自主提案切片，ROADMAP 837）────────────────────────────────────────
+// 村莊系統（835）早把居民的家收攏成中央廣場＋十字主路＋沿路地塊的實體佈局，玩家也
+// 走在真正鋪好的石板路上——但那份佈局只活在腳下：玩家從沒有任何管道一眼看到「村子
+// 多大、廣場在哪、誰住哪塊地」，只能靠雙腳丈量。跟羅盤（705雷達820）異曲同工：
+// 讓早已存在的系統第一次被看見。與雷達的關鍵區隔——雷達永遠以玩家為中心、只畫「居民
+// 目前位置」（會走動）；地圖以村莊中心為固定原點、畫的是「地塊佈局」這種不隨居民走動
+// 而變的**地理**（僅認領時才變），兩者互補、維度不同。
+const mapEl = document.getElementById("mapPanel");
+const mapCanvasEl = document.getElementById("villageMapCanvas");
+const mapCtx = mapCanvasEl ? mapCanvasEl.getContext("2d") : null;
+const mapBtnEl = document.getElementById("mapBtn");
+/** 地圖涵蓋半徑（遊戲單位，以村莊中心為原點）：略大於最遠地塊距離（PLOT_FIRST_OFFSET 20 +
+ * PLOT_STRIDE 22 * 2 ≈ 64），留邊界餘裕看得到主路延伸出去的方向。 */
+const VILLAGE_MAP_RANGE_UNITS = 90;
+
+/** 把「世界座標相對村莊中心的偏移」換算成地圖畫布上的相對座標（純函式、可測）。
+ * 超出 rangeUnits 的點回傳 `clamped=true`，呼叫端可選擇跳過不畫（避免畫到畫布外）。
+ * @returns {{x:number,y:number,clamped:boolean}}
+ */
+export function villageMapPoint(worldX, worldZ, centerX, centerZ, rangeUnits, radiusPx) {
+  const dx = worldX - centerX, dz = worldZ - centerZ;
+  const clamped = Math.abs(dx) > rangeUnits || Math.abs(dz) > rangeUnits;
+  return { x: (dx / rangeUnits) * radiusPx, y: (dz / rangeUnits) * radiusPx, clamped };
+}
+
+let mapData = null; // 最近一次 /voxel/village-map 回應（{cx,cz,plaza_radius,road_reach,plots}）
+let mapVisible = false;
+let mapRedrawTimer = null;
+
+/** 重繪村莊地圖畫布：十字主路 + 廣場方形 + 各地塊（已認領=金點+名字／空地=灰點）+ 玩家藍點。 */
+function renderVillageMap() {
+  if (!mapCtx || !mapCanvasEl) return;
+  const ctx = mapCtx;
+  const w = mapCanvasEl.width, h = mapCanvasEl.height;
+  const cx = w / 2, cy = h / 2;
+  const radiusPx = Math.min(w, h) / 2 - 10;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "rgba(10,14,22,0.85)";
+  ctx.fillRect(0, 0, w, h);
+  if (!mapData) return;
+  // 十字主路（貫穿整張畫布，村莊主路實際延伸更遠，畫布邊界即代表「路還沒到頭」）。
+  ctx.strokeStyle = "rgba(220,220,200,0.35)";
+  ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(w, cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, h); ctx.stroke();
+  // 中央廣場（正方形）。
+  const plazaPx = (mapData.plaza_radius / VILLAGE_MAP_RANGE_UNITS) * radiusPx;
+  ctx.fillStyle = "rgba(220,200,140,0.55)";
+  ctx.fillRect(cx - plazaPx, cy - plazaPx, plazaPx * 2, plazaPx * 2);
+  // 沿路地塊：已認領=金點+名字，空地=半透明灰點。
+  ctx.textAlign = "center";
+  ctx.font = "10px sans-serif";
+  for (const p of mapData.plots) {
+    const pt = villageMapPoint(p.cx, p.cz, mapData.cx, mapData.cz, VILLAGE_MAP_RANGE_UNITS, radiusPx);
+    if (pt.clamped) continue; // 超出地圖顯示範圍的地塊不畫（範圍已涵蓋現行村莊規模）
+    const px = cx + pt.x, py = cy + pt.y;
+    ctx.beginPath();
+    ctx.arc(px, py, p.resident ? 5 : 3, 0, Math.PI * 2);
+    ctx.fillStyle = p.resident ? "#ffd479" : "rgba(255,255,255,0.35)";
+    ctx.fill();
+    if (p.resident) {
+      ctx.fillStyle = "#eaf2ff";
+      ctx.fillText(p.resident, px, py - 8);
+    }
+  }
+  // 玩家目前位置（超出範圍就夾在邊緣，維持「你在那個方向」的直覺）。
+  const pp = villageMapPoint(player.x, player.z, mapData.cx, mapData.cz, VILLAGE_MAP_RANGE_UNITS, radiusPx);
+  const dist = Math.hypot(pp.x, pp.y) || 1;
+  const ppx = pp.clamped ? cx + (pp.x / dist) * radiusPx : cx + pp.x;
+  const ppy = pp.clamped ? cy + (pp.y / dist) * radiusPx : cy + pp.y;
+  ctx.beginPath();
+  ctx.arc(ppx, ppy, 5, 0, Math.PI * 2);
+  ctx.fillStyle = "#8ab8ff";
+  ctx.fill();
+  ctx.strokeStyle = "#eaf2ff";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
+
+/** 向後端抓最新村莊地圖資料（中心/廣場半徑/地塊認領）並重新繪製。 */
+async function refreshVillageMap() {
+  try {
+    const resp = await fetch("/voxel/village-map");
+    if (!resp.ok) throw new Error("village-map fetch failed: " + resp.status);
+    mapData = await resp.json();
+  } catch (err) {
+    mapData = null;
+  }
+  renderVillageMap();
+}
+
+/** 開啟村莊地圖面板：抓一次地塊佈局（地塊認領變化很慢，30 秒刷新一次足夠），
+ * 玩家位置則每 0.3 秒重繪一次（沿用既有資料、零額外請求，比照雷達的即時感）。 */
+function openVillageMap() {
+  if (!mapEl) return;
+  mapVisible = true;
+  mapEl.style.display = "flex";
+  refreshVillageMap();
+  if (mapRedrawTimer) clearInterval(mapRedrawTimer);
+  mapRedrawTimer = setInterval(() => { if (mapVisible) renderVillageMap(); }, 300);
+}
+
+/** 關閉村莊地圖面板。 */
+function closeVillageMap() {
+  mapVisible = false;
+  if (mapEl) mapEl.style.display = "none";
+  if (mapRedrawTimer) { clearInterval(mapRedrawTimer); mapRedrawTimer = null; }
+}
+
+if (mapBtnEl) mapBtnEl.addEventListener("click", () => {
+  mapVisible ? closeVillageMap() : openVillageMap();
+});
+if (mapEl) {
+  const closeBtn = document.getElementById("mapClose");
+  if (closeBtn) closeBtn.addEventListener("click", closeVillageMap);
+}
+
 // ── 準心選取 + 高亮外框（MCPE 風）──────────────────────────────────────────────
 // 選中方塊的線框外框（略大一點點避免 z-fighting）。對準時顯示、沒對到時隱藏。
 const highlight = new THREE.LineSegments(
@@ -3973,7 +4090,7 @@ if (menuDrawerEl) {
   // 點抽屜內任一功能鈕後收起抽屜——它開的面板（z-index 20）就不會被抽屜（z-index 21）擋住。
   // 各鈕自身的開面板/切人稱監聽器照樣先觸發，這裡只負責關抽屜。
   menuDrawerEl.addEventListener("click", (e) => {
-    const item = e.target.closest("#feedBtn, #diaryWallBtn, #compassBtn, #relationsBtn, #skillsBtn, #milestonesBtn, #viewBtn, #gearBtn");
+    const item = e.target.closest("#feedBtn, #diaryWallBtn, #compassBtn, #relationsBtn, #skillsBtn, #milestonesBtn, #mapBtn, #viewBtn, #gearBtn");
     if (item) closeMenuDrawer();
   });
 }
@@ -5703,6 +5820,16 @@ window.__voxel = {
   get milestonesVisible() { return milesVisible; },
   refreshMilestones() { return refreshMilestones(); },
   renderMilestonesPanel(rows) { renderMilestonesPanel(rows); return milesBodyEl && milesBodyEl.innerHTML; },
+  // ── 村莊地圖 QA 用（自主提案切片，ROADMAP 837）──
+  openVillageMap() { return openVillageMap(); },
+  closeVillageMap() { closeVillageMap(); },
+  get villageMapVisible() { return mapVisible; },
+  refreshVillageMap() { return refreshVillageMap(); },
+  renderVillageMap() { return renderVillageMap(); },
+  villageMapPoint(worldX, worldZ, centerX, centerZ, rangeUnits, radiusPx) {
+    return villageMapPoint(worldX, worldZ, centerX, centerZ, rangeUnits, radiusPx);
+  },
+  setVillageMapDataForTest(data) { mapData = data; },
   // ── 好感度 QA 用（ROADMAP 656）──
   affinityEmoji(count) { return affinityEmoji(count); },
   get myAffinity() { return Object.fromEntries(myAffinity); },
