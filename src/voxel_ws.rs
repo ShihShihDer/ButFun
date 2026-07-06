@@ -46,6 +46,7 @@ use crate::voxel_desires::{self as vdes, DesireStore};
 use crate::voxel_diary;
 use crate::voxel_feed as vfeed;
 use crate::voxel_village as vvillage;
+use crate::voxel_discovery as vdisc;
 use crate::voxel_craft as vcraft;
 use crate::voxel_inventory::{self as vinv, InvStore};
 use crate::voxel_memory::{self as vmem, VoxelMemory};
@@ -1673,6 +1674,9 @@ struct VoxelHub {
     /// 玩家里程碑 v1（ROADMAP 724）：玩家自己的療癒循環第一次做成可回頭翻閱的成就徽章。
     /// 持久化到 data/voxel_milestones.jsonl（append-only，重啟後徽章仍在）。
     milestones: RwLock<MilestoneStore>,
+    /// 探索紀事 v1（自主提案切片，接續 838/839）：玩家找到的地標座標與種類，可回頭翻閱。
+    /// 持久化到 data/voxel_discoveries.jsonl（append-only，重啟後紀事仍在）。
+    discovery: RwLock<vdisc::DiscoveryStore>,
     /// 同帳號去重——踢舊連線用的 oneshot 信號表（ROADMAP fix 幽靈分身）。
     /// 連線 UUID → 踢信號發送端；有同 email 的新連線進來時，從此表取出舊 UUID 的發送端並送 ()，
     /// 讓舊連線的 select! 觸發、優雅退出（幽靈分身消失）。
@@ -2188,6 +2192,8 @@ fn hub() -> &'static VoxelHub {
             last_seen: RwLock::new(HashMap::new()),
             // 啟動時從 data/voxel_milestones.jsonl 載回玩家已達成的成就徽章（重啟後仍記得）。
             milestones: RwLock::new(MilestoneStore::from_entries(vmiles::load_milestones())),
+            // 啟動時從 data/voxel_discoveries.jsonl 載回玩家的探索紀事（重啟後仍記得）。
+            discovery: RwLock::new(vdisc::DiscoveryStore::from_entries(vdisc::load_discoveries())),
             // 同帳號去重：啟動空，每條連線進場時登記、離場時清除。純記憶體、無需持久化。
             conn_kick: RwLock::new(HashMap::new()),
             // 玩家生存指標：啟動時從 data/voxel_player_stats.jsonl 載回血/飢（重登保留，比照 #1024）。
@@ -3248,6 +3254,18 @@ async fn handle_socket(
                         })
                         .to_string(),
                     ));
+                    // 探索紀事 v1（自主提案切片，接續 839）：溫泉可反覆進出，用所屬格子座標當
+                    // 穩定去重鍵，同一玩家對同一泓溫泉只記第一次踏進去的那一拍。
+                    try_unlock_milestone(&name, "first_hotspring", &out_tx);
+                    let cell = voxel::hot_spring_cell_of(px.floor() as i32, pz.floor() as i32);
+                    let (ix, iy, iz) = (px.floor() as i32, py.floor() as i32, pz.floor() as i32);
+                    let found = {
+                        let mut d = hub().discovery.write().unwrap();
+                        d.record(&name, vdisc::LandmarkKind::HotSpring, cell, ix, iy, iz)
+                    }; // discovery 寫鎖釋放
+                    if let Some(entry) = found {
+                        vdisc::append_discovery(&entry);
+                    }
                 }
                 was_soaking = soaking;
                 // 溺水扣血走統一傷害路徑（含死亡→重生判定、廣播、持久化）。
@@ -3389,6 +3407,19 @@ async fn handle_socket(
                 if broken {
                     // 玩家里程碑 v1（ROADMAP 724）：人生第一次成功挖出方塊。
                     try_unlock_milestone(&name, "first_mine", &out_tx);
+                    // 探索紀事 v1（自主提案切片，接續 838）：剛挖掉的這一格恰是遺跡柱頂裸露的
+                    // 乙太礦——固定位置、挖掉即成空氣不會再生，本身就是天然、不必額外去重的
+                    // 「發現一處新遺跡」信號。
+                    if matches!(target_block, Block::AetherOre) && voxel::ruin_ore_at(x, y, z) {
+                        try_unlock_milestone(&name, "first_ruin", &out_tx);
+                        let found = {
+                            let mut d = hub().discovery.write().unwrap();
+                            d.record(&name, vdisc::LandmarkKind::Ruin, (x, z), x, y, z)
+                        }; // discovery 寫鎖釋放
+                        if let Some(entry) = found {
+                            vdisc::append_discovery(&entry);
+                        }
+                    }
                     broadcast_block(x, y, z, Block::Air);
                     // 水流動：剛挖出一個空格 → 排入這格 + 鄰格，讓相鄰水體往缺口流過來
                     //（delta 鎖已釋放，只短暫持 water_queue 鎖，不 await，守鎖紀律）。
@@ -7648,6 +7679,44 @@ pub async fn voxel_milestones_handler(
             .collect()
     };
     let body = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into());
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
+/// 乙太方界·探索紀事 v1（自主提案切片，接續 838/839）：回傳這位玩家找到過的地標
+/// （種類＋座標，依發現順序）＋分類小計。跟里程碑端點同一手法：`?player=` 缺省時
+/// 回空清單，前端知道要先問玩家名再開面板。純讀取、零副作用。
+pub async fn voxel_discoveries_handler(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    use axum::http::header;
+    let player_name = params.get("player").map(|s| s.as_str()).unwrap_or("").trim().to_string();
+    let (items, ruins, springs) = if player_name.is_empty() {
+        (Vec::new(), 0usize, 0usize)
+    } else {
+        // 短讀鎖一次性快照這位玩家的探索紀事 → 立即釋放，不與其他鎖巢狀。
+        let store = hub().discovery.read().unwrap();
+        let list: Vec<serde_json::Value> = store
+            .list_for(&player_name)
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "kind": e.kind.wire_id(),
+                    "label": e.kind.label(),
+                    "icon": e.kind.icon(),
+                    "x": e.x,
+                    "y": e.y,
+                    "z": e.z,
+                })
+            })
+            .collect();
+        let (r, s) = store.counts_for(&player_name);
+        (list, r, s)
+    };
+    let body = serde_json::json!({ "items": items, "ruins": ruins, "springs": springs }).to_string();
     axum::response::Response::builder()
         .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-cache")
