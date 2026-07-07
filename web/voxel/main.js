@@ -4927,6 +4927,9 @@ function connect() {
     } else if (m.t === "welcome_back") {
       // 久別重逢摘要 v1（ROADMAP 721）：只有自己看得到，離線期間世界發生的重要事件摘要。
       if (m.text) appendMsg("sys", m.text);
+    } else if (m.t === "stall_sold_notice") {
+      // 自由市集賣家通知 v1（自主提案切片，ROADMAP 864）：只有自己看得到，你不在時攤位成交的私訊。
+      if (m.text) appendMsg("sys", m.text);
     } else if (m.t === "build_complete") {
       // 建物完工廣播 v1（ROADMAP 669）：全員可見，世界在長大。
       // 合力蓋家 v1（ROADMAP 834）：有協力者（additive helpers 欄位）就多提一句與誰合力。

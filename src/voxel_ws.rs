@@ -159,6 +159,7 @@ use crate::voxel_bottle::{self as vbottle, BottleStore};
 use crate::voxel_coop_gather as vcoop_gather;
 use crate::voxel_dropitem::{self as vdrop, DropStore};
 use crate::voxel_stall::{self as vstall, StallStore};
+use crate::voxel_stall_notify as vstallnotify;
 use crate::voxel_frontier_find as vffind;
 use crate::voxel_mastery::{self as vmastery, MasteryKind, MasteryStore};
 
@@ -1802,6 +1803,10 @@ struct VoxelHub {
     /// 就已 escrow 進攤位本身（非其背包）；任何身上有攤位所求材料的玩家路過都能接手成交，
     /// 哪怕擺攤者早已離線；擺攤者可隨時自行收攤退還，逾時未接手也會自動收攤。
     stalls: RwLock<StallStore>,
+    /// 自由市集成交後、待送達的賣家通知佇列（自主提案切片，ROADMAP 864）：per-owner 一份
+    /// 「你的攤位被誰接手、換到了什麼」清單，攤位成交當下塞入、賣家下次連線時投遞並清空。
+    /// 純記憶體、重啟歸零（比照 `stalls` 世界暫態慣例，非玩家永久資產，零 migration）。
+    stall_notices: RwLock<vstallnotify::StallNoticeQueue>,
     /// 禮物菜園 store（ROADMAP 755）：作物方塊世界座標 → 一畦「因你的種子而生」的田
     /// （居民 id、送種子的玩家名、作物種類）。持久化到 data/voxel_gift_gardens.jsonl；
     /// 那畦田熟了、種它的居民遇到你，會親手收成、把第一把收穫回贈給你。
@@ -2411,6 +2416,8 @@ fn hub() -> &'static VoxelHub {
             drops: RwLock::new(DropStore::new()),
             // 交易攤 v1：純記憶體，重啟歸零（比照 drops，世界暫態，非玩家永久資產）。
             stalls: RwLock::new(StallStore::new()),
+            // 自由市集賣家通知佇列：純記憶體，重啟歸零（比照 stalls，世界暫態，非玩家永久資產）。
+            stall_notices: RwLock::new(vstallnotify::StallNoticeQueue::new()),
             // 啟動時從 data/voxel_gift_gardens.jsonl 載回未收成的禮物菜園（重啟後那畦田還在，
             // 待種它的居民遇到送種子的你時收成回贈）。
             giftgarden: RwLock::new(vgg::GiftGardenStore::from_entries(vgg::load_gift_gardens())),
@@ -3534,6 +3541,19 @@ async fn handle_socket(
         }
 
         hub().last_seen.write().unwrap().insert(name.clone(), now); // 寫鎖釋放
+    }
+
+    // 自由市集賣家通知 v1（自主提案切片，ROADMAP 864）：連線時投遞這位玩家的待送達成交通知——
+    // 不看離線多久（跟久別重逢摘要的取樣窗獨立）、只要有成交過就送，送達後立刻清空這位賣家的佇列。
+    if !name.is_empty() {
+        let notices = {
+            hub().stall_notices.write().unwrap().remove(&name).unwrap_or_default()
+        }; // stall_notices 寫鎖釋放
+        if let Some(msg) = vstallnotify::format_notice_message(&notices) {
+            let stall_sold =
+                serde_json::json!({ "t": "stall_sold_notice", "text": msg }).to_string();
+            let _ = out_tx.send(Message::Text(stall_sold)).await;
+        }
     }
 
     // 送出生點周邊 chunk。
@@ -7232,6 +7252,20 @@ async fn handle_socket(
                 vfeed::append_feed("自由市集", &name, &format!(
                     "在市集用材料和{}的攤位成交了一筆交易", stall.owner
                 ));
+                // 自由市集賣家通知 v1（自主提案切片，ROADMAP 864）：把「你的攤位被誰接手、換到
+                // 了什麼」塞進賣家的待送達佇列，賣家下次連線時會收到私訊（見連線區塊接線）。
+                {
+                    let notice = vstallnotify::StallSaleNotice {
+                        buyer: name.clone(),
+                        got_item_name: vgift::item_name_zh(stall.give_item).to_string(),
+                        got_count: stall.give_count,
+                    };
+                    vstallnotify::enqueue_sale(
+                        &mut hub().stall_notices.write().unwrap(),
+                        &stall.owner,
+                        notice,
+                    );
+                } // stall_notices 寫鎖釋放
             }
 
             // 木門 v1（ROADMAP 693）：右鍵切換門的開/關狀態。
