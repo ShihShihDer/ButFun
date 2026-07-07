@@ -128,6 +128,17 @@ pub fn classify_desire(desire: &str) -> Option<BuildKind> {
     None
 }
 
+/// 心願閉環 v1（ROADMAP 859）：剛完工的建物是否正是「目前這份心願」所指、且這份心願
+/// 還沒被實現過（純函式、可測）。呼叫端用來判斷完工那一刻要不要對 `voxel_desires` 的
+/// `DesireStore` 補呼叫 `mark_fulfilled`——此前 `mark_fulfilled` 只在「玩家送禮」路徑
+/// （722）被呼叫過，居民自己蓋出建物讓心願成真時從未呼叫，導致這份心願在 store 裡
+/// 永遠停留在「未實現」，進而卡死 771（自我印象驅動自發追尋：`vacant` 判定要求
+/// `fulfilled==true` 或 `None`）——同一格心願一旦被歸類成某種建物、蓋完後也不會清空，
+/// 這位居民就再也種不出新的自發渴望。
+pub fn build_fulfills_desire(desire_text: &str, already_fulfilled: bool, completed: BuildKind) -> bool {
+    !already_fulfilled && classify_desire(desire_text) == Some(completed)
+}
+
 /// 一句自主禱告（`npc_pray` 產出）要不要提升成持久渴望（純函式、可測）。
 ///
 /// ROADMAP 6「禱告驅動蓋家」：居民每隔一段時間會自主許願（不像玩家聊天的心願，
@@ -950,6 +961,32 @@ mod tests {
         assert!(classify_desire("我想和旅人聊天").is_none());
         assert!(classify_desire("我想學習新事物").is_none());
         assert!(classify_desire("").is_none());
+    }
+
+    // ── build_fulfills_desire 純函式（ROADMAP 859 心願閉環）──────────────────────
+
+    #[test]
+    fn build_fulfills_desire_matches_kind_and_unfulfilled() {
+        assert!(build_fulfills_desire("我想有一個家", false, BuildKind::House));
+        assert!(build_fulfills_desire("好想有座涼亭", false, BuildKind::Pavilion));
+    }
+
+    #[test]
+    fn build_fulfills_desire_wrong_kind_returns_false() {
+        // 蓋出來的是水井，但心願指的是家——不該誤標成這份心願被實現。
+        assert!(!build_fulfills_desire("我想有一個家", false, BuildKind::Well));
+    }
+
+    #[test]
+    fn build_fulfills_desire_already_fulfilled_returns_false() {
+        // 已經標記過的心願不重複觸發（冪等，避免 append_desire 洗版）。
+        assert!(!build_fulfills_desire("我想有一個家", true, BuildKind::House));
+    }
+
+    #[test]
+    fn build_fulfills_desire_unclassifiable_desire_returns_false() {
+        // 心願本身分類不到任何建物種類（例如純聊天話題）→ 恆不算實現。
+        assert!(!build_fulfills_desire("我想和旅人聊天", false, BuildKind::House));
     }
 
     #[test]

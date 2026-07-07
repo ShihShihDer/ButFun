@@ -15348,6 +15348,23 @@ fn tick_residents(dt: f32) {
                         say_updates.push((rid.clone(), vannounce::build_complete_say_with_helpers(&rname, kind, &plan_helpers)));
                     }
                 }
+                // 心願閉環 v1（ROADMAP 859）：mark_fulfilled 此前只在「玩家送禮」路徑（722）被
+                // 呼叫過——居民自己蓋出建物讓心願成真時（不論來源：玩家親口/自我啟發 771/好奇心/
+                // 見賢思齊 858）從未補標記，導致這份心願在 DesireStore 裡永遠停在「未實現」，
+                // 進而卡死 771 自我印象驅動自發追尋（`vacant` 判定要求 fulfilled==true 或 None，
+                // 同一格心願一旦分類成某種建物、蓋完後也不會清空，這位居民就再也種不出新渴望）。
+                // 只看「剛完工的種類是否正是目前心願所指」，不論擴建與否、不論來源，皆補上這一刀。
+                let should_close_wish = {
+                    let des = hub().desires.read().unwrap();
+                    des.get_desire(&rid)
+                        .is_some_and(|d| vbuild::build_fulfills_desire(&d.desire, d.fulfilled, kind))
+                }; // desires 讀鎖釋放
+                if should_close_wish {
+                    let marked = { hub().desires.write().unwrap().mark_fulfilled(&rid) }; // desires 寫鎖釋放
+                    if let Some(entry) = marked {
+                        vdes::append_desire(&entry);
+                    }
+                }
             }
             // 居民立牌命名 v1（ROADMAP 749）：蓋完建物親手在門前立一塊告示牌署名，
             // 741「居民讀牌」的鏡像——居民第一次拿起人類的導覽工具，蓋的家從此有名。
