@@ -108,6 +108,7 @@ use crate::voxel_moderation as vmod;
 use crate::voxel_cheer as vcheer;
 use crate::voxel_chest as vchest;
 use crate::voxel_chest_contribute as vchestgive;
+use crate::voxel_envy as venvy;
 use crate::voxel_sign as vsign;
 use crate::voxel_readsign as vreadsign;
 use crate::voxel_tend as vtend;
@@ -338,6 +339,9 @@ struct VoxelResident {
     /// 主動討東西冷卻倒數（秒，居民拜託你幫個小忙 v1）：> 0 表示最近才向某位玩家開口討過材料，
     /// 暫不再開口，讓「反過來拜託你」稀有有份量、天然防洗版。
     request_timer: f32,
+    /// 見賢思齊冷卻倒數（秒，居民見賢思齊 v1）：> 0 表示最近才因為路過一座已命名地標
+    /// 心生嚮往過，暫不再觸發，讓「親眼所見萌生新心願」稀有有份量、天然防洗版。
+    envy_timer: f32,
     /// 目前尚未了結的請求：`Some(item_id)` 表示居民正等著有人送這樣材料來（同時只掛一個）。
     /// 玩家把這樣材料當禮物送到即算幫上忙（走 `Gift` 送禮管線），送到後清成 `None`。
     /// 純記憶體、重啟歸零（與渴望 / 心事同款：未了的請求重啟後淡去，不落持久化）。
@@ -1674,6 +1678,8 @@ fn build_resident(
             pending_care_thanks: None,
             // 居民關心你挨餓 v1：首次關心冷卻各自錯開，避免伺服器剛啟動、你剛好挨餓時一群居民同時衝過來。
             hunger_care_cooldown: vcare::care_cd_offset(i),
+            // 居民見賢思齊 v1：首次冷卻各自錯開，避免啟動後一群居民同時路過地標齊聲心生嚮往。
+            envy_timer: venvy::ENVY_COOLDOWN_SECS * 0.5 + i as f32 * 90.0,
     }
 }
 
@@ -8832,6 +8838,10 @@ fn tick_residents(dt: f32) {
     // (item_id, qty)（泡泡已於鎖內設好 r.say），鎖外統一執行真正的轉移（res_inv 寫→chest 寫，
     // 各自短鎖循序不巢狀）。格式：(居民 id, 居民顯示名, wx, wy, wz, item_id, qty)。
     let mut chest_contribute_events: Vec<(String, &'static str, i32, i32, i32, u8, u32)> = Vec::new();
+    // 居民見賢思齊 v1（自主提案，ROADMAP 858）：鎖內偵測「路過一座已命名地標且過機率門檻」→
+    // 決定嚮往哪種建物（泡泡已於鎖內設好 r.say），鎖外統一種下心願（desires 寫）+ 持久化 + Feed，
+    // 守「residents 寫鎖內不巢狀取 desires 寫鎖」的死鎖鐵律。格式：(居民 id, 居民顯示名, 地標名, 建物種類)。
+    let mut envy_events: Vec<(String, &'static str, String, vbuild::BuildKind)> = Vec::new();
     // 把昨晚的夢說給你聽 v1（自主提案，807）：招呼時序內偵測「做過夢的居民把昨晚的夢分享給你」
     // → 收集 (居民 id, 玩家顯示名) 記一筆 episodic 記憶（累積好感），與 (居民顯示名, 玩家顯示名)
     // 補一則城鎮動態；同樣 residents 寫鎖釋放後才開 memory 寫鎖 / 動態 IO，守死鎖鐵律。
@@ -9576,6 +9586,31 @@ fn tick_residents(dt: f32) {
                     r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                     // 真正的材料轉移 + 持久化 + Feed 留到鎖外統一做（守死鎖鐵律）。
                     chest_contribute_events.push((r.id.clone(), r.name, cx, cy, cz, item_id, qty));
+                }
+            }
+
+            // 居民見賢思齊 v1（自主提案，ROADMAP 858）：居民的渴望至今只從對話/自我禱告/好奇心
+            // 三個來源萌生，世界裡真實存在、被居民命名記住的地標（773/854）從沒觸發過任何居民的
+            // 心願——本刀補上第四個來源：閒晃路過一座已命名地標，偶爾心生嚮往，也想擁有一座自己
+            // 的類似建物。與招呼／掏心／教配方／回饋糧倉同款：只在這一 tick `r.say` 仍空時才可能
+            // 發生，不同幀、不互蓋泡泡。
+            if r.envy_timer > 0.0 {
+                r.envy_timer -= dt;
+            } else if r.say.is_empty() && !r.seeking_comfort && r.approaching_esteem.is_none() {
+                // 只讀分格鍵當下是否已被命名（Mutex 短鎖即釋、不巢狀）；未命名的地方安靜省鎖。
+                let cell = vstructname::cell_key(r.body.x, r.body.z);
+                let named = structure_names().lock().unwrap().get(&cell).cloned();
+                if let Some(structure_name) = named {
+                    if venvy::should_envy(true, rand::random::<f32>()) {
+                        let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                        let kind = venvy::pick_envy_kind(pick);
+                        r.say = venvy::envy_say_line(&structure_name, kind, pick);
+                        r.say_timer = SAY_SECS;
+                        r.envy_timer = venvy::ENVY_COOLDOWN_SECS;
+                        r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                        // 真正種下心願 + 持久化 + Feed 留到鎖外統一做（守死鎖鐵律）。
+                        envy_events.push((r.id.clone(), r.name, structure_name, kind));
+                    }
                 }
             }
 
@@ -13387,6 +13422,19 @@ fn tick_residents(dt: f32) {
         );
     }
 
+    // 居民見賢思齊 v1（自主提案，ROADMAP 858）：把鎖內判定觸發的「見賢思齊」心願真的種下——
+    // desires 寫鎖種下心願（覆寫既有心願，沿用既有 `set_desire` 覆蓋語義：與玩家聊天種願望
+    // 同款，最新萌生的心願蓋過舊的）→ 持久化 → Feed，鎖外循序、不巢狀，守死鎖鐵律；
+    // 文字全走固定模板，不含玩家原話。
+    for (rid, rname, structure_name, kind) in envy_events {
+        let entry = {
+            let mut des = hub().desires.write().unwrap();
+            des.set_desire(&rid, &venvy::envy_desire_text(&structure_name, kind), vdes::ENVY_SPARK)
+        }; // desires 寫鎖釋放
+        vdes::append_desire(&entry);
+        vfeed::append_feed("見賢思齊", rname, &venvy::envy_feed_line(rname, &structure_name, kind));
+    }
+
     // 5b-1a) 跑腿採集·找下一個目標（指令→任務第三刀收尾）：還沒鎖定資源的居民，
     //   找一次最近的指定資源；找不到 → 已帶著的份就直接送去交付、否則老實放棄整個任務
     //   （不無窮重試）。鎖序：deltas 讀（即釋）→ residents 寫（即釋），逐位居民各自短取即釋。
@@ -14908,6 +14956,7 @@ fn tick_residents(dt: f32) {
                         !d.fulfilled
                             && d.sparked_by != vdes::SELF_SPARK
                             && d.sparked_by != vdes::CURIOSITY_SPARK
+                            && d.sparked_by != vdes::ENVY_SPARK
                     })
                 }; // desires 讀鎖釋放
                 if !player_wish_pending && vinvent::curiosity_gate(rand::random()) {
@@ -15088,9 +15137,10 @@ fn tick_residents(dt: f32) {
                 match des.get_desire(&rid) {
                     Some(d) => (
                         vbuild::classify_desire(&d.desire),
-                        // 自我啟發（禱告）與好奇心都不是真人玩家——完工不指名感謝。
+                        // 自我啟發（禱告）、好奇心、見賢思齊都不是真人玩家——完工不指名感謝。
                         (d.sparked_by != vdes::SELF_SPARK
-                            && d.sparked_by != vdes::CURIOSITY_SPARK)
+                            && d.sparked_by != vdes::CURIOSITY_SPARK
+                            && d.sparked_by != vdes::ENVY_SPARK)
                             .then(|| d.sparked_by.clone()),
                     ),
                     None => (None, None),
@@ -16291,6 +16341,12 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
                 format!(
                     "你自己心底浮現過一個念頭：「{}」——\
                     這個夢想是你生活的動力，偶爾在心裡默默惦記著它。",
+                    d.desire
+                )
+            } else if d.sparked_by == vdes::ENVY_SPARK {
+                format!(
+                    "你親眼見過一件讓你心生嚮往的作品後，冒出了一個念頭：「{}」——\
+                    沒有人要求你這麼做，這個夢想是你自己心裡冒出來的。",
                     d.desire
                 )
             } else {
