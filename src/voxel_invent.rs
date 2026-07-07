@@ -1,11 +1,20 @@
-//! 乙太方界·技能發明（真進化第一刀＋第二刀）——居民自己把**基礎動作原語**組合成解法，
-//! 成功後存成「自己的技能」，之後同處境**直接重用（零 LLM）**。
+//! 乙太方界·技能發明（真進化第一刀＋第二刀＋第四刀）——居民自己把**基礎動作原語**
+//! 組合成解法，成功後存成「自己的技能」，之後同處境**直接重用（零 LLM）**。
 //!
 //! **第二刀（工作台配方鏈＋放置原語）**：第一刀只開 gather/craft 兩原語、只支援 2×2
 //! 背包配方——工作台 3×3 的配方鏈她發明不了。第二刀新增 `place`（把背包裡的站點方塊
 //! 放到自己旁邊）與 `craft_wb`（3×3 工作台合成，前提：附近有已放置的工作台），
 //! 可行性模擬懂「這配方需要工作台」＋「工作台本身可由 4 木板合成」——她第一次能自己
 //! 想出**多階段鏈**：採木→合木板→合工作台→放置→3×3 合成目標物。
+//!
+//! **第四刀（熔爐冶煉，接續第三刀技能組合技能）**：第二刀刻意誠實劃了邊界——
+//! 「熔爐冶煉配方不算，用熔爐還要放置熔爐＋冶煉原語，留給下一刀」。本刀補上那個原語：
+//! `smelt`（熔爐冶煉，前提：附近有已放置的熔爐；**冶煉需要時間**，不像 craft/craft_wb
+//! 瞬間完成——`InventRun::smelt_wait` 讓她「開爐→等待→回來收成」，比照 [`voxel_smelt`]
+//! 給真人玩家的煨煮手感）。這一刀讓她第一次能自己做出**拋光石**（`smelt_stone`）——
+//! 一種除了熔爐冶煉之外**沒有任何其他途徑**能得到的建材，是全鏈第一個「只有走完整條
+//! 採集→備料→蓋工作台→蓋熔爐→冶煉→等待」才碰得到的目標物。鐵/魚/薯/莓果醬等冶煉
+//! 配方的生料（礦石/漁獲/作物）仍不在她能自採的原語閉包內，誠實維持不可發明。
 //!
 //! 北極星（維護者原話）：「我們沒說可以挖可以放，他就自己組合出來了」——
 //! 居民自己從基礎動作組合發明、存成自己的技能。這是 Voyager（MineDojo）式 skill library
@@ -88,6 +97,10 @@ pub enum PrimStep {
     /// 放置（第二刀）：把背包裡的一個站點方塊（工作台／熔爐）放到自己旁邊的合理位置。
     /// **後置條件語意**：該型站點已在附近就跳過（不重複放、不白耗背包存量）。
     Place { block: String },
+    /// 熔爐冶煉（第四刀）：照熔爐配方表冶煉一次。**世界前提**：附近（[`STATION_NEAR_RADIUS`]
+    /// 格內）要有已放置的熔爐。**時間前提**：冶煉需要煨煮時間（見 [`InventRun::smelt_wait`]），
+    /// 不像 craft/craft_wb 瞬間完成——開爐後這一步要等熟成才算過。
+    Smelt { recipe: String },
     /// 引用自己已經學會的技能（第三刀·技能組合技能）：把她之前發明過、已經存進技能庫
     /// 的一整段步驟當一步用——「已經會的事」不用每次重新拆成一串原語。只在
     /// [`expand_step`] 展開（查她自己的技能庫換成具體原語序列），[`check_step`] 對它
@@ -104,6 +117,8 @@ pub enum CheckedStep {
     CraftWb { recipe_id: &'static str },
     /// 放置站點方塊（工作台=15／熔爐=16；白名單見 [`place_block_from_token`]）。
     Place { block_id: u8 },
+    /// 熔爐冶煉（第四刀，需附近有已放置的熔爐；需等煨煮時間，見 [`InventRun::smelt_wait`]）。
+    Smelt { recipe_id: &'static str },
 }
 
 /// 工作台方塊 id（`Block::Workbench as u8`；放置＋3×3 前提檢查的單一常數源）。
@@ -163,7 +178,14 @@ pub fn obtainable_ids() -> &'static HashSet<u8> {
         .collect();
         loop {
             let mut grew = false;
-            for r in vcraft::RECIPES.iter().chain(vcraft::WORKBENCH_RECIPES.iter()) {
+            // 第四刀：熔爐冶煉配方也納入閉包——只有「配料全可自採/鏈上加工品」的冶煉
+            // （如 smelt_stone：石×3→拋光石）才會真的進來；鐵/魚/薯/莓果醬的生料
+            // （礦石/漁獲/作物）不在種子集也不由任何配方鏈產出，誠實留在閉包外。
+            for r in vcraft::RECIPES
+                .iter()
+                .chain(vcraft::WORKBENCH_RECIPES.iter())
+                .chain(vcraft::FURNACE_RECIPES.iter())
+            {
                 if !set.contains(&r.output_block)
                     && r.inputs.iter().all(|(bid, _)| set.contains(bid))
                 {
@@ -193,6 +215,12 @@ pub fn inventable_recipes() -> impl Iterator<Item = &'static vcraft::Recipe> {
 /// 可發明的 3×3 工作台配方清單（大量木板/玻璃/熔爐/箱子…；鐵系要冶煉、不在鏈上）。
 pub fn inventable_wb_recipes() -> impl Iterator<Item = &'static vcraft::Recipe> {
     vcraft::WORKBENCH_RECIPES.iter().filter(|r| recipe_inventable(r))
+}
+
+/// 可發明的熔爐冶煉配方清單（第四刀）：拋光石（唯一途徑）＋玻璃/石磚的冶煉版本
+/// （配料皆可自採，冶煉只是更高效的另一條路）；鐵/魚/薯/莓果醬的生料她弄不到，誠實排除。
+pub fn inventable_furnace_recipes() -> impl Iterator<Item = &'static vcraft::Recipe> {
+    vcraft::FURNACE_RECIPES.iter().filter(|r| recipe_inventable(r))
 }
 
 /// 白名單驗證一步：資源在白名單、數量 1..=上限、配方存在且可發明。壞的一律 `None`。
@@ -236,6 +264,13 @@ pub fn check_step(s: &PrimStep) -> Option<CheckedStep> {
         PrimStep::Place { block } => {
             let bid = place_block_from_token(block)?;
             Some(CheckedStep::Place { block_id: bid })
+        }
+        PrimStep::Smelt { recipe } => {
+            let r = vcraft::find_furnace_recipe(recipe)?;
+            if !recipe_inventable(r) {
+                return None; // 生料她弄不到（礦石/漁獲/作物）→ 誠實拒絕
+            }
+            Some(CheckedStep::Smelt { recipe_id: r.id })
         }
         // 單獨出現一律無效——`UseSkill` 只能透過 [`expand_step`] 展開成具體原語序列，
         // 不是可執行的原子步（也保證存檔技能永遠不會殘留一顆沒展開的 `UseSkill`：
@@ -577,6 +612,13 @@ fn explain_bad_step(s: &PrimStep) -> String {
         PrimStep::Place { block } => {
             format!("place 只能放 workbench 或 furnace，「{block}」不在白名單")
         }
+        PrimStep::Smelt { recipe } => {
+            if vcraft::find_furnace_recipe(recipe).is_some() {
+                format!("熔爐配方「{recipe}」的生料你自己弄不到（要挖礦/釣魚/種田），不能用")
+            } else {
+                format!("「{recipe}」不在熔爐配方清單裡")
+            }
+        }
         // 實務上到不了這裡（[`expand_step`] 攔在更前面、給出更具體的原因）；
         // 保留這支只為了讓 `explain_bad_step` 對 `PrimStep` 保持窮舉、防禦未來改動。
         PrimStep::UseSkill { name } => {
@@ -599,8 +641,9 @@ pub fn accept_proposal(
     bag: &HashMap<u8, u32>,
     goal_block: u8,
     wb_nearby: bool,
+    furnace_nearby: bool,
 ) -> Result<InventedPlan, String> {
-    accept_proposal_with_skills(raw, bag, goal_block, wb_nearby, &[])
+    accept_proposal_with_skills(raw, bag, goal_block, wb_nearby, furnace_nearby, &[])
 }
 
 /// [`accept_proposal`] 的技能組合版（第三刀）：`known` 是這位居民自己技能庫裡
@@ -614,14 +657,15 @@ pub fn accept_proposal_with_skills(
     bag: &HashMap<u8, u32>,
     goal_block: u8,
     wb_nearby: bool,
+    furnace_nearby: bool,
     known: &[(String, Vec<PrimStep>)],
 ) -> Result<InventedPlan, String> {
     let plan = parse_plan_detailed_with_skills(raw, known)?;
-    // 正規化成自足鏈（從空背包/沒工作台也可行）；步數用存檔上限（正規化會變長，仍有界）。
+    // 正規化成自足鏈（從空背包/沒工作台/沒熔爐也可行）；步數用存檔上限（正規化會變長，仍有界）。
     let canon = canonicalize_steps(&plan.steps);
     let steps = check_stored_steps(&canon)
         .ok_or_else(|| format!("補上備料步後步數超過上限 {MAX_STORED_STEPS}，計畫太迂迴"))?;
-    simulate_plan(&steps, bag, goal_block, wb_nearby)?;
+    simulate_plan(&steps, bag, goal_block, wb_nearby, furnace_nearby)?;
     Ok(InventedPlan { name: plan.name, raw_steps: canon, steps })
 }
 
@@ -670,7 +714,7 @@ pub fn detect_missing_material(desire: &str) -> Option<MaterialGoal> {
             consider(kw.chars().count(), MaterialGoal { block_id: bid, name_zh: material_name(bid) });
         }
     }
-    for r in inventable_recipes().chain(inventable_wb_recipes()) {
+    for r in inventable_recipes().chain(inventable_wb_recipes()).chain(inventable_furnace_recipes()) {
         if desire.contains(r.name_zh) {
             consider(r.name_zh.chars().count(), MaterialGoal { block_id: r.output_block, name_zh: r.name_zh });
         }
@@ -689,6 +733,7 @@ pub fn material_name(block_id: u8) -> &'static str {
         WORKBENCH_BLOCK_ID => "工作台",
         FURNACE_BLOCK_ID => "熔爐",
         42 => "箱子",
+        17 => "拋光石",
         _ => "材料",
     }
 }
@@ -714,6 +759,10 @@ pub struct InventRun {
     pub reuse: bool,
     /// 剩餘秒數（tick 遞減；逾時放棄、記教訓）。
     pub deadline: f32,
+    /// 熔爐冶煉煨煮倒數（第四刀）：`None`＝目前這步還沒開爐（或這步根本不是冶煉）；
+    /// `Some(w)`＝已開爐，`w` 秒後熟成（tick 遞減，比照 `deadline` 同一節拍）。
+    /// 熟成（`w <= 0.0`）後 [`next_action`] 才會判定該收成、推進到下一步。
+    pub smelt_wait: Option<f32>,
 }
 
 impl InventRun {
@@ -728,6 +777,7 @@ impl InventRun {
             step_idx: 0,
             reuse,
             deadline: RUN_TIMEOUT_SECS,
+            smelt_wait: None,
         }
     }
 
@@ -748,6 +798,12 @@ pub enum StepAction {
     DoCraftWb { recipe_id: &'static str },
     /// 這一步是放置站點 → 呼叫端找放置點、扣背包、寫世界（找不到點/沒貨＝失敗）。
     DoPlace { block_id: u8 },
+    /// 這一步是熔爐冶煉、還沒開爐 → 呼叫端驗附近有熔爐、扣生料、開始煨煮倒數。
+    DoSmelt { recipe_id: &'static str },
+    /// 這一步的熔爐冶煉還在煨煮中 → 這輪什麼都不做，等下個 tick 再看。
+    Waiting,
+    /// 這一步的熔爐冶煉已熟成 → 呼叫端把成品交付背包、推進到下一步。
+    CollectSmelt { recipe_id: &'static str },
     /// 這一步的後置條件已滿足 → step_idx+1 再看下一步。
     Advance,
     /// 全部步驟跑完 → 呼叫端做最終後置條件驗證（[`goal_met`]）。
@@ -783,6 +839,14 @@ pub fn next_action(
                 StepAction::DoPlace { block_id: *block_id }
             }
         }
+        Some(CheckedStep::Smelt { recipe_id }) => match run.smelt_wait {
+            // 還沒開爐 → 交呼叫端驗附近有熔爐、扣生料、開始煨煮倒數。
+            None => StepAction::DoSmelt { recipe_id },
+            // 開了爐、還沒熟成 → 這輪什麼都不做，等下個 tick。
+            Some(w) if w > 0.0 => StepAction::Waiting,
+            // 熟成（<=0.0）→ 交呼叫端交付成品、推進到下一步。
+            Some(_) => StepAction::CollectSmelt { recipe_id },
+        },
     }
 }
 
@@ -811,6 +875,23 @@ pub fn craft_apply(bag: &mut HashMap<u8, u32>, recipe: &vcraft::Recipe) -> bool 
         }
     }
     *bag.entry(recipe.output_block).or_insert(0) += recipe.output_count;
+    true
+}
+
+/// 開始一爐冶煉：扣除配方所需生料，**不產出成品**——成品要等煨煮熟成才交付
+/// （見 `StepAction::CollectSmelt`／[`InventRun::smelt_wait`]）。配料夠 → 扣除、回 `true`；
+/// 不夠 → 不動、回 `false`。純函式（吃 &mut HashMap）、可測；呼叫端在 res_inv 寫鎖內用它。
+pub fn smelt_start_apply(bag: &mut HashMap<u8, u32>, recipe: &vcraft::Recipe) -> bool {
+    for (bid, need) in recipe.inputs {
+        if bag.get(bid).copied().unwrap_or(0) < *need {
+            return false;
+        }
+    }
+    for (bid, need) in recipe.inputs {
+        if let Some(c) = bag.get_mut(bid) {
+            *c -= *need;
+        }
+    }
     true
 }
 
@@ -858,9 +939,11 @@ pub fn simulate_plan(
     start_bag: &HashMap<u8, u32>,
     goal_block: u8,
     start_wb_nearby: bool,
+    start_furnace_nearby: bool,
 ) -> Result<(), String> {
     let mut bag = start_bag.clone();
     let mut wb_nearby = start_wb_nearby;
+    let mut furnace_nearby = start_furnace_nearby;
     for s in steps {
         match s {
             CheckedStep::Gather { resource, count } => {
@@ -907,6 +990,26 @@ pub fn simulate_plan(
                 if *block_id == WORKBENCH_BLOCK_ID {
                     wb_nearby = true;
                 }
+                if *block_id == FURNACE_BLOCK_ID {
+                    furnace_nearby = true;
+                }
+            }
+            CheckedStep::Smelt { recipe_id } => {
+                let r = vcraft::find_furnace_recipe(recipe_id)
+                    .ok_or_else(|| format!("熔爐配方 {recipe_id} 不存在"))?;
+                // 依賴順序：冶煉前必須已有熔爐在旁（本來就有、或計畫前段合出來放好）。
+                if !furnace_nearby {
+                    return Err(format!(
+                        "「{}」是熔爐配方，必須先有熔爐在你旁邊——熔爐可用配方 id\
+                        「furnace_wb」（石頭×8，需工作台）合成，再用 place 放置，然後才能 smelt",
+                        r.name_zh
+                    ));
+                }
+                // 冶煉需要煨煮時間（真實世界由 smelt_wait 倒數），但計畫可行性模擬只看
+                // 材料流動是否走得通——時間到了終究會產出，故此處視同即時（idealized）。
+                if !craft_apply(&mut bag, r) {
+                    return Err(craft_shortage_err(r));
+                }
             }
         }
     }
@@ -947,6 +1050,7 @@ pub fn canonicalize_steps(steps: &[CheckedStep]) -> Vec<PrimStep> {
     let mut out = Vec::new();
     let mut bag: HashMap<u8, u32> = HashMap::new(); // 模擬背包：從空開始
     let mut wb_placed = false; // 模擬世界：從「身邊沒工作台」開始
+    let mut furnace_placed = false; // 模擬世界：從「身邊沒熔爐」開始（第四刀）
     for s in steps {
         match s {
             CheckedStep::Gather { resource, count } => {
@@ -981,16 +1085,62 @@ pub fn canonicalize_steps(steps: &[CheckedStep]) -> Vec<PrimStep> {
                 out.push(PrimStep::CraftWb { recipe: recipe_id.to_string() });
             }
             CheckedStep::Place { block_id } => {
-                ensure_have(*block_id, 1, &mut bag, &mut out, ENSURE_MAX_DEPTH);
+                if *block_id == FURNACE_BLOCK_ID {
+                    // 熔爐只能在工作台合成（3×3 furnace_wb），不像工作台本身可 2×2 隨手合——
+                    // 專屬巢狀備料（見 ensure_furnace_ready），別走通用 ensure_have（找不到會靜默落空）。
+                    ensure_furnace_ready(&mut bag, &mut out, &mut wb_placed);
+                } else {
+                    ensure_have(*block_id, 1, &mut bag, &mut out, ENSURE_MAX_DEPTH);
+                }
                 out.push(PrimStep::Place { block: place_token_of(*block_id).to_string() });
                 let _ = take_one(&mut bag, *block_id);
                 if *block_id == WORKBENCH_BLOCK_ID {
                     wb_placed = true;
                 }
+                if *block_id == FURNACE_BLOCK_ID {
+                    furnace_placed = true;
+                }
+            }
+            CheckedStep::Smelt { recipe_id } => {
+                if let Some(r) = vcraft::find_furnace_recipe(recipe_id) {
+                    if !furnace_placed {
+                        ensure_furnace_ready(&mut bag, &mut out, &mut wb_placed);
+                        out.push(PrimStep::Place {
+                            block: place_token_of(FURNACE_BLOCK_ID).to_string(),
+                        });
+                        let _ = take_one(&mut bag, FURNACE_BLOCK_ID);
+                        furnace_placed = true;
+                    }
+                    ensure_inputs(r, &mut bag, &mut out);
+                    // 冶煉扣生料、產出記進模擬背包——現實中冶煉要等煨煮時間，但正規化階段
+                    // 只算「材料流通不通」，理想化視同即時（時間到了終究會產出）。
+                    let _ = craft_apply(&mut bag, r);
+                }
+                out.push(PrimStep::Smelt { recipe: recipe_id.to_string() });
             }
         }
     }
     out
+}
+
+/// 正規化輔助：確保模擬背包裡至少有 1 座熔爐——熔爐只能在工作台合成（3×3 `furnace_wb`），
+/// 不像工作台本身可用 2×2 隨手合成，需要專屬的巢狀備料（先備妥＋放置工作台，
+/// 再用工作台合出熔爐）。`wb_placed` 借用呼叫端的模擬世界狀態（副作用：確保後工作台
+/// 視同已放置）。純函式、確定性、可測。
+fn ensure_furnace_ready(bag: &mut HashMap<u8, u32>, out: &mut Vec<PrimStep>, wb_placed: &mut bool) {
+    if bag.get(&FURNACE_BLOCK_ID).copied().unwrap_or(0) >= 1 {
+        return; // 模擬背包已有熔爐（前段步驟備過）→ 不重複合
+    }
+    if !*wb_placed {
+        ensure_have(WORKBENCH_BLOCK_ID, 1, bag, out, ENSURE_MAX_DEPTH);
+        out.push(PrimStep::Place { block: place_token_of(WORKBENCH_BLOCK_ID).to_string() });
+        let _ = take_one(bag, WORKBENCH_BLOCK_ID);
+        *wb_placed = true;
+    }
+    if let Some(fr) = vcraft::find_workbench_recipe("furnace_wb") {
+        ensure_craftable(fr, bag, out);
+        out.push(PrimStep::CraftWb { recipe: fr.id.to_string() });
+    }
 }
 
 /// [`ensure_have`] 的遞迴深度上限（鏈：木→木板→工作台，深度 3 就夠；留餘裕仍有界）。
@@ -1365,18 +1515,20 @@ pub fn invention_prompt(
     desire: &str,
     bag_note: &str,
     wb_nearby: bool,
+    furnace_nearby: bool,
     known_skill_names: &[String],
 ) -> (String, String) {
     // 配方節錄：只列可發明配方（配料她弄得到的），每條含 id 與配料事實。
     let recipe_lines: Vec<String> = inventable_recipes().map(recipe_fact).collect();
     let wb_recipe_lines: Vec<String> = inventable_wb_recipes().map(recipe_fact).collect();
+    let furnace_recipe_lines: Vec<String> = inventable_furnace_recipes().map(recipe_fact).collect();
     // 第三刀·技能組合技能：她自己已經會的技能可以直接引用當一步，省得每次重新拆解。
     // 沒學過任何技能（多半是新生兒或還沒發明成功過）就不提這個 op，避免她引用不存在的名字。
     let use_skill_line = if known_skill_names.is_empty() {
         String::new()
     } else {
         format!(
-            "5. 使用已學會的技能：{{\"op\":\"use_skill\",\"name\":\"<你已經會的技能名>\"}}——\
+            "6. 使用已學會的技能：{{\"op\":\"use_skill\",\"name\":\"<你已經會的技能名>\"}}——\
             把你之前發明過、已經會的技能整段當一步用，不必重新拆解成原語。\n\
             你已經學會的技能（事實，只能引用這些名字，不可捏造）：{}\n",
             known_skill_names.join("、"),
@@ -1387,7 +1539,7 @@ pub fn invention_prompt(
     let use_skill_wb_hint = if known_skill_names.is_empty() {
         ""
     } else {
-        "若你已經會做工作台這件事，優先用 use_skill 引用，別重新拆解。"
+        "若你已經會做工作台/熔爐這件事，優先用 use_skill 引用，別重新拆解。"
     };
     let system = format!(
         "你是{resident_name}，乙太方界的居民。你要自己想辦法解決一個處境：把你會的基礎動作\
@@ -1397,19 +1549,27 @@ pub fn invention_prompt(
         2. 隨身合成（2×2）：{{\"op\":\"craft\",\"recipe\":\"<配方id>\"}}。\n\
         3. 工作台合成（3×3）：{{\"op\":\"craft_wb\",\"recipe\":\"<配方id>\"}}——\
         **必須先有工作台放在你旁邊**才能執行。\n\
-        4. 放置：{{\"op\":\"place\",\"block\":\"workbench\"}}——把背包裡的工作台放到腳邊\
-        （會消耗背包裡那一個）。\n\
+        4. 放置：{{\"op\":\"place\",\"block\":\"workbench\"或\"furnace\"}}——把背包裡的工作台\
+        或熔爐放到腳邊（會消耗背包裡那一個）。\n\
+        5. 熔爐冶煉：{{\"op\":\"smelt\",\"recipe\":\"<配方id>\"}}——\
+        **必須先有熔爐放在你旁邊**才能執行；冶煉需要時間慢慢煨煮，不是立刻拿到成品，\
+        放心，煨好了自然會收到。\n\
         {use_skill_line}\
         你知道的隨身合成配方（事實，不可捏造別的）：\n{recipes}\n\
         你知道的工作台配方（要先有工作台在旁邊，才能用 craft_wb 做這些）：\n{wb_recipes}\n\
+        你知道的熔爐冶煉配方（要先有熔爐在旁邊，才能用 smelt 做這些）：\n{furnace_recipes}\n\
         注意：\n\
-        - 合成會**消耗**配料——採集步驟的數量必須足以支付後續所有合成所需的配料\
+        - 合成／冶煉會**消耗**配料——採集步驟的數量必須足以支付後續所有合成/冶煉所需的配料\
         （例如要合成需要木頭×2的配方，前面就得先採集至少 2 個木頭）。\n\
-        - craft 只能用「隨身合成配方」清單裡的 id；craft_wb 只能用「工作台配方」\
-        清單裡的 id——兩張清單不可混用（workbench 在隨身清單，要用 craft 做）。\n\
+        - craft 只能用「隨身合成配方」清單裡的 id；craft_wb 只能用「工作台配方」清單裡的 id；\
+        smelt 只能用「熔爐冶煉配方」清單裡的 id——三張清單不可混用\
+        （workbench 在隨身清單，要用 craft 做）。\n\
         - 工作台本身的正確做法：先 craft plank（木頭×2→木板×4）、再 craft workbench\
         （木板×4→工作台）、再 place 放置到腳邊；\
-        若你附近已經有工作台，就不必再做一個、直接 craft_wb。{use_skill_wb_hint}\n\
+        若你附近已經有工作台，就不必再做一個、直接 craft_wb。\n\
+        - 熔爐本身的正確做法：先備妥工作台（同上）、再 craft_wb furnace_wb\
+        （石頭×8→熔爐，需工作台）、再 place 放置到腳邊；\
+        若你附近已經有熔爐，就不必再做一個、直接 smelt。{use_skill_wb_hint}\n\
         請只輸出一個 JSON 物件（不要任何其他文字或說明）：\n\
         {{\"name\":\"<你給這個技能取的名字，繁體中文，最多{max_n}字>\",\"steps\":[<原語序列，最多{max_s}步>]}}",
         max_c = MAX_GATHER_COUNT,
@@ -1417,14 +1577,16 @@ pub fn invention_prompt(
         max_s = MAX_STEPS,
         recipes = recipe_lines.join("\n"),
         wb_recipes = wb_recipe_lines.join("\n"),
+        furnace_recipes = furnace_recipe_lines.join("\n"),
     );
     let user = format!(
         "處境：你心裡想著「{desire}」，想要「{goal}」這種材料，但你的背包裡沒有。\
-        你的背包現況：{bag}。你附近{wb}。\
+        你的背包現況：{bag}。你附近{wb}、{furnace}。\
         請用你的原語組合出一個能讓背包裡出現「{goal}」的步驟計畫。",
         goal = goal.name_zh,
         bag = if bag_note.is_empty() { "空的" } else { bag_note },
         wb = if wb_nearby { "已經有一座放置好的工作台" } else { "沒有工作台" },
+        furnace = if furnace_nearby { "已經有一座放置好的熔爐" } else { "沒有熔爐" },
     );
     (system, user)
 }
@@ -1463,6 +1625,12 @@ pub fn steps_summary(steps: &[CheckedStep]) -> String {
                 format!("在工作台合成{name}")
             }
             CheckedStep::Place { block_id } => format!("放置{}", material_name(*block_id)),
+            CheckedStep::Smelt { recipe_id } => {
+                let name = vcraft::find_furnace_recipe(recipe_id)
+                    .map(|r| r.name_zh)
+                    .unwrap_or("？");
+                format!("熔爐冶煉{name}")
+            }
         })
         .collect::<Vec<_>>()
         .join("→")
@@ -1471,6 +1639,16 @@ pub fn steps_summary(steps: &[CheckedStep]) -> String {
 /// 放好站點方塊的冒泡（放置原語完成那一刻——玩家看得到「她把工作台擺出來了」）。
 pub fn placed_line(block_name: &str) -> String {
     format!("我把{block_name}放好了！")
+}
+
+/// 開爐冶煉那一刻的冒泡（第四刀——她把生料放進熔爐，靜候熟成）。
+pub fn smelting_started_line(recipe_name: &str) -> String {
+    format!("把材料放進熔爐開始冶煉{recipe_name}了，先去忙別的，等它煨好～")
+}
+
+/// 冶煉熟成、收成那一刻的冒泡（第四刀）。
+pub fn smelting_done_line(recipe_name: &str) -> String {
+    format!("熔爐煨好{recipe_name}了！")
 }
 
 /// 學會技能的冒泡（發明成功那一刻——維護者要看得到「進化」）。
@@ -1896,20 +2074,20 @@ mod tests {
             {"op":"place","block":"workbench"},
             {"op":"gather","resource":"stone","count":8},
             {"op":"craft_wb","recipe":"furnace_wb"}]}"#;
-        let plan = accept_proposal_with_skills(raw, &HashMap::new(), FURNACE_BLOCK_ID, false, &known)
+        let plan = accept_proposal_with_skills(raw, &HashMap::new(), FURNACE_BLOCK_ID, false, false, &known)
             .expect("組合已學技能的計畫應通過完整驗證管線");
-        assert!(simulate_plan(&plan.steps, &HashMap::new(), FURNACE_BLOCK_ID, false).is_ok());
+        assert!(simulate_plan(&plan.steps, &HashMap::new(), FURNACE_BLOCK_ID, false, false).is_ok());
         // 存檔版本已完全展平，不依賴「備木板」這個名字繼續存在。
         assert!(plan.raw_steps.iter().all(|s| !matches!(s, PrimStep::UseSkill { .. })));
     }
 
     #[test]
     fn accept_proposal_backward_compatible_with_empty_skills() {
-        // accept_proposal（舊 API）等同 accept_proposal_with_skills(..., &[])，
+        // accept_proposal（舊 API）等同 accept_proposal_with_skills(..., false, &[])，
         // 不受影響——既有呼叫端與既有測試皆不需要跟著改。
         let raw = r#"{"name":"燒玻璃","steps":[{"op":"gather","resource":"sand","count":2},{"op":"craft","recipe":"glass"}]}"#;
-        let a = accept_proposal(raw, &HashMap::new(), 10, false).unwrap();
-        let b = accept_proposal_with_skills(raw, &HashMap::new(), 10, false, &[]).unwrap();
+        let a = accept_proposal(raw, &HashMap::new(), 10, false, false).unwrap();
+        let b = accept_proposal_with_skills(raw, &HashMap::new(), 10, false, false, &[]).unwrap();
         assert_eq!(a.steps, b.steps);
     }
 
@@ -1927,10 +2105,10 @@ mod tests {
     #[test]
     fn invention_prompt_mentions_use_skill_only_when_known_nonempty() {
         let goal = MaterialGoal { block_id: 10, name_zh: "玻璃" };
-        let (sys_empty, _) = invention_prompt("露娜", &goal, "想要玻璃", "", false, &[]);
+        let (sys_empty, _) = invention_prompt("露娜", &goal, "想要玻璃", "", false, false, &[]);
         assert!(!sys_empty.contains("use_skill"), "沒學過任何技能就不該提這個 op");
         let names = vec!["備木板".to_string(), "燒玻璃".to_string()];
-        let (sys_known, _) = invention_prompt("露娜", &goal, "想要玻璃", "", false, &names);
+        let (sys_known, _) = invention_prompt("露娜", &goal, "想要玻璃", "", false, false, &names);
         assert!(sys_known.contains("use_skill") && sys_known.contains("備木板"));
     }
 
@@ -1945,10 +2123,10 @@ mod tests {
             {"op":"craft_wb","recipe":"workbench"},
             {"op":"place","block":"workbench"},
             {"op":"craft_wb","recipe":"chest"}]}"#;
-        let plan = accept_proposal(raw, &HashMap::new(), 42, false)
+        let plan = accept_proposal(raw, &HashMap::new(), 42, false, false)
             .expect("結構對、數量錯的弱腦計畫應被正規化接受");
         // 正規化後從空背包模擬可達目標（存檔語意一致）。
-        assert!(simulate_plan(&plan.steps, &HashMap::new(), 42, false).is_ok());
+        assert!(simulate_plan(&plan.steps, &HashMap::new(), 42, false, false).is_ok());
         // 正規化版本身就是存下來的 raw_steps（存檔＝執行＝提案，單一事實）。
         assert!(check_stored_steps(&plan.raw_steps).is_some());
         // 引擎補了木板備料：craft plank 至少 3 次（工作台 4＋箱子 8＝12 板，一次合 4）。
@@ -1963,10 +2141,10 @@ mod tests {
             {"op":"gather","resource":"wood","count":2},
             {"op":"craft","recipe":"plank"},
             {"op":"craft","recipe":"workbench"}]}"#;
-        let err = accept_proposal(raw, &HashMap::new(), 42, false).unwrap_err();
+        let err = accept_proposal(raw, &HashMap::new(), 42, false, false).unwrap_err();
         assert!(err.contains("箱子"), "要點名缺目標材料：{err}");
         // 解析失敗的具體原因也照樣傳出。
-        assert!(accept_proposal("嗯我想想", &HashMap::new(), 42, false)
+        assert!(accept_proposal("嗯我想想", &HashMap::new(), 42, false, false)
             .unwrap_err()
             .contains("JSON"));
     }
@@ -1989,7 +2167,7 @@ mod tests {
             {"op":"place","block":"workbench"},
             {"op":"craft_wb","recipe":"chest"}]}"#;
         let plan = parse_plan(raw).expect("op 修復後應可解析");
-        assert!(simulate_plan(&plan.steps, &HashMap::new(), 42, false).is_ok());
+        assert!(simulate_plan(&plan.steps, &HashMap::new(), 42, false, false).is_ok());
     }
 
     #[test]
@@ -2266,7 +2444,7 @@ mod tests {
         // 實測真場景：便宜腦提「採木頭×1→合成木板」，但木板配方要木頭×2 → 模擬應擋下。
         let raw = r#"{"name":"溫暖木地板","steps":[{"op":"gather","resource":"wood","count":1},{"op":"craft","recipe":"plank"}]}"#;
         let p = parse_plan(raw).unwrap();
-        let err = simulate_plan(&p.steps, &HashMap::new(), 8, false).unwrap_err();
+        let err = simulate_plan(&p.steps, &HashMap::new(), 8, false, false).unwrap_err();
         assert!(err.contains("木板"), "錯誤原因應點名不夠料的配方：{err}");
     }
 
@@ -2274,14 +2452,14 @@ mod tests {
     fn simulate_accepts_correct_plan() {
         let raw = r#"{"name":"備木成板","steps":[{"op":"gather","resource":"wood","count":2},{"op":"craft","recipe":"plank"}]}"#;
         let p = parse_plan(raw).unwrap();
-        assert!(simulate_plan(&p.steps, &HashMap::new(), 8, false).is_ok());
+        assert!(simulate_plan(&p.steps, &HashMap::new(), 8, false, false).is_ok());
     }
 
     #[test]
     fn simulate_rejects_plan_missing_goal() {
         // 計畫做得出玻璃、但目標是木板 → 跑完背包沒有目標材料，擋下。
         let p = parse_plan(glass_plan_json()).unwrap();
-        let err = simulate_plan(&p.steps, &HashMap::new(), 8, false).unwrap_err();
+        let err = simulate_plan(&p.steps, &HashMap::new(), 8, false, false).unwrap_err();
         assert!(err.contains("木板"));
     }
 
@@ -2291,9 +2469,9 @@ mod tests {
         let raw = r#"{"name":"就地取材","steps":[{"op":"craft","recipe":"plank"}]}"#;
         let p = parse_plan(raw).unwrap();
         let bag = HashMap::from([(5u8, 2u32)]);
-        assert!(simulate_plan(&p.steps, &bag, 8, false).is_ok());
+        assert!(simulate_plan(&p.steps, &bag, 8, false, false).is_ok());
         // 空背包則不可行。
-        assert!(simulate_plan(&p.steps, &HashMap::new(), 8, false).is_err());
+        assert!(simulate_plan(&p.steps, &HashMap::new(), 8, false, false).is_err());
     }
 
     #[test]
@@ -2311,11 +2489,11 @@ mod tests {
         let raw = r#"{"name":"溫暖木板","steps":[{"op":"craft","recipe":"plank"}]}"#;
         let p = parse_plan(raw).unwrap();
         // 原計畫從空背包不可行。
-        assert!(simulate_plan(&p.steps, &HashMap::new(), 8, false).is_err());
+        assert!(simulate_plan(&p.steps, &HashMap::new(), 8, false, false).is_err());
         // 正規化後：補了採集步 → 空背包可行。
         let canon = canonicalize_steps(&p.steps);
         let checked = check_stored_steps(&canon).expect("正規化版應過存檔白名單");
-        assert!(simulate_plan(&checked, &HashMap::new(), 8, false).is_ok(), "正規化技能應自足");
+        assert!(simulate_plan(&checked, &HashMap::new(), 8, false, false).is_ok(), "正規化技能應自足");
         // 第一步應是「採集木頭×2」（plank 配方的配料）。
         assert_eq!(
             checked[0],
@@ -2330,7 +2508,7 @@ mod tests {
         let p = parse_plan(glass_plan_json()).unwrap();
         let canon = canonicalize_steps(&p.steps);
         let checked = check_stored_steps(&canon).unwrap();
-        assert!(simulate_plan(&checked, &HashMap::new(), 10, false).is_ok());
+        assert!(simulate_plan(&checked, &HashMap::new(), 10, false, false).is_ok());
         // 原本的採集步仍在最前面。
         assert_eq!(
             checked[0],
@@ -2350,7 +2528,7 @@ mod tests {
             let canon = canonicalize_steps(&steps);
             let checked = check_stored_steps(&canon).expect("正規化版應過存檔白名單");
             assert!(
-                simulate_plan(&checked, &HashMap::new(), goal, false).is_ok(),
+                simulate_plan(&checked, &HashMap::new(), goal, false, false).is_ok(),
                 "{recipe}：正規化後從空背包應能真的合成出目標（原料被共用配料吃掉的缺口要補回）"
             );
         }
@@ -2365,10 +2543,10 @@ mod tests {
             {"op":"gather","resource":"wood","count":3},
             {"op":"craft_wb","recipe":"workbench"},
             {"op":"craft","recipe":"wood_pickaxe"}]}"#;
-        let plan = accept_proposal(raw, &HashMap::new(), vcraft::PICKAXE_WOOD_ID, false)
+        let plan = accept_proposal(raw, &HashMap::new(), vcraft::PICKAXE_WOOD_ID, false, false)
             .expect("結構對、共用原料算術錯的計畫應被正規化接受");
         assert!(
-            simulate_plan(&plan.steps, &HashMap::new(), vcraft::PICKAXE_WOOD_ID, false).is_ok(),
+            simulate_plan(&plan.steps, &HashMap::new(), vcraft::PICKAXE_WOOD_ID, false, false).is_ok(),
             "正規化後應真能做出木鎬"
         );
     }
@@ -2554,11 +2732,24 @@ mod tests {
         for no in ["iron_block", "iron_pickaxe", "iron_axe", "iron_shovel"] {
             assert!(!wb_ids.contains(&no), "{no} 不應可發明（要冶煉）");
         }
-        // 閉包集合本身：熔爐/箱子可取得；鐵錠/拋光石（熔爐冶煉產物）不可。
+        // 閉包集合本身：熔爐/箱子可取得；第四刀後拋光石（配料是可自採的石頭）也進了閉包，
+        // 鐵錠（配料要鐵礦/煤礦，她弄不到生料）仍誠實排除在外。
         assert!(obtainable_ids().contains(&FURNACE_BLOCK_ID));
         assert!(obtainable_ids().contains(&42u8), "箱子在鏈上");
-        assert!(!obtainable_ids().contains(&22u8), "鐵錠要冶煉，不在鏈上");
-        assert!(!obtainable_ids().contains(&17u8), "拋光石要冶煉，不在鏈上");
+        assert!(!obtainable_ids().contains(&22u8), "鐵錠要冶煉生料，不在鏈上");
+        assert!(obtainable_ids().contains(&17u8), "第四刀後拋光石（石頭冶煉）在鏈上");
+    }
+
+    #[test]
+    fn inventable_furnace_recipes_respect_raw_material_closure() {
+        // 熔爐冶煉配方（第四刀）：配料全可自採的才可發明；生料她弄不到的誠實排除。
+        let ids: Vec<&str> = inventable_furnace_recipes().map(|r| r.id).collect();
+        for want in ["smelt_stone", "smelt_glass", "smelt_brick"] {
+            assert!(ids.contains(&want), "{want} 配料可自採，應可發明");
+        }
+        for no in ["smelt_iron", "smelt_fish", "smelt_potato", "smelt_jam"] {
+            assert!(!ids.contains(&no), "{no} 生料弄不到（礦石/漁獲/作物），不應可發明");
+        }
     }
 
     // ── 第二刀：工作台鏈的可行性模擬（依賴順序：先有工作台才能 3×3）────────────────
@@ -2570,18 +2761,18 @@ mod tests {
             {"op":"gather","resource":"stone","count":8},
             {"op":"craft_wb","recipe":"furnace_wb"}]}"#;
         let p = parse_plan(raw).unwrap();
-        let err = simulate_plan(&p.steps, &HashMap::new(), FURNACE_BLOCK_ID, false).unwrap_err();
+        let err = simulate_plan(&p.steps, &HashMap::new(), FURNACE_BLOCK_ID, false, false).unwrap_err();
         assert!(err.contains("工作台"), "錯誤原因應點名缺工作台：{err}");
         assert!(err.contains("workbench"), "錯誤原因應附上工作台配方 id：{err}");
         // 同一計畫、但她附近本來就有工作台 → 可行（不必重做一個）。
-        assert!(simulate_plan(&p.steps, &HashMap::new(), FURNACE_BLOCK_ID, true).is_ok());
+        assert!(simulate_plan(&p.steps, &HashMap::new(), FURNACE_BLOCK_ID, true, false).is_ok());
     }
 
     #[test]
     fn simulate_accepts_full_workbench_chain() {
         // 全鏈：採木→合板→合工作台→放置→採石→3×3 合熔爐，空背包、附近沒工作台也可行。
         let p = parse_plan(furnace_chain_json()).unwrap();
-        assert!(simulate_plan(&p.steps, &HashMap::new(), FURNACE_BLOCK_ID, false).is_ok());
+        assert!(simulate_plan(&p.steps, &HashMap::new(), FURNACE_BLOCK_ID, false, false).is_ok());
     }
 
     #[test]
@@ -2592,7 +2783,7 @@ mod tests {
             {"op":"gather","resource":"stone","count":8},
             {"op":"craft_wb","recipe":"furnace_wb"}]}"#;
         let p = parse_plan(raw).unwrap();
-        let err = simulate_plan(&p.steps, &HashMap::new(), FURNACE_BLOCK_ID, false).unwrap_err();
+        let err = simulate_plan(&p.steps, &HashMap::new(), FURNACE_BLOCK_ID, false, false).unwrap_err();
         assert!(err.contains("放置") && err.contains("工作台"), "{err}");
     }
 
@@ -2607,7 +2798,7 @@ mod tests {
             {"op":"craft_wb","recipe":"furnace_wb"},
             {"op":"place","block":"workbench"}]}"#;
         let p = parse_plan(raw).unwrap();
-        assert!(simulate_plan(&p.steps, &HashMap::new(), FURNACE_BLOCK_ID, false).is_err());
+        assert!(simulate_plan(&p.steps, &HashMap::new(), FURNACE_BLOCK_ID, false, false).is_err());
     }
 
     #[test]
@@ -2618,9 +2809,9 @@ mod tests {
             {"op":"gather","resource":"sand","count":6},
             {"op":"craft_wb","recipe":"glass_wb"}]}"#;
         let p = parse_plan(raw).unwrap();
-        assert!(simulate_plan(&p.steps, &HashMap::new(), 10, true).is_ok());
+        assert!(simulate_plan(&p.steps, &HashMap::new(), 10, true, false).is_ok());
         // 附近沒有 → 背包也沒有 → 擋下。
-        assert!(simulate_plan(&p.steps, &HashMap::new(), 10, false).is_err());
+        assert!(simulate_plan(&p.steps, &HashMap::new(), 10, false, false).is_err());
     }
 
     #[test]
@@ -2635,11 +2826,11 @@ mod tests {
             {"op":"place","block":"workbench"},
             {"op":"craft_wb","recipe":"chest"}]}"#;
         let p = parse_plan(raw).unwrap();
-        assert!(simulate_plan(&p.steps, &HashMap::new(), 42, false).is_ok());
+        assert!(simulate_plan(&p.steps, &HashMap::new(), 42, false, false).is_ok());
         // 少採一輪木（4 木只夠 2 次合成 = 8 木板，工作台用掉 4、剩 4 < 8）→ 擋下。
         let short = raw.replace(r#""count":6"#, r#""count":4"#);
         let p2 = parse_plan(&short).unwrap();
-        assert!(simulate_plan(&p2.steps, &HashMap::new(), 42, false).is_err());
+        assert!(simulate_plan(&p2.steps, &HashMap::new(), 42, false, false).is_err());
     }
 
     // ── 第二刀：next_action 的放置/工作台步決策 ─────────────────────────────────
@@ -2713,6 +2904,9 @@ mod tests {
                     run.step_idx += 1;
                 }
                 StepAction::Done => break,
+                StepAction::DoSmelt { .. } | StepAction::Waiting | StepAction::CollectSmelt { .. } => {
+                    unreachable!("此計畫（合出熔爐本身）不含冶煉步驟")
+                }
             }
         }
         assert!(goal_met(&bag, FURNACE_BLOCK_ID), "後置條件：背包真的有熔爐");
@@ -2727,7 +2921,7 @@ mod tests {
         let canon = canonicalize_steps(&p.steps);
         assert_eq!(canon.len(), p.raw_steps.len(), "完整計畫正規化後應原樣（零冗餘）");
         let checked = check_stored_steps(&canon).unwrap();
-        assert!(simulate_plan(&checked, &HashMap::new(), FURNACE_BLOCK_ID, false).is_ok());
+        assert!(simulate_plan(&checked, &HashMap::new(), FURNACE_BLOCK_ID, false, false).is_ok());
     }
 
     #[test]
@@ -2739,13 +2933,13 @@ mod tests {
             {"op":"craft_wb","recipe":"furnace_wb"}]}"#;
         let p = parse_plan(raw).unwrap();
         // 原計畫只有在「附近有工作台」時可行。
-        assert!(simulate_plan(&p.steps, &HashMap::new(), FURNACE_BLOCK_ID, false).is_err());
-        assert!(simulate_plan(&p.steps, &HashMap::new(), FURNACE_BLOCK_ID, true).is_ok());
+        assert!(simulate_plan(&p.steps, &HashMap::new(), FURNACE_BLOCK_ID, false, false).is_err());
+        assert!(simulate_plan(&p.steps, &HashMap::new(), FURNACE_BLOCK_ID, true, false).is_ok());
         // 正規化後：空背包、附近沒工作台也可行（技能是帶著走的本事）。
         let canon = canonicalize_steps(&p.steps);
         let checked = check_stored_steps(&canon).expect("正規化版應過存檔白名單");
         assert!(
-            simulate_plan(&checked, &HashMap::new(), FURNACE_BLOCK_ID, false).is_ok(),
+            simulate_plan(&checked, &HashMap::new(), FURNACE_BLOCK_ID, false, false).is_ok(),
             "正規化技能應自足（含工作台備妥組）"
         );
         // 應包含放置步與工作台合成步。
@@ -2761,7 +2955,158 @@ mod tests {
         let canon = canonicalize_steps(&p.steps);
         assert!(canon.len() <= MAX_STORED_STEPS, "正規化步數 {} 應 ≤ {}", canon.len(), MAX_STORED_STEPS);
         let checked = check_stored_steps(&canon).expect("應過存檔白名單");
-        assert!(simulate_plan(&checked, &HashMap::new(), 42, false).is_ok(), "箱子鏈技能應自足");
+        assert!(simulate_plan(&checked, &HashMap::new(), 42, false, false).is_ok(), "箱子鏈技能應自足");
+    }
+
+    // ── 第四刀：熔爐冶煉（世界前提＋煨煮時間）───────────────────────────────────
+
+    /// 第四刀全鏈（拋光石）：接續造爐之路，放置熔爐後採石冶煉——9 步已超過 LLM 提案的
+    /// [`MAX_STEPS`]（8，見發明本身的節制），故直接組 `CheckedStep`（等同「已通過解析」
+    /// 的存檔/執行引擎輸入），不經 `parse_plan`；驗的是 `simulate_plan`/`steps_summary`
+    /// 對冶煉步的處理，非提案階段的原始步數上限。
+    fn smelt_stone_chain_checked() -> Vec<CheckedStep> {
+        vec![
+            CheckedStep::Gather { resource: GatherResource::Wood, count: 2 },
+            CheckedStep::Craft { recipe_id: "plank" },
+            CheckedStep::Craft { recipe_id: "workbench" },
+            CheckedStep::Place { block_id: WORKBENCH_BLOCK_ID },
+            CheckedStep::Gather { resource: GatherResource::Stone, count: 8 },
+            CheckedStep::CraftWb { recipe_id: "furnace_wb" },
+            CheckedStep::Place { block_id: FURNACE_BLOCK_ID },
+            CheckedStep::Gather { resource: GatherResource::Stone, count: 3 },
+            CheckedStep::Smelt { recipe_id: "smelt_stone" },
+        ]
+    }
+
+    #[test]
+    fn parse_accepts_smelt_op() {
+        let raw = r#"{"name":"冶煉","steps":[{"op":"smelt","recipe":"smelt_stone"}]}"#;
+        let p = parse_plan(raw).expect("smelt op 應可解析（配料可自採）");
+        assert_eq!(p.steps[0], CheckedStep::Smelt { recipe_id: "smelt_stone" });
+    }
+
+    #[test]
+    fn check_step_rejects_non_inventable_furnace_recipe() {
+        // 鐵錠冶煉配方存在，但生料（鐵礦/煤礦）她弄不到 → 誠實拒絕。
+        let s = PrimStep::Smelt { recipe: "smelt_iron".into() };
+        assert_eq!(check_step(&s), None);
+        assert!(explain_bad_step(&s).contains("弄不到"), "{}", explain_bad_step(&s));
+    }
+
+    #[test]
+    fn check_step_rejects_unknown_furnace_recipe() {
+        let s = PrimStep::Smelt { recipe: "no_such_recipe".into() };
+        assert_eq!(check_step(&s), None);
+        assert!(explain_bad_step(&s).contains("不在熔爐配方清單裡"), "{}", explain_bad_step(&s));
+    }
+
+    #[test]
+    fn simulate_smelt_requires_furnace_nearby() {
+        let raw = r#"{"name":"沒爐硬冶煉","steps":[
+            {"op":"gather","resource":"stone","count":3},
+            {"op":"smelt","recipe":"smelt_stone"}]}"#;
+        let p = parse_plan(raw).unwrap();
+        let err = simulate_plan(&p.steps, &HashMap::new(), 17, false, false).unwrap_err();
+        assert!(err.contains("熔爐"), "錯誤原因應點名缺熔爐：{err}");
+        assert!(err.contains("furnace_wb"), "錯誤原因應附上熔爐配方 id：{err}");
+        // 附近本來就有熔爐 → 可行。
+        assert!(simulate_plan(&p.steps, &HashMap::new(), 17, false, true).is_ok());
+    }
+
+    #[test]
+    fn simulate_smelt_consumes_raw_material() {
+        // 熔爐在旁但沒採夠料 → 冶煉本身仍走一般缺料檢查。
+        let raw = r#"{"name":"料不夠冶煉","steps":[
+            {"op":"gather","resource":"stone","count":1},
+            {"op":"smelt","recipe":"smelt_stone"}]}"#;
+        let p = parse_plan(raw).unwrap();
+        assert!(simulate_plan(&p.steps, &HashMap::new(), 17, false, true).is_err());
+    }
+
+    #[test]
+    fn simulate_accepts_full_smelt_chain() {
+        // 全鏈：造爐之路接續放置熔爐、採石、冶煉出拋光石，空背包/附近皆無也可行。
+        let steps = smelt_stone_chain_checked();
+        assert!(simulate_plan(&steps, &HashMap::new(), 17, false, false).is_ok());
+    }
+
+    #[test]
+    fn canonicalize_inserts_furnace_group_for_bare_smelt() {
+        // 她發明時附近剛好有熔爐 → 腦可能只提「採石→冶煉」；存檔版必須自足：
+        // 正規化應自動補上整組「工作台鏈→熔爐鏈」。
+        let raw = r#"{"name":"就地冶煉","steps":[
+            {"op":"gather","resource":"stone","count":3},
+            {"op":"smelt","recipe":"smelt_stone"}]}"#;
+        let p = parse_plan(raw).unwrap();
+        // 原計畫只有在「附近有熔爐」時可行。
+        assert!(simulate_plan(&p.steps, &HashMap::new(), 17, false, false).is_err());
+        assert!(simulate_plan(&p.steps, &HashMap::new(), 17, false, true).is_ok());
+        // 正規化後：空背包、附近沒工作台/熔爐也可行（技能是帶著走的本事）。
+        let canon = canonicalize_steps(&p.steps);
+        let checked = check_stored_steps(&canon).expect("正規化版應過存檔白名單");
+        assert!(
+            simulate_plan(&checked, &HashMap::new(), 17, false, false).is_ok(),
+            "正規化技能應自足（含工作台＋熔爐備妥組）"
+        );
+        assert!(canon.iter().any(|s| matches!(s, PrimStep::Place { block } if block == "furnace")));
+        assert!(canon.iter().any(|s| matches!(s, PrimStep::Smelt { recipe } if recipe == "smelt_stone")));
+    }
+
+    #[test]
+    fn next_action_smelt_state_machine() {
+        let raw = r#"{"name":"冶煉拋光石","steps":[
+            {"op":"gather","resource":"stone","count":3},
+            {"op":"smelt","recipe":"smelt_stone"}]}"#;
+        let plan = parse_plan(raw).unwrap();
+        let mut run = InventRun::from_plan(17, "拋光石", &plan, false);
+        run.step_idx = 1; // 冶煉步
+        let bag = HashMap::new();
+        // 還沒開爐 → DoSmelt。
+        assert_eq!(next_action(&run, &bag, no_station), StepAction::DoSmelt { recipe_id: "smelt_stone" });
+        // 開了爐、還在煨煮 → Waiting。
+        run.smelt_wait = Some(5.0);
+        assert_eq!(next_action(&run, &bag, no_station), StepAction::Waiting);
+        // 熟成（<=0.0）→ CollectSmelt。
+        run.smelt_wait = Some(0.0);
+        assert_eq!(
+            next_action(&run, &bag, no_station),
+            StepAction::CollectSmelt { recipe_id: "smelt_stone" }
+        );
+    }
+
+    #[test]
+    fn smelt_start_apply_deducts_or_refuses() {
+        let recipe = vcraft::find_furnace_recipe("smelt_stone").unwrap();
+        let mut bag = HashMap::from([(3u8, 3u32)]); // 3 石頭，恰好夠
+        assert!(smelt_start_apply(&mut bag, recipe), "料夠應成功開爐");
+        assert_eq!(bag.get(&3u8).copied(), Some(0), "生料應被扣除");
+        assert!(!bag.contains_key(&17u8), "開爐當下不產出成品，要等收成");
+        let mut short = HashMap::from([(3u8, 2u32)]); // 差 1 個
+        assert!(!smelt_start_apply(&mut short, recipe), "料不夠不能開爐");
+        assert_eq!(short.get(&3u8).copied(), Some(2), "失敗不應動到背包");
+    }
+
+    #[test]
+    fn invention_prompt_mentions_smelt_and_furnace_recipes() {
+        let goal = MaterialGoal { block_id: 17, name_zh: "拋光石" };
+        let (sys, user) = invention_prompt("露娜", &goal, "想要拋光石", "", false, false, &[]);
+        assert!(sys.contains("smelt"), "system prompt 應教 smelt op");
+        assert!(sys.contains("smelt_stone"), "應列出可發明的熔爐配方");
+        assert!(user.contains("沒有熔爐"), "user prompt 應告知附近沒有熔爐");
+        let (_, user2) = invention_prompt("露娜", &goal, "想要拋光石", "", false, true, &[]);
+        assert!(user2.contains("已經有一座放置好的熔爐"));
+    }
+
+    #[test]
+    fn steps_summary_includes_smelt_line() {
+        let summary = steps_summary(&smelt_stone_chain_checked());
+        assert!(summary.contains("熔爐冶煉拋光石"), "{summary}");
+    }
+
+    #[test]
+    fn smelting_lines_mention_recipe_name() {
+        assert!(smelting_started_line("拋光石").contains("拋光石"));
+        assert!(smelting_done_line("拋光石").contains("拋光石"));
     }
 
     // ── 第二刀：處境偵測新目標 ───────────────────────────────────────────────
@@ -2844,7 +3189,7 @@ mod tests {
     #[test]
     fn invention_prompt_is_grounded_and_strict() {
         let goal = MaterialGoal { block_id: 10, name_zh: "玻璃" };
-        let (sys, user) = invention_prompt("露娜", &goal, "好想要一塊玻璃", "木頭×1", false, &[]);
+        let (sys, user) = invention_prompt("露娜", &goal, "好想要一塊玻璃", "木頭×1", false, false, &[]);
         // 原語白名單與嚴格輸出格式都在 system。
         assert!(sys.contains("gather") && sys.contains("craft"));
         assert!(sys.contains("JSON"));
@@ -2857,7 +3202,7 @@ mod tests {
     #[test]
     fn invention_prompt_teaches_workbench_chain() {
         let goal = MaterialGoal { block_id: FURNACE_BLOCK_ID, name_zh: "熔爐" };
-        let (sys, user) = invention_prompt("露娜", &goal, "想要一座熔爐", "", false, &[]);
+        let (sys, user) = invention_prompt("露娜", &goal, "想要一座熔爐", "", false, false, &[]);
         // 新原語與工作台規則都在 system。
         assert!(sys.contains("craft_wb") && sys.contains("place"));
         assert!(sys.contains("workbench"), "要教她工作台配方 id");
@@ -2867,7 +3212,7 @@ mod tests {
         assert!(!sys.contains("iron_pickaxe"), "鐵鎬要冶煉，不該列給她");
         // user 帶「附近沒有工作台」的世界事實。
         assert!(user.contains("沒有工作台"));
-        let (_, user2) = invention_prompt("露娜", &goal, "想要一座熔爐", "", true, &[]);
+        let (_, user2) = invention_prompt("露娜", &goal, "想要一座熔爐", "", true, false, &[]);
         assert!(user2.contains("已經有一座放置好的工作台"));
     }
 
