@@ -150,6 +150,10 @@ const WILDFLOWER_RED = 94, WILDFLOWER_YELLOW = 95, WILDFLOWER_BLUE = 96;
 // 的獨門配方：1 石頭 + 1 紅花 → 護身符(97)。純物品、不可放置。跟一般配方不同，這道配方要
 // 先被居民教過（伺服器權威判定好感度）才能合成，見 `knownRecipes` + `matchBagRecipe`。
 const AMULET = 97;
+// 乙太幣 v1（ROADMAP 873，自主提案切片）——玩家↔玩家至今只有以物易物，沒有一種任何人
+// 都想要的通用媒介；把常見原礦鑄成一枚可攜帶的信物，自由市集就能標價收付。純物品、
+// 不可放置，98 是 97（護身符）之後的首個空號。
+const COIN = 98;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -271,6 +275,8 @@ const COLOR = {
   [WILDFLOWER_BLUE]:   [0.30, 0.46, 0.88], // 藍花——清亮矢車菊藍
   // 護身符 v1（居民教你一道獨門配方，自主提案切片）——溫潤琥珀色，一眼與其餘物品分開。
   [AMULET]: [0.78, 0.58, 0.22],
+  // 乙太幣 v1（ROADMAP 873，自主提案切片）——溫暖亮金色，一眼認出「這是錢」。
+  [COIN]: [0.95, 0.78, 0.20],
 };
 
 const DEBUG = location.search.includes("debug");
@@ -3708,6 +3714,8 @@ const BLOCK_NAME = {
   [WILDFLOWER_RED]: "紅花", [WILDFLOWER_YELLOW]: "黃花", [WILDFLOWER_BLUE]: "藍花",
   // 居民教你一道獨門配方 v1（自主提案切片，ROADMAP 849）
   [AMULET]: "護身符",
+  // 乙太幣 v1（ROADMAP 873，自主提案切片）
+  [COIN]: "乙太幣",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -5627,6 +5635,12 @@ const RECIPES_JS = [
   // `taught: true`——與其餘配方不同，湊對材料還不夠，要先被某位感情夠深的居民教過
   // （`knownRecipes` 由伺服器權威回報）才真正合成得出來，見 matchBagRecipe。
   { id: "amulet", name: "護身符", inputs: [[STONE, 1], [WILDFLOWER_RED, 1]], output_block: AMULET, out_count: 1, taught: true },
+  // 乙太幣鑄造 v1（ROADMAP 873，自主提案切片）：三種最容易湊齊的原礦各開一條「賣出換幣」
+  // 配方，統一 4 份原礦 → 1 枚乙太幣的匯率。鑄出的幣可拿去自由市集標價收付（832 已支援
+  // 任意物品當 want_item，乙太幣天生就能直接掛上去，不必再改市集半行程式碼）。
+  { id: "coin_from_wood",  name: "乙太幣（木頭）", inputs: [[WOOD, 4]],  output_block: COIN, out_count: 1 },
+  { id: "coin_from_stone", name: "乙太幣（石頭）", inputs: [[STONE, 4]], output_block: COIN, out_count: 1 },
+  { id: "coin_from_sand",  name: "乙太幣（沙）",   inputs: [[SAND, 4]],  output_block: COIN, out_count: 1 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
