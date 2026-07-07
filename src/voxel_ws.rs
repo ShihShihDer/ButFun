@@ -98,6 +98,7 @@ use crate::voxel_fish as vfishlife;
 use crate::voxel_chicken as vchicken;
 use crate::voxel_player_recipe as vprecipe;
 use crate::voxel_diary_peek as vdiarypeek;
+use crate::voxel_pet_admire as vpetadmire;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
@@ -8016,6 +8017,7 @@ pub fn spawn_farm_tick() {
             tick_smelt(); // 熔爐煨煮 v1（自主提案）：同節拍交付熟成的爐（成品入背包 + 廣播）。
             maybe_birth(); // 人口成長 v1：低頻檢查聚落是否有餘裕誕生一位新居民。
             maybe_breed_rabbits(); // 馴服兔子生寶寶 v1（自主提案切片 855）：同節拍檢查是否誕生一隻小兔子。
+            maybe_pet_admire(); // 居民注意到你身邊跟著的馴服動物 v1（自主提案切片 875）：同節拍檢查身邊有無寵物觸發讚賞。
             tick_dropitem_expire(); // 掉落物 v1（自主提案切片 828）：同節拍清掉沒人撿的過期掉落物。
             tick_stall_expire(); // 玩家自由市集 v1（自主提案切片 832）：同節拍清掉逾時沒人接手的攤位、退還材料。
         }
@@ -9178,6 +9180,130 @@ fn maybe_breed_rabbits() {
         vwild::baby_line(rand::random::<u64>() as usize).to_string()
     }; // wildlife 寫鎖釋放
     vfeed::append_feed("兔子誕生", "野兔", &feed_line);
+}
+
+/// 居民注意到你身邊跟著的馴服動物 v1（自主提案切片，ROADMAP 875）：全域「居民→冷卻時刻」
+/// 儲存（不分是哪位玩家的寵物觸發），比照 `structure_names()` 的 `OnceLock<Mutex<..>>` 慣例。
+/// 純記憶體、重啟歸零（讚賞本身無持久化，比照既有 773/774 讚賞冷卻慣例）。
+fn pet_admire_cd() -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 居民注意到你身邊跟著的馴服動物 v1（自主提案切片，ROADMAP 875，低頻併入 15 秒節拍檢查）：
+/// 已馴服且正在跟隨的兔子/雞若就在某位玩家身邊，挑一位近旁有空的居民，過冷卻就讚賞這份
+/// 陪伴＋記進心裡＋動態牆播報。與 773/774 讚賞完全獨立的一組判定/冷卻，互不干擾
+/// （見 `voxel_pet_admire` 模組說明）。
+///
+/// **鎖紀律**：players／wildlife／residents（讀→寫兩段）／memory 全部各自短取即釋、
+/// 循序不巢狀（守 prod 死鎖鐵律，比照 `maybe_farm_admire`/`maybe_breed_rabbits` 慣例）。
+fn maybe_pet_admire() {
+    // 1) 玩家快照（短鎖即釋，不與下面任何鎖巢狀）。
+    let players_snap: Vec<(String, f32, f32)> = {
+        let players = hub().players.read().unwrap();
+        players.values().map(|p| (p.name.clone(), p.x, p.z)).collect()
+    };
+    if players_snap.is_empty() {
+        return;
+    }
+
+    // 2) 已馴服且正在跟隨中的動物快照（短鎖即釋）。魚恆無跟隨機制，天然不會出現在此。
+    let pets_snap: Vec<(f32, f32, &'static str)> = {
+        let animals = hub().wildlife.read().unwrap();
+        animals
+            .iter()
+            .filter(|a| a.tamed && a.following)
+            .map(|a| {
+                let label = match a.kind {
+                    WildlifeKind::Rabbit => "兔子",
+                    WildlifeKind::Chicken => "雞",
+                    WildlifeKind::Fish => "魚",
+                };
+                (a.body.x, a.body.z, label)
+            })
+            .collect()
+    };
+    if pets_snap.is_empty() {
+        return;
+    }
+
+    let now_secs = vfarm::now_secs();
+    for (pname, px, pz) in &players_snap {
+        let nearest_pet = pets_snap
+            .iter()
+            .map(|(ax, az, label)| {
+                let dx = px - ax;
+                let dz = pz - az;
+                (dx * dx + dz * dz, *label)
+            })
+            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let Some((pet_dist_sq, pet_label)) = nearest_pet else { continue };
+        if !vpetadmire::has_pet_nearby(pet_dist_sq) {
+            continue;
+        }
+
+        // 3) 近旁有空的居民（residents 讀鎖即釋，不與後續寫鎖巢狀）。
+        let cand: Option<(String, &'static str, f32)> = {
+            let residents = hub().residents.read().unwrap();
+            residents
+                .iter()
+                .filter(|r| {
+                    r.say.is_empty()
+                        && !r.asleep
+                        && r.visiting.is_none()
+                        && r.expedition.is_none()
+                        && r.clique_meet.is_none()
+                        && r.savoring.is_none()
+                })
+                .map(|r| {
+                    let dx = px - r.body.x;
+                    let dz = pz - r.body.z;
+                    (r.id.clone(), r.name, dx * dx + dz * dz)
+                })
+                .filter(|(_, _, d2)| *d2 <= vpetadmire::PET_ADMIRE_RADIUS * vpetadmire::PET_ADMIRE_RADIUS)
+                .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+        };
+        let Some((rid, rname, dist_sq)) = cand else { continue };
+
+        let cooldown_ok = {
+            let cd = pet_admire_cd().lock().unwrap();
+            match cd.get(&rid) {
+                Some(prev) => now_secs.saturating_sub(*prev) >= vpetadmire::PET_ADMIRE_COOLDOWN_SECS,
+                None => true,
+            }
+        };
+        if !vpetadmire::admire_triggers(true, dist_sq, cooldown_ok) {
+            continue;
+        }
+        { pet_admire_cd().lock().unwrap().insert(rid.clone(), now_secs); }
+
+        let pick = now_secs as usize;
+        let say_line = vpetadmire::admire_say_line(pname, pet_label, pick);
+        let said = {
+            let mut residents = hub().residents.write().unwrap();
+            residents
+                .iter_mut()
+                .find(|r| r.id == rid)
+                .map(|r| {
+                    r.say = say_line.chars().take(50).collect();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                })
+                .is_some()
+        }; // residents 寫鎖釋放
+        if said {
+            broadcast_players();
+            let summary = vpetadmire::admire_memory_line(pname, pet_label);
+            let entry = hub().memory.write().unwrap().add_memory(&rid, pname, &summary);
+            vmem::append_memory(&entry);
+            vfeed::append_feed(
+                "居民讚賞",
+                rname,
+                &format!("{rname}注意到{pname}身邊跟著一隻{pet_label}，忍不住多看了幾眼。"),
+            );
+        }
+    }
 }
 
 /// 一次居民世界推進：套用上輪思考的決策 → 物理/閒晃 → 社交互動 → 廣播 → 排程新一輪思考。
