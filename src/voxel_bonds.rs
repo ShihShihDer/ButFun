@@ -10,7 +10,7 @@
 //! 純邏輯層（無 IO、無鎖、無 async），IO 在 `voxel_ws.rs`。
 //! 持久化格式：`data/voxel_bonds.jsonl`（每行一對 `BondEntry`，append-only 快照最後一行）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 // ── 常數 ──────────────────────────────────────────────────────────────────────
@@ -21,6 +21,11 @@ pub const ACQUAINTANCE_VISITS: u32 = 3;
 pub const FRIEND_VISITS: u32 = 8;
 /// 每對居民拜訪次數上限（防超長壽世界無限累加）。
 pub const VISIT_CAP: u32 = 200;
+/// 拌嘴時交情「暫時冷一格」的降幅——有下限 `FRIEND_VISITS`，老朋友拌嘴不會真的跌回相識，
+/// 只是 flavor 上略降；真正影響行為的是 `sulking` 旗標（下次碰面保證和好）。
+const TIFF_COOL: u32 = 1;
+/// 和好時交情回暖的漲幅（不打不相識，拌嘴和好後反而更進一步）。
+const MAKEUP_WARM: u32 = 1;
 
 // ── 情誼層級 ──────────────────────────────────────────────────────────────────
 
@@ -67,6 +72,10 @@ pub struct BondEntry {
 pub struct ResidentBonds {
     /// key = (min_id, max_id) → 拜訪次數。
     counts: HashMap<(String, String), u32>,
+    /// 正在鬧彆扭、尚未和好的居民對（乙太方界·長椅拌嘴/和好 v1）。純記憶體、重啟歸零——
+    /// 跟隨既有 cooldown/mood 類短命狀態的慣例，不寫進持久化格式，重開只是少了一次「和好」戲，
+    /// 不影響交情本身（`counts` 仍照常持久化）。
+    sulking: HashSet<(String, String)>,
 }
 
 impl ResidentBonds {
@@ -144,6 +153,43 @@ impl ResidentBonds {
     /// 清除某位居民的所有情誼記錄（居民退休時用）。
     pub fn forget(&mut self, id: &str) {
         self.counts.retain(|(a, b), _| a != id && b != id);
+        self.sulking.retain(|(a, b)| a != id && b != id);
+    }
+
+    /// 這對居民現在是不是「彆扭中」（拌嘴後尚未和好）。
+    pub fn is_sulking(&self, a: &str, b: &str) -> bool {
+        self.sulking.contains(&bond_key(a, b))
+    }
+
+    /// 開始鬧彆扭：標記這一對「彆扭中」、交情暫時冷一格（有下限，見 `TIFF_COOL`）。
+    /// 已在彆扭中則維持原狀（防呆，理論上不會被重複呼叫）。`a == b` 防呆。
+    pub fn begin_tiff(&mut self, a: &str, b: &str) {
+        if a == b {
+            return;
+        }
+        let key = bond_key(a, b);
+        if let Some(entry) = self.counts.get_mut(&key) {
+            *entry = entry.saturating_sub(TIFF_COOL).max(FRIEND_VISITS);
+        }
+        self.sulking.insert(key);
+    }
+
+    /// 和好：解除彆扭標記、交情回暖一格（到頂即飽和，拌嘴和好後反而更親近）。
+    /// 不在彆扭中則不回暖（防呆）。`a == b` 防呆。
+    pub fn make_up(&mut self, a: &str, b: &str) {
+        if a == b {
+            return;
+        }
+        let key = bond_key(a, b);
+        if self.sulking.remove(&key) {
+            let entry = self.counts.entry(key).or_insert(FRIEND_VISITS);
+            *entry = (*entry + MAKEUP_WARM).min(VISIT_CAP);
+        }
+    }
+
+    /// 目前正在鬧彆扭的居民對數（測試／除錯用）。
+    pub fn sulking_count(&self) -> usize {
+        self.sulking.len()
     }
 }
 
@@ -477,5 +523,87 @@ mod tests {
         assert!(!s.is_empty());
         assert!(s.contains("賽勒"), "應含被訪者名字");
         assert!(s.contains("老朋友"), "應含「老朋友」關鍵字，讓日記能分類");
+    }
+
+    // ── 乙太方界·長椅拌嘴/和好 v1：begin_tiff / make_up / is_sulking ────────────────
+
+    #[test]
+    fn new_pair_is_not_sulking() {
+        let b = make_bonds();
+        assert!(!b.is_sulking("露娜", "諾娃"));
+        assert_eq!(b.sulking_count(), 0);
+    }
+
+    #[test]
+    fn begin_tiff_marks_sulking_symmetrically() {
+        let mut b = make_bonds();
+        for _ in 0..FRIEND_VISITS {
+            b.record_visit("露娜", "諾娃");
+        }
+        b.begin_tiff("露娜", "諾娃");
+        assert!(b.is_sulking("露娜", "諾娃"));
+        assert!(b.is_sulking("諾娃", "露娜"), "彆扭旗標對稱，不分先後");
+        assert_eq!(b.sulking_count(), 1);
+    }
+
+    #[test]
+    fn begin_tiff_cools_but_never_drops_below_friend() {
+        let mut b = make_bonds();
+        for _ in 0..FRIEND_VISITS {
+            b.record_visit("露娜", "諾娃");
+        }
+        b.begin_tiff("露娜", "諾娃");
+        // 老朋友拌嘴仍是老朋友，不會真的跌回相識（療癒向不殘酷）。
+        assert_eq!(b.tier_of("露娜", "諾娃"), BondTier::Friend);
+    }
+
+    #[test]
+    fn make_up_clears_sulking_and_warms_up() {
+        let mut b = make_bonds();
+        for _ in 0..FRIEND_VISITS {
+            b.record_visit("露娜", "諾娃");
+        }
+        let before = b.visit_count("露娜", "諾娃");
+        b.begin_tiff("露娜", "諾娃");
+        b.make_up("露娜", "諾娃");
+        assert!(!b.is_sulking("露娜", "諾娃"));
+        assert_eq!(b.sulking_count(), 0);
+        // 和好後反而更進一步（不打不相識），至少回到拌嘴前的水準。
+        assert!(b.visit_count("露娜", "諾娃") >= before);
+        assert_eq!(b.tier_of("露娜", "諾娃"), BondTier::Friend);
+    }
+
+    #[test]
+    fn make_up_without_tiff_is_noop() {
+        let mut b = make_bonds();
+        for _ in 0..FRIEND_VISITS {
+            b.record_visit("露娜", "諾娃");
+        }
+        let before = b.visit_count("露娜", "諾娃");
+        b.make_up("露娜", "諾娃");
+        assert_eq!(b.visit_count("露娜", "諾娃"), before, "沒鬧彆扭就和好，數值不應變動");
+        assert_eq!(b.sulking_count(), 0);
+    }
+
+    #[test]
+    fn begin_tiff_and_make_up_self_pair_are_noop() {
+        let mut b = make_bonds();
+        b.begin_tiff("露娜", "露娜");
+        assert_eq!(b.sulking_count(), 0);
+        b.make_up("露娜", "露娜");
+        assert_eq!(b.sulking_count(), 0);
+    }
+
+    #[test]
+    fn forget_clears_sulking_entries() {
+        let mut b = make_bonds();
+        for _ in 0..FRIEND_VISITS {
+            b.record_visit("露娜", "諾娃");
+        }
+        b.begin_tiff("露娜", "諾娃");
+        assert_eq!(b.sulking_count(), 1);
+        b.forget("露娜");
+        assert_eq!(b.sulking_count(), 0);
+        assert!(!b.is_sulking("露娜", "諾娃"));
     }
 }
