@@ -2862,8 +2862,14 @@ enum ClientMsg {
     #[serde(rename = "trade_request")]
     TradeRequest { resident_id: String },
     /// 居民交易 v1：接受當前待確認的交易提案（ROADMAP 670）。
+    /// 付幣代替湊材料 v1（ROADMAP 874）起，`pay_with_coin=true` 時改直接扣提案的
+    /// `coin_price` 枚乙太幣成交，不必湊出 `want_item`；省略／`false` 維持 v1 原行為。
     #[serde(rename = "trade_accept")]
-    TradeAccept { resident_id: String },
+    TradeAccept {
+        resident_id: String,
+        #[serde(default)]
+        pay_with_coin: bool,
+    },
     /// 箱子 v1：開啟指定座標的箱子，伺服器回傳 `chest_view`（ROADMAP 692）。
     #[serde(rename = "open_chest")]
     OpenChest { x: i32, y: i32, z: i32 },
@@ -6924,11 +6930,12 @@ async fn handle_socket(
                     "want_count": offer.want_count,
                     "want_name": wname,
                     "affinity": affinity,
+                    "coin_price": offer.coin_price,
                 }).to_string();
                 let _ = out_tx.send(Message::Text(msg)).await;
             }
 
-            Ok(ClientMsg::TradeAccept { resident_id }) => {
+            Ok(ClientMsg::TradeAccept { resident_id, pay_with_coin }) => {
                 // 1) 短鎖取玩家位置（players 讀鎖即釋）。
                 let player_pos: Option<(f32, f32)> = {
                     let players = hub().players.read().unwrap();
@@ -6977,15 +6984,23 @@ async fn handle_socket(
                 }
                 let wname = vtrade::item_name_zh(offer.want_item);
                 let oname = vtrade::item_name_zh(offer.offer_item);
-                // 6) 驗並扣玩家背包中 want_item × want_count（inventory 寫鎖即釋）。
+                // 付幣代替湊材料 v1（ROADMAP 874）：pay_with_coin 時改付 COIN_ID×coin_price
+                // 代替湊 want_item×want_count，其餘流程（給 offer_item/記憶/台詞/Feed）共用
+                // 同一套、只是「玩家實際付出的是什麼」不同——單一分流點，別在後面處處 if。
+                let (pay_item, pay_count, pay_name): (u8, u32, &'static str) = if pay_with_coin {
+                    (vcraft::COIN_ID, offer.coin_price, vtrade::item_name_zh(vcraft::COIN_ID))
+                } else {
+                    (offer.want_item, offer.want_count, wname)
+                };
+                // 6) 驗並扣玩家背包中 pay_item × pay_count（inventory 寫鎖即釋）。
                 let taken = {
                     hub().inventory.write().unwrap()
-                        .take(&name, offer.want_item, offer.want_count)
+                        .take(&name, pay_item, pay_count)
                 };
                 let Some(taken_entry) = taken else {
                     let msg = serde_json::json!({
                         "t": "trade_fail",
-                        "reason": format!("背包裡的{}不夠（需要{}個）", wname, offer.want_count)
+                        "reason": format!("背包裡的{}不夠（需要{}個）", pay_name, pay_count)
                     }).to_string();
                     let _ = out_tx.send(Message::Text(msg)).await;
                     continue;
@@ -6998,7 +7013,11 @@ async fn handle_socket(
                 };
                 vinv::append_inv(&give_entry);
                 // 8) 寫 1 筆記憶（memory 寫鎖即釋）。
-                let mem = vtrade::trade_memory(&name, oname, wname);
+                let mem = if pay_with_coin {
+                    vtrade::trade_memory_coin(&name, pay_count, oname)
+                } else {
+                    vtrade::trade_memory(&name, oname, wname)
+                };
                 let mem_entry = {
                     hub().memory.write().unwrap().add_memory(&resident_id, &name, &mem)
                 };
@@ -7014,12 +7033,12 @@ async fn handle_socket(
                 }
                 broadcast_players();
                 // 10) 回傳兩筆 inv_update（讓前端同步背包） + trade_done。
-                let want_remain = hub().inventory.read().unwrap().count(&name, offer.want_item);
+                let pay_remain = hub().inventory.read().unwrap().count(&name, pay_item);
                 let offer_new = hub().inventory.read().unwrap().count(&name, offer.offer_item);
                 let upd1 = serde_json::json!({
                     "t": "inv_update",
-                    "block_id": offer.want_item,
-                    "count": want_remain,
+                    "block_id": pay_item,
+                    "count": pay_remain,
                 }).to_string();
                 let _ = out_tx.send(Message::Text(upd1)).await;
                 let upd2 = serde_json::json!({
@@ -7034,9 +7053,10 @@ async fn handle_socket(
                     "got_item": offer.offer_item,
                     "got_name": oname,
                     "got_count": offer.offer_count,
-                    "gave_item": offer.want_item,
-                    "gave_name": wname,
-                    "gave_count": offer.want_count,
+                    "gave_item": pay_item,
+                    "gave_name": pay_name,
+                    "gave_count": pay_count,
+                    "paid_with_coin": pay_with_coin,
                 }).to_string();
                 let _ = out_tx.send(Message::Text(done_msg)).await;
                 // 玩家里程碑 v1（ROADMAP 724）：人生第一次與居民完成以物易物。
@@ -7045,7 +7065,7 @@ async fn handle_socket(
                 vfeed::append_feed(
                     "交易",
                     rname,
-                    &format!("{name}與{rname}交易：{wname}×{}→{oname}×{}", offer.want_count, offer.offer_count),
+                    &format!("{name}與{rname}交易：{pay_name}×{}→{oname}×{}", pay_count, offer.offer_count),
                 );
             }
 
@@ -17883,7 +17903,26 @@ mod tests {
         let m: ClientMsg =
             serde_json::from_str(r#"{"t":"trade_accept","resident_id":"vox_res_0"}"#).unwrap();
         match m {
-            ClientMsg::TradeAccept { resident_id } => assert_eq!(resident_id, "vox_res_0"),
+            ClientMsg::TradeAccept { resident_id, pay_with_coin } => {
+                assert_eq!(resident_id, "vox_res_0");
+                assert!(!pay_with_coin, "省略 pay_with_coin 應預設 false（v1 原行為不變）");
+            }
+            _ => panic!("應解析成 TradeAccept"),
+        }
+    }
+
+    /// 付幣代替湊材料 v1（ROADMAP 874）：`pay_with_coin` 欄位能正確解析成 true。
+    #[test]
+    fn trade_accept_pay_with_coin_parses() {
+        let m: ClientMsg = serde_json::from_str(
+            r#"{"t":"trade_accept","resident_id":"vox_res_1","pay_with_coin":true}"#,
+        )
+        .unwrap();
+        match m {
+            ClientMsg::TradeAccept { resident_id, pay_with_coin } => {
+                assert_eq!(resident_id, "vox_res_1");
+                assert!(pay_with_coin);
+            }
             _ => panic!("應解析成 TradeAccept"),
         }
     }

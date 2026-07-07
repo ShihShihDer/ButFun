@@ -6,6 +6,8 @@
 //! **交易流程**：
 //! 1. 玩家點「⇌ 交易」→ TradeRequest → 伺服器生成提案 → 回 `trade_offer`。
 //! 2. 玩家在 30 秒內點「接受」→ TradeAccept → 伺服器執行扣/給背包 → 回 `trade_done`。
+//!    v2（自主提案切片，ROADMAP 874）起，扣的可以是提案要的原礦，**也可以直接付乙太幣**
+//!    （`coin_price`，見下）——付幣時改扣 `voxel_craft::COIN_ID`，其餘流程不變。
 //!
 //! **各居民特長**（依 resident_id 字元和 % 4 決定，永遠確定性）：
 //! - slot 0 → 種子 ↔ 木頭（農業，對應露娜）
@@ -24,6 +26,11 @@ pub const TRADE_REACH: f32 = 5.0;
 /// 交易提案有效時間（秒）：玩家 30 秒內未接受則伺服器自動作廢。
 pub const TRADE_OFFER_TTL: u64 = 30;
 
+/// 付幣代替湊材料 v1（ROADMAP 874）的匯率：每 1 單位 `want_count` 折合這麼多枚乙太幣。
+/// v1 刻意不分物品稀有度（沙子/木頭/石頭/種子/玻璃一律同價）——單純圖方便的「懶人稅」，
+/// 之後要分級再擴充。
+pub const COIN_PRICE_PER_UNIT: u32 = 2;
+
 /// 居民的交易提案：居民提供的物品 ↔ 玩家需要提供的物品。
 #[derive(Clone, Debug)]
 pub struct TradeOffer {
@@ -35,6 +42,9 @@ pub struct TradeOffer {
     pub want_item: u8,
     /// 居民想要的數量（玩家需給出）。
     pub want_count: u32,
+    /// 付幣代替湊材料 v1（ROADMAP 874）：玩家也可以不湊 `want_item`，改直接付這麼多枚
+    /// 乙太幣（`voxel_craft::COIN_ID`）成交——省得為了一單交易特地去採礦。
+    pub coin_price: u32,
 }
 
 /// 依 resident_id 決定交易特長 slot（0..4，永遠確定性）。
@@ -60,7 +70,8 @@ pub fn make_offer(resident_id: &str, affinity: usize) -> TradeOffer {
     } else {
         (2, 1) // 友人：玩家給 1 得 2
     };
-    TradeOffer { offer_item, offer_count, want_item, want_count }
+    let coin_price = want_count * COIN_PRICE_PER_UNIT;
+    TradeOffer { offer_item, offer_count, want_item, want_count, coin_price }
 }
 
 /// 方塊 / 物品 id → 中文名（對齊 voxel_gift::item_name_zh，獨立維護讓模組自給自足）。
@@ -82,6 +93,9 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         14 => "種子",
         18 => "小麥",
         19 => "麵包",
+        // 乙太幣（`voxel_craft::COIN_ID`，ROADMAP 873）：付幣代替湊材料 v1 起，交易台詞/
+        // 成交回條也可能提到「乙太幣」，補進這份獨立維護的命名表。
+        98 => "乙太幣",
         _ => "物品",
     }
 }
@@ -116,6 +130,12 @@ pub fn done_say_line(player_name: &str, got_name: &str) -> String {
 /// 寫進居民記憶的摘要（1 筆，確定性純函式）。
 pub fn trade_memory(player_name: &str, gave_name: &str, got_name: &str) -> String {
     format!("和{}以物易物：我給了{}，換來了{}，感覺不錯", player_name, gave_name, got_name)
+}
+
+/// 付幣代替湊材料 v1（ROADMAP 874）：付乙太幣成交時寫進居民記憶的摘要，語氣與純以物易物
+/// 區隔開（點名「直接付了乙太幣」而非某種原礦，讓居民記得的是「省事」而非「以物易物」）。
+pub fn trade_memory_coin(player_name: &str, coin_count: u32, got_name: &str) -> String {
+    format!("和{}交易：他直接付了{}枚乙太幣，換走了{}，省事又乾脆", player_name, coin_count, got_name)
 }
 
 // ── 測試 ──────────────────────────────────────────────────────────────────────
@@ -204,7 +224,7 @@ mod tests {
     #[test]
     fn offer_say_line_fair_contains_item_names() {
         // 公平 1:1：台詞應提到兩種物品名
-        let offer = TradeOffer { offer_item: 5, offer_count: 1, want_item: 4, want_count: 1 };
+        let offer = TradeOffer { offer_item: 5, offer_count: 1, want_item: 4, want_count: 1, coin_price: 2 };
         let s = offer_say_line(&offer);
         assert!(s.contains("木頭"), "公平台詞應含 offer_item 名（木頭）");
         assert!(s.contains("沙子"), "公平台詞應含 want_item 名（沙子）");
@@ -249,5 +269,48 @@ mod tests {
     fn constants_sane() {
         assert!(TRADE_REACH > 0.0, "TRADE_REACH 應大於 0");
         assert!(TRADE_OFFER_TTL > 0, "TRADE_OFFER_TTL 應大於 0");
+        assert!(COIN_PRICE_PER_UNIT > 0, "COIN_PRICE_PER_UNIT 應大於 0");
+    }
+
+    // ── 付幣代替湊材料 v1（ROADMAP 874）─────────────────────────────────────────
+
+    #[test]
+    fn coin_price_scales_with_want_count() {
+        for id in ["luna", "nova", "sailer", "auri"] {
+            for affinity in [0usize, 1, 3] {
+                let offer = make_offer(id, affinity);
+                assert_eq!(offer.coin_price, offer.want_count * COIN_PRICE_PER_UNIT,
+                    "coin_price 應等於 want_count×匯率 id={id} affinity={affinity}");
+            }
+        }
+    }
+
+    #[test]
+    fn coin_price_always_positive() {
+        for affinity in [0usize, 1, 2, 3, 10] {
+            let offer = make_offer("resident-z", affinity);
+            assert!(offer.coin_price > 0, "affinity={affinity} coin_price 應>0");
+        }
+    }
+
+    #[test]
+    fn item_name_zh_coin() {
+        assert_eq!(item_name_zh(98), "乙太幣");
+    }
+
+    #[test]
+    fn trade_memory_coin_contains_all_parts() {
+        let s = trade_memory_coin("小美", 4, "玻璃");
+        assert!(s.contains("小美"), "記憶應含玩家名");
+        assert!(s.contains('4'), "記憶應含付出的乙太幣數量");
+        assert!(s.contains("乙太幣"), "記憶應點名付的是乙太幣");
+        assert!(s.contains("玻璃"), "記憶應含換來物品名");
+    }
+
+    #[test]
+    fn trade_memory_coin_no_braces() {
+        let s = trade_memory_coin("", 2, "石頭");
+        assert!(!s.contains('{'), "台詞含未替換佔位");
+        assert!(!s.is_empty());
     }
 }
