@@ -9001,8 +9001,9 @@ fn tick_residents(dt: f32) {
     let mut share_meal_events: Vec<(String, &'static str, String, &'static str, bool)> = Vec::new();
     // 居民也會生病 v1（自主提案）：本 tick 自然痊癒事件（居民名），鎖外落地城鎮動態。
     let mut illness_recovered_events: Vec<&'static str> = Vec::new();
-    // 居民也會生病 v1：本 tick 病倒事件（居民名），鎖外落地城鎮動態。
-    let mut illness_onset_events: Vec<&'static str> = Vec::new();
+    // 居民也會生病 v1：本 tick 病倒事件（居民名, 是否為淋雨引發），鎖外落地城鎮動態；
+    // 淋雨引發的病倒（自主提案 v2）走專屬雨因文案，與泛用病倒刻意區隔。
+    let mut illness_onset_events: Vec<(&'static str, bool)> = Vec::new();
     // 居民也會生病 v1：本 tick 鄰居陪伴事件 (陪伴者 id, 陪伴者名, 被陪伴者 id, 被陪伴者名)，
     // 鎖外落地雙方記憶 + 情誼加溫 + 城鎮動態（比照 800 飢餓時的守望相助的鎖外處理，守死鎖鐵律）。
     let mut illness_care_events: Vec<(String, &'static str, String, &'static str)> = Vec::new();
@@ -11880,6 +11881,12 @@ fn tick_residents(dt: f32) {
             // 不挑地點），靠 [`villness::ONSET_CHANCE`]（極小）+ [`villness::ONSET_COOLDOWN_SECS`]（長）
             // 天然節流，稀少而有份量。病況此後隨 tick 自然消退（見上方冷卻遞減段），也可能被鄰居陪伴／
             // 玩家送湯加速好轉（見下方掃描／禮物特例）。全庫唯一還空白的「被照顧」情感深度第一次出現。
+            //
+            // v2（自主提案）淋雨易著涼：正下雨、且此刻沒在躲雨/歇著（`wait_timer<=0.0`——比照 815
+            // 用 wait_timer 判斷是否正躲/歇；若剛觸發躲雨/歇腳等任何駐足，wait_timer 已 >0，視為
+            // 當下有遮蔽，機率不加成，簡化但足夠的近似）→ 發病機率乘 `RAIN_ONSET_MULTIPLIER`，
+            // 讓「沒躲好雨」第一次有看得見的後果；觸發後台詞/動態牆依雨因區分。
+            let raining_unsheltered = raining && r.wait_timer <= 0.0;
             if r.say.is_empty()
                 && !r.asleep
                 && r.pilgrimage.is_none()
@@ -11888,16 +11895,20 @@ fn tick_residents(dt: f32) {
                     villness::is_sick(r.illness_severity),
                     r.illness_cooldown,
                     rand::random::<f32>(),
-                    villness::ONSET_CHANCE,
+                    villness::onset_chance_now(raining_unsheltered, villness::ONSET_CHANCE),
                 )
             {
                 r.illness_severity = villness::ILLNESS_MAX;
                 r.illness_cooldown = villness::ONSET_COOLDOWN_SECS;
                 r.wait_timer = r.wait_timer.max(villness::ONSET_REST_SECS);
                 let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                r.say = villness::onset_bubble(pick).to_string();
+                r.say = if raining_unsheltered {
+                    villness::onset_bubble_rain(pick).to_string()
+                } else {
+                    villness::onset_bubble(pick).to_string()
+                };
                 r.say_timer = SAY_SECS;
-                illness_onset_events.push(r.name);
+                illness_onset_events.push((r.name, raining_unsheltered));
             }
 
             // 居民誕辰紀念 v1（voxel_birthday）：經世代傳承誕生的居民（`birth_unix > 0`）每滿一個
@@ -13296,8 +13307,13 @@ fn tick_residents(dt: f32) {
 
     // 4a-2c) 居民也會生病·病倒／自然痊癒落地（自主提案）：本 tick 病倒 / 痊癒的居民各廣播一則城鎮
     // 動態（鎖外 IO），讓不在場 / 回來的玩家也讀到「這位居民今天不太舒服」的生活痕跡。
-    for name in &illness_onset_events {
-        vfeed::append_feed(villness::FEED_KIND, name, &villness::onset_feed_line(name));
+    for (name, caused_by_rain) in &illness_onset_events {
+        let line = if *caused_by_rain {
+            villness::onset_feed_line_rain(name)
+        } else {
+            villness::onset_feed_line(name)
+        };
+        vfeed::append_feed(villness::FEED_KIND, name, &line);
     }
     for name in &illness_recovered_events {
         vfeed::append_feed(villness::FEED_KIND, name, &villness::recovered_feed_line(name));

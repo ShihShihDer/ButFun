@@ -30,6 +30,11 @@
 //! 從外部催發；陪伴冷卻（每位照顧者 [`CARE_COOLDOWN_SECS`]）+ 每 tick 低機率 + 需相識以上
 //! ＝天然節流，不洗版泡泡/動態牆。病況/冷卻純記憶體重啟歸零（過場狀態、零資料風險、零
 //! migration），記憶/情誼走既有 append-only。
+//!
+//! **v2（自主提案）：淋雨易著涼**——接上 700 雨天／815 雨天葉傘避雨兩套既有系統，讓「這場
+//! 雨躲得好不好」第一次影響發病機率（見 [`RAIN_ONSET_MULTIPLIER`]），病倒台詞/動態牆也依
+//! 雨因區分（[`onset_bubble_rain`]／[`onset_feed_line_rain`]），把兩套至今互不相知的既有
+//! 系統接成一條看得見的因果，而非再開一條新軸線。
 
 use crate::voxel_bonds::BondTier;
 
@@ -39,6 +44,24 @@ pub const ILLNESS_MAX: f32 = 1.0;
 /// 發病機率（每次「有機會發病」的 tick 骰一次）：刻意很小——發病本身零場地限制，
 /// 靠這個小機率 + 長冷卻讓「生病」稀少而有份量，不會變成擾人的日常噪音。
 pub const ONSET_CHANCE: f32 = 0.02;
+
+/// 淋雨易著涼倍率（自主提案切片，接上 700 雨天 / 815 雨天葉傘避雨）：正下雨、且此刻**沒在
+/// 躲雨/歇著**（仍在雨裡走動、採集、蓋造）的居民，發病機率乘上這個倍率。雨天與生病兩套
+/// 既有系統至今從未互相知道對方存在——躲雨躲得好不好，發病機率完全一樣；本刀讓「沒躲好雨」
+/// 第一次有看得見的後果。倍率不高（避免生病從「稀少而有份量」淪為雨天日常噪音），乘完仍要
+/// 過 [`ONSET_CHANCE`] 這道原本就很小的機率門檻，天然節流不變。
+pub const RAIN_ONSET_MULTIPLIER: f32 = 3.0;
+
+/// 這一刻的發病機率：淋雨（正下雨＋沒在躲雨/歇著）→ 乘 [`RAIN_ONSET_MULTIPLIER`]（夾在
+/// `[0,1]`）；否則維持原機率。純函式、確定性、可測——呼叫端只需備好「此刻是否正淋著雨」
+/// 這個布林（比照 815 用 `wait_timer <= 0.0` 判斷「不在躲雨/歇著中」）。
+pub fn onset_chance_now(raining_unsheltered: bool, base_chance: f32) -> f32 {
+    if raining_unsheltered {
+        (base_chance * RAIN_ONSET_MULTIPLIER).min(1.0)
+    } else {
+        base_chance
+    }
+}
 
 /// 康復（或剛出生）後的重新發病冷卻（秒）：約 50 分鐘內不會再病倒一次，
 /// 「生病」才會是偶爾發生、讓人印象深刻的事，不是三天兩頭的小毛病。
@@ -118,6 +141,18 @@ pub fn onset_bubble(pick: usize) -> &'static str {
     LINES[pick % LINES.len()]
 }
 
+/// 淋雨引發的病倒泡泡（四句輪替，與 [`onset_bubble`] 刻意區隔——明確點出雨/濕，
+/// 讓玩家看得出「這次是被雨淋的」這條因果，而非泛用著涼）。
+pub fn onset_bubble_rain(pick: usize) -> &'static str {
+    const LINES: [&str; 4] = [
+        "都怪剛才那陣雨，身子發起冷來了…",
+        "淋濕的衣服還沒乾，這下真的著涼了",
+        "那陣雨終究沒躲乾淨，咳…頭有點暈",
+        "雨裡淋久了，這會兒渾身發冷，先歇一下…",
+    ];
+    LINES[pick % LINES.len()]
+}
+
 /// 病況自然消退到 0（靠自己扛過去）時的痊癒泡泡（四句輪替）。
 pub fn recovered_bubble(pick: usize) -> &'static str {
     const LINES: [&str; 4] = [
@@ -185,6 +220,11 @@ pub fn care_feed_line(carer: &str, patient: &str) -> String {
 /// 城鎮動態牆一行（病倒／痊癒，無鄰居/玩家在場也會留痕）。
 pub fn onset_feed_line(name: &str) -> String {
     format!("{name}身子有點不舒服，停下腳步歇了一會兒。")
+}
+
+/// 城鎮動態牆一行（淋雨引發的病倒，與 [`onset_feed_line`] 刻意區隔，點出雨因）。
+pub fn onset_feed_line_rain(name: &str) -> String {
+    format!("{name}沒躲過那陣雨，淋出了病，停下腳步歇了一會兒。")
 }
 
 /// 城鎮動態牆一行（自然痊癒）。
@@ -295,6 +335,37 @@ mod tests {
         assert_eq!(apply_care(0.2, CARE_BOOST), 0.0);
         // 對已經健康的居民套用照顧也不會變負值。
         assert_eq!(apply_care(0.0, SOUP_CARE_BOOST), 0.0);
+    }
+
+    #[test]
+    fn rain_boosts_onset_chance_but_dry_stays_unchanged() {
+        // 沒淋雨（沒下雨，或下雨但正躲雨/歇著）：機率不變。
+        assert_eq!(onset_chance_now(false, ONSET_CHANCE), ONSET_CHANCE);
+        // 淋雨（下雨中且沒在躲/歇）：機率乘上倍率。
+        assert!((onset_chance_now(true, ONSET_CHANCE) - ONSET_CHANCE * RAIN_ONSET_MULTIPLIER).abs() < 1e-6);
+        // 倍率再高也不會超過 1.0（機率上限，不 panic、不產生無意義值）。
+        assert_eq!(onset_chance_now(true, 0.9), 1.0);
+    }
+
+    #[test]
+    fn rain_onset_lines_rotate_bounded_and_distinct_from_generic() {
+        for pick in 0..8 {
+            let l = onset_bubble_rain(pick);
+            assert!(!l.is_empty() && l.chars().count() <= 40);
+        }
+        assert_eq!(onset_bubble_rain(0), onset_bubble_rain(4));
+        // 雨因台詞與泛用著涼台詞完全不重疊（玩家看得出這次是被雨淋的）。
+        for pick in 0..4 {
+            assert_ne!(onset_bubble_rain(pick), onset_bubble(pick));
+        }
+    }
+
+    #[test]
+    fn rain_onset_feed_line_embeds_name_and_mentions_rain() {
+        let f = onset_feed_line_rain("賽勒");
+        assert!(f.contains("賽勒") && f.contains("雨"));
+        // 與泛用版本刻意不同文案。
+        assert_ne!(onset_feed_line_rain("賽勒"), onset_feed_line("賽勒"));
     }
 
     #[test]
