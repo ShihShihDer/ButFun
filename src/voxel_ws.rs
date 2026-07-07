@@ -76,6 +76,7 @@ use crate::voxel_smelt as vsmelt;
 use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
 use crate::voxel_playercare as vcare;
 use crate::voxel_admire as vadmire;
+use crate::voxel_farm_admire as vfarmadmire;
 use crate::voxel_structure_name as vstructname;
 use crate::voxel_village_milestone as vvillms;
 use crate::voxel_confide as vconfide;
@@ -2590,6 +2591,86 @@ fn broadcast_players() {
     let _ = hub().tx.send(snap);
 }
 
+/// 居民注意到你悉心照料的農地 v1（自主提案切片）：在 Plant/HoeTill 成功後呼叫，推進這條
+/// 連線的「農忙連段」、挑一位近旁有空的居民，過門檻就讚賞＋記進心裡＋動態牆播報。
+/// 與 773 建造讚賞（`build_streak`/`admire_cd`）完全獨立的一組連段/冷卻，互不干擾——
+/// 比照 773 讚賞在 Place handler 內的挑人／冷卻／落地手法（residents 讀鎖即釋、不巢狀）。
+fn maybe_farm_admire(
+    x: f32,
+    z: f32,
+    name: &str,
+    farm_streak: &mut Option<vfarmadmire::FarmStreak>,
+    farm_admire_cd: &mut std::collections::HashMap<String, std::time::Instant>,
+) {
+    let now_secs = vfarm::now_secs();
+    *farm_streak = Some(vfarmadmire::advance_streak(*farm_streak, x, z, now_secs));
+    let streak = farm_streak.map_or(0, |s| s.0);
+    if streak < vfarmadmire::FARM_ADMIRE_STREAK_MIN {
+        return;
+    }
+    let cand: Option<(String, &'static str, f32)> = {
+        let residents = hub().residents.read().unwrap();
+        residents
+            .iter()
+            .filter(|r| {
+                r.say.is_empty()
+                    && !r.asleep
+                    && r.visiting.is_none()
+                    && r.expedition.is_none()
+                    && r.clique_meet.is_none()
+                    && r.savoring.is_none()
+            })
+            .map(|r| {
+                let dx = x - r.body.x;
+                let dz = z - r.body.z;
+                (r.id.clone(), r.name, dx * dx + dz * dz)
+            })
+            .filter(|(_, _, d2)| {
+                *d2 <= vfarmadmire::FARM_ADMIRE_RADIUS * vfarmadmire::FARM_ADMIRE_RADIUS
+            })
+            .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+    }; // residents 讀鎖釋放
+    let Some((rid, rname, dist_sq)) = cand else { return; };
+    let now = std::time::Instant::now();
+    let cooldown_ok = match farm_admire_cd.get(&rid) {
+        Some(prev) => {
+            now.duration_since(*prev).as_secs() >= vfarmadmire::FARM_ADMIRE_COOLDOWN_SECS
+        }
+        None => true,
+    };
+    if !vfarmadmire::admire_triggers(streak, dist_sq, cooldown_ok) {
+        return;
+    }
+    farm_admire_cd.insert(rid.clone(), now);
+    let pick = now_secs as usize;
+    let say_line = vfarmadmire::admire_say_line(name, pick);
+    let said = {
+        let mut residents = hub().residents.write().unwrap();
+        residents
+            .iter_mut()
+            .find(|r| r.id == rid)
+            .map(|r| {
+                r.say = say_line.chars().take(50).collect();
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            })
+            .is_some()
+    }; // residents 寫鎖釋放
+    if said {
+        broadcast_players();
+        // 把「看著你在田裡忙進忙出」寫進記憶（episodic，累積好感）——記憶寫鎖即釋，
+        // append 的 IO 在鎖外（守 prod 死鎖鐵律）。
+        let summary = vfarmadmire::admire_memory_line(name);
+        let entry = hub().memory.write().unwrap().add_memory(&rid, name, &summary);
+        vmem::append_memory(&entry);
+        vfeed::append_feed(
+            "居民讚賞",
+            rname,
+            &format!("{rname}看著{name}在田裡忙進忙出，悉心照料，由衷讚賞。"),
+        );
+    }
+}
+
 // ── WS 協定（JSON，全是 voxel 自己的型別）──────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -3511,6 +3592,14 @@ async fn handle_socket(
     // 天然 per-player、零跨連線鎖；斷線即清、無持久化需求）。
     let mut build_streak: Option<vadmire::BuildStreak> = None;
     let mut admire_cd: std::collections::HashMap<String, std::time::Instant> =
+        std::collections::HashMap::new();
+
+    // 居民注意到你悉心照料的農地 v1（自主提案切片）：這條連線的「農忙連段」（連續翻土/
+    // 播種的次數＋上一次位置與時刻，見 voxel_farm_admire）＋這條連線對每位居民的讚賞冷卻——
+    // 與上面 773 建造讚賞的 build_streak/admire_cd 完全獨立，各自連段、各自冷卻，
+    // 互不干擾（per-connection，天然 per-player、零跨連線鎖；斷線即清、無持久化需求）。
+    let mut farm_streak: Option<vfarmadmire::FarmStreak> = None;
+    let mut farm_admire_cd: std::collections::HashMap<String, std::time::Instant> =
         std::collections::HashMap::new();
 
     // 親手煮的暖食自己也能享用 v1（779）：這條連線上次「感染附近居民」的時刻（per-connection
@@ -5566,6 +5655,8 @@ async fn handle_socket(
                 ));
                 // 玩家里程碑 v1（ROADMAP 724）：人生第一次種下種子。
                 try_unlock_milestone(&name, "first_farm", &out_tx);
+                // 居民注意到你悉心照料的農地 v1（自主提案切片）：播種也算農忙連段一步。
+                maybe_farm_admire(x as f32, z as f32, &name, &mut farm_streak, &mut farm_admire_cd);
             }
             // ── 乙太沃肥 v1（ROADMAP 789）：手持沃肥對準幼苗催熟一截 ─────────────────
             Ok(ClientMsg::Fertilize { x, y, z }) => {
@@ -5821,6 +5912,8 @@ async fn handle_socket(
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({ "t": "hoe_ok", "say": vhoe::till_ok_line(pick) }).to_string(),
                 ));
+                // 居民注意到你悉心照料的農地 v1（自主提案切片）：翻土也算農忙連段一步。
+                maybe_farm_admire(x as f32, z as f32, &name, &mut farm_streak, &mut farm_admire_cd);
             }
             // ── 餵野兔馴服 v1（自主提案切片）：世界環境軸線(847/848)與玩家互動軸線首次交會 ──
             Ok(ClientMsg::FeedWildlife { id }) => {
