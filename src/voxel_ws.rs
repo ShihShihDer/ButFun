@@ -9372,11 +9372,19 @@ fn tick_residents(dt: f32) {
     // 收集；記憶寫＋Feed 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。
     // (居民 id, 居民名, 巧遇玩家名, 遠行方位, pick)。
     let mut frontier_find_events: Vec<(String, &'static str, String, String, usize)> = Vec::new();
-    // 居民誕辰紀念事件（居民誕辰紀念 v1）：某位經世代傳承誕生的居民滿一個乙太年時鎖內收集；記憶寫＋
-    // Feed 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在近旁才記交情，否則 None 只上
-    // Feed。(居民 id, 居民名, 近旁玩家名 Option, 滿週歲數, 父母名, pick)。
-    let mut birthday_events: Vec<(String, &'static str, Option<String>, u64, String, usize)> =
-        Vec::new();
+    // 居民誕辰紀念事件（居民誕辰紀念 v1 + v1.1 分你一份心意）：某位經世代傳承誕生的居民滿一個乙太年
+    // 時鎖內收集；記憶寫＋Feed 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在近旁才記
+    // 交情、才可能分到心意，否則 None 只上 Feed。
+    // (居民 id, 居民名, 近旁玩家名 Option, 滿週歲數, 父母名, pick, 分享的心意 Option<(item_id, qty)>)。
+    let mut birthday_events: Vec<(
+        String,
+        &'static str,
+        Option<String>,
+        u64,
+        String,
+        usize,
+        Option<(u8, u32)>,
+    )> = Vec::new();
     // 集會鐘 v1：某位應召的居民走到鐘邊聚攏時，鎖內收集事件；「你敲鐘召我來」的交情記憶＋Feed
     // 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。(居民 id, 居民名, 敲鐘者名)。
     let mut bell_gather_events: Vec<(String, &'static str, String)> = Vec::new();
@@ -12351,6 +12359,13 @@ fn tick_residents(dt: f32) {
                             .collect();
                         r.say_timer = SAY_SECS;
                         r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                        // v1.1 分你一份心意：短鎖讀她的採集背包（比照 728 回禮短取即釋慣例），
+                        // 挑她親手採到的東西、壓成象徵性的 1 份；背包空 → 誠實不硬塞（None）。
+                        let stock_pick = {
+                            let inv = hub().res_inv.read().unwrap();
+                            inv.get(&r.id).and_then(vret::pick_from_stock)
+                        }; // res_inv 讀鎖釋放
+                        let gift = vbday::birthday_gift_from_stock(stock_pick);
                         birthday_events.push((
                             r.id.clone(),
                             r.name,
@@ -12358,6 +12373,7 @@ fn tick_residents(dt: f32) {
                             age,
                             r.birth_parent_name.clone(),
                             pick,
+                            gift,
                         ));
                     } else if !r.birth_parent_name.is_empty() {
                         // 沒有玩家在近旁、但記得是誰生下自己→念句謝過父母的生日話，上 Feed、不寫玩家交情。
@@ -12374,6 +12390,7 @@ fn tick_residents(dt: f32) {
                             age,
                             r.birth_parent_name.clone(),
                             pick,
+                            None,
                         ));
                     } else {
                         // 沒有玩家、也沒有已知父母：獨自念句通用生日話，上 Feed、不寫玩家交情。
@@ -12383,7 +12400,15 @@ fn tick_residents(dt: f32) {
                             .collect();
                         r.say_timer = SAY_SECS;
                         r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
-                        birthday_events.push((r.id.clone(), r.name, None, age, String::new(), pick));
+                        birthday_events.push((
+                            r.id.clone(),
+                            r.name,
+                            None,
+                            age,
+                            String::new(),
+                            pick,
+                            None,
+                        ));
                     }
                 }
             }
@@ -14572,13 +14597,40 @@ fn tick_residents(dt: f32) {
     //（掛玩家名下、日後浮進日記），無論有無玩家都上動態牆（含父母名，若有）。記憶寫鎖短取即釋、Feed
     // 走 IO，皆在 residents 鎖釋放後（守死鎖鐵律）。比照顧家駐足／臨水垂釣：記憶只進記憶庫
     //（in-memory、重啟歸零），不額外持久化——`birth_unix`/`birthday_last_year` 本身才是這刀的狀態。
-    for (rid, rname, pname_opt, age, parent_name, _pick) in &birthday_events {
+    //
+    // v1.1（ROADMAP 872）分你一份心意：`gift` 為 `Some` 時（玩家在場且她的採集背包當時有貨），
+    // 額外把心意存進玩家背包、記一句更具體的記憶、上一行補充動態牆；`gift` 為 `None`（背包空/玩家
+    // 不在場）→ 只走原本 v1 的話語與記憶，不硬塞禮物。廣播刻意重用既有 `return_gift` 訊息格式
+    // （前端已有通用「居民把 X 送給你了」toast 處理，零前端改動）；本刀不需要「已送過」節流——
+    // 觸發本就綁在誕辰事件上，`birthday_last_year` 已保證同一週歲恆只送一次。
+    for (rid, rname, pname_opt, age, parent_name, _pick, gift) in &birthday_events {
         if let Some(pname) = pname_opt {
-            hub()
-                .memory
-                .write()
-                .unwrap()
-                .add_memory(rid, pname, &vbday::birthday_memory_line(pname, *age)); // 記憶寫鎖即釋
+            let mem_line = if let Some((bid, _)) = gift {
+                vbday::birthday_memory_line_gift(pname, *age, vgift::item_name_zh(*bid))
+            } else {
+                vbday::birthday_memory_line(pname, *age)
+            };
+            hub().memory.write().unwrap().add_memory(rid, pname, &mem_line); // 記憶寫鎖即釋
+
+            if let Some((bid, qty)) = gift {
+                let inv_entry = { hub().inventory.write().unwrap().give(pname, *bid, *qty) }; // inventory 寫鎖即釋
+                vinv::append_inv(&inv_entry);
+                let new_count = hub().inventory.read().unwrap().count(pname, *bid);
+                let iname = vgift::item_name_zh(*bid);
+                let msg = serde_json::json!({
+                    "t": "return_gift",
+                    "resident_id": rid,
+                    "resident_name": rname,
+                    "player": pname,
+                    "item_id": bid,
+                    "item_name": iname,
+                    "qty": qty,
+                    "new_count": new_count,
+                })
+                .to_string();
+                let _ = hub().tx.send(std::sync::Arc::new(msg));
+                vfeed::append_feed(vbday::FEED_KIND, rname, &vbday::birthday_gift_feed_line(rname, pname, &iname));
+            }
         }
         vfeed::append_feed(vbday::FEED_KIND, rname, &vbday::birthday_feed_line(rname, *age, parent_name));
     }

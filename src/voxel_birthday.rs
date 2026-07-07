@@ -23,6 +23,12 @@
 //!
 //! **純函式層**：確定性、零 LLM、零鎖、零 async、零 IO、可單元測試。連線／鎖／廣播／記憶／Feed
 //! 觸發全留在 `voxel_ws.rs`（沿用既有短鎖循序＋鎖外事件佇列慣例，守 prod 死鎖鐵律）。
+//!
+//! **v1.1（ROADMAP 872，自主提案切片）——分你一份心意**：v1 上線後，誕辰紀念一直只有一句話，
+//! 玩家在場時除了被點名、什麼都帶不走；而 667/728「回禮」早就示範過「居民親手採到的東西可以
+//! 分給玩家」，兩者從沒接上。本刀讓玩家在場的誕辰紀念也順手從她的採集背包（`res_inv`，
+//! `voxel_return_gift::pick_from_stock`）分你一份，量刻意壓到象徵性的 [`BIRTHDAY_GIFT_QTY`]
+//! （見下方 razor-sharp 區隔）。
 
 /// 一個「乙太年」的秒數：與四季輪替(798) `Season` 一輪四季同長——
 /// 4 季 × [`crate::voxel_season::DAYS_PER_SEASON`]（2 遊戲日）× [`crate::voxel_time::DAY_DURATION_SECS`]
@@ -110,6 +116,51 @@ pub fn birthday_feed_line(rname: &str, age_years: u64, parent_name: &str) -> Str
 /// 玩家/居民名截斷到 8 字（中文安全，避免超長名撐破泡泡框）。
 fn clip_name(name: &str) -> String {
     name.chars().take(8).collect()
+}
+
+/// 誕辰紀念·分你一份心意 v1——她過生日這天你也在場，不只是一句話，還會從自己**親手採到的
+/// 東西**（`voxel_return_gift::pick_from_stock`）裡分你一份，量刻意壓在象徵性的
+/// [`BIRTHDAY_GIFT_QTY`]（恆 1 份，不看存量多寡、不看交情門檻）——與 667/728「回禮」那種
+/// 要先累積交情才觸發、看存量給到上限的獎賞區隔開來：**回禮是她欠你的人情，這份是她想讓你
+/// 分享這天的心意**。背包空 → `None`（誠實：沒有就不硬塞，呼應模組檔頭「不塞不自然的資料」）。
+pub const BIRTHDAY_GIFT_QTY: u32 = 1;
+
+/// 把「她親手採到的東西」（呼叫端已用 `pick_from_stock` 挑好）壓成象徵性的
+/// [`BIRTHDAY_GIFT_QTY`] 份；輸入 `None`（背包空）原樣回傳 `None`。純函式、可測。
+pub fn birthday_gift_from_stock(stock_pick: Option<(u8, u32)>) -> Option<(u8, u32)> {
+    stock_pick.map(|(bid, _)| (bid, BIRTHDAY_GIFT_QTY))
+}
+
+/// 分你一份心意的泡泡——緊接生日話之後鎖外落地時單播給當事玩家，點名玩家+分享的東西，
+/// 三句輪替（`pick` 由呼叫端沿用同一顆確定性 bits，字元截斷防超長名撐破泡泡框）。
+pub fn birthday_gift_line(player: &str, item_name: &str, pick: usize) -> String {
+    let name = clip_name(player);
+    let templates: [&str; 3] = [
+        "{name}，這份{item}也分你一點，陪我一起慶祝這天吧。",
+        "來，{item}給你一份，謝謝{name}今天也在我身邊。",
+        "{name}，收下這份{item}，就當是我們一起過的紀念。",
+    ];
+    templates[pick % templates.len()]
+        .replace("{name}", &name)
+        .replace("{item}", item_name)
+        .chars()
+        .take(SAY_CHARS)
+        .collect()
+}
+
+/// 記得父母、且分了心意版本的誕辰記憶（掛在玩家名下）——比 [`birthday_memory_line`] 多帶一句
+/// 分享了什麼，讓日後日記能翻到「那天她還分了東西給我」這一筆更具體的細節。
+pub fn birthday_memory_line_gift(player: &str, age_years: u64, item_name: &str) -> String {
+    format!(
+        "滿{age_years}年的那天，{}恰好在身邊，我還分了一份{item_name}給他，一起慶祝了這個日子。",
+        clip_name(player)
+    )
+    .replace('\n', " ")
+}
+
+/// 動態牆句（分享心意的補充一行，緊接主要誕辰紀念 Feed 之後，只在真的分了東西時才上牆）。
+pub fn birthday_gift_feed_line(rname: &str, pname: &str, item_name: &str) -> String {
+    format!("{rname}在自己的誕辰紀念這天，把{item_name}分了一份給{pname}。")
 }
 
 #[cfg(test)]
@@ -201,5 +252,51 @@ mod tests {
         assert!(BIRTHDAY_PLAYER_RADIUS > 0.0);
         assert!(SAY_CHARS > 0);
         assert!(!FEED_KIND.is_empty());
+    }
+
+    #[test]
+    fn gift_from_stock_caps_to_symbolic_one() {
+        assert_eq!(birthday_gift_from_stock(Some((20, 7))), Some((20, BIRTHDAY_GIFT_QTY)));
+        assert_eq!(birthday_gift_from_stock(Some((3, 1))), Some((3, BIRTHDAY_GIFT_QTY)));
+        assert_eq!(BIRTHDAY_GIFT_QTY, 1);
+    }
+
+    #[test]
+    fn gift_from_stock_empty_bag_stays_none() {
+        // 背包空 → 呼叫端傳入 None，誠實回 None，不硬塞禮物。
+        assert_eq!(birthday_gift_from_stock(None), None);
+    }
+
+    #[test]
+    fn gift_bubble_embeds_name_item_and_rotates() {
+        for p in 0..3 {
+            let s = birthday_gift_line("旅人", "木頭", p);
+            assert!(s.contains("旅人") && s.contains("木頭"), "應含玩家名與物品名：{s}");
+        }
+        assert_ne!(
+            birthday_gift_line("旅人", "木頭", 0),
+            birthday_gift_line("旅人", "木頭", 1)
+        );
+        // pick 溢出取模不 panic。
+        assert!(!birthday_gift_line("旅人", "木頭", usize::MAX).is_empty());
+    }
+
+    #[test]
+    fn gift_bubble_super_long_name_truncated_not_broken() {
+        let long = birthday_gift_line("超級無敵長長長長長長長名字", "冰晶", 0);
+        assert!(long.chars().count() <= SAY_CHARS, "超長名應被截斷不破泡泡框：{long}");
+    }
+
+    #[test]
+    fn gift_memory_line_embeds_player_age_and_item_no_newline() {
+        let m = birthday_memory_line_gift("諾娃\n注入", 3, "冰晶");
+        assert!(m.contains("諾娃") && m.contains('3') && m.contains("冰晶"));
+        assert!(!m.contains('\n'), "記憶不得含換行：{m}");
+    }
+
+    #[test]
+    fn gift_feed_line_embeds_all_three() {
+        let f = birthday_gift_feed_line("露娜", "旅人", "石頭");
+        assert!(f.contains("露娜") && f.contains("旅人") && f.contains("石頭"));
     }
 }
