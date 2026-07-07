@@ -163,6 +163,7 @@ use crate::voxel_stall::{self as vstall, StallStore};
 use crate::voxel_stall_notify as vstallnotify;
 use crate::voxel_frontier_find as vffind;
 use crate::voxel_mastery::{self as vmastery, MasteryKind, MasteryStore};
+use crate::voxel_waypoint as vwaypoint;
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -1891,6 +1892,10 @@ struct VoxelHub {
     /// 哪些集體門檻」帳本，與 `milestones`（per-player）刻意區隔。持久化到
     /// `data/voxel_village_milestones.jsonl`（append-only，重啟後仍記得）。
     village_milestones: RwLock<vvillms::VillageMilestoneStore>,
+    /// 個人路標 v1（自主提案切片）：玩家名 → 自己插的路標（名字＋座標），在羅盤/雷達面板
+    /// 與居民座標並列導航。持久化到 data/voxel_waypoints.jsonl（append-only，含刪除
+    /// tombstone，重啟後仍記得）。
+    waypoints: RwLock<vwaypoint::WaypointStore>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -2535,6 +2540,8 @@ fn hub() -> &'static VoxelHub {
             village_milestones: RwLock::new(vvillms::VillageMilestoneStore::from_entries(
                 vvillms::load_village_milestones(),
             )),
+            // 啟動時從 data/voxel_waypoints.jsonl 載回玩家個人路標（含刪除 tombstone，重啟後仍記得）。
+            waypoints: RwLock::new(vwaypoint::WaypointStore::from_entries(vwaypoint::load_entries())),
             tx,
         }
     })
@@ -2914,6 +2921,14 @@ enum ClientMsg {
     /// 伺服器驗證身分＋內容審查後存檔＋回傳這處地標目前的留言簿（供前端顯示先前旅人的話）。
     #[serde(rename = "leave_landmark_note")]
     LeaveLandmarkNote { x: i32, y: i32, z: i32, text: String },
+    /// 個人路標 v1（自主提案切片，ROADMAP 869）：在玩家目前所站的位置插一支路標，取個
+    /// 短名字。座標一律由伺服器讀 `player_pos` 決定，不信任客戶端自報位置；同名重插＝
+    /// 原地改寫。成功回傳這位玩家目前完整的路標清單（`waypoint_sync`）。
+    #[serde(rename = "set_waypoint")]
+    SetWaypoint { label: String },
+    /// 個人路標 v1：刪除指定名字的路標。找不到回 `waypoint_fail`；成功回傳更新後的清單。
+    #[serde(rename = "remove_waypoint")]
+    RemoveWaypoint { label: String },
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -3159,6 +3174,20 @@ async fn send_landmark_notes(
         "kind": kind.wire_id(),
         "x": x, "y": y, "z": z,
         "notes": payload,
+    }).to_string())).await;
+}
+
+/// 個人路標 v1（自主提案切片，ROADMAP 869）：單播這位玩家目前完整的路標清單。
+/// 呼叫端在 `SetWaypoint`/`RemoveWaypoint` 成功後各呼叫一次，讓前端面板即時更新。
+async fn send_waypoints(player: &str, out_tx: &mpsc::Sender<Message>) {
+    let items = hub().waypoints.read().unwrap().list(player);
+    let payload: Vec<serde_json::Value> = items
+        .iter()
+        .map(|w| serde_json::json!({ "label": w.label, "x": w.x, "y": w.y, "z": w.z }))
+        .collect();
+    let _ = out_tx.send(Message::Text(serde_json::json!({
+        "t": "waypoint_sync",
+        "items": payload,
     }).to_string())).await;
 }
 
@@ -6193,6 +6222,52 @@ async fn handle_socket(
                     send_landmark_notes(kind, dedup_key, x, y, z, &out_tx).await;
                 }
             }
+            // ── 個人路標 v1（自主提案切片，ROADMAP 869）─────────────────────────
+            Ok(ClientMsg::SetWaypoint { label }) => {
+                let Some((px, py, pz)) = player_pos(my_id) else { continue; };
+                let clean = vwaypoint::sanitize_label(&label);
+                let result = {
+                    let mut store = hub().waypoints.write().unwrap();
+                    store.set(&name, &clean, px.floor() as i32, py.floor() as i32, pz.floor() as i32)
+                }; // waypoints 寫鎖釋放
+                match result {
+                    Ok(entry) => {
+                        vwaypoint::append_entry(&entry);
+                        try_unlock_milestone(&name, "first_waypoint", &out_tx);
+                        send_waypoints(&name, &out_tx).await;
+                    }
+                    Err(vwaypoint::SetErr::EmptyLabel) => {
+                        let _ = out_tx.send(Message::Text(serde_json::json!({
+                            "t": "waypoint_fail", "reason": "路標名稱不能是空的喔，取個短名字吧。"
+                        }).to_string())).await;
+                    }
+                    Err(vwaypoint::SetErr::TooMany) => {
+                        let _ = out_tx.send(Message::Text(serde_json::json!({
+                            "t": "waypoint_fail",
+                            "reason": format!("路標已插滿 {} 支了，先刪一支再插新的吧。", vwaypoint::MAX_WAYPOINTS_PER_PLAYER),
+                        }).to_string())).await;
+                    }
+                }
+            }
+            // ── 個人路標 v1：刪除 ─────────────────────────────────────────────
+            Ok(ClientMsg::RemoveWaypoint { label }) => {
+                let clean = vwaypoint::sanitize_label(&label);
+                let removed = {
+                    let mut store = hub().waypoints.write().unwrap();
+                    store.remove(&name, &clean)
+                }; // waypoints 寫鎖釋放
+                match removed {
+                    Some(tombstone) => {
+                        vwaypoint::append_entry(&tombstone);
+                        send_waypoints(&name, &out_tx).await;
+                    }
+                    None => {
+                        let _ = out_tx.send(Message::Text(serde_json::json!({
+                            "t": "waypoint_fail", "reason": "找不到這支路標。"
+                        }).to_string())).await;
+                    }
+                }
+            }
             // ── 居民贈禮 v1（ROADMAP 660）────────────────────────────────────────
             Ok(ClientMsg::Gift { resident_id, item_id }) => {
                 // 1) 短鎖取玩家位置（players 讀鎖即釋）。
@@ -8563,6 +8638,30 @@ pub async fn voxel_known_recipes_handler(
             .collect()
     };
     let body = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into());
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
+/// 乙太方界·個人路標 v1（自主提案切片，ROADMAP 869）：回傳這位玩家目前所有路標
+/// （名字＋座標，依插旗先後）。跟里程碑/探索紀事端點同一手法：`?player=` 缺省時回空
+/// 清單，供開面板時先拉一份現況；之後的即時更新走 WS `waypoint_sync`。純讀取、零副作用。
+pub async fn voxel_waypoints_handler(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    use axum::http::header;
+    let player_name = params.get("player").map(|s| s.as_str()).unwrap_or("").trim().to_string();
+    let items: Vec<serde_json::Value> = if player_name.is_empty() {
+        Vec::new()
+    } else {
+        hub().waypoints.read().unwrap().list(&player_name)
+            .iter()
+            .map(|w| serde_json::json!({ "label": w.label, "x": w.x, "y": w.y, "z": w.z }))
+            .collect()
+    };
+    let body = serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
     axum::response::Response::builder()
         .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-cache")

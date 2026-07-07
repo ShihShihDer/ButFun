@@ -722,6 +722,25 @@
       #compassPanel { top: auto; bottom: 268px; right: 10px; max-height: 45vh; }
     }
 
+    /* ── 個人路標（自主提案切片，ROADMAP 869）───────────────────────────── */
+    #waypointHead {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 13px 4px; font-size: 13px; font-weight: bold; color: #e8c95a;
+      border-top: 1px solid rgba(232,201,90,0.18);
+    }
+    #waypointAddBtn {
+      cursor: pointer; user-select: none; font-size: 12px; font-weight: normal;
+      padding: 3px 8px; border-radius: 8px; background: rgba(232,201,90,0.16); color: #f0dfa0;
+    }
+    #waypointAddBtn:hover { background: rgba(232,201,90,0.28); }
+    #waypointBody {
+      padding: 4px 13px 10px; display: flex; flex-direction: column; gap: 8px; font-size: 13px;
+    }
+    .waypoint-del {
+      cursor: pointer; user-select: none; color: #c88; font-size: 14px; padding: 0 4px;
+    }
+    .waypoint-del:hover { color: #f66; }
+
     /* ── 居民交情網（ROADMAP 708）────────────────────────────────────────── */
     #relationsBtn {
       position: fixed; right: 10px; top: 256px; z-index: 6;
@@ -1678,6 +1697,12 @@
     </div>
     <canvas id="compassRadar" width="200" height="200"></canvas>
     <div id="compassBody"></div>
+    <!-- 個人路標（自主提案切片，ROADMAP 869）：玩家自己標記的地點，跟居民座標並列導航 -->
+    <div id="waypointHead">
+      <span>🚩 我的路標</span>
+      <span id="waypointAddBtn">+ 插旗</span>
+    </div>
+    <div id="waypointBody"></div>
   </div>
   <!-- 居民交情網（ROADMAP 708）：情誼（672）早已驅動問候/八卦/互助蓋家，此面板讓玩家第一次看見 -->
   <div id="relationsPanel">
