@@ -9364,6 +9364,10 @@ fn tick_residents(dt: f32) {
             }
             if let Some(run) = &mut r.invent_run {
                 run.deadline -= dt;
+                // 熔爐冶煉煨煮倒數（第四刀）：只在真的開了爐（Some）時才倒數。
+                if let Some(w) = &mut run.smelt_wait {
+                    *w -= dt;
+                }
             }
             // 好奇心計時倒數（北極星第三刀）：觸發與種心願在 agency 段（build 候選迴圈），
             // 這裡只負責時間流逝。
@@ -15389,6 +15393,7 @@ fn tick_residents(dt: f32) {
                                         step_idx: 0,
                                         reuse: true,
                                         deadline: vinvent::RUN_TIMEOUT_SECS,
+                                        smelt_wait: None,
                                     });
                                 }
                             } // residents 寫鎖釋放
@@ -15427,6 +15432,14 @@ fn tick_residents(dt: f32) {
                                     &world, rx, ry, rz, vinvent::WORKBENCH_BLOCK_ID,
                                 )
                             }; // deltas 讀鎖釋放
+                            // 世界事實快照（第四刀）：她附近是否已有放置好的熔爐——
+                            // 給可行性模擬與 prompt（有就不必再做一個，直接 smelt）。
+                            let furnace_nearby = {
+                                let world = hub().deltas.read().unwrap();
+                                vinvent::station_nearby(
+                                    &world, rx, ry, rz, vinvent::FURNACE_BLOCK_ID,
+                                )
+                            }; // deltas 讀鎖釋放
                             // 她自己已經會的技能（第三刀·技能組合技能）：讓計畫的 use_skill
                             // 步驟能查表展開——已經會的事，不用每次重新拆成一串原語。
                             let known_skills = {
@@ -15439,6 +15452,7 @@ fn tick_residents(dt: f32) {
                                 goal,
                                 desire_text.clone().unwrap_or_default(),
                                 wb_nearby,
+                                furnace_nearby,
                                 known_skills,
                             );
                         }
@@ -16339,6 +16353,57 @@ fn advance_invent_run(
                 ));
                 run.step_idx += 1;
             }
+            vinvent::StepAction::DoSmelt { recipe_id } => {
+                // 開爐冶煉（第四刀）：世界前提——附近真的有已放置的熔爐
+                // （她這條鏈剛放的也算；被人挖走了就誠實失敗，不隔空冶煉）。
+                if !station_near(vinvent::FURNACE_BLOCK_ID) {
+                    finish_invent_run(rid, rname, run, false, say_updates);
+                    return;
+                }
+                let Some(recipe) = vcraft::find_furnace_recipe(recipe_id) else {
+                    finish_invent_run(rid, rname, run, false, say_updates);
+                    return;
+                };
+                let started = {
+                    let mut inv = hub().res_inv.write().unwrap();
+                    vinvent::smelt_start_apply(inv.entry(rid.to_string()).or_default(), recipe)
+                }; // res_inv 寫鎖釋放
+                if !started {
+                    // 照計畫走到這裡卻生料不足（計畫順序排錯了）→ 這次發明失敗、記教訓。
+                    finish_invent_run(rid, rname, run, false, say_updates);
+                    return;
+                }
+                run.smelt_wait = Some(vsmelt::smelt_secs(recipe_id) as f32);
+                say_updates.push((rid.to_string(), vinvent::smelting_started_line(recipe.name_zh)));
+                let mut residents = hub().residents.write().unwrap();
+                if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                    r.invent_run = Some(run);
+                }
+                return; // 這輪開始煨煮；之後每 tick 倒數，熟成後下輪收成。
+            }
+            vinvent::StepAction::Waiting => {
+                // 冶煉還在煨煮中——這輪什麼都不做，等下個 tick（smelt_wait 已在別處倒數）。
+                let mut residents = hub().residents.write().unwrap();
+                if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                    r.invent_run = Some(run);
+                }
+                return;
+            }
+            vinvent::StepAction::CollectSmelt { recipe_id } => {
+                // 冶煉已熟成：交付成品進背包（不需站點/材料檢查——開爐時已驗過、扣過料）。
+                let Some(recipe) = vcraft::find_furnace_recipe(recipe_id) else {
+                    finish_invent_run(rid, rname, run, false, say_updates);
+                    return;
+                };
+                {
+                    let mut inv = hub().res_inv.write().unwrap();
+                    let bag = inv.entry(rid.to_string()).or_default();
+                    *bag.entry(recipe.output_block).or_insert(0) += recipe.output_count;
+                } // res_inv 寫鎖釋放
+                say_updates.push((rid.to_string(), vinvent::smelting_done_line(recipe.name_zh)));
+                run.smelt_wait = None;
+                run.step_idx += 1;
+            }
             vinvent::StepAction::Done => {
                 // 最終後置條件驗證：背包**真的**有目標材料，才算「她做出來了」。
                 let met = {
@@ -16484,6 +16549,7 @@ fn finish_invent_run(
 /// 設 `BUTFUN_INVENT_FIXED_PLAN` 時改用固定計畫（**僅隔離實測用**，prod 不設）。
 /// `wb_nearby`（第二刀）：她附近是否已有放置好的工作台——世界事實快照，由呼叫端
 /// 查好傳入（prompt 據此告訴腦「不必再做一個」；可行性模擬據此判 3×3 依賴順序）。
+/// `furnace_nearby`（第四刀）：同理，她附近是否已有放置好的熔爐（判冶煉依賴順序）。
 /// `known_skills`（第三刀·技能組合技能）：她自己技能庫裡「(名字, 原語序列)」清單——
 /// 讓計畫裡的 `use_skill` 步驟能查表展開成具體原語，已經會的事不必重新拆解。
 fn spawn_invention(
@@ -16492,6 +16558,7 @@ fn spawn_invention(
     goal: vinvent::MaterialGoal,
     desire: String,
     wb_nearby: bool,
+    furnace_nearby: bool,
     known_skills: Vec<(String, Vec<vinvent::PrimStep>)>,
 ) {
     // 防重入：這位居民已有一筆發明在等腦回來，就不再發（LLM 可能比冷卻慢）。
@@ -16521,11 +16588,12 @@ fn spawn_invention(
             // 排對依賴、取名字，可引用她已學會的技能），引擎補**算術**（確定性備料）；
             // 失敗回具體錯處（Voyager 式回饋）。
             vinvent::accept_proposal_with_skills(
-                raw, &bag_snap, goal.block_id, wb_nearby, &known_skills,
+                raw, &bag_snap, goal.block_id, wb_nearby, furnace_nearby, &known_skills,
             )
         };
-        let (sys, user) =
-            vinvent::invention_prompt(rname, &goal, &desire, &bag_note, wb_nearby, &known_names);
+        let (sys, user) = vinvent::invention_prompt(
+            rname, &goal, &desire, &bag_note, wb_nearby, furnace_nearby, &known_names,
+        );
         let (raw, injected) = if let Some(fixed) = vinvent::fixed_plan_env() {
             // 測試注入（僅隔離實測；日誌標明，方便回報時區分「真腦」與「注入」）。
             tracing::info!(resident = %rid, "技能發明：使用 BUTFUN_INVENT_FIXED_PLAN 測試注入計畫");
