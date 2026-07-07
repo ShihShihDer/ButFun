@@ -4739,7 +4739,9 @@ function connect() {
       if (wbPanelVisible()) renderWbPanel();
       if (furnacePanelVisible()) renderFurnacePanel();
     } else if (m.t === "craft_fail") {
-      showErr("材料不足，無法合成（先多採集一些）");
+      // 伺服器現在會依情況給不同 reason（材料不足／獨門配方未學會／工作台熔爐閘門等），
+      // 過去這裡不論收到什麼一律顯示「材料不足」，讓其他 reason 文字被默默吞掉。
+      showErr(m.reason || "材料不足，無法合成（先多採集一些）");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
       if (bagPanelVisible()) renderBagPanel();
       if (wbPanelVisible()) renderWbPanel();
@@ -5523,6 +5525,11 @@ const bagResultEl  = document.getElementById("bagResultSlot");
 
 function openBagPanel() {
   if (!bagPanelEl) return;
+  // 四個合成/儲物面板共用同一個置中定位（手機直式尤其明顯疊在一起），
+  // 彼此互斥才不會疊出無法操作的畫面——開一個之前先關掉其他三個。
+  closeWbPanel();
+  closeFurnacePanel();
+  closeChestPanel();
   releaseMouse(); // 桌機：開面板要放開滑鼠鎖定，游標才能點格子
   bagPanelEl.style.display = "flex";
   renderBagPanel();
@@ -5791,6 +5798,9 @@ const wbBtnEl     = document.getElementById("wbBtn");
 
 function openWbPanel() {
   if (!wbPanelEl) return;
+  closeBagPanel();
+  closeFurnacePanel();
+  closeChestPanel();
   releaseMouse(); // 桌機：開面板要放開滑鼠鎖定，游標才能拖放材料
   wbPanelEl.style.display = "flex";
   renderWbPanel();
@@ -5983,6 +5993,9 @@ const furnaceResultEl  = document.getElementById("furnaceResultSlot");
 
 function openFurnacePanel() {
   if (!furnacePanelEl) return;
+  closeBagPanel();
+  closeWbPanel();
+  closeChestPanel();
   releaseMouse(); // 桌機：開面板要放開滑鼠鎖定，游標才能點冶煉
   furnacePanelEl.style.display = "flex";
   renderFurnacePanel();
@@ -6157,6 +6170,9 @@ function chestPanelVisible() {
 /** 開啟箱子面板：傳送 open_chest 請求，伺服器回 chest_view 後才真正渲染內容。 */
 function openChestPanel(bx, by, bz) {
   if (!chestPanelEl) return;
+  closeBagPanel();
+  closeWbPanel();
+  closeFurnacePanel();
   releaseMouse();
   _chestPos = { x: bx, y: by, z: bz };
   _chestItems = [];

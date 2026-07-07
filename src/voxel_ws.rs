@@ -5481,6 +5481,33 @@ async fn handle_socket(
                     }
                 });
                 if let Some(recipe) = recipe_opt {
+                    // 工作台/熔爐配方伺服器閘門 v1（自主提案切片）：ROADMAP 665/666 的設計
+                    // 原意就是「這兩張配方表需要先放置工作台/熔爐才能合成」，但過去只靠前端
+                    // 「目前開哪個面板」自律把關——伺服器從未驗證玩家真的站在對應方塊旁，
+                    // 改一行前端就能繞過這道門檻。這裡補上權威判定，不信任客戶端自報
+                    // （背包 2×2／獨門配方不受此限，本就不需要站別方塊）。
+                    let station_need = if vcraft::find_workbench_recipe(&recipe_id).is_some() {
+                        Some((Block::Workbench, "身邊要有工作台才能合成這個"))
+                    } else if vcraft::find_furnace_recipe(&recipe_id).is_some() {
+                        Some((Block::Furnace, "身邊要有熔爐才能合成這個"))
+                    } else {
+                        None
+                    };
+                    if let Some((want, reason)) = station_need {
+                        let has_station = player_pos(my_id).is_some_and(|(px, py, pz)| {
+                            station_nearby(&hub().deltas.read().unwrap(), px, py, pz, want)
+                        });
+                        if !has_station {
+                            let _ = out_tx.try_send(Message::Text(
+                                serde_json::json!({
+                                    "t": "craft_fail",
+                                    "recipe_id": &recipe_id,
+                                    "reason": reason
+                                }).to_string(),
+                            ));
+                            continue;
+                        }
+                    }
                     // 步驟 1：單把寫鎖內完成「確認足夠材料 + 消耗所有配料」（原子，防 TOCTOU）。
                     let (ok, consumed) = {
                         let mut inv = hub().inventory.write().unwrap();
@@ -7988,6 +8015,28 @@ fn is_irrigated_in_delta(deltas: &voxel::WorldDelta, fx: i32, fy: i32, fz: i32) 
         for dx in -r..=r {
             for dy in -1..=1_i32 {
                 if voxel::effective_block_at(deltas, fx + dx, fy + dy, fz + dz).is_any_water() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// 工作台/熔爐配方伺服器閘門 v1（自主提案切片）：判定玩家目前位置附近是否真的有
+/// 指定種類的方塊。掃描範圍比照 [`is_irrigated_in_delta`] 同款手法，取比觸及範圍
+/// 略寬鬆的半徑——玩家開面板後在原地小範圍走動、或站在略高/略低的地形上仍算數，
+/// 不苛求分毫不差貼著方塊。垂直範圍較窄（±2），故站在同層樓面之外（如樓上/樓下
+/// 隔了好幾層）的工作台/熔爐不會被誤判為「在附近」，屬已知的近似（比照 865 的
+/// wait_timer 近似精神：純度數上的簡化，不影響正確性或安全）。
+const STATION_RANGE_XZ: i32 = 4;
+const STATION_RANGE_Y: i32 = 2;
+fn station_nearby(deltas: &voxel::WorldDelta, px: f32, py: f32, pz: f32, want: Block) -> bool {
+    let (cx, cy, cz) = (px.floor() as i32, py.floor() as i32, pz.floor() as i32);
+    for dx in -STATION_RANGE_XZ..=STATION_RANGE_XZ {
+        for dz in -STATION_RANGE_XZ..=STATION_RANGE_XZ {
+            for dy in -STATION_RANGE_Y..=STATION_RANGE_Y {
+                if voxel::effective_block_at(deltas, cx + dx, cy + dy, cz + dz) == want {
                     return true;
                 }
             }
@@ -17672,5 +17721,59 @@ mod tests {
             !json.contains("secret@example.com"),
             "email 不應出現在廣播 JSON 中：{json}"
         );
+    }
+
+    // ── 工作台/熔爐配方伺服器閘門（自主提案切片）───────────────────────────
+    // station_nearby：伺服器權威判定玩家附近是否真的有指定站別方塊，
+    // 不信任「client 目前開哪個面板」的自報狀態。
+
+    #[test]
+    fn station_nearby_true_when_workbench_in_range() {
+        let mut deltas = WorldDelta::new();
+        voxel::set_block(&mut deltas, 10, 5, 10, Block::Workbench);
+        assert!(station_nearby(&deltas, 11.5, 5.0, 10.5, Block::Workbench));
+    }
+
+    #[test]
+    fn station_nearby_false_when_absent() {
+        let deltas = WorldDelta::new();
+        assert!(!station_nearby(&deltas, 0.0, 5.0, 0.0, Block::Workbench));
+    }
+
+    #[test]
+    fn station_nearby_false_when_out_of_range() {
+        let mut deltas = WorldDelta::new();
+        voxel::set_block(&mut deltas, 100, 5, 100, Block::Workbench);
+        assert!(
+            !station_nearby(&deltas, 0.0, 5.0, 0.0, Block::Workbench),
+            "太遠的工作台不該算數，否則等於沒有門檻"
+        );
+    }
+
+    #[test]
+    fn station_nearby_distinguishes_block_kind() {
+        let mut deltas = WorldDelta::new();
+        voxel::set_block(&mut deltas, 10, 5, 10, Block::Furnace);
+        assert!(station_nearby(&deltas, 11.0, 5.0, 10.0, Block::Furnace));
+        assert!(
+            !station_nearby(&deltas, 11.0, 5.0, 10.0, Block::Workbench),
+            "熔爐不該被誤判成工作台，兩種站別各自獨立把關"
+        );
+    }
+
+    #[test]
+    fn station_nearby_xz_boundary_inclusive() {
+        let mut deltas = WorldDelta::new();
+        // 剛好在 STATION_RANGE_XZ 邊界上，邊界含頭含尾應仍算數。
+        voxel::set_block(&mut deltas, STATION_RANGE_XZ, 5, 0, Block::Workbench);
+        assert!(station_nearby(&deltas, 0.5, 5.0, 0.5, Block::Workbench));
+    }
+
+    #[test]
+    fn station_nearby_y_out_of_vertical_range() {
+        let mut deltas = WorldDelta::new();
+        // 同一 XZ 位置，但垂直落差超過 STATION_RANGE_Y——不同樓層的工作台不算數。
+        voxel::set_block(&mut deltas, 0, 5 + STATION_RANGE_Y + 3, 0, Block::Workbench);
+        assert!(!station_nearby(&deltas, 0.5, 5.0, 0.5, Block::Workbench));
     }
 }
