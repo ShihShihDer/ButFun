@@ -869,11 +869,15 @@ fn ip_talk_limiter() -> &'static std::sync::Mutex<vrl::IpTalkLimiter> {
     L.get_or_init(|| std::sync::Mutex::new(vrl::IpTalkLimiter::new()))
 }
 
-/// 全域「作品命名」儲存（居民為你的建造作品取名字 v1）：以分格座標為鍵記已取過的名字，
+/// 全域「作品命名」儲存（居民為你的建造作品取名字 v1；860 擴充納入居民自蓋的家）：
+/// 以分格座標為鍵記已取過的名字＋擁有者（`None`＝玩家蓋的，見 773/854；
+/// `Some(resident_id)`＝居民自己蓋的家，見 860，讓 858 見賢思齊能排除「羨慕自己的家」）。
 /// 純記憶體、重啟歸零（作品本身不受影響，只是重啟後可再被重新命名一次，v1 刻意收斂）。
-fn structure_names() -> &'static std::sync::Mutex<std::collections::HashMap<(i32, i32), String>> {
-    static N: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<(i32, i32), String>>> =
-        std::sync::OnceLock::new();
+fn structure_names(
+) -> &'static std::sync::Mutex<std::collections::HashMap<(i32, i32), (String, Option<String>)>> {
+    static N: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<(i32, i32), (String, Option<String>)>>,
+    > = std::sync::OnceLock::new();
     N.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -4292,10 +4296,10 @@ async fn handle_socket(
                                     let (structure_name, just_named) = {
                                         let mut names = structure_names().lock().unwrap();
                                         match names.get(&cell) {
-                                            Some(n) => (n.clone(), false),
+                                            Some((n, _)) => (n.clone(), false),
                                             None => {
                                                 let n = vstructname::pick_name(pick).to_string();
-                                                names.insert(cell, n.clone());
+                                                names.insert(cell, (n.clone(), None));
                                                 (n, true)
                                             }
                                         }
@@ -9600,8 +9604,12 @@ fn tick_residents(dt: f32) {
                 // 只讀分格鍵當下是否已被命名（Mutex 短鎖即釋、不巢狀）；未命名的地方安靜省鎖。
                 let cell = vstructname::cell_key(r.body.x, r.body.z);
                 let named = structure_names().lock().unwrap().get(&cell).cloned();
-                if let Some(structure_name) = named {
-                    if venvy::should_envy(true, rand::random::<f32>()) {
+                // 860：這座地標若是自己蓋的家（owner == 自己 id），不觸發羨慕——
+                // 羨慕的前提是「別人的美好」，不會有人羨慕自己親手蓋的家。
+                if let Some((structure_name, owner)) = named {
+                    if owner.as_deref() != Some(r.id.as_str())
+                        && venvy::should_envy(true, rand::random::<f32>())
+                    {
                         let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                         let kind = venvy::pick_envy_kind(pick);
                         r.say = venvy::envy_say_line(&structure_name, kind, pick);
@@ -15395,6 +15403,58 @@ fn tick_residents(dt: f32) {
                             // ③ 動態牆 + 立牌泡泡（讓玩家一眼看到居民署了名）。
                             vfeed::append_feed("立牌命名", &rname, &vnameplate::nameplate_feed(&rname, &text));
                             say_updates.push((rid.clone(), vnameplate::nameplate_say(&text)));
+                            // ④ 居民親手蓋的家也算數 v1（自主提案，ROADMAP 860）：773/854 命名
+                            // 地標系統此前只認得「玩家蓋、居民讚賞取名」的作品——居民自己蓋出建物
+                            // 讓心願成真（859）、立牌署名（749）之後，這座建物在系統眼中仍是隱形
+                            // 的：從沒被算進村莊集體里程碑（856 複用同一份地標數），也從沒讓任何
+                            // 一位居民路過心生嚮往（858 見賢思齊只掃 structure_names()）。這裡把
+                            // 剛立好牌的這座建物用牌面文字（如「露娜的家」）連同擁有者 id 登記進去，
+                            // 讓「被記住的地標」這條鏈第一次對居民自己的作品一視同仁。
+                            // `contains_key` 先判斷再插入＝冪等（同一格只登記一次，擴建/鬼打牆
+                            // 補漏重蓋不會重複計入地標數）。
+                            let newly_landmarked = {
+                                let cell = vstructname::cell_key(plan_anchor.0 as f32, plan_anchor.2 as f32);
+                                let mut names = structure_names().lock().unwrap();
+                                if names.contains_key(&cell) {
+                                    false
+                                } else {
+                                    names.insert(cell, (text.clone(), Some(rid.clone())));
+                                    true
+                                }
+                            }; // structure_names 鎖釋放
+                            if newly_landmarked {
+                                let landmark_count = structure_names().lock().unwrap().len();
+                                let new_tier = hub()
+                                    .village_milestones
+                                    .write()
+                                    .unwrap()
+                                    .try_unlock_new_tier(landmark_count);
+                                if let Some(tier) = new_tier {
+                                    vvillms::append_village_milestone(&vvillms::VillageMilestoneEntry {
+                                        id: tier.id.to_string(),
+                                    });
+                                    // 全體居民一起歡呼；不覆寫正忙著別的事的居民（say 非空＝正在忙），
+                                    // 比照 773/856 既有「不覆寫既有泡泡」慣例。
+                                    {
+                                        let mut residents = hub().residents.write().unwrap();
+                                        for (i, r) in residents.iter_mut().enumerate() {
+                                            if r.say.is_empty() {
+                                                r.say = vvillms::celebrate_say_line(landmark_count + i)
+                                                    .to_string();
+                                                r.say_timer = SAY_SECS;
+                                                r.mood_boost_secs =
+                                                    r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                            }
+                                        }
+                                    } // residents 寫鎖釋放
+                                    broadcast_players();
+                                    vfeed::append_feed(
+                                        "村莊里程碑",
+                                        "全村",
+                                        &vvillms::celebrate_feed_line(tier.name_zh, landmark_count),
+                                    );
+                                }
+                            }
                         }
                     }
                 }
