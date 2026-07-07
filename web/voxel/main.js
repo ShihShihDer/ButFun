@@ -1406,6 +1406,11 @@ const FISH_BODY_MAT = new THREE.MeshLambertMaterial({ color: 0x4a90c2 });
 const FISH_TAIL_MAT = new THREE.MeshLambertMaterial({ color: 0x3a7aa8 });
 const FISH_BODY_GEO = new THREE.BoxGeometry(0.14, 0.14, 0.34);
 const FISH_TAIL_GEO = new THREE.BoxGeometry(0.16, 0.16, 0.06);
+// 放養雞 v1（自主提案切片，ROADMAP 870）：白身體 + 紅雞冠，體型介於兔子與魚之間。
+const CHICKEN_BODY_MAT = new THREE.MeshLambertMaterial({ color: 0xf2ede2 });
+const CHICKEN_COMB_MAT = new THREE.MeshLambertMaterial({ color: 0xc23b3b });
+const CHICKEN_BODY_GEO = new THREE.BoxGeometry(0.3, 0.28, 0.36);
+const CHICKEN_COMB_GEO = new THREE.BoxGeometry(0.1, 0.1, 0.1);
 const WILDLIFE_VISIBLE_DIST = 60; // 兔子體型小，遠處看不清也不必畫，比居民更早隱藏
 
 // 文字貼圖 sprite（名牌/泡泡共用工廠）。bubble=true 用柔色圓底（像在說話），否則白描邊名牌。
@@ -1905,6 +1910,19 @@ function buildFish() {
   return { group };
 }
 
+// 建一隻雞（放養雞 v1，自主提案切片 ROADMAP 870：身體 + 一小塊雞冠，無名牌無泡泡）。
+function buildChicken() {
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(CHICKEN_BODY_GEO, CHICKEN_BODY_MAT);
+  body.position.y = 0.16;
+  group.add(body);
+  const comb = new THREE.Mesh(CHICKEN_COMB_GEO, CHICKEN_COMB_MAT);
+  comb.position.set(0, 0.34, 0.14);
+  group.add(comb);
+  scene.add(group);
+  return { group };
+}
+
 // 依伺服器快照更新所有環境生物（位置/朝向）。新出現的依 `kind` 建對應模型、
 // 消失的就移除（同構 updateResidents）。
 function updateWildlife(list) {
@@ -1913,8 +1931,9 @@ function updateWildlife(list) {
     seen.add(w.id);
     let ent = wildlifeEnts.get(w.id);
     if (!ent) {
-      ent = w.kind === "fish" ? buildFish() : buildRabbit();
+      ent = w.kind === "fish" ? buildFish() : w.kind === "chicken" ? buildChicken() : buildRabbit();
       ent.group.userData.wid = w.id; // 餵野兔馴服 v1：raycast 命中後回查 id 用。
+      ent.group.userData.wkind = w.kind; // 放養雞 v1：前端據此決定送 feed_wildlife 還是 feed_chicken。
       wildlifeEnts.set(w.id, ent);
     }
     ent.group.position.set(w.x, w.y, w.z);
@@ -1952,8 +1971,10 @@ function pickResident(clientX, clientY) {
   return obj && obj.userData ? obj.userData.rid : null;
 }
 
-// 餵野兔馴服 v1（自主提案切片）：同款 raycast 挑選，改對象為 wildlife（野兔/魚）實體。
+// 餵野兔馴服 v1（自主提案切片）：同款 raycast 挑選，改對象為 wildlife（野兔/魚/雞）實體。
 // 只是「準心對到誰」的前端提示，伺服器仍會權威複驗真正的觸及範圍（vwild::TAME_REACH）。
+// 放養雞 v1（ROADMAP 870）：回傳同時帶 `kind`，讓呼叫端決定送 feed_wildlife 還是 feed_chicken
+// （對到魚或種類不符時，伺服器一律靜默拒絕，不影響手感）。
 const WILDLIFE_PICK_REACH = 8;
 function pickWildlife(clientX, clientY) {
   const rect = renderer.domElement.getBoundingClientRect();
@@ -1971,7 +1992,8 @@ function pickWildlife(clientX, clientY) {
   if (!hits.length || hits[0].distance > WILDLIFE_PICK_REACH) return null;
   let obj = hits[0].object;
   while (obj && !(obj.userData && obj.userData.wid)) obj = obj.parent;
-  return obj && obj.userData ? obj.userData.wid : null;
+  if (!obj || !obj.userData) return null;
+  return { id: obj.userData.wid, kind: obj.userData.wkind };
 }
 
 // 對話框 DOM + 狀態。
@@ -4212,6 +4234,15 @@ function placeAtTarget() {
     }
     return null;
   }
+  // 放養雞 v1（自主提案切片，ROADMAP 870）：手持小麥種子、準心對準一隻雞 → 優先「餵」
+  // 而非「種」；沒對準雞就落到下面種田分支正常種下種子，不改變既有種田手感。
+  if (selectedBlock() === SEEDS) {
+    const pick = pickWildlife(window.innerWidth / 2, window.innerHeight / 2);
+    if (pick) {
+      ws.send(JSON.stringify({ t: "feed_chicken", id: pick.id }));
+      return null;
+    }
+  }
   // 種子的特殊種植動作：目標是農田土本身（不偏移到面外側）。
   // 第二種作物 v1：胡蘿蔔種子選中時種下胡蘿蔔；第三種作物 v1：馬鈴薯種子選中時種下馬鈴薯，
   // 皆附帶 seed 欄位讓伺服器分辨作物種類。
@@ -4229,9 +4260,9 @@ function placeAtTarget() {
   // 餵野兔馴服 v1（自主提案切片）：手持胡蘿蔔、準心對準一隻野兔 → 優先「餵」而非「吃」；
   // 沒對準野兔就落到下面 heldIsFood 分支正常吃掉，不改變既有吃食物手感。
   if (selectedBlock() === CARROT) {
-    const wid = pickWildlife(window.innerWidth / 2, window.innerHeight / 2);
-    if (wid) {
-      ws.send(JSON.stringify({ t: "feed_wildlife", id: wid }));
+    const pick = pickWildlife(window.innerWidth / 2, window.innerHeight / 2);
+    if (pick) {
+      ws.send(JSON.stringify({ t: "feed_wildlife", id: pick.id }));
       return null;
     }
   }
@@ -4967,6 +4998,14 @@ function connect() {
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2400);
     } else if (m.t === "feed_wildlife_fail") {
       // 餵野兔馴服 v1：餵不成（太遠／已經馴服過／背包沒有胡蘿蔔）。
+      showErr(m.reason || "現在沒法餵食");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "feed_chicken_ok") {
+      // 放養雞 v1（自主提案切片，ROADMAP 870）：馴服成功——浮出回饋句（背包由 inv_update 更新）。
+      showMsg(m.say || "🌾 牠不再怕你了～");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2400);
+    } else if (m.t === "feed_chicken_fail") {
+      // 放養雞 v1：餵不成（太遠／已經馴服過／背包沒有種子）。
       showErr(m.reason || "現在沒法餵食");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "return_gift") {

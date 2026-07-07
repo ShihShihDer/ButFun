@@ -95,6 +95,7 @@ use crate::voxel_romance::{self as vromance, ResidentRomance};
 use crate::voxel_lover_seek as vlover;
 use crate::voxel_wildlife as vwild;
 use crate::voxel_fish as vfishlife;
+use crate::voxel_chicken as vchicken;
 use crate::voxel_player_recipe as vprecipe;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
@@ -683,12 +684,14 @@ struct VoxelResident {
     hunger_care_cooldown: f32,
 }
 
-/// 環境生物的種類（水中游魚 v1，ROADMAP 848 起 wildlife 系統擴充為可延伸的多種類）。
-/// 序列化成字串給前端據以挑選對應模型（"rabbit"/"fish"）。
+/// 環境生物的種類（水中游魚 v1，ROADMAP 848 起 wildlife 系統擴充為可延伸的多種類；
+/// 放養雞 v1，ROADMAP 870 再添第二種可馴服的陸地生物）。
+/// 序列化成字串給前端據以挑選對應模型（"rabbit"/"fish"/"chicken"）。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WildlifeKind {
     Rabbit,
     Fish,
+    Chicken,
 }
 
 impl WildlifeKind {
@@ -696,6 +699,7 @@ impl WildlifeKind {
         match self {
             WildlifeKind::Rabbit => "rabbit",
             WildlifeKind::Fish => "fish",
+            WildlifeKind::Chicken => "chicken",
         }
     }
 }
@@ -724,9 +728,12 @@ struct WildlifeAnimal {
     /// 是否已被玩家餵食馴服（餵野兔馴服 v1，自主提案切片）。一次性、永久生效——
     /// 馴服後永遠不再受驚逃跑。只有野兔會用到；魚恆為 `false`（無馴服機制）。
     tamed: bool,
-    /// 已馴服的兔子此刻是否正在跟隨附近的玩家（馴服兔子跟隨你 v1，自主提案切片）。
-    /// 只有 `tamed` 的野兔會用到；魚恆為 `false`（無跟隨機制）。
+    /// 已馴服的兔子此刻是否正在跟隨附近的玩家（馴服兔子跟隨你 v1，自主提案切片）；
+    /// 已馴服的雞也共用這個欄位跟隨（放養雞 v1）。魚恆為 `false`（無跟隨機制）。
     following: bool,
+    /// 已馴服的雞距離下一次下蛋還要多久（秒，放養雞 v1，自主提案切片 ROADMAP 870）。
+    /// 只有 `tamed` 的雞會遞減這個欄位；兔子／魚／未馴服的雞恆為 `0.0`（不使用）。
+    lay_cd: f32,
 }
 
 /// 野兔家域點（世界座標偏移，散布在村莊周圍，玩家出生後很快就有機會撞見）。
@@ -739,7 +746,11 @@ const WILDLIFE_HOMES: [(i32, i32); 6] = [
 /// 偏移不需精確落在水裡，找到附近夠深的水塘即可（地形起伏必然生出窪地/湖泊，見模組說明）。
 const FISH_HOMES: [(i32, i32); 4] = [(30, 30), (-30, 30), (30, -30), (-30, -30)];
 
-/// 建出初始環境生物群（hub 初始化時呼叫一次）：野兔（陸地）+ 魚（水域）。
+/// 雞的家域點（世界座標偏移，放養雞 v1，自主提案切片 ROADMAP 870）：與野兔家域錯開，
+/// 散布在村莊周圍，沿用同一套 `dry_ground_spawn` 找最近陸地。
+const CHICKEN_HOMES: [(i32, i32); 4] = [(8, -6), (-8, 8), (16, 12), (-16, -8)];
+
+/// 建出初始環境生物群（hub 初始化時呼叫一次）：野兔（陸地）+ 魚（水域）+ 雞（陸地）。
 fn init_wildlife() -> Vec<WildlifeAnimal> {
     let rabbits = WILDLIFE_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
         let body = vr::dry_ground_spawn(*ox, *oz);
@@ -756,6 +767,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             fleeing: false,
             tamed: false,
             following: false,
+            lay_cd: 0.0,
         }
     });
     let fish = FISH_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
@@ -773,9 +785,28 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             fleeing: false,
             tamed: false,
             following: false,
+            lay_cd: 0.0,
         }
     });
-    rabbits.chain(fish).collect()
+    let chickens = CHICKEN_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
+        let body = vr::dry_ground_spawn(*ox, *oz);
+        WildlifeAnimal {
+            id: format!("vox_chk_{i}"),
+            kind: WildlifeKind::Chicken,
+            home_x: body.x,
+            home_z: body.z,
+            target_x: body.x,
+            target_z: body.z,
+            body,
+            yaw: 0.0,
+            wait_timer: 0.0,
+            fleeing: false,
+            tamed: false,
+            following: false,
+            lay_cd: 0.0,
+        }
+    });
+    rabbits.chain(fish).chain(chickens).collect()
 }
 
 /// 居民序列化視圖（廣播給客戶端渲染：位置/名字/朝向/說的話/當前心願）。
@@ -2811,6 +2842,12 @@ enum ClientMsg {
     /// （"vox_wld_N"，見 `WildlifeAnimal.id`）。
     #[serde(rename = "feed_wildlife")]
     FeedWildlife { id: String },
+    /// 放養雞 v1（自主提案切片，ROADMAP 870）：手持小麥種子、準心對準一隻雞 → 就地餵食。
+    /// 伺服器驗證（種類必須是雞＋觸及範圍夠近＋尚未馴服過＋背包真持有種子）後消耗
+    /// 1 顆種子，永久馴服這隻雞（此後跟隨你、定期回饋一顆蛋）。`id` 是 wildlife 系統 id
+    /// （"vox_chk_N"，見 `WildlifeAnimal.id`）。
+    #[serde(rename = "feed_chicken")]
+    FeedChicken { id: String },
     /// 居民交易 v1：向指定居民請求以物易物（ROADMAP 670）。
     /// 伺服器回 `trade_offer`，玩家再傳 TradeAccept 接受；提案 30 秒後自動過期。
     #[serde(rename = "trade_request")]
@@ -6105,6 +6142,61 @@ async fn handle_socket(
                     serde_json::json!({ "t": "feed_wildlife_ok", "say": vwild::tame_line(pick) }).to_string(),
                 ));
             }
+            // ── 放養雞 v1（自主提案切片，ROADMAP 870）：世界環境軸線第二種可馴服動物 ──
+            Ok(ClientMsg::FeedChicken { id }) => {
+                // 鎖序比照餵野兔馴服（847）：players 讀位置 → wildlife 讀鎖驗種類/距離/是否
+                // 已馴服 → inventory 寫鎖消耗種子 → wildlife 寫鎖落地馴服狀態+首次下蛋倒數，
+                // 循序取放不巢狀（守死鎖鐵律）。
+                let Some((px, _py, pz)) = player_pos(my_id) else {
+                    continue;
+                };
+                let snap: Option<(bool, bool, f32)> = {
+                    let animals = hub().wildlife.read().unwrap();
+                    animals.iter().find(|a| a.id == id).map(|a| {
+                        let dx = px - a.body.x;
+                        let dz = pz - a.body.z;
+                        (matches!(a.kind, WildlifeKind::Chicken), a.tamed, dx * dx + dz * dz)
+                    })
+                };
+                let Some((is_chicken, already_tamed, dist_sq)) = snap else {
+                    continue; // 這隻動物已消失（id 過期）——靜默忽略
+                };
+                if !is_chicken {
+                    continue; // 目前只有雞可餵（兔子/魚走各自的餵食路徑）——靜默忽略，非錯誤
+                }
+                if !vwild::should_tame(already_tamed, dist_sq) {
+                    let reason = if already_tamed { "牠已經不怕你了，不用再餵" } else { "走近一點再餵" };
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "feed_chicken_fail", "reason": reason }).to_string(),
+                    ));
+                    continue;
+                }
+                // 背包必須真持有種子（前端不自報合法性·濫用防護：伺服器必查真實庫存）。
+                let Some(inv_entry) = hub().inventory.write().unwrap().take(&name, vfarm::SEEDS_ID, 1) else {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "feed_chicken_fail", "reason": "背包裡沒有小麥種子" }).to_string(),
+                    ));
+                    continue;
+                };
+                vinv::append_inv(&inv_entry);
+                {
+                    let mut animals = hub().wildlife.write().unwrap();
+                    if let Some(a) = animals.iter_mut().find(|a| a.id == id) {
+                        a.tamed = true;
+                        // 馴服當下就設好第一次下蛋倒數（正常間隔起算，非立即下蛋）。
+                        a.lay_cd = vchicken::next_lay_cooldown(rand::random::<f32>());
+                    }
+                }
+                try_unlock_milestone(&name, "first_chicken_tame", &out_tx);
+                let remain = hub().inventory.read().unwrap().count(&name, vfarm::SEEDS_ID);
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "inv_update", "block_id": vfarm::SEEDS_ID, "count": remain }).to_string(),
+                ));
+                let pick = rand::random::<u64>() as usize;
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "feed_chicken_ok", "say": vchicken::tame_line(pick) }).to_string(),
+                ));
+            }
             // ── 集會鐘 v1（自主提案切片）：敲響一座鐘，把附近閒著的居民召到身邊 ─────────
             Ok(ClientMsg::RingBell { x, y, z }) => {
                 // 鎖序：players 讀位置 → delta 讀目標型別 → residents 寫設應召，循序不巢狀（守死鎖鐵律）。
@@ -8797,18 +8889,22 @@ pub async fn voxel_village_map_handler() -> axum::response::Response {
         .unwrap()
 }
 
-/// 環境生物 tick（野兔 v1 ROADMAP 847 ＋水中游魚 v1 ROADMAP 848）：與 `tick_residents`
-/// 同節拍（10Hz）。純點綴生物——沒有思考/記憶/社交；野兔閒晃＋見到玩家靠近就受驚逃開，
-/// 魚只在自己的水塘裡悠游（不怕人、無陸地碰撞，見 `voxel_fish` 模組說明）。
-/// 鎖序：`players`(read) → `deltas`(read) → `wildlife`(write)，循序取放、與 `residents`
-/// 鎖各自獨立、不巢狀（守 prod 死鎖鐵律）。
+/// 環境生物 tick（野兔 v1 ROADMAP 847 ＋水中游魚 v1 ROADMAP 848 ＋放養雞 v1 ROADMAP 870）：
+/// 與 `tick_residents` 同節拍（10Hz）。純點綴生物——沒有思考/記憶/社交；野兔閒晃＋見到玩家
+/// 靠近就受驚逃開，魚只在自己的水塘裡悠游（不怕人、無陸地碰撞），雞跟野兔一樣不怕人，
+/// 已馴服的雞會跟隨並定期下蛋（見 `voxel_wildlife`/`voxel_fish`/`voxel_chicken` 模組說明）。
+/// 鎖序：`players`(read) → `deltas`(read) → `wildlife`(write，內層區塊釋放) → `drops`(write，
+/// 落雞蛋，鎖已釋放後才取)，循序取放、與 `residents` 鎖各自獨立、不巢狀（守 prod 死鎖鐵律）。
 fn tick_wildlife(dt: f32) {
-    // 玩家座標快照（短鎖即釋，不與 wildlife 鎖巢狀）。只有野兔需要，魚不怕人不查。
+    // 玩家座標快照（短鎖即釋，不與 wildlife 鎖巢狀）。野兔/雞需要，魚不怕人不查。
     let player_pts: Vec<(f32, f32)> = {
         let players = hub().players.read().unwrap();
         players.values().map(|p| (p.x, p.z)).collect()
     }; // 玩家讀鎖在此釋放
     let world = hub().deltas.read().unwrap();
+    // 這一 tick 該下蛋的已馴服雞座標，留到 wildlife 寫鎖釋放後才落地掉落物（不巢狀鎖）。
+    let mut egg_layers: Vec<(f32, f32, f32)> = Vec::new();
+    {
     let mut animals = hub().wildlife.write().unwrap();
     for a in animals.iter_mut() {
         let (bx, bz) = (a.body.x, a.body.z);
@@ -8913,9 +9009,64 @@ fn tick_wildlife(dt: f32) {
                 }
                 a.body.y = vfishlife::clamp_swim_y(a.body.x.round() as i32, a.body.z.round() as i32, a.body.y);
             }
+            WildlifeKind::Chicken => {
+                // 雞不怕人：沒有受驚分支，永遠只是閒晃或（馴服後）跟隨——比照野兔跟隨分支，
+                // 但沒有 fleeing 這條路（放養雞 v1，自主提案切片 ROADMAP 870）。
+                let nearest = player_pts.iter().min_by(|(x1, z1), (x2, z2)| {
+                    let d1 = (a.body.x - x1).powi(2) + (a.body.z - z1).powi(2);
+                    let d2 = (a.body.x - x2).powi(2) + (a.body.z - z2).powi(2);
+                    d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let nearest_dist_sq = nearest
+                    .map(|(px, pz)| (a.body.x - px).powi(2) + (a.body.z - pz).powi(2))
+                    .unwrap_or(f32::MAX);
+                let now_following = a.tamed && vwild::should_follow(a.following, nearest_dist_sq);
+                a.following = now_following;
+                if now_following {
+                    if let Some((px, pz)) = nearest {
+                        if vwild::should_close_follow_gap(nearest_dist_sq) {
+                            vr::step_toward(&world, &mut a.body, *px, *pz, dt, vwild::FOLLOW_SPEED);
+                        } else {
+                            vr::gravity_step(&world, &mut a.body, dt);
+                        }
+                    }
+                    a.wait_timer = 0.0;
+                } else if a.wait_timer > 0.0 {
+                    a.wait_timer -= dt;
+                    vr::gravity_step(&world, &mut a.body, dt);
+                } else {
+                    let reached =
+                        vr::step_toward(&world, &mut a.body, a.target_x, a.target_z, dt, vwild::WANDER_SPEED);
+                    if reached {
+                        let angle = rand::random::<f32>() * std::f32::consts::TAU;
+                        let radius = vwild::WANDER_MIN_R
+                            + rand::random::<f32>() * (vwild::WANDER_MAX_R - vwild::WANDER_MIN_R);
+                        let (tx, tz) = vr::wander_target(a.home_x, a.home_z, angle, radius);
+                        a.target_x = tx;
+                        a.target_z = tz;
+                        a.wait_timer = 0.5 + rand::random::<f32>() * 1.5;
+                    }
+                }
+                // 已馴服的雞會定期回饋一顆蛋（掉落在腳邊，走近撿起——複用既有掉落物管線）。
+                if a.tamed {
+                    a.lay_cd -= dt;
+                    if vchicken::should_lay(a.lay_cd) {
+                        egg_layers.push((a.body.x, a.body.y, a.body.z));
+                        a.lay_cd = vchicken::next_lay_cooldown(rand::random::<f32>());
+                    }
+                }
+            }
         }
         if let Some(yaw) = vr::yaw_from_move(a.body.x - bx, a.body.z - bz) {
             a.yaw = yaw;
+        }
+    }
+    } // wildlife 寫鎖釋放
+    drop(world);
+    for (x, y, z) in egg_layers {
+        let spawned = hub().drops.write().unwrap().spawn(x, y, z, vcoop::EGG_ID, 1, "雞", vfarm::now_secs());
+        if let Some(id) = spawned {
+            broadcast_item_dropped(id, x, y, z, vcoop::EGG_ID, 1, "雞");
         }
     }
 }
@@ -8970,6 +9121,7 @@ fn maybe_breed_rabbits() {
             fleeing: false,
             tamed: true, // 一出生就認得你、立刻跟父母一樣跟著走。
             following: false,
+            lay_cd: 0.0,
         });
         vwild::baby_line(rand::random::<u64>() as usize).to_string()
     }; // wildlife 寫鎖釋放
