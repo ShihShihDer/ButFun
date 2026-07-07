@@ -2529,7 +2529,13 @@ async function openDiary(rid) {
   diaryBodyEl.innerHTML = '<div class="diary-empty">載入中…</div>';
   diaryEl.style.display = "flex";
   try {
-    const resp = await fetch("/voxel/diary");
+    // 居民察覺你翻過她的日記 v1：帶上 player+resident，讓伺服器記下「這位玩家翻過我的日記」
+    // 的待發現旗標（只有點開單一居民日記面板才算——日記牆一覽全體不夾帶 resident，不觸發）。
+    let url = "/voxel/diary";
+    if (myName && myName !== "旅人") {
+      url += `?player=${encodeURIComponent(myName)}&resident=${encodeURIComponent(rid)}`;
+    }
+    const resp = await fetch(url);
     if (!resp.ok) throw new Error("diary fetch failed: " + resp.status);
     const pages = await resp.json();
     const page = Array.isArray(pages) ? pages.find(p => p.resident_id === rid) : null;
