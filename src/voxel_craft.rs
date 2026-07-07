@@ -53,6 +53,14 @@ pub const STEW_ID: u8 = 67;
 /// 心意信物。純物品、不可放置。96（野花藍花）是目前最大已用 id，97 是首個空號。
 pub const AMULET_ID: u8 = 97;
 
+// ── 貨幣物品 ID（純物品，不可放置於世界，乙太幣 v1，自主提案切片）───────────────────
+/// 乙太幣（ROADMAP 873）——物品 ID 98；玩家↔玩家至今唯一的交換手段是以物易物
+/// （自由市集 832），沒有一種**通用**、任何人都想要的媒介——想換到手上沒有的東西，
+/// 得先剛好找到「對方想要的正是我有的」那個人。乙太幣把常見的原礦資源鑄成一枚
+/// 可攜帶、任何人都認得的信物，讓「先賺、再買我真正想要的」第一次可行。純物品、
+/// 不可放置。97（護身符）是目前最大已用 id，98 是首個空號。
+pub const COIN_ID: u8 = 98;
+
 use crate::voxel_inventory::InvStore;
 
 /// 一條合成配方（靜態常數，不含任何鎖或 IO 呼叫）。
@@ -309,6 +317,32 @@ pub const RECIPES: &[Recipe] = &[
         inputs: &[(4, 2), (58, 1)], // 2 沙 + 1 乙太礦 → 2 青陶磚（世界最深最稀有的顏料）
         output_block: 92,           // Block::TerracottaBlue = 92
         output_count: 2,
+    },
+    // ── 乙太幣鑄造 v1（ROADMAP 873，自主提案切片）：把常見原礦鑄成通用貨幣 ───────────
+    // 三種最容易大量湊齊的原礦各開一條「賣出換幣」配方，統一 4 份原礦→1 枚乙太幣的
+    // 匯率（v1 刻意不分稀有度分級，先讓「賺錢」這件事本身成立，之後再視經濟數據調整）。
+    // {5:4}/{3:4}/{4:4} 皆為單一材料、不同數量的多重集，與既有配方（木板 {5:2}、
+    // 石磚 {3:2}、玻璃 {4:2}、鎬斧鏟等混合多重集）逐一核對皆不相撞，見下方測試。
+    Recipe {
+        id: "coin_from_wood",
+        name_zh: "乙太幣（木頭）",
+        inputs: &[(5, 4)], // 4 木頭 → 1 乙太幣
+        output_block: COIN_ID,
+        output_count: 1,
+    },
+    Recipe {
+        id: "coin_from_stone",
+        name_zh: "乙太幣（石頭）",
+        inputs: &[(3, 4)], // 4 石頭 → 1 乙太幣
+        output_block: COIN_ID,
+        output_count: 1,
+    },
+    Recipe {
+        id: "coin_from_sand",
+        name_zh: "乙太幣（沙）",
+        inputs: &[(4, 4)], // 4 沙 → 1 乙太幣
+        output_block: COIN_ID,
+        output_count: 1,
     },
 ];
 
@@ -876,7 +910,8 @@ mod tests {
                 || r.output_block == crate::voxel_berry::BUSH_UNRIPE_ID // 莓果叢苗（可放置方塊 id=75，自主提案切片 806）
                 || r.output_block == crate::voxel_bench::BENCH_ID // 木長椅（可放置家具方塊 id=79，自主提案切片）
                 || r.output_block == crate::voxel_bottle::BOTTLE_ID // 空玻璃瓶（純物品 id=83，漂流瓶 v1 自主提案切片 825）
-                || (r.output_block >= 89 && r.output_block <= 92); // 四色陶磚（染色建材 v1，自主提案切片）
+                || (r.output_block >= 89 && r.output_block <= 92) // 四色陶磚（染色建材 v1，自主提案切片）
+                || r.output_block == COIN_ID; // 乙太幣（純物品 id=98，鑄幣 v1，ROADMAP 873 自主提案切片）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
@@ -1583,5 +1618,53 @@ mod tests {
         ok.give("旅人", 4, 2);
         ok.give("旅人", 21, 1);
         assert!(can_craft(r, &ok, "旅人"), "2 沙 + 1 鐵礦應可合紅陶磚");
+    }
+
+    #[test]
+    fn coin_recipes_output_coin_id_with_expected_rate() {
+        for (id, input_block, input_count) in
+            [("coin_from_wood", 5u8, 4u32), ("coin_from_stone", 3, 4), ("coin_from_sand", 4, 4)]
+        {
+            let r = find_recipe(id).unwrap();
+            assert_eq!(r.inputs, &[(input_block, input_count)]);
+            assert_eq!(r.output_block, COIN_ID, "配方「{id}」應鑄出乙太幣");
+            assert_eq!(r.output_count, 1);
+        }
+    }
+
+    #[test]
+    fn coin_recipes_have_unique_input_multisets() {
+        // 三條鑄幣配方彼此不相撞，也不與其餘既有配方（木板 {5:2}、石磚 {3:2}、玻璃 {4:2}
+        // 等）相撞——多重集比對的是「數量也要一致」，故 {5:4} 與 {5:2} 天生不同。
+        let sets: Vec<Vec<(u8, u32)>> =
+            ["coin_from_wood", "coin_from_stone", "coin_from_sand"]
+                .iter()
+                .map(|id| find_recipe(id).unwrap().inputs.to_vec())
+                .collect();
+        for i in 0..sets.len() {
+            for j in (i + 1)..sets.len() {
+                assert_ne!(sets[i], sets[j], "鑄幣配方彼此不應共用同一多重集");
+            }
+        }
+        for r in RECIPES {
+            if r.id.starts_with("coin_from_") {
+                continue;
+            }
+            let mut other = r.inputs.to_vec();
+            other.sort();
+            assert!(!sets.contains(&other), "配方「{}」不該與鑄幣多重集相撞", r.id);
+        }
+    }
+
+    #[test]
+    fn coin_craft_requires_correct_material_count() {
+        let r = find_recipe("coin_from_wood").unwrap();
+        let mut short = InvStore::default();
+        short.give("旅人", 5, 3); // 只有 3 木頭，缺 1
+        assert!(!can_craft(r, &short, "旅人"), "木頭不足 4 不能鑄幣");
+
+        let mut ok = InvStore::default();
+        ok.give("旅人", 5, 4);
+        assert!(can_craft(r, &ok, "旅人"), "4 木頭應可鑄 1 乙太幣");
     }
 }

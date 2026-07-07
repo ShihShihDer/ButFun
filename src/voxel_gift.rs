@@ -97,6 +97,8 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         94 => "紅花",
         95 => "黃花",
         96 => "藍花",
+        // 乙太幣 v1（ROADMAP 873，自主提案切片）：原礦鑄成的通用貨幣，自由市集可標價收付。
+        crate::voxel_craft::COIN_ID => "乙太幣",
         _ => "物品",
     }
 }
