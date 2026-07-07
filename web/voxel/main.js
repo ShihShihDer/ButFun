@@ -2786,6 +2786,8 @@ if (feedEl) {
 const compassEl = document.getElementById("compassPanel");
 const compassBodyEl = document.getElementById("compassBody");
 const compassBtnEl = document.getElementById("compassBtn");
+const waypointBodyEl = document.getElementById("waypointBody");
+const waypointAddBtnEl = document.getElementById("waypointAddBtn");
 
 /** 世界座標下，從 (px,pz) 望向 (rx,rz) 的方位角（弧度）。
  * 與本引擎鏡頭朝向慣例同一套定義（`fwd(yaw) = (-sin(yaw), 0, -cos(yaw))`）：
@@ -2809,6 +2811,38 @@ export function compassRelativeDeg(px, pz, rx, rz, yaw) {
 
 let compassVisible = false;
 let compassTimer = null;
+
+// ── 個人路標（自主提案切片，ROADMAP 869）───────────────────────────────────
+// 世界很大，玩家自己標記的地點（礦坑入口/看中的地基）走開幾步就再也找不回去；
+// 本段讓玩家能在目前所站的位置插一支路標、取個短名字，跟居民座標並列在同一面板導航。
+/** 這位玩家目前的路標快取：`[{label,x,y,z}]`，由 `/voxel/waypoints` 拉取 + `waypoint_sync` 即時更新。 */
+let waypoints = [];
+
+/** 向後端抓這位玩家目前的所有路標（開面板時先拉一份現況，之後靠 `waypoint_sync` 即時更新）。 */
+async function refreshWaypoints() {
+  if (!myName || myName === "旅人") { waypoints = []; return; }
+  try {
+    const resp = await fetch(`/voxel/waypoints?player=${encodeURIComponent(myName)}`);
+    if (!resp.ok) throw new Error("waypoints fetch failed: " + resp.status);
+    waypoints = await resp.json();
+  } catch (err) {
+    // 拉取失敗保留舊快取，不阻斷遊戲——下次開面板/重連再試。
+  }
+}
+
+/** 彈窗問名字，在玩家目前所站位置插一支路標（座標由伺服器權威決定，不信任前端自報）。 */
+function promptAddWaypoint() {
+  const label = window.prompt("幫這個路標取個短名字（最多 12 字）：", "");
+  if (label === null) return;
+  const trimmed = label.trim();
+  if (!trimmed) return;
+  ws.send(JSON.stringify({ t: "set_waypoint", label: trimmed }));
+}
+
+/** 刪除指定名字的路標（伺服器確認後才會從 `waypoints` 快取移除，見 `waypoint_sync`）。 */
+function removeWaypoint(label) {
+  ws.send(JSON.stringify({ t: "remove_waypoint", label }));
+}
 
 // ── 雷達小地圖（ROADMAP 820）───────────────────────────────────────────────
 // 705 羅盤只有文字列表（方向＋距離），玩家仍得自己在腦中拼出「大家散得多開」的
@@ -2866,6 +2900,21 @@ function renderCompassRadar() {
     ctx.fill();
     ctx.globalAlpha = 1;
   }
+  // 個人路標（自主提案切片，ROADMAP 869）：金色小菱形，與居民色點一眼區隔。
+  for (const w of waypoints) {
+    const dx = w.x - player.x, dz = w.z - player.z;
+    const dist = Math.hypot(dx, dz);
+    const relDeg = compassRelativeDeg(player.x, player.z, w.x, w.z, player.yaw);
+    const pt = radarPoint(dist, relDeg, RADAR_RANGE_UNITS, dotR);
+    ctx.globalAlpha = pt.clamped ? 0.55 : 1;
+    ctx.save();
+    ctx.translate(cx + pt.x, cy + pt.y);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = "#e8c95a";
+    ctx.fillRect(-3.5, -3.5, 7, 7);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
   ctx.beginPath();
   ctx.moveTo(cx, cy - 7);
   ctx.lineTo(cx - 5, cy + 5);
@@ -2902,6 +2951,33 @@ function renderCompassPanel() {
       '<span class="compass-dist">' + Math.round(row.dist) + ' 格</span>';
     compassBodyEl.appendChild(div);
   }
+  renderWaypointList();
+}
+
+/** 渲染「我的路標」清單：跟居民列表同款方位箭頭＋距離，多一顆刪除鈕。 */
+function renderWaypointList() {
+  if (!waypointBodyEl) return;
+  if (waypoints.length === 0) {
+    waypointBodyEl.innerHTML = '<div class="compass-empty">還沒有路標，按上方「+ 插旗」在此處插一支。</div>';
+    return;
+  }
+  waypointBodyEl.innerHTML = "";
+  for (const w of waypoints) {
+    const dx = w.x - player.x, dz = w.z - player.z;
+    const dist = Math.hypot(dx, dz);
+    const deg = compassRelativeDeg(player.x, player.z, w.x, w.z, player.yaw);
+    const div = document.createElement("div");
+    div.className = "compass-row waypoint-row";
+    div.innerHTML =
+      '<span class="compass-arrow" style="transform: rotate(' + deg.toFixed(0) + 'deg)">🚩</span>' +
+      '<span class="compass-name">' + escHtml(w.label) + '</span>' +
+      '<span class="compass-dist">' + Math.round(dist) + ' 格</span>' +
+      '<span class="waypoint-del" data-label="' + escHtml(w.label) + '">✕</span>';
+    waypointBodyEl.appendChild(div);
+  }
+  for (const btn of waypointBodyEl.querySelectorAll(".waypoint-del")) {
+    btn.addEventListener("click", () => removeWaypoint(btn.dataset.label));
+  }
 }
 
 /** 開啟居民羅盤面板，開始每 0.3 秒刷新一次方位（面板關閉時停止，不空耗）。 */
@@ -2910,6 +2986,7 @@ function openCompass() {
   compassVisible = true;
   compassEl.style.display = "flex";
   renderCompassPanel();
+  refreshWaypoints().then(() => { if (compassVisible) renderCompassPanel(); });
   if (compassTimer) clearInterval(compassTimer);
   compassTimer = setInterval(() => { if (compassVisible) renderCompassPanel(); }, 300);
 }
@@ -2928,6 +3005,7 @@ if (compassEl) {
   const closeBtn = document.getElementById("compassClose");
   if (closeBtn) closeBtn.addEventListener("click", closeCompass);
 }
+if (waypointAddBtnEl) waypointAddBtnEl.addEventListener("click", promptAddWaypoint);
 
 // ── 居民交情網（ROADMAP 708）────────────────────────────────────────────────
 // 居民彼此拜訪（671）很久前就悄悄累積情誼（672：陌生→相識→老朋友），驅動問候語
@@ -4612,6 +4690,8 @@ function connect() {
       refreshAffinity();
       // 居民教你一道獨門配方 v1（自主提案切片 849）：連線後拉一次已學會的獨門配方。
       refreshKnownRecipes();
+      // 個人路標 v1（自主提案切片 869）：連線後拉一次現有路標，供羅盤面板隨時顯示。
+      refreshWaypoints();
     } else if (m.t === "chunks") {
       for (const c of m.chunks) {
         const key = ckey(c.cx, c.cy, c.cz);
@@ -5040,6 +5120,14 @@ function connect() {
       // 地標旅人留言 v1：留言失敗（不是已知地標／需登入／內容審查未過／空白）。
       landmarkNoteJustSent = false;
       showErr(m.reason || "留言失敗");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "waypoint_sync") {
+      // 個人路標 v1（自主提案切片，ROADMAP 869）：插旗/刪除成功後伺服器回傳最新完整清單。
+      waypoints = m.items || [];
+      if (compassVisible) renderCompassPanel();
+    } else if (m.t === "waypoint_fail") {
+      // 個人路標 v1：插旗/刪除失敗（空名稱／已達上限／找不到這支路標）。
+      showErr(m.reason || "路標操作失敗");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "bottle_sync") {
       // 漂流瓶 v1（自主提案切片 825）：連線時一次收到世界上所有尚未被撿走的瓶子座標，全部掛上浮標。
@@ -6606,4 +6694,11 @@ window.__voxel = {
   get gamepadName() { return gamepadName; },
   get gamepadDigHeld() { return gamepadDigHeld; },
   pollGamepad(dt) { pollGamepad(dt == null ? 0.016 : dt); return { connected: gamepadConnected, name: gamepadName, move: { ...gpMove } }; },
+  // ── 個人路標 QA 用（自主提案切片，ROADMAP 869）──
+  get waypoints() { return [...waypoints]; },
+  setWaypoints(items) { waypoints = items; renderWaypointList(); },
+  refreshWaypoints() { return refreshWaypoints(); },
+  renderWaypointList() { renderWaypointList(); return waypointBodyEl && waypointBodyEl.innerHTML; },
+  promptAddWaypoint() { return promptAddWaypoint(); },
+  removeWaypoint(label) { removeWaypoint(label); },
 };

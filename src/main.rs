@@ -287,6 +287,7 @@ mod voxel_wildlife; // 野兔 v1·乙太方界至今只有 4 位具名 AI 居民
 mod voxel_fish; // 水中游魚 v1·野兔（847）讓陸地看得出有生機，但水域（湖泊/海灣）至今空蕩——除非上鉤，玩家從沒見過水裡有魚；本模組讓魚安靜地在水下游動，共用野兔的 wildlife hub 基礎設施只新增 Fish 分支，證明「世界環境」軸線可延伸而非野兔專屬特例，也給釣魚（794/841）第一次視覺線索（自主提案切片，ROADMAP 848）
 mod voxel_player_recipe; // 居民教你一道獨門配方 v1·居民互相傳授技能（717）讓「本事」在居民↔居民朋友網絡流通，玩家的合成配方卻從第一天起全部開放，沒有任何「靠情誼解鎖新配方」的路；本模組讓居民↔玩家的關係第一次在配方上留下痕跡——好感深到門檻，她會主動教你一道獨門配方「護身符」，從此永久解鎖（自主提案切片，ROADMAP 849）
 mod voxel_envy; // 居民見賢思齊 v1·居民的渴望至今只從對話/自我禱告/好奇心三個來源萌生，世界裡真實存在的事物（773/854 讓玩家蓋起、被居民命名記住的地標）從沒觸發過任何居民的心願；本模組補上第四個來源——居民路過一座已命名地標，偶爾心生嚮往，也想擁有一座自己的類似建物，世界第一次讓「環境本身」而非對話驅動居民的心願（自主提案切片，ROADMAP 858）
+mod voxel_waypoint; // 個人路標 v1·世界很大（散居村莊+程序生成地形），玩家自己標記的地點（礦坑入口/看中的地基）走開幾步就再也找不回去，705 羅盤／820 雷達只導向居民；本模組讓玩家能在目前所站的位置插一支路標、取個短名字，之後在同一面板跟居民座標並列導航（自主提案切片，ROADMAP 869）
 mod pet;
 mod pet_fetch;
 mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
@@ -639,6 +640,8 @@ async fn main() {
         .route("/voxel/mastery", get(voxel_ws::voxel_mastery_handler))
         // 乙太方界·玩家獨門配方（自主提案切片，ROADMAP 849）：居民教過哪些獨門配方 JSON。
         .route("/voxel/known_recipes", get(voxel_ws::voxel_known_recipes_handler))
+        // 乙太方界·個人路標（自主提案切片，ROADMAP 869）：這位玩家目前所有路標 JSON。
+        .route("/voxel/waypoints", get(voxel_ws::voxel_waypoints_handler))
         // 其餘路徑（game.js、assets、wasm…）交給靜態前端（web/）。game.js 維持可
         // 快取——它的 URL 帶內容雜湊，內容一變 URL 就變，CF/瀏覽器自然抓新版。
         .fallback_service(ServeDir::new("web"))

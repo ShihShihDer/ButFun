@@ -68,6 +68,8 @@ pub const MILESTONES: &[MilestoneDef] = &[
     MilestoneDef { id: "first_tame", name_zh: "初次馴服", desc_zh: "用一根胡蘿蔔馴服了一隻野兔", icon: "🐇" },
     // 地標旅人留言 v1（自主提案切片，ROADMAP 862）：地標第一次擁有共同的旅人留言簿。
     MilestoneDef { id: "first_landmark_note", name_zh: "初次留言", desc_zh: "在一處地標留下一句話給後來的旅人", icon: "📜" },
+    // 個人路標 v1（自主提案切片，ROADMAP 869）：世界第一次能被玩家自己標記、導航回去。
+    MilestoneDef { id: "first_waypoint", name_zh: "初次插旗", desc_zh: "在世界插下第一支屬於自己的路標", icon: "🚩" },
 ];
 
 /// 查表確認是否為已知里程碑 id（守 store 資料乾淨，未知 id 不寫入）。
