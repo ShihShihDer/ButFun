@@ -61,6 +61,7 @@ use crate::voxel_keepsake_recall as vkrecall;
 use crate::voxel_humming as vhum;
 use crate::voxel_bench as vbench;
 use crate::voxel_bench_chat as vbenchchat;
+use crate::voxel_bench_tiff as vbtiff;
 use crate::voxel_anglerest as vangler;
 use crate::voxel_raincover as vrain;
 use crate::voxel_homegaze as vhome;
@@ -527,9 +528,11 @@ struct VoxelResident {
     /// [`vbenchchat::CHAT_COOLDOWN_SECS`]，歸零前不再起哄——白天同在一張長椅邊偶爾招呼熟人並肩閒聊、
     /// 不連珠炮洗版。各居民初始錯開。純記憶體、重啟歸零。
     bench_chat_cooldown: f32,
-    /// 被熟人招呼在長椅上並肩坐下後、等這秒數到期再應和（發起者名字, 剩餘秒）（長椅並坐閒聊 v1）。
-    /// 與 `pending_tale_reply`／`pending_response` 分開，讓被招呼者冒的是「並坐閒聊」味道的專屬應和。純記憶體。
-    pending_bench_reply: Option<(String, f32)>,
+    /// 被熟人招呼在長椅上並肩坐下後、等這秒數到期再應和（發起者名字, 剩餘秒, 這次相遇的結果）
+    /// （長椅並坐閒聊 v1 + 長椅拌嘴/和好 v1）。第三欄 `BenchOutcome` 決定應和該冒閒聊/拌嘴/和好
+    /// 哪一種專屬台詞。與 `pending_tale_reply`／`pending_response` 分開，讓被招呼者冒的是「並坐」
+    /// 味道的專屬應和。純記憶體。
+    pending_bench_reply: Option<(String, f32, vbtiff::BenchOutcome)>,
     /// 臨水垂釣冷卻倒數（秒，居民臨水垂釣 v1）：一次坐下垂釣後設 [`vangler::REST_COOLDOWN_SECS`]，
     /// 歸零前不再垂釣——白天路過水邊偶爾坐下釣一竿、不狂刷垂釣泡泡。各居民初始錯開。純記憶體、重啟歸零。
     angler_cooldown: f32,
@@ -878,6 +881,11 @@ fn resident_bond_counts(bonds: &ResidentBonds, rid: &str) -> (usize, usize) {
 /// 依兩個居民 id 查詢彼此的情誼層級（見 `resident_bond_counts` 說明，同一個鍵值 bug）。
 fn resident_tier_of(bonds: &ResidentBonds, id_a: &str, id_b: &str) -> vbonds::BondTier {
     bonds.tier_of(resident_name_of(id_a), resident_name_of(id_b))
+}
+
+/// 依兩個居民 id 查詢彼此是不是「彆扭中」（長椅拌嘴/和好 v1，同一套 id→名字轉換慣例）。
+fn resident_is_sulking(bonds: &ResidentBonds, id_a: &str, id_b: &str) -> bool {
+    bonds.is_sulking(resident_name_of(id_a), resident_name_of(id_b))
 }
 
 /// 依 index 配 persona（讓「人設」字串有變化，純供 LLM 口吻；voxel 不沿用 2D 的閒晃邊界）。
@@ -9542,6 +9550,11 @@ fn tick_residents(dt: f32) {
     // 事件；雙方交情記憶＋record_visit 加溫＋Feed 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖
     // 鐵律）。(發起者 id, 發起者名, 被招呼者 id, 被招呼者名)。
     let mut bench_chat_events: Vec<(String, &'static str, String, &'static str)> = Vec::new();
+    // 長椅拌嘴/和好 v1：與長椅並坐閒聊共用同一個配對掃描，互斥（每次相遇只擇一）。拌嘴＝雙方記一筆
+    // 摩擦記憶 + 標記彆扭中 + 交情暫冷一格；和好＝解除彆扭 + 雙方記一筆修復記憶 + 交情回暖一格。
+    // 鎖外統一落地，格式同 bench_chat_events：(發起者 id, 發起者名, 被招呼者 id, 被招呼者名)。
+    let mut bench_tiff_events: Vec<(String, &'static str, String, &'static str)> = Vec::new();
+    let mut bench_makeup_events: Vec<(String, &'static str, String, &'static str)> = Vec::new();
     // 飢餓時的守望相助 v1（ROADMAP 800）：本 tick 分食事件 (分食者 id, 分食者名, 被分食者 id, 被分食者名)，
     // 鎖外落地雙方記憶 + 情誼加溫 + 城鎮動態（比照 792/witness 的鎖外處理，守死鎖鐵律）。
     // 末欄 is_repay（知恩圖報 v1，801）：true=這頓是「回報當年那口飯」，鎖外落地時走專屬記憶/Feed
@@ -10121,26 +10134,32 @@ fn tick_residents(dt: f32) {
             }
 
             // 長椅並坐閒聊 v1·被招呼者應和倒數：被熟人招呼在長椅上並肩坐下後，延遲幾秒冒一句嵌發起者名的
-            // 專屬應和泡泡（零 LLM、程式化台詞），心情也亮一格。與圍火聆聽／通用社交回應分開，讓並坐閒聊
-            // 有專屬語氣。倒數與 take 都在居民自身鎖內、不巢狀。
+            // 專屬應和泡泡（零 LLM、程式化台詞）。與圍火聆聽／通用社交回應分開，讓並坐閒聊有專屬語氣。
+            // 長椅拌嘴/和好 v1：`BenchOutcome` 決定應和該冒閒聊/拌嘴/和好哪一種台詞——拌嘴回嘴不設
+            // 並坐 wait_timer、不加心情（吵架不是暖心事），閒聊/和好才並肩坐一會兒、心情亮一格。
+            // 倒數與 take 都在居民自身鎖內、不巢狀。
             let bench_reply_ready = match &mut r.pending_bench_reply {
-                Some((_, cd)) => {
+                Some((_, cd, _)) => {
                     *cd -= dt;
                     *cd <= 0.0
                 }
                 None => false,
             };
             if bench_reply_ready && r.say.is_empty() {
-                if let Some((opener_name, _)) = r.pending_bench_reply.take() {
+                if let Some((opener_name, _, outcome)) = r.pending_bench_reply.take() {
                     let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                    r.say = vbenchchat::reply_line(&opener_name, pick)
-                        .chars()
-                        .take(vbenchchat::CHAT_SAY_CHARS)
-                        .collect();
+                    let line = match outcome {
+                        vbtiff::BenchOutcome::Chat => vbenchchat::reply_line(&opener_name, pick),
+                        vbtiff::BenchOutcome::Tiff => vbtiff::tiff_reply_line(&opener_name, pick),
+                        vbtiff::BenchOutcome::MakeUp => vbtiff::makeup_reply_line(&opener_name, pick),
+                    };
+                    r.say = line.chars().take(vbenchchat::CHAT_SAY_CHARS).collect();
                     r.say_timer = SAY_SECS;
-                    // 被招呼者也停下來並肩坐一會兒（設 wait_timer，比照歇腳）。
-                    r.wait_timer = r.wait_timer.max(vbench::REST_SIT_SECS);
-                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    if outcome != vbtiff::BenchOutcome::Tiff {
+                        // 被招呼者也停下來並肩坐一會兒（設 wait_timer，比照歇腳）。
+                        r.wait_timer = r.wait_timer.max(vbench::REST_SIT_SECS);
+                        r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    }
                 }
             }
 
@@ -13225,17 +13244,18 @@ fn tick_residents(dt: f32) {
             }
         }
 
-        // 2c-2b) 長椅並坐閒聊掃描（長椅並坐閒聊 v1）：白天，若兩位醒著、沒在說話、交情已到相識以上的
-        // 居民恰好都走到**同一張**長椅邊、且發起者並坐冷卻到期，偶爾其中一位招呼另一位一起坐下、並肩
-        // 閒聊幾句家常——兩人心情都亮一格、交情加溫。每 tick 最多一對、長冷卻＋機率門檻＝天然節流。
-        // 沿用 2c-2 圍火講故事的 `snaps` 位置快照（i≠j 循序索引、不雙重借用）與 `bench_spots`（白天才非空
-        // → 夜裡整段早退零成本）；情誼層級以短讀鎖取一次即釋（鎖序 residents 寫→bonds 讀，不巢狀、不
-        // 反向，比照 800 分食掃描，守死鎖鐵律）。
+        // 2c-2b) 長椅並坐閒聊/拌嘴/和好掃描（長椅並坐閒聊 v1 + 長椅拌嘴/和好 v1）：白天，若兩位醒著、
+        // 沒在說話、交情已到相識以上的居民恰好都走到**同一張**長椅邊、且發起者並坐冷卻到期，這次相遇
+        // 三選一（互斥）：①若這對正彆扭中→保證和好（解除彆扭、交情回暖）；②若已是老朋友且未彆扭→
+        // 低機率拌嘴（標記彆扭中、交情暫冷一格）；③否則走原本的並坐閒聊機率。每 tick 最多一對、長冷卻
+        // ＋機率門檻＝天然節流。沿用 2c-2 圍火講故事的 `snaps` 位置快照（i≠j 循序索引、不雙重借用）與
+        // `bench_spots`（白天才非空 → 夜裡整段早退零成本）；情誼層級/彆扭旗標以短讀鎖取一次即釋（鎖序
+        // residents 寫→bonds 讀，不巢狀、不反向，比照 800 分食掃描，守死鎖鐵律）。
         if !bench_spots.is_empty() {
-            let chat_pair: Option<(usize, usize)> = {
-                // (發起者 i, 被招呼者 j)。bonds 讀鎖只在挑對期間持有、找到即釋。
+            let chat_pair: Option<(usize, usize, vbtiff::BenchOutcome)> = {
+                // (發起者 i, 被招呼者 j, 這次相遇的結果)。bonds 讀鎖只在挑對期間持有、找到即釋。
                 let bonds = hub().bonds.read().unwrap();
-                let mut found: Option<(usize, usize)> = None;
+                let mut found: Option<(usize, usize, vbtiff::BenchOutcome)> = None;
                 'cscan: for i in 0..snaps.len() {
                     // 發起者：此刻沒在說話（讀 live，避免 2c/2c-2 剛讓她開口）、沒睡著、並坐冷卻到期、
                     // 不在朝聖/遠行途中（不搶正事）。
@@ -13268,40 +13288,67 @@ fn tick_residents(dt: f32) {
                         {
                             continue;
                         }
-                        // 記憶驅動行為的閘：只有交情到相識以上的兩人才會招呼彼此並肩坐下閒聊。
-                        if !vbenchchat::tier_allows_chat(resident_tier_of(
-                            &bonds, &snaps[i].1, &snaps[j].1,
-                        )) {
+                        // 記憶驅動行為的閘：只有交情到相識以上的兩人才會招呼彼此並肩坐下。
+                        let tier = resident_tier_of(&bonds, &snaps[i].1, &snaps[j].1);
+                        if !vbenchchat::tier_allows_chat(tier) {
                             continue;
                         }
-                        if vbenchchat::should_chat(0.0, rand::random::<f32>(), vbenchchat::CHAT_CHANCE) {
-                            found = Some((i, j));
+                        let sulking = vbtiff::tier_allows_tiff(tier)
+                            && resident_is_sulking(&bonds, &snaps[i].1, &snaps[j].1);
+                        let outcome = if sulking {
+                            // 彆扭中的老朋友再碰上同一張長椅→保證和好（比照 2D 559 慣例，不用再擲骰）。
+                            Some(vbtiff::BenchOutcome::MakeUp)
+                        } else if vbtiff::tier_allows_tiff(tier)
+                            && vbtiff::should_tiff(0.0, rand::random::<f32>())
+                        {
+                            Some(vbtiff::BenchOutcome::Tiff)
+                        } else if vbenchchat::should_chat(0.0, rand::random::<f32>(), vbenchchat::CHAT_CHANCE) {
+                            Some(vbtiff::BenchOutcome::Chat)
+                        } else {
+                            None
+                        };
+                        if let Some(outcome) = outcome {
+                            found = Some((i, j, outcome));
                             break 'cscan;
                         }
                     }
                 }
                 found
             }; // bonds 讀鎖釋放
-            if let Some((i, j)) = chat_pair {
+            if let Some((i, j, outcome)) = chat_pair {
                 let opener_id = snaps[i].1.clone();
                 let opener_name = snaps[i].2;
                 let other_id = snaps[j].1.clone();
                 let other_name = snaps[j].2;
                 let pick = (residents[i].body.x.to_bits() ^ residents[i].body.z.to_bits()) as usize;
-                residents[i].say = vbenchchat::opener_line(other_name, pick)
-                    .chars()
-                    .take(vbenchchat::CHAT_SAY_CHARS)
-                    .collect();
+                let line = match outcome {
+                    vbtiff::BenchOutcome::Chat => vbenchchat::opener_line(other_name, pick),
+                    vbtiff::BenchOutcome::Tiff => vbtiff::tiff_opener_line(other_name, pick),
+                    vbtiff::BenchOutcome::MakeUp => vbtiff::makeup_opener_line(other_name, pick),
+                };
+                residents[i].say = line.chars().take(vbenchchat::CHAT_SAY_CHARS).collect();
                 residents[i].say_timer = SAY_SECS;
                 residents[i].bench_chat_cooldown = vbenchchat::CHAT_COOLDOWN_SECS;
-                // 發起者停下來並肩坐一會兒（設 wait_timer，比照歇腳）。
-                residents[i].wait_timer = residents[i].wait_timer.max(vbench::REST_SIT_SECS);
-                residents[i].mood_boost_secs =
-                    residents[i].mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
-                // 被招呼者幾秒後應和並坐下（pending_bench_reply 存發起者名 + 倒數，下一 tick 由回應段接手）。
+                if outcome != vbtiff::BenchOutcome::Tiff {
+                    // 閒聊/和好才並肩坐一會兒、心情亮一格；拌嘴各自悶著，不算暖心事。
+                    residents[i].wait_timer = residents[i].wait_timer.max(vbench::REST_SIT_SECS);
+                    residents[i].mood_boost_secs =
+                        residents[i].mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                }
+                // 被招呼者幾秒後應和（pending_bench_reply 存發起者名 + 倒數 + 結果，下一 tick 由回應段接手）。
                 residents[j].pending_bench_reply =
-                    Some((opener_name.to_string(), vbenchchat::CHAT_REPLY_DELAY_SECS));
-                bench_chat_events.push((opener_id, opener_name, other_id, other_name));
+                    Some((opener_name.to_string(), vbenchchat::CHAT_REPLY_DELAY_SECS, outcome));
+                match outcome {
+                    vbtiff::BenchOutcome::Chat => {
+                        bench_chat_events.push((opener_id, opener_name, other_id, other_name))
+                    }
+                    vbtiff::BenchOutcome::Tiff => {
+                        bench_tiff_events.push((opener_id, opener_name, other_id, other_name))
+                    }
+                    vbtiff::BenchOutcome::MakeUp => {
+                        bench_makeup_events.push((opener_id, opener_name, other_id, other_name))
+                    }
+                }
             }
         }
 
@@ -13822,6 +13869,77 @@ fn tick_residents(dt: f32) {
                 }
             }
         }
+    }
+
+    // 4a-2a3) 長椅拌嘴落地（長椅拌嘴/和好 v1）：發起者 + 被抱怨者各寫一筆摩擦記憶（掛在對方名下），
+    // 標記這一對「彆扭中」＋交情暫時冷一格（純 flavor，不影響情誼等級——見 `voxel_bonds::begin_tiff`），
+    // 並廣播一則城鎮動態。鎖序：memory 寫（即釋）×2 → bonds 寫（即釋）→ bonds 讀 save；不巢狀、
+    // append-only 不破壞既有資料，守死鎖鐵律。
+    for (opener_id, opener_name, other_id, other_name) in &bench_tiff_events {
+        let eo = {
+            hub().memory.write().unwrap().add_memory(
+                opener_id,
+                other_name,
+                &vbtiff::tiff_memory_line(other_name),
+            )
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&eo);
+        let et = {
+            hub().memory.write().unwrap().add_memory(
+                other_id,
+                opener_name,
+                &vbtiff::tiff_memory_line(opener_name),
+            )
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&et);
+        {
+            let mut bonds = hub().bonds.write().unwrap();
+            bonds.begin_tiff(opener_name, other_name);
+        } // bonds 寫鎖釋放
+        {
+            let bonds = hub().bonds.read().unwrap();
+            vbonds::save_bonds(&bonds);
+        } // bonds 讀鎖釋放
+        vfeed::append_feed(
+            "長椅拌嘴",
+            opener_name,
+            &vbtiff::tiff_feed_line(opener_name, other_name),
+        );
+    }
+
+    // 4a-2a4) 長椅和好落地（長椅拌嘴/和好 v1）：發起者 + 被招呼者各寫一筆修復記憶（掛在對方名下），
+    // 解除這一對的「彆扭中」旗標＋交情回暖一格，並廣播一則城鎮動態。鎖序同上（memory 寫×2 → bonds
+    // 寫 → bonds 讀 save，不巢狀，守死鎖鐵律）。
+    for (opener_id, opener_name, other_id, other_name) in &bench_makeup_events {
+        let eo = {
+            hub().memory.write().unwrap().add_memory(
+                opener_id,
+                other_name,
+                &vbtiff::makeup_memory_line(other_name),
+            )
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&eo);
+        let et = {
+            hub().memory.write().unwrap().add_memory(
+                other_id,
+                opener_name,
+                &vbtiff::makeup_memory_line(opener_name),
+            )
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&et);
+        {
+            let mut bonds = hub().bonds.write().unwrap();
+            bonds.make_up(opener_name, other_name);
+        } // bonds 寫鎖釋放
+        {
+            let bonds = hub().bonds.read().unwrap();
+            vbonds::save_bonds(&bonds);
+        } // bonds 讀鎖釋放
+        vfeed::append_feed(
+            "長椅和好",
+            opener_name,
+            &vbtiff::makeup_feed_line(opener_name, other_name),
+        );
     }
 
     // 4a-2b) 飢餓時的守望相助落地（飢餓時的守望相助 v1，ROADMAP 800）：分食者 + 被分食者各寫一筆
