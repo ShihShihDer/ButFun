@@ -2241,9 +2241,12 @@ if (chatEl) {
   // 交易鈕：向當前居民請求以物易物（ROADMAP 670）。
   const tradeBtnEl = document.getElementById("chatTrade");
   if (tradeBtnEl) tradeBtnEl.addEventListener("click", () => { if (chatRid) tryRequestTrade(); });
-  // 接受交易按鈕。
+  // 接受交易按鈕（用材料換，v1 原行為）。
   const tradeAcceptBtnEl = document.getElementById("tradeAcceptBtn");
-  if (tradeAcceptBtnEl) tradeAcceptBtnEl.addEventListener("click", () => { if (chatRid) sendTradeAccept(chatRid); });
+  if (tradeAcceptBtnEl) tradeAcceptBtnEl.addEventListener("click", () => { if (chatRid) sendTradeAccept(chatRid, false); });
+  // 付幣代替湊材料 v1（ROADMAP 874）：改直接付乙太幣成交。
+  const tradeAcceptCoinBtnEl = document.getElementById("tradeAcceptCoinBtn");
+  if (tradeAcceptCoinBtnEl) tradeAcceptCoinBtnEl.addEventListener("click", () => { if (chatRid) sendTradeAccept(chatRid, true); });
 }
 
 // ── 常駐說話輸入列（embodied 靠近說話 v1）─────────────────────────────────────
@@ -2488,10 +2491,10 @@ function tryRequestTrade() {
   ws.send(JSON.stringify({ t: "trade_request", resident_id: chatRid }));
 }
 
-/** 接受指定居民的交易提案（發 TradeAccept）。 */
-function sendTradeAccept(rid) {
+/** 接受指定居民的交易提案（發 TradeAccept）。payWithCoin=true 時改直接付乙太幣代替湊材料（ROADMAP 874）。 */
+function sendTradeAccept(rid, payWithCoin) {
   if (!wsReady) return;
-  ws.send(JSON.stringify({ t: "trade_accept", resident_id: rid }));
+  ws.send(JSON.stringify({ t: "trade_accept", resident_id: rid, pay_with_coin: !!payWithCoin }));
   hideTradeOffer();
 }
 
@@ -2499,6 +2502,7 @@ function sendTradeAccept(rid) {
 function showTradeOffer(m) {
   const el = document.getElementById("tradeOffer");
   const textEl = document.getElementById("tradeOfferText");
+  const coinBtn = document.getElementById("tradeAcceptCoinBtn");
   if (!el || !textEl) return;
   pendingTradeRid = m.resident_id;
   const offerLine = m.offer_count > 1
@@ -2508,6 +2512,14 @@ function showTradeOffer(m) {
     ? `${m.want_name}×${m.want_count}`
     : m.want_name;
   textEl.textContent = `${m.resident_name || "居民"} 提議：給你 ${offerLine}，換你的 ${wantLine}`;
+  // 付幣代替湊材料 v1（ROADMAP 874）：不想湊 want_item 也可以直接付 coin_price 枚乙太幣，
+  // 省得為了一單交易特地跑一趟採礦；伺服器仍會權威驗背包夠不夠，不夠會回 trade_fail。
+  if (coinBtn && m.coin_price > 0) {
+    coinBtn.textContent = `🪙 付${m.coin_price}枚乙太幣換`;
+    coinBtn.style.display = "inline-block";
+  } else if (coinBtn) {
+    coinBtn.style.display = "none";
+  }
   el.style.display = "flex";
 }
 

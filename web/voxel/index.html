@@ -326,12 +326,20 @@
       font-size: 13px; color: #b8e8ff; gap: 8px; flex-direction: column;
     }
     #tradeOfferText { line-height: 1.5; }
+    #tradeOfferBtns { display: flex; gap: 8px; flex-wrap: wrap; }
     #tradeAcceptBtn {
       align-self: flex-start; padding: 4px 14px; border-radius: 8px; border: none;
       background: rgba(120,200,255,0.32); color: #e0f4ff; font-size: 13px; cursor: pointer;
       font-weight: bold;
     }
     #tradeAcceptBtn:hover { background: rgba(120,200,255,0.5); }
+    /* 付幣代替湊材料 v1（ROADMAP 874）：金色系與材料換的藍色系區隔，一眼看出是「花錢」選項 */
+    #tradeAcceptCoinBtn {
+      align-self: flex-start; padding: 4px 14px; border-radius: 8px; border: none;
+      background: rgba(255,205,80,0.32); color: #fff2c8; font-size: 13px; cursor: pointer;
+      font-weight: bold;
+    }
+    #tradeAcceptCoinBtn:hover { background: rgba(255,205,80,0.5); }
     @media (orientation: portrait) { #chat { bottom: 60px; max-height: 50vh; } }
 
     /* ── 常駐說話輸入列（embodied 靠近說話 v1）：底部、直式友善，打字→範圍說話 ──
@@ -1532,7 +1540,10 @@
     <!-- 交易提案橫幅（trade_offer 到來後顯示；接受/取消後隱藏）-->
     <div id="tradeOffer">
       <div id="tradeOfferText"></div>
-      <button id="tradeAcceptBtn">✓ 接受</button>
+      <div id="tradeOfferBtns">
+        <button id="tradeAcceptBtn">✓ 用材料換</button>
+        <button id="tradeAcceptCoinBtn" style="display:none;"></button>
+      </div>
     </div>
     <div id="chatQuick"></div>
     <div id="chatInputRow">
