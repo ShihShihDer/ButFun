@@ -1340,8 +1340,38 @@ function animateAvatar(av, moving, dt) {
   }
 }
 
+// ── 手持工具可見 v1（自主提案切片）───────────────────────────────────────────
+// 玩家至今是隱形的操作者：工具/方塊做出來後除了 UI 圖示，世界裡誰都看不出你手上拿著
+// 什麼——居民已有詳盡的視覺個性（住家色盤/建物/稱號），玩家自己反而毫無視覺存在感。
+// 本刀補上：熱鍵選中的物品，用一顆貼色小方塊掛在慣用手（右臂）末端顯示出來，自己與
+// 別的玩家都看得見——「你正拿著石鎬」「他手上是根釣竿」，操作第一次有了畫面。
+// 共用幾何、每具身體各自一份材質（換手持物只換材質顏色，不重建 mesh，FPS 友善，
+// 比照既有 digest 守門慣例：物品沒變就整幀不動）。
+const HELD_ITEM_GEO = new THREE.BoxGeometry(0.22, 0.22, 0.22);
+function attachHeldItem(av) {
+  const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+  const mesh = new THREE.Mesh(HELD_ITEM_GEO, mat);
+  // 掛在右臂 pivot（肩關節）下，貼近手臂末端、稍微前伸，像握在掌心；隨手臂擺動自然同動。
+  mesh.position.set(0, -0.55, 0.14);
+  mesh.visible = false;
+  av.armR.add(mesh);
+  av.heldMesh = mesh;
+  av.heldId = null;
+  return av;
+}
+// 依物品 id 查既有 COLOR 色盤（方塊/工具早已有色，見合成/採集系統）換色；查不到顏色的
+// 物品（如食物/種子等未定義視覺色的雜項）就不顯示，避免突兀的預設方塊。
+function setHeldItem(av, itemId) {
+  if (!av || !av.heldMesh || av.heldId === itemId) return;
+  av.heldId = itemId;
+  const c = itemId ? COLOR[itemId] : null;
+  if (!c) { av.heldMesh.visible = false; return; }
+  av.heldMesh.material.color.setRGB(c[0], c[1], c[2]);
+  av.heldMesh.visible = true;
+}
+
 // 玩家自己的身體（第三人稱可見）：金色系方塊小人，一眼認得是自己。
-const myAvatar = buildAvatar(0xffcf6b, 0xffe0b0, 0xe6b866);
+const myAvatar = attachHeldItem(buildAvatar(0xffcf6b, 0xffe0b0, 0xe6b866));
 const bodyMesh = myAvatar.group; // 沿用 bodyMesh 名：.visible/.position/.rotation.y 都作用在 Group 上
 let myTitleSprite = null; // 僅 QA 用（_qaSetMyTitle）：正式流程玩家自己不掛稱號牌
 scene.add(bodyMesh);
@@ -4576,7 +4606,7 @@ function connect() {
         let ent = others.get(p.id);
         if (!ent) {
           // 其他玩家也是方塊小人（藍色系）；mesh＝avatar 的 group，沿用既有 position/rotation/add 邏輯。
-          const av = buildAvatar(OTHER_PALETTE.body, OTHER_PALETTE.head, OTHER_PALETTE.limb);
+          const av = attachHeldItem(buildAvatar(OTHER_PALETTE.body, OTHER_PALETTE.head, OTHER_PALETTE.limb));
           const mesh = av.group; scene.add(mesh);
           // 頭上對話泡泡（child of mesh，sprite 永遠面向鏡頭、不受 mesh 旋轉影響）。
           const bubble = makeTextSprite("", true);
@@ -4598,6 +4628,8 @@ function connect() {
           }
           ent.titleText = ptitle;
         }
+        // 手持工具可見 v1：伺服器廣播的 held（純視覺 cosmetic，見協定註解）換色/顯隱。
+        setHeldItem(ent.av, p.held || null);
         // 位置有明顯變化 → 記下時間戳，讓 render 迴圈判定「在走路」而擺手腳（快照間也持續動）。
         const moved = Math.hypot(p.x - ent.mesh.position.x, p.z - ent.mesh.position.z);
         if (moved > 0.002) ent.lastMoveT = performance.now();
@@ -5135,8 +5167,15 @@ function sendMove(dt) {
   sendTimer -= dt;
   if (!wsReady || sendTimer > 0) return;
   sendTimer = 0.1;
-  ws.send(JSON.stringify({ t: "move", x: player.x, y: player.y, z: player.z, yaw: player.yaw }));
+  // 手持工具可見 v1：順手把目前熱鍵選中的物品 id 帶上（0.1s 節流已有，零額外流量）。
+  // 熱鍵格是「拿在手上要用的東西」，空格（undefined/0 之類非有效方塊）視為空手。
+  const held = selectedBlock() || null;
+  ws.send(JSON.stringify({ t: "move", x: player.x, y: player.y, z: player.z, yaw: player.yaw, held }));
 }
+
+// 自己的手持顯示：每幀即時反映熱鍵當前選中格，不等伺服器回音（別人看到的仍走
+// broadcast held，容許 <=0.1s 的些微延遲，可接受）。
+function updateMyHeldItem() { setHeldItem(myAvatar, selectedBlock() || null); }
 
 // ── 主迴圈 ─────────────────────────────────────────────────────────────────
 const SPEED = 5.0, GRAVITY = 24.0;
@@ -5298,6 +5337,7 @@ function update(dt) {
   updateFertSparkle(dt); // 乙太沃肥 v1（789）：推進施肥綠火花
   streamChunks(dt);
   sendMove(dt);
+  updateMyHeldItem(); // 手持工具可見 v1：即時反映熱鍵切換，不等節流送出的回音
 
   // 每幀重建少量 dirty chunk（分攤成本）
   let built = 0;
@@ -6184,6 +6224,14 @@ window.__voxel = {
   get camPitch() { return camPitch; },
   get pointerLocked() { return pointerLocked; },
   get bodyVisible() { return bodyMesh.visible; },
+  get playerId() { return myId; },
+  // ── 手持工具可見 v1 QA 用（自主提案切片）：讀自己/指定其他玩家目前手持顯示狀態 ──
+  get myHeld() { return { id: myAvatar.heldId, visible: myAvatar.heldMesh.visible }; },
+  otherHeld(id) {
+    const ent = others.get(id);
+    return ent ? { id: ent.av.heldId, visible: ent.av.heldMesh.visible } : null;
+  },
+  setHeldItem(itemId) { setHeldItem(myAvatar, itemId); return this.myHeld; },
   // 玩家生存指標 QA 用：讀目前血/飢窄列的顯示寬度（%）＋餓瘋樣式，驗 HUD 真的隨 player_stats 動。
   get statsHud() {
     const hp = document.getElementById("statHealthFill");

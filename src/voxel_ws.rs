@@ -201,6 +201,12 @@ struct VoxelPlayer {
     /// 不廣播（#[serde(skip)]），前端永遠看不到此值。
     #[serde(skip)]
     account: Option<String>,
+    /// 手持工具可見 v1（自主提案切片）：前端隨 `Move` 自報目前熱鍵選中的物品 id。
+    /// **純視覺 cosmetic**（不影響任何判定——挖礦加成走 790 `Break.tool` 各自驗證，
+    /// 這裡只決定手上「看起來」拿什麼），信任等級比照 `say`：客戶端自報、伺服器照收廣播，
+    /// 錯報頂多讓別人看到你手上的東西不準確，無任何利益可圖。空熱鍵格 = None，不序列化省頻寬。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    held: Option<u8>,
 }
 
 // ── 乙太方界 AI 居民（切片③）────────────────────────────────────────────────
@@ -2584,7 +2590,16 @@ enum ClientMsg {
     /// 入場：帶顯示名（可選）。
     Join { name: Option<String> },
     /// 位置更新（前端權威預測，伺服器照收並廣播給別人；切片①不做伺服器端反作弊）。
-    Move { x: f32, y: f32, z: f32, yaw: f32 },
+    /// 手持工具可見 v1（自主提案切片）：`held` 為目前熱鍵選中的物品 id（additive、
+    /// `#[serde(default)]` 向後相容——舊前端不送即沒有手持顯示，純視覺不影響行為）。
+    Move {
+        x: f32,
+        y: f32,
+        z: f32,
+        yaw: f32,
+        #[serde(default)]
+        held: Option<u8>,
+    },
     /// 走到新區塊時補要 chunk（cx,cz 為 chunk 座標，伺服器補該 column 的 cy 範圍）。
     Req { cx: i32, cz: i32 },
     /// 破壞方塊：目標方塊世界座標。伺服器驗證觸及範圍/實心後挖掉並廣播。
@@ -3184,6 +3199,7 @@ async fn handle_socket(
                 say_timer: 0.0,
                 title: conn_title.clone(),
                 account: account_email.clone(), // 後端解出，不廣播，僅去重用
+                held: None,
             },
         );
         old_id
@@ -3564,7 +3580,7 @@ async fn handle_socket(
             _ => continue,
         };
         match serde_json::from_str::<ClientMsg>(&txt) {
-            Ok(ClientMsg::Move { x, y, z, yaw }) => {
+            Ok(ClientMsg::Move { x, y, z, yaw, held }) => {
                 let changed = {
                     let mut players = hub().players.write().unwrap();
                     if let Some(p) = players.get_mut(&my_id) {
@@ -3572,6 +3588,7 @@ async fn handle_socket(
                         p.y = y;
                         p.z = z;
                         p.yaw = yaw;
+                        p.held = held;
                         true
                     } else {
                         false
@@ -16982,7 +16999,8 @@ mod tests {
     fn move_and_req_parse() {
         let m: ClientMsg =
             serde_json::from_str(r#"{"t":"move","x":1.5,"y":10.0,"z":-3.0,"yaw":0.7}"#).unwrap();
-        assert!(matches!(m, ClientMsg::Move { .. }));
+        // 舊前端不送 held（向後相容）→ 預設 None。
+        assert!(matches!(m, ClientMsg::Move { held: None, .. }));
         let r: ClientMsg = serde_json::from_str(r#"{"t":"req","cx":2,"cz":-1}"#).unwrap();
         match r {
             ClientMsg::Req { cx, cz } => {
@@ -16991,6 +17009,22 @@ mod tests {
             }
             _ => panic!("應解析成 Req"),
         }
+    }
+
+    #[test]
+    fn move_with_held_parses() {
+        // 手持工具可見 v1：帶 held 欄位（有選中物品）。
+        let m: ClientMsg = serde_json::from_str(
+            r#"{"t":"move","x":0.0,"y":64.0,"z":0.0,"yaw":0.0,"held":34}"#,
+        )
+        .unwrap();
+        assert!(matches!(m, ClientMsg::Move { held: Some(34), .. }));
+        // held: null（熱鍵格清空）也要能解析成 None。
+        let m2: ClientMsg = serde_json::from_str(
+            r#"{"t":"move","x":0.0,"y":64.0,"z":0.0,"yaw":0.0,"held":null}"#,
+        )
+        .unwrap();
+        assert!(matches!(m2, ClientMsg::Move { held: None, .. }));
     }
 
     #[test]
@@ -17313,6 +17347,7 @@ mod tests {
             say_timer: 0.0,
             title: None,
             account: account.map(String::from),
+            held: None,
         }
     }
 
