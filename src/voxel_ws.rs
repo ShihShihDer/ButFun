@@ -7257,8 +7257,8 @@ async fn handle_socket(
                 {
                     let notice = vstallnotify::StallSaleNotice {
                         buyer: name.clone(),
-                        got_item_name: vgift::item_name_zh(stall.give_item).to_string(),
-                        got_count: stall.give_count,
+                        got_item_name: vgift::item_name_zh(stall.want_item).to_string(),
+                        got_count: stall.want_count,
                     };
                     vstallnotify::enqueue_sale(
                         &mut hub().stall_notices.write().unwrap(),
