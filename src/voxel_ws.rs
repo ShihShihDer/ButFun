@@ -97,6 +97,7 @@ use crate::voxel_wildlife as vwild;
 use crate::voxel_fish as vfishlife;
 use crate::voxel_chicken as vchicken;
 use crate::voxel_player_recipe as vprecipe;
+use crate::voxel_diary_peek as vdiarypeek;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
@@ -571,6 +572,12 @@ struct VoxelResident {
     /// 的名號（第二手傳聞）。key＝玩家顯示名。打招呼時若還昇華不出自己的第一手名號（affinity 不到
     /// 老友門檻），但此表有你 → 用一句「久仰」的傳聞招呼喊你。純記憶體、重啟歸零（比照 `coined_epithets`）。
     heard_epithets: std::collections::HashMap<String, vespread::Hearsay>,
+    /// 居民察覺你翻過她的日記 v1（自主提案切片）：這位居民對哪些玩家記著「翻過我的日記、
+    /// 我還沒發現」的待發現旗標——key＝玩家顯示名，存在＝待發現、不存在＝沒被那位玩家翻過或
+    /// 已經揭穿完畢。`/voxel/diary?player=&resident=` 命中時鎖外寫鎖新增（見 `voxel_diary_peek`）；
+    /// 打招呼那一刻依機率讀取／清除。有界成長（[`vdiarypeek::MAX_PEEK_ENTRIES_PER_RESIDENT`]），
+    /// 防有心人拿亂數玩家名瘋狂洗版。純記憶體、重啟歸零（丟了大不了少一次驚喜，零資料風險）。
+    diary_peeked: std::collections::HashSet<String>,
     /// 名號化為敬意 v1（自主提案·ROADMAP 777）：Some(玩家顯示名, 已為他昇華的名號角色) =
     /// 這位居民**已為某位在線玩家昇華出名號**（`coined_epithets` 有他），此刻正**特地放下閒晃、
     /// 走過去向他致意**；抵達（冒致意泡泡＋記城鎮動態）或玩家走遠／離線即清空。純記憶體、重啟歸零。
@@ -1674,6 +1681,8 @@ fn build_resident(
             // 自我印象 v3（ROADMAP 772）：入場還沒說出過自我印象——首次昇華不算「轉變」。
             self_image_domain: None,
             coined_epithets: std::collections::HashMap::new(),
+            // 居民察覺你翻過她的日記 v1：入場沒有任何待發現的偷看旗標。
+            diary_peeked: std::collections::HashSet::new(),
             heard_epithets: std::collections::HashMap::new(),
             approaching_esteem: None,
             // 各居民初始冷卻錯開，避免入場後同時起身向玩家致意（比照 678 尋伴）。
@@ -8485,7 +8494,15 @@ fn tick_coop() {
 /// 第一人稱反思、同主題收斂降噪、永不倒出玩家原話 / 玩家名（隱私邊界）。
 /// 短鎖讀取快照 → drop 鎖 → 格式化 → 回 JSON；零 LLM、零持久化、零 migration。
 /// 呼叫端（瀏覽器）直接 `fetch("/voxel/diary")` 即可，無需任何認證。
-pub async fn voxel_diary_handler() -> axum::response::Response {
+///
+/// **居民察覺你翻過她的日記 v1（自主提案切片）**：可選 `?player=&resident=` 兩參數——都非空
+/// 且 `resident` 命中一位真實居民時，記下「這位玩家翻過我的日記、還沒被我發現」的待發現旗標
+/// （見 `voxel_diary_peek`），下次她打招呼時有機率點破。只有**點開單一居民日記面板**（意圖明確）
+/// 才會觸發；日記牆一次讀全部居民、刻意不夾帶 `resident`，不觸發（避免掃過日記牆就被人人抓包）。
+/// 缺任一參數或 `resident` 沒命中任何居民 → 靜默略過，回傳內容不受影響，向後相容舊前端。
+pub async fn voxel_diary_handler(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
     use axum::http::header;
 
     // 1) 短鎖快照居民 id/name → drop（循序取鎖、不巢狀、守鎖紀律）。
@@ -8493,6 +8510,21 @@ pub async fn voxel_diary_handler() -> axum::response::Response {
         let rs = hub().residents.read().unwrap();
         rs.iter().map(|r| (r.id.clone(), r.name)).collect()
     };
+
+    // 1b) 居民察覺你翻過她的日記 v1：`player`+`resident` 皆非空且命中真實居民 → 短寫鎖插旗，
+    // 有界成長（`MAX_PEEK_ENTRIES_PER_RESIDENT`）防洗版，插滿靜默略過不 panic、不報錯。
+    let peek_player = params.get("player").map(|s| s.trim()).unwrap_or("");
+    let peek_resident = params.get("resident").map(|s| s.trim()).unwrap_or("");
+    if !peek_player.is_empty() && !peek_resident.is_empty() {
+        let mut rs = hub().residents.write().unwrap();
+        if let Some(r) = rs.iter_mut().find(|r| r.id == peek_resident) {
+            if r.diary_peeked.contains(peek_player)
+                || r.diary_peeked.len() < vdiarypeek::MAX_PEEK_ENTRIES_PER_RESIDENT
+            {
+                r.diary_peeked.insert(peek_player.to_string());
+            }
+        }
+    } // residents 寫鎖釋放
 
     // 2) 短鎖快照全部長期記憶 + 淡忘計數（每位）→ drop。
     let all_memories: Vec<(String, Vec<crate::voxel_memory::MemoryEntry>, usize)> = {
@@ -9446,6 +9478,11 @@ fn tick_residents(dt: f32) {
     // → 收集 (居民 id, 玩家顯示名)；residents 寫鎖釋放後再開 memory 寫鎖記一筆「我對這位旅人掏了心」
     // （episodic，累積好感），守「residents 寫鎖內不巢狀取 memory 寫鎖」的死鎖鐵律。
     let mut confide_mems: Vec<(String, String)> = Vec::new();
+    // 居民察覺你翻過她的日記 v1（自主提案切片）：招呼時序內偵測「這位居民對你恰好有待發現的
+    // 偷看旗標、且這次擲骰揭穿了」→ 收集 (居民 id, 玩家顯示名)；residents 寫鎖釋放後再開
+    // memory 寫鎖記一筆「你翻過我的日記」（episodic），守「residents 寫鎖內不巢狀取 memory
+    // 寫鎖」的死鎖鐵律（比照 `confide_mems` 同一手法）。
+    let mut diary_peek_reveals: Vec<(String, String)> = Vec::new();
     // 居民教你一道獨門配方 v1（自主提案，ROADMAP 849）：招呼時序內偵測「感情深厚的居民主動
     // 教你一道獨門配方」→ 收集 (居民 id, 居民顯示名, 玩家顯示名)；residents 寫鎖釋放後才
     // 落地學會（player_recipes 寫鎖）+ 記憶（memory 寫鎖）+ Feed + 廣播，守死鎖鐵律。
@@ -10023,7 +10060,18 @@ fn tick_residents(dt: f32) {
                             };
                             (aff, ms)
                         }; // 記憶讀鎖在此釋放
-                        let line = if affinity >= vfond::FOND_AFFINITY && !nearest_name.is_empty() {
+                        // 居民察覺你翻過她的日記 v1：這一拍最高優先——若這位居民對眼前這位玩家
+                        // 恰好留著「待發現」的偷看旗標、且這次擲骰揭穿了，整拍改用「抓包」台詞，
+                        // 蓋過底下名號／老友/陌生人問候（稀有一次性驚喜，優先於例行招呼）。
+                        // 命中後立刻清旗標（不重複抓包同一次偷看）＋收集鎖外記一筆記憶。
+                        let diary_reveal = !nearest_name.is_empty()
+                            && r.diary_peeked.contains(nearest_name)
+                            && rand::random::<f32>() < vdiarypeek::REVEAL_CHANCE;
+                        let line = if diary_reveal {
+                            r.diary_peeked.remove(nearest_name);
+                            diary_peek_reveals.push((r.id.clone(), nearest_name.to_string()));
+                            vdiarypeek::peek_reveal_line(nearest_name, pick)
+                        } else if affinity >= vfond::FOND_AFFINITY && !nearest_name.is_empty() {
                             // 居民為你取一個名號 v1：先看牠是否已從「關於你的全部作為」昇華出一個**明顯
                             // 主導的角色**（造物者／慷慨的人／老搭檔／常來的老友）。有的話——你不再只是
                             // 一個名字，而是牠心中一個掙來的名號，牠改用名號稱呼你。這是 770 自我印象
@@ -14849,6 +14897,15 @@ fn tick_residents(dt: f32) {
     // （守死鎖鐵律）；摘要為純模板、只嵌玩家顯示名、不含渴望原文。
     for (rid, player) in &confide_mems {
         let summary = vconfide::confide_memory_line(player);
+        let entry = hub().memory.write().unwrap().add_memory(rid, player, &summary);
+        vmem::append_memory(&entry);
+    }
+
+    // 5c-2g-1b-2) 居民察覺你翻過她的日記 v1（自主提案切片）：居民打招呼時抓包了「你翻過我的
+    // 日記」（泡泡已於鎖內設好、旗標已於鎖內清除）後，鎖外把這一刻記進她對這位玩家的記憶——
+    // episodic、純模板、不含日記原文，摘要視角。記憶寫鎖即釋、append IO 在鎖外（守死鎖鐵律）。
+    for (rid, player) in &diary_peek_reveals {
+        let summary = vdiarypeek::peek_memory_line(player);
         let entry = hub().memory.write().unwrap().add_memory(rid, player, &summary);
         vmem::append_memory(&entry);
     }
