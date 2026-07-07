@@ -66,6 +66,8 @@ pub const MILESTONES: &[MilestoneDef] = &[
     MilestoneDef { id: "first_hotspring", name_zh: "初次泡湯", desc_zh: "巧遇一泓暖泉，泡進去歇了口氣", icon: "♨️" },
     // 餵野兔馴服 v1（自主提案切片）：世界環境軸線（847/848）第一次能被玩家親手觸碰。
     MilestoneDef { id: "first_tame", name_zh: "初次馴服", desc_zh: "用一根胡蘿蔔馴服了一隻野兔", icon: "🐇" },
+    // 地標旅人留言 v1（自主提案切片，ROADMAP 862）：地標第一次擁有共同的旅人留言簿。
+    MilestoneDef { id: "first_landmark_note", name_zh: "初次留言", desc_zh: "在一處地標留下一句話給後來的旅人", icon: "📜" },
 ];
 
 /// 查表確認是否為已知里程碑 id（守 store 資料乾淨，未知 id 不寫入）。

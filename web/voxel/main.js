@@ -3256,6 +3256,33 @@ if (discEl) {
   if (closeBtn) closeBtn.addEventListener("click", closeDiscoveries);
 }
 
+// 伺服器對同一種 `landmark_notes` 訊息有兩個時機都會送：①第一次發現地標（該問要不要
+// 留言）②剛寫完留言後的回顯（只該更新顯示、不該再問一次——否則會無限循環跳窗）。兩者
+// wire 格式相同，靠這個旗標分辨「這則是不是我剛寫完留言換來的回音」。
+let landmarkNoteJustSent = false;
+
+// ── 地標旅人留言（自主提案切片，ROADMAP 862，接續 838/839/840）────────────────────
+// 840 探索紀事是私人足跡；本段接住伺服器在「第一次發現這處地標」那一刻主動推來的既有
+// 留言簿——先秀給玩家看先前旅人留了什麼話，再問要不要也留一句給後來的人。真正的驗證/
+// 去重/內容審查都在伺服器 `LeaveLandmarkNote` 那一刀，這裡純粹是問與顯示。
+function showLandmarkNotes(kind, x, y, z, notes) {
+  const icon = kind === "ruin" ? "🏛️" : "♨️";
+  if (landmarkNoteJustSent) {
+    landmarkNoteJustSent = false;
+    showMsg(icon + " 留言已收錄進地標留言簿了！");
+    return;
+  }
+  if (notes && notes.length > 0) {
+    const preview = notes.slice(0, 2).map((n) => "「" + n.text + "」——" + n.player).join(" ／ ");
+    showMsg(icon + " 先前旅人留言：" + preview);
+  }
+  const text = window.prompt(icon + " 要留一句話給後來的旅人嗎？（最多 60 字，留空可跳過）", "");
+  if (text !== null && text.trim() !== "") {
+    landmarkNoteJustSent = true;
+    ws.send(JSON.stringify({ t: "leave_landmark_note", x, y, z, text }));
+  }
+}
+
 // ── 玩家熟練度（自主提案切片，ROADMAP 842）──────────────────────────────────────
 // 玩家里程碑（724）補上了「回頭看看走了多遠」的一次性徽章牆，但徽章是二元的（做過一次
 // 沒），一次解鎖後就靜止——玩家日復一日反覆採集/耕種/垂釣，除了徽章牆上早已勾滿的勾勾，
@@ -5000,6 +5027,15 @@ function connect() {
     } else if (m.t === "mastery_bonus") {
       // 玩家熟練度 v1：練到 Lv.5 起的產出加成揭曉句（背包已由 inv_update 更新，此處只揭曉）。
       showMsg(m.line || "練出來的手法，多收了一份！");
+    } else if (m.t === "landmark_notes") {
+      // 地標旅人留言 v1（自主提案切片，ROADMAP 862）：第一次發現這處地標時伺服器主動推來
+      // 留言簿——先看看先前旅人留下的話，再問要不要也留一句給後來的人。
+      showLandmarkNotes(m.kind, m.x, m.y, m.z, m.notes || []);
+    } else if (m.t === "landmark_note_fail") {
+      // 地標旅人留言 v1：留言失敗（不是已知地標／需登入／內容審查未過／空白）。
+      landmarkNoteJustSent = false;
+      showErr(m.reason || "留言失敗");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "bottle_sync") {
       // 漂流瓶 v1（自主提案切片 825）：連線時一次收到世界上所有尚未被撿走的瓶子座標，全部掛上浮標。
       for (const b of (m.bottles || [])) addBottleMarker(b.x, b.y, b.z);
