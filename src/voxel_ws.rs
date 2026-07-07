@@ -154,6 +154,7 @@ use crate::voxel_welcome as vwelcome;
 use crate::voxel_resident_trade as vrtrade;
 use crate::voxel_share as vshare;
 use crate::voxel_milestones::{self as vmiles, MilestoneStore};
+use crate::voxel_milestone_cheer as vmcheer;
 use crate::voxel_player_pos as vpp;
 use crate::voxel_bottle::{self as vbottle, BottleStore};
 use crate::voxel_coop_gather as vcoop_gather;
@@ -1955,6 +1956,67 @@ fn try_unlock_milestone(player: &str, id: &str, out_tx: &mpsc::Sender<Message>) 
             })
             .to_string(),
         ));
+        // 居民為你的個人里程碑喝采 v1（自主提案切片）：私人旅程之外，讓身邊閒著的居民也
+        // 為這一刻由衷喝采。里程碑本身全庫只對每位玩家觸發一次，天然不會刷版。
+        maybe_cheer_milestone(player, def);
+    }
+}
+
+/// 居民為你的個人里程碑喝采 v1（自主提案切片，接續 724/856）：里程碑冪等解鎖成功後呼叫，
+/// 找到玩家當下位置附近一位閒著的居民，讓她為你喝采＋記進心裡＋動態牆播報。
+/// 比照 773/863 讚賞的「挑一位近旁有空的居民」手法（residents 讀鎖即釋、不巢狀）。
+/// **鎖紀律**：players/residents 讀鎖各自短取即釋；residents 寫鎖另外短取即釋；
+/// broadcast/memory append/feed append 全在鎖外，不巢狀、不持鎖 await。
+fn maybe_cheer_milestone(player_name: &str, def: &vmiles::MilestoneDef) {
+    let pos: Option<(f32, f32)> = {
+        hub().players.read().unwrap().values().find(|p| p.name == player_name).map(|p| (p.x, p.z))
+    }; // players 讀鎖釋放
+    let Some((px, pz)) = pos else { return };
+    let cand: Option<(String, &'static str, f32)> = {
+        let residents = hub().residents.read().unwrap();
+        residents
+            .iter()
+            .filter(|r| {
+                r.say.is_empty()
+                    && !r.asleep
+                    && r.visiting.is_none()
+                    && r.expedition.is_none()
+                    && r.clique_meet.is_none()
+                    && r.savoring.is_none()
+            })
+            .map(|r| {
+                let dx = px - r.body.x;
+                let dz = pz - r.body.z;
+                (r.id.clone(), r.name, dx * dx + dz * dz)
+            })
+            .filter(|(_, _, d2)| vmcheer::cheer_eligible(*d2))
+            .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+    }; // residents 讀鎖釋放
+    let Some((rid, rname, _)) = cand else { return };
+    let pick = vfarm::now_secs() as usize;
+    let say_line = vmcheer::cheer_say_line(player_name, def.name_zh, def.icon, pick);
+    let said = {
+        let mut residents = hub().residents.write().unwrap();
+        residents
+            .iter_mut()
+            .find(|r| r.id == rid)
+            .map(|r| {
+                r.say = say_line.chars().take(50).collect();
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            })
+            .is_some()
+    }; // residents 寫鎖釋放
+    if said {
+        broadcast_players();
+        let summary = vmcheer::cheer_memory_line(player_name, def.name_zh);
+        let entry = hub().memory.write().unwrap().add_memory(&rid, player_name, &summary);
+        vmem::append_memory(&entry);
+        vfeed::append_feed(
+            "居民喝采",
+            rname,
+            &vmcheer::cheer_feed_line(rname, player_name, def.name_zh, def.icon),
+        );
     }
 }
 

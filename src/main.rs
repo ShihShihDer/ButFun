@@ -241,6 +241,9 @@ mod voxel_resident_trade;
 mod voxel_share;
 // 乙太方界·玩家里程碑 v1：把玩家自己的療癒循環第一次做成可回頭翻閱的成就徽章（ROADMAP 724）。
 mod voxel_milestones;
+// 乙太方界·居民為你的個人里程碑喝采 v1：里程碑此前只私訊玩家自己，本模組讓身邊閒著的
+// 居民也為你的「第一次」由衷喝采、記進心裡（自主提案切片，接續 724/856）。
+mod voxel_milestone_cheer;
 // 乙太方界·玩家位置持久化 v1：登入帳號重整/重登回到上次位置（訪客不存、綁後端權威 email）。
 mod voxel_player_pos;
 mod voxel_keepsake; // ROADMAP 732 你送的心意她擺了出來·玩家餽贈化為紀念物擺進世界
