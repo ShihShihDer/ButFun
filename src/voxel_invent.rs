@@ -1541,6 +1541,34 @@ pub fn invention_prompt(
     } else {
         "若你已經會做工作台/熔爐這件事，優先用 use_skill 引用，別重新拆解。"
     };
+    // 工作台／熔爐的教學要看「目標材料是不是它本身」而分岔：
+    // 若目標就是工作台/熔爐這個材料，做到 craft/craft_wb 那步、東西已經在背包裡就是達成了，
+    // **不該再 place**——place 會把它放到地上、從背包消耗掉，反而讓背包裡沒有目標材料，
+    // 白費一趟（這正是修這支 prompt 前，居民想要「熔爐」卻總是失敗的根因：她照著
+    // 「拿它當中繼站」的教法多做一步 place，結果目標材料反而從背包裡消失）。
+    // 只有當工作台/熔爐是**拿來當中繼站**（要接著 craft_wb / smelt 別的東西）時，才需要放置。
+    let workbench_hint_line = if goal.block_id == WORKBENCH_BLOCK_ID {
+        "- 你的目標材料正是「工作台」本身：先 craft plank（木頭×2→木板×4）、\
+        再 craft workbench（木板×4→工作台），做到這裡東西已經在背包裡，就算達成目標了——\
+        **先別 place**，place 會把它放到地上、從背包裡消耗掉，反而達不成目標。\n"
+            .to_string()
+    } else {
+        "- 工作台本身的正確做法：先 craft plank（木頭×2→木板×4）、再 craft workbench\
+        （木板×4→工作台）、再 place 放置到腳邊，才能接著用 craft_wb 做 3×3 合成；\
+        若你附近已經有工作台，就不必再做一個、直接 craft_wb。\n"
+            .to_string()
+    };
+    let furnace_hint_line = if goal.block_id == FURNACE_BLOCK_ID {
+        "- 你的目標材料正是「熔爐」本身：先備妥工作台（同上）、再 craft_wb furnace_wb\
+        （石頭×8→熔爐，需工作台），做到這裡東西已經在背包裡，就算達成目標了——\
+        **先別 place**，place 會把它放到地上、從背包裡消耗掉，反而達不成目標。\n"
+            .to_string()
+    } else {
+        "- 熔爐本身的正確做法：先備妥工作台（同上）、再 craft_wb furnace_wb\
+        （石頭×8→熔爐，需工作台）、再 place 放置到腳邊，才能接著 smelt；\
+        若你附近已經有熔爐，就不必再做一個、直接 smelt。\n"
+            .to_string()
+    };
     let system = format!(
         "你是{resident_name}，乙太方界的居民。你要自己想辦法解決一個處境：把你會的基礎動作\
         組合成一個新技能。你只會這幾種基礎動作（原語）：\n\
@@ -1564,12 +1592,8 @@ pub fn invention_prompt(
         - craft 只能用「隨身合成配方」清單裡的 id；craft_wb 只能用「工作台配方」清單裡的 id；\
         smelt 只能用「熔爐冶煉配方」清單裡的 id——三張清單不可混用\
         （workbench 在隨身清單，要用 craft 做）。\n\
-        - 工作台本身的正確做法：先 craft plank（木頭×2→木板×4）、再 craft workbench\
-        （木板×4→工作台）、再 place 放置到腳邊；\
-        若你附近已經有工作台，就不必再做一個、直接 craft_wb。\n\
-        - 熔爐本身的正確做法：先備妥工作台（同上）、再 craft_wb furnace_wb\
-        （石頭×8→熔爐，需工作台）、再 place 放置到腳邊；\
-        若你附近已經有熔爐，就不必再做一個、直接 smelt。{use_skill_wb_hint}\n\
+        {workbench_hint}\
+        {furnace_hint}{use_skill_wb_hint}\n\
         請只輸出一個 JSON 物件（不要任何其他文字或說明）：\n\
         {{\"name\":\"<你給這個技能取的名字，繁體中文，最多{max_n}字>\",\"steps\":[<原語序列，最多{max_s}步>]}}",
         max_c = MAX_GATHER_COUNT,
@@ -1578,6 +1602,8 @@ pub fn invention_prompt(
         recipes = recipe_lines.join("\n"),
         wb_recipes = wb_recipe_lines.join("\n"),
         furnace_recipes = furnace_recipe_lines.join("\n"),
+        workbench_hint = workbench_hint_line,
+        furnace_hint = furnace_hint_line,
     );
     let user = format!(
         "處境：你心裡想著「{desire}」，想要「{goal}」這種材料，但你的背包裡沒有。\
@@ -3214,6 +3240,42 @@ mod tests {
         assert!(user.contains("沒有工作台"));
         let (_, user2) = invention_prompt("露娜", &goal, "想要一座熔爐", "", true, false, &[]);
         assert!(user2.contains("已經有一座放置好的工作台"));
+    }
+
+    /// 修根因：目標材料就是「熔爐」本身時，prompt 不該教她 place（place 會把它從背包
+    /// 放到地上、消耗掉，反而讓「背包裡有熔爐」這個目標永遠達不成——這正是修這支
+    /// prompt 前，居民想要熔爐卻總是失敗的根因（見 furnace_chain_json：正確計畫本就
+    /// 停在 craft_wb，不含 place）。
+    #[test]
+    fn invention_prompt_furnace_goal_says_dont_place() {
+        let goal = MaterialGoal { block_id: FURNACE_BLOCK_ID, name_zh: "熔爐" };
+        let (sys, _) = invention_prompt("露娜", &goal, "想要一座熔爐", "", false, false, &[]);
+        assert!(sys.contains("你的目標材料正是「熔爐」本身"), "{sys}");
+        assert!(sys.contains("先別 place"), "{sys}");
+        // 工作台在這裡仍是中繼站（她還得先放工作台才能 craft_wb），教法不變。
+        assert!(sys.contains("才能接著用 craft_wb 做 3×3 合成"), "{sys}");
+    }
+
+    /// 同理：目標材料是「工作台」本身時，工作台那條教法也該改口別 place；
+    /// 熔爐維持原本「拿來當中繼站」的教法（她可能還想接著 craft_wb/smelt 別的東西）。
+    #[test]
+    fn invention_prompt_workbench_goal_says_dont_place() {
+        let goal = MaterialGoal { block_id: WORKBENCH_BLOCK_ID, name_zh: "工作台" };
+        let (sys, _) = invention_prompt("露娜", &goal, "想要一座工作台", "", false, false, &[]);
+        assert!(sys.contains("你的目標材料正是「工作台」本身"), "{sys}");
+        assert!(sys.contains("先別 place"), "{sys}");
+        assert!(sys.contains("才能接著 smelt"), "{sys}");
+    }
+
+    /// 目標材料是別的東西（如玻璃）時，工作台／熔爐若被提到，仍是「拿來當中繼站」——
+    /// 兩條教法都該保留 place（附近沒有就得先放好才能繼續下一步）。
+    #[test]
+    fn invention_prompt_non_site_goal_keeps_place_guidance() {
+        let goal = MaterialGoal { block_id: 10, name_zh: "玻璃" };
+        let (sys, _) = invention_prompt("露娜", &goal, "好想要一塊玻璃", "", false, false, &[]);
+        assert!(sys.contains("才能接著用 craft_wb 做 3×3 合成"), "{sys}");
+        assert!(sys.contains("才能接著 smelt"), "{sys}");
+        assert!(!sys.contains("先別 place"), "{sys}");
     }
 
     #[test]
