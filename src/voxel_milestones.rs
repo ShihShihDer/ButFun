@@ -72,6 +72,8 @@ pub const MILESTONES: &[MilestoneDef] = &[
     MilestoneDef { id: "first_waypoint", name_zh: "初次插旗", desc_zh: "在世界插下第一支屬於自己的路標", icon: "🚩" },
     // 放養雞 v1（自主提案切片，ROADMAP 870）：wildlife 系統第二種可馴服動物。
     MilestoneDef { id: "first_chicken_tame", name_zh: "初次養雞", desc_zh: "用一把種子馴服了一隻雞", icon: "🐔" },
+    // 深層寶藏 v1（自主提案切片）：天然礦脈裡的秘密驚喜，挖礦第一次有機會巧遇乙太幣。
+    MilestoneDef { id: "first_treasure", name_zh: "初次尋寶", desc_zh: "在天然礦脈裡意外挖到一座藏寶", icon: "💎" },
 ];
 
 /// 查表確認是否為已知里程碑 id（守 store 資料乾淨，未知 id 不寫入）。
@@ -245,6 +247,7 @@ mod tests {
     fn is_known_matches_static_list() {
         assert!(is_known("first_mine"));
         assert!(is_known("first_sleep"));
+        assert!(is_known("first_treasure"));
         assert!(!is_known(""));
         assert!(!is_known("first_win_lottery"));
     }

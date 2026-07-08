@@ -101,6 +101,7 @@ use crate::voxel_player_recipe as vprecipe;
 use crate::voxel_diary_peek as vdiarypeek;
 use crate::voxel_pet_admire as vpetadmire;
 use crate::voxel_proximity_teach as vptteach;
+use crate::voxel_treasure as vtreasure;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
@@ -4373,6 +4374,37 @@ async fn handle_socket(
                                 target_block as u8,
                                 &out_tx,
                             );
+                        }
+
+                        // 深層寶藏 v1（自主提案切片，接續 790）：原生礦脈（非遺跡礦）裡極稀有
+                        // 一小撮秘密藏著寶藏——挖礦第一次有機會遇上與被挖的礦石種類完全脫鉤的
+                        // 驚喜獎勵，也是乙太幣（873）第一次有「挖到的」而非只有「鑄出來的」來源。
+                        // 判定純函式在 voxel::treasure_ore_at（確定性、零狀態）；獎勵/公告在本模組。
+                        if matches!(target_block, Block::CoalOre | Block::IronOre | Block::AetherOre)
+                            && voxel::treasure_ore_at(x, y, z)
+                        {
+                            try_unlock_milestone(&name, "first_treasure", &out_tx);
+                            let (rid, rcount) = vtreasure::treasure_reward();
+                            let entry = hub().inventory.write().unwrap().give(&name, rid, rcount);
+                            vinv::append_inv(&entry);
+                            let new_count = hub().inventory.read().unwrap().count(&name, rid);
+                            let _ = out_tx.try_send(Message::Text(
+                                serde_json::json!({
+                                    "t": "inv_update",
+                                    "block_id": rid,
+                                    "count": new_count
+                                })
+                                .to_string(),
+                            ));
+                            vfeed::append_feed("尋寶", &name, &vtreasure::treasure_feed_detail());
+                            let _ = out_tx.try_send(Message::Text(
+                                serde_json::json!({
+                                    "t": "treasure",
+                                    "block_id": rid,
+                                    "count": rcount
+                                })
+                                .to_string(),
+                            ));
                         }
                     }
                 }

@@ -1048,6 +1048,23 @@ pub fn ruin_ore_at(wx: i32, wy: i32, wz: i32) -> bool {
     ruin_block_at(wx, wy, wz) == Some(Block::AetherOre)
 }
 
+/// 深層寶藏 v1（自主提案切片）：這個確切座標是否是「天然礦脈裡祕藏的寶藏」。
+///
+/// **真缺口**：790「工欲善其事」讓帶對工具挖礦多掉一份**同一種**素材，是「值得帶工具」的
+/// 小確幸，但挖礦本身從沒有過真正「巧遇驚喜」的一刻——每一塊礦看起來都一樣。這裡在原生
+/// 礦脈（煤/鐵/乙太礦）裡藏進極稀有一小撮秘密寶藏：用獨立 seed 與礦石本身的生成機率完全
+/// 脫鉤（挖到礦、挖到寶藏，是疊在一起的兩層獨立骰子），純函式、確定性、零狀態，同座標
+/// 永遠同結果。**排除遺跡礦**（[`ruin_ore_at`]）——遺跡礦已有自己的探索紀事（838/862），
+/// 寶藏只藏在天然礦脈，避免同一塊礦石雙重觸發兩套「發現」回饋。
+pub const TREASURE_ORE_CHANCE: f32 = 0.02;
+pub fn treasure_ore_at(wx: i32, wy: i32, wz: i32) -> bool {
+    if ruin_ore_at(wx, wy, wz) {
+        return false;
+    }
+    matches!(block_at(wx, wy, wz), Block::CoalOre | Block::IronOre | Block::AetherOre)
+        && ore_hash3(wx, wy, wz, 0x7ea5_0000) < TREASURE_ORE_CHANCE
+}
+
 /// 探索紀事 v1：把世界座標換算成這處溫泉所屬的格子座標（`(cellx, cellz)`）——同一泓溫泉、
 /// 不論從哪個角度踏進去，換算出的格子座標永遠相同，可當「這是哪一處溫泉」的穩定去重鍵，
 /// 避免玩家在同一泓溫泉裡反覆進出時，探索紀事被同一處灌爆。純函式、確定性、零狀態。
@@ -2405,6 +2422,72 @@ mod tests {
         assert_eq!(true_count, 1, "四根柱應恰有一格被 ruin_ore_at 判定為真");
         // 遺跡範圍外一點：不該誤判。
         assert!(!ruin_ore_at(tx + 100, height_at(tx + 100, tz) + 1, tz));
+    }
+
+    #[test]
+    fn treasure_ore_at_is_deterministic() {
+        // 深層寶藏 v1：同座標多次呼叫必須完全一致（純函式、零狀態）。
+        for (wx, wy, wz) in [(4000, -50, 4000), (12345, 0, -6789), (0, 3, 0), (999, 1, 999)] {
+            let a = treasure_ore_at(wx, wy, wz);
+            let b = treasure_ore_at(wx, wy, wz);
+            assert_eq!(a, b, "treasure_ore_at 應為確定性純函式 @ ({wx},{wy},{wz})");
+        }
+    }
+
+    #[test]
+    fn treasure_ore_at_false_for_non_ore_positions() {
+        // 石頭、空氣、地表草地等非礦石方塊，永遠不該被判定為寶藏。
+        for (wx, wy, wz) in [(0, 100, 0), (5000, 50, 5000), (10, -1, 10)] {
+            if !matches!(block_at(wx, wy, wz), Block::CoalOre | Block::IronOre | Block::AetherOre) {
+                assert!(!treasure_ore_at(wx, wy, wz), "非礦石方塊不該藏寶藏 @ ({wx},{wy},{wz})");
+            }
+        }
+    }
+
+    #[test]
+    fn treasure_ore_at_excludes_ruin_ore() {
+        // 遺跡的乙太礦已有自己的探索紀事（838/862）——寶藏只藏在天然礦脈，
+        // 排除遺跡礦，避免同一塊礦石雙重觸發兩套「發現」回饋。
+        let (_, (tx, tz)) = find_a_ruin();
+        const CORNERS: [(i32, i32); 4] = [(-2, -2), (2, -2), (-2, 2), (2, 2)];
+        for (cdx, cdz) in CORNERS {
+            let (wx, wz) = (tx + cdx, tz + cdz);
+            let h = height_at(wx, wz);
+            for wy in (h + 2)..=(h + 4) {
+                if ruin_ore_at(wx, wy, wz) {
+                    assert!(!treasure_ore_at(wx, wy, wz), "遺跡乙太礦不該同時被判定為天然寶藏");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn treasure_ore_at_true_only_for_actual_ore_blocks() {
+        // 掃一片深層區域：treasure_ore_at 為真時，該座標必然真的是原生礦石方塊之一。
+        let mut ore_count = 0usize;
+        let mut treasure_count = 0usize;
+        for wx in 0..200 {
+            for wz in 0..200 {
+                for wy in -5..=(COAL_ORE_DEPTH) {
+                    let b = block_at(wx, wy, wz);
+                    if matches!(b, Block::CoalOre | Block::IronOre | Block::AetherOre) {
+                        ore_count += 1;
+                        if treasure_ore_at(wx, wy, wz) {
+                            treasure_count += 1;
+                            assert!(
+                                matches!(block_at(wx, wy, wz), Block::CoalOre | Block::IronOre | Block::AetherOre),
+                                "treasure_ore_at 為真時該格必為原生礦石 @ ({wx},{wy},{wz})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // 統計性檢查：掃到足量礦石時，寶藏比例應大致落在 TREASURE_ORE_CHANCE 附近的合理區間
+        // （樣本有限，容許寬鬆誤差，只驗證「確實稀有」而非「精確等於」）。
+        assert!(ore_count > 50, "測試區域應掃到足量礦石樣本，實際 {ore_count}");
+        let rate = treasure_count as f32 / ore_count as f32;
+        assert!(rate < TREASURE_ORE_CHANCE * 4.0, "寶藏比例應遠低於礦石本身、保持稀有：{rate}");
     }
 
     #[test]
