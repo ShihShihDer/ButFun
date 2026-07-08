@@ -562,6 +562,12 @@ fn generate_blocks(kind: BuildKind, cx: i32, cy: i32, cz: i32, style: &BuildStyl
                     }
                 }
             }
+            // 床鋪 v1（居民親手佈置新家）：內部從沒放過任何家具，蓋好只是四面牆包著空氣——
+            // 放在建物錨點正上方（x0=z0=X_MIN/Z_MIN 恆為 -1，故 x0+1=z0+1=0，正是 cx/cz 本身）：
+            // 恆落在內部（border 只在 x==x0/x1 或 z==z0/z1，0 永遠不是邊界）、不與門重疊
+            // （門在 z=z1≠0）、不與任何裝飾/annex 座標相撞，無論房子多小都至少有這一格可站。
+            // 讓「蓋好的家」第一次真的有人住的痕跡，不再是空氣包空氣的空殼。
+            add(&mut out, cx, cy, cz, Block::Bed);
             // 門口點綴（正面外一格，不動地基/不與牆重疊；每家不同的小細節）。
             let dz = front_z + 1;
             match s.decor {
@@ -1037,8 +1043,31 @@ mod tests {
     #[test]
     fn house_block_count_small_style() {
         let blocks = generate_blocks(BuildKind::House, 0, 5, 0, &style_small());
-        // 地板 9 + 牆 8+8 + 屋頂 9 = 34（門洞取代 2 塊木牆，總數不變）
-        assert_eq!(blocks.len(), 34);
+        // 地板 9 + 牆 8+8 + 屋頂 9 + 床 1 = 35（門洞取代 2 塊木牆，總數不變；床鋪 v1 新增）
+        assert_eq!(blocks.len(), 35);
+    }
+
+    #[test]
+    fn house_has_exactly_one_bed_at_center_never_on_wall_or_door() {
+        // 床鋪 v1：不管尺寸/風格如何變化，家的內部永遠恰好一張床，落在建物錨點（內部、
+        // 非邊界牆、非門格），讓蓋好的家第一次真的有人住的痕跡。
+        for rid in ["vox_res_0", "vox_res_1", "露娜", "諾娃"] {
+            for biome in [
+                VoxelBiome::Grassland,
+                VoxelBiome::Forest,
+                VoxelBiome::Desert,
+                VoxelBiome::Snow,
+            ] {
+                let style = BuildStyle::for_resident(rid, biome, 3, 9);
+                let blocks = generate_blocks(BuildKind::House, 3, 5, 9, &style);
+                let beds: Vec<_> = blocks.iter().filter(|b| b.b == Block::Bed as u8).collect();
+                assert_eq!(beds.len(), 1, "{rid}/{biome:?} 應恰好一張床");
+                let bed = beds[0];
+                assert_eq!((bed.x, bed.y, bed.z), (3, 5, 9), "床應落在建物錨點座標");
+                // 不與門重疊（門在 z=z1=cz+style.z_max，恆 ≠ cz）。
+                assert_ne!(bed.z, 9 + style.z_max);
+            }
+        }
     }
 
     #[test]
