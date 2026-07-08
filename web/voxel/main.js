@@ -4998,6 +4998,12 @@ function connect() {
       // 跳一句小回饋（背包由 inv_update 更新）。
       showMsg(m.line || "🤝 並肩採集，默契多收了一份！");
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 1800);
+    } else if (m.t === "treasure") {
+      // 深層寶藏 v1（自主提案切片）：天然礦脈裡的秘密驚喜，挖礦意外多得乙太幣——
+      // 跳一句醒目的慶祝提示（背包由 inv_update 更新）。
+      const iname = BLOCK_NAME[m.block_id] || "寶藏";
+      showMsg("💎 挖到寶藏了！意外多得 " + iname + " ×" + (m.count || 1));
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3200);
     } else if (m.t === "fertilize_fail") {
       // 乙太沃肥 v1（789）：施不了（太遠 / 非幼苗 / 背包沒有沃肥）。
       showErr(m.reason || "現在沒法施肥");
