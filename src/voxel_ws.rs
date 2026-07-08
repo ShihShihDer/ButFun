@@ -100,6 +100,7 @@ use crate::voxel_chicken as vchicken;
 use crate::voxel_player_recipe as vprecipe;
 use crate::voxel_diary_peek as vdiarypeek;
 use crate::voxel_pet_admire as vpetadmire;
+use crate::voxel_proximity_teach as vptteach;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
@@ -8026,6 +8027,7 @@ pub fn spawn_farm_tick() {
             maybe_birth(); // 人口成長 v1：低頻檢查聚落是否有餘裕誕生一位新居民。
             maybe_breed_rabbits(); // 馴服兔子生寶寶 v1（自主提案切片 855）：同節拍檢查是否誕生一隻小兔子。
             maybe_pet_admire(); // 居民注意到你身邊跟著的馴服動物 v1（自主提案切片 875）：同節拍檢查身邊有無寵物觸發讚賞。
+            maybe_proximity_teach(); // 就地指導 v1（自主提案切片）：同節拍檢查有無卡關居民身邊剛好站著會解法的老朋友。
             tick_dropitem_expire(); // 掉落物 v1（自主提案切片 828）：同節拍清掉沒人撿的過期掉落物。
             tick_stall_expire(); // 玩家自由市集 v1（自主提案切片 832）：同節拍清掉逾時沒人接手的攤位、退還材料。
         }
@@ -9312,6 +9314,155 @@ fn maybe_pet_admire() {
             );
         }
     }
+}
+
+/// 就地指導 v1（自主提案切片）：全域「學生→上次被就地教學的時刻」冷卻儲存，
+/// 比照 `pet_admire_cd()` 慣例。純記憶體、重啟歸零（比照既有 773/774/875 冷卻慣例，
+/// 教學本身早已透過 `voxel_invented_skills.jsonl` 落地持久化，只有這道冷卻本身不必記）。
+fn proximity_teach_cd() -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 就地指導 v1（自主提案切片，低頻併入 15 秒節拍檢查）：找一位正卡關（`invent_backoff`
+/// 非空）的居民，身邊剛好站著已經會解法的老朋友，就當場教會她、解除這個目標的退避——
+/// 不必等到 717（`voxel_teach`）下次登門到訪才有機會補上（見 `voxel_proximity_teach`
+/// 模組說明）。每次呼叫只促成一組教學（保持稀疏、成本可預期），找到第一組符合條件的
+/// 就執行並提前返回；下一輪 tick 再繼續找下一組。
+///
+/// **鎖紀律**：residents／bonds／invented／memory 全部各自短取即釋、循序不巢狀
+/// （守 prod 死鎖鐵律，比照 `maybe_pet_admire` 慣例）——三個階段依序：①residents 讀鎖
+/// 快照位置/是否有空/卡關目標 ②bonds 讀鎖篩出「老朋友且站得夠近」的候選對 ③invented
+/// 讀鎖確認老師真的會、再各自短寫鎖落地。
+fn maybe_proximity_teach() {
+    // 1) 居民快照：位置 + 是否有空 + 卡關中的目標材料集合（短讀鎖即釋，不與其他鎖巢狀）。
+    let snap: Vec<(String, &'static str, f32, f32, Vec<u8>, bool)> = {
+        let residents = hub().residents.read().unwrap();
+        residents
+            .iter()
+            .map(|r| {
+                let free = r.say.is_empty()
+                    && !r.asleep
+                    && r.visiting.is_none()
+                    && r.expedition.is_none()
+                    && r.clique_meet.is_none()
+                    && r.savoring.is_none()
+                    && r.invent_run.is_none();
+                (
+                    r.id.clone(),
+                    r.name,
+                    r.body.x,
+                    r.body.z,
+                    r.invent_backoff.keys().copied().collect::<Vec<u8>>(),
+                    free,
+                )
+            })
+            .collect()
+    }; // residents 讀鎖釋放
+
+    let now_secs = vfarm::now_secs();
+
+    // 2) 篩出「學生卡關中 + 老朋友站得夠近 + 學生冷卻已過」的候選對（bonds 短讀鎖即釋）。
+    let mut candidate_pair: Option<(usize, usize)> = None;
+    {
+        let bonds = hub().bonds.read().unwrap();
+        'outer: for (si, (student_id, _, sx, sz, stuck_goals, student_free)) in snap.iter().enumerate() {
+            if stuck_goals.is_empty() || !student_free {
+                continue;
+            }
+            let cooldown_ok = {
+                let cd = proximity_teach_cd().lock().unwrap();
+                match cd.get(student_id) {
+                    Some(prev) => now_secs.saturating_sub(*prev) >= vptteach::PROXIMITY_TEACH_COOLDOWN_SECS,
+                    None => true,
+                }
+            };
+            if !cooldown_ok {
+                continue;
+            }
+            for (ti, (teacher_id, _, tx, tz, _, teacher_free)) in snap.iter().enumerate() {
+                if ti == si || !teacher_free {
+                    continue;
+                }
+                let dx = sx - tx;
+                let dz = sz - tz;
+                let tier = resident_tier_of(&bonds, student_id, teacher_id);
+                if vptteach::teach_triggers(tier, dx * dx + dz * dz, true) {
+                    candidate_pair = Some((si, ti));
+                    break 'outer;
+                }
+            }
+        }
+    } // bonds 讀鎖釋放
+    let Some((si, ti)) = candidate_pair else { return };
+    let student_id = &snap[si].0;
+    let student_name = snap[si].1;
+    let stuck_goals = &snap[si].4;
+    let teacher_id = &snap[ti].0;
+    let teacher_name = snap[ti].1;
+
+    // 3) 老師是否真的會學生正卡關的某個目標（invented 短讀鎖即釋，不與上面鎖巢狀）。
+    let taught_skill = {
+        let store = hub().invented.read().unwrap();
+        stuck_goals.iter().find_map(|&goal| store.find_for(teacher_id, goal).cloned())
+    }; // invented 讀鎖釋放
+    let Some(skill) = taught_skill else { return };
+
+    // 4) 真的教會：技能落地（invented 短寫鎖即釋）。
+    let learned = {
+        let mut store = hub().invented.write().unwrap();
+        store.add(student_id, &skill.name, skill.goal_block, skill.steps.clone())
+    }; // invented 寫鎖釋放
+    let Some(rec) = learned else { return };
+    vinvent::append_invented_skill(&rec);
+    { proximity_teach_cd().lock().unwrap().insert(student_id.clone(), now_secs); }
+
+    // 解除這個目標的退避——答案已經到手，不必再乾等冷卻歸零。
+    {
+        let mut residents = hub().residents.write().unwrap();
+        if let Some(r) = residents.iter_mut().find(|r| &r.id == student_id) {
+            r.invent_backoff.remove(&skill.goal_block);
+            r.invent_fail_counts.remove(&skill.goal_block);
+        }
+    } // residents 寫鎖釋放
+
+    let pick = now_secs as usize;
+    {
+        let teacher_line = vteach::teach_say_line_as_teacher(student_name, &skill.name, pick);
+        let student_line = vteach::teach_say_line_as_student(teacher_name, &skill.name, pick);
+        let mut residents = hub().residents.write().unwrap();
+        for (rid, line) in [(teacher_id.clone(), teacher_line), (student_id.clone(), student_line)] {
+            if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                r.say = line.chars().take(50).collect();
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            }
+        }
+    } // residents 寫鎖釋放
+    broadcast_players();
+
+    {
+        let entry = hub().memory.write().unwrap().add_memory(
+            teacher_id,
+            student_name,
+            &vteach::teach_memory_line_teacher(student_name, &skill.name),
+        );
+        vmem::append_memory(&entry);
+    } // memory 寫鎖釋放
+    {
+        let entry = hub().memory.write().unwrap().add_memory(
+            student_id,
+            teacher_name,
+            &vteach::teach_memory_line_student(teacher_name, &skill.name),
+        );
+        vmem::append_memory(&entry);
+    } // memory 寫鎖釋放
+    vfeed::append_feed(
+        vteach::FEED_KIND,
+        teacher_name,
+        &vteach::teach_feed_line(teacher_name, student_name, &skill.name, pick),
+    );
 }
 
 /// 一次居民世界推進：套用上輪思考的決策 → 物理/閒晃 → 社交互動 → 廣播 → 排程新一輪思考。
