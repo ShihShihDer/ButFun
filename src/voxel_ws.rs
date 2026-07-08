@@ -15192,6 +15192,77 @@ fn tick_residents(dt: f32) {
                 );
                 vmem::append_memory(&entry);
                 vfeed::append_feed("遠行", rname, &vexp::shelter_feed_line(bearing));
+
+                // 邊陲營地立牌 v1（ROADMAP 881，PLAN_ETHERVOX item 7）：小棚第一次搭起（床剛
+                // 落地，本 if 分支只在此時進入）就順手在營地前立一塊牌子署名，比照 749 主城建物
+                // 立牌、860 讓自蓋作品算進地標系統——這處荒野據點從此有名字、被世界記住。走既有
+                // 告示牌管線（Sign 方塊 + SignStore + 廣播 + JSONL），零新協議。找不到合適空地
+                // （四邊都被擋）就靜默略過，不強蓋、不壓既有方塊。
+                let text = vexp::outpost_nameplate_text(rname);
+                if !text.is_empty() {
+                    if let Some((sx, sy, sz)) = pick_nameplate_slot((ax, ay, az)) {
+                        {
+                            let mut world = hub().deltas.write().unwrap();
+                            voxel::set_block(&mut world, sx, sy, sz, Block::Sign);
+                        } // deltas 寫鎖釋放
+                        broadcast_block(sx, sy, sz, Block::Sign);
+                        vbuild::append_world_block(sx, sy, sz, Block::Sign as u8);
+                        let ev = hub()
+                            .sign
+                            .write()
+                            .unwrap()
+                            .set(&vsign::pos_key(sx, sy, sz), text.clone(), None);
+                        vsign::append_sign(&ev);
+                        broadcast_sign(sx, sy, sz, &text);
+                        vfeed::append_feed("立牌命名", rname, &vexp::outpost_nameplate_feed(rname, &text));
+                        say_updates.push((rid.clone(), vexp::outpost_nameplate_say(&text)));
+                        // 邊陲營地也算進世界的地標系統（860 同款慣例）：讓見賢思齊（858）與村莊
+                        // 里程碑（856）一視同仁，不獨厚主城的建物。`contains_key` 先判斷再插入＝
+                        // 冪等（同一格只登記一次）。
+                        let newly_landmarked = {
+                            let cell = vstructname::cell_key(ax as f32, az as f32);
+                            let mut names = structure_names().lock().unwrap();
+                            if names.contains_key(&cell) {
+                                false
+                            } else {
+                                names.insert(cell, (text.clone(), Some(rid.clone())));
+                                true
+                            }
+                        }; // structure_names 鎖釋放
+                        if newly_landmarked {
+                            let landmark_count = structure_names().lock().unwrap().len();
+                            let new_tier = hub()
+                                .village_milestones
+                                .write()
+                                .unwrap()
+                                .try_unlock_new_tier(landmark_count);
+                            if let Some(tier) = new_tier {
+                                vvillms::append_village_milestone(&vvillms::VillageMilestoneEntry {
+                                    id: tier.id.to_string(),
+                                });
+                                // 全體居民一起歡呼；不覆寫正忙著別的事的居民，比照 773/856/860 慣例。
+                                {
+                                    let mut residents = hub().residents.write().unwrap();
+                                    for (i, r) in residents.iter_mut().enumerate() {
+                                        if r.say.is_empty() {
+                                            r.say = vvillms::celebrate_say_line(landmark_count + i)
+                                                .to_string();
+                                            r.say_timer = SAY_SECS;
+                                            r.mood_boost_secs =
+                                                r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                        }
+                                    }
+                                } // residents 寫鎖釋放
+                                broadcast_players();
+                                vfeed::append_feed(
+                                    "村莊里程碑",
+                                    "全村",
+                                    &vvillms::celebrate_feed_line(tier.name_zh, landmark_count),
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
     }

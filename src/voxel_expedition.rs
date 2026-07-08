@@ -494,6 +494,36 @@ pub fn keepsake_feed_line(bearing: &str, biome: VoxelBiome) -> String {
     )
 }
 
+// ── 邊陲營地立牌（遠行 v7，ROADMAP 881，PLAN_ETHERVOX item 7「散佈世界各處住」）───────────
+// 758 起居民已經在邊陲搭起帶床的小棚、759 起真的睡上去過夜、761 起還帶著當地風物回家——但這處
+// 荒野據點至今沒有名字：玩家路過只看得到一堆方塊，不知道「這是誰的地方」；749 讓居民為主城的家
+// 立牌署名、860 讓那塊牌子算進世界的地標系統，這兩件事都還沒發生在邊陲營地身上。這一刀把「立牌」
+// 這件事也帶到荒野——小棚第一次搭起（`shelter_bed_pos` 那張床剛落地）那一刻，居民也在營地前立一
+// 塊牌子，寫上「奧瑞的邊陲營地」，讓這處「第二個家的雛形」從此有名字、被世界記住。
+
+/// 產生居民為自己邊陲營地立的牌面文字（如「奧瑞的邊陲營地」）。走與居民主城建物立牌
+/// （[`crate::voxel_nameplate::nameplate_text`]）同一套 `sanitize_text` 清洗（去控制字元、
+/// 截 `SIGN_MAX_CHARS`），確定性、無副作用、可測。名字異常（空白）時回空字串，呼叫方據此
+/// 略過立牌。
+pub fn outpost_nameplate_text(resident: &str) -> String {
+    let name = resident.trim();
+    if name.is_empty() {
+        return String::new();
+    }
+    crate::voxel_sign::sanitize_text(&format!("{name}的邊陲營地"))
+}
+
+/// 立牌當下居民冒的泡泡台詞（≤40 字不破泡泡框），確定性零 LLM。
+pub fn outpost_nameplate_say(text: &str) -> String {
+    let line = format!("荒野裡也該有塊牌子——「{text}」");
+    line.chars().take(40).collect()
+}
+
+/// 立牌時記進動態牆（Feed）的一行描述，確定性零 LLM。
+pub fn outpost_nameplate_feed(resident: &str, text: &str) -> String {
+    format!("{resident} 在邊陲營地前立了塊牌子「{text}」")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,5 +925,38 @@ mod tests {
             assert!(feed.contains("東方") && feed.contains(biome_name(b)) && feed.contains(item));
             assert!(!mem.is_empty() && !feed.is_empty());
         }
+    }
+
+    #[test]
+    fn outpost_nameplate_text_names_the_resident_and_the_place() {
+        let text = outpost_nameplate_text("奧瑞");
+        assert_eq!(text, "奧瑞的邊陲營地");
+        // 空白名字（異常輸入）誠實回空字串，呼叫方據此略過立牌，不立無名牌。
+        assert!(outpost_nameplate_text("").is_empty());
+        assert!(outpost_nameplate_text("   ").is_empty());
+    }
+
+    #[test]
+    fn outpost_nameplate_text_truncates_long_names_without_breaking_utf8() {
+        // 極長名字（異常輸入）走與主城立牌同一套 sanitize_text，截斷不 panic、不切壞中文字元。
+        let long_name = "諾".repeat(50);
+        let text = outpost_nameplate_text(&long_name);
+        assert!(text.chars().count() <= crate::voxel_sign::SIGN_MAX_CHARS);
+    }
+
+    #[test]
+    fn outpost_nameplate_say_embeds_text_and_stays_within_bubble_limit() {
+        let text = outpost_nameplate_text("奧瑞");
+        let say = outpost_nameplate_say(&text);
+        assert!(say.contains(&text));
+        assert!(say.chars().count() <= 40);
+    }
+
+    #[test]
+    fn outpost_nameplate_feed_mentions_resident_and_text() {
+        let text = outpost_nameplate_text("諾娃");
+        let feed = outpost_nameplate_feed("諾娃", &text);
+        assert!(feed.contains("諾娃") && feed.contains(&text));
+        assert!(!feed.is_empty());
     }
 }
