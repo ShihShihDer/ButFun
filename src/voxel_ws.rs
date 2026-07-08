@@ -3215,6 +3215,43 @@ async fn apply_player_damage(
     persist_player_stats(); // 血變動落地（登入玩家重登保留）
 }
 
+/// 邊陲營地探索 v1（自主提案切片，接續 881 立牌）：判定玩家此刻是否站在某位居民親手搭起的
+/// 邊陲營地床邊。**與遺跡／溫泉的關鍵差異**：後兩者座標由世界生成種子決定（純座標函式，
+/// 與玩家/居民狀態無關）；邊陲營地座標由該居民的**家座標**純函式算出（`vexp::outpost_seq`
+/// → `pick_frontier` → `outpost_bed_center`，與 `voxel_ws.rs` 遠行狀態機算落點的手法完全
+/// 一致），且只有小棚真的搭起（`Block::Bed` 已落地）才算數——半路経過空地不算發現。
+/// 只掃能遠行的人格（`vexp::expedition_motive` 有值，目前 2 位），成本可忽略。
+/// 找到就回傳 `(居民 id, 居民名, 床的世界座標)`；找不到回 `None`。
+/// **鎖紀律**：residents 讀鎖只取一次快照即釋、deltas 讀鎖只取一次即釋，兩者不巢狀。
+fn player_near_built_outpost(px: f32, pz: f32) -> Option<(String, &'static str, i32, i32, i32)> {
+    let candidates: Vec<(String, &'static str, f32, f32)> = {
+        let rs = hub().residents.read().unwrap();
+        rs.iter()
+            .filter(|r| vexp::expedition_motive(r.persona).is_some())
+            .map(|r| (r.id.clone(), r.name, r.home_x, r.home_z))
+            .collect()
+    }; // residents 讀鎖釋放
+    for (rid, rname, home_x, home_z) in candidates {
+        let seq = vexp::outpost_seq(home_x, home_z);
+        let (fx, fz, _bearing) = vexp::pick_frontier(home_x, home_z, seq);
+        let (tx, tz) = (fx.round() as i32, fz.round() as i32);
+        let (bedx, bedz) = vexp::outpost_bed_center(tx, tz);
+        if !vexp::near_outpost_bed(px, pz, bedx, bedz) {
+            continue;
+        }
+        let (ax, az) = vexp::shelter_anchor(tx, tz);
+        let ay = vbuild::surface_y(ax, az);
+        let built = {
+            let _w = hub().deltas.read().unwrap();
+            voxel::block_at(ax, ay, az) == Block::Bed
+        }; // deltas 讀鎖釋放
+        if built {
+            return Some((rid, rname, ax, ay, az));
+        }
+    }
+    None
+}
+
 /// 地標旅人留言 v1（自主提案切片，ROADMAP 862）：把這處地標目前的留言簿（可能是空的）
 /// 單播給這位玩家，並附上 `(x,y,z)`——前端據此讓玩家能就地回送 `LeaveLandmarkNote`
 /// 寫下自己的一句話（溫泉不看座標，附的是玩家此刻的腳下位置即可；遺跡則必須是乙太礦
@@ -3789,6 +3826,11 @@ async fn handle_socket(
     // 用來偵測「剛踏進去」的那一刻只提示一次（per-connection、斷線即清，不必持久化）。
     let mut was_soaking = false;
 
+    // 邊陲營地探索 v1（自主提案切片，接續 881）：這條連線上一 tick 是否正站在某位居民的邊陲
+    // 營地床邊，用來偵測「剛走近」的那一刻只嘗試記一次探索紀事（避免逗留原地時每秒都取一次
+    // discovery 寫鎖；record() 本身已冪等，此旗標純粹省一趟鎖，非正確性必要）。
+    let mut was_near_outpost = false;
+
     // 玩家生存指標 tick（溫和版）：per-connection 每秒推進一次飢餓衰減／溺水／飽食回血，
     // 並在指標變動時單播 player_stats（只給玩家自己，減噪）。放這條連線的 select loop 裡跑，
     // 天然拿得到 out_tx／位置／床，避免居民 tick 那條 task 沒有 per-connection 送訊息管道。
@@ -3856,6 +3898,30 @@ async fn handle_socket(
                     }
                 }
                 was_soaking = soaking;
+                // 邊陲營地探索 v1（自主提案切片，接續 881 立牌）：881 讓居民自己在營地立牌、登記
+                // 進地標系統（居民視角），但玩家視角走到同一處荒野據點，此前完全不會被世界記住——
+                // 探索紀事／旅人留言簿只認遺跡與溫泉。這一刀讓玩家第一次走近某位居民親手搭起的
+                // 邊陲營地床邊時，也留下一筆探索紀事、解鎖里程碑、順手看看先前旅人的留言。
+                let near_outpost = player_near_built_outpost(px, pz);
+                if let Some((rid, rname, ax, ay, az)) = &near_outpost {
+                    if !was_near_outpost {
+                        try_unlock_milestone(&name, "first_outpost_discover", &out_tx);
+                        let found = {
+                            let mut d = hub().discovery.write().unwrap();
+                            d.record(&name, vdisc::LandmarkKind::Outpost, (*ax, *az), *ax, *ay, *az)
+                        }; // discovery 寫鎖釋放
+                        if let Some(entry) = found {
+                            vdisc::append_discovery(&entry);
+                            send_landmark_notes(vdisc::LandmarkKind::Outpost, (*ax, *az), *ax, *ay, *az, &out_tx).await;
+                            vfeed::append_feed(
+                                "探索",
+                                &name,
+                                &format!("走進荒野，找到了{rname}親手搭起的邊陲營地"),
+                            );
+                        }
+                    }
+                }
+                was_near_outpost = near_outpost.is_some();
                 // 溺水扣血走統一傷害路徑（含死亡→重生判定、廣播、持久化）。
                 if drown_dmg > 0 {
                     apply_player_damage(&name, drown_dmg, &out_tx).await;
@@ -6317,18 +6383,23 @@ async fn handle_socket(
                 // 判定這裡是不是一處已知地標：遺跡看瞄準座標（`ruin_ore_at` 純座標判定，
                 // 挖掉後仍成立，但要求觸及範圍內，比照告示牌/敲鐘同一套 reach 護欄）；
                 // 溫泉不看瞄準座標，改看玩家此刻是否真的泡在溫泉裡（比照溫泉回血 tick
-                // 同一套判定），避免對著遠方喊話就騙過伺服器。
+                // 同一套判定）；邊陲營地（自主提案切片，接續 881）不看瞄準座標、也不看泡水，
+                // 改看玩家此刻是否站在某位居民親手搭起的營地床邊（`player_near_built_outpost`，
+                // 與探索紀事 tick 偵測同一套判定）——三者皆避免對著遠方喊話就騙過伺服器。
                 let landmark = if voxel::in_reach(px, py, pz, x, y, z) && voxel::ruin_ore_at(x, y, z) {
-                    Some((vdisc::LandmarkKind::Ruin, (x, z)))
+                    Some((vdisc::LandmarkKind::Ruin, (x, z), x, y, z))
                 } else if feet_in_hot_spring(px, py, pz) {
                     let cell = voxel::hot_spring_cell_of(px.floor() as i32, pz.floor() as i32);
-                    Some((vdisc::LandmarkKind::HotSpring, cell))
+                    let (ix, iy, iz) = (px.floor() as i32, py.floor() as i32, pz.floor() as i32);
+                    Some((vdisc::LandmarkKind::HotSpring, cell, ix, iy, iz))
+                } else if let Some((_, _, ax, ay, az)) = player_near_built_outpost(px, pz) {
+                    Some((vdisc::LandmarkKind::Outpost, (ax, az), ax, ay, az))
                 } else {
                     None
                 };
-                let Some((kind, dedup_key)) = landmark else {
+                let Some((kind, dedup_key, lx, ly, lz)) = landmark else {
                     let _ = out_tx.send(Message::Text(serde_json::json!({
-                        "t": "landmark_note_fail", "reason": "這裡不是已知的地標，找一處遺跡或溫泉試試看。"
+                        "t": "landmark_note_fail", "reason": "這裡不是已知的地標，找一處遺跡、溫泉或邊陲營地試試看。"
                     }).to_string())).await;
                     continue;
                 };
@@ -6368,7 +6439,7 @@ async fn handle_socket(
                     vlmark::append_note(&entry);
                     try_unlock_milestone(&name, "first_landmark_note", &out_tx);
                     // 回傳這處地標目前的完整留言簿（含剛寫入的這一筆），前端據此更新面板。
-                    send_landmark_notes(kind, dedup_key, x, y, z, &out_tx).await;
+                    send_landmark_notes(kind, dedup_key, lx, ly, lz, &out_tx).await;
                 }
             }
             // ── 個人路標 v1（自主提案切片，ROADMAP 869）─────────────────────────
@@ -8865,8 +8936,8 @@ pub async fn voxel_discoveries_handler(
 ) -> axum::response::Response {
     use axum::http::header;
     let player_name = params.get("player").map(|s| s.as_str()).unwrap_or("").trim().to_string();
-    let (items, ruins, springs) = if player_name.is_empty() {
-        (Vec::new(), 0usize, 0usize)
+    let (items, ruins, springs, outposts) = if player_name.is_empty() {
+        (Vec::new(), 0usize, 0usize, 0usize)
     } else {
         // 短讀鎖一次性快照這位玩家的探索紀事 → 立即釋放，不與其他鎖巢狀。
         let store = hub().discovery.read().unwrap();
@@ -8884,10 +8955,10 @@ pub async fn voxel_discoveries_handler(
                 })
             })
             .collect();
-        let (r, s) = store.counts_for(&player_name);
-        (list, r, s)
+        let (r, s, o) = store.counts_for(&player_name);
+        (list, r, s, o)
     };
-    let body = serde_json::json!({ "items": items, "ruins": ruins, "springs": springs }).to_string();
+    let body = serde_json::json!({ "items": items, "ruins": ruins, "springs": springs, "outposts": outposts }).to_string();
     axum::response::Response::builder()
         .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-cache")

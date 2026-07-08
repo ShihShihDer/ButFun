@@ -3321,18 +3321,19 @@ const discBodyEl = document.getElementById("discBody");
 const discBtnEl = document.getElementById("discBtn");
 
 /** 重新渲染探索紀事清單。
- * @param {{items:Array<{kind:string,label:string,icon:string,x:number,y:number,z:number}>,ruins:number,springs:number}} data
+ * @param {{items:Array<{kind:string,label:string,icon:string,x:number,y:number,z:number}>,ruins:number,springs:number,outposts:number}} data
  */
 function renderDiscoveryPanel(data) {
   if (!discBodyEl) return;
   const items = (data && data.items) || [];
   if (items.length === 0) {
-    discBodyEl.innerHTML = '<div class="skills-empty">還沒有探索紀事——走遠去找找古代遺跡或溫泉吧。</div>';
+    discBodyEl.innerHTML = '<div class="skills-empty">還沒有探索紀事——走遠去找找古代遺跡、溫泉，或循著居民的足跡找到她的邊陲營地吧。</div>';
     return;
   }
   const ruins = (data && data.ruins) || 0;
   const springs = (data && data.springs) || 0;
-  let html = '<div class="disc-progress">🏛️ 遺跡 ' + ruins + ' 處 · ♨️ 溫泉 ' + springs + ' 處</div>';
+  const outposts = (data && data.outposts) || 0;
+  let html = '<div class="disc-progress">🏛️ 遺跡 ' + ruins + ' 處 · ♨️ 溫泉 ' + springs + ' 處 · ⛺ 邊陲營地 ' + outposts + ' 處</div>';
   for (const it of items) {
     html += '<div class="disc-row">' +
       '<span class="disc-icon">' + escHtml(it.icon || "📍") + '</span>' +
