@@ -26,6 +26,7 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         9 => "石磚",
         10 => "玻璃",
         11 => "農田土",
+        17 => "拋光石",
         12 => "幼苗",
         13 => "成熟小麥",
         14 => "種子",
@@ -99,6 +100,8 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         96 => "藍花",
         // 乙太幣 v1（ROADMAP 873，自主提案切片）：原礦鑄成的通用貨幣，自由市集可標價收付。
         crate::voxel_craft::COIN_ID => "乙太幣",
+        // 乙太沃肥 v1（ROADMAP 789）：雜草＋泥土漚成的催熟沃肥，此前漏補此名、可餽贈居民。
+        crate::voxel_compost::FERTILIZER_ID => "乙太沃肥",
         _ => "物品",
     }
 }

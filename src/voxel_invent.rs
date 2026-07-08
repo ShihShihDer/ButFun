@@ -722,19 +722,18 @@ pub fn detect_missing_material(desire: &str) -> Option<MaterialGoal> {
     best.map(|(_, goal)| goal)
 }
 
-/// 材料 id → 繁中名（覆蓋目標材料＋站點方塊；單一事實源在 voxel_craft 的 name_zh，
-/// 此處為靜態便利查表——與 MATERIAL_KEYWORDS / place 白名單同步維護）。
+/// 材料 id → 繁中名（覆蓋目標材料＋站點方塊＋任何配方中繼加工品）。
+/// 工作台／熔爐是「放置後的世界方塊」，`voxel_gift::item_name_zh` 沒有這兩個 id
+/// （它只覆蓋可收進背包餽贈的物品），此處特例覆蓋；其餘一律委派給
+/// `item_name_zh`——單一事實源，新物品只要在那邊補過名字，這裡與發明 prompt
+/// 自動一起拿到正確名字，不必兩邊同步維護查表（此前漏同步正是「空玻璃瓶／
+/// 乙太沃肥／水井藍圖」等目標材料在發明失敗訊息裡淪為泛稱「材料」，
+/// 便宜腦看不懂到底缺什麼的根因）。
 pub fn material_name(block_id: u8) -> &'static str {
     match block_id {
-        10 => "玻璃",
-        8 => "木板",
-        9 => "石磚",
-        11 => "農田土",
         WORKBENCH_BLOCK_ID => "工作台",
         FURNACE_BLOCK_ID => "熔爐",
-        42 => "箱子",
-        17 => "拋光石",
-        _ => "材料",
+        _ => crate::voxel_gift::item_name_zh(block_id),
     }
 }
 
@@ -917,7 +916,7 @@ fn craft_shortage_err(r: &vcraft::Recipe) -> String {
     let need: Vec<String> = r
         .inputs
         .iter()
-        .map(|(bid, n)| format!("{}×{}", input_name(*bid), n))
+        .map(|(bid, n)| format!("{}×{}", material_name(*bid), n))
         .collect();
     format!(
         "合成「{}」需要 {}，但照這個計畫走到這一步時背包裡的材料不夠——\
@@ -1494,7 +1493,7 @@ fn recipe_fact(r: &vcraft::Recipe) -> String {
     let inputs: Vec<String> = r
         .inputs
         .iter()
-        .map(|(bid, n)| format!("{}×{}", input_name(*bid), n))
+        .map(|(bid, n)| format!("{}×{}", material_name(*bid), n))
         .collect();
     format!(
         "- 配方 id「{}」：{} → {}×{}",
@@ -1615,19 +1614,6 @@ pub fn invention_prompt(
         furnace = if furnace_nearby { "已經有一座放置好的熔爐" } else { "沒有熔爐" },
     );
     (system, user)
-}
-
-/// 配料 id → 繁中名（prompt 事實行用；覆蓋可發明配方會用到的原料與鏈上加工品）。
-fn input_name(bid: u8) -> &'static str {
-    match bid {
-        2 => "泥土",
-        3 => "石頭",
-        4 => "沙子",
-        5 => "木頭",
-        6 => "葉片",
-        8 => "木板",
-        _ => "材料",
-    }
 }
 
 // ── 面向玩家的台詞／Feed／記憶文字（i18n：集中在此、可替換）────────────────────────
@@ -3149,6 +3135,43 @@ mod tests {
         assert_eq!(material_name(WORKBENCH_BLOCK_ID), "工作台");
     }
 
+    /// 修「空玻璃瓶／乙太沃肥」發明永遠失敗的根因：`material_name` 此前只有一張
+    /// 8 個 id 的手寫小表，鏈上中繼加工品（玻璃/石磚）與居民自製品目標
+    /// （空玻璃瓶/乙太沃肥）一律落回泛稱「材料」，便宜腦看不懂到底缺什麼、
+    /// goal_met 失敗訊息也講不出具體材料名。改委派 `voxel_gift::item_name_zh`
+    /// 後應覆蓋到這些 id，不再是泛稱。
+    #[test]
+    fn material_name_covers_chain_intermediates_and_own_products() {
+        assert_eq!(material_name(10), "玻璃"); // 鏈上中繼加工品（玻璃瓶/水井藍圖的配料）
+        assert_eq!(material_name(9), "石磚"); // 鏈上中繼加工品（瞭望台藍圖的配料）
+        assert_eq!(material_name(17), "拋光石"); // 熔爐產物，非站點特例仍要有正確名
+        assert_eq!(material_name(crate::voxel_bottle::BOTTLE_ID), "空玻璃瓶");
+        assert_eq!(material_name(crate::voxel_compost::FERTILIZER_ID), "乙太沃肥");
+    }
+
+    /// `recipe_fact`（透過 `invention_prompt` 節錄）此前對玻璃這種鏈上配料一律印出
+    /// 「材料×2」，便宜腦完全看不出「bottle」配方到底要吃什麼——本測試釘住系統
+    /// 提示裡「空玻璃瓶」配方那行必須點名「玻璃」，不能再淪為泛稱。
+    #[test]
+    fn invention_prompt_names_chain_ingredient_not_generic() {
+        let goal = MaterialGoal { block_id: crate::voxel_bottle::BOTTLE_ID, name_zh: "空玻璃瓶" };
+        let (sys, _) = invention_prompt("露娜", &goal, "想要空玻璃瓶", "", false, false, &[]);
+        assert!(sys.contains("玻璃×2"), "bottle 配方事實行應點名玻璃，而非泛稱「材料」: {sys}");
+        assert!(!sys.contains("材料×2"), "不該再出現泛稱材料的配方事實行: {sys}");
+    }
+
+    /// 目標材料是居民自製品（如空玻璃瓶/乙太沃肥）時，計畫跑完仍缺料的失敗訊息
+    /// 此前會講「背包裡仍然不會有目標材料「材料」」——便宜腦收到這句等於沒收到
+    /// 有效回饋、修正必然再失敗。改用委派後應點名真正的目標材料。
+    #[test]
+    fn goal_unmet_message_names_self_made_goal() {
+        let bag: HashMap<u8, u32> = HashMap::new();
+        let err = simulate_plan(&[], &bag, crate::voxel_bottle::BOTTLE_ID, false, false)
+            .expect_err("空背包、零步驟，目標不可能達成");
+        assert!(err.contains("空玻璃瓶"), "{err}");
+        assert!(!err.contains("「材料」"), "{err}");
+    }
+
     // ── 第二刀：放置點與站點查詢（世界純函式）───────────────────────────────────
 
     #[test]
@@ -3220,7 +3243,10 @@ mod tests {
         assert!(sys.contains("gather") && sys.contains("craft"));
         assert!(sys.contains("JSON"));
         // grounded 配方事實：玻璃那條一定在（2 沙 → 玻璃）。
-        assert!(sys.contains("glass") && sys.contains("沙子"));
+        // 材料名單一事實源改委派 voxel_gift::item_name_zh 後，沙子統一稱「沙」
+        // （原本 input_name 私有小表寫的「沙子」只是這支 prompt 自己的措辭，
+        // 不影響配方語意，改斷言貼合唯一事實源的真實輸出）。
+        assert!(sys.contains("glass") && sys.contains("沙"));
         // 處境與背包現況在 user。
         assert!(user.contains("玻璃") && user.contains("木頭×1"));
     }
