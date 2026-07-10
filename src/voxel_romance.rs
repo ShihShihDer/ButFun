@@ -94,6 +94,12 @@ impl ResidentRomance {
         true
     }
 
+    /// 全部戀人對的快照（顯示名對，正規化順序）。供「戀人愛巢」（築巢資格掃描）等需要遍歷所有
+    /// 戀人對的呼叫端使用；回傳擁有所有權的 `Vec`，讓呼叫端能短取讀鎖後即釋、鎖外慢慢處理。
+    pub fn all_pairs(&self) -> Vec<(String, String)> {
+        self.pairs.iter().cloned().collect()
+    }
+
     /// 快照成持久化記錄清單（供 `save_romance` 整份 append 一行）。
     pub fn to_entries(&self) -> Vec<RomanceEntry> {
         self.pairs
