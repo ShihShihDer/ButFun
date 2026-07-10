@@ -1866,6 +1866,135 @@ pub fn curiosity_pick(catalog: &[MaterialGoal], seed: u64) -> Option<MaterialGoa
     }
 }
 
+// ── 階梯式好奇心（真進化·踏腳石）─────────────────────────────────────────────
+// 線上日誌實證：`curiosity_pick` 從整份目錄**均勻亂挑**，居民常挑到「石劍／熔爐鏈深處」
+// 這種前置技能還沒攢夠、單一計畫塞不進 MAX_STEPS 的目標，一天到晚提案不可行、退避冷卻、
+// 猛撞牆。真進化該像**階梯**：先發明搆得著的踏腳石，用學到的技能當積木，複雜目標等她攢夠
+// 前置後自然變得搆得著。下面用一支純函式估「這個目標她現在搆不搆得著」，讓好奇心優先挑
+// 「當前踏得到的一階」——玩家因此看得到居民能力**像階梯一樣往上長**。
+
+/// 可自採的基礎資源 block id 集合（草/沙/土/石/木）——「一個 gather op 就到手」的葉節點。
+fn base_resource_ids() -> &'static HashSet<u8> {
+    static SET: OnceLock<HashSet<u8>> = OnceLock::new();
+    SET.get_or_init(|| {
+        [
+            GatherResource::Grass,
+            GatherResource::Sand,
+            GatherResource::Dirt,
+            GatherResource::Stone,
+            GatherResource::Wood,
+        ]
+        .iter()
+        .map(|r| r.block_id())
+        .collect()
+    })
+}
+
+/// 某產物需要的站台層級（None＝隨身 2×2／工作台／熔爐）。
+#[derive(Clone, Copy, PartialEq)]
+enum StationTier {
+    None,
+    Workbench,
+    Furnace,
+}
+
+/// 找「產出某 block」的可發明配方 + 它需要的站台。依「隨身→工作台→熔爐」順序挑第一條
+/// （同一產物優先較省事的做法，估算成本時取樂觀的那條）；查無回 `None`（弄不到）。
+fn producing_recipe(block: u8) -> Option<(&'static vcraft::Recipe, StationTier)> {
+    if let Some(r) = inventable_recipes().find(|r| r.output_block == block) {
+        return Some((r, StationTier::None));
+    }
+    if let Some(r) = inventable_wb_recipes().find(|r| r.output_block == block) {
+        return Some((r, StationTier::Workbench));
+    }
+    if let Some(r) = inventable_furnace_recipes().find(|r| r.output_block == block) {
+        return Some((r, StationTier::Furnace));
+    }
+    None
+}
+
+/// 遞迴估「把某材料弄進背包」需要多少個原語 op（對齊 LLM 提案的 raw op 數）。
+/// - 她已學會技能能產出的 → 1（use_skill 整條子鏈收成一步：這正是階梯往上長的積木）
+/// - 基礎可採資源 → 1（一個 gather op；數量由該步的 count 欄位涵蓋）
+/// - 否則查可發明配方：1（craft op）+ 各配料成本 +（若需站台）造站台成本 + 1（place）
+/// - 弄不到／遞迴超深／路徑有環 → `None`
+/// 刻意略保守（配料去重但共用中繼品重複計、站台每遇一次算一次）——寧可低估可及性，
+/// 也不挑到執行必敗的目標；真的高估了退避機制仍會止血。
+fn material_op_cost(
+    block: u8,
+    known_goals: &HashSet<u8>,
+    visited: &mut HashSet<u8>,
+    depth: u32,
+) -> Option<usize> {
+    const DEPTH_CAP: u32 = 12;
+    if depth > DEPTH_CAP {
+        return None;
+    }
+    if known_goals.contains(&block) {
+        return Some(1); // 她已經會——use_skill 一步搞定整條子鏈
+    }
+    if base_resource_ids().contains(&block) {
+        return Some(1); // 採一步就到手
+    }
+    if !visited.insert(block) {
+        return None; // 環：這條路不通（防禦，靜態配方表理論無環）
+    }
+    let result = (|| {
+        let (r, tier) = producing_recipe(block)?;
+        let mut c = 1usize; // 這一步 craft／craft_wb／smelt
+        // 各配料去重：同一種料只算一次它的產出成本（數量由採集 count 一步涵蓋）。
+        let mut seen_inputs: HashSet<u8> = HashSet::new();
+        for (bid, _) in r.inputs {
+            if !seen_inputs.insert(*bid) {
+                continue;
+            }
+            c += material_op_cost(*bid, known_goals, visited, depth + 1)?;
+        }
+        // 站台：需要工作台/熔爐而她還沒把它收成技能 → 造一座 + 放置（place 一步）。
+        match tier {
+            StationTier::None => {}
+            StationTier::Workbench => {
+                c += material_op_cost(WORKBENCH_BLOCK_ID, known_goals, visited, depth + 1)? + 1;
+            }
+            StationTier::Furnace => {
+                c += material_op_cost(FURNACE_BLOCK_ID, known_goals, visited, depth + 1)? + 1;
+            }
+        }
+        Some(c)
+    })();
+    visited.remove(&block);
+    result
+}
+
+/// 估「這個目標她現在搆不搆得著」：估出目標材料的原語 op 成本。`None`＝弄不到/太迂迴；
+/// `Some(n)` 且 `n ≤ MAX_STEPS` 即「當前踏得到的一階」。`known_goals`＝她已發明技能能
+/// 產出的 block（這些收成 1 步 use_skill，正是往上搆的積木）。
+pub fn goal_reach_cost(goal_block: u8, known_goals: &HashSet<u8>) -> Option<usize> {
+    let mut visited = HashSet::new();
+    material_op_cost(goal_block, known_goals, &mut visited, 0)
+}
+
+/// 階梯式好奇心挑目標（取代整份目錄均勻亂挑）：**優先從「當前搆得著」的子集挑**
+/// （估算 op 數 ≤ [`MAX_STEPS`]），先發明踏得到的踏腳石；複雜目標等她攢夠前置技能後
+/// 自然浮現。reachable 子集非空 → 從中 seed 取模挑（保留好奇心的探索、可重現）；
+/// 全都搆不著（理論罕見：木板/石磚這種 2 步的一定在）→ 退回原均勻挑（絕不卡死、零回歸）。
+pub fn curiosity_pick_laddered(
+    catalog: &[MaterialGoal],
+    known_goals: &HashSet<u8>,
+    seed: u64,
+) -> Option<MaterialGoal> {
+    if catalog.is_empty() {
+        return None;
+    }
+    let reachable: Vec<MaterialGoal> = catalog
+        .iter()
+        .filter(|g| goal_reach_cost(g.block_id, known_goals).map_or(false, |c| c <= MAX_STEPS))
+        .copied()
+        .collect();
+    let pool: &[MaterialGoal] = if reachable.is_empty() { catalog } else { &reachable };
+    Some(pool[(seed % pool.len() as u64) as usize])
+}
+
 /// 好奇心種下的自發心願文字——**保證含材料名**，[`detect_missing_material`]
 /// 一定接得住（round-trip 由測試釘住），發明引擎自然接手。
 pub fn curiosity_desire_text(name: &str) -> String {
@@ -3553,6 +3682,79 @@ mod tests {
         );
         // 空目錄（全會了）→ None，呼叫端冒「沒新東西想試」泡泡、零 LLM。
         assert!(curiosity_pick(&[], 42).is_none());
+    }
+
+    // ── 階梯式好奇心（真進化·踏腳石）測試 ─────────────────────────────────────
+
+    #[test]
+    fn reach_cost_cheap_handheld_goals_are_low() {
+        let none = HashSet::new();
+        // 木板（8）＝採木×1 + 合成×1 → 2 op；石磚（9）＝採石 + 合成 → 2 op。
+        assert_eq!(goal_reach_cost(8, &none), Some(2));
+        assert_eq!(goal_reach_cost(9, &none), Some(2));
+        // 工作台（15）＝採木→合木板→合工作台 → 3 op（隨身配方、免站台）。
+        assert_eq!(goal_reach_cost(WORKBENCH_BLOCK_ID, &none), Some(3));
+    }
+
+    #[test]
+    fn reach_cost_deep_furnace_chain_exceeds_budget_from_scratch() {
+        // 拋光石（17）需熔爐冶煉；零技能時要 造工作台→放→合熔爐→放→採石→冶煉，
+        // 估算 op 數 > MAX_STEPS，因此**從零搆不著**——正是線上居民猛撞牆的那種目標。
+        let cost = goal_reach_cost(17, &HashSet::new());
+        assert!(
+            cost.map_or(false, |c| c > MAX_STEPS),
+            "拋光石從零應估為超出步數上限，實得 {cost:?}"
+        );
+    }
+
+    #[test]
+    fn reach_cost_drops_once_prerequisite_skill_learned() {
+        // 階梯核心：一旦她發明過「熔爐」技能（收成 1 步 use_skill），拋光石的估算
+        // 成本大幅下降到 MAX_STEPS 內——複雜目標因前置技能到位而**變得搆得著**。
+        let mut known = HashSet::new();
+        known.insert(FURNACE_BLOCK_ID); // 她已會做熔爐
+        let cost = goal_reach_cost(17, &known);
+        assert!(
+            cost.map_or(false, |c| c <= MAX_STEPS),
+            "會做熔爐後拋光石應落在步數上限內，實得 {cost:?}"
+        );
+        // 且比從零便宜（積木收成 use_skill 一步）。
+        assert!(cost < goal_reach_cost(17, &HashSet::new()));
+    }
+
+    #[test]
+    fn laddered_pick_prefers_reachable_over_unreachable() {
+        // 手搭一份含「搆得著（木板）」與「搆不著（拋光石）」的目錄，零技能。
+        let cat = vec![
+            MaterialGoal { block_id: 17, name_zh: "拋光石" }, // 從零超上限
+            MaterialGoal { block_id: 8, name_zh: "木板" },    // 2 op，搆得著
+        ];
+        let none = HashSet::new();
+        // 掃過各種 seed，永遠只挑到搆得著的那個（不會挑到會撞牆的拋光石）。
+        for seed in 0..20u64 {
+            let picked = curiosity_pick_laddered(&cat, &none, seed).unwrap();
+            assert_eq!(picked.block_id, 8, "seed={seed} 竟挑到搆不著的目標");
+        }
+    }
+
+    #[test]
+    fn laddered_pick_falls_back_when_nothing_reachable() {
+        // 目錄裡全是搆不著的目標（只放拋光石）→ 不卡死，退回原均勻挑（零回歸）。
+        let cat = vec![MaterialGoal { block_id: 17, name_zh: "拋光石" }];
+        let none = HashSet::new();
+        assert_eq!(curiosity_pick_laddered(&cat, &none, 3).map(|g| g.block_id), Some(17));
+        // 空目錄 → None（她全會了）。
+        assert!(curiosity_pick_laddered(&[], &none, 7).is_none());
+    }
+
+    #[test]
+    fn laddered_pick_is_deterministic() {
+        let cat = possibility_catalog(&HashSet::new());
+        let none = HashSet::new();
+        assert_eq!(
+            curiosity_pick_laddered(&cat, &none, 11),
+            curiosity_pick_laddered(&cat, &none, 11)
+        );
     }
 
     #[test]
