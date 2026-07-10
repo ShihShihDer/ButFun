@@ -1786,6 +1786,41 @@ function updateUnderwaterAtmosphere() {
 }
 // ── end 水下氛圍 v1 ───────────────────────────────────────────────────────────
 
+// ── 晨霧 v1（ROADMAP 913）──────────────────────────────────────────────────────
+// 每個清晨，整片世界浮起一層薄霧：縮短 Three.js fog 的能見度，遠處的屋與樹在霧裡朦朧成剪影，
+// 日出後（太陽升高）再一點點散去。純前端、零後端、零協議、零 migration、零 LLM、零美術——
+// 只用既有廣播的 time_of_day（worldTime）本地判定，複用場景既有的 scene.fog。
+// 對齊後端 TimePhase::Dawn（time_of_day ∈ [0.20, 0.35)）：0.20 霧最濃、0.25 日出、0.35 散盡。
+const MIST_DAWN_START = 0.20; // 清晨窗口起點（霧開始瀰漫），對齊後端 Dawn 起點
+const MIST_DAWN_PEAK  = 0.22; // 日出前最濃
+const MIST_DAWN_END   = 0.35; // 清晨窗口終點（霧散盡），對齊後端 Dawn 終點
+// fog.near/far：無霧＝場景既有預設（40／120）；濃霧＝縮短到看不遠（12／50）。
+const MIST_FOG_NEAR_CLEAR = 40,  MIST_FOG_NEAR_THICK = 12;
+const MIST_FOG_FAR_CLEAR  = 120, MIST_FOG_FAR_THICK  = 50;
+
+/** 依一日進度 t（0–1）算晨霧強度 [0,1]：清晨窗口外＝0（無霧）、窗口內先快速濃起再漸散。
+ *  純函式、確定性、可單元測試；壞值（NaN/±Infinity/非數字）一律保守回 0（不起霧、永不爆）。 */
+function dawnMistStrength(t) {
+  if (typeof t !== "number" || !isFinite(t)) return 0;
+  if (t <= MIST_DAWN_START || t >= MIST_DAWN_END) return 0; // 清晨窗口外：無霧
+  if (t <= MIST_DAWN_PEAK) {
+    // START→PEAK：霧快速濃起（線性上升到 1）。
+    return (t - MIST_DAWN_START) / (MIST_DAWN_PEAK - MIST_DAWN_START);
+  }
+  // PEAK→END：日出後漸散（線性回落到 0）。
+  return Math.max(0, 1 - (t - MIST_DAWN_PEAK) / (MIST_DAWN_END - MIST_DAWN_PEAK));
+}
+
+/** 每幀更新晨霧的 fog 能見度。水下另有自己的近霧（updateUnderwaterAtmosphere 主導），
+ *  水下時整段跳過、由水下霧接管；地面則依晨霧強度縮短能見度（無霧時剛好還原成場景預設）。 */
+function updateDawnMist() {
+  if (_isUnderwater) return; // 水下：交給水下霧，不套晨霧
+  const mist = dawnMistStrength(worldTime);
+  scene.fog.near = MIST_FOG_NEAR_CLEAR - (MIST_FOG_NEAR_CLEAR - MIST_FOG_NEAR_THICK) * mist;
+  scene.fog.far  = MIST_FOG_FAR_CLEAR  - (MIST_FOG_FAR_CLEAR  - MIST_FOG_FAR_THICK)  * mist;
+}
+// ── end 晨霧 v1 ───────────────────────────────────────────────────────────────
+
 // 把一個 chunk 連同鄰塊標記為待重建（鄰塊也要重算面剔除）。
 function markDirty(cx, cy, cz) {
   dirty.add(ckey(cx, cy, cz));
@@ -6330,6 +6365,7 @@ function update(dt) {
 
   // 水下氛圍：相機所在方塊是否為水（每幀一次 getRaw 查詢，成本極低）。
   updateUnderwaterAtmosphere();
+  updateDawnMist(); // 晨霧 v1（913）：清晨縮短 fog 能見度、日出後漸散（須在水下判定後，水下時讓位給水下霧）
 
   updateRain(dt);
   updateRainbow(dt);

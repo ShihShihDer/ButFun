@@ -152,6 +152,7 @@ use crate::voxel_player_home as vplayerhome;
 use crate::voxel_weather as vweather;
 use crate::voxel_season as vseason;
 use crate::voxel_snow as vsnow;
+use crate::voxel_mist as vmist;
 use crate::voxel_timely as vtimely;
 use crate::voxel_bounty as vbounty;
 use crate::voxel_stargaze as vstar;
@@ -2114,6 +2115,10 @@ struct VoxelHub {
     /// 冬季飄雪 v1（ROADMAP 900）：季內初雪偵測狀態機（純記憶體，比照天氣／季節等世界暫態，
     /// 重啟歸零）。每輪 tick_residents 依「當前是否冬季 ∧ 是否下雨」推進，偵測本冬第一次飄雪。
     snow_tracker: RwLock<vsnow::SnowSeasonTracker>,
+    /// 晨霧 v1（ROADMAP 913）：追蹤「今天清晨的晨霧是否已播報過」（純記憶體，比照天氣／季節等
+    /// 世界暫態，重啟歸零）。每輪 tick_residents 依「當前是否清晨 ∧ 世界第幾天」推進，偵測
+    /// 每天清晨第一次霧起那一刻，讓附近醒著居民抬頭冒句晨霧感言＋動態牆留一則。
+    mist_tracker: RwLock<vmist::MistDayTracker>,
     /// 秋收囤糧過冬 v1（自主提案）：本秋是否已播過「初囤」城鎮時刻的追蹤器（純記憶體，比照
     /// 飄雪／季節等世界暫態，重啟歸零）。每輪 tick_residents 依「當前是否秋季」推進；秋天內
     /// 第一次真的有人囤糧那刻播一則季節動態，離開秋天即重置、下一個秋天再播一次。
@@ -2833,6 +2838,9 @@ fn hub() -> &'static VoxelHub {
             last_season: RwLock::new(vseason::season_for_day(0)),
             // 冬季飄雪 v1（ROADMAP 900）：啟動時尚未飄雪、本冬未播初雪；之後靠 tick_residents 逐 tick 推進。
             snow_tracker: RwLock::new(vsnow::SnowSeasonTracker::new()),
+            // 晨霧 v1（ROADMAP 913）：啟動時尚未播過任何一天的晨霧；世界初始為白天（非清晨），
+            // 故啟動當下不會誤觸發，第一縷晨霧落在隔天清晨。之後靠 tick_residents 逐 tick 推進。
+            mist_tracker: RwLock::new(vmist::MistDayTracker::new()),
             // 秋收囤糧過冬 v1（自主提案）：啟動時本秋尚未播過初囤時刻；之後靠 tick_residents 逐 tick 推進。
             autumn_stock: RwLock::new(vharveststock::AutumnStockTracker::new()),
             // 村莊自發習俗 v1（暮聚）：啟動時尚無任何一場暮聚發生過。
@@ -12124,6 +12132,18 @@ fn tick_residents(dt: f32) {
     let village_center_opt: Option<(f32, f32)> =
         vvillage::load_village_center().map(|(cx, cz)| (cx as f32 + 0.5, cz as f32 + 0.5));
     let current_day = { hub().world_time.read().unwrap().days_elapsed() };
+    // 晨霧 v1（ROADMAP 913）：把「當前是否清晨（Dawn）」與「世界第幾天」餵給每日晨霧狀態機，
+    // 偵測「今天清晨第一次霧起」那一刻（純函式，短寫鎖即釋、不巢狀，守死鎖鐵律）。回 true 時：
+    // ①寫一則城鎮動態（不在線上的玩家回來也讀得到清晨起了霧）②供下方 residents 迴圈讓附近醒著
+    // 居民抬頭冒一句晨霧感言。霧的「視覺」不必後端管——前端用既有廣播的 time_of_day 本地判定，
+    // 清晨自動縮短 fog 能見度、日出後漸散（零協議破壞）。
+    let morning_mist_started = {
+        let is_dawn = matches!(phase, TimePhase::Dawn);
+        hub().mist_tracker.write().unwrap().update(is_dawn, current_day)
+    };
+    if morning_mist_started {
+        vfeed::append_feed("晨霧", "乙太方界", vmist::morning_mist_feed_detail());
+    }
     // 這一 tick 是否「有資格」開暮聚（黃昏＋有廣場中心＋今天還沒聚過）——最終還要在鎖內看在場閒人數。
     let custom_dusk_now = matches!(phase, TimePhase::Dusk);
     let custom_already_today = { *hub().last_custom_day.read().unwrap() == Some(current_day) };
@@ -15048,6 +15068,16 @@ fn tick_residents(dt: f32) {
             if first_snow_just_started && !r.asleep && r.say.is_empty() {
                 let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                 r.say = vsnow::first_snow_line(pick).to_string();
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            }
+
+            // 晨霧 v1（ROADMAP 913）：今天清晨霧起那一刻，say 為空、醒著的居民抬頭望向朦朧的世界，
+            // 冒一句晨霧感言（零 LLM、確定性選句），心情也跟著微亮一格（`mood_boost` 是驅動行為的真狀態）。
+            // 與換季／初雪／雨天反應同屬一次性環境事件，值得蓋過閒聊冷卻；每天清晨只起一次。
+            if morning_mist_started && !r.asleep && r.say.is_empty() {
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                r.say = vmist::morning_mist_line(pick).to_string();
                 r.say_timer = SAY_SECS;
                 r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
             }
