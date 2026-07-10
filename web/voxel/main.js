@@ -1348,6 +1348,24 @@ const FACES = [
   { n: [0, 0, -1], v: [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]], d: [0, 0, -1] },
 ];
 
+// 方塊色只在重建 mesh 時生成：世界座標相同就永遠得到相同微差，不進入每幀更新。
+function variedBlockColor(c, wx, wy, wz) {
+  let h = Math.imul(wx | 0, 73856093) ^ Math.imul(wy | 0, 19349663) ^ Math.imul(wz | 0, 83492791);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  const light = 0.94 + ((h >>> 0) / 4294967295) * 0.12; // 亮度約 ±6%
+  const tint = (((h >>> 9) & 1023) / 1023 - 0.5) * 0.05; // 極淡冷暖色相差，避免髒灰
+  return [
+    Math.min(1, Math.max(0, c[0] * light + tint)),
+    Math.min(1, Math.max(0, c[1] * light + tint * 0.25)),
+    Math.min(1, Math.max(0, c[2] * light - tint * 0.7)),
+  ];
+}
+
+// 固定方向明暗與場景光疊加：頂面柔亮、側面收斂、底面最深。
+function faceShade(f) {
+  return f.n[1] > 0 ? 1.07 : (f.n[1] < 0 ? 0.70 : 0.91);
+}
+
 // 不透明面是否該畫：相鄰是空氣、水或梯子（可視穿）才畫；未載入(-1)當作實心 → 不畫
 //（避免世界邊緣冒出一面牆，等鄰塊串到再補）。
 function faceVisibleOpaque(nx, ny, nz) {
@@ -1388,18 +1406,18 @@ function rebuildChunk(key) {
             const nb = getRaw(wx + f.d[0], wy + f.d[1], wz + f.d[2]);
             if (f.n[1] === 1) {
               // 頂面：上方空氣才露出水面，畫在 topH（矮水面一眼看得出在漫）。
-              if (nb === AIR) emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, topH, topH, b);
+              if (nb === AIR) emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, topH, topH, b, wx, wy, wz);
             } else if (f.n[1] === -1) {
               // 底面：下方空氣才畫（避免內面）。
-              if (nb === AIR) emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, 0, 0, b);
+              if (nb === AIR) emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, 0, 0, b, wx, wy, wz);
             } else {
               // 側面：鄰空氣→整片側牆(0..topH)；鄰為較矮的水→畫階梯落差牆(鄰topH..topH)，
               // 讓「越流越低」的水階在側面也看得出來，不是兩塊水之間破洞。
               if (nb === AIR) {
-                emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, topH, 0, b);
+                emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, topH, 0, b, wx, wy, wz);
               } else if (isWaterId(nb)) {
                 const nH = waterTopH(nb);
-                if (nH < topH - 1e-3) emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, topH, nH, b);
+                if (nH < topH - 1e-3) emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, topH, nH, b, wx, wy, wz);
               }
             }
           }
@@ -1407,9 +1425,9 @@ function rebuildChunk(key) {
           // 裝飾植物：走十字貼片（兩片交叉直立四邊形），一眼是「插在地上的一小株」而非方塊。
           // 併入不透明 mesh（opaqueMat 為 DoubleSide，兩面都畫，花不會半透明破洞）。
           // （window.__qaCubePlants 僅供 QA 對比截圖用，切回舊的整格立方體渲染。）
-          emitCross(pos, norm, col, idx, lx, ly, lz, COLOR[b] || COLOR[STONE]);
+          emitCross(pos, norm, col, idx, lx, ly, lz, variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz));
         } else {
-          const c = COLOR[b] || COLOR[STONE];
+          const c = variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz);
           for (const f of FACES) {
             if (!faceVisibleOpaque(wx + f.d[0], wy + f.d[1], wz + f.d[2])) continue;
             emitFace(pos, norm, col, idx, lx, ly, lz, f, c);
@@ -1448,10 +1466,11 @@ function rebuildChunk(key) {
 // 把一個面（4 頂點、2 三角）推進陣列。座標用 chunk 局部（mesh 自身有 position 偏移）。
 function emitFace(pos, norm, col, idx, lx, ly, lz, f, c) {
   const start = pos.length / 3;
+  const shade = faceShade(f);
   for (const v of f.v) {
     pos.push(lx + v[0], ly + v[1], lz + v[2]);
     norm.push(f.n[0], f.n[1], f.n[2]);
-    if (col && c) col.push(c[0], c[1], c[2]);
+    if (col && c) col.push(Math.min(1, c[0] * shade), Math.min(1, c[1] * shade), Math.min(1, c[2] * shade));
   }
   idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
 }
@@ -1504,14 +1523,15 @@ function waterColor(b) {
 
 // 推一個水面（4 頂點、2 三角）：頂邊在 yTop、底邊在 yBot（側面藉此畫出階梯落差牆）。
 // wcol：水頂點色陣列；blockId：水方塊 id（決定深淺色）。
-function emitWaterFace(pos, norm, col, idx, lx, ly, lz, f, yTop, yBot, blockId) {
+function emitWaterFace(pos, norm, col, idx, lx, ly, lz, f, yTop, yBot, blockId, wx, wy, wz) {
   const start = pos.length / 3;
-  const c = waterColor(blockId);
+  const c = variedBlockColor(waterColor(blockId), wx, wy, wz);
+  const shade = faceShade(f);
   for (const v of f.v) {
     const y = v[1] === 1 ? yTop : yBot;
     pos.push(lx + v[0], ly + y, lz + v[2]);
     norm.push(f.n[0], f.n[1], f.n[2]);
-    col.push(c[0], c[1], c[2]);
+    col.push(Math.min(1, c[0] * shade), Math.min(1, c[1] * shade), Math.min(1, c[2] * shade));
   }
   idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
 }
