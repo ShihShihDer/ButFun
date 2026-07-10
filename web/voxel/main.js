@@ -727,6 +727,68 @@ function updateRainbow(dt) {
   rainbowGroup.rotation.y = Math.atan2(dir.x, dir.z) + Math.PI;
 }
 
+// ── 流星許願 v1（ROADMAP 904）──────────────────────────────────────────────
+// 伺服器夜裡低機率偵測到流星,隨快照廣播 meteor:bool(旗標亮約一個檢查窗);前端只負責視覺:
+// 在「旗標由假轉真」的上升緣,於鏡頭前方高空生成一道加法混合的光痕,沿對角掠過天際、淡入再
+// 拖尾淡出(約 1.2 秒),之後自行隱藏。效能鐵律:單一可重用 Mesh,平時隱藏、未播放時零成本早退,
+// 不逐幀配置幾何/材質。與彩虹(白天)、繁星(靜止)區隔:這是夜空唯一「會動、會發生」的天象。
+let meteorActive = false;      // 伺服器快照旗標:此刻是否剛劃過流星
+let meteorWasActive = false;   // 上一幀旗標,偵測「假→真」上升緣(只在上升緣觸發一次動畫)
+let meteorAnimT = -1;          // 動畫進度(秒);< 0 = 未在播放
+const METEOR_DURATION = 1.2;   // 一道流星的視覺時長(秒)
+const METEOR_LEN = 26;         // 光痕長度(格)
+const METEOR_TRAVEL = 60;      // 劃過的位移距離(格)
+const meteorMat = new THREE.MeshBasicMaterial({
+  color: 0xfff3d0, transparent: true, opacity: 0,
+  depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+  side: THREE.DoubleSide, // 旋轉朝行進方向後兩面皆可能朝鏡頭,雙面才不會消失
+});
+// 光痕本體:細長平面(長軸沿本地 +X),之後整體旋轉對齊行進方向。
+const meteorMesh = new THREE.Mesh(new THREE.PlaneGeometry(METEOR_LEN, 0.5), meteorMat);
+meteorMesh.visible = false;
+scene.add(meteorMesh);
+const meteorFrom = new THREE.Vector3();
+const meteorDir = new THREE.Vector3();
+const _MET_XAXIS = new THREE.Vector3(1, 0, 0);
+// 觸發一道流星:在鏡頭水平朝向的高空遠方設定起點/行進方向,開始播放動畫。
+function triggerMeteor() {
+  // 只在看得見星星的夜空才播(伺服器已有夜間門檻,這裡再保險一次,免得白天邊界瞬間閃現)。
+  if (nightFactor(worldTime) <= 0.05) return;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  dir.y = 0;
+  if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
+  dir.normalize();
+  const side = new THREE.Vector3(-dir.z, 0, dir.x); // 鏡頭水平右向量
+  // 起點:鏡頭前方遠處、偏左上方的高空。
+  meteorFrom.set(
+    camera.position.x + dir.x * 70 - side.x * 24,
+    camera.position.y + 46,
+    camera.position.z + dir.z * 70 - side.z * 24,
+  );
+  // 行進方向:向右斜下方掠過(主要沿 side、略微下降)。
+  meteorDir.set(side.x, -0.35, side.z).normalize();
+  // 光痕長軸(本地 +X)旋轉對齊行進方向。
+  meteorMesh.quaternion.setFromUnitVectors(_MET_XAXIS, meteorDir);
+  meteorAnimT = 0;
+  meteorMesh.visible = true;
+}
+function updateMeteor(dt) {
+  if (meteorActive && !meteorWasActive) triggerMeteor(); // 上升緣:播一道流星
+  meteorWasActive = meteorActive;
+  if (meteorAnimT < 0) return; // 未在播放:零成本早退
+  meteorAnimT += dt;
+  const p = meteorAnimT / METEOR_DURATION;
+  if (p >= 1) { meteorAnimT = -1; meteorMesh.visible = false; meteorMat.opacity = 0; return; }
+  meteorMesh.position.set(
+    meteorFrom.x + meteorDir.x * METEOR_TRAVEL * p,
+    meteorFrom.y + meteorDir.y * METEOR_TRAVEL * p,
+    meteorFrom.z + meteorDir.z * METEOR_TRAVEL * p,
+  );
+  // 不透明度包絡:0→峰→0(sin),快速亮起再拖尾淡出。
+  meteorMat.opacity = Math.sin(p * Math.PI) * 0.95;
+}
+
 // ── 乙太煙火 v1（ROADMAP 785）────────────────────────────────────────────────
 // 玩家朝夜空施放的煙火:一束火花在施放者頭頂上方升空、綻放。伺服器廣播 firework{x,y,z,palette}
 // 給全場,前端在該位置上方生成一朵綻放的火花點雲。效能鐵律:每束煙火＝單一 THREE.Points
@@ -5257,6 +5319,8 @@ function connect() {
       if (typeof m.raining === "boolean" && m.raining !== isRaining) { isRaining = m.raining; skyDirty = true; }
       // 雨後彩虹 v1（ROADMAP 780）：rainbow 隨同一份快照送達，切換前端彩虹弧的淡入/淡出目標。
       if (typeof m.rainbow === "boolean") rainbowActive = m.rainbow;
+      // 流星許願 v1（ROADMAP 904）：meteor 隨同一份快照送達，updateMeteor 於旗標「假→真」上升緣播一道光痕。
+      if (typeof m.meteor === "boolean") meteorActive = m.meteor;
       // 季節輪替 v1（ROADMAP 798）：season 隨同一份快照送達，換季時整片天地換上不同色調。
       if (typeof m.season === "string" && m.season !== worldSeason) { worldSeason = m.season; skyDirty = true; }
       // 季節指示器 v1（ROADMAP 897）：season_day（這一季第幾天）隨同一份快照送達，HUD 徽章顯示用。
@@ -6022,6 +6086,7 @@ function update(dt) {
 
   updateRain(dt);
   updateRainbow(dt);
+  updateMeteor(dt); // 流星許願 v1（904）：上升緣播一道劃過夜空的光痕
   updateNightSky(dt);
   updateFireworks(dt); // 乙太煙火 v1（785）：推進進行中的煙火綻放
   updateShadowFx(dt);  // 暗影生物 v1：暗影浮動/微光呼吸/受擊閃白/輕煙淡出
@@ -7186,6 +7251,13 @@ window.__voxel = {
   get rainbowVisible() { return rainbowGroup.visible; },
   get rainbowAlpha() { return rainbowAlpha; },
   updateRainbow(dt) { updateRainbow(dt); },
+  // ── 流星許願 v1 QA 用（ROADMAP 904）──
+  get meteorActive() { return meteorActive; },
+  set meteorActive(v) { meteorActive = !!v; },
+  get meteorVisible() { return meteorMesh.visible; },
+  get meteorOpacity() { return meteorMat.opacity; },
+  triggerMeteor() { triggerMeteor(); return meteorMesh.visible; },
+  updateMeteor(dt) { updateMeteor(dt); },
   // ── 真瀏覽器 QA 用：讀準心目標、讀方塊、觸發破壞/放置、選方塊 ──
   get target() { return target; },
   getBlock(x, y, z) { return getRaw(x, y, z); },
