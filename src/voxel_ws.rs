@@ -554,6 +554,10 @@ struct VoxelResident {
     /// 被夥伴在營火邊講了故事後、等這秒數到期再應和（講述者名字, 剩餘秒）（圍火講往事 v1）。
     /// 與 `pending_response` 分開，讓聆聽者冒的是「聽故事」味道的專屬應和，而非通用社交回應。純記憶體。
     pending_tale_reply: Option<(String, f32)>,
+    /// 相遇被老朋友就地教了一手後、等這秒數到期再冒「原來如此！」的應和（應和台詞, 剩餘秒）
+    /// （技能互教·北極星第四刀）。與 `pending_tale_reply`／`pending_bench_reply` 分開，
+    /// 讓受教有專屬的一來一往語氣。台詞在教學那刻就從句式池組好（零 LLM）。純記憶體。
+    pending_teach_reply: Option<(String, f32)>,
     /// 門口留下的「有人來找過」心意佇列（登門撲空留心意 v1，ROADMAP 763）：某訪客登門撲空（752 判定
     /// 主人不在家）時，訪客名字塞進這裡；日後主人回到自家附近閒著時逐一感應、念一句、記一筆。
     /// 去重＋上限保護（[`vcard::MAX_PENDING_CALLERS`]）。純記憶體、重啟歸零。
@@ -1749,6 +1753,8 @@ fn build_resident(
             rain_shelter_cooldown: vrain::shelter_cd_offset(i),
             homegaze_cooldown: vhome::gaze_cd_offset(i),
             pending_tale_reply: None,
+            // 技能互教（北極星第四刀）：入場沒有待應和的教學。
+            pending_teach_reply: None,
             // 集會鐘 v1：入場沒有正在應召的鐘；應召冷卻歸零（一出生就聽得到第一次鐘聲）。
             summon: None,
             summon_cooldown: 0.0,
@@ -8949,14 +8955,28 @@ pub async fn voxel_cliques_handler() -> axum::response::Response {
 pub async fn voxel_skills_handler() -> axum::response::Response {
     use axum::http::header;
     let rows: Vec<serde_json::Value> = {
-        // 短讀鎖一次性快照 4 位居民的技能清單 → 立即釋放，不與其他鎖巢狀。
+        // 短讀鎖一次性快照全體居民的技能清單 → 立即釋放，不與其他鎖巢狀。
         let invented = hub().invented.read().unwrap();
         (0..resident_count())
             .map(|i| {
                 let rid = format!("vox_res_{i}");
+                // 師承鏈可見（技能互教·北極星第四刀）：每筆技能連同「來歷」一起攤開——
+                // 自己發明／承自XX（親子）／師承XX（教學），村裡的知識系譜第一次看得見。
+                // `skills`（純名字陣列）保留不動，既有前端/QA 向後相容；`lineage` 新增並列。
+                let lineage: Vec<serde_json::Value> = invented
+                    .records_for(&rid)
+                    .into_iter()
+                    .map(|r| {
+                        serde_json::json!({
+                            "name": r.name,
+                            "origin": vinvent::lineage_label(r),
+                        })
+                    })
+                    .collect();
                 serde_json::json!({
                     "name": resident_name_of(&rid),
                     "skills": invented.names_for(&rid),
+                    "lineage": lineage,
                 })
             })
             .collect()
@@ -9560,6 +9580,56 @@ fn proximity_teach_cd() -> &'static std::sync::Mutex<std::collections::HashMap<S
     C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+/// 技能互教·每居民「教或學」帳本（北極星第四刀）：居民 id → 上次教/學的 unix 秒。
+/// 三條教學路（717 登門到訪／就地指導／相遇互教）**共用同一本帳**：教過或學過任一次，
+/// 這一遊戲天（[`vteach::TEACH_LEDGER_SECS`]）內不再參與登門教學與相遇互教——手藝在
+/// 村裡以自然節奏擴散、不會一個下午全村都會。就地指導（卡關救援）不受帳本**攔阻**
+/// （自救優先，仍走它自己的 240s 冷卻），但成功救援會**記帳**（那也算這天教過了）。
+/// 純記憶體、重啟歸零（頂多重啟後早一點再教，零資料風險）。
+fn skill_teach_ledger() -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 帳本冷卻秒數：預設一遊戲天（[`vteach::TEACH_LEDGER_SECS`]）；QA 可用環境變數
+/// `BUTFUN_TEACH_COOLDOWN_SECS` 縮短（只影響教學節奏，不動任何資料）。啟動時讀一次。
+fn teach_ledger_secs() -> u64 {
+    static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("BUTFUN_TEACH_COOLDOWN_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(vteach::TEACH_LEDGER_SECS)
+    })
+}
+
+/// 相遇互教每輪掃描的觸發機率：預設 [`vteach::ENCOUNTER_TEACH_CHANCE`]；QA 可用
+/// 環境變數 `BUTFUN_TEACH_CHANCE` 調高做確定性驗證。啟動時讀一次，夾在 [0,1]。
+fn encounter_teach_chance() -> f32 {
+    static V: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("BUTFUN_TEACH_CHANCE")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .map(|c| c.clamp(0.0, 1.0))
+            .unwrap_or(vteach::ENCOUNTER_TEACH_CHANCE)
+    })
+}
+
+/// 相遇互教的「近旁」半徑（方塊）：預設沿用就地指導的 [`vptteach::PROXIMITY_TEACH_RADIUS`]；
+/// QA 可用環境變數 `BUTFUN_TEACH_RADIUS` 放大，免等居民恰好晃到彼此身邊。啟動時讀一次。
+fn encounter_teach_radius() -> f32 {
+    static V: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("BUTFUN_TEACH_RADIUS")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .filter(|r| r.is_finite() && *r > 0.0)
+            .unwrap_or(vptteach::PROXIMITY_TEACH_RADIUS)
+    })
+}
+
 /// 就地指導 v1（自主提案切片，低頻併入 15 秒節拍檢查）：找一位正卡關（`invent_backoff`
 /// 非空）的居民，身邊剛好站著已經會解法的老朋友，就當場教會她、解除這個目標的退避——
 /// 不必等到 717（`voxel_teach`）下次登門到訪才有機會補上（見 `voxel_proximity_teach`
@@ -9630,7 +9700,12 @@ fn maybe_proximity_teach() {
             }
         }
     } // bonds 讀鎖釋放
-    let Some((si, ti)) = candidate_pair else { return };
+    let Some((si, ti)) = candidate_pair else {
+        // 沒有人卡關待救 → 走相遇互教（技能互教·北極星第四刀）：交情夠的兩位閒著的
+        // 居民恰好站得近，偶爾把自己會、對方不會的手藝就地教一手。
+        maybe_encounter_teach(&snap, now_secs);
+        return;
+    };
     let student_id = &snap[si].0;
     let student_name = snap[si].1;
     let stuck_goals = &snap[si].4;
@@ -9644,14 +9719,21 @@ fn maybe_proximity_teach() {
     }; // invented 讀鎖釋放
     let Some(skill) = taught_skill else { return };
 
-    // 4) 真的教會：技能落地（invented 短寫鎖即釋）。
+    // 4) 真的教會：技能落地（invented 短寫鎖即釋）。師承鏈（北極星第四刀）：走 learn_from
+    //    而非 add——學來的技能 source 標老師名、taught 標 true，技能簿看得出「師承XX」。
     let learned = {
         let mut store = hub().invented.write().unwrap();
-        store.add(student_id, &skill.name, skill.goal_block, skill.steps.clone())
+        store.learn_from(student_id, &skill, teacher_name)
     }; // invented 寫鎖釋放
     let Some(rec) = learned else { return };
     vinvent::append_invented_skill(&rec);
     { proximity_teach_cd().lock().unwrap().insert(student_id.clone(), now_secs); }
+    // 教/學帳本也記一筆（救援不受帳本攔阻、但算進這一天的教學額度，見 skill_teach_ledger）。
+    {
+        let mut led = skill_teach_ledger().lock().unwrap();
+        led.insert(teacher_id.clone(), now_secs);
+        led.insert(student_id.clone(), now_secs);
+    }
 
     // 解除這個目標的退避——答案已經到手，不必再乾等冷卻歸零。
     {
@@ -9697,6 +9779,139 @@ fn maybe_proximity_teach() {
         vteach::FEED_KIND,
         teacher_name,
         &vteach::teach_feed_line(teacher_name, student_name, &skill.name, pick),
+    );
+}
+
+/// 相遇互教（技能互教·北極星第四刀，與就地指導同一 15 秒節拍、就地指導沒人待救時才輪到）：
+/// 交情到老朋友的兩位居民**平常相處時剛好站得夠近、雙方都閒**，偶爾把自己會、對方還不會的
+/// 手藝就地教一手——手藝第一次不必等登門到訪或有人卡關，就能在活人之間口耳相傳，與出生時的
+/// 血脈繼承（#998「承自XX」）互補成兩條知識傳承的路。
+///
+/// **不無限擴散的三道閘**：①機率門檻（[`encounter_teach_chance`]，每輪掃描擲一次）
+/// ②每居民教/學帳本冷卻（一遊戲天最多參與一次，[`skill_teach_ledger`]）③交情要到老朋友
+/// ——一個技能傳遍全村自然要花好幾遊戲天，像真的村子。
+///
+/// **教學那一幕**：兩人停留 [`vteach::TEACH_PAUSE_SECS`] 秒（設 `wait_timer`，比照長椅並坐），
+/// 老師先冒「來，我教你…」的開講泡泡，學生幾秒後應和「原來如此！」（`pending_teach_reply`，
+/// 全程句式池、零 LLM）；學到的技能 `source` 標老師名（技能簿顯示「師承XX」）、走既有 jsonl
+/// 落地，之後同處境零 LLM 重用照舊、也能再往下教。
+///
+/// **鎖紀律**：bonds 讀 → drop → invented 讀 → drop → invented 寫 → drop → residents 寫 →
+/// drop → memory 寫 ×2，全程短鎖循序、不巢狀、不持鎖 await（守 prod 死鎖鐵律）。
+fn maybe_encounter_teach(snap: &[(String, &'static str, f32, f32, Vec<u8>, bool)], now_secs: u64) {
+    // 機率門檻：每輪掃描只擲一次骰（不隨在場人數膨脹觸發率）。
+    if rand::random::<f32>() >= encounter_teach_chance() {
+        return;
+    }
+
+    // 1) 篩出「兩人都閒 + 老朋友 + 站得夠近 + 雙方教/學帳本都過冷卻」的候選對
+    //    （bonds 讀鎖只在挑對期間持有；帳本是獨立小 Mutex，取值即釋）。
+    let ledger_ok: Vec<bool> = {
+        let led = skill_teach_ledger().lock().unwrap();
+        snap.iter()
+            .map(|(id, ..)| vteach::ledger_ready(now_secs, led.get(id).copied(), teach_ledger_secs()))
+            .collect()
+    }; // 帳本鎖釋放
+    let candidates: Vec<(usize, usize)> = {
+        let bonds = hub().bonds.read().unwrap();
+        let mut out = Vec::new();
+        for (ti, (teacher_id, _, tx, tz, _, teacher_free)) in snap.iter().enumerate() {
+            if !teacher_free || !ledger_ok[ti] {
+                continue;
+            }
+            for (si, (student_id, _, sx, sz, _, student_free)) in snap.iter().enumerate() {
+                if ti == si || !student_free || !ledger_ok[si] {
+                    continue;
+                }
+                let dx = sx - tx;
+                let dz = sz - tz;
+                let r = encounter_teach_radius();
+                let tier = resident_tier_of(&bonds, teacher_id, student_id);
+                // 交情要到老朋友＋站得夠近（半徑預設同就地指導，QA 可調）。
+                if tier == vbonds::BondTier::Friend && dx * dx + dz * dz <= r * r {
+                    out.push((ti, si));
+                }
+            }
+        }
+        out
+    }; // bonds 讀鎖釋放
+
+    // 2) 依序找第一對「老師真的有學生不會的技能」（invented 短讀鎖即釋）；每輪最多教一組。
+    let taught = {
+        let store = hub().invented.read().unwrap();
+        candidates.into_iter().find_map(|(ti, si)| {
+            store
+                .teachable(&snap[ti].0, &snap[si].0)
+                .map(|k| (ti, si, k.clone()))
+        })
+    }; // invented 讀鎖釋放
+    let Some((ti, si, skill)) = taught else { return };
+    let teacher_id = &snap[ti].0;
+    let teacher_name = snap[ti].1;
+    let student_id = &snap[si].0;
+    let student_name = snap[si].1;
+
+    // 3) 真的教會：複製進學生技能庫（source=師承老師名）＋既有 jsonl 落地（向後相容）。
+    let learned = {
+        let mut store = hub().invented.write().unwrap();
+        store.learn_from(student_id, &skill, teacher_name)
+    }; // invented 寫鎖釋放
+    let Some(rec) = learned else { return };
+    vinvent::append_invented_skill(&rec);
+    {
+        let mut led = skill_teach_ledger().lock().unwrap();
+        led.insert(teacher_id.clone(), now_secs);
+        led.insert(student_id.clone(), now_secs);
+    } // 帳本鎖釋放
+
+    // 4) 教學那一幕：老師開講、兩人停留一會兒，學生幾秒後應和（零 LLM、句式池）。
+    let pick = now_secs as usize;
+    {
+        let mut residents = hub().residents.write().unwrap();
+        if let Some(r) = residents.iter_mut().find(|r| &r.id == teacher_id) {
+            r.say = vteach::teach_open_line(student_name, &skill.name, pick)
+                .chars()
+                .take(50)
+                .collect();
+            r.say_timer = SAY_SECS;
+            r.wait_timer = r.wait_timer.max(vteach::TEACH_PAUSE_SECS);
+            r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+        }
+        if let Some(r) = residents.iter_mut().find(|r| &r.id == student_id) {
+            r.pending_teach_reply = Some((
+                vteach::teach_reply_line(&skill.name, pick),
+                vteach::TEACH_REPLY_DELAY_SECS,
+            ));
+            r.wait_timer = r.wait_timer.max(vteach::TEACH_PAUSE_SECS);
+        }
+    } // residents 寫鎖釋放
+    broadcast_players();
+
+    // 5) 雙方各留一筆記憶＋世界 Feed（沿用 717 的句式，同一件事不另造一套詞）。
+    {
+        let entry = hub().memory.write().unwrap().add_memory(
+            teacher_id,
+            student_name,
+            &vteach::teach_memory_line_teacher(student_name, &skill.name),
+        );
+        vmem::append_memory(&entry);
+    } // memory 寫鎖釋放
+    {
+        let entry = hub().memory.write().unwrap().add_memory(
+            student_id,
+            teacher_name,
+            &vteach::teach_memory_line_student(teacher_name, &skill.name),
+        );
+        vmem::append_memory(&entry);
+    } // memory 寫鎖釋放
+    vfeed::append_feed(
+        vteach::FEED_KIND,
+        teacher_name,
+        &vteach::teach_feed_line(teacher_name, student_name, &skill.name, pick),
+    );
+    tracing::info!(
+        teacher = %teacher_id, student = %student_id, skill = %skill.name,
+        "相遇互教：手藝在活人之間口耳相傳（師承鏈落地，零 LLM）"
     );
 }
 
@@ -10546,6 +10761,24 @@ fn tick_residents(dt: f32) {
                         r.wait_timer = r.wait_timer.max(vbench::REST_SIT_SECS);
                         r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                     }
+                }
+            }
+
+            // 技能互教·學生應和倒數（北極星第四刀）：被老朋友就地教了一手後，延遲幾秒冒一句
+            // 「原來如此！」的專屬應和（台詞在教學那刻已從句式池組好，零 LLM）。與圍火聆聽／
+            // 並坐應和分開，讓受教有一來一往的專屬語氣。倒數與 take 都在居民自身鎖內、不巢狀。
+            let teach_reply_ready = match &mut r.pending_teach_reply {
+                Some((_, cd)) => {
+                    *cd -= dt;
+                    *cd <= 0.0
+                }
+                None => false,
+            };
+            if teach_reply_ready && r.say.is_empty() {
+                if let Some((line, _)) = r.pending_teach_reply.take() {
+                    r.say = line.chars().take(50).collect();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                 }
             }
 
@@ -16126,7 +16359,16 @@ fn tick_residents(dt: f32) {
                 let residents = hub().residents.read().unwrap();
                 residents.iter().find(|r| r.name == host_name).map(|r| r.id.clone())
             }; // residents 讀鎖釋放
-            if let Some(host_id) = host_id {
+            // 教/學帳本冷卻（技能互教·北極星第四刀）：任一方這一遊戲天已教過/學過就先不教
+            //（與相遇互教共用同一本帳，手藝以自然節奏擴散、不洗版）。帳本小鎖取值即釋。
+            let ledger_ready = host_id.as_ref().map_or(false, |hid| {
+                let now = vfarm::now_secs();
+                let led = skill_teach_ledger().lock().unwrap();
+                let cd = teach_ledger_secs();
+                vteach::ledger_ready(now, led.get(hid).copied(), cd)
+                    && vteach::ledger_ready(now, led.get(&visitor_id).copied(), cd)
+            });
+            if let Some(host_id) = host_id.filter(|_| ledger_ready) {
                 let taught = {
                     let store = hub().invented.read().unwrap();
                     store
@@ -16139,12 +16381,20 @@ fn tick_residents(dt: f32) {
                         })
                 }; // invented 讀鎖釋放
                 if let Some((teacher_id, teacher_name, student_id, student_name, skill)) = taught {
+                    // 師承鏈（北極星第四刀）：走 learn_from——source 標老師名、taught 標
+                    // true，技能簿看得出這手藝是「師承XX」，與親子的「承自XX」並行。
                     let learned = {
                         let mut store = hub().invented.write().unwrap();
-                        store.add(&student_id, &skill.name, skill.goal_block, skill.steps.clone())
+                        store.learn_from(&student_id, &skill, &teacher_name)
                     }; // invented 寫鎖釋放
                     if let Some(rec) = learned {
                         vinvent::append_invented_skill(&rec);
+                        {
+                            let now = vfarm::now_secs();
+                            let mut led = skill_teach_ledger().lock().unwrap();
+                            led.insert(teacher_id.clone(), now);
+                            led.insert(student_id.clone(), now);
+                        } // 帳本鎖釋放
                         vfeed::append_feed(
                             vteach::FEED_KIND,
                             &teacher_name,

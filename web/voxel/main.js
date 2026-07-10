@@ -3181,7 +3181,10 @@ const skillsBodyEl = document.getElementById("skillsBody");
 const skillsBtnEl = document.getElementById("skillsBtn");
 
 /** 重新渲染技能簿列表。
- * @param {Array<{name:string, skills:string[]}>} rows
+ * 師承鏈可見（技能互教·北極星第四刀）：後端多回了 `lineage`（每筆技能的來歷——
+ * 自己發明／承自XX（親子）／師承XX（教學）），非「自己發明」的在晶片上以淡字並列，
+ * 村裡的知識系譜一眼看得出這手藝是誰傳給誰的。缺 `lineage`（舊後端）時照舊只顯名字。
+ * @param {Array<{name:string, skills:string[], lineage?:Array<{name:string,origin:string}>}>} rows
  */
 function renderSkillsPanel(rows) {
   if (!skillsBodyEl) return;
@@ -3194,9 +3197,15 @@ function renderSkillsPanel(rows) {
     const div = document.createElement("div");
     div.className = "skills-row";
     const skills = row.skills || [];
+    const lineage = Array.isArray(row.lineage) ? row.lineage : null;
     const chips = skills.length > 0
       ? '<div class="skills-chips">' +
-        skills.map((s) => '<span class="skills-chip">' + escHtml(s) + '</span>').join("") +
+        skills.map((s, k) => {
+          const origin = lineage && lineage[k] && lineage[k].origin && lineage[k].origin !== "自己發明"
+            ? '<span class="skills-origin">·' + escHtml(lineage[k].origin) + '</span>'
+            : "";
+          return '<span class="skills-chip">' + escHtml(s) + origin + '</span>';
+        }).join("") +
         '</div>'
       : '<div class="skills-none">尚未發明任何技能</div>';
     div.innerHTML = '<span class="skills-name">' + escHtml(row.name) + '</span>' + chips;
