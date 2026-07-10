@@ -1419,6 +1419,118 @@ const CHICKEN_BODY_GEO = new THREE.BoxGeometry(0.3, 0.28, 0.36);
 const CHICKEN_COMB_GEO = new THREE.BoxGeometry(0.1, 0.1, 0.1);
 const WILDLIFE_VISIBLE_DIST = 60; // 兔子體型小，遠處看不清也不必畫，比居民更早隱藏
 
+// ── 暗影生物 v1（怪物/抵禦第一刀·夜的張力）────────────────────────────────────
+// 夜間暗處的漂浮小靈：半透明深色核心 + 微光邊（additive 外殼），輕輕上下浮動。
+// 伺服器權威（位置/受擊/消散都由後端算），前端只渲染 + 把「準心挖擊」轉送 shadow_hit。
+const shadowEnts = new Map(); // id -> { group, core, glow, baseY, phase, hitFlash }
+const SHADOW_CORE_MAT = new THREE.MeshBasicMaterial({ color: 0x14102a, transparent: true, opacity: 0.78 });
+const SHADOW_GLOW_MAT = new THREE.MeshBasicMaterial({
+  color: 0x7a5fd0, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false,
+});
+const SHADOW_CORE_GEO = new THREE.IcosahedronGeometry(0.34, 1);
+const SHADOW_GLOW_GEO = new THREE.IcosahedronGeometry(0.5, 1);
+const SHADOW_VISIBLE_DIST = 70;
+const SHADOW_PICK_REACH = 8; // 準心挑選距離（前端提示；真正打不打得到由伺服器 reach 複驗）
+
+// 建一隻暗影小靈（深色核心 + 微光外殼；材質 clone 讓每隻可獨立變淡/閃白）。
+function buildShadow(id) {
+  const group = new THREE.Group();
+  const core = new THREE.Mesh(SHADOW_CORE_GEO, SHADOW_CORE_MAT.clone());
+  core.position.y = 0.45;
+  group.add(core);
+  const glow = new THREE.Mesh(SHADOW_GLOW_GEO, SHADOW_GLOW_MAT.clone());
+  glow.position.y = 0.45;
+  group.add(glow);
+  group.userData.sid = id;
+  scene.add(group);
+  return { group, core, glow, baseY: 0, phase: Math.random() * Math.PI * 2, hitFlash: 0 };
+}
+
+// 依伺服器快照更新所有暗影（同構 updateWildlife）；受擊數越多越淡（「快散了」）。
+// 首次見到暗影時提示玩法（一台裝置只提示一次，localStorage 記憶）。
+function updateShadows(list) {
+  const seen = new Set();
+  for (const s of list) {
+    seen.add(s.id);
+    let ent = shadowEnts.get(s.id);
+    if (!ent) {
+      ent = buildShadow(s.id);
+      shadowEnts.set(s.id, ent);
+    }
+    ent.group.position.x = s.x;
+    ent.group.position.z = s.z;
+    ent.baseY = s.y;
+    // 受擊變淡：0 擊 0.78 → 2 擊 0.42（每擊 -0.18），微光邊也跟著弱。
+    const fade = Math.max(0.3, 0.78 - (s.hits || 0) * 0.18);
+    ent.core.material.opacity = fade;
+    const dx = s.x - player.x, dz = s.z - player.z;
+    ent.group.visible = (dx * dx + dz * dz) < (SHADOW_VISIBLE_DIST * SHADOW_VISIBLE_DIST);
+  }
+  for (const [id, ent] of shadowEnts) {
+    if (!seen.has(id)) { scene.remove(ent.group); shadowEnts.delete(id); }
+  }
+  // 首夜提示：第一次親眼見到暗影時教玩法（光=庇護）。只提示一次、不洗版。
+  if (list.length > 0 && !localStorage.getItem("bfShadowHint")) {
+    localStorage.setItem("bfShadowHint", "1");
+    showMsg("🌑 夜裡有暗影出沒…點亮燈火吧！火把與燈的光圈是庇護，牆內是安全的。");
+    setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 5200);
+  }
+}
+
+// 準心挑暗影（同款 raycast；命中回 id，否則 null）。伺服器仍會權威複驗 reach。
+function pickShadow(clientX, clientY) {
+  if (!shadowEnts.size) return null;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((clientX - rect.left) / rect.width) * 2 - 1,
+    -((clientY - rect.top) / rect.height) * 2 + 1
+  );
+  raycaster.setFromCamera(ndc, camera);
+  const pickables = [];
+  for (const ent of shadowEnts.values()) {
+    if (ent.group.visible) ent.group.traverse((o) => { if (o.isMesh) pickables.push(o); });
+  }
+  if (!pickables.length) return null;
+  const hits = raycaster.intersectObjects(pickables, false);
+  if (!hits.length || hits[0].distance > SHADOW_PICK_REACH) return null;
+  let obj = hits[0].object;
+  while (obj && !(obj.userData && obj.userData.sid !== undefined)) obj = obj.parent;
+  return obj && obj.userData && obj.userData.sid !== undefined ? obj.userData.sid : null;
+}
+
+// 消散輕煙：一顆快速放大並淡出的微光球（0.7 秒），溫柔的「散去」而非爆炸。
+const shadowPuffs = []; // { mesh, t }
+function spawnShadowPuff(x, y, z) {
+  const mesh = new THREE.Mesh(SHADOW_GLOW_GEO, SHADOW_GLOW_MAT.clone());
+  mesh.material.opacity = 0.5;
+  mesh.position.set(x, y + 0.45, z);
+  scene.add(mesh);
+  shadowPuffs.push({ mesh, t: 0 });
+}
+
+// 每幀推進暗影氛圍：上下輕浮 + 微光呼吸 + 受擊閃白 + 輕煙淡出。數量 ≤6，成本極低。
+function updateShadowFx(dt) {
+  const now = performance.now() * 0.001;
+  for (const ent of shadowEnts.values()) {
+    ent.group.position.y = ent.baseY + Math.sin(now * 2.0 + ent.phase) * 0.12;
+    const breathe = 1.0 + Math.sin(now * 3.1 + ent.phase) * 0.08;
+    ent.glow.scale.setScalar(breathe);
+    if (ent.hitFlash > 0) {
+      ent.hitFlash -= dt;
+      ent.core.material.color.setHex(0xcfc4ff); // 命中閃一下淡紫白
+      if (ent.hitFlash <= 0) ent.core.material.color.setHex(0x14102a);
+    }
+  }
+  for (let i = shadowPuffs.length - 1; i >= 0; i--) {
+    const p = shadowPuffs[i];
+    p.t += dt;
+    const k = p.t / 0.7;
+    if (k >= 1) { scene.remove(p.mesh); shadowPuffs.splice(i, 1); continue; }
+    p.mesh.scale.setScalar(1 + k * 2.2);
+    p.mesh.material.opacity = 0.5 * (1 - k);
+  }
+}
+
 // 文字貼圖 sprite（名牌/泡泡共用工廠）。bubble=true 用柔色圓底（像在說話），否則白描邊名牌。
 function makeTextSprite(text, bubble) {
   const canvas = document.createElement("canvas");
@@ -4396,6 +4508,9 @@ if (!isTouch) {
       const ent = residents.get(rid);
       openChat(rid, ent && ent.lastName);
     } else {
+      // 暗影生物 v1：準心對到暗影 → 挖擊它（送 shadow_hit；打不打得到由伺服器權威複驗）。
+      const sid = pickShadow(cx, cy);
+      if (sid !== null) { ws.send(JSON.stringify({ t: "shadow_hit", id: sid })); return; }
       startMining(); // 採礦手感 v1：開始計時挖掘，而非立即 break
     }
   });
@@ -4466,8 +4581,13 @@ if (isTouch) {
         // 輕點：先看是否點到居民（開對話，兩種模式皆可——不動世界、無誤觸風險）。
         const rid = pickResident(t.clientX, t.clientY);
         if (rid) { const ent = residents.get(rid); openChat(rid, ent && ent.lastName); }
-        // 點世界＝挖：只在「點擊互動」模式生效；準心+按鈕模式拖曳/輕點都不挖（改按挖鈕）。
-        else if (settings.touchMode === "tap") breakAtTarget();
+        else {
+          // 暗影生物 v1：輕點到暗影 → 挖擊（兩種觸控模式皆可——像點居民一樣直覺、無誤觸風險）。
+          const sid = pickShadow(t.clientX, t.clientY);
+          if (sid !== null) ws.send(JSON.stringify({ t: "shadow_hit", id: sid }));
+          // 點世界＝挖：只在「點擊互動」模式生效；準心+按鈕模式拖曳/輕點都不挖（改按挖鈕）。
+          else if (settings.touchMode === "tap") breakAtTarget();
+        }
       }
       camId = null;
     }
@@ -4815,6 +4935,8 @@ function connect() {
       if (m.residents) updateResidents(m.residents);
       // 野兔 v1（自主提案切片，ROADMAP 847）：世界第一種環境生物，純位置/朝向。
       if (m.wildlife) updateWildlife(m.wildlife);
+      // 暗影生物 v1：夜間暗處的漂浮小靈（伺服器權威；白天陣列為空自然全移除）。
+      if (m.shadows) updateShadows(m.shadows);
       // 晝夜循環 v1：伺服器每幀帶 time_of_day(0.0–1.0)，前端據此更新天空/光照。
       // 下雨天氣 v1（ROADMAP 700）：raining 隨同一份快照送達，一併觸發天空重繪。
       let skyDirty = false;
@@ -4956,6 +5078,13 @@ function connect() {
       // 溫泉遺跡 v1（自主提案切片）：剛踏進溫泉那一刻，浮出一句暖意提示（只給自己看）。
       showMsg(m.line || "暖流環繞全身，泡進溫泉舒服多了～");
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+    } else if (m.t === "shadow_puff") {
+      // 暗影生物 v1：一隻暗影化成一縷輕煙（被擊散/誤入亮區/黎明）——放大淡出的微光球。
+      spawnShadowPuff(m.x, m.y, m.z);
+    } else if (m.t === "shadow_hit_ok") {
+      // 暗影生物 v1：自己的挖擊命中——該暗影閃一下淡紫白（gone=true 時等 shadow_puff 收尾）。
+      const ent = shadowEnts.get(m.id);
+      if (ent) ent.hitFlash = 0.12;
     } else if (m.t === "firework") {
       // 乙太煙火 v1（785）：全場任一玩家施放的煙火——在該座標上方綻放一朵火花（人人可見）。
       spawnFirework(m.x, m.y, m.z, m.palette | 0);
@@ -5532,6 +5661,7 @@ function update(dt) {
   updateRainbow(dt);
   updateNightSky(dt);
   updateFireworks(dt); // 乙太煙火 v1（785）：推進進行中的煙火綻放
+  updateShadowFx(dt);  // 暗影生物 v1：暗影浮動/微光呼吸/受擊閃白/輕煙淡出
   updateBellRings(dt); // 集會鐘 v1（自主提案切片）：推進進行中的鐘聲漣漪
   updateHumNotes(dt);  // 居民哼歌 v1（788）：推進頭頂飄浮音符
   updateFertSparkle(dt); // 乙太沃肥 v1（789）：推進施肥綠火花
@@ -6452,6 +6582,20 @@ window.__voxel = {
     return ent ? { id: ent.av.heldId, visible: ent.av.heldMesh.visible } : null;
   },
   setHeldItem(itemId) { setHeldItem(myAvatar, itemId); return this.myHeld; },
+  // ── 暗影生物 v1 QA 用：讀暗影實體清單＋把視角轉向某座標（截圖/準心驗證）──
+  get shadows() {
+    return [...shadowEnts.entries()].map(([id, e]) => ({
+      id, x: e.group.position.x, y: e.group.position.y, z: e.group.position.z, visible: e.group.visible,
+    }));
+  },
+  get shadowPuffCount() { return shadowPuffs.length; },
+  // 把視角轉向世界座標（等同玩家自己轉滑鼠，純視覺、無任何權威影響）。
+  lookTowards(x, y, z) {
+    const dx = x - player.x, dy = y - (player.y + 1.5), dz = z - player.z;
+    player.yaw = Math.atan2(-dx, -dz);
+    camPitch = -Math.atan2(dy, Math.hypot(dx, dz));
+    clampPitch();
+  },
   // 玩家生存指標 QA 用：讀目前血/飢窄列的顯示寬度（%）＋餓瘋樣式，驗 HUD 真的隨 player_stats 動。
   get statsHud() {
     const hp = document.getElementById("statHealthFill");

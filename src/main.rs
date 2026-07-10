@@ -147,6 +147,8 @@ mod voxel_gift;
 mod voxel_return_gift;
 // 乙太方界·居民投你所好 v1：回禮時讀你說過的偏好記憶，特地挑一份呼應喜好的禮物（ROADMAP 730）。
 mod voxel_preference;
+// 乙太方界·暗影生物 v1：夜的張力純邏輯——夜間暗處生成、光=庇護、牆=屏障、挖擊反擊（怪物/抵禦第一刀，療癒調性）。
+mod voxel_shadow;
 // 乙太方界·晝夜循環 v1：世界時鐘純邏輯——一遊戲日 10 分鐘，廣播 time_of_day 給前端更新天空/光照（ROADMAP 661）。
 mod voxel_time;
 // 乙太方界·季節輪替 v1：累計遊戲日數 → 四季循環純邏輯；換季換世界色調＋居民抬頭反應＋城鎮動態（ROADMAP 798）。

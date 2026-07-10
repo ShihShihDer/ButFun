@@ -10,7 +10,7 @@
 //! 3. 讀取：處理 `move`（更新並廣播）與 `req`（補送 chunk）。
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
@@ -89,6 +89,7 @@ use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
 use crate::voxel_residents::{self as vr, Body};
 use crate::voxel_roster as vroster;
+use crate::voxel_shadow as vshadow;
 use crate::voxel_time::{self as vt, WorldTime, TimePhase};
 use crate::voxel_announce as vannounce;
 use crate::voxel_bonds::{self as vbonds, ResidentBonds};
@@ -851,6 +852,16 @@ struct WildlifeView {
     y: f32,
     z: f32,
     yaw: f32,
+}
+
+/// 暗影小靈序列化視圖（暗影生物 v1）：位置＋已受擊數（前端據 hits 顯示「快散了」的變淡）。
+#[derive(Serialize)]
+struct ShadowView {
+    id: u64,
+    x: f32,
+    y: f32,
+    z: f32,
+    hits: u8,
 }
 
 /// 居民名字池（取自 resident_npc 的近城居民風格名，柔和轉寫式、與主要 NPC 一致）。
@@ -1947,6 +1958,15 @@ struct VoxelHub {
     /// 與居民座標並列導航。持久化到 data/voxel_waypoints.jsonl（append-only，含刪除
     /// tombstone，重啟後仍記得）。
     waypoints: RwLock<vwaypoint::WaypointStore>,
+    /// 暗影生物 v1（怪物/抵禦第一刀）：此刻在世的暗影小靈（伺服器權威，隨 players 快照廣播）。
+    /// 純記憶體、重啟消失（黎明本就整批消散，無持久化需求）。純確定性 tick、零 LLM。
+    shadows: RwLock<Vec<vshadow::Wisp>>,
+    /// 暗影生物 v1：光源方塊座標快取（火把/冰晶燈/乙太燈/營火）。低頻（數秒）掃一次世界
+    /// delta 重建——成本與「被改過的方塊數」成正比，暗影 tick 逐隻查亮區時 O(燈數) 便宜查。
+    shadow_lights: RwLock<Vec<(i32, i32, i32)>>,
+    /// 暗影生物 v1：居民害怕反應冷卻（居民 id → 上次冒害怕泡泡的時刻），避免整夜洗版。
+    /// 純記憶體、黎明清空。
+    shadow_fear_cd: std::sync::Mutex<HashMap<String, std::time::Instant>>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -2593,6 +2613,10 @@ fn hub() -> &'static VoxelHub {
             )),
             // 啟動時從 data/voxel_waypoints.jsonl 載回玩家個人路標（含刪除 tombstone，重啟後仍記得）。
             waypoints: RwLock::new(vwaypoint::WaypointStore::from_entries(vwaypoint::load_entries())),
+            // 暗影生物 v1：啟動時無暗影（入夜後才在暗處慢慢冒）；光源快取由 tick 低頻重掃。
+            shadows: RwLock::new(Vec::new()),
+            shadow_lights: RwLock::new(Vec::new()),
+            shadow_fear_cd: std::sync::Mutex::new(HashMap::new()),
             tx,
         }
     })
@@ -2699,11 +2723,17 @@ fn players_snapshot_json() -> String {
             .map(|w| WildlifeView { id: w.id.clone(), kind: w.kind.wire(), x: w.body.x, y: w.body.y, z: w.body.z, yaw: w.yaw })
             .collect()
     }; // 野兔讀鎖在此釋放
+    // 暗影快照（暗影生物 v1，短鎖、不巢狀）：夜間在世的暗影小靈，前端渲染半透明漂浮體。
+    let shadows: Vec<ShadowView> = {
+        let ws = hub().shadows.read().unwrap();
+        ws.iter().map(|w| ShadowView { id: w.id, x: w.x, y: w.y, z: w.z, hits: w.hits }).collect()
+    }; // 暗影讀鎖在此釋放
     serde_json::json!({
         "t": "players",
         "players": players,
         "residents": residents,
         "wildlife": wildlife,
+        "shadows": shadows,
         "time_of_day": time_of_day,
         "raining": raining,
         "rainbow": rainbow,
@@ -2950,6 +2980,16 @@ enum ClientMsg {
     /// 濫用防護：未設 QA flag 時伺服器直接無視此訊息（不授予、不回應），故正式環境無法靠它刷物品。
     #[serde(rename = "qa_grant")]
     QaGrant { item_id: u8, count: u32 },
+    /// QA 專用撥鐘（只在環境變數 `BUTFUN_QA_DEBUG=1` 時生效，正式線上完全惰性/被忽略）：
+    /// 把世界時鐘直接撥到指定的一日進度（0.0–1.0），讓隔離 QA 伺服器能快轉到夜晚驗
+    /// 暗影生物的生成/消散，不必乾等真實分鐘數。濫用防護：未設 QA flag 時直接無視。
+    #[serde(rename = "qa_set_time")]
+    QaSetTime { time: f32 },
+    /// 暗影生物 v1（怪物/抵禦第一刀）：挖擊準心對到的暗影小靈。客戶端只自報「想打哪隻」
+    /// ——**打不打得到、打幾下散、掉不掉獎勵全由伺服器算**（觸及驗證 + 每連線揮擊節流，
+    /// 客戶端無法自報擊殺）。累計 [`vshadow::HITS_TO_DISSIPATE`] 下化成輕煙、掉一枚乙太礦。
+    #[serde(rename = "shadow_hit")]
+    ShadowHit { id: u64 },
     /// 乙太煙火 v1（ROADMAP 785）：朝夜空施放一束背包裡的乙太煙火(68)。伺服器驗每連線
     /// 冷卻＋消耗一份煙火後，廣播 `firework`（施放者頭頂上方位置＋火花配色）給全場，附近
     /// 醒著的居民抬頭歡呼。無座標欄位——火花在施放者頭頂夜空綻放，位置由伺服器取施放者當前
@@ -3091,6 +3131,13 @@ fn broadcast_item_dropped(id: u64, x: f32, y: f32, z: f32, item_id: u8, count: u
 /// 廣播一件掉落物從世界上消失（被撿走或逾時消散），所有人同步移除浮標（掉落物 v1）。
 fn broadcast_item_removed(id: u64) {
     let msg = Arc::new(serde_json::json!({ "t": "item_removed", "id": id }).to_string());
+    let _ = hub().tx.send(msg);
+}
+
+/// 廣播一隻暗影在該座標化成一縷輕煙（暗影生物 v1）：被擊散/誤入亮區/黎明消散，
+/// 人人可見的小小霧化效果——溫柔的「散去」，不是恐怖的死亡。
+fn broadcast_shadow_puff(x: f32, y: f32, z: f32) {
+    let msg = Arc::new(serde_json::json!({ "t": "shadow_puff", "x": x, "y": y, "z": z }).to_string());
     let _ = hub().tx.send(msg);
 }
 
@@ -3789,6 +3836,12 @@ async fn handle_socket(
     // 用來偵測「剛踏進去」的那一刻只提示一次（per-connection、斷線即清，不必持久化）。
     let mut was_soaking = false;
 
+    // 暗影生物 v1：這條連線的觸傷冷卻（上次被暗影碰到扣血的時刻——至少隔
+    // TOUCH_COOLDOWN_SECS 才會再扣，緩慢溫柔的壓力）＋揮擊節流（上次有效挖擊暗影的時刻，
+    // 擋封包連發瞬殺）。皆 per-connection、斷線即清、零跨連線鎖。
+    let mut last_shadow_touch: Option<std::time::Instant> = None;
+    let mut last_shadow_swing: Option<std::time::Instant> = None;
+
     // 玩家生存指標 tick（溫和版）：per-connection 每秒推進一次飢餓衰減／溺水／飽食回血，
     // 並在指標變動時單播 player_stats（只給玩家自己，減噪）。放這條連線的 select loop 裡跑，
     // 天然拿得到 out_tx／位置／床，避免居民 tick 那條 task 沒有 per-connection 送訊息管道。
@@ -3856,6 +3909,21 @@ async fn handle_socket(
                     }
                 }
                 was_soaking = soaking;
+                // 暗影觸碰扣血（暗影生物 v1·後端權威）：短鎖快照暗影 → 判定貼身 → 冷卻到期
+                // 才走統一傷害路徑。1 點/2 秒的緩慢壓力——配合溫柔重生，絕不秒殺。
+                let shadow_touching = {
+                    let ws = hub().shadows.read().unwrap();
+                    ws.iter().any(|w| vshadow::touching(px, py, pz, w))
+                }; // shadows 讀鎖釋放
+                if shadow_touching {
+                    let now = std::time::Instant::now();
+                    let cd_ok = last_shadow_touch
+                        .map_or(true, |t| now.duration_since(t).as_secs_f32() >= vshadow::TOUCH_COOLDOWN_SECS);
+                    if cd_ok {
+                        last_shadow_touch = Some(now);
+                        apply_player_damage(&name, vshadow::TOUCH_DAMAGE, &out_tx).await;
+                    }
+                }
                 // 溺水扣血走統一傷害路徑（含死亡→重生判定、廣播、持久化）。
                 if drown_dmg > 0 {
                     apply_player_damage(&name, drown_dmg, &out_tx).await;
@@ -7742,6 +7810,59 @@ async fn handle_socket(
                 }).to_string())).await;
             }
 
+            // QA 專用撥鐘（只在 BUTFUN_QA_DEBUG=1 生效；正式線上直接忽略，無法操縱時間）。
+            Ok(ClientMsg::QaSetTime { time }) => {
+                if std::env::var("BUTFUN_QA_DEBUG").as_deref() != Ok("1") {
+                    continue; // 未開 QA flag → 惰性忽略（濫用防護）
+                }
+                { hub().world_time.write().unwrap().set_time_of_day(time); } // 時鐘寫鎖即釋
+                broadcast_players(); // 讓所有連線立即拿到新 time_of_day 更新天空
+            }
+
+            // 暗影生物 v1：玩家挖擊暗影（後端權威——觸及/節奏/擊殺全由伺服器算）。
+            Ok(ClientMsg::ShadowHit { id }) => {
+                // ① 每連線揮擊節流：擋封包連發瞬殺（客戶端就算灌包也快不過這個間隔）。
+                let now = std::time::Instant::now();
+                let swing_ok = last_shadow_swing
+                    .map_or(true, |t| now.duration_since(t).as_secs_f32() >= vshadow::HIT_MIN_INTERVAL_SECS);
+                if !swing_ok {
+                    continue;
+                }
+                last_shadow_swing = Some(now);
+                // ② 觸及驗證：伺服器記載的玩家位置 → 打不打得到由伺服器算，不信客戶端。
+                let Some((px, py, pz)) = player_pos(my_id) else { continue };
+                let outcome: Option<(vshadow::Wisp, bool)> = {
+                    let mut ws = hub().shadows.write().unwrap();
+                    match ws.iter().position(|w| w.id == id) {
+                        Some(i) if vshadow::hit_in_reach(px, py, pz, &ws[i]) => {
+                            let (nh, dead) = vshadow::register_hit(ws[i].hits);
+                            ws[i].hits = nh;
+                            let snap = ws[i].clone();
+                            if dead {
+                                ws.remove(i);
+                            }
+                            Some((snap, dead))
+                        }
+                        _ => None, // 不存在/太遠 → 靜默忽略（不影響手感、也不給探測回饋）
+                    }
+                }; // shadows 寫鎖釋放
+                let Some((w, dead)) = outcome else { continue };
+                // ③ 命中回饋單播（前端閃一下暗影；gone=true 時前端等 shadow_puff 收尾）。
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "shadow_hit_ok", "id": w.id, "hits": w.hits, "gone": dead
+                }).to_string())).await;
+                if dead {
+                    // 化成一縷輕煙 + 掉一枚乙太礦（溫柔獎勵；走近自動撿起，見 Move handler）。
+                    broadcast_shadow_puff(w.x, w.y, w.z);
+                    let spawned = {
+                        hub().drops.write().unwrap().spawn(w.x, w.y, w.z, vshadow::SHARD_ITEM_ID, 1, &name, vfarm::now_secs())
+                    }; // drops 寫鎖釋放
+                    if let Some(did) = spawned {
+                        broadcast_item_dropped(did, w.x, w.y, w.z, vshadow::SHARD_ITEM_ID, 1, &name);
+                    }
+                }
+            }
+
             Ok(ClientMsg::Eat { item_id }) => {
                 // 親手煮的暖食自己也能享用 v1（779）。
                 // 玩家生存指標 v1（溫和版·後端權威）：吃東西真的回復飢餓、扣背包。
@@ -8038,8 +8159,204 @@ pub fn spawn_residents() {
             ticker.tick().await;
             tick_residents(RESIDENT_DT);
             tick_wildlife(RESIDENT_DT); // 野兔 v1：同節拍，各自獨立鎖，不與居民鎖巢狀。
+            tick_shadows(RESIDENT_DT); // 暗影生物 v1：同節拍，各自獨立鎖，零 LLM、上限 6 隻。
         }
     });
+}
+
+// ── 暗影生物 tick（怪物/抵禦第一刀·夜的張力）────────────────────────────────────
+//
+// 純確定性移動、零 LLM、全圖上限 vshadow::MAX_WISPS 隻——成本比照居民 tick 的零頭。
+// 嚴守鎖紀律：各 store 短鎖循序取放、不巢狀、不持鎖 await/IO；廣播/掉落全在鎖外。
+
+/// 暗影 id 發號器（單調遞增，session 內唯一即可——黎明整批消散、無持久化）。
+static SHADOW_NEXT_ID: AtomicU64 = AtomicU64::new(1);
+/// 暗影 tick 計數（用取模驅動「每 N tick 一次」的低頻生成檢查/光源重掃）。
+static SHADOW_TICKS: AtomicU64 = AtomicU64::new(0);
+/// 首夜提示旗標：今晚第一隻暗影現身時上一則 Feed（教「光=庇護」玩法），黎明重置。
+static SHADOW_FEED_SENT: AtomicBool = AtomicBool::new(false);
+
+/// 推進暗影生物一個 tick：黎明整批消散 → 低頻重掃光源 → 低頻生成檢查 →
+/// 逐隻漂向最近目標（實體碰撞、不穿牆）→ 亮區消散 → 居民害怕反應。
+fn tick_shadows(dt: f32) {
+    let tick_no = SHADOW_TICKS.fetch_add(1, Ordering::Relaxed);
+    let phase = { hub().world_time.read().unwrap().phase() };
+
+    if !vshadow::is_shadow_time(phase) {
+        // 黎明/白天：有暗影就整批化成輕煙（不掉獎勵、不洗版），並重置夜間狀態。
+        let cleared: Vec<vshadow::Wisp> = { std::mem::take(&mut *hub().shadows.write().unwrap()) };
+        if !cleared.is_empty() {
+            for w in &cleared {
+                broadcast_shadow_puff(w.x, w.y, w.z);
+            }
+            SHADOW_FEED_SENT.store(false, Ordering::Relaxed);
+            hub().shadow_fear_cd.lock().unwrap().clear();
+        }
+        return;
+    }
+
+    // 低頻重掃光源快取（每 LIGHT_RESCAN_SECS 秒）：deltas 讀鎖內純掃描 → drop → 寫回快取。
+    let rescan_every = (vshadow::LIGHT_RESCAN_SECS / dt).max(1.0) as u64;
+    if tick_no % rescan_every == 0 {
+        let lights = {
+            let world = hub().deltas.read().unwrap();
+            vshadow::collect_lights(&world)
+        }; // deltas 讀鎖釋放
+        *hub().shadow_lights.write().unwrap() = lights;
+    }
+    let lights: Vec<(i32, i32, i32)> = { hub().shadow_lights.read().unwrap().clone() };
+
+    // 目標快照（短鎖循序取放）：所有玩家 + 醒著的居民。暗影漂向最近者；居民只會怕、絕不掉血。
+    let players: Vec<(f32, f32, f32)> = {
+        let p = hub().players.read().unwrap();
+        p.values().map(|q| (q.x, q.y, q.z)).collect()
+    }; // players 讀鎖釋放
+    let residents_snap: Vec<(String, f32, f32, f32, bool)> = {
+        let rs = hub().residents.read().unwrap();
+        rs.iter().map(|r| (r.id.clone(), r.body.x, r.body.y, r.body.z, r.asleep)).collect()
+    }; // residents 讀鎖釋放
+    let mut targets: Vec<(f32, f32, f32)> = players.clone();
+    targets.extend(
+        residents_snap.iter().filter(|(_, _, _, _, asleep)| !asleep).map(|(_, x, y, z, _)| (*x, *y, *z)),
+    );
+
+    // 低頻生成檢查（每 SPAWN_INTERVAL_SECS 秒擲一次骰）：夜 + 未達上限 + 有玩家在線才生。
+    let spawn_every = (vshadow::SPAWN_INTERVAL_SECS / dt).max(1.0) as u64;
+    if tick_no % spawn_every == 0 && !players.is_empty() {
+        let count = { hub().shadows.read().unwrap().len() };
+        if vshadow::can_spawn(count, true, rand::random::<f32>()) {
+            // 村莊中心（優先用一次性整理釘死的中心，否則由居民家域推算——比照村莊回填那套）。
+            let (vcx, vcz) = vvillage::load_village_center().unwrap_or_else(|| {
+                let home_bases: Vec<(i32, i32)> = {
+                    let rs = hub().residents.read().unwrap();
+                    rs.iter().map(|r| (r.home_x.floor() as i32, r.home_z.floor() as i32)).collect()
+                }; // residents 讀鎖釋放
+                vvillage::village_center(&home_bases)
+            });
+            // 挑一位玩家當錨點，在其視野邊緣試找「暗處、遠村、不卡實心」的生成點（至多 6 次）。
+            let anchor = players[(rand::random::<u32>() as usize) % players.len()];
+            for _ in 0..6 {
+                let angle = rand::random::<f32>() * std::f32::consts::TAU;
+                let dist = vshadow::SPAWN_MIN_DIST
+                    + rand::random::<f32>() * (vshadow::SPAWN_MAX_DIST - vshadow::SPAWN_MIN_DIST);
+                let (sx, sz) = vshadow::spawn_candidate(anchor.0, anchor.2, angle, dist);
+                if !vshadow::far_from_village(sx, sz, vcx as f32, vcz as f32) {
+                    continue; // 村莊庇護半徑內絕不生成
+                }
+                let sy = {
+                    let world = hub().deltas.read().unwrap();
+                    vshadow::hover_spawn_y(&world, sx, sz)
+                }; // deltas 讀鎖釋放
+                let Some(sy) = sy else { continue };
+                if vshadow::is_lit(sx, sy, sz, &lights) {
+                    continue; // 亮區不生成（光=庇護）
+                }
+                let id = SHADOW_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+                {
+                    hub().shadows.write().unwrap().push(vshadow::Wisp { id, x: sx, y: sy, z: sz, hits: 0 });
+                } // shadows 寫鎖釋放
+                // 首夜提示（一夜一次，鎖外 IO）：Feed 教玩家「光=庇護」的玩法。
+                if !SHADOW_FEED_SENT.swap(true, Ordering::Relaxed) {
+                    vfeed::append_feed(
+                        vshadow::SHADOW_FEED_KIND,
+                        vshadow::SHADOW_FEED_ACTOR,
+                        vshadow::SHADOW_FEED_DETAIL,
+                    );
+                }
+                break;
+            }
+        }
+    }
+
+    // 移動 + 亮區消散：短鎖快照暗影（≤6 隻，clone 便宜）→ drop → deltas 讀鎖內純計算 →
+    // drop → 寫鎖以 id 對齊套用（期間被玩家擊散的自然找不到、不會復活）。
+    let mut wisps: Vec<vshadow::Wisp> = { hub().shadows.read().unwrap().clone() };
+    if wisps.is_empty() {
+        return;
+    }
+    let mut gone: Vec<(vshadow::Wisp, vshadow::DissipateReason)> = Vec::new();
+    {
+        let world = hub().deltas.read().unwrap();
+        wisps.retain_mut(|w| {
+            // 已站在亮區（可能是有人剛在旁邊點了燈）→ 立即化成輕煙。
+            if vshadow::is_lit(w.x, w.y, w.z, &lights) {
+                gone.push((w.clone(), vshadow::DissipateReason::Light));
+                return false;
+            }
+            if let Some((tx, ty, tz)) = vshadow::nearest_target(w.x, w.z, &targets) {
+                vshadow::drift_step(&world, w, tx, ty, tz, dt);
+            }
+            // 漂完再驗一次：朝目標漂進了誰家燈圈 → 止步於消散（玩家沿燈走是安全的）。
+            if vshadow::is_lit(w.x, w.y, w.z, &lights) {
+                gone.push((w.clone(), vshadow::DissipateReason::Light));
+                return false;
+            }
+            true
+        });
+    } // deltas 讀鎖釋放
+    {
+        let mut auth = hub().shadows.write().unwrap();
+        for w in &wisps {
+            if let Some(a) = auth.iter_mut().find(|a| a.id == w.id) {
+                a.x = w.x;
+                a.y = w.y;
+                a.z = w.z;
+            }
+        }
+        auth.retain(|a| !gone.iter().any(|(g, _)| g.id == a.id));
+    } // shadows 寫鎖釋放
+
+    // 鎖外收尾：輕煙廣播 + 亮區消散的溫柔獎勵（把影子引到燈下也是一種玩法）。
+    for (w, reason) in &gone {
+        broadcast_shadow_puff(w.x, w.y, w.z);
+        if vshadow::drops_shard(*reason) {
+            let spawned = {
+                hub().drops.write().unwrap().spawn(w.x, w.y, w.z, vshadow::SHARD_ITEM_ID, 1, "暗影", vfarm::now_secs())
+            }; // drops 寫鎖釋放
+            if let Some(did) = spawned {
+                broadcast_item_dropped(did, w.x, w.y, w.z, vshadow::SHARD_ITEM_ID, 1, "暗影");
+            }
+        }
+    }
+
+    // 居民害怕反應（療癒底線：只會怕、不掉血）：醒著 + 暗影靠近 + 冷卻到期 →
+    // 冒害怕泡泡 + 立即把閒晃目標折返回家（「加速回家」的那一步；夜裡本就歸巢）。
+    let now = std::time::Instant::now();
+    let mut scared: Vec<String> = Vec::new();
+    for (rid, rx, _ry, rz, asleep) in &residents_snap {
+        if *asleep || !vshadow::frightened_by(*rx, *rz, &wisps) {
+            continue;
+        }
+        let ok = {
+            let mut cd = hub().shadow_fear_cd.lock().unwrap();
+            match cd.get(rid) {
+                Some(prev) if now.duration_since(*prev).as_secs_f32() < vshadow::FEAR_COOLDOWN_SECS => false,
+                _ => {
+                    cd.insert(rid.clone(), now);
+                    true
+                }
+            }
+        }; // fear_cd mutex 釋放
+        if ok {
+            scared.push(rid.clone());
+        }
+    }
+    if !scared.is_empty() {
+        let seed = vfarm::now_secs() as usize;
+        let mut rs = hub().residents.write().unwrap();
+        for (i, rid) in scared.iter().enumerate() {
+            if let Some(r) = rs.iter_mut().find(|r| &r.id == rid) {
+                if r.say.is_empty() {
+                    r.say = vshadow::fear_line(seed + i).to_string();
+                    r.say_timer = SAY_SECS;
+                }
+                // 躲避：立刻朝家折返（wander 分支下一步就會往家走；牆內即安全）。
+                r.target_x = r.home_x;
+                r.target_z = r.home_z;
+                r.wait_timer = 0.0;
+            }
+        }
+    } // residents 寫鎖釋放
 }
 
 /// 啟動農地成熟 tick（每 15 秒檢查一次，成熟的幼苗換成成熟小麥並廣播）。
