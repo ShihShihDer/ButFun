@@ -39,6 +39,16 @@ pub fn tag_neighborly(text: &str) -> String {
     format!("{NEIGHBORLY_TAG}{text}")
 }
 
+/// 這段記憶摘要是否帶了「內部識別前綴」（[`NEIGHBORLY_TAG`] 鄰里生活／[`SIGN_MEMORY_TAG`] 讀牌）。
+///
+/// 這類前綴只給日記端辨識分類用、**不是給玩家看的文字**。凡是會把 `MemoryEntry.summary` 原文
+/// 直接組進玩家可見輸出的地方（口耳相傳 `voxel_gossip`、營火說故事 `voxel_campfire_tale` 的頭上
+/// 泡泡），都要先用這個判定濾掉，否則「🏘️鄰里…」「🪧讀到告示牌…」這種帶原始標記的破碎文字會
+/// 直接洩漏到玩家眼前。集中在此一處判定，日後新增內部前綴只要更新這裡、各挑選端自動涵蓋。
+pub fn is_internal_tagged(summary: &str) -> bool {
+    summary.starts_with(NEIGHBORLY_TAG) || summary.starts_with(SIGN_MEMORY_TAG)
+}
+
 /// 整本日記最多顯示幾條內心反思（生命故事級，少而有意義）。
 pub const MAX_DIARY_ENTRIES: usize = 6;
 

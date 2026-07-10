@@ -32,16 +32,22 @@ const TALE_SNIPPET_CHARS: usize = 26;
 
 /// 從講述者的長期記憶挑一則可講的往事。
 ///
-/// 排除規則（比照 gossip，避免無意義／無窮遞迴）：
+/// 排除規則（比照 gossip，避免無意義／無窮遞迴／洩漏內部標記）：
 /// - 摘要為空。
 /// - 已是「轉述」本身（以「聽」開頭）——只講第一手往事，不接力別人的八卦鏈。
+/// - 帶了內部識別前綴（`voxel_diary::is_internal_tagged`，如 `🏘️鄰里`／`🪧讀到告示牌`）——這些前綴
+///   只給日記端分類用、不是給玩家看的文字，若被挑中會直接顯在居民頭上的說故事泡泡裡洩漏出去。
 ///
 /// 純函式、確定性：多筆候選時取 `seq` 最大（最新）者。`memories` 由呼叫端以 `all_memories_for`
 /// 取得（已按 seq 由新到舊排序，但此處不倚賴傳入順序，自行取最新）。
 pub fn pick_tale(memories: &[MemoryEntry]) -> Option<&MemoryEntry> {
     memories
         .iter()
-        .filter(|e| !e.summary.trim().is_empty() && !e.summary.starts_with('聽'))
+        .filter(|e| {
+            !e.summary.trim().is_empty()
+                && !e.summary.starts_with('聽')
+                && !crate::voxel_diary::is_internal_tagged(&e.summary)
+        })
         .max_by_key(|e| e.seq)
 }
 
@@ -113,6 +119,24 @@ mod tests {
         ];
         let got = pick_tale(&mems).expect("應挑到一則往事");
         assert_eq!(got.seq, 5, "應取最新的有效往事（seq=5），跳過空與轉述");
+    }
+
+    #[test]
+    fn pick_tale_skips_internal_tagged_memories() {
+        // 帶內部識別前綴的記憶（鄰里生活 NEIGHBORLY_TAG／讀牌 SIGN_MEMORY_TAG）雖是最新，
+        // 也不該被挑進頭上說故事泡泡（否則「🏘️鄰里…」原始標記會直接顯給玩家看）。
+        let mems = vec![
+            mem("vox_res_0", "露娜", "和露娜一起蓋了口井", 5),
+            mem("vox_res_0", "諾娃", &crate::voxel_diary::tag_neighborly("跟諾娃分了一顆果子"), 8),
+            mem(
+                "vox_res_0",
+                "旅人",
+                &format!("{}廣場的告示牌", crate::voxel_readsign::SIGN_MEMORY_TAG),
+                9,
+            ),
+        ];
+        let got = pick_tale(&mems).expect("應退回乾淨往事");
+        assert_eq!(got.seq, 5, "應跳過帶內部標記的較新記憶，取乾淨的 seq=5");
     }
 
     #[test]
