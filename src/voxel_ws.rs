@@ -92,6 +92,7 @@ use crate::voxel_preference as vpref;
 use crate::voxel_overhear as vh;
 use crate::voxel_relations::{self as vrel, SocialStore};
 use crate::voxel_residents::{self as vr, Body};
+use crate::voxel_nightwatch as vnwatch;
 use crate::voxel_roster as vroster;
 use crate::voxel_shadow as vshadow;
 use crate::voxel_time::{self as vt, WorldTime, TimePhase};
@@ -2071,6 +2072,9 @@ struct VoxelHub {
     /// 暗影生物 v1：居民害怕反應冷卻（居民 id → 上次冒害怕泡泡的時刻），避免整夜洗版。
     /// 純記憶體、黎明清空。
     shadow_fear_cd: std::sync::Mutex<HashMap<String, std::time::Instant>>,
+    /// 夜裡點燈守望 v1：居民點燈冷卻（居民 id → 上次親手點燈的時刻），避免同一位整夜狂點。
+    /// 純記憶體、黎明清空（隨一夜守望狀態一起重置）。
+    nightwatch_cd: std::sync::Mutex<HashMap<String, std::time::Instant>>,
     /// 守夜恩人 v1（ROADMAP 888）：居民對你的道謝冷卻（居民 id → 上次道謝的時刻），避免整夜
     /// 你連驅數團暗影、同一位居民連環道謝洗版。純記憶體、黎明清空。
     nightguard_cd: std::sync::Mutex<HashMap<String, std::time::Instant>>,
@@ -2731,6 +2735,8 @@ fn hub() -> &'static VoxelHub {
             shadows: RwLock::new(Vec::new()),
             shadow_lights: RwLock::new(Vec::new()),
             shadow_fear_cd: std::sync::Mutex::new(HashMap::new()),
+            // 夜裡點燈守望 v1：啟動時無點燈冷卻紀錄（純記憶體、黎明清空）。
+            nightwatch_cd: std::sync::Mutex::new(HashMap::new()),
             nightguard_cd: std::sync::Mutex::new(HashMap::new()),
             tx,
         }
@@ -8605,6 +8611,7 @@ pub fn spawn_residents() {
             tick_residents(RESIDENT_DT);
             tick_wildlife(RESIDENT_DT); // 野兔 v1：同節拍，各自獨立鎖，不與居民鎖巢狀。
             tick_shadows(RESIDENT_DT); // 暗影生物 v1：同節拍，各自獨立鎖，零 LLM、上限 6 隻。
+            tick_nightwatch(RESIDENT_DT); // 夜裡點燈守望 v1：低頻檢查、各自獨立鎖，見暗影靠近就近點盞燈。
         }
     });
 }
@@ -8803,6 +8810,139 @@ fn tick_shadows(dt: f32) {
             }
         }
     } // residents 寫鎖釋放
+}
+
+// ── 夜裡點燈守望 tick（把「怕著躲家」升級成「一起點燈守望」）────────────────────────
+//
+// 純確定性、零 LLM、低頻（每 vnwatch::WATCH_CHECK_SECS 秒才真的掃一次）——成本比照暗影
+// tick 的零頭。嚴守 prod 死鎖鐵律：各 store 短鎖循序取放、不巢狀、set_block/持久化/廣播
+// 全在鎖外或各自短鎖內完成，絕不持鎖 await/IO。與暗影 fear 反應（怕著回家）互補共存：
+// fear 把居民推回家、nightwatch 讓她在退回前朝暗處點一盞守望燈。
+
+/// 點燈守望 tick 計數（取模驅動「每 N tick 一次」的低頻檢查）。
+static NIGHTWATCH_TICKS: AtomicU64 = AtomicU64::new(0);
+/// 今夜全村已點的守望燈數（黎明重置；達 [`vnwatch::WATCH_MAX_LAMPS_PER_NIGHT`] 停手）。
+static NIGHTWATCH_LAMPS_TONIGHT: AtomicU64 = AtomicU64::new(0);
+/// 今夜是否已上過「村民點燈守望」的 Feed（一夜一次，黎明重置）。
+static NIGHTWATCH_FEED_SENT: AtomicBool = AtomicBool::new(false);
+
+/// 推進點燈守望一個 tick：黎明重置一夜狀態 → 低頻閘 → 夜間上限閘 → 找一位「身邊有暗影、
+/// 冷卻到期、就近有暗處可點」的醒著居民 → 朝暗影方向點一盞火把（既有 set_block＋持久化＋廣播）
+/// → 補進光源快取（亮區立即生效）→ 冒守望泡泡 → 首盞上 Feed。一次檢查至多點一盞，從容不洗燈。
+fn tick_nightwatch(dt: f32) {
+    let phase = { hub().world_time.read().unwrap().phase() };
+    if !vnwatch::is_watch_time(phase) {
+        // 黎明/白天：重置一夜守望狀態（下次入夜重新從零守望），並清點燈冷卻。
+        if NIGHTWATCH_LAMPS_TONIGHT.swap(0, Ordering::Relaxed) != 0 {
+            hub().nightwatch_cd.lock().unwrap().clear();
+        }
+        NIGHTWATCH_FEED_SENT.store(false, Ordering::Relaxed);
+        return;
+    }
+
+    // 低頻閘：每 WATCH_CHECK_SECS 秒才真的掃一次（非 60fps 熱迴圈）。
+    let tick_no = NIGHTWATCH_TICKS.fetch_add(1, Ordering::Relaxed);
+    let check_every = (vnwatch::WATCH_CHECK_SECS / dt).max(1.0) as u64;
+    if tick_no % check_every != 0 {
+        return;
+    }
+    // 夜間上限閘（最便宜的早退）：這夜點夠了就不再碰任何鎖。
+    if !vnwatch::under_night_cap(NIGHTWATCH_LAMPS_TONIGHT.load(Ordering::Relaxed) as u32) {
+        return;
+    }
+
+    // 暗影快照（短讀鎖）：沒暗影就沒什麼好守望的。
+    let shadows: Vec<(f32, f32, f32)> = {
+        let ws = hub().shadows.read().unwrap();
+        ws.iter().map(|w| (w.x, w.y, w.z)).collect()
+    }; // shadows 讀鎖釋放
+    if shadows.is_empty() {
+        return;
+    }
+    // 光源快取（tick_shadows 低頻維護，讀即釋）：判斷候選點是否夠暗。
+    let lights: Vec<(i32, i32, i32)> = { hub().shadow_lights.read().unwrap().clone() };
+    // 醒著居民快照（短讀鎖）：睡著的不守望。
+    let residents_snap: Vec<(String, f32, f32)> = {
+        let rs = hub().residents.read().unwrap();
+        rs.iter().filter(|r| !r.asleep).map(|r| (r.id.clone(), r.body.x, r.body.z)).collect()
+    }; // residents 讀鎖釋放
+    if residents_snap.is_empty() {
+        return;
+    }
+
+    // 找第一位「身邊有暗影 + 冷卻到期 + 就近有暗處可放」的居民，點一盞就收工（從容節奏）。
+    let now = std::time::Instant::now();
+    for (rid, rx, rz) in &residents_snap {
+        // ① 身邊有暗影嗎（通知半徑內最近的一隻，決定點燈方向）？
+        let Some((sx, sz)) = vnwatch::nearest_shadow_within(*rx, *rz, &shadows, vnwatch::WATCH_NOTICE_RADIUS)
+        else {
+            continue;
+        };
+        // ② 這位冷卻到期了嗎（短鎖查、即釋）？
+        let cd_ok = {
+            let cd = hub().nightwatch_cd.lock().unwrap();
+            cd.get(rid)
+                .map_or(true, |t| now.duration_since(*t).as_secs_f32() >= vnwatch::WATCH_COOLDOWN_SECS)
+        }; // nightwatch_cd mutex 釋放
+        if !cd_ok {
+            continue;
+        }
+        // ③ 朝暗影方向算出候選柱，取地表上一格為放火把處。
+        let (cx, cz) = vnwatch::lamp_column(*rx, *rz, sx, sz);
+        let cy = vbuild::surface_y(cx, cz); // 地面正上方一格（放火把處）
+        // ④ 世界檢查（deltas 短讀鎖）：放置格是空氣、其正下方是實心（有立足），才放得穩。
+        let placeable = {
+            let d = hub().deltas.read().unwrap();
+            voxel::effective_block_at(&d, cx, cy, cz) == Block::Air
+                && voxel::effective_block_at(&d, cx, cy - 1, cz).is_solid()
+        }; // deltas 讀鎖釋放
+        if !placeable {
+            continue;
+        }
+        // ⑤ 這點夠暗嗎（附近沒有既有光源才點——自然收斂、不洗燈）？
+        if !vnwatch::spot_is_dark(cx, cy, cz, &lights, vnwatch::WATCH_MIN_LIGHT_SPACING) {
+            continue;
+        }
+        // ⑥ 放火把（deltas 短寫鎖；鎖內再確認一次仍是空氣，防同 tick 競態覆蓋）。
+        let placed = {
+            let mut d = hub().deltas.write().unwrap();
+            if voxel::effective_block_at(&d, cx, cy, cz) == Block::Air {
+                voxel::set_block(&mut d, cx, cy, cz, vnwatch::WATCH_LAMP_BLOCK);
+                true
+            } else {
+                false
+            }
+        }; // deltas 寫鎖釋放
+        if !placed {
+            continue;
+        }
+        // ⑦ 持久化（append-only IO，鎖外）＋廣播給前端亮起這盞燈。
+        vbuild::append_world_block(cx, cy, cz, vnwatch::WATCH_LAMP_BLOCK as u8);
+        broadcast_block(cx, cy, cz, vnwatch::WATCH_LAMP_BLOCK);
+        // ⑧ 即時補進光源快取：本輪後續檢查與下輪暗影 tick 立刻視為亮區（暗影誤入即化煙）。
+        { hub().shadow_lights.write().unwrap().push((cx, cy, cz)); }
+        // ⑨ 記冷卻＋夜間計數。
+        { hub().nightwatch_cd.lock().unwrap().insert(rid.clone(), now); }
+        NIGHTWATCH_LAMPS_TONIGHT.fetch_add(1, Ordering::Relaxed);
+        // ⑩ 這位居民冒守望泡泡（點燈是稀有有份量的事，直接覆蓋當下冒泡）。
+        {
+            let seed = vfarm::now_secs() as usize;
+            let mut rs = hub().residents.write().unwrap();
+            if let Some(r) = rs.iter_mut().find(|r| &r.id == rid) {
+                r.say = vnwatch::watch_line(seed).to_string();
+                r.say_timer = SAY_SECS;
+            }
+        } // residents 寫鎖釋放
+        // ⑪ 今夜第一盞守望燈：上一則 Feed（一夜一次），讓玩家看見村民的集體守望。
+        if !NIGHTWATCH_FEED_SENT.swap(true, Ordering::Relaxed) {
+            vfeed::append_feed(
+                vnwatch::WATCH_FEED_KIND,
+                vnwatch::WATCH_FEED_ACTOR,
+                vnwatch::WATCH_FEED_DETAIL,
+            );
+        }
+        break; // 一次檢查至多點一盞，從容不洗燈
+    }
 }
 
 /// 啟動農地成熟 tick（每 15 秒檢查一次，成熟的幼苗換成成熟小麥並廣播）。
