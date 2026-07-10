@@ -69,6 +69,13 @@ impl WorldTime {
         self.days_elapsed = self.days_elapsed.saturating_add(1);
     }
 
+    /// 直接把時鐘撥到指定的一日進度（0.0–1.0，超界夾住）。
+    /// **QA 專用**：只被 `voxel_ws` 裡受 `BUTFUN_QA_DEBUG=1` 門禁的 `qa_set_time` 訊息呼叫，
+    /// 讓隔離 QA 伺服器能把時間快轉到夜晚驗暗影生物；正式線上無入口。不動 days_elapsed。
+    pub fn set_time_of_day(&mut self, t: f32) {
+        self.elapsed_secs = DAY_DURATION_SECS * t.clamp(0.0, 0.9999);
+    }
+
     /// 根據時刻判斷所在時段。
     pub fn phase(&self) -> TimePhase {
         let t = self.time_of_day();
@@ -344,5 +351,21 @@ mod tests {
         t2.skip_to_dawn();
         assert_eq!(t1.time_of_day(), t2.time_of_day());
         assert!((t1.time_of_day() - 0.20).abs() < 0.001);
+    }
+
+    #[test]
+    fn set_time_of_day_clamps_and_lands_exact() {
+        // QA 撥鐘：精確落點 + 超界夾住（不會把時鐘撥出一日範圍）。
+        let mut t = WorldTime::new();
+        t.set_time_of_day(0.05);
+        assert_eq!(t.phase(), TimePhase::Night, "0.05 應是深夜");
+        t.set_time_of_day(0.5);
+        assert_eq!(t.phase(), TimePhase::Day, "0.5 應是白晝");
+        t.set_time_of_day(2.0);
+        assert!(t.time_of_day() < 1.0, "超界應被夾住");
+        t.set_time_of_day(-1.0);
+        assert_eq!(t.time_of_day(), 0.0, "負值夾到 0");
+        // 撥鐘不影響已流逝日數（季節不跳）。
+        assert_eq!(t.days_elapsed(), 0);
     }
 }
