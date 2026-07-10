@@ -269,8 +269,16 @@ pub fn touching(px: f32, py: f32, pz: f32, w: &Wisp) -> bool {
 }
 
 /// 登記一次有效挖擊：回傳（新累計、是否就此消散）。純函式、可測。
+/// 徒手一擊登記 1 點——等同 [`register_hit_with`]`(hits, 1)`。
 pub fn register_hit(hits: u8) -> (u8, bool) {
-    let n = hits.saturating_add(1);
+    register_hit_with(hits, 1)
+}
+
+/// 登記一次有效揮擊、造成 `power` 點傷害（驅影之劍 v1，ROADMAP 887）：
+/// 回傳（新累計、是否就此消散）。徒手 power=1、木劍 2、石劍/鐵劍 3（見 `voxel_craft::sword_power`）。
+/// `power` 至少當作 1（避免 0 傷害的無效揮擊卡死永不消散）。純函式、確定性、可測。
+pub fn register_hit_with(hits: u8, power: u8) -> (u8, bool) {
+    let n = hits.saturating_add(power.max(1));
     (n, n >= HITS_TO_DISSIPATE)
 }
 
@@ -443,6 +451,22 @@ mod tests {
         // saturating：不會 overflow。
         let (h4, d4) = register_hit(u8::MAX);
         assert_eq!((h4, d4), (u8::MAX, true));
+    }
+
+    #[test]
+    fn sword_power_shortens_dissipation() {
+        // 驅影之劍 v1：木劍 2 傷 → 兩擊消散；石劍/鐵劍 3 傷 → 一擊即散；徒手 1 傷 → 三擊。
+        // 木劍：第一擊 0→2（未滿 3、還在），第二擊 2→4≥3（消散）。
+        assert_eq!(register_hit_with(0, 2), (2, false), "木劍第一擊還在");
+        assert_eq!(register_hit_with(2, 2), (4, true), "木劍第二擊消散");
+        // 石劍/鐵劍：一擊 0→3≥3 即散。
+        assert_eq!(register_hit_with(0, 3), (3, true), "石/鐵劍一擊即散");
+        // 徒手（power=1）與 register_hit 完全等價。
+        assert_eq!(register_hit_with(0, 1), register_hit(0));
+        // power=0 的無效揮擊也至少當 1，永不卡死不消散。
+        assert_eq!(register_hit_with(0, 0), (1, false));
+        // saturating：不會 overflow。
+        assert_eq!(register_hit_with(u8::MAX, 3), (u8::MAX, true));
     }
 
     #[test]

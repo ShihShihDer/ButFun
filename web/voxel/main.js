@@ -154,6 +154,9 @@ const AMULET = 97;
 // 都想要的通用媒介；把常見原礦鑄成一枚可攜帶的信物，自由市集就能標價收付。純物品、
 // 不可放置，98 是 97（護身符）之後的首個空號。
 const COIN = 98;
+// 驅影之劍 v1（ROADMAP 887，自主提案切片）——世界第一批武器，握在手上驅散夜之暗影更快：
+// 木劍一擊抵兩下、石/鐵劍一擊即散，鐵劍還雙倍乙太礦。純物品、不可放置，99~101 是首個空號。
+const SWORD_WOOD = 99, SWORD_STONE = 100, SWORD_IRON = 101;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -277,6 +280,11 @@ const COLOR = {
   [AMULET]: [0.78, 0.58, 0.22],
   // 乙太幣 v1（ROADMAP 873，自主提案切片）——溫暖亮金色，一眼認出「這是錢」。
   [COIN]: [0.95, 0.78, 0.20],
+  // 驅影之劍 v1（ROADMAP 887，自主提案切片）——刃色與鎬/斧同一材質色系（木棕/石灰/鐵銀），
+  // 一眼認出是同一階材料鍛的武器。
+  [SWORD_WOOD]:  [0.64, 0.46, 0.26], // 木劍——深棕木刃
+  [SWORD_STONE]: [0.62, 0.62, 0.64], // 石劍——冷灰石刃
+  [SWORD_IRON]:  [0.86, 0.88, 0.94], // 鐵劍——明亮銀白，精煉金屬鋒芒
 };
 
 const DEBUG = location.search.includes("debug");
@@ -3850,6 +3858,8 @@ const BLOCK_NAME = {
   [AMULET]: "護身符",
   // 乙太幣 v1（ROADMAP 873，自主提案切片）
   [COIN]: "乙太幣",
+  // 驅影之劍 v1（ROADMAP 887，自主提案切片）
+  [SWORD_WOOD]: "木劍", [SWORD_STONE]: "石劍", [SWORD_IRON]: "鐵劍",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -5807,6 +5817,10 @@ const RECIPES_JS = [
   { id: "coin_from_wood",  name: "乙太幣（木頭）", inputs: [[WOOD, 4]],  output_block: COIN, out_count: 1 },
   { id: "coin_from_stone", name: "乙太幣（石頭）", inputs: [[STONE, 4]], output_block: COIN, out_count: 1 },
   { id: "coin_from_sand",  name: "乙太幣（沙）",   inputs: [[SAND, 4]],  output_block: COIN, out_count: 1 },
+  // 驅影之劍 v1（ROADMAP 887，自主提案切片）——世界第一批武器，握在手上驅散夜之暗影更快。
+  // 對齊後端 voxel_craft::RECIPES：木劍 {5:1,8:2}、石劍 {3:2,8:1}（鐵劍在工作台，見下）。
+  { id: "wood_sword",  name: "木劍", inputs: [[WOOD, 1], [PLANK, 2]], output_block: SWORD_WOOD,  out_count: 1 },
+  { id: "stone_sword", name: "石劍", inputs: [[STONE, 2], [PLANK, 1]], output_block: SWORD_STONE, out_count: 1 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
@@ -6096,6 +6110,9 @@ const WORKBENCH_RECIPES_JS = [
   { id: "blueprint_tower",    name: "瞭望台藍圖", inputs: [[STONE_BRICK, 5]],        output_block: BLUEPRINT_TOWER,    out_count: 1 },
   { id: "blueprint_garden",   name: "花圃藍圖",   inputs: [[LEAVES, 3], [SEEDS, 2]], output_block: BLUEPRINT_GARDEN,   out_count: 1 },
   { id: "blueprint_pavilion", name: "涼亭藍圖",   inputs: [[WOOD, 3], [TORCH, 2]],   output_block: BLUEPRINT_PAVILION, out_count: 1 },
+  // 驅影之劍 v1（ROADMAP 887，自主提案切片）——精煉武器的頂點，一擊驅散暗影且雙倍乙太礦。
+  // 對齊後端 voxel_craft::WORKBENCH_RECIPES：鐵劍 {5:2,22:3}（3 鐵錠鑄刃 + 2 木頭作握柄）。
+  { id: "iron_sword",         name: "鐵劍",       inputs: [[IRON_INGOT, 3], [WOOD, 2]], output_block: SWORD_IRON, out_count: 1 },
 ];
 
 // wbGrid[0..8]：3×3 共 9 格，0 代表空格，非零代表 block_id。
@@ -6867,6 +6884,8 @@ window.__voxel = {
   TORCH,
   // ── 鎬具 v1 QA 用（ROADMAP 687）──
   PICKAXE_WOOD, PICKAXE_STONE, PICKAXE_IRON,
+  // ── 驅影之劍 v1 QA 用（ROADMAP 887）──
+  SWORD_WOOD, SWORD_STONE, SWORD_IRON,
   blockHardness, pickaxeBonus,
   get mining() { return mining; },
   get isMouseDown() { return isMouseDown; },

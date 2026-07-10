@@ -61,6 +61,40 @@ pub const AMULET_ID: u8 = 97;
 /// 不可放置。97（護身符）是目前最大已用 id，98 是首個空號。
 pub const COIN_ID: u8 = 98;
 
+// ── 武器物品 ID（純物品，不可放置於世界，驅影之劍 v1，自主提案切片）───────────────────
+/// 木劍（ROADMAP 887）——物品 ID 99；世界至今有鎬/斧/鏟三件採集工具，卻沒有一件**武器**——
+/// 夜裡驅散暗影只能徒手挖擊、固定三下，備不備戰毫無差別。木劍是第一把武器：握在手上驅散
+/// 暗影一下抵兩下（三下→兩下）。純物品、不可放置。98（乙太幣）是目前最大已用 id，99 是首個空號。
+pub const SWORD_WOOD_ID: u8 = 99;
+/// 石劍（ROADMAP 887）——物品 ID 100；比木劍更利，握在手上一擊即驅散暗影（一下抵三下）。
+pub const SWORD_STONE_ID: u8 = 100;
+/// 鐵劍（ROADMAP 887）——物品 ID 101，需工作台合成；一擊驅散暗影，且驅散時暗影多凝一枚
+/// 乙太礦（雙倍溫柔獎勵）——精煉武器的頂點回報。純物品、不可放置。
+pub const SWORD_IRON_ID: u8 = 101;
+
+/// 一把武器每次揮擊對暗影造成的「傷害點」（暗影耐久＝[`crate::voxel_shadow::HITS_TO_DISSIPATE`]=3）。
+/// 徒手不是武器→回 0（呼叫端據此退回既有徒手 1 點）。木劍 2、石劍 3（一擊即散）、鐵劍 3。
+/// 純函式、確定性、無副作用、可測。i18n 無涉（純數值）。
+pub fn sword_power(item_id: u8) -> u8 {
+    match item_id {
+        SWORD_WOOD_ID => 2,
+        SWORD_STONE_ID => 3,
+        SWORD_IRON_ID => 3,
+        _ => 0,
+    }
+}
+
+/// 該物品是否為一把武器（劍）。純函式、可測。
+pub fn is_sword(item_id: u8) -> bool {
+    sword_power(item_id) > 0
+}
+
+/// 用這把武器驅散一隻暗影時，「額外」多凝的乙太礦數（基礎恆掉 1 枚，見 `voxel_shadow`）。
+/// 只有鐵劍給 +1（雙倍溫柔獎勵），其餘武器與徒手皆 0。純函式、可測。
+pub fn sword_extra_shards(item_id: u8) -> u32 {
+    if item_id == SWORD_IRON_ID { 1 } else { 0 }
+}
+
 use crate::voxel_inventory::InvStore;
 
 /// 一條合成配方（靜態常數，不含任何鎖或 IO 呼叫）。
@@ -344,6 +378,25 @@ pub const RECIPES: &[Recipe] = &[
         output_block: COIN_ID,
         output_count: 1,
     },
+    // ── 驅影之劍 v1（ROADMAP 887，自主提案切片）：世界第一批武器，握在手上驅散夜之暗影 ──────
+    // 木劍多重集 {5:1,8:2}（1 木頭＋2 木板）獨一無二：木鏟 {5:1,8:1}、木長椅 {5:2,8:2}、
+    // 告示牌 {8:2}、木劍 {5:1,8:2} 皆相異，不撞任何既有 2×2 配方。木板當劍身、木頭當劍柄。
+    Recipe {
+        id: "wood_sword",
+        name_zh: "木劍",
+        inputs: &[(5, 1), (8, 2)], // 1 木頭 + 2 木板 → 1 木劍
+        output_block: SWORD_WOOD_ID,
+        output_count: 1,
+    },
+    // 石劍多重集 {3:2,8:1}（2 石頭＋1 木板）獨一無二：石磚 {3:2}、石鏟 {3:1,8:1}、
+    // 石鎬/石斧 {3:3,8:1} 皆相異。石片當劍身、木板當劍柄，比木劍更利。
+    Recipe {
+        id: "stone_sword",
+        name_zh: "石劍",
+        inputs: &[(3, 2), (8, 1)], // 2 石頭 + 1 木板 → 1 石劍
+        output_block: SWORD_STONE_ID,
+        output_count: 1,
+    },
 ];
 
 /// 工作台 3×3 合成配方（需放置工作台方塊後右鍵開啟面板才能合成）。
@@ -550,6 +603,17 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
         name_zh: "涼亭藍圖",
         inputs: &[(5, 3), (31, 2)],  // 3 木頭 + 2 火把 → 1 涼亭藍圖（5 格，需工作台）
         output_block: crate::voxel_blueprint::BLUEPRINT_PAVILION,
+        output_count: 1,
+    },
+    // ── 驅影之劍 v1（ROADMAP 887，自主提案切片）：精煉武器的頂點，需工作台大格 ──────────────
+    // 鐵劍多重集 {5:2,22:3}（3 鐵錠鑄劍身＋2 木頭作握柄）獨一無二：鐵磚 {22:6}、鐵鎬/鐵斧/鐵鏟
+    // {8:2,22:3}（木板握柄）皆相異，不撞任何既有工作台配方；總 5 料 > 4 格，名正言順需工作台。
+    // 一擊驅散暗影且雙倍乙太礦回報，見 sword_extra_shards。
+    Recipe {
+        id: "iron_sword",
+        name_zh: "鐵劍",
+        inputs: &[(5, 2), (22, 3)], // 3 鐵錠 + 2 木頭 → 1 鐵劍
+        output_block: SWORD_IRON_ID,
         output_count: 1,
     },
 ];
@@ -911,7 +975,9 @@ mod tests {
                 || r.output_block == crate::voxel_bench::BENCH_ID // 木長椅（可放置家具方塊 id=79，自主提案切片）
                 || r.output_block == crate::voxel_bottle::BOTTLE_ID // 空玻璃瓶（純物品 id=83，漂流瓶 v1 自主提案切片 825）
                 || (r.output_block >= 89 && r.output_block <= 92) // 四色陶磚（染色建材 v1，自主提案切片）
-                || r.output_block == COIN_ID; // 乙太幣（純物品 id=98，鑄幣 v1，ROADMAP 873 自主提案切片）
+                || r.output_block == COIN_ID // 乙太幣（純物品 id=98，鑄幣 v1，ROADMAP 873 自主提案切片）
+                || r.output_block == SWORD_WOOD_ID   // 木劍（純物品 id=99，驅影之劍 v1，ROADMAP 887 自主提案切片）
+                || r.output_block == SWORD_STONE_ID; // 石劍（純物品 id=100，驅影之劍 v1）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
@@ -935,7 +1001,8 @@ mod tests {
                 || r.output_block == crate::voxel_blueprint::BLUEPRINT_WELL // 水井藍圖（純物品 id=85）
                 || r.output_block == crate::voxel_blueprint::BLUEPRINT_TOWER // 瞭望台藍圖（純物品 id=86）
                 || r.output_block == crate::voxel_blueprint::BLUEPRINT_GARDEN // 花圃藍圖（純物品 id=87）
-                || r.output_block == crate::voxel_blueprint::BLUEPRINT_PAVILION; // 涼亭藍圖（純物品 id=88）
+                || r.output_block == crate::voxel_blueprint::BLUEPRINT_PAVILION // 涼亭藍圖（純物品 id=88）
+                || r.output_block == SWORD_IRON_ID; // 鐵劍（純物品 id=101，驅影之劍 v1，ROADMAP 887 自主提案切片）
             assert!(
                 ok,
                 "工作台配方「{}」產出 id={} 超出範圍",
@@ -1653,6 +1720,71 @@ mod tests {
             let mut other = r.inputs.to_vec();
             other.sort();
             assert!(!sets.contains(&other), "配方「{}」不該與鑄幣多重集相撞", r.id);
+        }
+    }
+
+    // ── 驅影之劍 v1（ROADMAP 887，自主提案切片）測試 ───────────────────────────────
+    #[test]
+    fn sword_power_ladder_is_wood2_stone3_iron3_others0() {
+        // 武器傷害階梯：木劍 2、石劍 3（一擊即散）、鐵劍 3；非武器（含徒手/工具/方塊）皆 0。
+        assert_eq!(sword_power(SWORD_WOOD_ID), 2);
+        assert_eq!(sword_power(SWORD_STONE_ID), 3);
+        assert_eq!(sword_power(SWORD_IRON_ID), 3);
+        assert_eq!(sword_power(PICKAXE_IRON_ID), 0, "鎬不是武器");
+        assert_eq!(sword_power(0), 0, "空手不是武器");
+        assert_eq!(sword_power(5), 0, "木頭方塊不是武器");
+    }
+
+    #[test]
+    fn is_sword_only_true_for_the_three_swords() {
+        assert!(is_sword(SWORD_WOOD_ID) && is_sword(SWORD_STONE_ID) && is_sword(SWORD_IRON_ID));
+        assert!(!is_sword(PICKAXE_WOOD_ID) && !is_sword(AXE_IRON_ID) && !is_sword(COIN_ID));
+        assert!(!is_sword(0));
+    }
+
+    #[test]
+    fn only_iron_sword_gives_extra_shard() {
+        // 雙倍溫柔獎勵只給鐵劍；木劍/石劍/徒手皆無額外。
+        assert_eq!(sword_extra_shards(SWORD_IRON_ID), 1);
+        assert_eq!(sword_extra_shards(SWORD_WOOD_ID), 0);
+        assert_eq!(sword_extra_shards(SWORD_STONE_ID), 0);
+        assert_eq!(sword_extra_shards(0), 0);
+    }
+
+    #[test]
+    fn sword_recipes_exist_and_output_expected_ids() {
+        assert_eq!(find_recipe("wood_sword").unwrap().output_block, SWORD_WOOD_ID);
+        assert_eq!(find_recipe("stone_sword").unwrap().output_block, SWORD_STONE_ID);
+        // 鐵劍在工作台清單，不在背包 2×2 清單。
+        assert!(find_recipe("iron_sword").is_none(), "鐵劍應只在工作台配方");
+        assert_eq!(find_workbench_recipe("iron_sword").unwrap().output_block, SWORD_IRON_ID);
+    }
+
+    #[test]
+    fn sword_recipes_have_unique_input_multisets() {
+        // 木劍/石劍不與任何其他 2×2 配方共用多重集；鐵劍不與任何其他工作台配方共用。
+        let bag_ids = ["wood_sword", "stone_sword"];
+        for sid in bag_ids {
+            let mut mine = find_recipe(sid).unwrap().inputs.to_vec();
+            mine.sort();
+            for r in RECIPES {
+                if r.id == sid {
+                    continue;
+                }
+                let mut other = r.inputs.to_vec();
+                other.sort();
+                assert_ne!(mine, other, "劍配方「{sid}」與 2×2 配方「{}」多重集相撞", r.id);
+            }
+        }
+        let mut iron = find_workbench_recipe("iron_sword").unwrap().inputs.to_vec();
+        iron.sort();
+        for r in WORKBENCH_RECIPES {
+            if r.id == "iron_sword" {
+                continue;
+            }
+            let mut other = r.inputs.to_vec();
+            other.sort();
+            assert_ne!(iron, other, "鐵劍與工作台配方「{}」多重集相撞", r.id);
         }
     }
 
