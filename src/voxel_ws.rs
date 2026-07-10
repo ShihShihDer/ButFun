@@ -78,6 +78,7 @@ use crate::voxel_player_stats as vstats;
 use crate::voxel_smelt as vsmelt;
 use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
 use crate::voxel_playercare as vcare;
+use crate::voxel_nightguard as vguard;
 use crate::voxel_admire as vadmire;
 use crate::voxel_farm_admire as vfarmadmire;
 use crate::voxel_structure_name as vstructname;
@@ -151,6 +152,7 @@ use crate::voxel_tool as vtool;
 use crate::voxel_clique as vclique;
 use crate::voxel_quarrel as vquarrel;
 use crate::voxel_teach as vteach;
+use crate::voxel_mastery_fame as vfame;
 use crate::voxel_sleep as vsleep;
 use crate::voxel_bedtime as vbedtime;
 use crate::voxel_dream as vdream;
@@ -2073,6 +2075,9 @@ struct VoxelHub {
     /// 夜裡點燈守望 v1：居民點燈冷卻（居民 id → 上次親手點燈的時刻），避免同一位整夜狂點。
     /// 純記憶體、黎明清空（隨一夜守望狀態一起重置）。
     nightwatch_cd: std::sync::Mutex<HashMap<String, std::time::Instant>>,
+    /// 守夜恩人 v1（ROADMAP 888）：居民對你的道謝冷卻（居民 id → 上次道謝的時刻），避免整夜
+    /// 你連驅數團暗影、同一位居民連環道謝洗版。純記憶體、黎明清空。
+    nightguard_cd: std::sync::Mutex<HashMap<String, std::time::Instant>>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -2732,6 +2737,7 @@ fn hub() -> &'static VoxelHub {
             shadow_fear_cd: std::sync::Mutex::new(HashMap::new()),
             // 夜裡點燈守望 v1：啟動時無點燈冷卻紀錄（純記憶體、黎明清空）。
             nightwatch_cd: std::sync::Mutex::new(HashMap::new()),
+            nightguard_cd: std::sync::Mutex::new(HashMap::new()),
             tx,
         }
     })
@@ -8207,6 +8213,89 @@ async fn handle_socket(
                     if let Some(did) = spawned {
                         broadcast_item_dropped(did, w.x, w.y, w.z, vshadow::SHARD_ITEM_ID, shards, &name);
                     }
+                    // 守夜恩人 v1（自主提案切片，ROADMAP 888）：這團暗影散在近旁一位醒著的居民身邊
+                    // ——她剛才正被它威脅（對齊 FEAR 半徑），現在注意到是你替她解了圍，冒一句道謝、心情
+                    // 亮一格，並把「那夜你為我驅散了暗影」記進她心裡。戰鬥（人對怪）第一次長出社交後果。
+                    // 只在登入玩家（名字非空）驅散時觸發——訪客/幽靈探針無名，不掛人情。
+                    // 鎖序：residents 讀鎖快照即釋 → nightguard_cd mutex 短取即釋 → residents 寫鎖設
+                    // say/mood 即釋 → memory 寫即釋 → Feed，全程短取即釋、不巢狀（守 prod 死鎖鐵律）。
+                    if !name.is_empty() {
+                        // ① 快照近旁醒著、say 為空的居民，挑水平距離最近的一位當「被你救到的人」。
+                        let saved: Option<(String, &'static str, usize)> = {
+                            let rs = hub().residents.read().unwrap();
+                            rs.iter()
+                                .filter(|r| !r.asleep && r.say.is_empty())
+                                .map(|r| {
+                                    let d2 = vguard::horiz_dist_sq(r.body.x, r.body.z, w.x, w.z);
+                                    (d2, r)
+                                })
+                                .filter(|(d2, _)| vguard::within_rescue(*d2))
+                                .min_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                                .map(|(d2, r)| {
+                                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                                    let _ = d2;
+                                    (r.id.clone(), r.name, pick)
+                                })
+                        }; // residents 讀鎖釋放
+                        if let Some((rid, rname, pick)) = saved {
+                            // ② 道謝冷卻＋機率閘（三閘的距離閘已在 ① 過濾，這裡補冷卻＋骰）。
+                            let cd_ok = {
+                                let mut cd = hub().nightguard_cd.lock().unwrap();
+                                let now = std::time::Instant::now();
+                                match cd.get(&rid) {
+                                    Some(prev)
+                                        if now.duration_since(*prev).as_secs_f32()
+                                            < vguard::GRATITUDE_COOLDOWN_SECS =>
+                                    {
+                                        false
+                                    }
+                                    _ => {
+                                        cd.insert(rid.clone(), now);
+                                        true
+                                    }
+                                }
+                            }; // nightguard_cd mutex 釋放
+                            if cd_ok && rand::random::<f32>() < vguard::THANK_CHANCE {
+                                // ③ 設道謝泡泡 + 心情亮一格（短寫鎖即釋；再確認 say 仍為空避免蓋掉他人）。
+                                {
+                                    let mut rs = hub().residents.write().unwrap();
+                                    if let Some(r) = rs.iter_mut().find(|r| r.id == rid) {
+                                        if r.say.is_empty() {
+                                            r.say = vguard::thanks_bubble(&name, pick)
+                                                .chars()
+                                                .take(vguard::SAY_CHARS)
+                                                .collect();
+                                            r.say_timer = SAY_SECS;
+                                            r.mood_boost_secs =
+                                                r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                        }
+                                    }
+                                } // residents 寫鎖釋放
+                                // ④ 記進她心裡（掛你名下，append-only）+ 動態牆 + 單播 toast 給你。
+                                hub().memory.write().unwrap().add_memory(
+                                    &rid,
+                                    &name,
+                                    &vguard::guard_memory_line(&name),
+                                ); // 記憶寫鎖即釋
+                                vfeed::append_feed(
+                                    vguard::FEED_KIND,
+                                    rname,
+                                    &vguard::guard_feed_line(rname, &name),
+                                );
+                                let _ = out_tx
+                                    .send(Message::Text(
+                                        serde_json::json!({
+                                            "t": "night_guard",
+                                            "resident_id": rid,
+                                            "resident_name": rname,
+                                            "player": name,
+                                        })
+                                        .to_string(),
+                                    ))
+                                    .await;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -8554,6 +8643,7 @@ fn tick_shadows(dt: f32) {
             }
             SHADOW_FEED_SENT.store(false, Ordering::Relaxed);
             hub().shadow_fear_cd.lock().unwrap().clear();
+            hub().nightguard_cd.lock().unwrap().clear(); // 守夜恩人 v1：黎明清道謝冷卻，新的一夜重新開始
         }
         return;
     }
@@ -8872,6 +8962,7 @@ pub fn spawn_farm_tick() {
             maybe_birth(); // 人口成長 v1：低頻檢查聚落是否有餘裕誕生一位新居民。
             maybe_breed_rabbits(); // 馴服兔子生寶寶 v1（自主提案切片 855）：同節拍檢查是否誕生一隻小兔子。
             maybe_pet_admire(); // 居民注意到你身邊跟著的馴服動物 v1（自主提案切片 875）：同節拍檢查身邊有無寵物觸發讚賞。
+            maybe_crown_masters(); // 名匠聲望 v1（ROADMAP 888）：同節拍以既有發明/師承紀錄重算村裡每門手藝的公認名匠、公告新加冕、刷新「卡關優先找名匠」快照（須在就地指導前跑，讓本輪教學偏好讀到最新名匠）。
             maybe_proximity_teach(); // 就地指導 v1（自主提案切片）：同節拍檢查有無卡關居民身邊剛好站著會解法的老朋友。
             maybe_found_colony(); // 分村殖民 v1：低頻檢查主村是否夠成熟、該外派拓荒隊奠下第二座村。
             maybe_build_lovenest(); // 戀人愛巢 v1：低頻檢查有無戀人對還沒築巢、擲中就在村邊合力蓋起共同的家。
@@ -10527,6 +10618,125 @@ fn encounter_teach_radius() -> f32 {
     })
 }
 
+/// 名匠聲望 v1（ROADMAP 888）·已加冕紀錄：`(名匠顯示名, 手藝名)` 的集合，記「這位居民在
+/// 這門手藝上已經公告過名匠了」，避免同一頂桂冠反覆刷 Feed／泡泡。純記憶體、重啟歸零
+/// （重啟後首次重算會重新公告一次，只是文案再現一次，零資料風險）。
+fn crowned_masters() -> &'static std::sync::Mutex<std::collections::HashSet<(String, String)>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<(String, String)>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// 名匠聲望 v1·手藝→公認名匠快照：`goal_block → 名匠顯示名`。由 [`maybe_crown_masters`]
+/// 每輪重算刷新，供就地指導挑老師時「卡這門手藝優先找名匠」讀取（聲望→社會後果）。
+/// 純記憶體快取，只是把每輪算好的結果攤平成好查的表，重啟歸零由下一輪自然重建。
+fn master_by_goal() -> &'static std::sync::Mutex<std::collections::HashMap<u8, String>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u8, String>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 名匠聲望 v1（ROADMAP 888，低頻併入 15 秒節拍）：以既有技能庫（發明＋師承紀錄）為唯一
+/// 輸入，即時重算村裡每門手藝的公認名匠；偵測到**新加冕**的名匠就公告一次——名匠自己冒出
+/// 謙遜帶驕傲的心聲泡泡、留一筆內心記憶、世界動態記下「村裡公認○○是××的一把好手」。並把
+/// 「手藝→名匠」快照刷進 [`master_by_goal`]，供就地指導挑老師時優先找名匠（聲望的社會後果）。
+///
+/// **零重複資料**：聲望不另存，純從 `InventedSkillStore` 重算（`vfame::masters`）。
+/// **鎖紀律**（守 prod 死鎖鐵律）：residents 讀 → drop → invented 讀 → drop →（純計算，無鎖）
+/// → 已加冕帳本 Mutex 短取即釋 → 手藝快取 Mutex 短取即釋 → residents 寫（設泡泡）→ drop；
+/// memory／Feed 的 IO 一律在所有鎖外。全程短鎖、循序、不巢狀、不持鎖 await。
+fn maybe_crown_masters() {
+    // 1) 居民 id→顯示名 快照（發明紀錄以 id 記，聲望一律換算成顯示名對齊師承鏈口徑）。
+    let id_to_name: std::collections::HashMap<String, &'static str> = {
+        let residents = hub().residents.read().unwrap();
+        residents.iter().map(|r| (r.id.clone(), r.name)).collect()
+    }; // residents 讀鎖釋放
+
+    // 2) 從全村技能庫擷取聲望輸入（發明＝source None、師承＝taught 且 source 為老師名）。
+    let evidence: Vec<vfame::SkillEvidence> = {
+        let store = hub().invented.read().unwrap();
+        store
+            .all()
+            .iter()
+            .filter_map(|rec| {
+                // 持有者換算成顯示名；查不到（理論上不會）就跳過該筆發明證據。
+                let holder = id_to_name.get(&rec.resident)?;
+                Some(vfame::SkillEvidence {
+                    holder: holder.to_string(),
+                    craft: rec.name.clone(),
+                    goal_block: rec.goal_block,
+                    source: rec.source.clone(),
+                    taught: rec.taught,
+                })
+            })
+            .collect()
+    }; // invented 讀鎖釋放
+
+    // 3) 純計算（無鎖）：算出村裡每門手藝目前的公認名匠。
+    let masters = vfame::masters(&evidence);
+
+    // 4) 刷新「手藝→名匠」快照供就地指導讀取（短鎖即釋）。
+    {
+        let mut by_goal = master_by_goal().lock().unwrap();
+        by_goal.clear();
+        for m in &masters {
+            by_goal.insert(m.goal_block, m.resident.clone());
+        }
+    } // 快取鎖釋放
+
+    // 5) 挑出這一輪**新加冕**的名匠（已加冕帳本短鎖即釋）。
+    let newly: Vec<vfame::CraftFame> = {
+        let mut crowned = crowned_masters().lock().unwrap();
+        masters
+            .into_iter()
+            .filter(|m| crowned.insert((m.resident.clone(), m.craft.clone())))
+            .collect()
+    }; // 帳本鎖釋放
+    if newly.is_empty() {
+        return;
+    }
+
+    // 6) 名匠冒出心聲泡泡（residents 寫鎖短取即釋；名字對回 id 設泡泡）。
+    let name_to_id: std::collections::HashMap<&'static str, String> =
+        id_to_name.iter().map(|(id, name)| (*name, id.clone())).collect();
+    let now_secs = vfarm::now_secs();
+    let pick = now_secs as usize;
+    {
+        let mut residents = hub().residents.write().unwrap();
+        for m in &newly {
+            if let Some(id) = name_to_id.get(m.resident.as_str()) {
+                if let Some(r) = residents.iter_mut().find(|r| &r.id == id) {
+                    r.say = vfame::crown_say_line(&m.craft, pick).chars().take(50).collect();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                }
+            }
+        }
+    } // residents 寫鎖釋放
+    broadcast_players();
+
+    // 7) 各留一筆內心記憶 + 世界 Feed（IO 全在鎖外）。
+    for m in &newly {
+        if let Some(id) = name_to_id.get(m.resident.as_str()) {
+            let entry = hub().memory.write().unwrap().add_memory(
+                id,
+                m.resident.as_str(),
+                &vfame::crown_memory_line(&m.craft),
+            );
+            vmem::append_memory(&entry);
+        }
+        vfeed::append_feed(
+            vfame::FEED_KIND,
+            &m.resident,
+            &vfame::crown_feed_line(&m.resident, &m.craft),
+        );
+        tracing::info!(
+            master = %m.resident, craft = %m.craft, score = m.score,
+            "名匠加冕：村裡公認的手藝權威誕生（純以既有發明/師承紀錄重算，零 LLM/零 migration）"
+        );
+    }
+}
+
 /// 就地指導 v1（自主提案切片，低頻併入 15 秒節拍檢查）：找一位正卡關（`invent_backoff`
 /// 非空）的居民，身邊剛好站著已經會解法的老朋友，就當場教會她、解除這個目標的退避——
 /// 不必等到 717（`voxel_teach`）下次登門到訪才有機會補上（見 `voxel_proximity_teach`
@@ -10565,7 +10775,14 @@ fn maybe_proximity_teach() {
 
     let now_secs = vfarm::now_secs();
 
+    // 名匠聲望 v1（ROADMAP 888）·社會後果①：卡在某門手藝時**優先找該手藝的公認名匠**。
+    //   取一份「手藝→名匠顯示名」快照（短鎖即釋），下面挑老師時同樣夠格者優先選名匠。
+    let master_by_goal_snap: std::collections::HashMap<u8, String> = {
+        master_by_goal().lock().unwrap().clone()
+    };
+
     // 2) 篩出「學生卡關中 + 老朋友站得夠近 + 學生冷卻已過」的候選對（bonds 短讀鎖即釋）。
+    //    同一位學生若有多位夠格老師，優先選其中「卡關手藝的公認名匠」（聲望→社會後果）。
     let mut candidate_pair: Option<(usize, usize)> = None;
     {
         let bonds = hub().bonds.read().unwrap();
@@ -10583,7 +10800,14 @@ fn maybe_proximity_teach() {
             if !cooldown_ok {
                 continue;
             }
-            for (ti, (teacher_id, _, tx, tz, _, teacher_free)) in snap.iter().enumerate() {
+            // 這位學生卡關的手藝裡，村裡已有公認名匠的那些名匠名（優先找他們授課）。
+            let wanted_masters: Vec<&str> = stuck_goals
+                .iter()
+                .filter_map(|g| master_by_goal_snap.get(g).map(|s| s.as_str()))
+                .collect();
+            let mut fallback_ti: Option<usize> = None; // 第一位夠格老師（保底，沿用舊行為）
+            let mut preferred_ti: Option<usize> = None; // 夠格且正是名匠者（優先）
+            for (ti, (teacher_id, teacher_name, tx, tz, _, teacher_free)) in snap.iter().enumerate() {
                 if ti == si || !teacher_free {
                     continue;
                 }
@@ -10591,9 +10815,18 @@ fn maybe_proximity_teach() {
                 let dz = sz - tz;
                 let tier = resident_tier_of(&bonds, student_id, teacher_id);
                 if vptteach::teach_triggers(tier, dx * dx + dz * dz, true) {
-                    candidate_pair = Some((si, ti));
-                    break 'outer;
+                    if fallback_ti.is_none() {
+                        fallback_ti = Some(ti);
+                    }
+                    if wanted_masters.iter().any(|m| *m == *teacher_name) {
+                        preferred_ti = Some(ti);
+                        break; // 已找到名匠，這位學生的老師定案。
+                    }
                 }
+            }
+            if let Some(ti) = preferred_ti.or(fallback_ti) {
+                candidate_pair = Some((si, ti));
+                break 'outer;
             }
         }
     } // bonds 讀鎖釋放
@@ -10643,7 +10876,16 @@ fn maybe_proximity_teach() {
 
     let pick = now_secs as usize;
     {
-        let teacher_line = vteach::teach_say_line_as_teacher(student_name, &skill.name, pick);
+        // 名匠聲望 v1（ROADMAP 888）·社會後果②：授課者若正是這門手藝的公認名匠，
+        //   老師開講的泡泡改用帶「名匠」稱謂的句式——聲望在世界裡隨每次授課反覆現身。
+        let teacher_is_master = master_by_goal_snap
+            .get(&skill.goal_block)
+            .is_some_and(|m| m == teacher_name);
+        let teacher_line = if teacher_is_master {
+            vfame::master_teach_say_line(&skill.name, pick)
+        } else {
+            vteach::teach_say_line_as_teacher(student_name, &skill.name, pick)
+        };
         let student_line = vteach::teach_say_line_as_student(teacher_name, &skill.name, pick);
         let mut residents = hub().residents.write().unwrap();
         for (rid, line) in [(teacher_id.clone(), teacher_line), (student_id.clone(), student_line)] {
