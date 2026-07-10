@@ -167,6 +167,7 @@ use crate::voxel_daybreak as vdaybreak;
 use crate::voxel_reunion as vreunion;
 use crate::voxel_expedition as vexp;
 use crate::voxel_frontier_visit as vfvisit;
+use crate::voxel_sendoff as vsend;
 use crate::voxel_illness as villness;
 use crate::voxel_welcome as vwelcome;
 use crate::voxel_resident_trade as vrtrade;
@@ -11868,6 +11869,9 @@ fn tick_residents(dt: f32) {
     // 遠行探野 Feed（遠行探野 v1，ROADMAP 756）：鎖內收集「某居民啟程遠行／遠行歸來」事件，
     // 鎖釋放後統一 append_feed（不在持居民鎖時做 IO）。(居民名, 播報詳情)。
     let mut expedition_feed: Vec<(&'static str, String)> = Vec::new();
+    // 遠行送行 v1（ROADMAP 902）：啟程那刻收集 (送行者 id, 送行者名, 遠行夥伴名, 方位)，
+    // residents 寫鎖釋放後鎖外統一落地（memory 寫＋bonds 往來＋Feed，守死鎖鐵律）。
+    let mut sendoff_events: Vec<(String, &'static str, &'static str, String)> = Vec::new();
     // 邊陲探友（居民千里跋涉去邊陲探望遠行的夥伴 v1，ROADMAP 821）：鎖內收集「訪客抵達朋友邊陲落點、
     // 找到人」事件，記憶寫（雙方，朋友 id 於鎖外用名字查回）＋record_visit 加溫＋Feed 在居民鎖釋放後
     // 統一落地（不持居民鎖做 IO，守死鎖鐵律）。(訪客 id, 訪客名, 朋友名, 方位名)。
@@ -12161,6 +12165,17 @@ fn tick_residents(dt: f32) {
                     None
                 }
             })
+            .collect()
+    }; // residents 讀鎖釋放
+
+    // 遠行送行 v1（ROADMAP 902）：啟程那刻要找「就近、醒著、相識以上」的送行者，需在 residents
+    // 寫鎖前快照全體居民的 id/名/座標/醒睡（本世界僅 4 位，成本可忽略；比照上方 outpost_snap 的
+    // 短讀鎖即釋——避免在寫鎖迴圈內再向已被 iter_mut 借用的 residents 另要一次讀取）。
+    let town_snap: Vec<(String, &'static str, f32, f32, bool)> = {
+        let residents = hub().residents.read().unwrap();
+        residents
+            .iter()
+            .map(|r| (r.id.clone(), r.name, r.body.x, r.body.z, r.asleep))
             .collect()
     }; // residents 讀鎖釋放
 
@@ -14292,6 +14307,45 @@ fn tick_residents(dt: f32) {
                     r.say = vexp::embark_bubble(motive, bearing, pick);
                     r.say_timer = SAY_SECS;
                     expedition_feed.push((r.name, vexp::embark_feed_line(motive, bearing)));
+
+                    // ── 遠行送行 v1（ROADMAP 902·item 4「居民↔居民關係」× item 7「散居·遠行」）──
+                    // 啟程那一刻，找一位就近（半徑內）、醒著、與牠相識以上的老鄰居送牠一程。
+                    // bonds 讀鎖只取一次即釋（比照 14381 邊陲探友；bonds 與 residents 為不同鎖，不巢狀、
+                    // 守死鎖鐵律）。送行者道別走 say_updates（統一「say 空才套」+ 截斷），記憶/交情/Feed
+                    // 收進 sendoff_events、寫鎖釋放後鎖外落地。
+                    let traveler_name = r.name;
+                    let (bx, bz) = (r.body.x, r.body.z);
+                    let sender = {
+                        let bonds = hub().bonds.read().unwrap();
+                        town_snap
+                            .iter()
+                            .filter(|(id, name, x, z, asleep)| {
+                                let dx = x - bx;
+                                let dz = z - bz;
+                                *id != r.id
+                                    && vsend::qualifies_as_sender(
+                                        dx * dx + dz * dz,
+                                        !*asleep,
+                                        bonds.tier_of(traveler_name, name),
+                                    )
+                            })
+                            .min_by(|a, b| {
+                                let da = (a.2 - bx).powi(2) + (a.3 - bz).powi(2);
+                                let db = (b.2 - bx).powi(2) + (b.3 - bz).powi(2);
+                                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .map(|(id, name, ..)| (id.clone(), *name))
+                    }; // bonds 讀鎖釋放
+                    if let Some((sender_id, sender_name)) = sender {
+                        say_updates
+                            .push((sender_id.clone(), vsend::farewell_bubble(traveler_name, bearing, pick)));
+                        sendoff_events.push((
+                            sender_id,
+                            sender_name,
+                            traveler_name,
+                            bearing.to_string(),
+                        ));
+                    }
                 }
             }
 
@@ -17259,6 +17313,32 @@ fn tick_residents(dt: f32) {
     // 讓沒在現場的玩家也讀得到「居民的足跡散進了荒野」——世界不再只圍著主城打轉。
     for (rname, detail) in &expedition_feed {
         vfeed::append_feed("遠行", rname, detail);
+    }
+
+    // 遠行送行 v1（ROADMAP 902）落地：鎖已全釋；送行者把「今天為夥伴送行」記進心裡（episodic，
+    // 掛遠行夥伴名下）、這份到村口送一程的心意讓兩人交情再深一分（bonds 往來）、並補一則動態牆。
+    // 鎖序：memory 寫（即釋）→ bonds 寫（即釋）→ bonds 讀（僅升級時存檔、即釋）→ Feed IO，
+    // 皆短取即釋、不巢狀（守死鎖鐵律，比照邊陲探友 821 的落地）。
+    for (_sender_id, sender_name, traveler_name, bearing) in &sendoff_events {
+        let ev = hub().memory.write().unwrap().add_memory(
+            _sender_id,
+            traveler_name,
+            &vsend::sendoff_memory_line(traveler_name, bearing),
+        ); // memory 寫鎖釋放
+        vmem::append_memory(&ev);
+        let (_tier, tier_changed) = {
+            let mut bonds = hub().bonds.write().unwrap();
+            bonds.record_visit(sender_name, traveler_name)
+        }; // bonds 寫鎖釋放
+        if tier_changed {
+            let bonds = hub().bonds.read().unwrap();
+            vbonds::save_bonds(&bonds);
+        } // bonds 讀鎖釋放
+        vfeed::append_feed(
+            vsend::FEED_KIND,
+            sender_name,
+            &vsend::sendoff_feed_line(traveler_name, bearing),
+        );
     }
 
     // 5c-2a') 邊陲探友（居民千里跋涉去邊陲探望遠行的夥伴 v1，ROADMAP 821）：純 Feed 事件
