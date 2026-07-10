@@ -67,6 +67,15 @@ pub fn season_for_day(day: u64) -> Season {
     }
 }
 
+/// 目前是這一季的第幾天（1-based，範圍恆在 `1..=DAYS_PER_SEASON`）。
+///
+/// 例（`DAYS_PER_SEASON` = 2）：world day 0/4/8… = 這一季第 1 天、day 1/5/9… = 第 2 天。
+/// 供 HUD 季節指示器顯示「這個季節過了第幾天」，替玩家補上「今日」這層時間感
+///（配合季節本身的「這個季節」與晝夜的「此刻」，湊齊完整的時間層次）。確定性純函式、可測。
+pub fn day_of_season(day: u64) -> u64 {
+    day % DAYS_PER_SEASON + 1
+}
+
 /// 換季那一刻，附近醒著的居民抬頭感到季節更迭、隨機冒出的應景台詞池（確定性選句、零 LLM）。
 /// 每季 4 句，語氣貼合療癒世界（都是溫柔而帶著期待／感懷的一句）。
 const SPRING_LINES: [&str; 4] = [
@@ -168,6 +177,24 @@ mod tests {
                 // 確定性：同輸入同輸出；pick 以 4 為週期輪替。
                 assert_eq!(line, season_turn_line(s, pick + 4));
             }
+        }
+    }
+
+    #[test]
+    fn day_of_season_is_one_based_and_bounded() {
+        // 恆在 1..=DAYS_PER_SEASON，且每逢換季那一日重置回第 1 天。
+        for day in 0..(DAYS_PER_SEASON * 4 * 3) {
+            let dos = day_of_season(day);
+            assert!(
+                (1..=DAYS_PER_SEASON).contains(&dos),
+                "第 {day} 日的季內天數 {dos} 越界"
+            );
+            // 換季當日（day 是某季的頭一日）季內天數必為 1。
+            if day % DAYS_PER_SEASON == 0 {
+                assert_eq!(dos, 1, "第 {day} 日應為該季第 1 天");
+            }
+            // 季內天數與該季起點一致遞增（0-based 的 day%span 加 1）。
+            assert_eq!(dos, day % DAYS_PER_SEASON + 1);
         }
     }
 

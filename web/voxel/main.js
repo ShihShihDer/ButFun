@@ -306,6 +306,7 @@ const isTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
 const hudEl = document.getElementById("hud");
 const dbgEl = document.getElementById("dbg");
 const clockEl = document.getElementById("clock"); // 時段指示器（ROADMAP 896）
+const seasonEl = document.getElementById("season"); // 季節指示器（ROADMAP 897）
 
 // ── 操作設定 v1（麥塊 Bedrock 式：準心+按鈕防誤觸、靈敏度、慣用手、自動跳、預設人稱）──
 // 全部存 localStorage、重載保留；合理預設。純前端顯示/手感層，不動遊戲規則或後端。
@@ -448,6 +449,30 @@ function updateClock() {
   clockEl.querySelector(".cl-time").textContent = voxelClockTime(worldTime);
 }
 
+// ── 季節指示器 v1（ROADMAP 897）─────────────────────────────────────────────
+// 季節（voxel_season）至今只靠「刻意極輕」的天地染色暗示，玩家幾乎看不出現在是哪一季，
+// 但季節其實驅動居民換季反應/心情/城鎮動態。本徽章把「現在是春/夏/秋/冬＋這一季第幾天」
+// 明白寫在時段徽章下方，補齊「此刻（時段）→今日（季內第幾天）→這個季節」的完整時間層次。
+// 季節字串 → 徽章圖示/名稱/底色 class（名稱在前端 hardcode，比照時段徽章的 i18n 慣例）。
+const SEASON_BADGE = {
+  spring: { icon: "🌸", name: "春天", cls: "se-spring" },
+  summer: { icon: "🌻", name: "夏天", cls: "se-summer" },
+  autumn: { icon: "🍂", name: "秋天", cls: "se-autumn" },
+  winter: { icon: "❄️", name: "冬天", cls: "se-winter" },
+};
+let _seasonKey = ""; // 記住目前顯示的「季節+天數」，只在其變化時才改 DOM（省重繪）
+function updateSeason() {
+  if (!seasonEl) return;
+  const s = SEASON_BADGE[worldSeason] || SEASON_BADGE.spring; // 容錯未知字串，永不空白
+  const key = `${worldSeason}/${worldSeasonDay}`;
+  if (key === _seasonKey) return;
+  _seasonKey = key;
+  seasonEl.className = s.cls;
+  seasonEl.querySelector(".se-icon").textContent = s.icon;
+  seasonEl.querySelector(".se-name").textContent = s.name;
+  seasonEl.querySelector(".se-day").textContent = `第${worldSeasonDay}天`;
+}
+
 // 季節輪替 v1（ROADMAP 798）：各季節的天地染色 [r, g, b, 權重]（皆 0..1）。
 // 依當前季節把插值後的天空/霧色往該季色調輕輕一混——權重刻意小，讓晝夜與晴雨變化仍讀得出，
 // 只在氛圍上一眼分得出「換季了」。春天近乎原色（新綠本就是預設世界的模樣），
@@ -517,6 +542,8 @@ let isRaining = false;
 // 前端只負責視覺：換季時為整片天地（天空/霧/半球光）微微換上不同色調，讓「世界過了一季」一眼可辨。
 // 宣告需在初始 updateSkyAndLight() 呼叫之前，避免其讀取 worldSeason 時尚未初始化。
 let worldSeason = "spring";
+// 季節指示器 v1（ROADMAP 897）：伺服器隨快照廣播 season_day（這一季第幾天，1-based）；HUD 徽章顯示用。
+let worldSeasonDay = 1;
 
 // 初始套用，讓進場就是白天而非等第一幀快照。
 updateSkyAndLight(worldTime);
@@ -5098,6 +5125,8 @@ function connect() {
       if (typeof m.rainbow === "boolean") rainbowActive = m.rainbow;
       // 季節輪替 v1（ROADMAP 798）：season 隨同一份快照送達，換季時整片天地換上不同色調。
       if (typeof m.season === "string" && m.season !== worldSeason) { worldSeason = m.season; skyDirty = true; }
+      // 季節指示器 v1（ROADMAP 897）：season_day（這一季第幾天）隨同一份快照送達，HUD 徽章顯示用。
+      if (typeof m.season_day === "number") worldSeasonDay = m.season_day;
       if (skyDirty) updateSkyAndLight(worldTime);
     } else if (m.t === "talk") {
       // 居民對話回覆（單播）：
@@ -5884,6 +5913,7 @@ function loop() {
   if (dbgT >= 0.25) {
     dbgT = 0;
     updateClock(); // 時段指示器（ROADMAP 896）：每 0.25 秒依 worldTime 刷新徽章
+    updateSeason(); // 季節指示器（ROADMAP 897）：同節拍依快照 season/season_day 刷新徽章
     // 觸控裝置顯示精簡文字，避免直式螢幕頂部 HUD 溢出
     hudEl.textContent = isTouch
       ? `乙太方界 · ${myName}\n${settings.touchMode === "crosshair" ? "拖曳看・⛏挖鈕・放置鈕" : "輕點挖・放置鈕放"}\nchunk:${chunks.size} 線上:${others.size + 1} 居民:${residents.size}`
