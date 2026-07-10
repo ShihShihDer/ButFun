@@ -287,17 +287,19 @@ const COLOR = {
   [SWORD_IRON]:  [0.86, 0.88, 0.94], // 鐵劍——明亮銀白，精煉金屬鋒芒
 };
 
-// ── 裝飾植物十字貼片渲染 v1 ─────────────────────────────────────────────
+// ── 裝飾植物十字貼片渲染 v2 ─────────────────────────────────────────────
 // 維護者玩到時把一顆「藍色方塊」納悶成積木、打掉才發現是小花——根因是每種方塊都被
 // 畫成平色立方體。這批「本該是插在地上的細植物」改走十字貼片（cross-billboard）：
-// 兩片交叉的直立四邊形（X 字形），比整格窄、貼地長，用該方塊既有顏色 + 綠莖，
-// 一眼就是「一小株植物」而非方塊。只改長相，碰撞/採集/放置沿用後端語意不動。
+// 兩片交叉的直立四邊形（X 字形），比整格窄、貼地長，一眼就是「一小株植物」而非方塊。
+// v2 精緻化（維護者回報 v1 花偏大偏粗、像大植物）：沿高度分段收放寬度、疊莖/花萼/花冠/
+// 花心多段頂點色，讓野花嬌小可辨、紅/黃/藍更好分（詳見 emitCross）。
+// 只改長相，碰撞/採集/放置沿用後端語意不動。
 const CROSS_PLANTS = new Set([
   WILDFLOWER_RED, WILDFLOWER_YELLOW, WILDFLOWER_BLUE, // 三色野花——本刀主角
   SAPLING,                                            // 樹苗——抽芽幼苗
   BERRY_BUSH, BERRY_BUSH_RIPE,                         // 莓果叢苗／結果莓果叢
 ]);
-// 莖色——統一的柔綠，讓花朵頂端的花色與地面/彼此更好分辨（頂花色＋底莖綠的簡單雙色）。
+// 莖色——統一的柔綠，作為花萼/葉叢的基底色，讓花冠的花色與地面/彼此更好分辨。
 const STEM_COLOR = [0.24, 0.5, 0.22];
 
 const DEBUG = location.search.includes("debug");
@@ -1165,6 +1167,188 @@ function updateFertSparkle(dt) {
   }
 }
 
+// ── 世界環境氛圍 v1（ROADMAP 905）：環境微生物 ────────────────────────────────────
+// 純前端視覺點綴，讓安靜的世界多一點活氣：白天草原/花叢旁飄幾隻蝴蝶、夜裡水邊/暗處有螢火蟲
+// 微光（呼應暗影的光主題）。依「時段 × 玩家附近地表」自然生成，離開範圍或換時段即淡出。
+// 非可互動實體、無後端權威（比照 firework/humNotes 的前端粒子作法）。
+// 效能鐵律：兩型各一個「精靈池」（開場預建、之後只切 visible/位置/透明度，零配置churn）；
+//   數量有硬上限、只在玩家附近生成、frustumCulled 讓背後的不進 draw；非該時段整池隱藏近零成本。
+const AMB_BUTTERFLY_MAX = 7;    // 白天蝴蝶同時上限
+const AMB_FIREFLY_MAX = 12;     // 夜間螢火蟲同時上限
+const AMB_SPAWN_RANGE = 14;     // 生成半徑（格，僅玩家附近）
+const AMB_DESPAWN_RANGE = 24;   // 錨點離玩家超過此距離就淡出回收
+const AMB_SPAWN_INTERVAL = 0.55;// 生成評估節流（秒），非每幀掃地表
+const AMB_FADE_SPEED = 1.6;     // 淡入/淡出速度（透明度/秒）——柔和不突兀
+
+// 蝴蝶貼圖：🦋 emoji 一張共用（暖色、融進草原不刺眼）。
+function makeButterflyTexture() {
+  const s = 64;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = s;
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, s, s);
+  ctx.font = "48px serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("🦋", s / 2, s / 2 + 2);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.needsUpdate = true;
+  return tex;
+}
+// 螢火蟲貼圖：柔和暖黃綠的徑向光暈（非 emoji），配加法混合＝夜裡一點溫暖微光。
+function makeFireflyTexture() {
+  const s = 64;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = s;
+  const ctx = cv.getContext("2d");
+  const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  g.addColorStop(0.0, "rgba(240,255,180,1)");   // 核心：亮暖黃綠
+  g.addColorStop(0.35, "rgba(200,240,120,0.7)");
+  g.addColorStop(1.0, "rgba(160,220,90,0)");    // 邊緣淡出
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.needsUpdate = true;
+  return tex;
+}
+const BUTTERFLY_TEX = makeButterflyTexture();
+const FIREFLY_TEX = makeFireflyTexture();
+
+// 預建一型精靈池：每隻一個 Sprite（自動 billboard），各自材質以便獨立淡入淡出。開場全隱藏。
+function makeAmbientPool(n, tex, additive, baseScale, peakOp) {
+  const arr = [];
+  for (let i = 0; i < n; i++) {
+    const mat = new THREE.SpriteMaterial({
+      map: tex, transparent: true, opacity: 0, depthWrite: false, fog: true,
+      ...(additive ? { blending: THREE.AdditiveBlending } : {}),
+    });
+    const sp = new THREE.Sprite(mat);
+    sp.visible = false;
+    // frustumCulled 預設 true：背後/視野外的不進 draw call，守 FPS。
+    scene.add(sp);
+    arr.push({
+      sp, mat, alive: false, fade: 0, peakOp, baseScale,
+      age: 0, ttl: 0, ax: 0, ay: 0, az: 0,
+      phase: Math.random() * Math.PI * 2,   // 飄動相位（各隻錯開）
+      scaleJit: 0.8 + Math.random() * 0.5,  // 大小微抖，避免整齊劃一
+    });
+  }
+  return arr;
+}
+const butterflies = makeAmbientPool(AMB_BUTTERFLY_MAX, BUTTERFLY_TEX, false, 0.55, 0.95);
+const fireflies = makeAmbientPool(AMB_FIREFLY_MAX, FIREFLY_TEX, true, 0.45, 0.9);
+
+// 從玩家附近某 (wx,wz) 由上往下找地表：回傳第一個非空氣方塊的 {y,id}；未載入或找不到回 null。
+function ambSurface(wx, wz) {
+  const top = Math.floor(player.y) + 5;
+  const bot = Math.floor(player.y) - 8;
+  for (let wy = top; wy >= bot; wy--) {
+    const b = getRaw(wx, wy, wz);
+    if (b === -1) return null;   // chunk 未載入 → 放棄這次取樣
+    if (b === AIR) continue;
+    return { y: wy, id: b };
+  }
+  return null;
+}
+
+// 取一隻閒置精靈啟用：設定錨點、壽命、淡入起點。找不到閒置隻回 false。
+function activateAmbient(pool, ax, ay, az, ttl) {
+  for (const c of pool) {
+    if (c.alive) continue;
+    c.alive = true; c.fade = 0; c.age = 0; c.ttl = ttl;
+    c.ax = ax; c.ay = ay; c.az = az;
+    c.phase = Math.random() * Math.PI * 2;
+    c.sp.visible = true;
+    return true;
+  }
+  return false;
+}
+
+// 白天在花叢/草地上方生成一隻蝴蝶（偏好野花，草地機率減半以聚向花叢）。
+function trySpawnButterfly() {
+  let n = 0; for (const c of butterflies) if (c.alive) n++;
+  if (n >= AMB_BUTTERFLY_MAX) return;
+  const ang = Math.random() * Math.PI * 2;
+  const rad = 5 + Math.random() * (AMB_SPAWN_RANGE - 5);
+  const wx = Math.floor(player.x + Math.cos(ang) * rad);
+  const wz = Math.floor(player.z + Math.sin(ang) * rad);
+  const surf = ambSurface(wx, wz);
+  if (!surf) return;
+  const isFlower = surf.id === WILDFLOWER_RED || surf.id === WILDFLOWER_YELLOW || surf.id === WILDFLOWER_BLUE;
+  if (!isFlower && surf.id !== GRASS) return;          // 只在花/草上方
+  if (!isFlower && Math.random() < 0.5) return;         // 草地降半機率 → 花叢更熱鬧
+  const ay = surf.y + 1.2 + Math.random() * 0.9;
+  activateAmbient(butterflies, wx + 0.5, ay, wz + 0.5, 9 + Math.random() * 10);
+}
+
+// 夜間在水邊（優先）或暗處近地面生成一點螢火蟲微光。
+function trySpawnFirefly() {
+  let n = 0; for (const c of fireflies) if (c.alive) n++;
+  if (n >= AMB_FIREFLY_MAX) return;
+  const ang = Math.random() * Math.PI * 2;
+  const rad = 4 + Math.random() * (AMB_SPAWN_RANGE - 4);
+  const wx = Math.floor(player.x + Math.cos(ang) * rad);
+  const wz = Math.floor(player.z + Math.sin(ang) * rad);
+  const surf = ambSurface(wx, wz);
+  if (!surf) return;
+  const nearWater = isWaterId(surf.id);
+  if (!nearWater && Math.random() < 0.55) return;       // 非水邊降低機率 → 多數聚水邊
+  const ay = surf.y + 0.7 + Math.random() * (nearWater ? 1.0 : 1.3);
+  activateAmbient(fireflies, wx + 0.5, ay, wz + 0.5, 8 + Math.random() * 12);
+}
+
+// 推進一隻精靈的移動與淡入淡出。wantAlive=此時段是否仍該存在。alive 消退時自動隱藏。
+function stepAmbient(c, dt, wantAlive, isFirefly) {
+  c.age += dt;
+  const dx = c.ax - player.x, dz = c.az - player.z;
+  const tooFar = dx * dx + dz * dz > AMB_DESPAWN_RANGE * AMB_DESPAWN_RANGE;
+  const keep = wantAlive && c.age < c.ttl && !tooFar;
+  // 淡入/淡出（柔和）
+  c.fade += (keep ? 1 : -1) * AMB_FADE_SPEED * dt;
+  if (c.fade <= 0) { c.fade = 0; c.alive = false; c.sp.visible = false; return; }
+  if (c.fade > 1) c.fade = 1;
+  const a = c.age, p = c.phase;
+  let x, y, z, op = c.peakOp * c.fade;
+  if (isFirefly) {
+    // 螢火蟲：慢飄 + 明滅閃爍（加法混合下明滅＝一點忽明忽暗的暖光）。
+    x = c.ax + Math.sin(a * 0.8 + p) * 0.6;
+    y = c.ay + Math.sin(a * 0.6 + p * 1.3) * 0.4;
+    z = c.az + Math.cos(a * 0.7 + p) * 0.6;
+    op *= 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(a * 2.2 + p)); // 明滅
+  } else {
+    // 蝴蝶：小幅快速振翅飄動 + 錨點緩慢平移（隨風悠悠）。
+    c.ax += Math.cos(p) * 0.12 * dt;
+    c.az += Math.sin(p) * 0.12 * dt;
+    x = c.ax + Math.sin(a * 3.0 + p) * 0.45;
+    y = c.ay + Math.sin(a * 5.0 + p) * 0.28;
+    z = c.az + Math.cos(a * 2.6 + p) * 0.45;
+  }
+  c.sp.position.set(x, y, z);
+  const sc = c.baseScale * c.scaleJit;
+  c.sp.scale.set(sc, sc, sc);
+  c.mat.opacity = op;
+}
+
+// 每幀推進環境微生物：依時段決定該出蝴蝶還是螢火蟲，節流評估生成，逐隻移動/淡出。
+// 非任何生物的時段（如陰雨、正午與午夜交界）該池自然淡空、visible=false 近零成本。
+let ambSpawnTimer = 0;
+function updateAmbientLife(dt) {
+  const nf = nightFactor(worldTime);
+  const calm = !isRaining;                 // 陰雨天不出來（療癒、也省事）
+  const dayOut = calm && nf < 0.25;        // 白天出蝴蝶
+  const nightOut = calm && nf > 0.55;      // 夜裡出螢火蟲
+  // 推進現有個體（時段不符即淡出回收）
+  for (const c of butterflies) if (c.alive) stepAmbient(c, dt, dayOut, false);
+  for (const c of fireflies) if (c.alive) stepAmbient(c, dt, nightOut, true);
+  // 節流生成
+  ambSpawnTimer -= dt;
+  if (ambSpawnTimer <= 0) {
+    ambSpawnTimer = AMB_SPAWN_INTERVAL;
+    if (dayOut) trySpawnButterfly();
+    else if (nightOut) trySpawnFirefly();
+  }
+}
+
 // 方塊用 Lambert + 頂點色（每方塊上色），對光反應但靠半球光保底不黑。
 // DoubleSide：切片① 求穩，避免任一面纏繞方向算錯被背面剔除成破洞/黑屏（perf 微讓步，之後可收回 FrontSide）。
 const opaqueMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
@@ -1348,6 +1532,24 @@ const FACES = [
   { n: [0, 0, -1], v: [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]], d: [0, 0, -1] },
 ];
 
+// 方塊色只在重建 mesh 時生成：世界座標相同就永遠得到相同微差，不進入每幀更新。
+function variedBlockColor(c, wx, wy, wz) {
+  let h = Math.imul(wx | 0, 73856093) ^ Math.imul(wy | 0, 19349663) ^ Math.imul(wz | 0, 83492791);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  const light = 0.94 + ((h >>> 0) / 4294967295) * 0.12; // 亮度約 ±6%
+  const tint = (((h >>> 9) & 1023) / 1023 - 0.5) * 0.05; // 極淡冷暖色相差，避免髒灰
+  return [
+    Math.min(1, Math.max(0, c[0] * light + tint)),
+    Math.min(1, Math.max(0, c[1] * light + tint * 0.25)),
+    Math.min(1, Math.max(0, c[2] * light - tint * 0.7)),
+  ];
+}
+
+// 固定方向明暗與場景光疊加：頂面柔亮、側面收斂、底面最深。
+function faceShade(f) {
+  return f.n[1] > 0 ? 1.07 : (f.n[1] < 0 ? 0.70 : 0.91);
+}
+
 // 不透明面是否該畫：相鄰是空氣、水或梯子（可視穿）才畫；未載入(-1)當作實心 → 不畫
 //（避免世界邊緣冒出一面牆，等鄰塊串到再補）。
 function faceVisibleOpaque(nx, ny, nz) {
@@ -1388,18 +1590,18 @@ function rebuildChunk(key) {
             const nb = getRaw(wx + f.d[0], wy + f.d[1], wz + f.d[2]);
             if (f.n[1] === 1) {
               // 頂面：上方空氣才露出水面，畫在 topH（矮水面一眼看得出在漫）。
-              if (nb === AIR) emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, topH, topH, b);
+              if (nb === AIR) emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, topH, topH, b, wx, wy, wz);
             } else if (f.n[1] === -1) {
               // 底面：下方空氣才畫（避免內面）。
-              if (nb === AIR) emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, 0, 0, b);
+              if (nb === AIR) emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, 0, 0, b, wx, wy, wz);
             } else {
               // 側面：鄰空氣→整片側牆(0..topH)；鄰為較矮的水→畫階梯落差牆(鄰topH..topH)，
               // 讓「越流越低」的水階在側面也看得出來，不是兩塊水之間破洞。
               if (nb === AIR) {
-                emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, topH, 0, b);
+                emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, topH, 0, b, wx, wy, wz);
               } else if (isWaterId(nb)) {
                 const nH = waterTopH(nb);
-                if (nH < topH - 1e-3) emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, topH, nH, b);
+                if (nH < topH - 1e-3) emitWaterFace(wpos, wnorm, wcol, widx, lx, ly, lz, f, topH, nH, b, wx, wy, wz);
               }
             }
           }
@@ -1407,9 +1609,9 @@ function rebuildChunk(key) {
           // 裝飾植物：走十字貼片（兩片交叉直立四邊形），一眼是「插在地上的一小株」而非方塊。
           // 併入不透明 mesh（opaqueMat 為 DoubleSide，兩面都畫，花不會半透明破洞）。
           // （window.__qaCubePlants 僅供 QA 對比截圖用，切回舊的整格立方體渲染。）
-          emitCross(pos, norm, col, idx, lx, ly, lz, COLOR[b] || COLOR[STONE]);
+          emitCross(pos, norm, col, idx, lx, ly, lz, variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz), b);
         } else {
-          const c = COLOR[b] || COLOR[STONE];
+          const c = variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz);
           for (const f of FACES) {
             if (!faceVisibleOpaque(wx + f.d[0], wy + f.d[1], wz + f.d[2])) continue;
             emitFace(pos, norm, col, idx, lx, ly, lz, f, c);
@@ -1448,36 +1650,80 @@ function rebuildChunk(key) {
 // 把一個面（4 頂點、2 三角）推進陣列。座標用 chunk 局部（mesh 自身有 position 偏移）。
 function emitFace(pos, norm, col, idx, lx, ly, lz, f, c) {
   const start = pos.length / 3;
+  const shade = faceShade(f);
   for (const v of f.v) {
     pos.push(lx + v[0], ly + v[1], lz + v[2]);
     norm.push(f.n[0], f.n[1], f.n[2]);
-    if (col && c) col.push(c[0], c[1], c[2]);
+    if (col && c) col.push(Math.min(1, c[0] * shade), Math.min(1, c[1] * shade), Math.min(1, c[2] * shade));
   }
   idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
 }
 
-// 十字貼片（cross-billboard）：把裝飾植物畫成兩片交叉的直立四邊形（俯視成 X），
-// 比整格窄（寬 0.8）、貼地長（高 0.7），底莖綠、頂花色的簡單雙色，一眼是「一小株」。
-// 法線一律朝上：讓花草固定吃頂光、不因側面背光而發黑，紅/黃/藍花更好辨識。
-// 座標用 chunk 局部（mesh 自身有 position 偏移）；材質 opaqueMat 為 DoubleSide→兩面都畫。
-function emitCross(pos, norm, col, idx, lx, ly, lz, topC) {
-  const cx = lx + 0.5, cz = lz + 0.5;   // 格中心
-  const half = 0.4;                     // 半寬（寬 0.8）
-  const y0 = ly, y1 = ly + 0.7;         // 貼地、高 0.7
-  const bot = STEM_COLOR, top = topC;
-  // 兩片交叉四邊形，各 4 頂點（左下、右下、右上、左上）；沿兩條對角線立起。
-  const quads = [
-    [[cx - half, cz - half], [cx + half, cz + half]], // 對角線 A
-    [[cx - half, cz + half], [cx + half, cz - half]], // 對角線 B
-  ];
-  for (const [a, bb] of quads) {
-    const start = pos.length / 3;
-    // 左下(莖)、右下(莖)、右上(花)、左上(花)
-    pos.push(a[0], y0, a[1]);   norm.push(0, 1, 0); col.push(bot[0], bot[1], bot[2]);
-    pos.push(bb[0], y0, bb[1]); norm.push(0, 1, 0); col.push(bot[0], bot[1], bot[2]);
-    pos.push(bb[0], y1, bb[1]); norm.push(0, 1, 0); col.push(top[0], top[1], top[2]);
-    pos.push(a[0], y1, a[1]);   norm.push(0, 1, 0); col.push(top[0], top[1], top[2]);
-    idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
+// 色彩線性內插小工具：mix(a,b,t)=a→b 走 t（0..1）。用來把莖綠、花萼、花冠、花心
+// 疊出層次頂點色（不引入外部圖檔，純程式生成的多段漸層）。
+function mixCol(a, b, t) {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+}
+
+// 沿一條對角線推一段「梯形」四邊形：底邊在 yb、寬 halfB；頂邊在 yt、寬 halfT；
+// 底/頂各自頂點色 cB/cT（做出漸層）。(ux,uz) 為該對角線的單位方向。
+// 底頂寬可不同→把「細莖收窄底 → 鼓起的花冠 → 收成尖的花心」堆成一小株。
+function emitCrossSeg(pos, norm, col, idx, cx, cz, ux, uz, yb, yt, halfB, halfT, cB, cT) {
+  const start = pos.length / 3;
+  // 左下、右下（底，寬 halfB）、右上、左上（頂，寬 halfT）
+  pos.push(cx - ux * halfB, yb, cz - uz * halfB); norm.push(0, 1, 0); col.push(cB[0], cB[1], cB[2]);
+  pos.push(cx + ux * halfB, yb, cz + uz * halfB); norm.push(0, 1, 0); col.push(cB[0], cB[1], cB[2]);
+  pos.push(cx + ux * halfT, yt, cz + uz * halfT); norm.push(0, 1, 0); col.push(cT[0], cT[1], cT[2]);
+  pos.push(cx - ux * halfT, yt, cz - uz * halfT); norm.push(0, 1, 0); col.push(cT[0], cT[1], cT[2]);
+  idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
+}
+
+// 十字貼片（cross-billboard）v2：把裝飾植物畫成兩片交叉的直立四邊形（俯視成 X）。
+// v1 是一片填滿大半格的粗 X（寬 0.8、單純底綠頂花色），讀起來像大植物；v2 精緻化成
+// 「一小株」——沿高度分段收放寬度、疊多段頂點色：
+//   花（三色野花）：細莖(收窄底) → 綠花萼 → 鼓起的彩色花冠 → 收成尖的淺色花心，
+//                  花冠最寬僅 ~0.52、總高 ~0.58，嬌小可辨、紅/黃/藍更好分。
+//   苗（樹苗／莓果叢）：細莖 → 上寬的葉叢再收頂，像一株小苗而非填滿格的方塊。
+// 法線一律朝上：讓花草固定吃頂光、不因側面背光而發黑。座標用 chunk 局部（mesh 有偏移）；
+// 材質 opaqueMat 為 DoubleSide→兩面都畫，花不會半透明破洞。
+function emitCross(pos, norm, col, idx, lx, ly, lz, topC, b) {
+  const cx = lx + 0.5, cz = lz + 0.5, y0 = ly;
+  const s = Math.SQRT1_2;                       // 對角線單位分量（1/√2）
+  const dirs = [[s, s], [s, -s]];               // 兩條對角線方向
+  const isFlower = (b === WILDFLOWER_RED || b === WILDFLOWER_YELLOW || b === WILDFLOWER_BLUE);
+
+  // 依植物型別排出「分段梯形」表：[底y, 頂y, 底半寬, 頂半寬, 底色, 頂色]。
+  const stem = STEM_COLOR;
+  const stemDark = mixCol(stem, [0, 0, 0], 0.25);  // 莖底稍暗，貼地陰影感
+  let segs;
+  if (isFlower) {
+    const crown = topC;                            // 花冠＝該野花的飽和色
+    const calyx = mixCol(stem, crown, 0.35);       // 花萼＝莖綠帶一點花色，承接綠與彩
+    const center = mixCol(crown, [1, 1, 1], 0.42); // 花心＝花色提亮，做出花瓣中心亮點
+    segs = [
+      // 細莖：底收窄(0.025)微張到 0.05，一株纖細的莖
+      [y0 + 0.00, y0 + 0.30, 0.025, 0.05, stemDark, stem],
+      // 花萼：從細莖張開，綠→花萼色
+      [y0 + 0.28, y0 + 0.37, 0.05, 0.16, stem, calyx],
+      // 花冠下半：鼓起到最寬(0.26→寬 0.52)，花萼→花冠
+      [y0 + 0.36, y0 + 0.47, 0.15, 0.26, calyx, crown],
+      // 花冠上半：收成尖端、提亮成花心，一朵有中心的小花
+      [y0 + 0.47, y0 + 0.58, 0.26, 0.06, crown, center],
+    ];
+  } else {
+    // 樹苗／莓果叢：細莖 → 上寬葉叢 → 收頂，一株小苗（莓果叢結果時 topC 偏紅＝綴果）
+    const foliage = topC;
+    segs = [
+      [y0 + 0.00, y0 + 0.22, 0.03, 0.06, stemDark, stem],
+      [y0 + 0.20, y0 + 0.55, 0.06, 0.24, stem, foliage],
+      [y0 + 0.55, y0 + 0.70, 0.24, 0.05, foliage, foliage],
+    ];
+  }
+
+  for (const [ux, uz] of dirs) {
+    for (const [yb, yt, hB, hT, cB, cT] of segs) {
+      emitCrossSeg(pos, norm, col, idx, cx, cz, ux, uz, yb, yt, hB, hT, cB, cT);
+    }
   }
 }
 
@@ -1504,14 +1750,15 @@ function waterColor(b) {
 
 // 推一個水面（4 頂點、2 三角）：頂邊在 yTop、底邊在 yBot（側面藉此畫出階梯落差牆）。
 // wcol：水頂點色陣列；blockId：水方塊 id（決定深淺色）。
-function emitWaterFace(pos, norm, col, idx, lx, ly, lz, f, yTop, yBot, blockId) {
+function emitWaterFace(pos, norm, col, idx, lx, ly, lz, f, yTop, yBot, blockId, wx, wy, wz) {
   const start = pos.length / 3;
-  const c = waterColor(blockId);
+  const c = variedBlockColor(waterColor(blockId), wx, wy, wz);
+  const shade = faceShade(f);
   for (const v of f.v) {
     const y = v[1] === 1 ? yTop : yBot;
     pos.push(lx + v[0], ly + y, lz + v[2]);
     norm.push(f.n[0], f.n[1], f.n[2]);
-    col.push(c[0], c[1], c[2]);
+    col.push(Math.min(1, c[0] * shade), Math.min(1, c[1] * shade), Math.min(1, c[2] * shade));
   }
   idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
 }
@@ -6094,6 +6341,7 @@ function update(dt) {
   updateHumNotes(dt);  // 居民哼歌 v1（788）：推進頭頂飄浮音符
   updateHearts(dt);    // 寵愛你的夥伴 v1（899）：推進小夥伴頭頂的愛心
   updateFertSparkle(dt); // 乙太沃肥 v1（789）：推進施肥綠火花
+  updateAmbientLife(dt); // 世界環境氛圍 v1（905）：白天蝴蝶／夜間螢火蟲環境微生物
   streamChunks(dt);
   sendMove(dt);
   updateMyHeldItem(); // 手持工具可見 v1：即時反映熱鍵切換，不等節流送出的回音
@@ -7045,6 +7293,13 @@ window.__voxel = {
     player.yaw = Math.atan2(-dx, -dz);
     camPitch = -Math.atan2(dy, Math.hypot(dx, dz));
     clampPitch();
+  },
+  // 世界環境氛圍 v1（905）QA 用：讀此刻活著的蝴蝶／螢火蟲數＋各自位置（驗依時段真的生成、供取景）。
+  get ambientCounts() {
+    const bp = [], fp = [];
+    for (const c of butterflies) if (c.alive) bp.push({ x: c.sp.position.x, y: c.sp.position.y, z: c.sp.position.z });
+    for (const c of fireflies) if (c.alive) fp.push({ x: c.sp.position.x, y: c.sp.position.y, z: c.sp.position.z });
+    return { butterflies: bp.length, fireflies: fp.length, butterflyPos: bp, fireflyPos: fp };
   },
   // 挖擊一隻暗影（headless QA 無法 pointer lock 時的替代路徑；與點擊送同一則訊息，
   // 打不打得到仍由伺服器權威驗 reach/節奏——玩家用 console 呼叫也佔不到任何便宜）。
