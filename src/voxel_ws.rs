@@ -9414,6 +9414,19 @@ fn encounter_teach_chance() -> f32 {
     })
 }
 
+/// 相遇互教的「近旁」半徑（方塊）：預設沿用就地指導的 [`vptteach::PROXIMITY_TEACH_RADIUS`]；
+/// QA 可用環境變數 `BUTFUN_TEACH_RADIUS` 放大，免等居民恰好晃到彼此身邊。啟動時讀一次。
+fn encounter_teach_radius() -> f32 {
+    static V: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("BUTFUN_TEACH_RADIUS")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .filter(|r| r.is_finite() && *r > 0.0)
+            .unwrap_or(vptteach::PROXIMITY_TEACH_RADIUS)
+    })
+}
+
 /// 就地指導 v1（自主提案切片，低頻併入 15 秒節拍檢查）：找一位正卡關（`invent_backoff`
 /// 非空）的居民，身邊剛好站著已經會解法的老朋友，就當場教會她、解除這個目標的退避——
 /// 不必等到 717（`voxel_teach`）下次登門到訪才有機會補上（見 `voxel_proximity_teach`
@@ -9609,8 +9622,10 @@ fn maybe_encounter_teach(snap: &[(String, &'static str, f32, f32, Vec<u8>, bool)
                 }
                 let dx = sx - tx;
                 let dz = sz - tz;
+                let r = encounter_teach_radius();
                 let tier = resident_tier_of(&bonds, teacher_id, student_id);
-                if vptteach::teach_triggers(tier, dx * dx + dz * dz, true) {
+                // 交情要到老朋友＋站得夠近（半徑預設同就地指導，QA 可調）。
+                if tier == vbonds::BondTier::Friend && dx * dx + dz * dz <= r * r {
                     out.push((ti, si));
                 }
             }
