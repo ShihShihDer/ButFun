@@ -145,6 +145,7 @@ use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_player_home as vplayerhome;
 use crate::voxel_weather as vweather;
 use crate::voxel_season as vseason;
+use crate::voxel_snow as vsnow;
 use crate::voxel_timely as vtimely;
 use crate::voxel_bounty as vbounty;
 use crate::voxel_stargaze as vstar;
@@ -2041,6 +2042,9 @@ struct VoxelHub {
     /// 推算當前季節，與此比對——不同即「換季」，設下方一次性旗標並上一則城鎮動態。純記憶體、重啟
     /// 從初春重新流轉（比照天氣／彩虹狀態）。
     last_season: RwLock<vseason::Season>,
+    /// 冬季飄雪 v1（ROADMAP 900）：季內初雪偵測狀態機（純記憶體，比照天氣／季節等世界暫態，
+    /// 重啟歸零）。每輪 tick_residents 依「當前是否冬季 ∧ 是否下雨」推進，偵測本冬第一次飄雪。
+    snow_tracker: RwLock<vsnow::SnowSeasonTracker>,
     /// 上一場「暮聚」發生的世界日（村莊自發習俗 v1，村莊自發習俗）：每到黃昏、村子已有廣場中心、
     /// 在場閒人達門檻時，居民自發聚到廣場村碑邊——用「當日累計日數」比對確保**每日黃昏至多一場**
     /// （同一天已聚過就不再重複觸發）。純記憶體、重啟歸零（最壞重啟後當日再聚一次，無資料風險）。
@@ -2744,6 +2748,8 @@ fn hub() -> &'static VoxelHub {
             rainbow_started_flag: RwLock::new(false),
             // 季節輪替 v1（ROADMAP 798）：啟動時世界日數為 0 ＝初春；之後靠 tick_residents 逐日推進換季。
             last_season: RwLock::new(vseason::season_for_day(0)),
+            // 冬季飄雪 v1（ROADMAP 900）：啟動時尚未飄雪、本冬未播初雪；之後靠 tick_residents 逐 tick 推進。
+            snow_tracker: RwLock::new(vsnow::SnowSeasonTracker::new()),
             // 村莊自發習俗 v1（暮聚）：啟動時尚無任何一場暮聚發生過。
             last_custom_day: RwLock::new(None),
             // 協助建造感激記憶冷卻：啟動空（純記憶體、無需持久化）。
@@ -11699,6 +11705,18 @@ fn tick_residents(dt: f32) {
         *f = false;
         v
     };
+    // 冬季飄雪 v1（ROADMAP 900）：把「當前是否冬季 ∧ 是否下雨」餵給季內初雪狀態機，偵測
+    // 「本冬第一次飄雪」那一刻（純函式，短寫鎖即釋、不巢狀，守死鎖鐵律）。回傳 true 時：
+    // ①寫一則城鎮動態（不在線上的玩家回來也讀得到初雪落下）②供下方 residents 迴圈讓附近醒著
+    // 居民抬頭冒一句初雪感言。飄雪的「視覺」不必後端管——前端用既有廣播的 season＋raining 本地判定，
+    // 冬天下雨自動渲染成雪（零協議破壞）。
+    let first_snow_just_started = {
+        let is_winter = current_season == vseason::Season::Winter;
+        hub().snow_tracker.write().unwrap().update(is_winter, raining)
+    };
+    if first_snow_just_started {
+        vfeed::append_feed("初雪", "乙太方界", vsnow::first_snow_feed_detail());
+    }
     // 夜間歸巢遮蔽：批次快照各居民已蓋好的小屋座標（goals 讀鎖即釋），
     // 供下面 residents 寫鎖那段挑閒晃中心用——不與 residents 鎖巢狀（守死鎖鐵律）。
     let house_locations: HashMap<String, (i32, i32, i32)> = {
@@ -14522,6 +14540,16 @@ fn tick_residents(dt: f32) {
             if season_just_turned && !r.asleep && r.say.is_empty() {
                 let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                 r.say = vseason::season_turn_line(current_season, pick).to_string();
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            }
+
+            // 冬季飄雪 v1（ROADMAP 900）：本冬第一次飄雪那一刻，say 為空、醒著的居民抬頭看見初雪落下，
+            // 冒一句應景感言（零 LLM、確定性選句），心情也跟著微亮一格（`mood_boost` 是驅動行為的真狀態）。
+            // 與換季／雨天／彩虹反應同屬罕見的一次性環境事件，值得蓋過閒聊冷卻；一個冬天只落一次。
+            if first_snow_just_started && !r.asleep && r.say.is_empty() {
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                r.say = vsnow::first_snow_line(pick).to_string();
                 r.say_timer = SAY_SECS;
                 r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
             }
