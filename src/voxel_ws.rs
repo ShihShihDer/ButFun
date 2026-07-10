@@ -114,6 +114,7 @@ use crate::voxel_diary_peek as vdiarypeek;
 use crate::voxel_pet_admire as vpetadmire;
 use crate::voxel_pet_fright as vpetfright;
 use crate::voxel_proximity_teach as vptteach;
+use crate::voxel_envoy_mark as venvoy;
 use crate::voxel_treasure as vtreasure;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
@@ -1270,6 +1271,24 @@ fn special_title_talk_note(title: &str) -> Option<&'static str> {
     }
 }
 
+/// 純函式：這條連線的稱號是否為「引夢使者」（印記深化 v1 專用閘——只有引夢使者的善舉才攢印記）。
+/// 訪客／一般玩家／築夢工匠皆回 false（印記是引夢使者這一身分獨有的體驗）。
+fn is_dream_envoy(title: Option<&str>) -> bool {
+    title == Some(TITLE_DREAM_ENVOY)
+}
+
+/// 便捷層：記下引夢使者對某居民的一件善舉並落地（短寫鎖即釋、不巢狀，鎖外寫檔）。
+/// 由伺服器權威事件（守夜驅暗影／送禮／送花）呼叫；玩家無法自報。
+fn record_envoy_deed(resident_id: &str, resident_name: &str, kind: venvoy::DeedKind) {
+    let snapshot = {
+        let mut marks = hub().envoy_marks.write().unwrap();
+        marks.record(resident_id, resident_name, kind);
+        // 落地整份快照（格數極小）——在鎖內取快照、鎖外寫檔避免持鎖 IO。
+        marks.to_entries()
+    }; // envoy_marks 寫鎖釋放
+    venvoy::save_marks(&snapshot);
+}
+
 /// 引夢使者專屬對話注入：當來搭話的旅人是引夢使者時，比照既有注入區塊（誠實 / 配方 / 願望），
 /// 讓居民自然地以熟悉的溫暖敬意對待他——但不浮誇諂媚、能力誠實照舊（敬愛≠開空頭支票）。
 fn dream_envoy_talk_note() -> &'static str {
@@ -2007,6 +2026,13 @@ struct VoxelHub {
     /// 居民情誼帳本（ROADMAP 672）：拜訪次數累積情誼（陌生→相識→老朋友），持久化跨重啟。
     /// 每次探訪到達時 record_visit → 若升級則 Feed 廣播 + 問候語更換。
     bonds: RwLock<ResidentBonds>,
+    /// 引夢使者印記帳本（引夢使者印記深化 v1）：累積這位帶稱號的維護者（引夢使者）為各居民做過的
+    /// 具體善舉（守夜驅暗影／送禮／送花），持久化跨重啟；居民日後平常相處時偶爾回想提起。
+    /// 全由伺服器權威事件驅動、玩家無法自報；鎖與 `bonds` 各自獨立短取即釋。
+    envoy_marks: RwLock<venvoy::EnvoyMarkStore>,
+    /// 引夢使者印記回想冷卻（居民 id → 上次回想的 unix 秒），避免同一位居民連環回想洗版。
+    /// 純記憶體、重啟歸零（比照 `pet_admire_cd` 慣例，頂多重啟後早一點再回想，零資料風險）。
+    envoy_recall_cd: std::sync::Mutex<HashMap<String, u64>>,
     /// 居民戀愛帳本（ROADMAP 846）：老朋友並坐閒聊時偶爾擦出心動火花，締結成一對戀人（一生
     /// 只有一位），持久化跨重啟。與 `bonds` 並行、鎖各自獨立短取即釋。
     romance: RwLock<ResidentRomance>,
@@ -2741,6 +2767,9 @@ fn hub() -> &'static VoxelHub {
             pending_fish: RwLock::new(HashMap::new()),
             // 居民情誼 v1（ROADMAP 672）：啟動時從 data/voxel_bonds.jsonl 載回情誼記錄。
             bonds: RwLock::new(ResidentBonds::from_entries(vbonds::load_bonds())),
+            // 引夢使者印記深化 v1：啟動時從 data/voxel_envoy_marks.jsonl 載回印記帳本（重啟後居民仍記得你的善舉）。
+            envoy_marks: RwLock::new(venvoy::EnvoyMarkStore::from_entries(venvoy::load_marks())),
+            envoy_recall_cd: std::sync::Mutex::new(HashMap::new()),
             // 居民戀愛 v1（ROADMAP 846）：啟動時從 data/voxel_romance.jsonl 載回已締結的戀人對。
             romance: RwLock::new(ResidentRomance::from_entries(vromance::load_romance())),
             // 知恩圖報 v1（ROADMAP 801）：欠飯帳本純記憶體、啟動時空的（過場恩情、重啟歸零、零持久化）。
@@ -7255,6 +7284,16 @@ async fn handle_socket(
                     hub().memory.write().unwrap().add_memory(&resident_id, &name, &mem2)
                 };
                 vmem::append_memory(&entry2);
+                // 引夢使者印記深化 v1：若送禮的是引夢使者，把這份心意攢進她的印記帳本——野花另計
+                // （純粹示好的心意），其餘一律記作「餽贈禮物」。伺服器權威（背包已扣、觸及已驗），玩家無法自報。
+                if is_dream_envoy(conn_title.as_deref()) {
+                    let deed = if vgift::is_flower_gift(item_id) {
+                        venvoy::DeedKind::Flower
+                    } else {
+                        venvoy::DeedKind::Gift
+                    };
+                    record_envoy_deed(&resident_id, rname, deed);
+                }
                 // 拜託你幫個小忙 v1：若這份禮正中她開口討的材料，另記一筆「你在我開口時幫了我」的
                 // 人情（episodic，掛玩家名下累積好感）——她會記得你幫過她，日後回想 / 日記可引用。
                 if request_fulfilled {
@@ -8642,6 +8681,11 @@ async fn handle_socket(
                                     &name,
                                     &vguard::guard_memory_line(&name),
                                 ); // 記憶寫鎖即釋
+                                // 引夢使者印記深化 v1：若驅散暗影的是引夢使者，把「你替我趕走了暗影」
+                                // 攢進她的印記帳本（日後平常相處時她會回想提起）。伺服器權威、玩家無法自報。
+                                if is_dream_envoy(conn_title.as_deref()) {
+                                    record_envoy_deed(&rid, rname, venvoy::DeedKind::SaveShadow);
+                                }
                                 vfeed::append_feed(
                                     vguard::FEED_KIND,
                                     rname,
@@ -9434,6 +9478,7 @@ pub fn spawn_farm_tick() {
             maybe_birth(); // 人口成長 v1：低頻檢查聚落是否有餘裕誕生一位新居民。
             maybe_breed_rabbits(); // 馴服兔子生寶寶 v1（自主提案切片 855）：同節拍檢查是否誕生一隻小兔子。
             maybe_pet_admire(); // 居民注意到你身邊跟著的馴服動物 v1（自主提案切片 875）：同節拍檢查身邊有無寵物觸發讚賞。
+            maybe_envoy_recall(); // 引夢使者印記深化 v1（自主提案切片）：同節拍檢查身邊有無曾受你恩惠的居民、偶爾回想提起你為她做過的具體好事。
             maybe_crown_masters(); // 名匠聲望 v1（ROADMAP 888）：同節拍以既有發明/師承紀錄重算村裡每門手藝的公認名匠、公告新加冕、刷新「卡關優先找名匠」快照（須在就地指導前跑，讓本輪教學偏好讀到最新名匠）。
             maybe_proximity_teach(); // 就地指導 v1（自主提案切片）：同節拍檢查有無卡關居民身邊剛好站著會解法的老朋友。
             maybe_encounter_barter(); // 居民以物易物 v1（ROADMAP 888）：同節拍檢查有無餘料互補的老朋友走得夠近、湊成一樁雙向互利的背包對換。
@@ -10555,6 +10600,54 @@ pub async fn voxel_waypoints_handler(
         .unwrap()
 }
 
+/// 乙太方界·引夢使者印記 v1（自主提案切片）：回傳「你在風禾方界為居民做過的具體善舉」彙總——
+/// 每位有印記的居民，名下各種善舉（驅散暗影／餽贈禮物／餽贈野花）的次數，以及總計。
+/// 純讀取、零副作用（短讀鎖一次性快照即釋）。印記全由伺服器權威事件攢成，這裡只呈現、不寫。
+pub async fn voxel_envoy_marks_handler() -> axum::response::Response {
+    use axum::http::header;
+    let (total, residents): (u64, Vec<serde_json::Value>) = {
+        let marks = hub().envoy_marks.read().unwrap();
+        let total = marks.total_count();
+        let mut residents: Vec<serde_json::Value> = marks
+            .residents_with_marks()
+            .into_iter()
+            .map(|rid| {
+                let mut deeds = marks.deeds_for(&rid);
+                // 依「最近一件」在前排序，讓面板一眼看到最新的印記。
+                deeds.sort_by(|a, b| b.last_seq.cmp(&a.last_seq));
+                let rname = deeds.first().map(|d| d.resident_name.clone()).unwrap_or_default();
+                let sub: u64 = deeds.iter().map(|d| d.count as u64).sum();
+                let deed_list: Vec<serde_json::Value> = deeds
+                    .iter()
+                    .map(|d| {
+                        let label = venvoy::DeedKind::from_wire(d.kind)
+                            .map(|k| k.label())
+                            .unwrap_or("");
+                        serde_json::json!({ "kind": d.kind, "label": label, "count": d.count })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "resident_id": rid,
+                    "resident_name": rname,
+                    "total": sub,
+                    "deeds": deed_list,
+                })
+            })
+            .collect();
+        // 名下善舉多的居民排前面（印記最深的關係先看到）。
+        residents.sort_by(|a, b| {
+            b["total"].as_u64().unwrap_or(0).cmp(&a["total"].as_u64().unwrap_or(0))
+        });
+        (total, residents)
+    }; // envoy_marks 讀鎖釋放
+    let body = serde_json::json!({ "total": total, "residents": residents }).to_string();
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
 /// 乙太方界·探索紀事 v1（自主提案切片，接續 838/839）：回傳這位玩家找到過的地標
 /// （種類＋座標，依發現順序）＋分類小計。跟里程碑端點同一手法：`?player=` 缺省時
 /// 回空清單，前端知道要先問玩家名再開面板。純讀取、零副作用。
@@ -11106,6 +11199,106 @@ fn maybe_pet_admire() {
                 rname,
                 &format!("{rname}注意到{pname}身邊跟著一隻{pet_label}，忍不住多看了幾眼。"),
             );
+        }
+    }
+}
+
+/// 引夢使者印記深化 v1（自主提案切片）：居民平常閒晃時，若身邊剛好站著曾為她做過具體好事的
+/// 引夢使者，偶爾回想、提起那件事（「還記得那晚你替我趕走暗影…」）——讓「你的功績被世界記住」
+/// 這一層真的被玩家感受到。與 875 寵物讚賞同一套已驗證的「短鎖即釋、不巢狀」慣例，於 15 秒節拍檢查。
+///
+/// 鎖序：players 讀鎖快照即釋 → envoy_marks 讀鎖快照即釋 → residents 讀鎖挑候選即釋 →
+/// envoy_recall_cd mutex 短取即釋 → residents 寫鎖設 say/mood 即釋 → Feed（鎖外）。全程短取即釋、
+/// 不巢狀（守 prod 死鎖鐵律）。濫用防護：只認帶「引夢使者」稱號的玩家、印記全由伺服器權威事件攢成。
+fn maybe_envoy_recall() {
+    // 1) 引夢使者玩家快照（短鎖即釋）：只認後端判定的稱號，不吃客戶端自報。訪客/一般玩家 title=None。
+    let envoys_snap: Vec<(String, f32, f32)> = {
+        let players = hub().players.read().unwrap();
+        players
+            .values()
+            .filter(|p| is_dream_envoy(p.title.as_deref()) && !p.name.is_empty())
+            .map(|p| (p.name.clone(), p.x, p.z))
+            .collect()
+    };
+    if envoys_snap.is_empty() {
+        return;
+    }
+
+    // 2) 有印記的居民清單 ＋ 各自「最近一件」善舉快照（短鎖即釋）。沒有任何印記就整輪早退。
+    let marked: std::collections::HashMap<String, venvoy::DeedKind> = {
+        let marks = hub().envoy_marks.read().unwrap();
+        marks
+            .residents_with_marks()
+            .into_iter()
+            .filter_map(|rid| marks.latest_kind_for(&rid).map(|k| (rid, k)))
+            .collect()
+    };
+    if marked.is_empty() {
+        return;
+    }
+
+    let now_secs = vfarm::now_secs();
+    for (pname, px, pz) in &envoys_snap {
+        // 3) 近旁有空、且名下有印記的居民（residents 讀鎖即釋，不與後續寫鎖巢狀）。挑最近的一位。
+        let cand: Option<(String, &'static str, f32)> = {
+            let residents = hub().residents.read().unwrap();
+            residents
+                .iter()
+                .filter(|r| {
+                    r.say.is_empty()
+                        && !r.asleep
+                        && r.visiting.is_none()
+                        && r.expedition.is_none()
+                        && r.clique_meet.is_none()
+                        && r.savoring.is_none()
+                        && marked.contains_key(&r.id)
+                })
+                .map(|r| {
+                    let dx = px - r.body.x;
+                    let dz = pz - r.body.z;
+                    (r.id.clone(), r.name, dx * dx + dz * dz)
+                })
+                .filter(|(_, _, d2)| *d2 <= venvoy::RECALL_RADIUS * venvoy::RECALL_RADIUS)
+                .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+        };
+        let Some((rid, rname, dist_sq)) = cand else { continue };
+
+        // 4) 冷卻閘（envoy_recall_cd mutex 短取即釋）。
+        let cooldown_ok = {
+            let cd = hub().envoy_recall_cd.lock().unwrap();
+            match cd.get(&rid) {
+                Some(prev) => now_secs.saturating_sub(*prev) >= venvoy::RECALL_COOLDOWN_SECS,
+                None => true,
+            }
+        };
+        if !venvoy::recall_triggers(dist_sq, cooldown_ok) {
+            continue;
+        }
+        // 5) 機率閘（保持稀疏）——擲不過就這輪不回想（不佔冷卻，下輪還有機會）。
+        if rand::random::<f32>() >= venvoy::RECALL_CHANCE {
+            continue;
+        }
+        { hub().envoy_recall_cd.lock().unwrap().insert(rid.clone(), now_secs); }
+
+        let Some(kind) = marked.get(&rid).copied() else { continue };
+        let pick = now_secs as usize;
+        let say_line = venvoy::recall_line(pname, kind, pick);
+        // 6) 設回想泡泡 ＋ 心情微亮（短寫鎖即釋；再確認 say 仍為空避免蓋掉他人）。
+        let said = {
+            let mut residents = hub().residents.write().unwrap();
+            residents
+                .iter_mut()
+                .find(|r| r.id == rid && r.say.is_empty())
+                .map(|r| {
+                    r.say = say_line.chars().take(50).collect();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                })
+                .is_some()
+        }; // residents 寫鎖釋放
+        if said {
+            broadcast_players();
+            vfeed::append_feed(venvoy::FEED_KIND, rname, &venvoy::feed_line(rname, pname, kind));
         }
     }
 }
