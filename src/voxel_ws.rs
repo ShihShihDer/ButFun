@@ -163,6 +163,7 @@ use crate::voxel_illness as villness;
 use crate::voxel_welcome as vwelcome;
 use crate::voxel_resident_trade as vrtrade;
 use crate::voxel_share as vshare;
+use crate::voxel_barter as vbarter;
 use crate::voxel_milestones::{self as vmiles, MilestoneStore};
 use crate::voxel_milestone_cheer as vmcheer;
 use crate::voxel_player_pos as vpp;
@@ -8733,6 +8734,7 @@ pub fn spawn_farm_tick() {
             maybe_breed_rabbits(); // 馴服兔子生寶寶 v1（自主提案切片 855）：同節拍檢查是否誕生一隻小兔子。
             maybe_pet_admire(); // 居民注意到你身邊跟著的馴服動物 v1（自主提案切片 875）：同節拍檢查身邊有無寵物觸發讚賞。
             maybe_proximity_teach(); // 就地指導 v1（自主提案切片）：同節拍檢查有無卡關居民身邊剛好站著會解法的老朋友。
+            maybe_encounter_barter(); // 居民以物易物 v1（ROADMAP 888）：同節拍檢查有無餘料互補的老朋友走得夠近、湊成一樁雙向互利的背包對換。
             maybe_found_colony(); // 分村殖民 v1：低頻檢查主村是否夠成熟、該外派拓荒隊奠下第二座村。
             maybe_build_lovenest(); // 戀人愛巢 v1：低頻檢查有無戀人對還沒築巢、擲中就在村邊合力蓋起共同的家。
             tick_dropitem_expire(); // 掉落物 v1（自主提案切片 828）：同節拍清掉沒人撿的過期掉落物。
@@ -10337,6 +10339,15 @@ fn proximity_teach_cd() -> &'static std::sync::Mutex<std::collections::HashMap<S
     C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+/// 居民以物易物 v1（ROADMAP 888）·每對居民的成交冷卻：無序 pair 鍵（[`vbarter::pair_key`]）
+/// → 上次成交的 unix 秒。避免同一對老朋友短時間內反覆對換、洗版泡泡與動態牆。
+/// 純記憶體、重啟歸零（頂多重啟後早一點再換，零資料風險、零 migration）。
+fn barter_cd() -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
 /// 技能互教·每居民「教或學」帳本（北極星第四刀）：居民 id → 上次教/學的 unix 秒。
 /// 三條教學路（717 登門到訪／就地指導／相遇互教）**共用同一本帳**：教過或學過任一次，
 /// 這一遊戲天（[`vteach::TEACH_LEDGER_SECS`]）內不再參與登門教學與相遇互教——手藝在
@@ -10669,6 +10680,173 @@ fn maybe_encounter_teach(snap: &[(String, &'static str, f32, f32, Vec<u8>, bool)
     tracing::info!(
         teacher = %teacher_id, student = %student_id, skill = %skill.name,
         "相遇互教：手藝在活人之間口耳相傳（師承鏈落地，零 LLM）"
+    );
+}
+
+/// 居民以物易物 v1（ROADMAP 888，與相遇互教同 15 秒節拍）：手上有餘料的居民路遇身邊
+/// 缺該料的老朋友，走近偶爾開口「拿我的木頭換你的石頭？」——湊得成一樁**雙向互利**的
+/// 對換就成交：雙方採集背包（`res_inv`）**真的**對換（零和守恆、不憑空生料），各記一筆
+/// 「和 X 換了東西」的暖記憶、動態牆播一則「露娜用木頭跟諾娃換了石頭」。這是小社會第一樁
+/// 雙向互利的以物易物——不同於 723（象徵性、不動背包）、748/800（單向贈與），本刀是
+/// 「各自拿多的換自己缺的」的真實互通有無。
+///
+/// **不無限擴散的四道閘**：①每輪掃描擲一次骰（[`vbarter::BARTER_CHANCE`]，不隨在場人數
+/// 膨脹）②交情要到老朋友（`Friend`）③每對居民成交冷卻（[`barter_cd`]）④背包餘缺真的
+/// 湊得成一樁對換（[`vbarter::pick_barter`]）——四道皆過才成交，一遊戲天全村自然只換幾樁。
+///
+/// **鎖紀律（守 prod 死鎖鐵律）**：residents 讀 → drop → res_inv 讀（快照）→ drop →
+/// cd 快照 → drop → bonds 讀（挑對）→ drop → res_inv 寫（真實對換，即釋）→ cd 寫（即釋）
+/// → residents 寫（台詞，即釋）→ memory 寫 ×2 → Feed，全程短鎖循序、不巢狀、不持鎖 await。
+fn maybe_encounter_barter() {
+    // ① 機率門檻：每輪掃描只擲一次骰（同一 roll 貫穿整輪掃描 → 觸發率不隨在場人數膨脹）。
+    let roll = rand::random::<f32>();
+    if roll >= vbarter::BARTER_CHANCE {
+        return;
+    }
+    let now_secs = vfarm::now_secs();
+
+    // 居民快照：位置 + 是否有空（residents 讀鎖即釋，不與其他鎖巢狀）。
+    let snap: Vec<(String, &'static str, f32, f32, bool)> = {
+        let residents = hub().residents.read().unwrap();
+        residents
+            .iter()
+            .map(|r| {
+                let free = r.say.is_empty()
+                    && !r.asleep
+                    && r.visiting.is_none()
+                    && r.expedition.is_none()
+                    && r.clique_meet.is_none()
+                    && r.savoring.is_none()
+                    && r.invent_run.is_none();
+                (r.id.clone(), r.name, r.body.x, r.body.z, free)
+            })
+            .collect()
+    }; // residents 讀鎖釋放
+    if snap.len() < 2 {
+        return;
+    }
+
+    // 背包快照（res_inv 讀鎖即釋）。居民數量小，整份 clone 成本可忽略。
+    let bags: HashMap<String, HashMap<u8, u32>> = { hub().res_inv.read().unwrap().clone() };
+    // 冷卻快照（cd 鎖即釋，避免與 bonds 讀鎖巢狀）。
+    let cd_snapshot: HashMap<String, u64> = { barter_cd().lock().unwrap().clone() };
+
+    // 挑第一對「都閒 + 老朋友 + 站得夠近 + 冷卻已過 + 背包餘缺湊得成一樁對換」的候選
+    //（bonds 讀鎖即釋）。只讓 ai<bi 提議：同一對不雙向重掃、提議者固定為 a。
+    let chosen: Option<(usize, usize, vbarter::BarterDeal)> = {
+        let bonds = hub().bonds.read().unwrap();
+        let r2 = vbarter::BARTER_RADIUS * vbarter::BARTER_RADIUS;
+        let mut found = None;
+        'outer: for (ai, (a_id, _, ax, az, a_free)) in snap.iter().enumerate() {
+            if !a_free {
+                continue;
+            }
+            for (bi, (b_id, _, bx, bz, b_free)) in snap.iter().enumerate() {
+                if bi <= ai || !b_free {
+                    continue;
+                }
+                let dx = bx - ax;
+                let dz = bz - az;
+                if dx * dx + dz * dz > r2 {
+                    continue;
+                }
+                let tier = resident_tier_of(&bonds, a_id, b_id);
+                // ②交情門檻＋②本輪骰（同一 roll）：老朋友且骰過才有機會。
+                if !vbarter::should_barter(tier, roll) {
+                    continue;
+                }
+                // ③每對冷卻。
+                let key = vbarter::pair_key(a_id, b_id);
+                if !vbarter::cooldown_ok(now_secs, cd_snapshot.get(&key).copied()) {
+                    continue;
+                }
+                // ④背包餘缺真的湊得成一樁互利對換。
+                let (Some(a_bag), Some(b_bag)) = (bags.get(a_id), bags.get(b_id)) else {
+                    continue;
+                };
+                if let Some(deal) = vbarter::pick_barter(a_bag, b_bag) {
+                    found = Some((ai, bi, deal));
+                    break 'outer;
+                }
+            }
+        }
+        found
+    }; // bonds 讀鎖釋放
+    let Some((ai, bi, deal)) = chosen else {
+        return;
+    };
+    let a_id = snap[ai].0.clone();
+    let a_name = snap[ai].1;
+    let b_id = snap[bi].0.clone();
+    let b_name = snap[bi].1;
+
+    // 真實對換：單一寫鎖內完成（先再確認雙方仍握足量防同 tick 競態，先扣後加、循序）。
+    // 純邏輯與競態防護抽在 vbarter::apply_barter（已單元測試零和守恆＋不足時原封回 false）。
+    let swapped = {
+        let mut inv = hub().res_inv.write().unwrap();
+        vbarter::apply_barter(&mut inv, &a_id, &b_id, &deal)
+    }; // res_inv 寫鎖釋放
+    if !swapped {
+        return;
+    }
+
+    // ③記這對的成交冷卻（cd 寫鎖即釋）。
+    {
+        barter_cd().lock().unwrap().insert(vbarter::pair_key(&a_id, &b_id), now_secs);
+    }
+
+    // 成交那一幕：a 冒提議泡泡、b 冒應和泡泡（零 LLM、句式池；residents 寫鎖即釋）。
+    let pick = now_secs as usize;
+    let a_item = vgift::item_name_zh(deal.a_gives); // a 給出、b 收到
+    let b_item = vgift::item_name_zh(deal.b_gives); // b 給出、a 收到
+    {
+        let mut residents = hub().residents.write().unwrap();
+        if let Some(r) = residents.iter_mut().find(|r| r.id == a_id) {
+            r.say = vbarter::barter_say_line_proposer(b_name, a_item, b_item, pick)
+                .chars()
+                .take(50)
+                .collect();
+            r.say_timer = SAY_SECS;
+            r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+        }
+        if let Some(r) = residents.iter_mut().find(|r| r.id == b_id) {
+            r.say = vbarter::barter_say_line_accepter(a_name, a_item, pick)
+                .chars()
+                .take(50)
+                .collect();
+            r.say_timer = SAY_SECS;
+            r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+        }
+    } // residents 寫鎖釋放
+    broadcast_players();
+
+    // 雙方各記一筆「和 X 換了東西」的暖記憶（memory 寫鎖 ×2，日後可被日記昇華）。
+    {
+        let entry = hub().memory.write().unwrap().add_memory(
+            &a_id,
+            b_name,
+            &vbarter::barter_memory_line(b_name, a_item, b_item),
+        );
+        vmem::append_memory(&entry);
+    } // memory 寫鎖釋放
+    {
+        let entry = hub().memory.write().unwrap().add_memory(
+            &b_id,
+            a_name,
+            &vbarter::barter_memory_line(a_name, b_item, a_item),
+        );
+        vmem::append_memory(&entry);
+    } // memory 寫鎖釋放
+
+    // 世界動態牆：讓離線玩家回來翻動態也知道居民彼此在互通有無（actor＝提議者 a）。
+    vfeed::append_feed(
+        vbarter::FEED_KIND,
+        a_name,
+        &vbarter::barter_feed_line(b_name, a_item, b_item, deal.qty),
+    );
+    tracing::info!(
+        a = %a_id, b = %b_id, gave = %a_item, got = %b_item, qty = deal.qty,
+        "居民以物易物：一方餘料換另一方缺料，雙方背包真的對換（零 LLM）"
     );
 }
 
