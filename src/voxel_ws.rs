@@ -49,6 +49,7 @@ use crate::voxel_village as vvillage;
 use crate::voxel_discovery as vdisc;
 use crate::voxel_landmark_note as vlmark;
 use crate::voxel_colony as vcolony;
+use crate::voxel_lovenest as vnest;
 use crate::voxel_craft as vcraft;
 use crate::voxel_inventory::{self as vinv, InvStore};
 use crate::voxel_memory::{self as vmem, VoxelMemory};
@@ -2034,6 +2035,9 @@ struct VoxelHub {
     /// 分村殖民 v1（自主提案切片，承 PLAN_ETHERVOX §7）：全世界已奠基的野外殖民地名冊。
     /// 持久化到 data/voxel_colonies.jsonl（append-only，重啟後村落與立村故事仍在）。
     colonies: RwLock<vcolony::ColonyRegistry>,
+    /// 戀人愛巢 v1（自主提案切片，承 PLAN_ETHERVOX §4/§6）：全世界已築的戀人愛巢名冊。
+    /// 持久化到 data/voxel_lovenest.jsonl（append-only，重啟後愛巢與登記的地標仍在）。
+    lovenests: RwLock<vnest::NestRegistry>,
     /// 同帳號去重——踢舊連線用的 oneshot 信號表（ROADMAP fix 幽靈分身）。
     /// 連線 UUID → 踢信號發送端；有同 email 的新連線進來時，從此表取出舊 UUID 的發送端並送 ()，
     /// 讓舊連線的 select! 觸發、優雅退出（幽靈分身消失）。
@@ -2705,6 +2709,7 @@ fn hub() -> &'static VoxelHub {
             mastery: RwLock::new(MasteryStore::from_entries(vmastery::load_mastery())),
             // 啟動時從 data/voxel_colonies.jsonl 載回已奠基的野外殖民地（重啟後村落仍在）。
             colonies: RwLock::new(vcolony::ColonyRegistry::from_entries(vcolony::load_colonies())),
+            lovenests: RwLock::new(vnest::NestRegistry::from_entries(vnest::load_nests())),
             // 同帳號去重：啟動空，每條連線進場時登記、離場時清除。純記憶體、無需持久化。
             conn_kick: RwLock::new(HashMap::new()),
             // 玩家生存指標：啟動時從 data/voxel_player_stats.jsonl 載回血/飢（重登保留，比照 #1024）。
@@ -8715,6 +8720,7 @@ pub fn spawn_farm_tick() {
             maybe_pet_admire(); // 居民注意到你身邊跟著的馴服動物 v1（自主提案切片 875）：同節拍檢查身邊有無寵物觸發讚賞。
             maybe_proximity_teach(); // 就地指導 v1（自主提案切片）：同節拍檢查有無卡關居民身邊剛好站著會解法的老朋友。
             maybe_found_colony(); // 分村殖民 v1：低頻檢查主村是否夠成熟、該外派拓荒隊奠下第二座村。
+            maybe_build_lovenest(); // 戀人愛巢 v1：低頻檢查有無戀人對還沒築巢、擲中就在村邊合力蓋起共同的家。
             tick_dropitem_expire(); // 掉落物 v1（自主提案切片 828）：同節拍清掉沒人撿的過期掉落物。
             tick_stall_expire(); // 玩家自由市集 v1（自主提案切片 832）：同節拍清掉逾時沒人接手的攤位、退還材料。
         }
@@ -9035,6 +9041,144 @@ fn maybe_found_colony() {
         .to_string(),
     ));
     tracing::info!("分村殖民：奠下野外村落「{name}」於 ({cx},{cz}) {}", vcolony::biome_label(biome));
+}
+
+/// 戀人愛巢 v1（自主提案切片，承 PLAN_ETHERVOX §4/§6）：低頻檢查有無「已締結、還沒築巢」的
+/// 戀人對；擲中機率閘就在村邊選一處空地，讓兩人合力蓋起一間亮著燈的小屋、門前立牌「X 與 Y 的
+/// 愛巢」並登記進地標系統，兩位戀人各冒泡＋各寫一筆記憶。戀愛（846）第一次從面板 ❤️ 長成方塊
+/// 天地裡站得住、走得到的實體。
+///
+/// 鎖紀律（嚴守短鎖即釋、循序不巢狀，比照殖民奠基 884 黃金安全模式）：
+/// romance(讀) → lovenests(讀) → deltas(寫) → sign(寫) → structure_names(lock) → lovenests(寫)
+/// → residents(寫) → memory(寫)，各自短取即釋、IO（append/broadcast）全在鎖外、全程無 await。
+/// 本 tick 最多築一座（自然節流：15 秒一 tick＋機率閘＋新戀人對稀有），避免一次冒出好幾座。
+fn maybe_build_lovenest() {
+    // ① 最便宜的早退：全世界沒有任何戀人對，連 lovenests / village 鎖都不碰。
+    let pairs = {
+        let rom = hub().romance.read().unwrap();
+        rom.all_pairs()
+    };
+    if pairs.is_empty() {
+        return;
+    }
+
+    // ② 愛巢蓋在「村邊」，需先有村莊中心；主村都還沒成形就先不築。
+    let Some((vcx, vcz)) = vvillage::load_village_center() else {
+        return;
+    };
+
+    // ③ 篩出「還沒築過巢」的戀人對（lovenests 短讀鎖即釋）。
+    let eligible: Vec<(String, String)> = {
+        let reg = hub().lovenests.read().unwrap();
+        pairs.into_iter().filter(|(a, b)| !reg.has_nest(a, b)).collect()
+    };
+    if eligible.is_empty() {
+        return;
+    }
+
+    // ④ 機率閘：對每一對獨立擲骰，命中第一對就為它築巢（在一起一陣子後才發生、非締結當下）。
+    let Some((a, b)) = eligible.iter().find(|_| vnest::nest_roll(rand::random::<f32>())).cloned()
+    else {
+        return;
+    };
+
+    // ⑤ 選址（確定性序號往外推）；巧合離既有愛巢太近就本輪先略過、等下輪（不硬推）。
+    let seq = hub().lovenests.read().unwrap().next_seq();
+    let (cx, cz) = vnest::pick_nest_site(vcx, vcz, seq);
+    if hub().lovenests.read().unwrap().too_close_to_existing(cx, cz) {
+        return;
+    }
+
+    let name = vnest::nest_name(&a, &b);
+
+    // ⑥ 落地小屋（golden safe pattern：surface_y 鎖外算 → deltas 寫鎖批次即釋 → 鎖外廣播＋
+    //    持久化）。逐格只在該格為空氣時落子——絕不覆蓋任何既有方塊，冪等、重跑安全。
+    let sy = vbuild::surface_y(cx, cz);
+    let cells = vnest::cottage_cells(cx, cz, sy);
+    let mut placed: Vec<(i32, i32, i32, Block)> = Vec::new();
+    {
+        let mut world = hub().deltas.write().unwrap();
+        for &(x, y, z, blk) in &cells {
+            let cur = voxel::effective_block_at(&world, x, y, z);
+            if cur == blk {
+                continue; // 已是目標（重跑冪等）。
+            }
+            if cur == Block::Air {
+                voxel::set_block(&mut world, x, y, z, blk);
+                placed.push((x, y, z, blk));
+            }
+        }
+    } // deltas 寫鎖釋放
+    for &(x, y, z, blk) in &placed {
+        broadcast_block(x, y, z, blk);
+        vbuild::append_world_block(x, y, z, blk as u8);
+    }
+
+    // ⑦ 門前立牌命名（既有 Sign 方塊 + SignStore + 廣播 + JSONL 管線，零新協議）。找不到合適
+    //    空地（四邊都被擋）就靜默略過立牌，小屋仍在（比照 881 outpost 立牌容錯）。
+    if let Some((snx, sny, snz)) = pick_nameplate_slot((cx, sy, cz)) {
+        {
+            let mut world = hub().deltas.write().unwrap();
+            voxel::set_block(&mut world, snx, sny, snz, Block::Sign);
+        } // deltas 寫鎖釋放
+        broadcast_block(snx, sny, snz, Block::Sign);
+        vbuild::append_world_block(snx, sny, snz, Block::Sign as u8);
+        let ev = hub()
+            .sign
+            .write()
+            .unwrap()
+            .set(&vsign::pos_key(snx, sny, snz), name.clone(), None);
+        vsign::append_sign(&ev);
+        broadcast_sign(snx, sny, snz, &name);
+
+        // 愛巢也算進世界的地標系統（比照 860/881 慣例，讓見賢思齊/村莊里程碑一視同仁）。
+        // `or_insert` = 冪等（同一格只登記一次）；共同的家不歸屬單一居民，故 owner 記 None。
+        let cell = vstructname::cell_key(cx as f32, cz as f32);
+        structure_names()
+            .lock()
+            .unwrap()
+            .entry(cell)
+            .or_insert((name.clone(), None));
+    }
+
+    // ⑧ 記進愛巢名冊（記憶體 push + append 落地，重啟後愛巢仍在）。
+    let now = vfarm::now_secs();
+    let nest = vnest::Nest { seq, a: a.clone(), b: b.clone(), cx, cz, built_unix: now };
+    hub().lovenests.write().unwrap().push(nest.clone());
+    vnest::append_nest(&nest);
+
+    // ⑨ 世界動態 feed（非同步層可回看）。
+    vfeed::append_feed("戀人築巢", "全村", &vnest::nest_feed_line(&a, &b, &name));
+
+    // ⑩ 兩位戀人冒泡（世界裡看得見的一刻）＋收集其 (id, 另一半名) 供記憶。residents 寫鎖批次即釋。
+    let who: Vec<(String, String)> = {
+        let mut rs = hub().residents.write().unwrap();
+        let mut acc = Vec::new();
+        for r in rs.iter_mut() {
+            let partner = if r.name == a {
+                Some(b.clone())
+            } else if r.name == b {
+                Some(a.clone())
+            } else {
+                None
+            };
+            if let Some(partner) = partner {
+                r.say = vnest::nest_say_line(&partner);
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                acc.push((r.id.clone(), partner));
+            }
+        }
+        acc
+    }; // residents 寫鎖釋放
+    broadcast_players();
+    for (rid, partner) in &who {
+        let summary = vnest::nest_memory_line(partner);
+        let entry = hub().memory.write().unwrap().add_memory(rid, vnest::NEST_MEMORY_PLAYER, &summary);
+        vmem::append_memory(&entry);
+    }
+
+    tracing::info!("戀人愛巢：{a} 與 {b} 在 ({cx},{cz}) 蓋起「{name}」");
 }
 
 /// 水流 tick 頻率（秒）：0.5s（2Hz）——水一格一格漫開，像麥塊那樣「看得到在流」，
