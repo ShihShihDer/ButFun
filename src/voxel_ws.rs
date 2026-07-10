@@ -86,6 +86,7 @@ use crate::voxel_farm_admire as vfarmadmire;
 use crate::voxel_structure_name as vstructname;
 use crate::voxel_village_milestone as vvillms;
 use crate::voxel_monument as vmonument;
+use crate::voxel_lifeproject as vlife;
 use crate::voxel_confide as vconfide;
 use crate::voxel_request as vrequest;
 use crate::voxel_witness as vwit;
@@ -545,6 +546,10 @@ struct VoxelResident {
     /// 哼歌冷卻倒數（秒，ROADMAP 788）：一次哼歌後設 [`vhum::HUM_COOLDOWN_SECS`]，歸零前不再哼——
     /// 心情正好時偶爾滿溢一段旋律、不洗版。各居民初始錯開。純記憶體、重啟歸零。
     humming_cooldown: f32,
+    /// 長程自主專案「回來添一塊」的節奏倒數（秒，居民長程自主專案 v1）：歸零＋閒著時回到自己的大夢
+    /// 前添一塊、再設回工作間隔（各居民初始大幅錯開，讓不同人的夢在不同時間各自慢慢長）。純記憶體、
+    /// 重啟歸零（進度本身走 `hub().life_projects` 持久化，重啟接續；這個只是節拍器，重啟大不了下次再添）。
+    life_project_timer: f32,
     /// 營火取暖冷卻倒數（秒，乙太營火 v1）：一次圍暖後設 [`vcamp::WARM_COOLDOWN_SECS`]，歸零前不再取暖——
     /// 夜裡路過火邊偶爾駐足、不狂刷泡泡。各居民初始錯開。純記憶體、重啟歸零。
     campfire_warm_cooldown: f32,
@@ -1829,6 +1834,9 @@ fn build_resident(
             keepsake_recall_cooldown: 90.0 + i as f32 * 40.0,
             // 哼歌 v1（ROADMAP 788）：哼歌冷卻各自錯開，避免大家同時哼起來。
             humming_cooldown: 60.0 + i as f32 * 35.0,
+            // 居民長程自主專案 v1：首次「回來添一塊」的節拍大幅錯開，讓不同居民的大夢在不同時間
+            // 各自慢慢長，玩家隨時路過都可能撞見某一位正在忙自己的事（FAST 環境變數下大幅縮短供測試）。
+            life_project_timer: lifeproject_initial_timer(i),
             // 乙太營火 v1：首次取暖冷卻各自錯開，避免入夜同一 tick 一群人齊聲說暖語。
             campfire_warm_cooldown: 140.0 + i as f32 * 30.0,
             // 圍火講往事 v1：首次講述冷卻各自錯開，避免入夜同一 tick 一群人同時開講；入場無待應和的故事。
@@ -2100,6 +2108,10 @@ struct VoxelHub {
     /// 玩家里程碑 v1（ROADMAP 724）：玩家自己的療癒循環第一次做成可回頭翻閱的成就徽章。
     /// 持久化到 data/voxel_milestones.jsonl（append-only，重啟後徽章仍在）。
     milestones: RwLock<MilestoneStore>,
+    /// 居民長程自主專案 v1（自主提案切片）：每居民一份「跨多天的個人大夢」進度帳本（key=居民 id）。
+    /// 與 `desires`（當下心願）／`builds`（單次建造計畫）刻意區隔——這是「一直放在心上、一塊塊慢慢
+    /// 做成」的長程夢想。持久化到 data/voxel_lifeprojects.jsonl（append-only，重啟後接著做）。
+    life_projects: RwLock<vlife::LifeProjectStore>,
     /// 探索紀事 v1（自主提案切片，接續 838/839）：玩家找到的地標座標與種類，可回頭翻閱。
     /// 持久化到 data/voxel_discoveries.jsonl（append-only，重啟後紀事仍在）。
     discovery: RwLock<vdisc::DiscoveryStore>,
@@ -2793,6 +2805,8 @@ fn hub() -> &'static VoxelHub {
             last_seen: RwLock::new(HashMap::new()),
             // 啟動時從 data/voxel_milestones.jsonl 載回玩家已達成的成就徽章（重啟後仍記得）。
             milestones: RwLock::new(MilestoneStore::from_entries(vmiles::load_milestones())),
+            // 啟動時從 data/voxel_lifeprojects.jsonl 載回居民長程專案進度（重啟後接著做，取每人最高進度）。
+            life_projects: RwLock::new(vlife::LifeProjectStore::from_entries(vlife::load_entries())),
             // 啟動時從 data/voxel_discoveries.jsonl 載回玩家的探索紀事（重啟後仍記得）。
             discovery: RwLock::new(vdisc::DiscoveryStore::from_entries(vdisc::load_discoveries())),
             landmark_notes: RwLock::new(vlmark::LandmarkNoteStore::from_entries(vlmark::load_notes())),
@@ -19402,6 +19416,11 @@ fn tick_residents(dt: f32) {
         reset_build_tick(&rid, interval);
     }
 
+    // ── 居民長程自主專案 v1：低頻掃描（每 LIFE_PROJECT_SCAN_TICKS 個 tick 一次），閒著的居民
+    //    回自己的大夢前添一塊。全在此函式裡短鎖循序、不巢狀、不 await（守死鎖鐵律）。冒的泡泡
+    //    走 say_updates（在下方統一套用），故必須在套用之前呼叫。
+    tick_life_projects(dt, &mut say_updates);
+
     // 一次性套用說話更新（單獨一把 residents 寫鎖；say_updates 可能為空）。
     if !say_updates.is_empty() {
         let mut residents = hub().residents.write().unwrap();
@@ -19416,6 +19435,225 @@ fn tick_residents(dt: f32) {
             }
         }
     } // residents 寫鎖釋放
+}
+
+// ── 居民長程自主專案 v1（純邏輯在 voxel_lifeproject.rs；此處只做接線：短鎖循序、不巢狀、不 await）──
+
+/// 長程專案掃描的粗略節拍：每這麼多個 tick（10Hz）才做一次全員掃描，把 10Hz 常態成本壓到近零。
+const LIFE_PROJECT_SCAN_TICKS: u64 = 50; // 約每 5 秒掃一次
+/// 長程專案掃描的 tick 計數器（單執行緒 tick_residents 循序推進，無資料競態）。
+static LIFE_PROJECT_TICK: AtomicU64 = AtomicU64::new(0);
+
+/// 一位居民「回來添一塊」之間的工作間隔（秒）：夠慢，讓一個約 9~14 塊的夢跨好些天慢慢成形。
+/// 測試可用 `BUTFUN_LIFEPROJECT_FAST=1` 大幅縮短（隔離伺服器實測用），預設為正式節奏。
+fn lifeproject_work_secs() -> f32 {
+    if std::env::var("BUTFUN_LIFEPROJECT_FAST").is_ok() {
+        3.0
+    } else {
+        300.0
+    }
+}
+
+/// 居民初次「回來添一塊」的節拍（大幅錯開，讓不同居民的大夢在不同時間各自慢慢長）。
+fn lifeproject_initial_timer(i: usize) -> f32 {
+    if std::env::var("BUTFUN_LIFEPROJECT_FAST").is_ok() {
+        1.0 + i as f32 * 0.5
+    } else {
+        90.0 + i as f32 * 47.0
+    }
+}
+
+/// persona → 穩定 persona_code（0=市集 / 1=農務 / 2=廣場 / 3=漫遊），供 `vlife::dream_kind_for` 挑夢。
+fn persona_code(p: ResidentPersona) -> u8 {
+    match p {
+        ResidentPersona::MarketBrowser => 0,
+        ResidentPersona::FarmWorker => 1,
+        ResidentPersona::TownSquare => 2,
+        ResidentPersona::Wanderer => 3,
+    }
+}
+
+/// 低頻掃描：閒著的居民回自己的大夢前添一塊，夢在世界裡跨天慢慢成形；階段收尾／圓夢有溫暖收尾。
+/// 全在此函式裡短鎖循序（residents → deltas → life_projects → memory，各自即釋、彼此不巢狀）、
+/// 不 await，守 prod 死鎖鐵律。放塊沿用村碑 885 的 golden safe pattern（只在空氣格落子、鎖外廣播）。
+fn tick_life_projects(dt: f32, say_updates: &mut Vec<(String, String)>) {
+    // 每 tick 只付一次原子累加；沒到掃描節拍就早退（近零成本）。
+    let n = LIFE_PROJECT_TICK.fetch_add(1, Ordering::Relaxed) + 1;
+    if n % LIFE_PROJECT_SCAN_TICKS != 0 {
+        return;
+    }
+    let step = dt * LIFE_PROJECT_SCAN_TICKS as f32; // 這次掃描累進的秒數
+    let work_secs = lifeproject_work_secs();
+
+    // 1) 短寫鎖：全員 timer 遞減；挑出「timer 到期 ∧ 閒著 ∧ 醒著」的候選並重置其 timer。
+    //    只收快照，實際放塊在鎖外執行（不與其他鎖巢狀）。
+    struct Cand {
+        id: String,
+        name: &'static str,
+        pcode: u8,
+        home_x: f32,
+        home_z: f32,
+    }
+    let cands: Vec<Cand> = {
+        let mut residents = hub().residents.write().unwrap();
+        let mut out = Vec::new();
+        for r in residents.iter_mut() {
+            r.life_project_timer -= step;
+            if r.life_project_timer > 0.0 {
+                continue;
+            }
+            // 閒著才動自己的夢：睡著／採集／跟隨／跑腿／發明／探訪／應召皆讓位（不搶正事、不打斷）。
+            let idle = !r.asleep
+                && r.gather.is_none()
+                && r.follow.is_none()
+                && r.fetch.is_none()
+                && r.invent_run.is_none()
+                && r.visiting.is_none()
+                && r.summon.is_none();
+            if !idle {
+                // 正忙 → 晚點再試（別等一整個工作間隔）。
+                r.life_project_timer = 15.0;
+                continue;
+            }
+            r.life_project_timer = work_secs;
+            out.push(Cand {
+                id: r.id.clone(),
+                name: r.name,
+                pcode: persona_code(r.persona),
+                home_x: r.home_x,
+                home_z: r.home_z,
+            });
+        }
+        out
+    }; // residents 寫鎖釋放
+    if cands.is_empty() {
+        return;
+    }
+
+    // 2) 村莊中心（鎖外同步小檔讀，鐵律：只在不持鎖時呼叫）——供「點燈連路」算朝村方向。
+    let village_center = vvillage::load_village_center();
+
+    // 事件先蒐集，記憶／Feed／持久化全在所有鎖釋放後統一做（不持鎖 IO）。
+    let mut feed_events: Vec<(String, String)> = Vec::new(); // (居民名, feed detail)
+    let mut mem_events: Vec<(String, String, String)> = Vec::new(); // (rid, name, 內心句)
+    let mut persist_events: Vec<vlife::LifeProjectEntry> = Vec::new();
+
+    for c in cands {
+        // 2a) 讀進度（短讀鎖即釋）。已圓夢 → 這夢做完了，不再動（留作世界裡的一座成品）。
+        let (placed_before, done_before) = {
+            let lp = hub().life_projects.read().unwrap();
+            (lp.placed(&c.id) as usize, lp.is_done(&c.id))
+        };
+        if done_before {
+            continue;
+        }
+
+        // 2b) 決定她的夢（性格＋名字，確定性、重啟穩定）＋朝村方向（僅點燈連路用）。
+        let kind = vlife::dream_kind_for(c.pcode, vlife::name_hash(c.name));
+        let (ax, az) = (c.home_x.round() as i32, c.home_z.round() as i32);
+        let (tx, tz) = match kind {
+            vlife::LifeDreamKind::LanternPath => match village_center {
+                Some((vx, vz)) => ((vx - ax).signum(), (vz - az).signum()),
+                None => (1, 0),
+            },
+            _ => (0, 0),
+        };
+        let dream = vlife::build_dream(kind, tx, tz);
+        let total = dream.total_cells();
+        if placed_before >= total {
+            // 進度已滿卻沒標 done（理論上不會）——補記 done、放行。
+            let e = {
+                let mut lp = hub().life_projects.write().unwrap();
+                lp.record(&c.id, kind.id(), total as u32, true)
+            };
+            persist_events.push(e);
+            continue;
+        }
+
+        // 2c) 取下一塊、算世界座標（各格自算 surface_y，貼各自地面）。
+        let Some(cell) = dream.cell_at(placed_before) else {
+            continue;
+        };
+        let wx = ax + cell.dx;
+        let wz = az + cell.dz;
+        let sy = vbuild::surface_y(wx, wz);
+        let wy = sy + cell.dy;
+        let seed = vlife::name_hash(c.name).wrapping_add(placed_before as u64);
+
+        // 2d) 只在空氣格落子（golden safe pattern：deltas 寫鎖批次即釋 → 鎖外廣播＋落地）。
+        //     即使該格被地形擋住（非空氣）也照樣推進進度（她「試過了」，夢不卡死、必能完成）；
+        //     只有真的放下方塊時才廣播＋持久化世界方塊——絕不覆蓋任何既有方塊。
+        let mut did_place = false;
+        {
+            let mut world = hub().deltas.write().unwrap();
+            let cur = voxel::effective_block_at(&world, wx, wy, wz);
+            if cur == Block::Air {
+                voxel::set_block(&mut world, wx, wy, wz, cell.block);
+                did_place = true;
+            }
+        } // deltas 寫鎖釋放
+        if did_place {
+            broadcast_block(wx, wy, wz, cell.block);
+            vbuild::append_world_block(wx, wy, wz, cell.block as u8);
+        }
+
+        // 2e) 推進進度（短寫鎖），持久化留鎖外。
+        let placed_now = placed_before + 1;
+        let is_done = placed_now >= total;
+        let entry = {
+            let mut lp = hub().life_projects.write().unwrap();
+            lp.record(&c.id, kind.id(), placed_now as u32, is_done)
+        };
+        persist_events.push(entry);
+
+        // 2f) 敘事：立夢／圓夢／階段收尾／平日推進——冒泡（走 say_updates）＋記憶＋Feed。
+        if placed_before == 0 {
+            // 立定大夢的第一塊：開場泡泡＋城鎮動態＋內心記憶。
+            tracing::info!(resident = %c.id, name = %c.name, dream = %kind.id(), "長程專案：立定一個跨天的大夢，動手了");
+            say_updates.push((c.id.clone(), vlife::start_bubble(kind, seed)));
+            feed_events.push((c.name.to_string(), vlife::start_feed(kind, c.name)));
+            mem_events.push((c.id.clone(), c.name.to_string(), vlife::start_memory(kind)));
+        } else if is_done {
+            // 圓滿全夢：一個小圓夢時刻。
+            tracing::info!(resident = %c.id, name = %c.name, dream = %kind.id(), "長程專案：圓夢！跨好些天終於做成了");
+            say_updates.push((c.id.clone(), vlife::done_bubble(kind, seed)));
+            feed_events.push((c.name.to_string(), vlife::done_feed(kind, c.name)));
+            mem_events.push((c.id.clone(), c.name.to_string(), vlife::done_memory(kind)));
+        } else if let Some(si) = dream.stage_completed_by(placed_now) {
+            // 完成一個階段。
+            let stage_name = dream.stages[si].name_zh;
+            say_updates.push((c.id.clone(), vlife::stage_done_bubble(stage_name, seed)));
+            feed_events.push((c.name.to_string(), vlife::stage_done_feed(c.name, stage_name)));
+            mem_events.push((c.id.clone(), c.name.to_string(), vlife::stage_done_memory(stage_name)));
+        } else {
+            // 平日回來添一塊：偶爾冒個泡（讓玩家看出她這幾天都在忙同一件事）。不記憶不 Feed（不洗版）。
+            let stage_name = dream
+                .stage_of(placed_before)
+                .map(|i| dream.stages[i].name_zh)
+                .unwrap_or("");
+            say_updates.push((c.id.clone(), vlife::work_bubble(kind, stage_name, seed)));
+        }
+    }
+
+    // 3) 所有鎖已釋放——統一落地：進度持久化、記憶寫＋落地、Feed append。
+    for e in &persist_events {
+        vlife::append_entry(e);
+    }
+    if !mem_events.is_empty() {
+        let mut entries = Vec::new();
+        {
+            let mut mem = hub().memory.write().unwrap();
+            for (rid, name, summary) in &mem_events {
+                entries.push(mem.add_memory(rid, name, summary));
+            }
+        } // memory 寫鎖釋放
+        for e in &entries {
+            vmem::append_memory(e);
+        }
+    }
+    for (name, detail) in &feed_events {
+        vfeed::append_feed("長程心願", name, detail);
+    }
 }
 
 // ── agency v1 輔助（全在 tick_residents 鎖釋放後呼叫；各短鎖即釋、不巢狀、不 await）──────
