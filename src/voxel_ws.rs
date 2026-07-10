@@ -71,6 +71,7 @@ use crate::voxel_homegaze as vhome;
 use crate::voxel_birthday as vbday;
 use crate::voxel_campfire as vcamp;
 use crate::voxel_campfire_tale as vtale;
+use crate::voxel_nightlife as vnight;
 use crate::voxel_custom as vcustom;
 use crate::voxel_bell as vbell;
 use crate::voxel_seedgift as vseed;
@@ -582,6 +583,13 @@ struct VoxelResident {
     /// 被夥伴在營火邊講了故事後、等這秒數到期再應和（講述者名字, 剩餘秒）（圍火講往事 v1）。
     /// 與 `pending_response` 分開，讓聆聽者冒的是「聽故事」味道的專屬應和，而非通用社交回應。純記憶體。
     pending_tale_reply: Option<(String, f32)>,
+    /// 居民夜間生活冷卻倒數（秒，居民夜間生活 v1）：一次夜生活（抬頭許願／睡前互道晚安）後設
+    /// [`vnight::GOODNIGHT_COOLDOWN_SECS`]，歸零前不再有下一拍——入夜偶爾一拍才有感、不洗版。
+    /// 許願與互道晚安共用此欄位（同屬夜間溫柔日常）。各居民初始錯開。純記憶體、重啟歸零。
+    nightlife_cooldown: f32,
+    /// 被夥伴在回家前道了晚安後、等這秒數到期再回一聲晚安（無需帶名，回應句通用）（居民夜間生活 v1）。
+    /// 與 `pending_tale_reply`／`pending_response` 分開，讓夜裡的道別有專屬「晚安」語氣。純記憶體。
+    pending_goodnight_reply: Option<f32>,
     /// 相遇被老朋友就地教了一手後、等這秒數到期再冒「原來如此！」的應和（應和台詞, 剩餘秒）
     /// （技能互教·北極星第四刀）。與 `pending_tale_reply`／`pending_bench_reply` 分開，
     /// 讓受教有專屬的一來一往語氣。台詞在教學那刻就從句式池組好（零 LLM）。純記憶體。
@@ -1844,6 +1852,10 @@ fn build_resident(
             rain_shelter_cooldown: vrain::shelter_cd_offset(i),
             homegaze_cooldown: vhome::gaze_cd_offset(i),
             pending_tale_reply: None,
+            // 居民夜間生活 v1：首次夜生活冷卻各自錯開，避免入夜同一 tick 一群人齊聲許願／道晚安；
+            // 入場無待回應的晚安。
+            nightlife_cooldown: 110.0 + i as f32 * 37.0,
+            pending_goodnight_reply: None,
             // 技能互教（北極星第四刀）：入場沒有待應和的教學。
             pending_teach_reply: None,
             // 集會鐘 v1：入場沒有正在應召的鐘；應召冷卻歸零（一出生就聽得到第一次鐘聲）。
@@ -12084,6 +12096,9 @@ fn tick_residents(dt: f32) {
     // 聆聽者的社交記憶寫＋Feed 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。
     // (講述者 id, 講述者名, 聆聽者 id, 聆聽者名, 往事摘要)。
     let mut campfire_tale_events: Vec<(String, &'static str, String, &'static str, String)> = Vec::new();
+    // 居民夜間生活 v1（睡前互道晚安）：入夜後兩位還醒著、走得夠近的居民在回家前互道晚安時，鎖內收集
+    // 事件；一則城鎮動態在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。(發起者名, 回應者名)。
+    let mut nightlife_goodnight_events: Vec<(&'static str, &'static str)> = Vec::new();
     // 長椅並坐閒聊 v1：白天兩位相識以上的居民同在一張長椅邊、一位招呼另一位並肩坐下閒聊時，鎖內收集
     // 事件；雙方交情記憶＋record_visit 加溫＋Feed 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖
     // 鐵律）。(發起者 id, 發起者名, 被招呼者 id, 被招呼者名)。
@@ -12682,6 +12697,25 @@ fn tick_residents(dt: f32) {
                 if r.pending_tale_reply.take().is_some() {
                     let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                     r.say = vtale::listener_bubble(pick).to_string();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                }
+            }
+
+            // 居民夜間生活 v1·互道晚安回應倒數：被夥伴在回家前道了晚安後，延遲幾秒回一聲「晚安」
+            // （零 LLM、程式化台詞），心情也亮一格。與圍火聆聽／通用社交回應分開，讓夜裡的道別有專屬語氣。
+            // 倒數與 take 都在居民自身鎖內、不巢狀。
+            let goodnight_reply_ready = match &mut r.pending_goodnight_reply {
+                Some(cd) => {
+                    *cd -= dt;
+                    *cd <= 0.0
+                }
+                None => false,
+            };
+            if goodnight_reply_ready && r.say.is_empty() {
+                if r.pending_goodnight_reply.take().is_some() {
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    r.say = vnight::goodnight_reply_line(pick).to_string();
                     r.say_timer = SAY_SECS;
                     r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                 }
@@ -13876,6 +13910,10 @@ fn tick_residents(dt: f32) {
             if r.campfire_tale_cooldown > 0.0 {
                 r.campfire_tale_cooldown -= dt;
             }
+            // 居民夜間生活 v1（ROADMAP·自主提案）：夜生活冷卻遞減（許願／互道晚安共用，純記憶體、每 tick 一次）。
+            if r.nightlife_cooldown > 0.0 {
+                r.nightlife_cooldown -= dt;
+            }
             // 村莊自發習俗·暮聚（村莊自發習俗 v1）：逗留倒數＋在廣場邊的閒話家常。
             // 逗留歸零＝這場暮聚對這位居民結束（散去回家，下方閒晃分支自然帶回）。逗留中且已站到
             // 廣場邊（離聚集點夠近）、此刻沒別的話、過低機率門檻時，冒一句閒聊泡泡、心情亮一格——
@@ -14920,6 +14958,30 @@ fn tick_residents(dt: f32) {
                 }
             }
 
+            // 居民夜間生活 v1·抬頭許願（ROADMAP·自主提案）：入夜後（Night/Evening）閒著、醒著、還沒就寢、
+            // 手邊沒正事的居民，偶爾獨自停下腳步、抬頭望向夜空，輕輕許個願——**不需要玩家在場**，是這片
+            // 夜色即使沒人看著也在悄悄發生的溫柔（與 783 望星邀約分界：那是記得你愛看星星才點名喚你同賞）。
+            // 選址（近光源／營火）：站在火光近旁則扣暖光意象、否則星空版（純氛圍分支）。長冷卻＋極低機率
+            // ＝天然節流。純氛圍：只冒句 say、不寫記憶、不上 Feed、不點任何名。就寢優先——想睡的照樣去睡，
+            // 這裡只挑「還沒就寢（!asleep）」的居民、且只設 say 不改移動意圖，不攔著誰入睡。純讀居民自身欄位
+            // ＋鎖前備好的 `campfire_spots` 快照（不巢狀 campfires 讀鎖），守死鎖鐵律。
+            if is_night
+                && r.say.is_empty()
+                && !r.asleep
+                && r.nightlife_cooldown <= 0.0
+                && r.pilgrimage.is_none()
+                && r.expedition.is_none()
+                && vnight::should_wish(true, rand::random::<f32>(), vnight::WISH_CHANCE)
+            {
+                r.nightlife_cooldown = vnight::WISH_COOLDOWN_SECS;
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                let near_light =
+                    vnight::is_near_light(r.body.x, r.body.z, &campfire_spots, vnight::LIGHT_NEAR_RADIUS);
+                r.say = vnight::wish_line(near_light, pick);
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            }
+
             // 木長椅 v1：白天，閒著、醒著、且恰好路過玩家擺的某張長椅附近時，居民偶爾**停下腳步
             // 坐上去歇一會兒**（設 wait_timer 原地小坐，這一拍的關鍵新行為＝居民第一次主動停步休息）、
             // 心情變好、說句輕鬆的歇腳話；你也坐在旁邊（REST_PLAYER_RADIUS 內）時點你名並記進交情。
@@ -15940,6 +16002,68 @@ fn tick_residents(dt: f32) {
                     residents[j].pending_tale_reply = Some((teller_name.to_string(), vtale::TALE_REPLY_DELAY_SECS));
                     campfire_tale_events.push((teller_id, teller_name, listener_id, listener_name, summary));
                 }
+            }
+        }
+
+        // 2c-2a2) 居民夜間生活·睡前互道晚安掃描（居民夜間生活 v1）：入夜後（is_night＝Evening/Night），
+        // 若兩位醒著、沒在說話、還沒就寢、走得夠近（[`vnight::GOODNIGHT_RADIUS`]）的居民，且發起者夜生活
+        // 冷卻到期，偶爾在各自回家歇息前互道一聲晚安。每 tick 最多一對、長冷卻＋機率門檻＝天然節流。沿用
+        // 2c/2c-2 的 `snaps` 位置快照（i≠j 循序索引、不雙重借用）；不綁營火（與 792 圍火講古分界），只是
+        // 回家前的一聲道別。就寢優先：只挑「還沒就寢（!asleep，即 snaps[x].7 為 false）」的居民，且只設 say
+        // ＋pending 回應、不改移動意圖，不攔著誰入睡。近光源／營火則台詞扣暖光意象（選址純氛圍分支）。
+        if is_night {
+            let mut gn_pair: Option<(usize, usize)> = None; // (發起者 i, 回應者 j)
+            'gnscan: for i in 0..snaps.len() {
+                // 發起者：此刻沒在說話（讀 live，避免 2c/2c-2 剛讓她開口）、沒睡著、夜生活冷卻到期、
+                // 不在朝聖/遠行途中（不搶正事）。
+                if !residents[i].say.is_empty() || snaps[i].7 {
+                    continue;
+                }
+                if residents[i].nightlife_cooldown > 0.0 {
+                    continue;
+                }
+                if residents[i].pilgrimage.is_some() || residents[i].expedition.is_some() {
+                    continue;
+                }
+                for j in 0..snaps.len() {
+                    if i == j {
+                        continue;
+                    }
+                    // 回應者：此刻沒在說話、沒睡著、且和發起者走得夠近。
+                    if !residents[j].say.is_empty() || snaps[j].7 {
+                        continue;
+                    }
+                    if !vnight::within_range(
+                        snaps[i].3, snaps[i].4, snaps[j].3, snaps[j].4, vnight::GOODNIGHT_RADIUS,
+                    ) {
+                        continue;
+                    }
+                    if vnight::should_bid_goodnight(
+                        true, rand::random::<f32>(), vnight::GOODNIGHT_CHANCE,
+                    ) {
+                        gn_pair = Some((i, j));
+                        break 'gnscan;
+                    }
+                }
+            }
+            if let Some((i, j)) = gn_pair {
+                let opener_name = snaps[i].2;
+                let other_name = snaps[j].2;
+                let pick = (residents[i].body.x.to_bits() ^ residents[i].body.z.to_bits()) as usize;
+                // 選址：發起者站在火光近旁 → 暖光版台詞；否則星空版（純氛圍分支）。
+                let near_light = vnight::is_near_light(
+                    residents[i].body.x, residents[i].body.z, &campfire_spots, vnight::LIGHT_NEAR_RADIUS,
+                );
+                residents[i].say = vnight::goodnight_line(other_name, near_light, pick);
+                residents[i].say_timer = SAY_SECS;
+                residents[i].nightlife_cooldown = vnight::GOODNIGHT_COOLDOWN_SECS;
+                residents[i].mood_boost_secs =
+                    residents[i].mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                // 回應者幾秒後回一聲晚安（pending_goodnight_reply 存倒數，下一 tick 由回應段接手），
+                // 並同樣設夜生活冷卻（兩位都算今晚有過這一拍、不會立刻又被挑中）。
+                residents[j].pending_goodnight_reply = Some(vnight::GOODNIGHT_REPLY_DELAY_SECS);
+                residents[j].nightlife_cooldown = vnight::GOODNIGHT_COOLDOWN_SECS;
+                nightlife_goodnight_events.push((opener_name, other_name));
             }
         }
 
@@ -17558,6 +17682,16 @@ fn tick_residents(dt: f32) {
             .unwrap()
             .add_memory(rid, pname, &vstar::stargaze_memory(pname)); // 記憶寫鎖即釋
         vfeed::append_feed(vstar::FEED_KIND, rname, &vstar::stargaze_feed_line(rname, pname));
+    }
+
+    // 居民夜間生活 v1（睡前互道晚安）：入夜後兩位居民在回家前互道晚安時上一則城鎮動態，讓離線回訪的
+    // 玩家也讀得到這則溫柔的夜日常——鎖外統一 IO（不持居民鎖，守死鎖鐵律）。純氛圍，不寫記憶。
+    for (opener_name, other_name) in &nightlife_goodnight_events {
+        vfeed::append_feed(
+            vnight::GOODNIGHT_FEED_KIND,
+            opener_name,
+            &vnight::goodnight_feed_line(opener_name, other_name),
+        );
     }
 
     // 睹物思人（ROADMAP 784）：居民駐足在你送的紀念物前想起你時，把這份「又想起了你」記進交情、
