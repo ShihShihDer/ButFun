@@ -97,6 +97,56 @@ impl IpTalkLimiter {
     }
 }
 
+/// 同一 IP 允許的同時 WebSocket 連線數上限（治安三件套②·連線數上限）。
+/// 5 條對「同家庭多裝置」夠用；一個腳本想開幾十條連線並行灌 talk（繞過 per-connection 冷卻）
+/// 會在第 6 條就被拒。可由 `BUTFUN_MAX_CONN_PER_IP`（見 voxel_ws）覆寫；此常數是預設來源。
+pub const MAX_CONN_PER_IP: usize = 5;
+
+/// per-IP 同時連線數計數器（治安三件套②）：以真實 IP 為鍵記「目前活著幾條連線」。
+/// 連線建立時 [`IpConnLimiter::try_acquire`]（超上限→拒），連線結束時 [`IpConnLimiter::release`]
+/// （歸零即移除，記憶體有界）。
+#[derive(Default)]
+pub struct IpConnLimiter {
+    counts: HashMap<String, usize>,
+}
+
+impl IpConnLimiter {
+    pub fn new() -> Self {
+        Self { counts: HashMap::new() }
+    }
+
+    /// 嘗試為 `ip` 佔一個連線名額（`limit`＝該 IP 上限）。
+    ///
+    /// 目前數 < limit → +1 並回 `true`（放行這條連線）；已達上限 → 不改、回 `false`（拒新連線）。
+    /// 純函式（上限由呼叫端注入，方便測試白名單／覆寫）。
+    pub fn try_acquire(&mut self, ip: &str, limit: usize) -> bool {
+        let cur = self.counts.get(ip).copied().unwrap_or(0);
+        if cur >= limit {
+            return false;
+        }
+        self.counts.insert(ip.to_string(), cur + 1);
+        true
+    }
+
+    /// 釋放 `ip` 的一個連線名額（連線結束時呼叫）。歸零即移除該鍵（記憶體有界）。
+    /// 對未知／已歸零的鍵是安全 no-op（不會 underflow）。
+    pub fn release(&mut self, ip: &str) {
+        if let Some(cur) = self.counts.get(ip).copied() {
+            if cur <= 1 {
+                self.counts.remove(ip);
+            } else {
+                self.counts.insert(ip.to_string(), cur - 1);
+            }
+        }
+    }
+
+    /// 某 IP 目前的連線數（測試／觀測用）。
+    #[cfg(test)]
+    pub fn count(&self, ip: &str) -> usize {
+        self.counts.get(ip).copied().unwrap_or(0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +232,56 @@ mod tests {
         }
         // 觸頂後應已清過一輪，桶數落在上限之內。
         assert!(rl.tracked() <= MAX_TRACKED_IPS, "追蹤桶數應受硬上限約束");
+    }
+
+    // ── IpConnLimiter（連線數上限）────────────────────────────────────────────
+
+    /// 同一 IP 開到上限都放行，第 limit+1 條被拒。
+    #[test]
+    fn conn_limiter_caps_at_limit() {
+        let mut cl = IpConnLimiter::new();
+        let limit = MAX_CONN_PER_IP; // 5
+        for i in 0..limit {
+            assert!(cl.try_acquire("1.2.3.4", limit), "第 {i} 條應放行");
+        }
+        assert!(!cl.try_acquire("1.2.3.4", limit), "第 6 條應被拒");
+        assert_eq!(cl.count("1.2.3.4"), limit, "計數停在上限、不超收");
+    }
+
+    /// 釋放一個名額後又能開一條新連線（正常斷線重連）。
+    #[test]
+    fn conn_limiter_release_frees_a_slot() {
+        let mut cl = IpConnLimiter::new();
+        let limit = 2;
+        assert!(cl.try_acquire("ip", limit));
+        assert!(cl.try_acquire("ip", limit));
+        assert!(!cl.try_acquire("ip", limit), "滿了應拒");
+        cl.release("ip"); // 一條斷線
+        assert!(cl.try_acquire("ip", limit), "釋放後應能再開一條");
+    }
+
+    /// 不同 IP 各自獨立計數（一戶開滿不影響別戶）。
+    #[test]
+    fn conn_limiter_ips_independent() {
+        let mut cl = IpConnLimiter::new();
+        let limit = 1;
+        assert!(cl.try_acquire("a", limit));
+        assert!(!cl.try_acquire("a", limit), "a 滿");
+        assert!(cl.try_acquire("b", limit), "b 不受 a 影響");
+    }
+
+    /// 歸零即移除該鍵（記憶體有界）；對未知鍵 release 是安全 no-op（不 underflow）。
+    #[test]
+    fn conn_limiter_release_is_safe_and_prunes() {
+        let mut cl = IpConnLimiter::new();
+        cl.release("never-seen"); // 未知鍵：no-op，不 panic
+        assert_eq!(cl.count("never-seen"), 0);
+        assert!(cl.try_acquire("ip", 3));
+        cl.release("ip");
+        assert_eq!(cl.count("ip"), 0, "歸零");
+        // 大上限傳入（白名單語意：limit 很大時永不拒）。
+        for _ in 0..100 {
+            assert!(cl.try_acquire("localhost", usize::MAX));
+        }
     }
 }

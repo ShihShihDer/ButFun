@@ -471,6 +471,22 @@ async fn main() {
                 }
             }
         }
+        // QA 輔助 CLI（非伺服器啟動路徑，比照 verify-version 慣例）：
+        // `butfun-server dump-house <rid> <cx> <cz>` → 印出該居民在該錨點的家
+        // （確定性樣式 + 方塊清單）JSON 後退出。供「居民搬新家」隔離實測腳本
+        // 佈置與伺服器**逐塊一致**的散落舊家（同一份 house_blocks_at，零手抄）。
+        if args.get(1).map(String::as_str) == Some("dump-house") {
+            let rid = args.get(2).map(String::as_str).unwrap_or("vox_res_0");
+            let cx: i32 = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(0);
+            let cz: i32 = args.get(4).and_then(|v| v.parse().ok()).unwrap_or(0);
+            let cy = voxel_building::surface_y(cx, cz);
+            let blocks = voxel_building::house_blocks_at(rid, cx, cy, cz);
+            println!(
+                "{}",
+                serde_json::json!({ "resident": rid, "cx": cx, "cy": cy, "cz": cz, "blocks": blocks })
+            );
+            std::process::exit(0);
+        }
     }
 
     // 開發/正式上線都從 .env 載入秘密(systemd 會用 EnvironmentFile,本機 cargo run 用 dotenvy)。

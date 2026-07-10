@@ -43,6 +43,9 @@ pub enum LandmarkKind {
     Ruin,
     /// 溫泉遺跡（839）——可重複造訪的功能性地標。
     HotSpring,
+    /// 邊陲營地（881）——居民親手搭起、有床有立牌的荒野據點。與前兩者不同：座標非世界生成
+    /// 種子決定，而是由該居民的家座標純函式算出（見 `voxel_ws.rs::player_near_built_outpost`）。
+    Outpost,
 }
 
 impl LandmarkKind {
@@ -51,6 +54,7 @@ impl LandmarkKind {
         match self {
             LandmarkKind::Ruin => "古代遺跡",
             LandmarkKind::HotSpring => "溫泉",
+            LandmarkKind::Outpost => "邊陲營地",
         }
     }
 
@@ -60,6 +64,7 @@ impl LandmarkKind {
         match self {
             LandmarkKind::Ruin => "ruin",
             LandmarkKind::HotSpring => "hot_spring",
+            LandmarkKind::Outpost => "outpost",
         }
     }
 
@@ -68,6 +73,7 @@ impl LandmarkKind {
         match self {
             LandmarkKind::Ruin => "🏛️",
             LandmarkKind::HotSpring => "♨️",
+            LandmarkKind::Outpost => "⛺",
         }
     }
 }
@@ -163,13 +169,14 @@ impl DiscoveryStore {
         self.by_player.get(player).cloned().unwrap_or_default()
     }
 
-    /// 這位玩家分別發現過幾處遺跡／溫泉（供面板頂部小計）。
-    pub fn counts_for(&self, player: &str) -> (usize, usize) {
+    /// 這位玩家分別發現過幾處遺跡／溫泉／邊陲營地（供面板頂部小計）。
+    pub fn counts_for(&self, player: &str) -> (usize, usize, usize) {
         let list = self.by_player.get(player);
-        let Some(list) = list else { return (0, 0); };
+        let Some(list) = list else { return (0, 0, 0); };
         let ruins = list.iter().filter(|e| e.kind == LandmarkKind::Ruin).count();
         let springs = list.iter().filter(|e| e.kind == LandmarkKind::HotSpring).count();
-        (ruins, springs)
+        let outposts = list.iter().filter(|e| e.kind == LandmarkKind::Outpost).count();
+        (ruins, springs, outposts)
     }
 }
 
@@ -205,7 +212,7 @@ mod tests {
         let e = s.record("阿光", LandmarkKind::Ruin, (10, 20), 10, 65, 20);
         assert!(e.is_some());
         assert_eq!(s.list_for("阿光").len(), 1);
-        assert_eq!(s.counts_for("阿光"), (1, 0));
+        assert_eq!(s.counts_for("阿光"), (1, 0, 0));
     }
 
     #[test]
@@ -232,8 +239,9 @@ mod tests {
         let mut s = DiscoveryStore::new();
         s.record("阿光", LandmarkKind::Ruin, (5, 5), 5, 65, 5);
         s.record("阿光", LandmarkKind::HotSpring, (5, 5), 5, 65, 5);
-        assert_eq!(s.list_for("阿光").len(), 2);
-        assert_eq!(s.counts_for("阿光"), (1, 1));
+        s.record("阿光", LandmarkKind::Outpost, (5, 5), 5, 65, 5);
+        assert_eq!(s.list_for("阿光").len(), 3);
+        assert_eq!(s.counts_for("阿光"), (1, 1, 1));
     }
 
     #[test]
@@ -290,13 +298,18 @@ mod tests {
     fn empty_player_has_no_entries() {
         let s = DiscoveryStore::new();
         assert_eq!(s.list_for("沒人"), vec![]);
-        assert_eq!(s.counts_for("沒人"), (0, 0));
+        assert_eq!(s.counts_for("沒人"), (0, 0, 0));
     }
 
     #[test]
     fn label_icon_wire_id_are_distinct_per_kind() {
-        assert_ne!(LandmarkKind::Ruin.label(), LandmarkKind::HotSpring.label());
-        assert_ne!(LandmarkKind::Ruin.wire_id(), LandmarkKind::HotSpring.wire_id());
-        assert_ne!(LandmarkKind::Ruin.icon(), LandmarkKind::HotSpring.icon());
+        let kinds = [LandmarkKind::Ruin, LandmarkKind::HotSpring, LandmarkKind::Outpost];
+        for (i, a) in kinds.iter().enumerate() {
+            for b in &kinds[i + 1..] {
+                assert_ne!(a.label(), b.label());
+                assert_ne!(a.wire_id(), b.wire_id());
+                assert_ne!(a.icon(), b.icon());
+            }
+        }
     }
 }

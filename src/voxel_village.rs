@@ -598,6 +598,259 @@ pub fn village_restore_feed_line() -> &'static str {
     "村裡的大坑填平了，灌進來的水也退了——路面重見天日，村子恢復了模樣。"
 }
 
+// ── 居民搬新家（引導式都更）：純邏輯（判定 / 排程 / 持久化）───────────────────────
+//
+// 維護者：「城鎮破破爛爛，怎麼重建？」拍板：不 god-mode 重建、不放生——給居民「搬家」機制。
+// 老家（已完工的 House 錨點）**不在任何村莊地塊上**的居民，一次一位、錯開地自己搬到地塊上：
+// 認領地塊 → 用她的樣式蓋新家（走既有 BuildPlan 引擎）→ 走回舊家逐塊拆除回收材料 → 家域遷移。
+// 本節只放**純邏輯**：都更名單判定、一次一位的狀態機、jsonl 持久化（中斷可恢復）、Feed 文字。
+// 真正動世界（set_block / 廣播 / res_inv）全在 `voxel_ws.rs` 的搬家 tick，嚴守短鎖鐵律。
+
+/// 「老家算在地塊上」的判定半徑（格，Chebyshev）：距某地塊中心 ≤ 此值即視為已在村裡。
+/// 取 [`Plot::HOMESTEAD_HALF`]（10）——地塊上的建物用 `build_offset` 散開最遠 ±8 再加建物半寬，
+/// 與地塊「整片家園佔地」同一套尺度；超過它＝這個家真的散落在村外，列入待都更名單。
+pub const RELOC_ON_PLOT_CHEB: i32 = Plot::HOMESTEAD_HALF;
+
+/// (hx, hz) 是否落在任一地塊的「家園佔地」內（Chebyshev ≤ [`RELOC_ON_PLOT_CHEB`]）。純函式、可測。
+pub fn home_on_any_plot(plots: &[Plot], hx: i32, hz: i32) -> bool {
+    plots.iter().any(|p| {
+        (hx - p.cx).abs() <= RELOC_ON_PLOT_CHEB && (hz - p.cz).abs() <= RELOC_ON_PLOT_CHEB
+    })
+}
+
+/// **待都更名單判定**（純函式、確定性、可測）：所有「已完工的家不在任何村莊地塊上、
+/// 且還沒搬過家」的居民，依居民 id 排序（穩定順序 → 一次一位輪流搬時不跳號）。
+/// `houses`＝各居民已完工小屋錨點（GoalStore::house_of 的快照）；`done`＝已完成搬家的居民 id。
+pub fn relocation_candidates(
+    houses: &[(String, (i32, i32, i32))],
+    plots: &[Plot],
+    done: &[String],
+) -> Vec<(String, (i32, i32, i32))> {
+    let mut out: Vec<(String, (i32, i32, i32))> = houses
+        .iter()
+        .filter(|(rid, (hx, _, hz))| {
+            !done.iter().any(|d| d == rid) && !home_on_any_plot(plots, *hx, *hz)
+        })
+        .cloned()
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// 從一組錨位偏移中挑第一個「沒被她既有建物佔用」的絕對座標（純函式、可測）。
+/// `spots`＝候選偏移（如 `voxel_skills::build_offset` 的六格）；`taken_xz`＝她既有建物錨點的 (x,z)。
+/// 全被佔 → None（這位居民的地塊排不下新家，這輪先跳過她）。
+pub fn first_free_spot(
+    pcx: i32,
+    pcz: i32,
+    spots: &[(i32, i32)],
+    taken_xz: &[(i32, i32)],
+) -> Option<(i32, i32)> {
+    spots
+        .iter()
+        .map(|&(ox, oz)| (pcx + ox, pcz + oz))
+        .find(|&(bx, bz)| !taken_xz.iter().any(|&(tx, tz)| tx == bx && tz == bz))
+}
+
+/// 搬家階段（狀態機）：蓋新家中 → 拆舊家中 → 完成。字串常數供 serde 落地向後相容。
+pub const RELOC_PHASE_BUILD: &str = "build";
+pub const RELOC_PHASE_DEMOLISH: &str = "demolish";
+pub const RELOC_PHASE_DONE: &str = "done";
+
+/// 一筆搬家進度記錄（jsonl 落地單位；append-only，重啟後由 seq 最大者還原當前階段）。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RelocationRecord {
+    /// 搬家的居民 id（"vox_res_{i}"）。
+    pub resident: String,
+    /// 舊家錨點世界座標（拆除目標；方塊集合由 `voxel_building::house_blocks_at` 確定性重算）。
+    pub old_x: i32,
+    pub old_y: i32,
+    pub old_z: i32,
+    /// 新家錨點世界座標（在她認領的村莊地塊上）。
+    pub new_x: i32,
+    pub new_y: i32,
+    pub new_z: i32,
+    /// 階段：[`RELOC_PHASE_BUILD`] / [`RELOC_PHASE_DEMOLISH`] / [`RELOC_PHASE_DONE`]。
+    pub phase: String,
+    /// 單調遞增序號（越大越新；還原時同居民取最新一筆）。
+    pub seq: u64,
+}
+
+/// 搬家排程 store：**全村同時至多一位在搬**（錯開）＋已搬完名單（不重複搬）。
+/// 純資料；鎖 / 落地由呼叫端（voxel_ws）管。
+#[derive(Default)]
+pub struct RelocationStore {
+    /// 進行中的搬家（至多一件）。
+    active: Option<RelocationRecord>,
+    /// 已完成搬家的居民 → 新家錨點（供重啟後家域中心跟著新家走）。
+    done: HashMap<String, (i32, i32, i32)>,
+    next_seq: u64,
+}
+
+impl RelocationStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 目前進行中的搬家（無 → None）。
+    pub fn active(&self) -> Option<&RelocationRecord> {
+        self.active.as_ref()
+    }
+
+    /// 已完成搬家的居民 id 清單（供待都更名單排除）。
+    pub fn done_residents(&self) -> Vec<String> {
+        self.done.keys().cloned().collect()
+    }
+
+    /// 重啟後家域中心該落在哪：已搬完（或新家已完工、正拆舊家）的居民 → 新家錨點。
+    /// 還在蓋新家的不動（舊家仍是她的家）；沒搬過的回 None。
+    pub fn home_override(&self, resident: &str) -> Option<(i32, i32, i32)> {
+        if let Some((x, y, z)) = self.done.get(resident) {
+            return Some((*x, *y, *z));
+        }
+        self.active.as_ref().and_then(|a| {
+            (a.resident == resident && a.phase == RELOC_PHASE_DEMOLISH)
+                .then_some((a.new_x, a.new_y, a.new_z))
+        })
+    }
+
+    /// 開始一件搬家（一次一位的硬閘）：已有進行中的搬家、或這位居民已搬過 → None（不開工）。
+    /// 成功回落地記錄（phase=build）供 append。
+    pub fn begin(
+        &mut self,
+        resident: &str,
+        old: (i32, i32, i32),
+        new: (i32, i32, i32),
+    ) -> Option<RelocationRecord> {
+        if self.active.is_some() || self.done.contains_key(resident) {
+            return None;
+        }
+        let rec = RelocationRecord {
+            resident: resident.to_string(),
+            old_x: old.0,
+            old_y: old.1,
+            old_z: old.2,
+            new_x: new.0,
+            new_y: new.1,
+            new_z: new.2,
+            phase: RELOC_PHASE_BUILD.to_string(),
+            seq: self.next_seq,
+        };
+        self.next_seq = self.next_seq.wrapping_add(1);
+        self.active = Some(rec.clone());
+        Some(rec)
+    }
+
+    /// 新家完工 → 進拆舊家階段。無進行中搬家、或不在 build 階段 → None（冪等防呆）。
+    pub fn advance_to_demolish(&mut self) -> Option<RelocationRecord> {
+        let a = self.active.as_mut()?;
+        if a.phase != RELOC_PHASE_BUILD {
+            return None;
+        }
+        a.phase = RELOC_PHASE_DEMOLISH.to_string();
+        a.seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        Some(a.clone())
+    }
+
+    /// 舊家拆完 → 這件搬家收尾（登記進已完成、釋放「一次一位」名額）。
+    /// 無進行中搬家 → None（冪等防呆）。
+    pub fn finish(&mut self) -> Option<RelocationRecord> {
+        let mut rec = self.active.take()?;
+        rec.phase = RELOC_PHASE_DONE.to_string();
+        rec.seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        self.done
+            .insert(rec.resident.clone(), (rec.new_x, rec.new_y, rec.new_z));
+        Some(rec)
+    }
+
+    /// 從 jsonl 記錄還原（**中斷可恢復**）：依 seq 重放，同居民取最新階段；
+    /// done → 進已完成名單；build / demolish → 還原成進行中（至多一件，取 seq 最大者）。
+    pub fn from_entries(entries: Vec<RelocationRecord>) -> Self {
+        let mut es = entries;
+        es.sort_by_key(|e| e.seq);
+        let mut s = Self::default();
+        // 同居民保留最新一筆。
+        let mut latest: HashMap<String, RelocationRecord> = HashMap::new();
+        for e in es {
+            if e.seq >= s.next_seq {
+                s.next_seq = e.seq.wrapping_add(1);
+            }
+            latest.insert(e.resident.clone(), e);
+        }
+        // done 全收；未完的取 seq 最大的一件當 active（正常情況只會有一件）。
+        let mut pending: Vec<RelocationRecord> = Vec::new();
+        for (_, e) in latest {
+            if e.phase == RELOC_PHASE_DONE {
+                s.done.insert(e.resident.clone(), (e.new_x, e.new_y, e.new_z));
+            } else {
+                pending.push(e);
+            }
+        }
+        pending.sort_by_key(|e| e.seq);
+        s.active = pending.pop();
+        s
+    }
+}
+
+/// 搬家進度落地路徑（`data/` 已 gitignore）。
+const VOXEL_RELOCATIONS_PATH: &str = "data/voxel_relocations.jsonl";
+
+/// Append 一筆搬家進度記錄。**鐵律**：只在不持任何鎖時呼叫（同步小檔寫、不 await）。
+pub fn append_relocation(rec: &RelocationRecord) {
+    if let Ok(line) = serde_json::to_string(rec) {
+        write_line(VOXEL_RELOCATIONS_PATH, &line);
+    }
+}
+
+/// 載回所有搬家進度記錄（啟動時呼叫一次）。檔不存在（舊世界）→ 空（向後相容）。
+pub fn load_relocations() -> Vec<RelocationRecord> {
+    let content = match std::fs::read_to_string(VOXEL_RELOCATIONS_PATH) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    content
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            if l.is_empty() { None } else { serde_json::from_str::<RelocationRecord>(l).ok() }
+        })
+        .collect()
+}
+
+// ── 搬家 Feed / 泡泡文字（面向玩家、i18n 友善集中此處）──────────────────────────
+
+/// 搬家動工：某居民開始把家搬到村裡的新地塊。
+pub fn reloc_start_feed_line(name: &str) -> String {
+    format!("{name}開始把家搬到村裡的新地塊。")
+}
+
+/// 搬家動工泡泡。
+pub fn reloc_start_say_line() -> &'static str {
+    "村裡的地塊比較熱鬧，我要把家搬過去！"
+}
+
+/// 新家完工、回舊家拆料。
+pub fn reloc_demolish_feed_line(name: &str) -> String {
+    format!("新家蓋好了，{name}回舊家把材料一塊塊拆下帶走。")
+}
+
+/// 回舊家拆料泡泡。
+pub fn reloc_demolish_say_line() -> &'static str {
+    "新家蓋好了！回去把舊家的材料拆回來。"
+}
+
+/// 搬家完成：舊家材料全帶走、新家就在村裡。
+pub fn reloc_done_feed_line(name: &str) -> String {
+    format!("舊家的木料{name}都帶走了，新家就在村裡的路旁。")
+}
+
+/// 搬家完成泡泡。
+pub fn reloc_done_say_line() -> &'static str {
+    "搬好了！以後我就住在村裡了。"
+}
+
 // ── 單元測試 ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1091,6 +1344,164 @@ mod tests {
     fn refill_is_idempotent_when_hole_already_filled() {
         // 冪等：已回填（現為實心土）→ current 非 Air/流動水 → 回 None、不重覆補。
         assert_eq!(village_hole_refill(Block::Dirt, Block::Dirt, 7), None);
+    }
+
+    // ── 居民搬新家：待都更名單判定（純函式）──────────────────────────────────────
+
+    #[test]
+    fn home_on_plot_uses_chebyshev_threshold() {
+        let plots = vec![Plot { cx: 20, cz: 0 }];
+        // 地塊中心本身、邊界內、剛好在閾值上 → 都算在村裡。
+        assert!(home_on_any_plot(&plots, 20, 0));
+        assert!(home_on_any_plot(&plots, 20 + RELOC_ON_PLOT_CHEB, 0));
+        assert!(home_on_any_plot(&plots, 20, -RELOC_ON_PLOT_CHEB));
+        // 超過閾值一格 → 村外（待都更）。
+        assert!(!home_on_any_plot(&plots, 20 + RELOC_ON_PLOT_CHEB + 1, 0));
+        assert!(!home_on_any_plot(&plots, 20, RELOC_ON_PLOT_CHEB + 1));
+        // 沒有任何地塊 → 一律村外。
+        assert!(!home_on_any_plot(&[], 20, 0));
+    }
+
+    #[test]
+    fn relocation_candidates_picks_offplot_homes_sorted() {
+        let plots = plot_layout(0, 0);
+        // res_1 的家蓋在某地塊中心上（村裡）；res_0 / res_2 的家遠在村外。
+        let on_plot = plots[0];
+        let houses = vec![
+            ("vox_res_2".to_string(), (200, 9, 0)),
+            ("vox_res_0".to_string(), (-150, 9, 80)),
+            ("vox_res_1".to_string(), (on_plot.cx, 9, on_plot.cz)),
+        ];
+        let c = relocation_candidates(&houses, &plots, &[]);
+        // 只留村外兩位，且依 id 排序（穩定的一次一位輪序）。
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].0, "vox_res_0");
+        assert_eq!(c[1].0, "vox_res_2");
+    }
+
+    #[test]
+    fn relocation_candidates_excludes_already_done() {
+        let plots = plot_layout(0, 0);
+        let houses = vec![
+            ("vox_res_0".to_string(), (-150, 9, 80)),
+            ("vox_res_2".to_string(), (200, 9, 0)),
+        ];
+        let done = vec!["vox_res_0".to_string()];
+        let c = relocation_candidates(&houses, &plots, &done);
+        assert_eq!(c.len(), 1, "已搬完的不再列入名單（不重複搬）");
+        assert_eq!(c[0].0, "vox_res_2");
+    }
+
+    #[test]
+    fn first_free_spot_skips_taken_anchor() {
+        let spots = [(7, 0), (0, 7), (-7, 0)];
+        // 第一格已被她既有建物佔用 → 挑第二格。
+        let taken = [(107, 50)];
+        assert_eq!(first_free_spot(100, 50, &spots, &taken), Some((100, 57)));
+        // 全被佔 → None。
+        let all = [(107, 50), (100, 57), (93, 50)];
+        assert_eq!(first_free_spot(100, 50, &spots, &all), None);
+        // 全空 → 第一格。
+        assert_eq!(first_free_spot(100, 50, &spots, &[]), Some((107, 50)));
+    }
+
+    // ── 居民搬新家：一次一位狀態機（RelocationStore）─────────────────────────────
+
+    #[test]
+    fn relocation_one_at_a_time() {
+        let mut s = RelocationStore::new();
+        let a = s.begin("vox_res_0", (-150, 9, 80), (20, 9, 0));
+        assert!(a.is_some(), "沒人在搬 → 可開工");
+        assert_eq!(a.as_ref().unwrap().phase, RELOC_PHASE_BUILD);
+        // 第一位還在搬 → 第二位不得開工（錯開的硬閘）。
+        assert!(s.begin("vox_res_1", (0, 9, -160), (42, 9, 0)).is_none());
+        // 第一位搬完 → 第二位才能接著開始。
+        s.advance_to_demolish().expect("build → demolish");
+        assert!(s.begin("vox_res_1", (0, 9, -160), (42, 9, 0)).is_none(), "拆舊家中仍佔名額");
+        s.finish().expect("demolish → done");
+        assert!(s.begin("vox_res_1", (0, 9, -160), (42, 9, 0)).is_some(), "上一位完成後才輪到下一位");
+    }
+
+    #[test]
+    fn relocation_done_resident_never_begins_again() {
+        let mut s = RelocationStore::new();
+        s.begin("vox_res_0", (-150, 9, 80), (20, 9, 0)).unwrap();
+        s.advance_to_demolish().unwrap();
+        s.finish().unwrap();
+        assert!(s.begin("vox_res_0", (-150, 9, 80), (20, 9, 0)).is_none(), "搬過的不再搬");
+        assert!(s.done_residents().contains(&"vox_res_0".to_string()));
+    }
+
+    #[test]
+    fn relocation_phase_guards_are_idempotent() {
+        let mut s = RelocationStore::new();
+        // 沒有進行中的搬家 → 推進 / 收尾都是 None（不 panic、不亂遞增）。
+        assert!(s.advance_to_demolish().is_none());
+        assert!(s.finish().is_none());
+        s.begin("vox_res_0", (-150, 9, 80), (20, 9, 0)).unwrap();
+        assert!(s.advance_to_demolish().is_some());
+        // 已在 demolish → 再推進一次是 None（冪等）。
+        assert!(s.advance_to_demolish().is_none());
+    }
+
+    #[test]
+    fn relocation_store_restart_roundtrip_mid_demolish() {
+        // 中斷可恢復：拆到一半重啟，還原後 active 仍是同一位、同階段、同座標。
+        let mut s = RelocationStore::new();
+        let mut recs = Vec::new();
+        recs.push(s.begin("vox_res_0", (-150, 9, 80), (20, 9, 0)).unwrap());
+        recs.push(s.advance_to_demolish().unwrap());
+        let restored = RelocationStore::from_entries(recs);
+        let a = restored.active().expect("重啟後仍記得進行中的搬家");
+        assert_eq!(a.resident, "vox_res_0");
+        assert_eq!(a.phase, RELOC_PHASE_DEMOLISH);
+        assert_eq!((a.old_x, a.old_y, a.old_z), (-150, 9, 80));
+        assert_eq!((a.new_x, a.new_y, a.new_z), (20, 9, 0));
+    }
+
+    #[test]
+    fn relocation_store_restart_roundtrip_done_history() {
+        // 完成的搬家重啟後進 done 名單（不重搬）、且無 active。
+        let mut s = RelocationStore::new();
+        let mut recs = Vec::new();
+        recs.push(s.begin("vox_res_0", (-150, 9, 80), (20, 9, 0)).unwrap());
+        recs.push(s.advance_to_demolish().unwrap());
+        recs.push(s.finish().unwrap());
+        recs.push(s.begin("vox_res_1", (0, 9, -160), (42, 9, 0)).unwrap());
+        let restored = RelocationStore::from_entries(recs);
+        assert!(restored.done_residents().contains(&"vox_res_0".to_string()));
+        let a = restored.active().expect("第二位進行中");
+        assert_eq!(a.resident, "vox_res_1");
+        assert_eq!(a.phase, RELOC_PHASE_BUILD);
+        // 還原後續編 seq 不回捲：新開第三位的記錄 seq 必大於載回的所有 seq。
+        let mut restored = restored;
+        restored.advance_to_demolish().unwrap();
+        restored.finish().unwrap();
+        let r2 = restored.begin("vox_res_2", (99, 9, 99), (64, 9, 0)).unwrap();
+        assert!(r2.seq >= 6, "seq 應接續遞增（實得 {}）", r2.seq);
+    }
+
+    #[test]
+    fn relocation_home_override_follows_phase() {
+        let mut s = RelocationStore::new();
+        assert_eq!(s.home_override("vox_res_0"), None, "沒搬過 → 家不動");
+        s.begin("vox_res_0", (-150, 9, 80), (20, 9, 0)).unwrap();
+        assert_eq!(s.home_override("vox_res_0"), None, "還在蓋新家 → 家仍在舊處");
+        s.advance_to_demolish().unwrap();
+        assert_eq!(s.home_override("vox_res_0"), Some((20, 9, 0)), "新家完工 → 家域跟著新家");
+        s.finish().unwrap();
+        assert_eq!(s.home_override("vox_res_0"), Some((20, 9, 0)), "搬完 → 永久遷移");
+        assert_eq!(s.home_override("vox_res_1"), None);
+    }
+
+    #[test]
+    fn relocation_feed_lines_mention_name() {
+        assert!(reloc_start_feed_line("露娜").contains("露娜"));
+        assert!(reloc_demolish_feed_line("露娜").contains("露娜"));
+        assert!(reloc_done_feed_line("露娜").contains("露娜"));
+        assert!(!reloc_start_say_line().is_empty());
+        assert!(!reloc_demolish_say_line().is_empty());
+        assert!(!reloc_done_say_line().is_empty());
     }
 
     // ── 村莊大修復·排水判定（只清流動水、源水不動）──────────────────────────────

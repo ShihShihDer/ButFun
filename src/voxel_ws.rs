@@ -555,6 +555,10 @@ struct VoxelResident {
     /// 被夥伴在營火邊講了故事後、等這秒數到期再應和（講述者名字, 剩餘秒）（圍火講往事 v1）。
     /// 與 `pending_response` 分開，讓聆聽者冒的是「聽故事」味道的專屬應和，而非通用社交回應。純記憶體。
     pending_tale_reply: Option<(String, f32)>,
+    /// 相遇被老朋友就地教了一手後、等這秒數到期再冒「原來如此！」的應和（應和台詞, 剩餘秒）
+    /// （技能互教·北極星第四刀）。與 `pending_tale_reply`／`pending_bench_reply` 分開，
+    /// 讓受教有專屬的一來一往語氣。台詞在教學那刻就從句式池組好（零 LLM）。純記憶體。
+    pending_teach_reply: Option<(String, f32)>,
     /// 門口留下的「有人來找過」心意佇列（登門撲空留心意 v1，ROADMAP 763）：某訪客登門撲空（752 判定
     /// 主人不在家）時，訪客名字塞進這裡；日後主人回到自家附近閒著時逐一感應、念一句、記一筆。
     /// 去重＋上限保護（[`vcard::MAX_PENDING_CALLERS`]）。純記憶體、重啟歸零。
@@ -955,6 +959,73 @@ fn structure_names(
     N.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+/// 全域 per-IP 連線數計數器（治安三件套②·連線數上限）：跨所有連線共用一份，以真實 IP 為鍵，
+/// 擋「一個腳本開幾十條連線並行灌 talk（繞過 per-connection 冷卻）」。連線建立時 try_acquire、
+/// 結束時 release。
+fn ip_conn_limiter() -> &'static std::sync::Mutex<vrl::IpConnLimiter> {
+    static L: std::sync::OnceLock<std::sync::Mutex<vrl::IpConnLimiter>> = std::sync::OnceLock::new();
+    L.get_or_init(|| std::sync::Mutex::new(vrl::IpConnLimiter::new()))
+}
+
+/// 全域 per-IP 內容違規計數器（治安三件套①·累犯加長冷卻）：以真實 IP 為鍵記「累積命中審查幾次」。
+/// 玩家每被內容審查（注入／NSFW／辱罵）攔一次就 +1；違規越多、下一次對話的額外冷卻越長，
+/// 讓反覆試探的人自然被拖慢，正常人零感知（永遠不會命中）。純記憶體、單調累加、無界性由
+/// 「命中審查者本就稀少」天然約束（不像每 IP 都有的 rate 桶會長大）。
+fn ip_violations() -> &'static std::sync::Mutex<std::collections::HashMap<String, u32>> {
+    static V: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u32>>> =
+        std::sync::OnceLock::new();
+    V.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 記一次某 IP 的內容違規並回傳「累積違規次數」（含這次）。短鎖即釋、不 await（守鎖紀律）。
+fn record_violation(ip: &str) -> u32 {
+    let mut v = ip_violations().lock().unwrap();
+    let c = v.entry(ip.to_string()).or_insert(0);
+    *c = c.saturating_add(1);
+    *c
+}
+
+/// 累犯額外冷卻（毫秒）：純函式。違規 n 次 → 額外 min(n, CAP) × STEP 毫秒，封頂避免無限長。
+/// 第一次違規（n=1）就給一點冷卻，反覆試探者遞增到上限；正常玩家永不命中審查、恆 0。
+fn violation_cooldown_ms(violations: u32) -> u64 {
+    const STEP_MS: u64 = 2000; // 每次違規多 2 秒
+    const CAP: u64 = 30; // 封頂 30 次 → 最多額外 60 秒
+    (violations as u64).min(CAP) * STEP_MS
+}
+
+/// 同一 IP 的同時連線數上限（治安三件套②）：讀 `BUTFUN_MAX_CONN_PER_IP`，未設／壞值／0 →
+/// 退預設 `vrl::MAX_CONN_PER_IP`（5）。維護者可視需要調整；下限 clamp 到 1（永不歸零把人全鎖死）。
+fn max_conn_per_ip() -> usize {
+    std::env::var("BUTFUN_MAX_CONN_PER_IP")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(vrl::MAX_CONN_PER_IP)
+}
+
+/// 純函式：某 IP 是否在「連線數／速率」限流白名單內（QA／localhost 豁免）。
+/// - localhost（`127.0.0.1`、`::1`、解不出 IP 的保底桶 `unknown`）恆豁免——本機冒煙／隔離
+///   測試不受上限干擾（prod 的真流量一律經 CF tunnel，帶真實 `cf-connecting-ip`，永遠不是這些）。
+/// - 另可用 `whitelist`（由呼叫端傳入，來自 env `BUTFUN_RL_WHITELIST` 逗號分隔）補充。
+fn ip_limit_exempt(ip: &str, whitelist: &[String]) -> bool {
+    matches!(ip, "127.0.0.1" | "::1" | "unknown") || whitelist.iter().any(|w| w == ip)
+}
+
+/// 便捷層：讀 env 白名單清單（逗號分隔、去空白、濾空）。未設 → 空 Vec（只剩內建 localhost 豁免）。
+fn rl_whitelist() -> Vec<String> {
+    std::env::var("BUTFUN_RL_WHITELIST")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// 便捷層：這條連線的 IP 是否豁免限流（讀 env 白名單 + 內建 localhost）。
+fn ip_is_exempt(ip: &str) -> bool {
+    ip_limit_exempt(ip, &rl_whitelist())
+}
+
 /// 當前 UNIX 毫秒時間戳（餵給 token bucket；時鐘不可用時退 0，限流器內部對回退安全）。
 fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
@@ -1163,11 +1234,13 @@ fn resident_talk_system_prompt(name: &str, persona: ResidentPersona, desire: Opt
         })
         .unwrap_or_default();
     let honesty = resident_honesty_guide();
+    // 治安三件套①：拒絕成人／露骨內容、溫和轉移話題的一小段守則（內建過濾是主閘，這段是補強）。
+    let refusal = vmod::refusal_guide();
     format!(
         "{base}\n\n你現在身處『乙太方界』——一片由方塊構成、寧靜清新的新生天地，你是這裡的居民。{desire_note}\
         此刻有一位來訪的旅人向你搭話。請以你的身份、用繁體中文自然回應，1 到 2 句、口吻溫暖親切，\
         可以聊聊你在這片方塊天地裡的生活或當下的心情；絕不跳出角色，也不要提到你是 AI 或語言模型。\
-        \n\n{honesty}"
+        \n\n{honesty}\n\n{refusal}"
     )
 }
 
@@ -1539,6 +1612,16 @@ fn init_residents() -> Vec<VoxelResident> {
     for (i, home_x, home_z, body, birth_unix, parent_name) in specs {
         out.push(build_resident(i, home_x, home_z, body, birth_unix, parent_name));
     }
+    // 居民搬新家（引導式都更）：已搬完（或新家已完工、正拆舊家）的居民，家域中心跟著
+    // 新家走（重啟持久）——初始居民的 resident_home_base / 名冊 home_base 只是出生預設，
+    // 搬過家的以搬家記錄為準（她的日常活動圈從此繞著村裡的新家）。
+    let reloc = vvillage::RelocationStore::from_entries(vvillage::load_relocations());
+    for r in &mut out {
+        if let Some((nx, _ny, nz)) = reloc.home_override(&r.id) {
+            r.home_x = nx as f32 + 0.5;
+            r.home_z = nz as f32 + 0.5;
+        }
+    }
     // 在世人口（含出生居民）→ resident_count() 無鎖回報的單一事實來源。
     RESIDENT_POP.store(out.len(), Ordering::Relaxed);
     out
@@ -1691,6 +1774,8 @@ fn build_resident(
             rain_shelter_cooldown: vrain::shelter_cd_offset(i),
             homegaze_cooldown: vhome::gaze_cd_offset(i),
             pending_tale_reply: None,
+            // 技能互教（北極星第四刀）：入場沒有待應和的教學。
+            pending_teach_reply: None,
             // 集會鐘 v1：入場沒有正在應召的鐘；應召冷卻歸零（一出生就聽得到第一次鐘聲）。
             summon: None,
             summon_cooldown: 0.0,
@@ -1804,6 +1889,10 @@ struct VoxelHub {
     /// 村莊地塊認領註冊表（村莊系統 v1）：誰認領了哪塊沿路地塊。持久化到 data/voxel_village_plots.jsonl。
     /// 居民新建築（含新生兒的家）改成「認領最近的空地塊」當錨點 → 蓋在地塊上自動沿路對齊、不再散落。
     village: RwLock<vvillage::PlotRegistry>,
+    /// 居民搬新家（引導式都更）：搬家進度狀態機（**全村一次一位**）。持久化到
+    /// data/voxel_relocations.jsonl——重啟後接著搬（新家續蓋、舊家拆除冪等重算恢復），
+    /// 搬完的居民進 done 名單永不重搬。
+    relocations: RwLock<vvillage::RelocationStore>,
     /// 居民小背包（agency v1·純記憶體）：採集挖到的材料進這裡（rid → block_id → 數量）。
     /// 「她真的在做事」的成果；與玩家背包（inventory）分開，互不干涉。
     res_inv: RwLock<HashMap<String, HashMap<u8, u32>>>,
@@ -2517,6 +2606,10 @@ fn hub() -> &'static VoxelHub {
             goals: RwLock::new(GoalStore::from_entries(vskill::load_goals())),
             // 村莊系統 v1：啟動時從 data/voxel_village_plots.jsonl 載回地塊認領（重啟後仍記得誰住哪塊）。
             village: RwLock::new(vvillage::PlotRegistry::from_entries(vvillage::load_plot_claims())),
+            // 居民搬新家：啟動時從 data/voxel_relocations.jsonl 載回搬家進度（重啟後接著搬）。
+            relocations: RwLock::new(vvillage::RelocationStore::from_entries(
+                vvillage::load_relocations(),
+            )),
             // 居民小背包純記憶體（採集成果；重啟重置，與農地一致）。
             res_inv: RwLock::new(HashMap::new()),
             // 啟動時從 data/voxel_inventory.jsonl 載回玩家背包（重啟後存量還在）。
@@ -3262,6 +3355,43 @@ async fn apply_player_damage(
     persist_player_stats(); // 血變動落地（登入玩家重登保留）
 }
 
+/// 邊陲營地探索 v1（自主提案切片，接續 881 立牌）：判定玩家此刻是否站在某位居民親手搭起的
+/// 邊陲營地床邊。**與遺跡／溫泉的關鍵差異**：後兩者座標由世界生成種子決定（純座標函式，
+/// 與玩家/居民狀態無關）；邊陲營地座標由該居民的**家座標**純函式算出（`vexp::outpost_seq`
+/// → `pick_frontier` → `outpost_bed_center`，與 `voxel_ws.rs` 遠行狀態機算落點的手法完全
+/// 一致），且只有小棚真的搭起（`Block::Bed` 已落地）才算數——半路経過空地不算發現。
+/// 只掃能遠行的人格（`vexp::expedition_motive` 有值，目前 2 位），成本可忽略。
+/// 找到就回傳 `(居民 id, 居民名, 床的世界座標)`；找不到回 `None`。
+/// **鎖紀律**：residents 讀鎖只取一次快照即釋、deltas 讀鎖只取一次即釋，兩者不巢狀。
+fn player_near_built_outpost(px: f32, pz: f32) -> Option<(String, &'static str, i32, i32, i32)> {
+    let candidates: Vec<(String, &'static str, f32, f32)> = {
+        let rs = hub().residents.read().unwrap();
+        rs.iter()
+            .filter(|r| vexp::expedition_motive(r.persona).is_some())
+            .map(|r| (r.id.clone(), r.name, r.home_x, r.home_z))
+            .collect()
+    }; // residents 讀鎖釋放
+    for (rid, rname, home_x, home_z) in candidates {
+        let seq = vexp::outpost_seq(home_x, home_z);
+        let (fx, fz, _bearing) = vexp::pick_frontier(home_x, home_z, seq);
+        let (tx, tz) = (fx.round() as i32, fz.round() as i32);
+        let (bedx, bedz) = vexp::outpost_bed_center(tx, tz);
+        if !vexp::near_outpost_bed(px, pz, bedx, bedz) {
+            continue;
+        }
+        let (ax, az) = vexp::shelter_anchor(tx, tz);
+        let ay = vbuild::surface_y(ax, az);
+        let built = {
+            let _w = hub().deltas.read().unwrap();
+            voxel::block_at(ax, ay, az) == Block::Bed
+        }; // deltas 讀鎖釋放
+        if built {
+            return Some((rid, rname, ax, ay, az));
+        }
+    }
+    None
+}
+
 /// 地標旅人留言 v1（自主提案切片，ROADMAP 862）：把這處地標目前的留言簿（可能是空的）
 /// 單播給這位玩家，並附上 `(x,y,z)`——前端據此讓玩家能就地回送 `LeaveLandmarkNote`
 /// 寫下自己的一句話（溫泉不看座標，附的是玩家此刻的腳下位置即可；遺跡則必須是乙太礦
@@ -3458,6 +3588,27 @@ async fn handle_socket(
     let (mut sender, mut receiver) = socket.split();
     let my_id = Uuid::new_v4();
 
+    // 治安三件套②·連線數上限：同一真實 IP 只准這麼多條同時連線（預設 5，env 可調），擋
+    // 「開幾十條連線並行灌 talk 繞過 per-connection 冷卻」。白名單（localhost / QA / env）豁免，
+    // 讓本機冒煙與隔離測試不受限。超上限 → 直接關這條連線（連 Join 都不讀，最省資源）。
+    // 短鎖即釋、不 await（守鎖紀律）。豁免連線不佔名額、也不需 release（一致性由 exempt 判定守住）。
+    let conn_exempt = ip_is_exempt(&client_ip);
+    if !conn_exempt {
+        let acquired = ip_conn_limiter()
+            .lock()
+            .unwrap()
+            .try_acquire(&client_ip, max_conn_per_ip());
+        if !acquired {
+            // 名額已滿：不建 writer、不進場，直接讓 socket 隨函式結束而關閉。
+            return;
+        }
+    }
+    // 名額守衛：確保任何離開路徑（早退 / 正常收攤）都會釋放這條連線的名額（豁免者不佔名額）。
+    let _conn_guard = ConnSlotGuard {
+        ip: client_ip.clone(),
+        active: !conn_exempt,
+    };
+
     // 出站訊息統一走 mpsc → 單一 writer task，避免「轉發任務」與「讀取迴圈」同時寫 socket。
     let (out_tx, mut out_rx) = mpsc::channel::<Message>(64);
     let writer = tokio::spawn(async move {
@@ -3476,7 +3627,7 @@ async fn handle_socket(
             join_name = n;
         }
     } else {
-        // 連線一開始就斷/非文字 → 收攤。
+        // 連線一開始就斷/非文字 → 收攤（_conn_guard 於函式結束時自動釋放名額）。
         writer.abort();
         return;
     }
@@ -3789,6 +3940,9 @@ async fn handle_socket(
 
     // 對話冷卻：記這條連線上次跟居民說話的時刻（per-connection 節流，防灌爆 LLM）。
     let mut last_talk: Option<std::time::Instant> = None;
+    // 內容審查累犯罰則（治安三件套①）：反覆命中審查者，這條連線被推遲到此刻後才准再對話。
+    // None＝目前無罰則（正常玩家永遠是 None，零感知）。
+    let mut talk_penalty_until: Option<std::time::Instant> = None;
 
     // 位置持久化 v1：上次存位置的 unix 秒（0 = 從未存；第一次 Move 後 30 秒內觸發第一次存）。
     let mut last_pos_save_ts: u64 = 0;
@@ -3841,6 +3995,10 @@ async fn handle_socket(
     // 擋封包連發瞬殺）。皆 per-connection、斷線即清、零跨連線鎖。
     let mut last_shadow_touch: Option<std::time::Instant> = None;
     let mut last_shadow_swing: Option<std::time::Instant> = None;
+    // 邊陲營地探索 v1（自主提案切片，接續 881）：這條連線上一 tick 是否正站在某位居民的邊陲
+    // 營地床邊，用來偵測「剛走近」的那一刻只嘗試記一次探索紀事（避免逗留原地時每秒都取一次
+    // discovery 寫鎖；record() 本身已冪等，此旗標純粹省一趟鎖，非正確性必要）。
+    let mut was_near_outpost = false;
 
     // 玩家生存指標 tick（溫和版）：per-connection 每秒推進一次飢餓衰減／溺水／飽食回血，
     // 並在指標變動時單播 player_stats（只給玩家自己，減噪）。放這條連線的 select loop 裡跑，
@@ -3924,6 +4082,30 @@ async fn handle_socket(
                         apply_player_damage(&name, vshadow::TOUCH_DAMAGE, &out_tx).await;
                     }
                 }
+                // 邊陲營地探索 v1（自主提案切片，接續 881 立牌）：881 讓居民自己在營地立牌、登記
+                // 進地標系統（居民視角），但玩家視角走到同一處荒野據點，此前完全不會被世界記住——
+                // 探索紀事／旅人留言簿只認遺跡與溫泉。這一刀讓玩家第一次走近某位居民親手搭起的
+                // 邊陲營地床邊時，也留下一筆探索紀事、解鎖里程碑、順手看看先前旅人的留言。
+                let near_outpost = player_near_built_outpost(px, pz);
+                if let Some((rid, rname, ax, ay, az)) = &near_outpost {
+                    if !was_near_outpost {
+                        try_unlock_milestone(&name, "first_outpost_discover", &out_tx);
+                        let found = {
+                            let mut d = hub().discovery.write().unwrap();
+                            d.record(&name, vdisc::LandmarkKind::Outpost, (*ax, *az), *ax, *ay, *az)
+                        }; // discovery 寫鎖釋放
+                        if let Some(entry) = found {
+                            vdisc::append_discovery(&entry);
+                            send_landmark_notes(vdisc::LandmarkKind::Outpost, (*ax, *az), *ax, *ay, *az, &out_tx).await;
+                            vfeed::append_feed(
+                                "探索",
+                                &name,
+                                &format!("走進荒野，找到了{rname}親手搭起的邊陲營地"),
+                            );
+                        }
+                    }
+                }
+                was_near_outpost = near_outpost.is_some();
                 // 溺水扣血走統一傷害路徑（含死亡→重生判定、廣播、持久化）。
                 if drown_dmg > 0 {
                     apply_player_damage(&name, drown_dmg, &out_tx).await;
@@ -4842,7 +5024,14 @@ async fn handle_socket(
                     continue;
                 };
                 // 2) per-connection 冷卻：太頻繁就忽略（保護免費 LLM 額度）。
+                //    累犯罰則（治安三件套①）：反覆命中內容審查者，`talk_penalty_until` 會被推遲到
+                //    未來一段時間——這段內連 per-connection 冷卻都直接擋，把試探者自然拖慢。
                 let now = std::time::Instant::now();
+                if let Some(until) = talk_penalty_until {
+                    if now < until {
+                        continue; // 罰則冷卻中：靜默忽略（已提示過），別再燒 LLM
+                    }
+                }
                 if let Some(prev) = last_talk {
                     if !talk_cooldown_ok(now.duration_since(prev).as_millis() as u64) {
                         continue;
@@ -4853,7 +5042,8 @@ async fn handle_socket(
                 //     開多條 WebSocket 連線」繞過（每連線各有 last_talk）→ 白嫖／燒爆免費 LLM。
                 //     這道以真實 IP 為鍵的 token bucket 設一道跨連線天花板；超量→在玩家自己頭上
                 //     冒一句溫柔提示、跳過（絕不觸發 LLM）。短鎖即釋、不持鎖 await（守鎖紀律）。
-                {
+                //     白名單 IP（localhost / QA / env）豁免，讓隔離測試與本機冒煙不受限。
+                if !conn_exempt {
                     let allowed = ip_talk_limiter()
                         .lock()
                         .unwrap()
@@ -4867,13 +5057,21 @@ async fn handle_socket(
                         continue;
                     }
                 }
-                // 2c) 內容審查（治安三件套②）：文字長度/速率合格不代表「內容」乾淨。玩家對話會
-                //     ①直達免費 LLM（居民的腦）②廣播成泡泡給所有人看——這道純邏輯審查攔 prompt
-                //     injection/越獄注入（想劫持居民的腦、套系統提示）與明顯辱罵；命中→在玩家自己
-                //     頭上冒一句溫柔提示、跳過（絕不觸發 LLM、絕不把原文廣播出去）。零鎖純比對。
+                // 2c) 內容審查（治安三件套①·進 LLM 前）：文字長度/速率合格不代表「內容」乾淨。
+                //     玩家對話會 ①直達免費 LLM（居民的腦）②廣播成泡泡給所有人看——這道純邏輯審查
+                //     攔 prompt injection/越獄注入、成人露骨（NSFW）與明顯辱罵；命中→在玩家自己
+                //     頭上冒一句居民得體的迴避、記一次該 IP 違規（累犯加長冷卻）、跳過（絕不觸發
+                //     LLM、絕不把原文廣播出去）。零鎖純比對；違規計數短鎖即釋。
                 {
                     let verdict = vmod::screen(&clean);
                     if verdict != vmod::Screen::Clean {
+                        // 累犯罰則：記一次違規、依累積次數推遲這條連線的下次可對話時間。
+                        let n = record_violation(&client_ip);
+                        let penalty = violation_cooldown_ms(n);
+                        if penalty > 0 {
+                            talk_penalty_until =
+                                Some(now + std::time::Duration::from_millis(penalty));
+                        }
                         let mut players = hub().players.write().unwrap();
                         if let Some(p) = players.get_mut(&my_id) {
                             p.say = vmod::gentle_notice(verdict).to_string();
@@ -5551,7 +5749,15 @@ async fn handle_socket(
                         )
                         .await
                         {
-                            Ok(Some(t)) => t.chars().take(TALK_REPLY_MAX_CHARS).collect(),
+                            Ok(Some(t)) => {
+                                // 治安三件套①·LLM 出來後（出口過濾）：小模型偶爾被誘導吐出露骨/失格
+                                // 內容——出口再過一遍，命中就改罐頭（守住出口，絕不把失格內容廣播）。
+                                if vmod::reply_flagged(&t) {
+                                    resident_canned_reply(rname)
+                                } else {
+                                    t.chars().take(TALK_REPLY_MAX_CHARS).collect()
+                                }
+                            }
                             _ => resident_canned_reply(rname), // 逾時 / LLM 未啟用 → 罐頭後備
                         };
                         let msg = serde_json::json!({
@@ -6385,18 +6591,23 @@ async fn handle_socket(
                 // 判定這裡是不是一處已知地標：遺跡看瞄準座標（`ruin_ore_at` 純座標判定，
                 // 挖掉後仍成立，但要求觸及範圍內，比照告示牌/敲鐘同一套 reach 護欄）；
                 // 溫泉不看瞄準座標，改看玩家此刻是否真的泡在溫泉裡（比照溫泉回血 tick
-                // 同一套判定），避免對著遠方喊話就騙過伺服器。
+                // 同一套判定）；邊陲營地（自主提案切片，接續 881）不看瞄準座標、也不看泡水，
+                // 改看玩家此刻是否站在某位居民親手搭起的營地床邊（`player_near_built_outpost`，
+                // 與探索紀事 tick 偵測同一套判定）——三者皆避免對著遠方喊話就騙過伺服器。
                 let landmark = if voxel::in_reach(px, py, pz, x, y, z) && voxel::ruin_ore_at(x, y, z) {
-                    Some((vdisc::LandmarkKind::Ruin, (x, z)))
+                    Some((vdisc::LandmarkKind::Ruin, (x, z), x, y, z))
                 } else if feet_in_hot_spring(px, py, pz) {
                     let cell = voxel::hot_spring_cell_of(px.floor() as i32, pz.floor() as i32);
-                    Some((vdisc::LandmarkKind::HotSpring, cell))
+                    let (ix, iy, iz) = (px.floor() as i32, py.floor() as i32, pz.floor() as i32);
+                    Some((vdisc::LandmarkKind::HotSpring, cell, ix, iy, iz))
+                } else if let Some((_, _, ax, ay, az)) = player_near_built_outpost(px, pz) {
+                    Some((vdisc::LandmarkKind::Outpost, (ax, az), ax, ay, az))
                 } else {
                     None
                 };
-                let Some((kind, dedup_key)) = landmark else {
+                let Some((kind, dedup_key, lx, ly, lz)) = landmark else {
                     let _ = out_tx.send(Message::Text(serde_json::json!({
-                        "t": "landmark_note_fail", "reason": "這裡不是已知的地標，找一處遺跡或溫泉試試看。"
+                        "t": "landmark_note_fail", "reason": "這裡不是已知的地標，找一處遺跡、溫泉或邊陲營地試試看。"
                     }).to_string())).await;
                     continue;
                 };
@@ -6436,7 +6647,7 @@ async fn handle_socket(
                     vlmark::append_note(&entry);
                     try_unlock_milestone(&name, "first_landmark_note", &out_tx);
                     // 回傳這處地標目前的完整留言簿（含剛寫入的這一筆），前端據此更新面板。
-                    send_landmark_notes(kind, dedup_key, x, y, z, &out_tx).await;
+                    send_landmark_notes(kind, dedup_key, lx, ly, lz, &out_tx).await;
                 }
             }
             // ── 個人路標 v1（自主提案切片，ROADMAP 869）─────────────────────────
@@ -8131,6 +8342,21 @@ async fn handle_socket(
     broadcast_players();
 }
 
+/// 連線名額守衛（治安三件套②）：`handle_socket` 任一離開路徑（早退／正常收攤／panic 展開）
+/// 都會在此 drop，自動釋放這條連線在 per-IP 連線數計數器裡佔的名額。`active==false`（豁免的
+/// localhost/QA 連線）則不佔名額、drop 時也不動計數，行為一致。短鎖即釋、不 await（守鎖紀律）。
+struct ConnSlotGuard {
+    ip: String,
+    active: bool,
+}
+impl Drop for ConnSlotGuard {
+    fn drop(&mut self) {
+        if self.active {
+            ip_conn_limiter().lock().unwrap().release(&self.ip);
+        }
+    }
+}
+
 /// 把玩家移出登錄、清除踢信號、並中止 writer task。
 /// **鎖紀律**：players 寫鎖短取即釋，conn_kick 寫鎖另一把短取即釋，不巢狀。
 fn cleanup(id: Uuid, writer: &tokio::task::JoinHandle<()>) {
@@ -9063,14 +9289,28 @@ pub async fn voxel_cliques_handler() -> axum::response::Response {
 pub async fn voxel_skills_handler() -> axum::response::Response {
     use axum::http::header;
     let rows: Vec<serde_json::Value> = {
-        // 短讀鎖一次性快照 4 位居民的技能清單 → 立即釋放，不與其他鎖巢狀。
+        // 短讀鎖一次性快照全體居民的技能清單 → 立即釋放，不與其他鎖巢狀。
         let invented = hub().invented.read().unwrap();
         (0..resident_count())
             .map(|i| {
                 let rid = format!("vox_res_{i}");
+                // 師承鏈可見（技能互教·北極星第四刀）：每筆技能連同「來歷」一起攤開——
+                // 自己發明／承自XX（親子）／師承XX（教學），村裡的知識系譜第一次看得見。
+                // `skills`（純名字陣列）保留不動，既有前端/QA 向後相容；`lineage` 新增並列。
+                let lineage: Vec<serde_json::Value> = invented
+                    .records_for(&rid)
+                    .into_iter()
+                    .map(|r| {
+                        serde_json::json!({
+                            "name": r.name,
+                            "origin": vinvent::lineage_label(r),
+                        })
+                    })
+                    .collect();
                 serde_json::json!({
                     "name": resident_name_of(&rid),
                     "skills": invented.names_for(&rid),
+                    "lineage": lineage,
                 })
             })
             .collect()
@@ -9182,8 +9422,8 @@ pub async fn voxel_discoveries_handler(
 ) -> axum::response::Response {
     use axum::http::header;
     let player_name = params.get("player").map(|s| s.as_str()).unwrap_or("").trim().to_string();
-    let (items, ruins, springs) = if player_name.is_empty() {
-        (Vec::new(), 0usize, 0usize)
+    let (items, ruins, springs, outposts) = if player_name.is_empty() {
+        (Vec::new(), 0usize, 0usize, 0usize)
     } else {
         // 短讀鎖一次性快照這位玩家的探索紀事 → 立即釋放，不與其他鎖巢狀。
         let store = hub().discovery.read().unwrap();
@@ -9201,10 +9441,10 @@ pub async fn voxel_discoveries_handler(
                 })
             })
             .collect();
-        let (r, s) = store.counts_for(&player_name);
-        (list, r, s)
+        let (r, s, o) = store.counts_for(&player_name);
+        (list, r, s, o)
     };
-    let body = serde_json::json!({ "items": items, "ruins": ruins, "springs": springs }).to_string();
+    let body = serde_json::json!({ "items": items, "ruins": ruins, "springs": springs, "outposts": outposts }).to_string();
     axum::response::Response::builder()
         .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-cache")
@@ -9674,6 +9914,56 @@ fn proximity_teach_cd() -> &'static std::sync::Mutex<std::collections::HashMap<S
     C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+/// 技能互教·每居民「教或學」帳本（北極星第四刀）：居民 id → 上次教/學的 unix 秒。
+/// 三條教學路（717 登門到訪／就地指導／相遇互教）**共用同一本帳**：教過或學過任一次，
+/// 這一遊戲天（[`vteach::TEACH_LEDGER_SECS`]）內不再參與登門教學與相遇互教——手藝在
+/// 村裡以自然節奏擴散、不會一個下午全村都會。就地指導（卡關救援）不受帳本**攔阻**
+/// （自救優先，仍走它自己的 240s 冷卻），但成功救援會**記帳**（那也算這天教過了）。
+/// 純記憶體、重啟歸零（頂多重啟後早一點再教，零資料風險）。
+fn skill_teach_ledger() -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 帳本冷卻秒數：預設一遊戲天（[`vteach::TEACH_LEDGER_SECS`]）；QA 可用環境變數
+/// `BUTFUN_TEACH_COOLDOWN_SECS` 縮短（只影響教學節奏，不動任何資料）。啟動時讀一次。
+fn teach_ledger_secs() -> u64 {
+    static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("BUTFUN_TEACH_COOLDOWN_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(vteach::TEACH_LEDGER_SECS)
+    })
+}
+
+/// 相遇互教每輪掃描的觸發機率：預設 [`vteach::ENCOUNTER_TEACH_CHANCE`]；QA 可用
+/// 環境變數 `BUTFUN_TEACH_CHANCE` 調高做確定性驗證。啟動時讀一次，夾在 [0,1]。
+fn encounter_teach_chance() -> f32 {
+    static V: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("BUTFUN_TEACH_CHANCE")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .map(|c| c.clamp(0.0, 1.0))
+            .unwrap_or(vteach::ENCOUNTER_TEACH_CHANCE)
+    })
+}
+
+/// 相遇互教的「近旁」半徑（方塊）：預設沿用就地指導的 [`vptteach::PROXIMITY_TEACH_RADIUS`]；
+/// QA 可用環境變數 `BUTFUN_TEACH_RADIUS` 放大，免等居民恰好晃到彼此身邊。啟動時讀一次。
+fn encounter_teach_radius() -> f32 {
+    static V: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("BUTFUN_TEACH_RADIUS")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .filter(|r| r.is_finite() && *r > 0.0)
+            .unwrap_or(vptteach::PROXIMITY_TEACH_RADIUS)
+    })
+}
+
 /// 就地指導 v1（自主提案切片，低頻併入 15 秒節拍檢查）：找一位正卡關（`invent_backoff`
 /// 非空）的居民，身邊剛好站著已經會解法的老朋友，就當場教會她、解除這個目標的退避——
 /// 不必等到 717（`voxel_teach`）下次登門到訪才有機會補上（見 `voxel_proximity_teach`
@@ -9744,7 +10034,12 @@ fn maybe_proximity_teach() {
             }
         }
     } // bonds 讀鎖釋放
-    let Some((si, ti)) = candidate_pair else { return };
+    let Some((si, ti)) = candidate_pair else {
+        // 沒有人卡關待救 → 走相遇互教（技能互教·北極星第四刀）：交情夠的兩位閒著的
+        // 居民恰好站得近，偶爾把自己會、對方不會的手藝就地教一手。
+        maybe_encounter_teach(&snap, now_secs);
+        return;
+    };
     let student_id = &snap[si].0;
     let student_name = snap[si].1;
     let stuck_goals = &snap[si].4;
@@ -9758,14 +10053,21 @@ fn maybe_proximity_teach() {
     }; // invented 讀鎖釋放
     let Some(skill) = taught_skill else { return };
 
-    // 4) 真的教會：技能落地（invented 短寫鎖即釋）。
+    // 4) 真的教會：技能落地（invented 短寫鎖即釋）。師承鏈（北極星第四刀）：走 learn_from
+    //    而非 add——學來的技能 source 標老師名、taught 標 true，技能簿看得出「師承XX」。
     let learned = {
         let mut store = hub().invented.write().unwrap();
-        store.add(student_id, &skill.name, skill.goal_block, skill.steps.clone())
+        store.learn_from(student_id, &skill, teacher_name)
     }; // invented 寫鎖釋放
     let Some(rec) = learned else { return };
     vinvent::append_invented_skill(&rec);
     { proximity_teach_cd().lock().unwrap().insert(student_id.clone(), now_secs); }
+    // 教/學帳本也記一筆（救援不受帳本攔阻、但算進這一天的教學額度，見 skill_teach_ledger）。
+    {
+        let mut led = skill_teach_ledger().lock().unwrap();
+        led.insert(teacher_id.clone(), now_secs);
+        led.insert(student_id.clone(), now_secs);
+    }
 
     // 解除這個目標的退避——答案已經到手，不必再乾等冷卻歸零。
     {
@@ -9811,6 +10113,139 @@ fn maybe_proximity_teach() {
         vteach::FEED_KIND,
         teacher_name,
         &vteach::teach_feed_line(teacher_name, student_name, &skill.name, pick),
+    );
+}
+
+/// 相遇互教（技能互教·北極星第四刀，與就地指導同一 15 秒節拍、就地指導沒人待救時才輪到）：
+/// 交情到老朋友的兩位居民**平常相處時剛好站得夠近、雙方都閒**，偶爾把自己會、對方還不會的
+/// 手藝就地教一手——手藝第一次不必等登門到訪或有人卡關，就能在活人之間口耳相傳，與出生時的
+/// 血脈繼承（#998「承自XX」）互補成兩條知識傳承的路。
+///
+/// **不無限擴散的三道閘**：①機率門檻（[`encounter_teach_chance`]，每輪掃描擲一次）
+/// ②每居民教/學帳本冷卻（一遊戲天最多參與一次，[`skill_teach_ledger`]）③交情要到老朋友
+/// ——一個技能傳遍全村自然要花好幾遊戲天，像真的村子。
+///
+/// **教學那一幕**：兩人停留 [`vteach::TEACH_PAUSE_SECS`] 秒（設 `wait_timer`，比照長椅並坐），
+/// 老師先冒「來，我教你…」的開講泡泡，學生幾秒後應和「原來如此！」（`pending_teach_reply`，
+/// 全程句式池、零 LLM）；學到的技能 `source` 標老師名（技能簿顯示「師承XX」）、走既有 jsonl
+/// 落地，之後同處境零 LLM 重用照舊、也能再往下教。
+///
+/// **鎖紀律**：bonds 讀 → drop → invented 讀 → drop → invented 寫 → drop → residents 寫 →
+/// drop → memory 寫 ×2，全程短鎖循序、不巢狀、不持鎖 await（守 prod 死鎖鐵律）。
+fn maybe_encounter_teach(snap: &[(String, &'static str, f32, f32, Vec<u8>, bool)], now_secs: u64) {
+    // 機率門檻：每輪掃描只擲一次骰（不隨在場人數膨脹觸發率）。
+    if rand::random::<f32>() >= encounter_teach_chance() {
+        return;
+    }
+
+    // 1) 篩出「兩人都閒 + 老朋友 + 站得夠近 + 雙方教/學帳本都過冷卻」的候選對
+    //    （bonds 讀鎖只在挑對期間持有；帳本是獨立小 Mutex，取值即釋）。
+    let ledger_ok: Vec<bool> = {
+        let led = skill_teach_ledger().lock().unwrap();
+        snap.iter()
+            .map(|(id, ..)| vteach::ledger_ready(now_secs, led.get(id).copied(), teach_ledger_secs()))
+            .collect()
+    }; // 帳本鎖釋放
+    let candidates: Vec<(usize, usize)> = {
+        let bonds = hub().bonds.read().unwrap();
+        let mut out = Vec::new();
+        for (ti, (teacher_id, _, tx, tz, _, teacher_free)) in snap.iter().enumerate() {
+            if !teacher_free || !ledger_ok[ti] {
+                continue;
+            }
+            for (si, (student_id, _, sx, sz, _, student_free)) in snap.iter().enumerate() {
+                if ti == si || !student_free || !ledger_ok[si] {
+                    continue;
+                }
+                let dx = sx - tx;
+                let dz = sz - tz;
+                let r = encounter_teach_radius();
+                let tier = resident_tier_of(&bonds, teacher_id, student_id);
+                // 交情要到老朋友＋站得夠近（半徑預設同就地指導，QA 可調）。
+                if tier == vbonds::BondTier::Friend && dx * dx + dz * dz <= r * r {
+                    out.push((ti, si));
+                }
+            }
+        }
+        out
+    }; // bonds 讀鎖釋放
+
+    // 2) 依序找第一對「老師真的有學生不會的技能」（invented 短讀鎖即釋）；每輪最多教一組。
+    let taught = {
+        let store = hub().invented.read().unwrap();
+        candidates.into_iter().find_map(|(ti, si)| {
+            store
+                .teachable(&snap[ti].0, &snap[si].0)
+                .map(|k| (ti, si, k.clone()))
+        })
+    }; // invented 讀鎖釋放
+    let Some((ti, si, skill)) = taught else { return };
+    let teacher_id = &snap[ti].0;
+    let teacher_name = snap[ti].1;
+    let student_id = &snap[si].0;
+    let student_name = snap[si].1;
+
+    // 3) 真的教會：複製進學生技能庫（source=師承老師名）＋既有 jsonl 落地（向後相容）。
+    let learned = {
+        let mut store = hub().invented.write().unwrap();
+        store.learn_from(student_id, &skill, teacher_name)
+    }; // invented 寫鎖釋放
+    let Some(rec) = learned else { return };
+    vinvent::append_invented_skill(&rec);
+    {
+        let mut led = skill_teach_ledger().lock().unwrap();
+        led.insert(teacher_id.clone(), now_secs);
+        led.insert(student_id.clone(), now_secs);
+    } // 帳本鎖釋放
+
+    // 4) 教學那一幕：老師開講、兩人停留一會兒，學生幾秒後應和（零 LLM、句式池）。
+    let pick = now_secs as usize;
+    {
+        let mut residents = hub().residents.write().unwrap();
+        if let Some(r) = residents.iter_mut().find(|r| &r.id == teacher_id) {
+            r.say = vteach::teach_open_line(student_name, &skill.name, pick)
+                .chars()
+                .take(50)
+                .collect();
+            r.say_timer = SAY_SECS;
+            r.wait_timer = r.wait_timer.max(vteach::TEACH_PAUSE_SECS);
+            r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+        }
+        if let Some(r) = residents.iter_mut().find(|r| &r.id == student_id) {
+            r.pending_teach_reply = Some((
+                vteach::teach_reply_line(&skill.name, pick),
+                vteach::TEACH_REPLY_DELAY_SECS,
+            ));
+            r.wait_timer = r.wait_timer.max(vteach::TEACH_PAUSE_SECS);
+        }
+    } // residents 寫鎖釋放
+    broadcast_players();
+
+    // 5) 雙方各留一筆記憶＋世界 Feed（沿用 717 的句式，同一件事不另造一套詞）。
+    {
+        let entry = hub().memory.write().unwrap().add_memory(
+            teacher_id,
+            student_name,
+            &vteach::teach_memory_line_teacher(student_name, &skill.name),
+        );
+        vmem::append_memory(&entry);
+    } // memory 寫鎖釋放
+    {
+        let entry = hub().memory.write().unwrap().add_memory(
+            student_id,
+            teacher_name,
+            &vteach::teach_memory_line_student(teacher_name, &skill.name),
+        );
+        vmem::append_memory(&entry);
+    } // memory 寫鎖釋放
+    vfeed::append_feed(
+        vteach::FEED_KIND,
+        teacher_name,
+        &vteach::teach_feed_line(teacher_name, student_name, &skill.name, pick),
+    );
+    tracing::info!(
+        teacher = %teacher_id, student = %student_id, skill = %skill.name,
+        "相遇互教：手藝在活人之間口耳相傳（師承鏈落地，零 LLM）"
     );
 }
 
@@ -9890,6 +10325,22 @@ fn tick_residents(dt: f32) {
             .map(|(rid, t)| (rid.clone(), (t.cx, t.cz, t.radius, t.pave.is_some())))
             .collect()
     }; // directed_tasks 讀鎖釋放
+    // 居民搬新家（引導式都更）：進行中搬家的快照（relocations 讀鎖即釋），供 residents
+    // 寫鎖段用——拆除段把她排除出 agency 候選（搬家中不接其他任務）、閒晃中心貼著當前
+    // 工地（蓋新家貼新地塊、拆舊家貼舊家），不與 residents 鎖巢狀（守死鎖鐵律）。
+    // 元組＝(居民 id, 工地焦點 x, 工地焦點 z, 是否在拆除段)。
+    let reloc_snap: Option<(String, f32, f32, bool)> = {
+        let reloc = hub().relocations.read().unwrap();
+        reloc.active().map(|a| {
+            let demolishing = a.phase == vvillage::RELOC_PHASE_DEMOLISH;
+            let (fx, fz) = if demolishing {
+                (a.old_x as f32 + 0.5, a.old_z as f32 + 0.5)
+            } else {
+                (a.new_x as f32 + 0.5, a.new_z as f32 + 0.5)
+            };
+            (a.resident.clone(), fx, fz, demolishing)
+        })
+    }; // relocations 讀鎖釋放
     // 本 tick 已抵達工地、要整地一批的居民（鎖內收集，鎖外套用方塊改動）。
     let mut level_workers: Vec<String> = Vec::new();
     // say_updates 提前宣告，過渡台詞與建造台詞共用同一張 Vec，在末尾一次套用。
@@ -10660,6 +11111,24 @@ fn tick_residents(dt: f32) {
                         r.wait_timer = r.wait_timer.max(vbench::REST_SIT_SECS);
                         r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                     }
+                }
+            }
+
+            // 技能互教·學生應和倒數（北極星第四刀）：被老朋友就地教了一手後，延遲幾秒冒一句
+            // 「原來如此！」的專屬應和（台詞在教學那刻已從句式池組好，零 LLM）。與圍火聆聽／
+            // 並坐應和分開，讓受教有一來一往的專屬語氣。倒數與 take 都在居民自身鎖內、不巢狀。
+            let teach_reply_ready = match &mut r.pending_teach_reply {
+                Some((_, cd)) => {
+                    *cd -= dt;
+                    *cd <= 0.0
+                }
+                None => false,
+            };
+            if teach_reply_ready && r.say.is_empty() {
+                if let Some((line, _)) = r.pending_teach_reply.take() {
+                    r.say = line.chars().take(50).collect();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                 }
             }
 
@@ -13465,7 +13934,14 @@ fn tick_residents(dt: f32) {
                     // 聚會中（ROADMAP 711）：以聚會點為中心，讓一群人看起來聚在一塊；
                     // 邊陲探友逗留中（ROADMAP 821）：以朋友的邊陲落點為中心，讓兩人在荒野一小片範圍相聚；
                     // 夜間遮蔽：以自己蓋的小屋為中心；否則：以自己家域中心為基準（正常行為）。
-                    let (center_x, center_z) = if let Some((vx, vz, _)) = &r.visiting {
+                    // 搬家中的居民（引導式都更）：閒晃中心貼著當前工地——蓋新家段貼新地塊、
+                    // 拆除段貼舊家——玩家全程看得到她在搬家現場忙活（優先於探訪/遠行/遮蔽）。
+                    let reloc_here: Option<(f32, f32)> = reloc_snap
+                        .as_ref()
+                        .and_then(|(id, fx, fz, _)| (*id == r.id).then_some((*fx, *fz)));
+                    let (center_x, center_z) = if let Some((fx, fz)) = reloc_here {
+                        (fx, fz)
+                    } else if let Some((vx, vz, _)) = &r.visiting {
                         (*vx, *vz)
                     } else if let Some((ex, ez, _)) = &r.expedition {
                         (*ex, *ez)
@@ -13482,7 +13958,10 @@ fn tick_residents(dt: f32) {
                     // 探訪中用探訪範圍；遠行逗留用遠行範圍（在邊陲一小片走動）；聚會中用更小的聚會範圍
                     //（不散開）；邊陲探友逗留用探友範圍；夜間遮蔽用更小的遮蔽半徑（緊靠自家）；
                     // 否則用家域半徑（正常行為）。
-                    let wander_r = if r.visiting.is_some() {
+                    let wander_r = if reloc_here.is_some() {
+                        // 搬家工地：緊貼著打轉（看得出她在忙搬家，不是路過）。
+                        RELOC_WANDER_RADIUS
+                    } else if r.visiting.is_some() {
                         vvisit::VISIT_WANDER_RADIUS
                     } else if r.expedition.is_some() {
                         vexp::EXPEDITION_WANDER_RADIUS
@@ -13634,6 +14113,11 @@ fn tick_residents(dt: f32) {
                 && !directed_snaps.contains_key(&r.id)
                 && r.follow.is_none()
                 && r.fetch.is_none()
+                // 搬家拆除段的居民不進 agency 候選（搬家中不接其他任務；拆除由搬家
+                // tick 自己推進，不受 build_cooldown 影響）。蓋新家段照常進（推進計畫）。
+                && !reloc_snap
+                    .as_ref()
+                    .map_or(false, |(id, _, _, demolishing)| *demolishing && *id == r.id)
             {
                 // 居民 id 格式固定 "vox_res_{i}"，取末位數字當 index。
                 let idx = r.id.trim_start_matches("vox_res_").parse::<usize>().unwrap_or(0);
@@ -16240,7 +16724,16 @@ fn tick_residents(dt: f32) {
                 let residents = hub().residents.read().unwrap();
                 residents.iter().find(|r| r.name == host_name).map(|r| r.id.clone())
             }; // residents 讀鎖釋放
-            if let Some(host_id) = host_id {
+            // 教/學帳本冷卻（技能互教·北極星第四刀）：任一方這一遊戲天已教過/學過就先不教
+            //（與相遇互教共用同一本帳，手藝以自然節奏擴散、不洗版）。帳本小鎖取值即釋。
+            let ledger_ready = host_id.as_ref().map_or(false, |hid| {
+                let now = vfarm::now_secs();
+                let led = skill_teach_ledger().lock().unwrap();
+                let cd = teach_ledger_secs();
+                vteach::ledger_ready(now, led.get(hid).copied(), cd)
+                    && vteach::ledger_ready(now, led.get(&visitor_id).copied(), cd)
+            });
+            if let Some(host_id) = host_id.filter(|_| ledger_ready) {
                 let taught = {
                     let store = hub().invented.read().unwrap();
                     store
@@ -16253,12 +16746,20 @@ fn tick_residents(dt: f32) {
                         })
                 }; // invented 讀鎖釋放
                 if let Some((teacher_id, teacher_name, student_id, student_name, skill)) = taught {
+                    // 師承鏈（北極星第四刀）：走 learn_from——source 標老師名、taught 標
+                    // true，技能簿看得出這手藝是「師承XX」，與親子的「承自XX」並行。
                     let learned = {
                         let mut store = hub().invented.write().unwrap();
-                        store.add(&student_id, &skill.name, skill.goal_block, skill.steps.clone())
+                        store.learn_from(&student_id, &skill, &teacher_name)
                     }; // invented 寫鎖釋放
                     if let Some(rec) = learned {
                         vinvent::append_invented_skill(&rec);
+                        {
+                            let now = vfarm::now_secs();
+                            let mut led = skill_teach_ledger().lock().unwrap();
+                            led.insert(teacher_id.clone(), now);
+                            led.insert(student_id.clone(), now);
+                        } // 帳本鎖釋放
                         vfeed::append_feed(
                             vteach::FEED_KIND,
                             &teacher_name,
@@ -16493,6 +16994,10 @@ fn tick_residents(dt: f32) {
             );
         }
     }
+
+    // ── 居民搬新家（引導式都更）：排程 / 推進（全村一次一位、錯開；低頻節奏內建，
+    //    平時每 tick 只付一次倒數遞減的成本）。全部短鎖即釋、循序不巢狀、不 await。
+    tick_home_relocation(dt, &mut say_updates);
 
     for (rid, rname, rx, ry, rz, _ridx) in build_candidates {
         // ── 技能發明/重用執行（優先於一般 agency：她正專心驗證自己的點子）────────
@@ -18017,6 +18522,428 @@ fn reset_build_tick(rid: &str, interval: f32) {
     }
 }
 
+// ── 居民搬新家（引導式都更）：搬家任務 tick ──────────────────────────────────────
+//
+// 維護者拍板：「城鎮破破爛爛」不 god-mode 重建、不放生——老家不在村莊地塊上的居民，
+// **一次一位、錯開地**自己搬進村：(a) 認領地塊 →(b) Feed 昭告 →(c) 用她的樣式在地塊上
+// 蓋新家（走既有 BuildPlan 引擎，完工收尾/立牌全沿用）→(d) 走回舊家逐塊拆除、材料回收
+// 入她的小背包 →(e) 錨點與家域中心遷到新家。純邏輯（名單判定/一次一位狀態機/舊家方塊
+// 集合重算/拆除安全過濾/重啟恢復）在 voxel_village / voxel_building / voxel_skills，
+// 這裡只做排程與世界 IO——嚴守短鎖即釋、循序不巢狀、不 await 的死鎖鐵律。
+
+/// 搬家排程的節奏狀態（純記憶體）：`timer`＝下次掃名單/推進一步的倒數；
+/// `walk_stall`＝拆除段「她還沒走到舊家」的累計秒數（超時就地開拆，保證有進展）。
+struct RelocPace {
+    timer: f32,
+    walk_stall: f32,
+}
+
+static RELOC_PACE: std::sync::Mutex<RelocPace> =
+    std::sync::Mutex::new(RelocPace { timer: 10.0, walk_stall: 0.0 });
+
+/// 搬家節奏可用 `BUTFUN_RELOC_FAST=1` 加速（隔離實測用；prod 不設＝正常節奏）。
+fn reloc_fast() -> bool {
+    static FAST: OnceLock<bool> = OnceLock::new();
+    *FAST.get_or_init(|| std::env::var("BUTFUN_RELOC_FAST").map_or(false, |v| v == "1"))
+}
+
+/// 沒有搬家進行中時，多久掃一次待都更名單（秒）。
+fn reloc_scan_secs() -> f32 {
+    if reloc_fast() { 3.0 } else { 30.0 }
+}
+/// 搬家進行中，多久推進一步（秒）——比照建造節奏（BUILD_INTERVAL_SECS）。
+fn reloc_step_secs() -> f32 {
+    if reloc_fast() { 1.0 } else { BUILD_INTERVAL_SECS }
+}
+/// 拆除段一步拆幾塊（與建造同節奏、但一步多拆幾塊——拆比蓋快是誠實的體感，
+/// 也讓全村在一兩個遊戲天內看得見地自我重組）。
+fn reloc_demolish_per_step() -> usize {
+    if reloc_fast() { 6 } else { 3 }
+}
+/// 蓋新家段每步「加放」幾塊：疊在既有建造引擎（8 秒一塊）之上等效加速——
+/// 搬家戶多時才趕得上「全村 1-2 遊戲天搬完」的節奏；只對搬家中的計畫生效。
+fn reloc_extra_build_per_step() -> usize {
+    if reloc_fast() { 4 } else { 1 }
+}
+/// 一位搬完後隔多久才輪下一位（錯開；全村不會同時工地連天）。
+fn reloc_gap_secs() -> f32 {
+    if reloc_fast() { 3.0 } else { 90.0 }
+}
+/// 拆除段：走不到舊家的累計超時（秒）——超過就地開拆（誠實推進，不無限空等）。
+fn reloc_walk_timeout_secs() -> f32 {
+    if reloc_fast() { 10.0 } else { 60.0 }
+}
+/// 拆除段：走回舊家的抵達判定距離（水平，格）。
+const RELOC_ARRIVE_DIST: f32 = 9.0;
+/// 搬家中居民的閒晃半徑（緊貼工地打轉，看得出她在忙搬家）。
+const RELOC_WANDER_RADIUS: f32 = 3.0;
+
+/// 搬家任務主 tick（tick_residents 每輪呼叫；節奏閘讓平時只付一次倒數遞減成本）。
+/// 無進行中搬家 → 低頻掃待都更名單開新的一件；有 → 依階段推進（蓋新家加放 / 拆舊家）。
+fn tick_home_relocation(dt: f32, say_updates: &mut Vec<(String, String)>) {
+    {
+        let mut pace = RELOC_PACE.lock().unwrap();
+        pace.timer -= dt;
+        if pace.timer > 0.0 {
+            return;
+        }
+    } // RELOC_PACE mutex 釋放（各分支自行重設 timer）
+    let active: Option<vvillage::RelocationRecord> =
+        hub().relocations.read().unwrap().active().cloned(); // relocations 讀鎖即釋
+
+    let Some(rec) = active else {
+        relocation_kickoff(say_updates);
+        RELOC_PACE.lock().unwrap().timer = reloc_scan_secs();
+        return;
+    };
+
+    let rid = rec.resident.clone();
+    match rec.phase.as_str() {
+        vvillage::RELOC_PHASE_BUILD => {
+            let has_plan = { hub().builds.read().unwrap().has_plan(&rid) }; // builds 讀鎖釋放
+            let new_anchor = (rec.new_x, rec.new_y, rec.new_z);
+            if has_plan {
+                // 建造引擎照常 8 秒一塊；這裡每步再加放幾塊（等效加速，留最後一塊給
+                // 主引擎收尾——完工 Feed/錨點登記/立牌走既有唯一路徑，不重複）。
+                relocation_place_extra_blocks(&rid, reloc_extra_build_per_step());
+            } else if hub()
+                .goals
+                .read()
+                .unwrap()
+                .anchor_built(&rid, vbuild::BuildKind::House, new_anchor)
+            {
+                // 新家完工（完工收尾已由建造引擎統一處理）→ (d) 走回舊家、進拆除段。
+                let advanced = { hub().relocations.write().unwrap().advance_to_demolish() };
+                if let Some(adv) = advanced {
+                    vvillage::append_relocation(&adv);
+                    let rname = resident_name_of(&rid);
+                    vfeed::append_feed("都更搬家", rname, &vvillage::reloc_demolish_feed_line(rname));
+                    say_updates.push((rid.clone(), vvillage::reloc_demolish_say_line().to_string()));
+                    {
+                        let mut residents = hub().residents.write().unwrap();
+                        if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                            r.target_x = rec.old_x as f32 + 0.5;
+                            r.target_z = rec.old_z as f32 + 0.5;
+                            r.wait_timer = 0.0;
+                        }
+                    } // residents 寫鎖釋放
+                    RELOC_PACE.lock().unwrap().walk_stall = 0.0;
+                    tracing::info!(resident = %rid, "都更搬家：新家完工，回舊家拆料");
+                }
+            } else {
+                // 中斷恢復（極少：搬家已登記、計畫卻遺失且新家未完工）→ 冪等重建計畫續蓋。
+                let plan = {
+                    let mut builds = hub().builds.write().unwrap();
+                    if builds.has_plan(&rid) {
+                        None
+                    } else {
+                        Some(builds.new_plan(
+                            &rid,
+                            vbuild::BuildKind::House,
+                            rec.new_x,
+                            rec.new_y,
+                            rec.new_z,
+                            false,
+                            None,
+                        ))
+                    }
+                }; // builds 寫鎖釋放
+                if let Some(p) = &plan {
+                    vbuild::append_build(p);
+                }
+            }
+            RELOC_PACE.lock().unwrap().timer = reloc_step_secs();
+        }
+        vvillage::RELOC_PHASE_DEMOLISH => {
+            RELOC_PACE.lock().unwrap().timer = reloc_step_secs();
+            relocation_demolish_step(&rec, say_updates);
+        }
+        _ => {
+            // 防呆：不明階段（理論到不了）→ 收尾釋放名額，別卡死全村輪替。
+            if let Some(f) = hub().relocations.write().unwrap().finish() {
+                vvillage::append_relocation(&f);
+            }
+            RELOC_PACE.lock().unwrap().timer = reloc_gap_secs();
+        }
+    }
+}
+
+/// 掃待都更名單、挑第一位「此刻閒著」的居民開工搬家（一次至多開一件）。
+/// (a) 認領地塊 →(b) Feed「開始把家搬到村裡的新地塊」→(c) 動工新家（既有 BuildPlan 引擎）。
+fn relocation_kickoff(say_updates: &mut Vec<(String, String)>) {
+    // 村莊還沒規劃（無釘死中心）→ 沒有地塊可搬，安靜早退（舊世界向後相容）。
+    let Some((vcx, vcz)) = vvillage::load_village_center() else { return };
+    let plots = vvillage::plot_layout(vcx, vcz); // 純函式、鎖外算
+    let houses = { hub().goals.read().unwrap().all_houses() }; // goals 讀鎖釋放
+    let done = { hub().relocations.read().unwrap().done_residents() }; // relocations 讀鎖釋放
+    let cands = vvillage::relocation_candidates(&houses, &plots, &done);
+    for (rid, old) in cands {
+        // 此刻在忙（已有建造計畫/被指派整地/發明/跑腿/跟隨/睡著）→ 這輪先跳過她，
+        // 搬家不打斷玩家指派或進行中的大事（比照既有 gating 精神，下輪掃描再看）。
+        // 自發的散步採集（gather）不算大事——搬家開工時她會自己放下（見下方清除）。
+        if hub().builds.read().unwrap().has_plan(&rid) {
+            continue; // builds 讀鎖釋放
+        }
+        if hub().directed_tasks.read().unwrap().contains_key(&rid) {
+            continue; // directed_tasks 讀鎖釋放
+        }
+        let busy = {
+            let residents = hub().residents.read().unwrap();
+            residents.iter().find(|r| r.id == rid).map_or(true, |r| {
+                r.invent_run.is_some() || r.fetch.is_some() || r.follow.is_some() || r.asleep
+            })
+        }; // residents 讀鎖釋放
+        if busy {
+            continue;
+        }
+        // (a) 認領地塊（已認領過＝沿用同一塊；村滿認不到 → 這位搬不了，換下一位）。
+        let (pcx, pcz) = claim_or_reuse_plot(&rid, old.0, old.2);
+        if hub().village.read().unwrap().claim_of(&rid).is_none() {
+            continue; // village 讀鎖釋放
+        }
+        // 挑新家錨位：避開她既有建物錨點（同地塊上可能已有花圃/水井等）。
+        let spots: Vec<(i32, i32)> = (0..6).map(vskill::build_offset).collect();
+        let taken = { hub().goals.read().unwrap().anchors_xz_of(&rid) }; // goals 讀鎖釋放
+        let Some((bx, bz)) = vvillage::first_free_spot(pcx, pcz, &spots, &taken) else {
+            continue; // 她的地塊排不下新家（極少）→ 換下一位
+        };
+        let by = vbuild::surface_y(bx, bz);
+        // 一次一位硬閘（store 內建）：登記 build 階段並落地。
+        let rec = { hub().relocations.write().unwrap().begin(&rid, old, (bx, by, bz)) };
+        let Some(rec) = rec else { return }; // 併發防呆：已有人在搬 → 本輪收手
+        vvillage::append_relocation(&rec);
+        // (c) 動工新家：走既有 BuildPlan 引擎（她的樣式 BuildStyle::for_resident /
+        // 放塊節奏 / 進度冒泡 / 完工收尾與立牌全沿用，零新建造路徑）。
+        let plan = {
+            let mut builds = hub().builds.write().unwrap();
+            if builds.has_plan(&rid) {
+                None // double-check 併發安全
+            } else {
+                Some(builds.new_plan(&rid, vbuild::BuildKind::House, bx, by, bz, false, None))
+            }
+        }; // builds 寫鎖釋放
+        if let Some(p) = &plan {
+            vbuild::append_build(p);
+        }
+        // (b) Feed + 泡泡 + 她放下手邊採集、動身走向新地塊（閒晃中心由搬家焦點接管）。
+        let rname = resident_name_of(&rid);
+        vfeed::append_feed("都更搬家", rname, &vvillage::reloc_start_feed_line(rname));
+        say_updates.push((rid.clone(), vvillage::reloc_start_say_line().to_string()));
+        {
+            let mut residents = hub().residents.write().unwrap();
+            if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                r.gather = None; // 搬家是大事：自發的散步採集先放下
+                // 建造冷卻歸零：搬家是刻意決策，不是完工連發——否則剛蓋完別的建物的
+                // 300 秒冷卻會把新家計畫的收尾（agency 放最後一塊+完工登記）卡住。
+                r.build_cooldown = 0.0;
+                r.target_x = bx as f32 + 0.5;
+                r.target_z = bz as f32 + 0.5;
+                r.wait_timer = 0.0;
+            }
+        } // residents 寫鎖釋放
+        tracing::info!(resident = %rid, old = ?old, new = ?(bx, by, bz), "都更搬家：認領地塊、動工新家");
+        return; // 一次只開一件（錯開）
+    }
+}
+
+/// 蓋新家段的「加放」：既有建造引擎（8 秒一塊）之外每步多放幾塊——只對搬家中的計畫
+/// 生效，且**永遠留最後一塊**給主引擎收尾（完工 Feed/錨點登記/心願閉環/立牌走既有唯一
+/// 路徑、不重複觸發）。放置流程與主引擎逐項相同：set_block → 廣播 → 水流喚醒 → 持久化。
+fn relocation_place_extra_blocks(rid: &str, n: usize) {
+    let mut placed = 0usize;
+    for _ in 0..n {
+        let bb = {
+            let mut builds = hub().builds.write().unwrap();
+            builds
+                .get_plan_mut(rid)
+                .and_then(|p| if p.remaining.len() > 1 { p.pop_next() } else { None })
+        }; // builds 寫鎖釋放
+        let Some(bb) = bb else { break };
+        if let Some(block) = Block::from_u8(bb.b) {
+            {
+                let mut world = hub().deltas.write().unwrap();
+                voxel::set_block(&mut world, bb.x, bb.y, bb.z, block);
+            } // deltas 寫鎖釋放
+            broadcast_block(bb.x, bb.y, bb.z, block);
+            enqueue_water_around(bb.x, bb.y, bb.z);
+            vbuild::append_world_block(bb.x, bb.y, bb.z, bb.b);
+            placed += 1;
+        }
+    }
+    if placed > 0 {
+        // 持久化更新後的計畫（remaining 已縮短，重啟後接著蓋）。
+        if let Some(plan) = hub().builds.read().unwrap().plans.get(rid) {
+            vbuild::append_build(plan);
+        } // builds 讀鎖釋放
+    }
+}
+
+/// 拆除段單步：她在舊家附近（或走路超時）→ 依**確定性重算**的舊家方塊集合拆幾塊、
+/// 材料回收入她的小背包；集合裡再也沒有可拆的格 → 搬家收尾（錨點/家域遷移）。
+/// 資料安全鐵律：只有「集合裡的座標 + 現況方塊正是她當年放的那塊」才拆
+/// （見 `vbuild::demolish_allowed`）——玩家平台/告示牌/箱子/鄰居建物機制性一塊碰不到。
+fn relocation_demolish_step(
+    rec: &vvillage::RelocationRecord,
+    say_updates: &mut Vec<(String, String)>,
+) {
+    let rid = &rec.resident;
+    // 她此刻的狀態快照（residents 讀鎖即釋）。
+    let snap = {
+        let residents = hub().residents.read().unwrap();
+        residents.iter().find(|r| r.id == *rid).map(|r| {
+            (
+                r.body.x,
+                r.body.y,
+                r.body.z,
+                r.asleep,
+                r.fetch.is_some() || r.follow.is_some(),
+            )
+        })
+    }; // residents 讀鎖釋放
+    let Some((px, py, pz, asleep, player_task)) = snap else {
+        // 居民不存在（理論到不了）→ 收尾釋放名額，別卡死全村輪替。
+        if let Some(f) = hub().relocations.write().unwrap().finish() {
+            vvillage::append_relocation(&f);
+        }
+        RELOC_PACE.lock().unwrap().timer = reloc_gap_secs();
+        return;
+    };
+    // 睡著／正被玩家指派任務（跟隨/跑腿/整地）→ 搬家讓路暫停，醒來/忙完下一步再續拆。
+    let directed = hub().directed_tasks.read().unwrap().contains_key(rid); // 讀鎖即釋
+    if asleep || player_task || directed {
+        return;
+    }
+    // 還沒走到舊家：繼續走（目標持續指向舊家），累計超時後就地開拆（誠實推進）。
+    let dx = px - (rec.old_x as f32 + 0.5);
+    let dz = pz - (rec.old_z as f32 + 0.5);
+    let near = (dx * dx + dz * dz).sqrt() <= RELOC_ARRIVE_DIST;
+    if !near {
+        let timed_out = {
+            let mut pace = RELOC_PACE.lock().unwrap();
+            pace.walk_stall += reloc_step_secs();
+            pace.walk_stall >= reloc_walk_timeout_secs()
+        }; // RELOC_PACE mutex 釋放
+        if !timed_out {
+            let mut residents = hub().residents.write().unwrap();
+            if let Some(r) = residents.iter_mut().find(|r| r.id == *rid) {
+                r.target_x = rec.old_x as f32 + 0.5;
+                r.target_z = rec.old_z as f32 + 0.5;
+            }
+            return; // residents 寫鎖釋放
+        }
+    }
+
+    // 舊家方塊集合（確定性重算，見 `vbuild::house_blocks_at`）——只有這份集合裡的格才可能被拆。
+    let expected = vbuild::house_blocks_at(rid, rec.old_x, rec.old_y, rec.old_z);
+    let mut removed = 0usize;
+    let mut skipped_body = 0usize;
+    let mut removable_left = false;
+    for bb in &expected {
+        // 現況（deltas 短讀鎖即釋，逐格取放——一步最多幾塊，非熱路徑）。
+        let current = {
+            let world = hub().deltas.read().unwrap();
+            voxel::effective_block_at(&world, bb.x, bb.y, bb.z)
+        }; // deltas 讀鎖釋放
+        if !vbuild::demolish_allowed(bb.b, current) {
+            continue; // 不是她當年放的那塊（早拆過/被改動/玩家物）→ 一律不動
+        }
+        if removed >= reloc_demolish_per_step() {
+            removable_left = true; // 本步額度用完，還有得拆 → 下一步繼續
+            break;
+        }
+        // 安全：不拆與她身體重疊的格（永不自拆站位；她挪開後下一步再拆）。
+        if vdt::cell_in_body(bb.x, bb.y, bb.z, px, py, pz) {
+            skipped_body += 1;
+            continue;
+        }
+        // 拆！地板層回復自然基底（地表不留坑）、其餘回空氣；廣播 + 水流喚醒 + 持久化。
+        let restore = vbuild::demolition_restore(bb.x, bb.y, bb.z);
+        {
+            let mut world = hub().deltas.write().unwrap();
+            voxel::set_block(&mut world, bb.x, bb.y, bb.z, restore);
+        } // deltas 寫鎖釋放
+        broadcast_block(bb.x, bb.y, bb.z, restore);
+        enqueue_water_around(bb.x, bb.y, bb.z);
+        vbuild::append_world_block(bb.x, bb.y, bb.z, restore as u8);
+        // 材料回收入她的小背包（res_inv 短鎖即釋，比照礦井挖掘入包慣例）。
+        {
+            let mut inv = hub().res_inv.write().unwrap();
+            *inv.entry(rid.to_string())
+                .or_default()
+                .entry(vbuild::demolition_yield(bb.b))
+                .or_insert(0) += 1;
+        } // res_inv 寫鎖釋放
+        removed += 1;
+    }
+
+    if removed == 0 && skipped_body > 0 {
+        // 只剩她站位擋著的那幾格：把她請往新家方向挪開，下一步就拆得到了。
+        let mut residents = hub().residents.write().unwrap();
+        if let Some(r) = residents.iter_mut().find(|r| r.id == *rid) {
+            r.target_x = rec.new_x as f32 + 0.5;
+            r.target_z = rec.new_z as f32 + 0.5;
+            r.wait_timer = 0.0;
+        }
+        return; // residents 寫鎖釋放
+    }
+    if removed == 0 && !removable_left && skipped_body == 0 {
+        // (e) 集合裡再也沒有可拆的格＝舊家拆完 → 搬家收尾。
+        relocation_finish(rec, say_updates);
+    }
+}
+
+/// 搬家收尾：舊家拆完 → 移舊錨點、小屋座標與家域中心遷到新家（含持久化）＋ Feed/泡泡，
+/// 釋放「一次一位」名額（隔 `reloc_gap_secs` 後輪下一位）。
+fn relocation_finish(
+    rec: &vvillage::RelocationRecord,
+    say_updates: &mut Vec<(String, String)>,
+) {
+    let rid = &rec.resident;
+    let fin = { hub().relocations.write().unwrap().finish() }; // relocations 寫鎖釋放
+    let Some(fin) = fin else { return };
+    vvillage::append_relocation(&fin);
+    // built_anchors 更新：移舊錨點、小屋座標遷到新家（新家錨點完工時已由建造引擎登記）。
+    let (removal, moved) = {
+        let mut goals = hub().goals.write().unwrap();
+        goals.relocate_house(
+            rid,
+            (rec.old_x, rec.old_y, rec.old_z),
+            (rec.new_x, rec.new_y, rec.new_z),
+        )
+    }; // goals 寫鎖釋放
+    vskill::append_goal(&removal);
+    vskill::append_goal(&moved);
+    // 家域中心遷到新家：日常活動圈（閒晃/歸巢/遠行基準）從此繞著村裡的新家。
+    {
+        let mut residents = hub().residents.write().unwrap();
+        if let Some(r) = residents.iter_mut().find(|r| r.id == *rid) {
+            r.home_x = rec.new_x as f32 + 0.5;
+            r.home_z = rec.new_z as f32 + 0.5;
+            r.target_x = r.home_x;
+            r.target_z = r.home_z;
+            r.wait_timer = 0.0;
+        }
+    } // residents 寫鎖釋放
+    let rname = resident_name_of(rid);
+    vfeed::append_feed("都更搬家", rname, &vvillage::reloc_done_feed_line(rname));
+    say_updates.push((rid.clone(), vvillage::reloc_done_say_line().to_string()));
+    {
+        let mut pace = RELOC_PACE.lock().unwrap();
+        pace.timer = reloc_gap_secs();
+        pace.walk_stall = 0.0;
+    } // RELOC_PACE mutex 釋放
+    // 誠實記錄：她背包目前的材料總數（含拆舊家回收的）——隔離實測據此驗「材料真的入包」。
+    let bag_total: u32 = {
+        let inv = hub().res_inv.read().unwrap();
+        inv.get(rid).map_or(0, |b| b.values().sum())
+    }; // res_inv 讀鎖釋放
+    tracing::info!(
+        resident = %rid, bag_total,
+        new_home = ?(rec.new_x, rec.new_y, rec.new_z),
+        "都更搬家：完成（舊家拆除回收、家域遷至新家）"
+    );
+}
+
 /// 為一位居民發起一次無鎖 async 思考：短鎖讀附近玩家 → drop → spawn → npc_think/npc_pray
 /// → 把決策投進 AgentBus（下一 tick 套用）。比照 game.rs npc_agent_wire 的做法，全程不持遊戲狀態鎖。
 fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona, x: f32, z: f32) {
@@ -18805,6 +19732,52 @@ mod tests {
         assert!(!talk_allowed_for_identity(false), "訪客應被擋下、不可觸發 LLM");
         // 訪客提示非空、且是面向玩家的溫柔字串（i18n 集中於此常數）。
         assert!(!TALK_GUEST_NOTICE.is_empty());
+    }
+
+    #[test]
+    fn violation_cooldown_grows_and_caps() {
+        // 治安三件套①·累犯加長冷卻：0 次違規＝零冷卻；違規越多冷卻越長；封頂不無限長。
+        assert_eq!(violation_cooldown_ms(0), 0, "無違規＝零冷卻（正常玩家零感知）");
+        assert!(violation_cooldown_ms(1) > 0, "第一次違規就有一點冷卻");
+        assert!(
+            violation_cooldown_ms(3) > violation_cooldown_ms(1),
+            "違規越多冷卻越長（遞增）"
+        );
+        // 封頂：極多次違規不會爆長（30 步封頂）。
+        assert_eq!(
+            violation_cooldown_ms(1000),
+            violation_cooldown_ms(30),
+            "冷卻有封頂、不無限長"
+        );
+    }
+
+    #[test]
+    fn ip_limit_whitelist_exempts_localhost_and_env() {
+        // 治安三件套②：localhost / 保底桶恆豁免（本機冒煙、隔離測試不受連線數/速率上限干擾）。
+        assert!(ip_limit_exempt("127.0.0.1", &[]));
+        assert!(ip_limit_exempt("::1", &[]));
+        assert!(ip_limit_exempt("unknown", &[]));
+        // 一般公網 IP 不豁免（照常受限）。
+        assert!(!ip_limit_exempt("203.0.113.7", &[]));
+        // env 白名單補充命中。
+        let wl = vec!["10.0.0.9".to_string()];
+        assert!(ip_limit_exempt("10.0.0.9", &wl));
+        assert!(!ip_limit_exempt("10.0.0.10", &wl));
+    }
+
+    #[test]
+    fn max_conn_per_ip_defaults_and_clamps() {
+        // 未設 env → 用預設（vrl::MAX_CONN_PER_IP）。
+        std::env::remove_var("BUTFUN_MAX_CONN_PER_IP");
+        assert_eq!(max_conn_per_ip(), vrl::MAX_CONN_PER_IP);
+        // 壞值 / 0 → 退預設；合法值 → 採用。
+        std::env::set_var("BUTFUN_MAX_CONN_PER_IP", "0");
+        assert_eq!(max_conn_per_ip(), vrl::MAX_CONN_PER_IP, "0 不可把人全鎖死，退預設");
+        std::env::set_var("BUTFUN_MAX_CONN_PER_IP", "abc");
+        assert_eq!(max_conn_per_ip(), vrl::MAX_CONN_PER_IP, "壞值退預設");
+        std::env::set_var("BUTFUN_MAX_CONN_PER_IP", "8");
+        assert_eq!(max_conn_per_ip(), 8);
+        std::env::remove_var("BUTFUN_MAX_CONN_PER_IP");
     }
 
     #[test]
