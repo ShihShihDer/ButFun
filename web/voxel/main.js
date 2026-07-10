@@ -6596,6 +6596,9 @@ window.__voxel = {
     camPitch = -Math.atan2(dy, Math.hypot(dx, dz));
     clampPitch();
   },
+  // 挖擊一隻暗影（headless QA 無法 pointer lock 時的替代路徑；與點擊送同一則訊息，
+  // 打不打得到仍由伺服器權威驗 reach/節奏——玩家用 console 呼叫也佔不到任何便宜）。
+  qaShadowHit(id) { ws.send(JSON.stringify({ t: "shadow_hit", id })); },
   // 玩家生存指標 QA 用：讀目前血/飢窄列的顯示寬度（%）＋餓瘋樣式，驗 HUD 真的隨 player_stats 動。
   get statsHud() {
     const hp = document.getElementById("statHealthFill");
