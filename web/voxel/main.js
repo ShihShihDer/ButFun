@@ -569,17 +569,40 @@ const rainPoints = new THREE.Points(rainGeom, rainMat);
 rainPoints.visible = false;
 scene.add(rainPoints);
 
-// 每幀推進雨滴下落（純視覺，無碰撞）；不下雨時整組隱藏、零成本早退。
+// 冬季飄雪 v1（ROADMAP 900）：冬天下雨即飄雪——同一組雨滴粒子改渲染成白、較大、飄落更慢、
+// 左右輕飄的雪花（伺服器不必新增協議：前端用既有廣播的 worldSeason==="winter" ＋ isRaining 本地判定）。
+// 效能鐵律：仍是同一個 THREE.Points（一次 draw call），只切材質參數＋落速＋加一個 sin 橫飄，零額外物件。
+const SNOW_FALL_SPEED = 4.5;  // 雪花飄落速度（格/秒）——遠慢於雨（24），飄逸感的關鍵
+const SNOW_SWAY_AMPL = 6;     // 雪花左右輕飄幅度（格/秒），每顆相位錯開
+let _snowSwayPhase = 0;       // 橫飄相位累計（僅一個全域 sin 輸入，成本可忽略）
+
+// 每幀推進雨滴/雪花下落（純視覺，無碰撞）；不下雨時整組隱藏、零成本早退。
 function updateRain(dt) {
   if (!isRaining) { rainPoints.visible = false; return; }
+  const snowing = worldSeason === "winter"; // 冬季下雨 ⇒ 飄雪
   rainPoints.visible = true;
-  // 粒子雲整體跟著鏡頭水平移動，讓雨看起來覆蓋玩家周遭而非固定世界座標。
+  // 依「雨 / 雪」切換材質外觀（賦值即生效，一次 draw call、零額外物件）。
+  if (snowing) {
+    rainMat.color.setHex(0xf4f8ff); rainMat.size = 0.28; rainMat.opacity = 0.85;
+  } else {
+    rainMat.color.setHex(0xaac4e0); rainMat.size = 0.12; rainMat.opacity = 0.55;
+  }
+  // 粒子雲整體跟著鏡頭水平移動，讓雨/雪看起來覆蓋玩家周遭而非固定世界座標。
   rainPoints.position.set(camera.position.x, camera.position.y + RAIN_HEIGHT / 2, camera.position.z);
+  const fall = snowing ? SNOW_FALL_SPEED : RAIN_FALL_SPEED;
   const pos = rainGeom.attributes.position;
+  _snowSwayPhase += dt;
   for (let i = 0; i < RAIN_COUNT; i++) {
-    let y = pos.getY(i) - RAIN_FALL_SPEED * dt;
+    let y = pos.getY(i) - fall * dt;
     if (y < -RAIN_HEIGHT / 2) y += RAIN_HEIGHT; // 落到底部循環回頂部
     pos.setY(i, y);
+    if (snowing) {
+      // 雪花左右輕飄（每顆用索引錯開相位，看起來各自飄）；橫向也做環形循環維持粒子雲範圍。
+      let x = pos.getX(i) + Math.sin(_snowSwayPhase * 1.5 + i) * SNOW_SWAY_AMPL * dt;
+      if (x > RAIN_SPREAD / 2) x -= RAIN_SPREAD;
+      else if (x < -RAIN_SPREAD / 2) x += RAIN_SPREAD;
+      pos.setX(i, x);
+    }
   }
   pos.needsUpdate = true;
 }
