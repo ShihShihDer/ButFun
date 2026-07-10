@@ -61,6 +61,7 @@ use crate::voxel_gift as vgift;
 use crate::voxel_keepsake as vkeep;
 use crate::voxel_keepsake_recall as vkrecall;
 use crate::voxel_humming as vhum;
+use crate::voxel_meteor as vmeteor;
 use crate::voxel_bench as vbench;
 use crate::voxel_bench_chat as vbenchchat;
 use crate::voxel_bench_tiff as vbtiff;
@@ -2052,6 +2053,13 @@ struct VoxelHub {
     /// 彩虹剛升起的一次性旗標（ROADMAP 780）：`tick_farm` 偵測到「雨→晴」（彩虹 0→>0）時設 true，
     /// `tick_residents` 讀到後立即清回 false（consume-once），觸發附近居民抬頭望見彩虹的歡呼＋心情補助。
     rainbow_started_flag: RwLock<bool>,
+    /// 流星可見 tick（流星許願 v1，ROADMAP 904）：> 0 tick = 此刻天邊剛劃過流星，隨快照廣播
+    /// `meteor:bool` 給前端播光痕動畫。純記憶體、無需持久化（重啟後從無流星重新擲骰）。每次
+    /// `tick_farm`（15 秒）由純函式 `vmeteor::next_meteor_ticks` 更新：夜裡低機率劃過→重設、否則逐 tick 遞減。
+    meteor_ticks: RwLock<u32>,
+    /// 流星剛劃過的一次性旗標（ROADMAP 904）：`tick_farm` 夜裡擲中（流星 0→>0）時設 true，
+    /// `tick_residents` 讀到後立即清回 false（consume-once），觸發附近醒著居民抬頭望見流星而許願＋心情補助。
+    meteor_started_flag: RwLock<bool>,
     /// 上一輪偵測到的季節（季節輪替 v1，ROADMAP 798）：`tick_residents` 每輪由世界時鐘累計日數
     /// 推算當前季節，與此比對——不同即「換季」，設下方一次性旗標並上一則城鎮動態。純記憶體、重啟
     /// 從初春重新流轉（比照天氣／彩虹狀態）。
@@ -2760,6 +2768,9 @@ fn hub() -> &'static VoxelHub {
             // 雨後彩虹：啟動時晴天、無彩虹。
             rainbow_ticks: RwLock::new(0),
             rainbow_started_flag: RwLock::new(false),
+            // 流星許願 v1（ROADMAP 904）：啟動時夜空無流星。
+            meteor_ticks: RwLock::new(0),
+            meteor_started_flag: RwLock::new(false),
             // 季節輪替 v1（ROADMAP 798）：啟動時世界日數為 0 ＝初春；之後靠 tick_residents 逐日推進換季。
             last_season: RwLock::new(vseason::season_for_day(0)),
             // 冬季飄雪 v1（ROADMAP 900）：啟動時尚未飄雪、本冬未播初雪；之後靠 tick_residents 逐 tick 推進。
@@ -2902,6 +2913,8 @@ fn players_snapshot_json() -> String {
     let raining: bool = *hub().weather.read().unwrap();
     // 雨後彩虹 v1（ROADMAP 780，短鎖、不巢狀）：> 0 tick = 天邊正掛著彩虹，前端據此顯示彩虹弧。
     let rainbow: bool = *hub().rainbow_ticks.read().unwrap() > 0;
+    // 流星許願 v1（ROADMAP 904，短鎖、不巢狀）：> 0 tick = 此刻剛劃過流星，前端據此播光痕動畫。
+    let meteor: bool = *hub().meteor_ticks.read().unwrap() > 0;
     // 季節輪替 v1（ROADMAP 798，短鎖、不巢狀）：由世界累計日數推算當前季節，帶給前端隨季節微染天地色調。
     // 季節指示器 v1（ROADMAP 897）：一併帶「這一季第幾天」給前端 HUD 徽章，補上「今日」這層時間感。
     let (season, season_day): (&str, u64) = {
@@ -2938,6 +2951,7 @@ fn players_snapshot_json() -> String {
         "time_of_day": time_of_day,
         "raining": raining,
         "rainbow": rainbow,
+        "meteor": meteor,
         "season": season,
         "season_day": season_day,
     }).to_string()
@@ -10013,6 +10027,21 @@ fn tick_farm() {
         }
         *w
     };
+    // 流星許願 v1（ROADMAP 904）：天氣鎖已釋放後，於此獨立短鎖推進流星狀態機（夜裡低機率擲一顆），
+    // 並偵測「流星剛劃過（0→>0）」設一次性旗標，供 tick_residents 觸發居民抬頭許願。各鎖短取即釋、
+    // 不巢狀（先短讀世界時鐘判夜→再短寫 meteor_ticks→必要時短寫 started 旗標），守死鎖鐵律。
+    // 刻意放在下方 `mature.is_empty()` 早退之前——沒有成熟作物的夜晚，流星照樣會劃過。
+    {
+        let is_night = vmeteor::is_night(hub().world_time.read().unwrap().time_of_day());
+        let mut mt = hub().meteor_ticks.write().unwrap();
+        let prev = *mt;
+        // 只在「目前無流星」時才擲骰新流星，避免可見窗內重複觸發。
+        let started = prev == 0 && vmeteor::should_streak(is_night, rand::random::<f32>());
+        *mt = vmeteor::next_meteor_ticks(prev, started);
+        if started {
+            *hub().meteor_started_flag.write().unwrap() = true;
+        }
+    }
     let now = vfarm::now_secs();
     // 短讀鎖取 delta 快照用於水耕判斷（每 15s 一次，clone 代價小），馬上釋放。
     let deltas_snap: voxel::WorldDelta = hub().deltas.read().unwrap().clone();
@@ -11792,6 +11821,41 @@ fn tick_residents(dt: f32) {
         *f = false;
         v
     };
+    // 流星許願 v1（ROADMAP 904）：流星剛劃過的一次性旗標（consume-once），觸發附近醒著居民抬頭許願。
+    let meteor_just_appeared = {
+        let mut f = hub().meteor_started_flag.write().unwrap();
+        let v = *f;
+        *f = false;
+        v
+    };
+    // 流星劃過時，在此（未持下方 residents 寫鎖）先把各居民的「當前心願」快照成清洗後的許願片段，
+    // 供下方 residents 迴圈只查這份本地 map（渴望驅動許願＝北極星）。**刻意循序取兩把讀鎖、不巢狀**：
+    // 先短讀 residents 蒐集 id 即釋，再短讀 desires 逐 id 查心願即釋——避免與下方大迴圈的
+    // residents→desires 取鎖順序相反而致死鎖（守 prod 死鎖鐵律）。心願源自居民 LLM 回覆的規則萃取
+    // （間接受玩家的話影響），故一律先過 `sanitize_wish_fragment` 去換行／控制字元＋截長，杜絕注入／洗版。
+    let meteor_wish_frags: std::collections::HashMap<String, String> = if meteor_just_appeared {
+        let ids: Vec<String> = hub()
+            .residents
+            .read()
+            .unwrap()
+            .iter()
+            .map(|r| r.id.clone())
+            .collect(); // residents 讀鎖在此釋放
+        let des = hub().desires.read().unwrap();
+        ids.into_iter()
+            .filter_map(|id| {
+                des.get_desire(&id)
+                    .and_then(|d| vmeteor::sanitize_wish_fragment(&d.desire))
+                    .map(|frag| (id, frag))
+            })
+            .collect()
+    } else {
+        std::collections::HashMap::new()
+    }; // desires 讀鎖在此釋放
+    // 流星劃過那一刻上一則城鎮動態牆（每顆流星一則、非每位居民一則，不洗版；不在線上的玩家回來也讀得到）。
+    if meteor_just_appeared {
+        vfeed::append_feed(vmeteor::FEED_KIND, "乙太方界", vmeteor::feed_detail());
+    }
     // 冬季飄雪 v1（ROADMAP 900）：把「當前是否冬季 ∧ 是否下雨」餵給季內初雪狀態機，偵測
     // 「本冬第一次飄雪」那一刻（純函式，短寫鎖即釋、不巢狀，守死鎖鐵律）。回傳 true 時：
     // ①寫一則城鎮動態（不在線上的玩家回來也讀得到初雪落下）②供下方 residents 迴圈讓附近醒著
@@ -14679,6 +14743,21 @@ fn tick_residents(dt: f32) {
             if rainbow_just_appeared && !r.asleep && r.say.is_empty() {
                 let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                 r.say = vweather::rainbow_line(pick).to_string();
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            }
+
+            // 流星許願 v1（ROADMAP 904）：流星剛劃過那一刻，say 為空、醒著的居民抬頭望見而許下一個願
+            // （零 LLM、確定性選句），心情也跟著亮一格（`mood_boost` 是驅動行為的真狀態，非純美術）。
+            // **記憶／渴望驅動行為（北極星）**：若這位居民心裡正懷著一個渴望（上方 `meteor_wish_frags`
+            // 已快照出清洗後的心願片段），牠許的就是**那個藏了好久的願**；否則許一句泛用祈願。
+            // 與雨天／彩虹／換季反應同屬罕見的一次性環境事件，值得蓋過閒聊冷卻。
+            if meteor_just_appeared && !r.asleep && r.say.is_empty() {
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                r.say = match meteor_wish_frags.get(&r.id) {
+                    Some(frag) => vmeteor::wish_bubble_with_desire(frag, pick),
+                    None => vmeteor::wish_bubble_generic(pick).to_string(),
+                };
                 r.say_timer = SAY_SECS;
                 r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
             }
