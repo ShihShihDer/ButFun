@@ -17770,7 +17770,7 @@ struct RelocPace {
 }
 
 static RELOC_PACE: std::sync::Mutex<RelocPace> =
-    std::sync::Mutex::new(RelocPace { timer: 30.0, walk_stall: 0.0 });
+    std::sync::Mutex::new(RelocPace { timer: 10.0, walk_stall: 0.0 });
 
 /// 搬家節奏可用 `BUTFUN_RELOC_FAST=1` 加速（隔離實測用；prod 不設＝正常節奏）。
 fn reloc_fast() -> bool {
@@ -17964,6 +17964,9 @@ fn relocation_kickoff(say_updates: &mut Vec<(String, String)>) {
             let mut residents = hub().residents.write().unwrap();
             if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
                 r.gather = None; // 搬家是大事：自發的散步採集先放下
+                // 建造冷卻歸零：搬家是刻意決策，不是完工連發——否則剛蓋完別的建物的
+                // 300 秒冷卻會把新家計畫的收尾（agency 放最後一塊+完工登記）卡住。
+                r.build_cooldown = 0.0;
                 r.target_x = bx as f32 + 0.5;
                 r.target_z = bz as f32 + 0.5;
                 r.wait_timer = 0.0;
