@@ -5981,12 +5981,14 @@ async fn handle_socket(
                                 } // memory 寫鎖釋放
                             }
                             // 雙方各記一筆「一起見證圓夢」的記憶（掛在對方名下，交情自然加深）。
-                            let mem_w = vwit::witness_memory_for_witness(rname);
+                            // 打上 NEIGHBORLY_TAG（自主提案切片）：這是居民↔居民的模板句，非玩家對話，
+                            // 讓日記優先歸類為「鄰里生活」，別被關鍵字誤判或落入籠統的 Other。
+                            let mem_w = voxel_diary::tag_neighborly(&vwit::witness_memory_for_witness(rname));
                             let ew = {
                                 hub().memory.write().unwrap().add_memory(&witness_id, rname, &mem_w)
                             }; // memory 寫鎖釋放
                             vmem::append_memory(&ew);
-                            let mem_a = vwit::witness_memory_for_achiever(witness_name);
+                            let mem_a = voxel_diary::tag_neighborly(&vwit::witness_memory_for_achiever(witness_name));
                             let ea = {
                                 hub().memory.write().unwrap().add_memory(&resident_id, witness_name, &mem_a)
                             }; // memory 寫鎖釋放
@@ -12023,21 +12025,23 @@ fn tick_residents(dt: f32) {
     // 產生反向欠飯，避免無止盡你來我往）；false=一般守望相助，登記「被分食者欠分食者一口飯」供日後回報。
     for (sharer_id, sharer_name, hungry_id, hungry_name, is_repay) in &share_meal_events {
         // 被分食者的記憶（掛在分食者名下）。回報時：hungry 是當年的恩人，牠記「牠竟記著、把那口飯還我」。
-        let mem_h = if *is_repay {
+        // 打上 NEIGHBORLY_TAG（自主提案切片）：讓日記把這類鄰里模板句歸類為「鄰里生活」，
+        // 不落入籠統的 Other、也不被關鍵字誤判。
+        let mem_h = voxel_diary::tag_neighborly(&if *is_repay {
             vgrat::repay_memory_for_benefactor(sharer_name)
         } else {
             vsharemeal::shared_memory_for_hungry(sharer_name)
-        };
+        });
         let eh = {
             hub().memory.write().unwrap().add_memory(hungry_id, sharer_name, &mem_h)
         }; // memory 寫鎖釋放
         vmem::append_memory(&eh);
         // 分食者的記憶（掛在被分食者名下）。回報時：sharer 是回報者，牠記「今天把當年那口飯還了回去」。
-        let mem_s = if *is_repay {
+        let mem_s = voxel_diary::tag_neighborly(&if *is_repay {
             vgrat::repay_memory_for_repayer(hungry_name)
         } else {
             vsharemeal::shared_memory_for_sharer(hungry_name)
-        };
+        });
         let es = {
             hub().memory.write().unwrap().add_memory(sharer_id, hungry_name, &mem_s)
         }; // memory 寫鎖釋放
@@ -12129,15 +12133,16 @@ fn tick_residents(dt: f32) {
     // 4a-c) 打氣到達記憶落地（ROADMAP 679）：打氣者 + 被打氣者各寫一筆記憶、Feed 廣播。
     // 鎖序：memory 寫（即釋）×2；不巢狀；append-only 不破壞既有資料。
     for (happy_id, happy_name, lonely_rid, lonely_name) in &cheer_arrive_done {
-        // 打氣者的記憶（去陪伴了某人）。
-        let mem_for_cheerful = vcheer::cheer_memory_for_cheerful(lonely_name);
+        // 打氣者的記憶（去陪伴了某人）。打上 NEIGHBORLY_TAG（自主提案切片）：這句含「陪」字，
+        // 若不標記會被日記的玩家對話關鍵字誤判成 Friendship（「有人記得我」），文不對題。
+        let mem_for_cheerful = voxel_diary::tag_neighborly(&vcheer::cheer_memory_for_cheerful(lonely_name));
         let e1 = {
             let mut mem = hub().memory.write().unwrap();
             mem.add_memory(happy_id, lonely_name, &mem_for_cheerful)
         }; // memory 寫鎖釋放
         vmem::append_memory(&e1);
         // 被打氣者的記憶（某人來陪伴我）。
-        let mem_for_lonely = vcheer::cheer_memory_for_lonely(happy_name);
+        let mem_for_lonely = voxel_diary::tag_neighborly(&vcheer::cheer_memory_for_lonely(happy_name));
         let e2 = {
             let mut mem = hub().memory.write().unwrap();
             mem.add_memory(lonely_rid, happy_name, &mem_for_lonely)
@@ -13543,14 +13548,16 @@ fn tick_residents(dt: f32) {
                 let residents = hub().residents.read().unwrap();
                 residents.iter().find(|r| r.name == host_name).map(|r| r.id.clone())
             }; // residents 讀鎖釋放
+            // 打上 NEIGHBORLY_TAG（自主提案切片）：讓日記把拌嘴這類鄰里模板句歸類為
+            // 「鄰里生活」，別落入籠統的 Other、也不被關鍵字誤判。
             {
                 let entry = hub().memory.write().unwrap()
-                    .add_memory(&visitor_id, &host_name, &vquarrel::quarrel_memory_line_visitor(&host_name, pick));
+                    .add_memory(&visitor_id, &host_name, &voxel_diary::tag_neighborly(&vquarrel::quarrel_memory_line_visitor(&host_name, pick)));
                 vmem::append_memory(&entry);
             } // memory 寫鎖釋放
             if let Some(host_id) = host_id {
                 let entry = hub().memory.write().unwrap()
-                    .add_memory(&host_id, visitor_name, &vquarrel::quarrel_memory_line_host(visitor_name, pick));
+                    .add_memory(&host_id, visitor_name, &voxel_diary::tag_neighborly(&vquarrel::quarrel_memory_line_host(visitor_name, pick)));
                 vmem::append_memory(&entry);
             } // memory 寫鎖釋放
             quarrel_line = Some(vquarrel::quarrel_say_line(&host_name, pick));
