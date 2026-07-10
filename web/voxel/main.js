@@ -2181,16 +2181,21 @@ function updateWildlife(list) {
     // 為馴服的動物取名 v1（ROADMAP 895）：記住是否已馴服（點一下能否取名，伺服器仍權威複驗），
     // 已命名的小夥伴頭頂掛上專屬名牌（懶建立、內容變更才重繪貼圖，守 FPS 鐵律）。
     ent.group.userData.wtamed = !!w.tamed;
+    // 寵物指令「安置／召回」v1（ROADMAP 898）：記住命名與待命狀態（「再點一下」據此決定
+    // 該送安置還是召回），已安置的小夥伴名牌旁掛 💤 待命標記，一眼看得出牠在等你。
+    ent.petName = w.name || null;
+    ent.wsettled = !!w.settled;
     if (w.name) {
+      const labelStr = w.name + (w.settled ? " 💤" : "");
       if (!ent.nameLabel) {
-        ent.nameLabel = makeTextSprite(w.name, false);
+        ent.nameLabel = makeTextSprite(labelStr, false);
         ent.nameLabel.position.y = 1.0; // 浮在小動物頭頂（軀幹矮，比居民名牌低）
         ent.nameLabel.scale.set(1.8, 0.45, 1); // 比居民名牌略小，配合小動物體型
         ent.group.add(ent.nameLabel);
-        ent.labelText = w.name;
-      } else if (ent.labelText !== w.name) {
-        setSpriteText(ent.nameLabel, w.name, false);
-        ent.labelText = w.name;
+        ent.labelText = labelStr;
+      } else if (ent.labelText !== labelStr) {
+        setSpriteText(ent.nameLabel, labelStr, false); // 內容變才重繪貼圖（守 FPS 鐵律）
+        ent.labelText = labelStr;
       }
     }
     const dx = w.x - player.x, dz = w.z - player.z;
@@ -2259,7 +2264,9 @@ function pickWildlife(clientX, clientY) {
 // 為馴服的動物取名 v1（ROADMAP 895）：準心/輕點對到一隻「已馴服」的小夥伴 → 跳出取名輸入。
 // 回傳 true 表示這一下已被命名流程接手（呼叫端不要再落到挖掘/挖擊）；false 表示沒對到動物。
 // 伺服器仍會權威複驗（存在＋已馴服＋距離＋清洗名字），前端只是手感提示、不自報合法性。
-function tryNamePet(clientX, clientY) {
+// 點一下馴服的小夥伴：還沒取名 → 替牠取名（895）；已取名 → 在「跟著你」與「在這待命」
+// 之間切換（寵物指令「安置／召回」v1，ROADMAP 898）。先取名建立羈絆，之後點牠就是指揮牠。
+function tryPetInteract(clientX, clientY) {
   const pick = pickWildlife(clientX, clientY);
   if (!pick) return false;
   const ent = wildlifeEnts.get(pick.id);
@@ -2267,8 +2274,13 @@ function tryNamePet(clientX, clientY) {
     showMsg("先餵食馴服牠，牠才願意讓你取名 🥕");
     return true; // 對到動物就接手這一下（別挖到牠背後的地）
   }
-  const cur = ent.labelText || "";
-  const text = window.prompt("替這隻小夥伴取個名字吧（最多 12 字）", cur);
+  // 已取名 → 送安置／召回切換（後端權威判定並回 pet_command_ok 帶當前狀態＋暖句）。
+  if (ent.petName) {
+    ws.send(JSON.stringify({ t: "pet_command", id: pick.id }));
+    return true;
+  }
+  // 還沒取名 → 取名（取完名字，之後再點就是指揮牠待命／跟上）。
+  const text = window.prompt("替這隻小夥伴取個名字吧（最多 12 字）", "");
   if (text !== null && text.trim() !== "") {
     ws.send(JSON.stringify({ t: "name_pet", id: pick.id, name: text }));
   }
@@ -4680,8 +4692,8 @@ if (!isTouch) {
     if (rid) {
       const ent = residents.get(rid);
       openChat(rid, ent && ent.lastName);
-    } else if (tryNamePet(cx, cy)) {
-      // 為馴服的動物取名 v1：準心對到自己馴服的小夥伴 → 取名（優先於挖擊/採礦，不挖牠背後的地）。
+    } else if (tryPetInteract(cx, cy)) {
+      // 寵物互動：準心對到自己馴服的小夥伴 → 取名（895）或安置／召回（898）；優先於挖擊/採礦，不挖牠背後的地。
       isMouseDown = false;
     } else {
       // 暗影生物 v1：準心對到暗影 → 挖擊它（送 shadow_hit；打不打得到由伺服器權威複驗）。
@@ -4757,8 +4769,8 @@ if (isTouch) {
         // 輕點：先看是否點到居民（開對話，兩種模式皆可——不動世界、無誤觸風險）。
         const rid = pickResident(t.clientX, t.clientY);
         if (rid) { const ent = residents.get(rid); openChat(rid, ent && ent.lastName); }
-        else if (tryNamePet(t.clientX, t.clientY)) {
-          // 為馴服的動物取名 v1：輕點到自己馴服的小夥伴 → 取名（像點居民一樣直覺，不動世界）。
+        else if (tryPetInteract(t.clientX, t.clientY)) {
+          // 寵物互動：輕點到自己馴服的小夥伴 → 取名（895）或安置／召回（898），像點居民一樣直覺，不動世界。
         }
         else {
           // 暗影生物 v1：輕點到暗影 → 挖擊（兩種觸控模式皆可——像點居民一樣直覺、無誤觸風險）。
@@ -5373,6 +5385,14 @@ function connect() {
     } else if (m.t === "name_pet_fail") {
       // 為馴服的動物取名 v1：取不了名（太遠／還沒馴服／名字空白）。
       showErr(m.reason || "現在沒法取名");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "pet_command_ok") {
+      // 寵物指令「安置／召回」v1（ROADMAP 898）：切換成功——浮出暖句（💤 待命標記由 players 廣播即時掛上/取下）。
+      showMsg(m.say || (m.settled ? "🐾 牠乖乖在這兒待命～" : "🐾 牠又跟上你了～"));
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+    } else if (m.t === "pet_command_fail") {
+      // 寵物指令「安置／召回」v1：指揮不了（太遠／還沒馴服）。
+      showErr(m.reason || "現在沒法指揮牠");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "return_gift") {
       // 居民回禮 v1（ROADMAP 667）：只有當事玩家才顯示提示並更新背包。

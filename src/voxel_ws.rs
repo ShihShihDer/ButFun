@@ -778,6 +778,11 @@ struct WildlifeAnimal {
     /// `None` = 尚未命名（含所有未馴服動物與魚）。純記憶體、重啟歸零（比照 `tamed`/`following`
     /// 同款 wildlife 暫態慣例，零 migration）。已過 `vpet::sanitize_pet_name` 清洗才會被寫入。
     name: Option<String>,
+    /// 是否被玩家「安置（待命）」在原地（寵物指令「安置／召回」v1，自主提案切片 ROADMAP 898）。
+    /// `true` = 乖乖待在 `home_x`/`home_z`（安置那一刻設為當下位置）小範圍徘徊、不再跟隨你；
+    /// `false`（預設）= 沿用既有跟隨行為。只有 `tamed` 的兔／雞會用到；魚恆為 `false`。
+    /// 純記憶體、重啟歸零（比照 `tamed`/`following`/`name` 同款 wildlife 暫態慣例，零 migration）。
+    settled: bool,
 }
 
 /// 野兔家域點（世界座標偏移，散布在村莊周圍，玩家出生後很快就有機會撞見）。
@@ -813,6 +818,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             following: false,
             lay_cd: 0.0,
             name: None,
+            settled: false,
         }
     });
     let fish = FISH_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
@@ -832,6 +838,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             following: false,
             lay_cd: 0.0,
             name: None,
+            settled: false,
         }
     });
     let chickens = CHICKEN_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
@@ -851,6 +858,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             following: false,
             lay_cd: 0.0,
             name: None,
+            settled: false,
         }
     });
     rabbits.chain(fish).chain(chickens).collect()
@@ -893,6 +901,11 @@ struct WildlifeView {
     /// 前端只在此欄位為真時於該動物頭頂掛名牌。名字已過伺服器端清洗。
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    /// 是否被玩家安置（待命）在原地（寵物指令「安置／召回」v1 ROADMAP 898）：`false` 時
+    /// 不送欄位（additive，向後相容）。前端據此在名牌旁顯示 💤 待命標記、並讓「再點一下」
+    /// 知道當前該送召回還是安置。未安置／未馴服恆 `false`——不信客戶端自報，指令時伺服器仍權威複驗。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    settled: bool,
 }
 
 /// 暗影小靈序列化視圖（暗影生物 v1）：位置＋已受擊數（前端據 hits 顯示「快散了」的變淡）。
@@ -2878,7 +2891,7 @@ fn players_snapshot_json() -> String {
     let wildlife: Vec<WildlifeView> = {
         let a = hub().wildlife.read().unwrap();
         a.iter()
-            .map(|w| WildlifeView { id: w.id.clone(), kind: w.kind.wire(), x: w.body.x, y: w.body.y, z: w.body.z, yaw: w.yaw, tamed: w.tamed, name: w.name.clone() })
+            .map(|w| WildlifeView { id: w.id.clone(), kind: w.kind.wire(), x: w.body.x, y: w.body.y, z: w.body.z, yaw: w.yaw, tamed: w.tamed, name: w.name.clone(), settled: w.settled })
             .collect()
     }; // 野兔讀鎖在此釋放
     // 暗影快照（暗影生物 v1，短鎖、不巢狀）：夜間在世的暗影小靈，前端渲染半透明漂浮體。
@@ -3064,6 +3077,12 @@ enum ClientMsg {
     /// （"vox_wld_N"／"vox_chk_N"），`name` 是玩家自由輸入的名字（伺服器不信其合法性）。
     #[serde(rename = "name_pet")]
     NamePet { id: String, name: String },
+    /// 寵物指令「安置／召回」v1（自主提案切片，ROADMAP 898）：點一下已馴服的小夥伴 →
+    /// 在「跟著你走」與「在這安家待命」之間切換。伺服器驗證（這隻動物存在＋已馴服＋在觸及
+    /// 範圍 `vwild::COMMAND_REACH` 內）後翻轉 `settled` 旗標：安置那一刻把牠的家域點設為當下
+    /// 位置（就地安頓、小範圍徘徊、不再跟隨）；召回則恢復跟隨。`id` 是 wildlife 系統 id。
+    #[serde(rename = "pet_command")]
+    PetCommand { id: String },
     /// 居民交易 v1：向指定居民請求以物易物（ROADMAP 670）。
     /// 伺服器回 `trade_offer`，玩家再傳 TradeAccept 接受；提案 30 秒後自動過期。
     #[serde(rename = "trade_request")]
@@ -6817,6 +6836,75 @@ async fn handle_socket(
                     }
                 }
             }
+            // ── 寵物指令「安置／召回」v1（自主提案切片，ROADMAP 898）───────────────────
+            Ok(ClientMsg::PetCommand { id }) => {
+                // 鎖序：players 讀位置 → wildlife 讀鎖驗存在/已馴服/距離 → wildlife 寫鎖翻旗標，
+                //   全程短取即釋、不巢狀（守 prod 死鎖鐵律，比照 895 取名同一條已驗證慣例）。
+                // 濫用防護：本指令不收任何自由文字、不觸發 LLM（零注入面／零燒額度）；能否安置／召回
+                //   完全由伺服器權威判定（這隻動物存在＋已馴服＋在觸及範圍內），客戶端不自報合法性。
+                let Some((px, _py, pz)) = player_pos(my_id) else {
+                    continue;
+                };
+                // ① 讀鎖快照：這隻動物是否存在、已馴服、距離平方、名字（回饋句用）。
+                let snap: Option<(bool, f32, Option<String>)> = {
+                    let animals = hub().wildlife.read().unwrap();
+                    animals.iter().find(|a| a.id == id).map(|a| {
+                        let dx = px - a.body.x;
+                        let dz = pz - a.body.z;
+                        (a.tamed, dx * dx + dz * dz, a.name.clone())
+                    })
+                }; // wildlife 讀鎖釋放
+                let Some((tamed, dist_sq, pet_name)) = snap else {
+                    continue; // 這隻動物已消失（id 過期）——靜默忽略
+                };
+                if !tamed {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "pet_command_fail", "reason": "先餵食馴服牠，牠才聽你的" }).to_string(),
+                    ));
+                    continue;
+                }
+                if dist_sq > vwild::COMMAND_REACH * vwild::COMMAND_REACH {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "pet_command_fail", "reason": "走近一點再指揮牠" }).to_string(),
+                    ));
+                    continue;
+                }
+                // ② 寫鎖翻轉 settled（再確認仍存在/仍馴服）。安置那一刻把家域點設為當下位置，
+                //    並把 target/following 一起歸位，讓牠就地安頓、不再拔腿跟你；召回則恢復跟隨。
+                let toggled: Option<bool> = {
+                    let mut animals = hub().wildlife.write().unwrap();
+                    match animals.iter_mut().find(|a| a.id == id) {
+                        Some(a) if a.tamed => {
+                            a.settled = !a.settled;
+                            if a.settled {
+                                a.home_x = a.body.x;
+                                a.home_z = a.body.z;
+                                a.target_x = a.body.x;
+                                a.target_z = a.body.z;
+                                a.following = false;
+                                a.wait_timer = 0.0;
+                            }
+                            Some(a.settled)
+                        }
+                        _ => None,
+                    }
+                }; // wildlife 寫鎖釋放
+                let Some(settled) = toggled else {
+                    continue; // 這期間被移除／狀態變 → 靜默忽略
+                };
+                // ③ 廣播讓所有在場玩家立即看到 💤 待命標記變化 + 單播暖句確認給指揮者。
+                broadcast_players();
+                let display = pet_name.as_deref().unwrap_or("小夥伴");
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({
+                        "t": "pet_command_ok",
+                        "id": id,
+                        "settled": settled,
+                        "say": vwild::command_ack_line(settled, display),
+                    })
+                    .to_string(),
+                ));
+            }
             // ── 集會鐘 v1（自主提案切片）：敲響一座鐘，把附近閒著的居民召到身邊 ─────────
             Ok(ClientMsg::RingBell { x, y, z }) => {
                 // 鎖序：players 讀位置 → delta 讀目標型別 → residents 寫設應召，循序不巢狀（守死鎖鐵律）。
@@ -10484,7 +10572,9 @@ fn tick_wildlife(dt: f32) {
                 // （馴服兔子跟隨你 v1，自主提案切片，ROADMAP 851）。
                 if a.tamed {
                     a.fleeing = false;
-                    a.following = vwild::should_follow(a.following, nearest_dist_sq);
+                    // 寵物指令「安置／召回」v1（898）：安置（待命）中一律不跟隨，只在被放下的
+                    // 家域點小範圍徘徊；否則沿用既有跟隨手感。
+                    a.following = vwild::follow_when_settleable(a.settled, a.following, nearest_dist_sq);
                     if a.following {
                         if let Some((px, pz)) = nearest {
                             if vwild::should_close_follow_gap(nearest_dist_sq) {
@@ -10503,8 +10593,13 @@ fn tick_wildlife(dt: f32) {
                         );
                         if reached {
                             let angle = rand::random::<f32>() * std::f32::consts::TAU;
-                            let radius = vwild::WANDER_MIN_R
-                                + rand::random::<f32>() * (vwild::WANDER_MAX_R - vwild::WANDER_MIN_R);
+                            // 安置中收斂到 SETTLE_WANDER_R（只在原地那一小塊踱步）；否則正常閒晃半徑。
+                            let radius = if a.settled {
+                                rand::random::<f32>() * vwild::SETTLE_WANDER_R
+                            } else {
+                                vwild::WANDER_MIN_R
+                                    + rand::random::<f32>() * (vwild::WANDER_MAX_R - vwild::WANDER_MIN_R)
+                            };
                             let (tx, tz) = vr::wander_target(a.home_x, a.home_z, angle, radius);
                             a.target_x = tx;
                             a.target_z = tz;
@@ -10581,7 +10676,9 @@ fn tick_wildlife(dt: f32) {
                 let nearest_dist_sq = nearest
                     .map(|(px, pz)| (a.body.x - px).powi(2) + (a.body.z - pz).powi(2))
                     .unwrap_or(f32::MAX);
-                let now_following = a.tamed && vwild::should_follow(a.following, nearest_dist_sq);
+                // 寵物指令「安置／召回」v1（898）：安置（待命）中的雞一律不跟隨、只在原地小範圍踱步。
+                let now_following =
+                    a.tamed && vwild::follow_when_settleable(a.settled, a.following, nearest_dist_sq);
                 a.following = now_following;
                 if now_following {
                     if let Some((px, pz)) = nearest {
@@ -10600,8 +10697,13 @@ fn tick_wildlife(dt: f32) {
                         vr::step_toward(&world, &mut a.body, a.target_x, a.target_z, dt, vwild::WANDER_SPEED);
                     if reached {
                         let angle = rand::random::<f32>() * std::f32::consts::TAU;
-                        let radius = vwild::WANDER_MIN_R
-                            + rand::random::<f32>() * (vwild::WANDER_MAX_R - vwild::WANDER_MIN_R);
+                        // 安置中收斂到 SETTLE_WANDER_R（只在被放下那一小塊踱步）；否則正常閒晃半徑。
+                        let radius = if a.settled {
+                            rand::random::<f32>() * vwild::SETTLE_WANDER_R
+                        } else {
+                            vwild::WANDER_MIN_R
+                                + rand::random::<f32>() * (vwild::WANDER_MAX_R - vwild::WANDER_MIN_R)
+                        };
                         let (tx, tz) = vr::wander_target(a.home_x, a.home_z, angle, radius);
                         a.target_x = tx;
                         a.target_z = tz;
@@ -10684,6 +10786,7 @@ fn maybe_breed_rabbits() {
             following: false,
             lay_cd: 0.0,
             name: None,
+            settled: false,
         });
         vwild::baby_line(rand::random::<u64>() as usize).to_string()
     }; // wildlife 寫鎖釋放
