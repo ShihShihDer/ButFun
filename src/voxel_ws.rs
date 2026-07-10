@@ -81,6 +81,7 @@ use crate::voxel_admire as vadmire;
 use crate::voxel_farm_admire as vfarmadmire;
 use crate::voxel_structure_name as vstructname;
 use crate::voxel_village_milestone as vvillms;
+use crate::voxel_monument as vmonument;
 use crate::voxel_confide as vconfide;
 use crate::voxel_request as vrequest;
 use crate::voxel_witness as vwit;
@@ -5038,6 +5039,73 @@ async fn handle_socket(
                                                         landmark_count,
                                                     ),
                                                 );
+                                                // 村碑 v1（ROADMAP 885）：集體成就第一次成為實體地標——
+                                                // 居民合力在村莊中心廣場把中央村碑再拔高一段（石磚柱身＋
+                                                // 乙太燈頂），逐階長高。只在有村莊中心時發生；比照殖民奠基
+                                                // （884）黃金安全模式：surface_y 鎖外算 → deltas 寫鎖批次
+                                                // 落子（只在 air 落，絕不覆蓋既有方塊、冪等）→ 鎖外廣播＋
+                                                // append-only 持久化。
+                                                if let (Some(tier_idx), Some((mcx, mcz))) =
+                                                    (vvillms::tier_index(tier.id), vvillage::load_village_center())
+                                                {
+                                                    let sy = vbuild::surface_y(mcx, mcz);
+                                                    let cells =
+                                                        vmonument::monument_cells(mcx, mcz, sy, tier_idx);
+                                                    let mut placed: Vec<(i32, i32, i32, Block)> = Vec::new();
+                                                    {
+                                                        let mut world = hub().deltas.write().unwrap();
+                                                        for &(x, y, z, blk) in &cells {
+                                                            let cur =
+                                                                voxel::effective_block_at(&world, x, y, z);
+                                                            if cur == blk {
+                                                                continue; // 已是目標（重跑冪等）
+                                                            }
+                                                            if cur == Block::Air {
+                                                                voxel::set_block(&mut world, x, y, z, blk);
+                                                                placed.push((x, y, z, blk));
+                                                            }
+                                                        }
+                                                    } // deltas 寫鎖釋放
+                                                    for &(x, y, z, blk) in &placed {
+                                                        broadcast_block(x, y, z, blk);
+                                                        vbuild::append_world_block(x, y, z, blk as u8);
+                                                    }
+                                                    if !placed.is_empty() {
+                                                        let height = vmonument::total_height(tier_idx);
+                                                        vfeed::append_feed(
+                                                            "村莊里程碑",
+                                                            "全村",
+                                                            &vmonument::monument_feed_line(
+                                                                tier.name_zh,
+                                                                height,
+                                                            ),
+                                                        );
+                                                        // 在場居民把「和大家一起立碑」寫進記憶（記憶→
+                                                        // 社會歸屬感）——記憶寫鎖批次即釋、append IO 在鎖外。
+                                                        let summary =
+                                                            vmonument::monument_memory_line(height);
+                                                        let roster: Vec<(String, String)> = {
+                                                            let rs = hub().residents.read().unwrap();
+                                                            rs.iter()
+                                                                .map(|r| {
+                                                                    (r.id.to_string(), r.name.to_string())
+                                                                })
+                                                                .collect()
+                                                        };
+                                                        let mut entries = Vec::new();
+                                                        {
+                                                            let mut mem = hub().memory.write().unwrap();
+                                                            for (rid, rname) in &roster {
+                                                                entries.push(mem.add_memory(
+                                                                    rid, rname, &summary,
+                                                                ));
+                                                            }
+                                                        } // memory 寫鎖釋放
+                                                        for e in &entries {
+                                                            vmem::append_memory(e);
+                                                        }
+                                                    }
+                                                }
                                             }
                                         } else {
                                             vfeed::append_feed(
