@@ -286,6 +286,11 @@ impl PlotRegistry {
         self.claims.contains_key(resident)
     }
 
+    /// 目前已被認領的地塊數（＝主村住得多滿的成熟度信號，供分村殖民奠基閘讀）。
+    pub fn claimed_count(&self) -> usize {
+        self.claims.len()
+    }
+
     /// 取此居民已認領的地塊中心（沒認領則 None）。
     pub fn claim_of(&self, resident: &str) -> Option<(i32, i32)> {
         self.claims.get(resident).copied()
