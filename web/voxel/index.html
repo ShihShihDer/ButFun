@@ -38,6 +38,24 @@
       background: rgba(150,30,30,0.9); color: #fff; padding: 6px 12px; border-radius: 8px;
       font-size: 13px; display: none; max-width: 90vw;
     }
+    /* 時段指示器（ROADMAP 896）：頂部中央一枚徽章，讓玩家一眼知道現在是黎明/白天/黃昏/夜晚＋概略時刻，
+       底色隨時段換調（黃昏偏橙、夜晚偏深藍），不必再靠天空亮度猜。點不到、純顯示。 */
+    #clock {
+      position: fixed; left: 50%; top: 10px; transform: translateX(-50%); z-index: 6;
+      background: rgba(20,28,40,0.62); color: #eaf2ff; padding: 5px 12px;
+      border-radius: 999px; font-size: 13px; line-height: 1.2; white-space: nowrap;
+      pointer-events: none; box-shadow: 0 1px 6px rgba(0,0,0,0.35);
+      border: 1px solid rgba(255,255,255,0.10);
+      transition: background 1.2s linear, border-color 1.2s linear;
+      display: flex; align-items: center; gap: 6px;
+    }
+    #clock .cl-icon { font-size: 15px; }
+    #clock .cl-time { opacity: 0.72; font-variant-numeric: tabular-nums; font-size: 12px; }
+    /* 各時段底色（與天空色階同調，讓徽章與環境呼應） */
+    #clock.cl-dawn  { background: rgba(120,64,40,0.66); border-color: rgba(240,150,90,0.35); }
+    #clock.cl-day   { background: rgba(40,72,110,0.60); border-color: rgba(160,200,240,0.28); }
+    #clock.cl-dusk  { background: rgba(120,44,28,0.68); border-color: rgba(255,110,50,0.38); }
+    #clock.cl-night { background: rgba(16,22,44,0.72); border-color: rgba(90,120,190,0.32); }
     #dbg {
       position: fixed; right: 10px; top: 10px; z-index: 6;
       background: rgba(0,0,0,0.55); color: #9effa0; padding: 6px 10px;
@@ -1491,6 +1509,8 @@
   <!-- 受傷輕紅暈（玩家生存指標 v1·溫和版）：扣血時淡入一層極輕微紅色再淡出，別嚇人 -->
   <div id="damageFlash"></div>
   <div id="hud">載入中…</div>
+  <!-- 時段指示器（ROADMAP 896）：內容由 main.js 每 tick 依 worldTime 更新 -->
+  <div id="clock" class="cl-day"><span class="cl-icon">☀️</span><span class="cl-name">白天</span><span class="cl-time">12:00</span></div>
   <!-- Google 登入帳號 chip（內容由 main.js 依登入態填）-->
   <div id="acct"></div>
   <div id="dbg"></div>
