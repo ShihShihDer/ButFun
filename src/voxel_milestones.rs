@@ -74,6 +74,9 @@ pub const MILESTONES: &[MilestoneDef] = &[
     MilestoneDef { id: "first_chicken_tame", name_zh: "初次養雞", desc_zh: "用一把種子馴服了一隻雞", icon: "🐔" },
     // 深層寶藏 v1（自主提案切片）：天然礦脈裡的秘密驚喜，挖礦第一次有機會巧遇乙太幣。
     MilestoneDef { id: "first_treasure", name_zh: "初次尋寶", desc_zh: "在天然礦脈裡意外挖到一座藏寶", icon: "💎" },
+    // 邊陲營地探索 v1（自主提案切片，接續 881 立牌）：荒野裡居民親手搭起的據點，玩家視角
+    // 第一次也被世界記住——地標系統從「居民立牌」延伸出「玩家探索紀事」的另一半。
+    MilestoneDef { id: "first_outpost_discover", name_zh: "覓得營地", desc_zh: "循著居民的足跡走進荒野，找到了她親手搭起的邊陲營地", icon: "⛺" },
 ];
 
 /// 查表確認是否為已知里程碑 id（守 store 資料乾淨，未知 id 不寫入）。

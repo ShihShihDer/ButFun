@@ -1312,6 +1312,22 @@ pub struct InventedSkillRecord {
     /// `None`＝自己發明的（或舊記錄，`#[serde(default)]` 向後相容：舊檔沒此欄位載回即 None）。
     #[serde(default)]
     pub source: Option<String>,
+    /// 師承標記（技能互教·北極星第四刀）：`true`＝這筆是**在世居民之間口耳相傳學來的**
+    /// （`source`＝老師名，顯示「師承XX」）；`false`＝沿用舊語意（`source` 有值＝出生時
+    /// 承自父母「承自XX」，`None`＝自己發明）。`#[serde(default)]` 向後相容：
+    /// 舊檔沒此欄位載回即 false，既有親子繼承記錄語意不變。
+    #[serde(default)]
+    pub taught: bool,
+}
+
+/// 一筆技能的「來歷」標籤（師承鏈可見·北極星第四刀）：三種來源攤開給人看——
+/// 自己發明／出生承自父母／在世時師承老師。技能簿 API 與面板用它呈現村裡的知識系譜。
+pub fn lineage_label(rec: &InventedSkillRecord) -> String {
+    match (&rec.source, rec.taught) {
+        (None, _) => "自己發明".to_string(),
+        (Some(n), true) => format!("師承{n}"),
+        (Some(n), false) => format!("承自{n}"),
+    }
 }
 
 /// 每居民技能庫。重啟後載回——「她已經會了」跨重啟仍然會。
@@ -1365,6 +1381,7 @@ impl InventedSkillStore {
             steps,
             seq: self.next_seq,
             source: None,
+            taught: false,
         };
         self.next_seq = self.next_seq.wrapping_add(1);
         self.skills.push(rec.clone());
@@ -1395,10 +1412,45 @@ impl InventedSkillStore {
             steps: from.steps.clone(),
             seq: self.next_seq,
             source: Some(parent_name.to_string()),
+            taught: false,
         };
         self.next_seq = self.next_seq.wrapping_add(1);
         self.skills.push(rec.clone());
         Some(rec)
+    }
+
+    /// 讓 `student` 從老師手上**活著學會**一筆技能（技能互教·北極星第四刀）：把 `from` 的
+    /// 原語序列複製到學生名下，`source` 標成老師名、`taught` 標 true——顯示成「師承XX」，
+    /// 與出生時的「承自XX」（親子）並行成兩條知識傳承的路。學到之後零 LLM 重用照舊
+    /// （`find_for` 查得到、`check_stored_steps` 驗過就能執行），也能再往下教（師承鏈一節一節）。
+    /// 同處境（goal_block）student 已有技能 → 不重複學（回 `None`）。回傳 record 供落地。
+    pub fn learn_from(
+        &mut self,
+        student: &str,
+        from: &InventedSkillRecord,
+        teacher_name: &str,
+    ) -> Option<InventedSkillRecord> {
+        if self.find_for(student, from.goal_block).is_some() {
+            return None;
+        }
+        let rec = InventedSkillRecord {
+            resident: student.to_string(),
+            name: from.name.clone(),
+            goal_block: from.goal_block,
+            steps: from.steps.clone(),
+            seq: self.next_seq,
+            source: Some(teacher_name.to_string()),
+            taught: true,
+        };
+        self.next_seq = self.next_seq.wrapping_add(1);
+        self.skills.push(rec.clone());
+        Some(rec)
+    }
+
+    /// 這位居民技能庫的完整記錄快照（師承鏈可見·北極星第四刀）：技能簿 API 用它連同
+    /// 來歷（[`lineage_label`]）一起攤開。順序同技能庫既有順序（與 `names_for` 對齊）。
+    pub fn records_for(&self, resident: &str) -> Vec<&InventedSkillRecord> {
+        self.skills.iter().filter(|k| k.resident == resident).collect()
     }
 
     /// 這位居民已會技能的**目標材料 id 集合**（好奇心第三刀：可能性目錄
@@ -2673,6 +2725,7 @@ mod tests {
             steps: plan.raw_steps.clone(),
             seq: 0,
             source: None,
+            taught: false,
         };
         let new = InventedSkillRecord {
             resident: "vox_res_0".into(),
@@ -2681,6 +2734,7 @@ mod tests {
             steps: plan.raw_steps,
             seq: 5,
             source: None,
+            taught: false,
         };
         let s = InventedSkillStore::from_entries(vec![old, new]);
         assert_eq!(s.find_for("vox_res_0", 10).unwrap().name, "新玻璃法");
@@ -2712,6 +2766,87 @@ mod tests {
         let line = r#"{"resident":"vox_res_0","name":"燒玻璃","goal_block":10,"steps":[],"seq":0}"#;
         let rec: InventedSkillRecord = serde_json::from_str(line).unwrap();
         assert_eq!(rec.source, None);
+    }
+
+    // ── 技能互教（北極星第四刀）：learn_from ＋師承鏈 ─────────────────────────────
+
+    #[test]
+    fn learn_from_copies_skill_and_marks_teacher() {
+        let plan = parse_plan(glass_plan_json()).unwrap();
+        let mut s = InventedSkillStore::new();
+        // 露娜（vox_res_0）自己發明了「燒玻璃」，就地教給諾娃（vox_res_1）。
+        s.add("vox_res_0", "燒玻璃", 10, plan.raw_steps.clone()).unwrap();
+        let skill = s.find_for("vox_res_0", 10).unwrap().clone();
+        let learned = s.learn_from("vox_res_1", &skill, "露娜").unwrap();
+        assert_eq!(learned.resident, "vox_res_1");
+        assert_eq!(learned.name, "燒玻璃");
+        assert_eq!(learned.steps, plan.raw_steps);
+        assert_eq!(learned.source.as_deref(), Some("露娜"));
+        assert!(learned.taught, "教學學來的要標師承，不能混同親子承繼");
+        // 零 LLM 重用照舊：她自己的技能庫查得到、存檔驗證也過得了（下次同處境直接做）。
+        assert!(s.find_for("vox_res_1", 10).is_some());
+        assert!(check_steps(&learned.steps).is_some(), "學來的原語序列應能通過白名單驗證");
+    }
+
+    #[test]
+    fn learn_from_dedups_when_student_already_knows() {
+        let plan = parse_plan(glass_plan_json()).unwrap();
+        let mut s = InventedSkillStore::new();
+        s.add("vox_res_0", "燒玻璃", 10, plan.raw_steps.clone()).unwrap();
+        s.add("vox_res_1", "自己的燒玻璃法", 10, plan.raw_steps).unwrap();
+        let skill = s.find_for("vox_res_0", 10).unwrap().clone();
+        assert!(s.learn_from("vox_res_1", &skill, "露娜").is_none(), "同處境已會就不重複學");
+    }
+
+    #[test]
+    fn taught_skill_can_be_taught_onward_forming_a_chain() {
+        // 師承鏈一節一節：露娜發明 → 教諾娃 → 諾娃再教賽勒，賽勒的 source 是諾娃（直系老師）。
+        let plan = parse_plan(glass_plan_json()).unwrap();
+        let mut s = InventedSkillStore::new();
+        s.add("vox_res_0", "燒玻璃", 10, plan.raw_steps).unwrap();
+        let luna_skill = s.find_for("vox_res_0", 10).unwrap().clone();
+        s.learn_from("vox_res_1", &luna_skill, "露娜").unwrap();
+        // 諾娃學會後，teachable 查得到「諾娃會、賽勒不會」→ 可再往下教。
+        let nova_skill = s.teachable("vox_res_1", "vox_res_2").expect("學來的技能也可再教").clone();
+        let seler = s.learn_from("vox_res_2", &nova_skill, "諾娃").unwrap();
+        assert_eq!(seler.source.as_deref(), Some("諾娃"));
+        assert!(seler.taught);
+    }
+
+    #[test]
+    fn lineage_label_distinguishes_three_origins() {
+        let plan = parse_plan(glass_plan_json()).unwrap();
+        let mut s = InventedSkillStore::new();
+        let invented = s.add("vox_res_0", "燒玻璃", 10, plan.raw_steps).unwrap();
+        assert_eq!(lineage_label(&invented), "自己發明");
+        let inherited = s.inherit("vox_res_4", &invented, "露娜").unwrap();
+        assert_eq!(lineage_label(&inherited), "承自露娜");
+        let taught = s.learn_from("vox_res_1", &invented, "露娜").unwrap();
+        assert_eq!(lineage_label(&taught), "師承露娜");
+    }
+
+    #[test]
+    fn old_record_without_taught_loads_as_parent_inheritance() {
+        // 向後相容：#998 親子繼承的舊 jsonl 沒有 taught 欄位 → 載回 taught=false，
+        // 來歷仍顯示「承自XX」，語意不變（不會被誤標成師承）。
+        let line = r#"{"resident":"vox_res_4","name":"燒玻璃","goal_block":10,"steps":[],"seq":3,"source":"諾娃"}"#;
+        let rec: InventedSkillRecord = serde_json::from_str(line).unwrap();
+        assert!(!rec.taught);
+        assert_eq!(lineage_label(&rec), "承自諾娃");
+    }
+
+    #[test]
+    fn records_for_aligns_with_names_for_order() {
+        let plan = parse_plan(glass_plan_json()).unwrap();
+        let mut s = InventedSkillStore::new();
+        s.add("vox_res_0", "燒玻璃", 10, plan.raw_steps.clone()).unwrap();
+        s.add("vox_res_0", "備木板", 11, plan.raw_steps).unwrap();
+        let names = s.names_for("vox_res_0");
+        let recs = s.records_for("vox_res_0");
+        assert_eq!(names.len(), recs.len());
+        for (n, r) in names.iter().zip(recs.iter()) {
+            assert_eq!(n, &r.name, "records_for 順序須與 names_for 對齊（技能簿並排呈現）");
+        }
     }
 
     #[test]
