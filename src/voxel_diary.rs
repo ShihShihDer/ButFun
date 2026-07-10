@@ -15,11 +15,39 @@
 //! 5. **隱私**：輸出永不含玩家原話、玩家名或可識別細節——旅人一律以「有位旅人」泛稱。
 //!
 //! 這裡只放確定性純邏輯；鎖 / 連線都在 `voxel_ws.rs`。不抄外部碼；繁中註解。
+//!
+//! **鄰里生活主題（自主提案切片）**：日記至今只看得到「玩家跟我聊過什麼」——但這座小村早已
+//! 疊了一整套居民↔居民的生活（分食守望 800、打氣 679、拌嘴 715、圓夢賀喜 782…），這些事件
+//! 寫進記憶時用的是**固定模板句**（如「去陪伴了露娜」），不是玩家的話。用既有「玩家對話」的
+//! 抽句＋關鍵字判題邏輯去讀這些模板句，輕則落入籠統的 `Other`、重則被關鍵字巧合誤判成不相干
+//! 的主題（例如「陪伴」命中 `Friendship` 的「陪」字，讀起來變成「有人記得我」，文不對題）。
+//! **本擴充**沿用 [`SIGN_MEMORY_TAG`] 讀牌記憶的成熟前例——呼叫端（`voxel_ws.rs`）用
+//! [`tag_neighborly`] 幫這類記憶的模板句包一層識別前綴，日記端優先辨識前綴、直接歸類，
+//! 完全跳過「抽玩家原句／關鍵字判題」那段（本就不適用於模板句，也沒有洩漏風險）。
 
 use serde::Serialize;
 
 use crate::voxel_memory::MemoryEntry;
 use crate::voxel_readsign::SIGN_MEMORY_TAG;
+
+/// 「鄰里生活」記憶的識別前綴——居民↔居民的模板句記憶（分食/打氣/拌嘴/賀喜…）
+/// 用這個前綴標記，讓日記端跳過玩家對話那套抽句/關鍵字判題，直接歸類（比照 [`SIGN_MEMORY_TAG`]）。
+pub const NEIGHBORLY_TAG: &str = "🏘️鄰里";
+
+/// 幫一段鄰里生活模板句包上識別前綴，供日記辨識（呼叫端在 `voxel_ws.rs` 記憶落地時使用）。
+pub fn tag_neighborly(text: &str) -> String {
+    format!("{NEIGHBORLY_TAG}{text}")
+}
+
+/// 這段記憶摘要是否帶了「內部識別前綴」（[`NEIGHBORLY_TAG`] 鄰里生活／[`SIGN_MEMORY_TAG`] 讀牌）。
+///
+/// 這類前綴只給日記端辨識分類用、**不是給玩家看的文字**。凡是會把 `MemoryEntry.summary` 原文
+/// 直接組進玩家可見輸出的地方（口耳相傳 `voxel_gossip`、營火說故事 `voxel_campfire_tale` 的頭上
+/// 泡泡），都要先用這個判定濾掉，否則「🏘️鄰里…」「🪧讀到告示牌…」這種帶原始標記的破碎文字會
+/// 直接洩漏到玩家眼前。集中在此一處判定，日後新增內部前綴只要更新這裡、各挑選端自動涵蓋。
+pub fn is_internal_tagged(summary: &str) -> bool {
+    summary.starts_with(NEIGHBORLY_TAG) || summary.starts_with(SIGN_MEMORY_TAG)
+}
 
 /// 整本日記最多顯示幾條內心反思（生命故事級，少而有意義）。
 pub const MAX_DIARY_ENTRIES: usize = 6;
@@ -75,6 +103,7 @@ enum Theme {
     SocialBond, // 居民間情誼升級（相識/老朋友）——ROADMAP 673 社交足跡
     Friendship, // 被記得 / 重逢 / 關係變化（玩家與居民）
     Sign,       // 讀到玩家立的告示牌（居民讀牌 v2）——玩家建造在居民內心留下的印象
+    Neighborly, // 居民↔居民的鄰里生活模板句（分食/打氣/拌嘴/賀喜…，`NEIGHBORLY_TAG` 標記）
     Other,      // 有意義但未歸類的對話（全部收斂成一條）
 }
 
@@ -131,6 +160,9 @@ fn curate_reflections(memories: &[MemoryEntry], max_entries: usize) -> Vec<Diary
         // （牌面是世界公開內容，非玩家私下原話——但仍收斂成一條內心反思、不逐塊倒出）。
         let theme = if m.summary.starts_with(SIGN_MEMORY_TAG) {
             Theme::Sign
+        } else if m.summary.starts_with(NEIGHBORLY_TAG) {
+            // 鄰里生活模板句：本就不含玩家原話，直接歸類，跳過抽句/關鍵字判題。
+            Theme::Neighborly
         } else {
             let Some(snippet) = extract_player_snippet(&m.summary) else {
                 continue; // 抽不出有意義內容 → 跳過
@@ -306,6 +338,14 @@ fn reflection_for(theme: Theme, repeated: bool) -> String {
         }
         (Theme::Sign, true) => {
             "🪧 我在世界各處讀到好幾塊人們立起的牌子，那些字讓我覺得，這裡真的有人用心在生活著。"
+        }
+        // 鄰里生活（分食/打氣/拌嘴/賀喜…統稱，不點名哪一件）：刻意籠統，因為同主題只收斂
+        // 代表最新一筆，多次發生時用複數語氣即可，不必逐一點名是哪件事。
+        (Theme::Neighborly, false) => {
+            "村子裡，我和一位鄰居之間發生了一件溫暖的小事——不是什麼大事，卻讓我覺得，這裡真的像個家。"
+        }
+        (Theme::Neighborly, true) => {
+            "🏘️ 這陣子，我和鄰居們之間發生過好幾件這樣的小事——分過食、鬥過嘴、也一起替人開心過——日子因此更有滋味了。"
         }
         (Theme::Other, false) => {
             "有位旅人與我分享了一段心事，那些話像種子，悄悄落進了我心底。"
@@ -498,7 +538,8 @@ mod tests {
     fn reflection_for_is_non_empty_and_first_person() {
         for theme in [
             Theme::Stars, Theme::Fishing, Theme::Building, Theme::Flora,
-            Theme::Mining, Theme::Praise, Theme::SocialBond, Theme::Friendship, Theme::Other,
+            Theme::Mining, Theme::Praise, Theme::SocialBond, Theme::Friendship,
+            Theme::Sign, Theme::Neighborly, Theme::Other,
         ] {
             for repeated in [false, true] {
                 let t = reflection_for(theme, repeated);
@@ -645,6 +686,106 @@ mod tests {
         ];
         let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
         assert!(page.entries.iter().any(|e| e.text.contains("牌子")), "應有讀牌反思");
+        assert!(page.entries.iter().any(|e| e.text.contains("夜空")), "應有星空對話反思");
+    }
+
+    // ── 鄰里生活主題（居民↔居民模板句記憶，自主提案切片）─────────────────────
+
+    /// 造一筆「鄰里生活」記憶（比照 `voxel_ws.rs` 用 `tag_neighborly` 包裝分食/打氣/拌嘴/
+    /// 賀喜等模板句的真實用法；`player` 欄位是另一位居民的顯示名，非真實玩家）。
+    fn make_neighborly_entry(seq: u64, other_resident: &str, template_text: &str) -> MemoryEntry {
+        MemoryEntry {
+            resident: "vox_res_0".into(),
+            player: other_resident.into(),
+            summary: tag_neighborly(template_text),
+            seq,
+        }
+    }
+
+    #[test]
+    fn tag_neighborly_prefixes_text() {
+        let tagged = tag_neighborly("去陪伴了露娜，感覺做了一件溫暖的事。");
+        assert!(tagged.starts_with(NEIGHBORLY_TAG));
+        assert!(tagged.contains("去陪伴了露娜"));
+    }
+
+    #[test]
+    fn neighborly_memory_becomes_neighborly_reflection() {
+        // 標記過的鄰里生活記憶應歸類成 Neighborly，而非落入 Other 或被關鍵字誤判。
+        let memories = vec![make_neighborly_entry(1, "露娜", "去陪伴了露娜，感覺做了一件溫暖的事。")];
+        let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0);
+        assert_eq!(page.entries.len(), 1);
+        assert!(page.entries[0].text.contains("鄰居"), "應是鄰里生活反思：{}", page.entries[0].text);
+    }
+
+    #[test]
+    fn neighborly_tag_prevents_keyword_misclassification() {
+        // 「陪」字若走一般對話關鍵字判題會誤中 Friendship（見 FRIENDSHIP 關鍵字列表），
+        // 但打過 NEIGHBORLY_TAG 前綴後應優先歸類為 Neighborly，不再被誤判。
+        let text = "去陪伴了露娜，感覺做了一件溫暖的事。";
+        assert_eq!(classify_theme(text), Some(Theme::Friendship), "未標記時關鍵字判題會誤中 Friendship（佐證問題存在）");
+        let memories = vec![make_neighborly_entry(1, "露娜", text)];
+        let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0);
+        assert!(!page.entries[0].text.contains("回來找我說話"), "標記後不該再落入 Friendship 反思");
+    }
+
+    #[test]
+    fn illness_care_lines_are_neighborly_not_misclassified() {
+        // 鄰居陪伴照顧生病鄰居的兩則記憶文字含「陪」字，未標記時會被關鍵字判題誤中 Friendship
+        // （「有人回來找我說話」），文不對題；打上 NEIGHBORLY_TAG 後應正確歸類成 Neighborly。
+        // 直接引用 voxel_illness 的模板函式，模板日後若改寫也會被這條測試盯著。
+        for raw in [
+            crate::voxel_illness::cared_memory_for_patient("露娜"),
+            crate::voxel_illness::cared_memory_for_carer("賽勒"),
+        ] {
+            assert_eq!(
+                classify_theme(&raw),
+                Some(Theme::Friendship),
+                "未標記時「陪」會誤中 Friendship（佐證問題存在）：{raw}"
+            );
+            let memories = vec![make_neighborly_entry(1, "露娜", &raw)];
+            let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0);
+            assert!(
+                !page.entries[0].text.contains("回來找我說話"),
+                "標記後不該再落入 Friendship 反思：{}",
+                page.entries[0].text
+            );
+            assert!(
+                page.entries[0].text.contains("鄰居"),
+                "應歸類成鄰里生活反思：{}",
+                page.entries[0].text
+            );
+        }
+    }
+
+    #[test]
+    fn neighborly_reflection_does_not_leak_template_text_or_resident_name() {
+        let memories = vec![make_neighborly_entry(1, "奧瑞", "奧瑞特地來陪我說話，心裡暖了不少。")];
+        let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0);
+        assert!(!page.entries[0].text.contains("奧瑞"), "不該點名是哪位鄰居：{}", page.entries[0].text);
+    }
+
+    #[test]
+    fn multiple_neighborly_events_collapse_to_one_reflection() {
+        let memories = vec![
+            make_neighborly_entry(3, "露娜", "分你一口，別餓著肚子"),
+            make_neighborly_entry(2, "賽勒", "你怎麼又把工具放這裡了"),
+            make_neighborly_entry(1, "奧瑞", "圓夢了，真替你開心"),
+        ];
+        let entries = curate_reflections(&memories, MAX_DIARY_ENTRIES);
+        assert_eq!(entries.len(), 1, "多筆鄰里生活事件應收斂成一條");
+        assert_eq!(entries[0].seq, 3, "代表 seq 應是最新一筆");
+        assert!(entries[0].text.contains("好幾件"), "多次發生應用複數語氣：{}", entries[0].text);
+    }
+
+    #[test]
+    fn neighborly_and_conversation_coexist_in_diary() {
+        let memories = vec![
+            make_neighborly_entry(2, "露娜", "分你一口，別餓著肚子"),
+            make_entry(1, "旅人", "我想看星星"),
+        ];
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
+        assert!(page.entries.iter().any(|e| e.text.contains("鄰居")), "應有鄰里生活反思");
         assert!(page.entries.iter().any(|e| e.text.contains("夜空")), "應有星空對話反思");
     }
 }

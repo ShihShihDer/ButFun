@@ -31,12 +31,19 @@ pub fn gossip_chance(tier: BondTier) -> f32 {
 /// - 摘要為空。
 /// - 已經是「轉述」本身（摘要以「聽」開頭）——只轉述第一手見聞，避免八卦鏈無限累加文字、
 ///   也避免「A 聽 B 說聽 C 說…」的無窮遞迴摘要。
+/// - 帶了內部識別前綴（`voxel_diary::is_internal_tagged`，如 `🏘️鄰里`／`🪧讀到告示牌`）——這些前綴
+///   只給日記端分類用、不是給玩家看的文字，若被挑中會把原始標記直接組進轉述文字洩漏出去。
 ///
 /// 純函式、確定性：多筆候選時取 `seq` 最大（最新）者。
 pub fn pick_gossip<'a>(host_memories: &'a [MemoryEntry], visitor_name: &str) -> Option<&'a MemoryEntry> {
     host_memories
         .iter()
-        .filter(|e| e.player != visitor_name && !e.summary.is_empty() && !e.summary.starts_with('聽'))
+        .filter(|e| {
+            e.player != visitor_name
+                && !e.summary.is_empty()
+                && !e.summary.starts_with('聽')
+                && !crate::voxel_diary::is_internal_tagged(&e.summary)
+        })
         .max_by_key(|e| e.seq)
 }
 
@@ -92,6 +99,24 @@ mod tests {
     fn pick_gossip_skips_already_relayed_gossip() {
         let mems = vec![mem("vox_res_0", "諾娃", "聽諾娃說：她蓋了一口井", 9)];
         assert!(pick_gossip(&mems, "露娜").is_none());
+    }
+
+    #[test]
+    fn pick_gossip_skips_internal_tagged_memories() {
+        // 鄰里生活記憶帶 NEIGHBORLY_TAG 前綴、讀牌記憶帶 SIGN_MEMORY_TAG 前綴，兩者都不該
+        // 被挑去轉述（否則「🏘️鄰里…」原始標記會洩漏進訪客記憶）。挑選端只剩乾淨的舊記憶。
+        let mems = vec![
+            mem("vox_res_0", "玩家甲", "跟玩家甲聊過採礦", 3),
+            mem("vox_res_0", "玩家乙", &crate::voxel_diary::tag_neighborly("去陪伴了露娜"), 8),
+            mem(
+                "vox_res_0",
+                "玩家丙",
+                &format!("{}村口那面告示牌", crate::voxel_readsign::SIGN_MEMORY_TAG),
+                9,
+            ),
+        ];
+        let picked = pick_gossip(&mems, "露娜").expect("應退回乾淨舊記憶");
+        assert_eq!(picked.summary, "跟玩家甲聊過採礦");
     }
 
     #[test]
