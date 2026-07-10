@@ -2107,11 +2107,31 @@ function updateWildlife(list) {
     }
     ent.group.position.set(w.x, w.y, w.z);
     ent.group.rotation.y = w.yaw || 0;
+    // 為馴服的動物取名 v1（ROADMAP 895）：記住是否已馴服（點一下能否取名，伺服器仍權威複驗），
+    // 已命名的小夥伴頭頂掛上專屬名牌（懶建立、內容變更才重繪貼圖，守 FPS 鐵律）。
+    ent.group.userData.wtamed = !!w.tamed;
+    if (w.name) {
+      if (!ent.nameLabel) {
+        ent.nameLabel = makeTextSprite(w.name, false);
+        ent.nameLabel.position.y = 1.0; // 浮在小動物頭頂（軀幹矮，比居民名牌低）
+        ent.nameLabel.scale.set(1.8, 0.45, 1); // 比居民名牌略小，配合小動物體型
+        ent.group.add(ent.nameLabel);
+        ent.labelText = w.name;
+      } else if (ent.labelText !== w.name) {
+        setSpriteText(ent.nameLabel, w.name, false);
+        ent.labelText = w.name;
+      }
+    }
     const dx = w.x - player.x, dz = w.z - player.z;
     ent.group.visible = (dx * dx + dz * dz) < (WILDLIFE_VISIBLE_DIST * WILDLIFE_VISIBLE_DIST);
   }
   for (const [id, ent] of wildlifeEnts) {
-    if (!seen.has(id)) { scene.remove(ent.group); wildlifeEnts.delete(id); }
+    if (!seen.has(id)) {
+      // 名牌貼圖回收，避免 GPU 記憶體洩漏（比照名牌工廠 setSpriteText 的 dispose 慣例）。
+      if (ent.nameLabel && ent.nameLabel.material.map) ent.nameLabel.material.map.dispose();
+      scene.remove(ent.group);
+      wildlifeEnts.delete(id);
+    }
   }
 }
 
@@ -2163,6 +2183,25 @@ function pickWildlife(clientX, clientY) {
   while (obj && !(obj.userData && obj.userData.wid)) obj = obj.parent;
   if (!obj || !obj.userData) return null;
   return { id: obj.userData.wid, kind: obj.userData.wkind };
+}
+
+// 為馴服的動物取名 v1（ROADMAP 895）：準心/輕點對到一隻「已馴服」的小夥伴 → 跳出取名輸入。
+// 回傳 true 表示這一下已被命名流程接手（呼叫端不要再落到挖掘/挖擊）；false 表示沒對到動物。
+// 伺服器仍會權威複驗（存在＋已馴服＋距離＋清洗名字），前端只是手感提示、不自報合法性。
+function tryNamePet(clientX, clientY) {
+  const pick = pickWildlife(clientX, clientY);
+  if (!pick) return false;
+  const ent = wildlifeEnts.get(pick.id);
+  if (!ent || !ent.group.userData.wtamed) {
+    showMsg("先餵食馴服牠，牠才願意讓你取名 🥕");
+    return true; // 對到動物就接手這一下（別挖到牠背後的地）
+  }
+  const cur = ent.labelText || "";
+  const text = window.prompt("替這隻小夥伴取個名字吧（最多 12 字）", cur);
+  if (text !== null && text.trim() !== "") {
+    ws.send(JSON.stringify({ t: "name_pet", id: pick.id, name: text }));
+  }
+  return true;
 }
 
 // 對話框 DOM + 狀態。
@@ -4570,6 +4609,9 @@ if (!isTouch) {
     if (rid) {
       const ent = residents.get(rid);
       openChat(rid, ent && ent.lastName);
+    } else if (tryNamePet(cx, cy)) {
+      // 為馴服的動物取名 v1：準心對到自己馴服的小夥伴 → 取名（優先於挖擊/採礦，不挖牠背後的地）。
+      isMouseDown = false;
     } else {
       // 暗影生物 v1：準心對到暗影 → 挖擊它（送 shadow_hit；打不打得到由伺服器權威複驗）。
       const sid = pickShadow(cx, cy);
@@ -4644,6 +4686,9 @@ if (isTouch) {
         // 輕點：先看是否點到居民（開對話，兩種模式皆可——不動世界、無誤觸風險）。
         const rid = pickResident(t.clientX, t.clientY);
         if (rid) { const ent = residents.get(rid); openChat(rid, ent && ent.lastName); }
+        else if (tryNamePet(t.clientX, t.clientY)) {
+          // 為馴服的動物取名 v1：輕點到自己馴服的小夥伴 → 取名（像點居民一樣直覺，不動世界）。
+        }
         else {
           // 暗影生物 v1：輕點到暗影 → 挖擊（兩種觸控模式皆可——像點居民一樣直覺、無誤觸風險）。
           const sid = pickShadow(t.clientX, t.clientY);
@@ -5247,6 +5292,14 @@ function connect() {
     } else if (m.t === "feed_chicken_fail") {
       // 放養雞 v1：餵不成（太遠／已經馴服過／背包沒有種子）。
       showErr(m.reason || "現在沒法餵食");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "name_pet_ok") {
+      // 為馴服的動物取名 v1（ROADMAP 895）：取名成功——浮出確認句（名牌由 players 廣播即時掛上）。
+      showMsg(m.say || "🐾 牠有名字了～");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+    } else if (m.t === "name_pet_fail") {
+      // 為馴服的動物取名 v1：取不了名（太遠／還沒馴服／名字空白）。
+      showErr(m.reason || "現在沒法取名");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "return_gift") {
       // 居民回禮 v1（ROADMAP 667）：只有當事玩家才顯示提示並更新背包。

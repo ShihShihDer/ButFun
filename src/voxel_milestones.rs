@@ -77,6 +77,8 @@ pub const MILESTONES: &[MilestoneDef] = &[
     // 邊陲營地探索 v1（自主提案切片，接續 881 立牌）：荒野裡居民親手搭起的據點，玩家視角
     // 第一次也被世界記住——地標系統從「居民立牌」延伸出「玩家探索紀事」的另一半。
     MilestoneDef { id: "first_outpost_discover", name_zh: "覓得營地", desc_zh: "循著居民的足跡走進荒野，找到了她親手搭起的邊陲營地", icon: "⛺" },
+    // 為馴服的動物取名 v1（自主提案切片，ROADMAP 895）：馴服的羈絆第一次有了署名。
+    MilestoneDef { id: "first_pet_name", name_zh: "初次命名", desc_zh: "替一隻已馴服、跟著你走的小夥伴取了名字", icon: "🐾" },
 ];
 
 /// 查表確認是否為已知里程碑 id（守 store 資料乾淨，未知 id 不寫入）。

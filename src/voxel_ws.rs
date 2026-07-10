@@ -95,6 +95,7 @@ use crate::voxel_relations::{self as vrel, SocialStore};
 use crate::voxel_residents::{self as vr, Body};
 use crate::voxel_nightwatch as vnwatch;
 use crate::voxel_roster as vroster;
+use crate::voxel_petname as vpet;
 use crate::voxel_shadow as vshadow;
 use crate::voxel_siege as vsiege;
 use crate::voxel_time::{self as vt, WorldTime, TimePhase};
@@ -773,6 +774,10 @@ struct WildlifeAnimal {
     /// 已馴服的雞距離下一次下蛋還要多久（秒，放養雞 v1，自主提案切片 ROADMAP 870）。
     /// 只有 `tamed` 的雞會遞減這個欄位；兔子／魚／未馴服的雞恆為 `0.0`（不使用）。
     lay_cd: f32,
+    /// 玩家為這隻已馴服的小夥伴取的名字（為馴服的動物取名 v1，自主提案切片 ROADMAP 895）。
+    /// `None` = 尚未命名（含所有未馴服動物與魚）。純記憶體、重啟歸零（比照 `tamed`/`following`
+    /// 同款 wildlife 暫態慣例，零 migration）。已過 `vpet::sanitize_pet_name` 清洗才會被寫入。
+    name: Option<String>,
 }
 
 /// 野兔家域點（世界座標偏移，散布在村莊周圍，玩家出生後很快就有機會撞見）。
@@ -807,6 +812,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             tamed: false,
             following: false,
             lay_cd: 0.0,
+            name: None,
         }
     });
     let fish = FISH_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
@@ -825,6 +831,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             tamed: false,
             following: false,
             lay_cd: 0.0,
+            name: None,
         }
     });
     let chickens = CHICKEN_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
@@ -843,6 +850,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             tamed: false,
             following: false,
             lay_cd: 0.0,
+            name: None,
         }
     });
     rabbits.chain(fish).chain(chickens).collect()
@@ -877,6 +885,14 @@ struct WildlifeView {
     y: f32,
     z: f32,
     yaw: f32,
+    /// 是否已馴服（為馴服的動物取名 v1 ROADMAP 895）：前端據此決定「點一下能不能取名」。
+    /// 未馴服恆 `false`——不信客戶端自報，命名時伺服器仍權威複驗。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    tamed: bool,
+    /// 玩家取的寵物名（為馴服的動物取名 v1）：`None` 時不送欄位（additive，向後相容），
+    /// 前端只在此欄位為真時於該動物頭頂掛名牌。名字已過伺服器端清洗。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
 }
 
 /// 暗影小靈序列化視圖（暗影生物 v1）：位置＋已受擊數（前端據 hits 顯示「快散了」的變淡）。
@@ -2861,7 +2877,7 @@ fn players_snapshot_json() -> String {
     let wildlife: Vec<WildlifeView> = {
         let a = hub().wildlife.read().unwrap();
         a.iter()
-            .map(|w| WildlifeView { id: w.id.clone(), kind: w.kind.wire(), x: w.body.x, y: w.body.y, z: w.body.z, yaw: w.yaw })
+            .map(|w| WildlifeView { id: w.id.clone(), kind: w.kind.wire(), x: w.body.x, y: w.body.y, z: w.body.z, yaw: w.yaw, tamed: w.tamed, name: w.name.clone() })
             .collect()
     }; // 野兔讀鎖在此釋放
     // 暗影快照（暗影生物 v1，短鎖、不巢狀）：夜間在世的暗影小靈，前端渲染半透明漂浮體。
@@ -3039,6 +3055,13 @@ enum ClientMsg {
     /// （"vox_chk_N"，見 `WildlifeAnimal.id`）。
     #[serde(rename = "feed_chicken")]
     FeedChicken { id: String },
+    /// 為馴服的動物取名 v1（自主提案切片，ROADMAP 895）：點一下已馴服的小夥伴 → 替牠取名。
+    /// 伺服器驗證（這隻動物存在＋已馴服＋在觸及範圍 `vpet::NAME_REACH` 內）並清洗名字
+    /// （`vpet::sanitize_pet_name`：去控制字元/換行、去空白、拒空、字數上限）後，把名字寫進
+    /// 這隻動物、廣播讓所有在場玩家的畫面上該動物頭頂浮起名牌。`id` 是 wildlife 系統 id
+    /// （"vox_wld_N"／"vox_chk_N"），`name` 是玩家自由輸入的名字（伺服器不信其合法性）。
+    #[serde(rename = "name_pet")]
+    NamePet { id: String, name: String },
     /// 居民交易 v1：向指定居民請求以物易物（ROADMAP 670）。
     /// 伺服器回 `trade_offer`，玩家再傳 TradeAccept 接受；提案 30 秒後自動過期。
     #[serde(rename = "trade_request")]
@@ -6682,6 +6705,115 @@ async fn handle_socket(
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({ "t": "feed_chicken_ok", "say": vchicken::tame_line(pick) }).to_string(),
                 ));
+            }
+            // ── 為馴服的動物取名 v1（自主提案切片，ROADMAP 895）：替已馴服的小夥伴署名 ──────────
+            Ok(ClientMsg::NamePet { id, name: pet_name }) => {
+                // 鎖序：players 讀位置 → wildlife 讀鎖驗存在/已馴服/距離 → wildlife 寫鎖落名 →
+                //   （首次命名）residents 讀鎖挑見證者 → residents 寫鎖設暖泡泡 → memory 寫 → Feed，
+                //   全程短取即釋、不巢狀（守 prod 死鎖鐵律，比照 847 餵食／888 守夜恩人）。
+                // ① 濫用防護（鐵律）：先清洗玩家自由輸入的名字——去控制字元/換行、去空白、拒空、
+                //    字數上限。清洗後只用於名牌廣播，絕不進任何居民記憶/日記/口耳相傳（零注入面）。
+                let Some(clean) = vpet::sanitize_pet_name(&pet_name) else {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "name_pet_fail", "reason": "名字不能是空白喔" }).to_string(),
+                    ));
+                    continue;
+                };
+                let Some((px, _py, pz)) = player_pos(my_id) else {
+                    continue;
+                };
+                // ② 讀鎖快照：這隻動物是否存在、已馴服、距離平方、是否已有名字（首次命名才觸發見證）。
+                let snap: Option<(bool, f32, bool)> = {
+                    let animals = hub().wildlife.read().unwrap();
+                    animals.iter().find(|a| a.id == id).map(|a| {
+                        let dx = px - a.body.x;
+                        let dz = pz - a.body.z;
+                        (a.tamed, dx * dx + dz * dz, a.name.is_some())
+                    })
+                }; // wildlife 讀鎖釋放
+                let Some((tamed, dist_sq, already_named)) = snap else {
+                    continue; // 這隻動物已消失（id 過期）——靜默忽略
+                };
+                if !tamed {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "name_pet_fail", "reason": "先餵食馴服牠，牠才願意讓你取名" }).to_string(),
+                    ));
+                    continue;
+                }
+                if dist_sq > vpet::NAME_REACH * vpet::NAME_REACH {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "name_pet_fail", "reason": "走近一點再取名" }).to_string(),
+                    ));
+                    continue;
+                }
+                // ③ 寫鎖落名（再確認仍存在/仍馴服——避免這期間被移除或狀態變）。
+                let named_ok = {
+                    let mut animals = hub().wildlife.write().unwrap();
+                    match animals.iter_mut().find(|a| a.id == id) {
+                        Some(a) if a.tamed => {
+                            a.name = Some(clean.clone());
+                            true
+                        }
+                        _ => false,
+                    }
+                }; // wildlife 寫鎖釋放
+                if !named_ok {
+                    continue;
+                }
+                // ④ 首次命名 → 里程碑（只在登入玩家時；訪客無名不掛里程碑）。
+                if !already_named && !name.is_empty() {
+                    try_unlock_milestone(&name, "first_pet_name", &out_tx);
+                }
+                // ⑤ 廣播讓所有在場玩家立即看到這隻動物頭頂浮起名牌 + 單播確認給命名者。
+                broadcast_players();
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "name_pet_ok", "id": id, "name": clean, "say": vpet::name_ack_line(&clean) }).to_string(),
+                ));
+                // ⑥ 北極星鉤子（只在首次命名 + 登入玩家時）：一位近旁醒著、say 為空的居民注意到這
+                //    溫柔的一幕，冒一句暖泡泡、把它記進心裡——你和小夥伴的羈絆第一次被這座小社會看見。
+                //    **固定模板、不嵌任何玩家輸入**（零注入面）；不改居民 target（不與 fear/siege 搶
+                //    移動），只設 say/mood/memory，短鎖循序即釋。
+                if !already_named && !name.is_empty() {
+                    let witness: Option<(String, &'static str, usize)> = {
+                        let rs = hub().residents.read().unwrap();
+                        rs.iter()
+                            .filter(|r| !r.asleep && r.say.is_empty())
+                            .map(|r| {
+                                let dx = r.body.x - px;
+                                let dz = r.body.z - pz;
+                                (dx * dx + dz * dz, r)
+                            })
+                            .filter(|(d2, _)| *d2 <= vpet::WITNESS_RANGE_SQ)
+                            .min_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                            .map(|(_, r)| {
+                                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                                (r.id.clone(), r.name, pick)
+                            })
+                    }; // residents 讀鎖釋放
+                    if let Some((rid, rname, pick)) = witness {
+                        {
+                            let mut rs = hub().residents.write().unwrap();
+                            if let Some(r) = rs.iter_mut().find(|r| r.id == rid) {
+                                if r.say.is_empty() {
+                                    r.say = vpet::witness_say(pick).to_string();
+                                    r.say_timer = SAY_SECS;
+                                    r.mood_boost_secs =
+                                        r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                }
+                            }
+                        } // residents 寫鎖釋放
+                        hub().memory.write().unwrap().add_memory(
+                            &rid,
+                            &name,
+                            &vpet::witness_memory_line(),
+                        ); // 記憶寫鎖即釋
+                        vfeed::append_feed(
+                            vpet::FEED_KIND,
+                            rname,
+                            &vpet::witness_feed_line(rname),
+                        );
+                    }
+                }
             }
             // ── 集會鐘 v1（自主提案切片）：敲響一座鐘，把附近閒著的居民召到身邊 ─────────
             Ok(ClientMsg::RingBell { x, y, z }) => {
@@ -10549,6 +10681,7 @@ fn maybe_breed_rabbits() {
             tamed: true, // 一出生就認得你、立刻跟父母一樣跟著走。
             following: false,
             lay_cd: 0.0,
+            name: None,
         });
         vwild::baby_line(rand::random::<u64>() as usize).to_string()
     }; // wildlife 寫鎖釋放
