@@ -79,6 +79,8 @@ pub const MILESTONES: &[MilestoneDef] = &[
     MilestoneDef { id: "first_outpost_discover", name_zh: "覓得營地", desc_zh: "循著居民的足跡走進荒野，找到了她親手搭起的邊陲營地", icon: "⛺" },
     // 為馴服的動物取名 v1（自主提案切片，ROADMAP 895）：馴服的羈絆第一次有了署名。
     MilestoneDef { id: "first_pet_name", name_zh: "初次命名", desc_zh: "替一隻已馴服、跟著你走的小夥伴取了名字", icon: "🐾" },
+    // 寵愛你的夥伴 v1（自主提案切片，ROADMAP 899）：馴養羈絆線第一次有了「疼牠」的日常暖收尾。
+    MilestoneDef { id: "first_treat", name_zh: "初次寵愛", desc_zh: "遞一份零食給已馴服的小夥伴，換來牠一次撒嬌", icon: "💕" },
 ];
 
 /// 查表確認是否為已知里程碑 id（守 store 資料乾淨，未知 id 不寫入）。

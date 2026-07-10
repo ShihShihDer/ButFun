@@ -939,6 +939,86 @@ function updateHumNotes(dt) {
   }
 }
 
+// ── 寵愛你的夥伴 v1（ROADMAP 899）：疼一下已馴服的小夥伴，頭頂浮起一串愛心 ──────────
+// 沿用哼歌音符（788）同款「單一 THREE.Points 點雲＝一次 draw call、共用一張 💕 貼圖」手法：
+// 上飄＋左右輕飄＋後段淡出，壽命約 1.8 秒後整束移除、釋放幾何；同時最多 HEART_MAX_BURSTS
+// 束防洗版；陣列空零成本早退（守 FPS 鐵律）。純視覺回饋，撒嬌台詞由後端權威 pet_treat_ok 帶來。
+const HEART_NOTES = 5;            // 每束愛心粒子數（單一點雲）
+const HEART_LIFE_SECS = 1.8;     // 一束愛心壽命
+const HEART_RISE_SPEED = 1.05;   // 上飄速度（格/秒）
+const HEART_DRIFT = 0.45;        // 左右輕飄幅度尺度
+const HEART_MAX_BURSTS = 6;      // 同時最多幾束（保險上限）
+function makeHeartTexture() {
+  const s = 64;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = s;
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, s, s);
+  ctx.font = "48px serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("💕", s / 2, s / 2 + 2);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.needsUpdate = true;
+  return tex;
+}
+const HEART_TEX = makeHeartTexture();
+const heartBursts = []; // 進行中的愛心束
+
+// 在世界座標 (x,y,z) 上方生成一束緩緩上飄的愛心（疼夥伴時呼叫）。
+function spawnHearts(x, y, z) {
+  if (heartBursts.length >= HEART_MAX_BURSTS) {
+    const old = heartBursts.shift();
+    scene.remove(old.points);
+    old.points.geometry.dispose();
+  }
+  const pos = new Float32Array(HEART_NOTES * 3);
+  const seed = new Float32Array(HEART_NOTES); // 各愛心的相位（左右飄動錯開）
+  const rise = new Float32Array(HEART_NOTES); // 各愛心的上升速度倍率
+  const originY = y + 1.1;                     // 從小動物頭頂稍上方起（動物比居民矮）
+  for (let i = 0; i < HEART_NOTES; i++) {
+    pos[i * 3] = x + (Math.random() - 0.5) * 0.5;
+    pos[i * 3 + 1] = originY + Math.random() * 0.4;
+    pos[i * 3 + 2] = z + (Math.random() - 0.5) * 0.5;
+    seed[i] = Math.random() * Math.PI * 2;
+    rise[i] = 0.7 + Math.random() * 0.6;
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 0.7, map: HEART_TEX, transparent: true, opacity: 1,
+    depthWrite: false, fog: true, sizeAttenuation: true, alphaTest: 0.1,
+  });
+  const points = new THREE.Points(geom, mat);
+  points.frustumCulled = false;
+  scene.add(points);
+  heartBursts.push({ points, mat, seed, rise, age: 0 });
+}
+
+// 每幀推進所有愛心束：上飄＋左右輕飄＋淡出，壽命到就移除、釋放幾何。陣列空即零成本早退。
+function updateHearts(dt) {
+  if (heartBursts.length === 0) return;
+  for (let b = heartBursts.length - 1; b >= 0; b--) {
+    const hb = heartBursts[b];
+    hb.age += dt;
+    if (hb.age >= HEART_LIFE_SECS) {
+      scene.remove(hb.points);
+      hb.points.geometry.dispose();
+      heartBursts.splice(b, 1);
+      continue;
+    }
+    const posAttr = hb.points.geometry.getAttribute("position");
+    const arr = posAttr.array;
+    for (let i = 0; i < HEART_NOTES; i++) {
+      arr[i * 3 + 1] += HEART_RISE_SPEED * hb.rise[i] * dt; // 緩緩上飄
+      arr[i * 3] += Math.sin(hb.age * 2.4 + hb.seed[i]) * HEART_DRIFT * dt; // 左右輕飄
+    }
+    const t = hb.age / HEART_LIFE_SECS;
+    hb.mat.opacity = t < 0.65 ? 1 : Math.max(0, 1 - (t - 0.65) / 0.35); // 後段淡出
+    posAttr.needsUpdate = true;
+  }
+}
+
 // ── 乙太沃肥 v1（ROADMAP 789）：施肥瞬間在幼苗上噴一小撮綠色沃肥火花 ─────────────
 // 純視覺回饋（作物成熟與否由後端農地 tick 權威決定翻面）。單一 THREE.Points＝一次 draw call，
 // 壽命短、上限 FERT_MAX_BURSTS 保險防洗版；陣列空零成本早退（守 FPS 鐵律）。
@@ -5386,6 +5466,16 @@ function connect() {
       // 為馴服的動物取名 v1：取不了名（太遠／還沒馴服／名字空白）。
       showErr(m.reason || "現在沒法取名");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "pet_treat_ok") {
+      // 寵愛你的夥伴 v1（ROADMAP 899）：疼夥伴成功——浮出撒嬌句＋在牠頭頂綻一串愛心。
+      showMsg(m.say || "💕 牠開心地蹭了蹭你～");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+      // 依 id 回查該動物當前世界座標，就地噴愛心（找不到＝實體剛好離開視野，靜默略過）。
+      const ent = m.id ? wildlifeEnts.get(m.id) : null;
+      if (ent && ent.group) {
+        const p = ent.group.position;
+        spawnHearts(p.x, p.y, p.z);
+      }
     } else if (m.t === "pet_command_ok") {
       // 寵物指令「安置／召回」v1（ROADMAP 898）：切換成功——浮出暖句（💤 待命標記由 players 廣播即時掛上/取下）。
       showMsg(m.say || (m.settled ? "🐾 牠乖乖在這兒待命～" : "🐾 牠又跟上你了～"));
@@ -5895,6 +5985,7 @@ function update(dt) {
   updateShadowFx(dt);  // 暗影生物 v1：暗影浮動/微光呼吸/受擊閃白/輕煙淡出
   updateBellRings(dt); // 集會鐘 v1（自主提案切片）：推進進行中的鐘聲漣漪
   updateHumNotes(dt);  // 居民哼歌 v1（788）：推進頭頂飄浮音符
+  updateHearts(dt);    // 寵愛你的夥伴 v1（899）：推進小夥伴頭頂的愛心
   updateFertSparkle(dt); // 乙太沃肥 v1（789）：推進施肥綠火花
   streamChunks(dt);
   sendMove(dt);
