@@ -720,6 +720,35 @@ mod tests {
     }
 
     #[test]
+    fn illness_care_lines_are_neighborly_not_misclassified() {
+        // 鄰居陪伴照顧生病鄰居的兩則記憶文字含「陪」字，未標記時會被關鍵字判題誤中 Friendship
+        // （「有人回來找我說話」），文不對題；打上 NEIGHBORLY_TAG 後應正確歸類成 Neighborly。
+        // 直接引用 voxel_illness 的模板函式，模板日後若改寫也會被這條測試盯著。
+        for raw in [
+            crate::voxel_illness::cared_memory_for_patient("露娜"),
+            crate::voxel_illness::cared_memory_for_carer("賽勒"),
+        ] {
+            assert_eq!(
+                classify_theme(&raw),
+                Some(Theme::Friendship),
+                "未標記時「陪」會誤中 Friendship（佐證問題存在）：{raw}"
+            );
+            let memories = vec![make_neighborly_entry(1, "露娜", &raw)];
+            let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0);
+            assert!(
+                !page.entries[0].text.contains("回來找我說話"),
+                "標記後不該再落入 Friendship 反思：{}",
+                page.entries[0].text
+            );
+            assert!(
+                page.entries[0].text.contains("鄰居"),
+                "應歸類成鄰里生活反思：{}",
+                page.entries[0].text
+            );
+        }
+    }
+
+    #[test]
     fn neighborly_reflection_does_not_leak_template_text_or_resident_name() {
         let memories = vec![make_neighborly_entry(1, "奧瑞", "奧瑞特地來陪我說話，心裡暖了不少。")];
         let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0);

@@ -12099,13 +12099,13 @@ fn tick_residents(dt: f32) {
     // bonds 讀 save + memory 寫；不巢狀、append-only 不破壞既有資料，守死鎖鐵律。
     for (carer_id, carer_name, patient_id, patient_name) in &illness_care_events {
         // 被陪伴者的記憶（掛在陪伴者名下）。
-        let mem_p = villness::cared_memory_for_patient(carer_name);
+        let mem_p = voxel_diary::tag_neighborly(&villness::cared_memory_for_patient(carer_name));
         let ep = {
             hub().memory.write().unwrap().add_memory(patient_id, carer_name, &mem_p)
         }; // memory 寫鎖釋放
         vmem::append_memory(&ep);
         // 陪伴者的記憶（掛在被陪伴者名下）。
-        let mem_c = villness::cared_memory_for_carer(patient_name);
+        let mem_c = voxel_diary::tag_neighborly(&villness::cared_memory_for_carer(patient_name));
         let ec = {
             hub().memory.write().unwrap().add_memory(carer_id, patient_name, &mem_c)
         }; // memory 寫鎖釋放
