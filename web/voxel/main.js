@@ -2301,6 +2301,23 @@ function updateWildlife(list) {
         ent.labelText = labelStr;
       }
     }
+    // 臨危依偎 v1（ROADMAP 903）：受驚依偎中的小夥伴頭頂掛一枚受驚表情（😨 等）。
+    // 懶建立、可見性切換、內容變才重繪貼圖（守 FPS 鐵律，非受驚時只是隱藏、零重繪）。
+    const emoteStr = w.emote || "";
+    if (emoteStr) {
+      if (!ent.emoteLabel) {
+        ent.emoteLabel = makeTextSprite(emoteStr, false);
+        ent.emoteLabel.position.y = 1.5; // 浮在名牌(1.0)之上，兩者不重疊
+        ent.emoteLabel.scale.set(0.9, 0.9, 1);
+        ent.group.add(ent.emoteLabel);
+        ent.emoteText = emoteStr;
+      } else {
+        if (ent.emoteText !== emoteStr) { setSpriteText(ent.emoteLabel, emoteStr, false); ent.emoteText = emoteStr; }
+        ent.emoteLabel.visible = true;
+      }
+    } else if (ent.emoteLabel) {
+      ent.emoteLabel.visible = false;
+    }
     const dx = w.x - player.x, dz = w.z - player.z;
     ent.group.visible = (dx * dx + dz * dz) < (WILDLIFE_VISIBLE_DIST * WILDLIFE_VISIBLE_DIST);
   }
@@ -2308,6 +2325,8 @@ function updateWildlife(list) {
     if (!seen.has(id)) {
       // 名牌貼圖回收，避免 GPU 記憶體洩漏（比照名牌工廠 setSpriteText 的 dispose 慣例）。
       if (ent.nameLabel && ent.nameLabel.material.map) ent.nameLabel.material.map.dispose();
+      // 臨危依偎 v1（903）：受驚表情貼圖一併回收（同款 dispose 慣例）。
+      if (ent.emoteLabel && ent.emoteLabel.material.map) ent.emoteLabel.material.map.dispose();
       scene.remove(ent.group);
       wildlifeEnts.delete(id);
     }

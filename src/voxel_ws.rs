@@ -110,6 +110,7 @@ use crate::voxel_chicken as vchicken;
 use crate::voxel_player_recipe as vprecipe;
 use crate::voxel_diary_peek as vdiarypeek;
 use crate::voxel_pet_admire as vpetadmire;
+use crate::voxel_pet_fright as vpetfright;
 use crate::voxel_proximity_teach as vptteach;
 use crate::voxel_treasure as vtreasure;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
@@ -786,6 +787,11 @@ struct WildlifeAnimal {
     /// `false`（預設）= 沿用既有跟隨行為。只有 `tamed` 的兔／雞會用到；魚恆為 `false`。
     /// 純記憶體、重啟歸零（比照 `tamed`/`following`/`name` 同款 wildlife 暫態慣例，零 migration）。
     settled: bool,
+    /// 臨危依偎 v1（ROADMAP 903）：已馴服的兔／雞夜裡撞見暗影後的「受驚倒數」（秒）。
+    /// > 0 = 正嚇得竄回最近玩家腳邊依偎、頭頂冒受驚表情；暗影還在害怕半徑內每個暗影 tick 刷回滿，
+    /// 走遠後由 `tick_wildlife` 按 dt 遞減、歸零即鬆開回歸日常。只有 `tamed` 的兔／雞會用到；
+    /// 魚／未馴服者恆為 `0.0`（不使用）。純記憶體、重啟歸零（比照 `tamed`/`following` 同款慣例，零 migration）。
+    spooked_secs: f32,
 }
 
 /// 野兔家域點（世界座標偏移，散布在村莊周圍，玩家出生後很快就有機會撞見）。
@@ -822,6 +828,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             lay_cd: 0.0,
             name: None,
             settled: false,
+            spooked_secs: 0.0,
         }
     });
     let fish = FISH_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
@@ -842,6 +849,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             lay_cd: 0.0,
             name: None,
             settled: false,
+            spooked_secs: 0.0,
         }
     });
     let chickens = CHICKEN_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
@@ -862,6 +870,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             lay_cd: 0.0,
             name: None,
             settled: false,
+            spooked_secs: 0.0,
         }
     });
     rabbits.chain(fish).chain(chickens).collect()
@@ -909,6 +918,10 @@ struct WildlifeView {
     /// 知道當前該送召回還是安置。未安置／未馴服恆 `false`——不信客戶端自報，指令時伺服器仍權威複驗。
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     settled: bool,
+    /// 臨危依偎 v1（ROADMAP 903）：受驚依偎中的小夥伴頭頂該冒的表情（😨 等）。
+    /// `None`（未受驚）時不送欄位（additive，向後相容），前端只在此欄位為真時於頭頂掛表情。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    emote: Option<&'static str>,
 }
 
 /// 暗影小靈序列化視圖（暗影生物 v1）：位置＋已受擊數（前端據 hits 顯示「快散了」的變淡）。
@@ -2899,7 +2912,16 @@ fn players_snapshot_json() -> String {
     let wildlife: Vec<WildlifeView> = {
         let a = hub().wildlife.read().unwrap();
         a.iter()
-            .map(|w| WildlifeView { id: w.id.clone(), kind: w.kind.wire(), x: w.body.x, y: w.body.y, z: w.body.z, yaw: w.yaw, tamed: w.tamed, name: w.name.clone(), settled: w.settled })
+            .map(|w| WildlifeView {
+                id: w.id.clone(), kind: w.kind.wire(), x: w.body.x, y: w.body.y, z: w.body.z, yaw: w.yaw,
+                tamed: w.tamed, name: w.name.clone(), settled: w.settled,
+                // 臨危依偎 v1（903）：受驚倒數 > 0 時掛一枚受驚表情（依 id 雜湊挑一枚、同一隻穩定）。
+                emote: if vpetfright::is_spooked(w.spooked_secs) {
+                    Some(vpetfright::spook_emote(w.id.bytes().map(|b| b as usize).sum()))
+                } else {
+                    None
+                },
+            })
             .collect()
     }; // 野兔讀鎖在此釋放
     // 暗影快照（暗影生物 v1，短鎖、不巢狀）：夜間在世的暗影小靈，前端渲染半透明漂浮體。
@@ -9215,6 +9237,23 @@ fn tick_shadows(dt: f32) {
             }
         }
     } // residents 寫鎖釋放
+
+    // 臨危依偎 v1（ROADMAP 903）：已馴服的兔／雞夜裡撞見暗影漂進害怕半徑 → 刷新「受驚倒數」；
+    // 實際奔向玩家依偎＋按 dt 遞減都在 `tick_wildlife` 的寵物分支落地（那裡才有 world/玩家位置）。
+    // 沿用居民同一條 `vshadow::frightened_by` 驚嚇線；短寫鎖即釋、不與其他鎖巢狀（守死鎖鐵律）。
+    // 只在此暗影 tick「刷回滿」（見影才刷），遞減交給 tick_wildlife 單一處，避免雙重扣時。
+    {
+        let mut animals = hub().wildlife.write().unwrap();
+        for a in animals.iter_mut() {
+            // 只有已馴服的兔／雞會依偎（魚無腳、未馴服者本就自顧自逃竄，維持原行為）。
+            if !a.tamed || matches!(a.kind, WildlifeKind::Fish) {
+                continue;
+            }
+            if vshadow::frightened_by(a.body.x, a.body.z, &wisps) {
+                a.spooked_secs = vpetfright::SPOOK_SECS;
+            }
+        }
+    } // wildlife 寫鎖釋放
 }
 
 // ── 夜裡點燈守望 tick（把「怕著躲家」升級成「一起點燈守望」）────────────────────────
@@ -10636,6 +10675,26 @@ fn tick_wildlife(dt: f32) {
                 // （馴服兔子跟隨你 v1，自主提案切片，ROADMAP 851）。
                 if a.tamed {
                     a.fleeing = false;
+                    // 臨危依偎 v1（903）：受驚倒數按 dt 遞減（刷回滿在暗影 tick，此處單一處遞減不雙扣）。
+                    a.spooked_secs = vpetfright::next_spook_secs(a.spooked_secs, false, dt);
+                    if vpetfright::is_spooked(a.spooked_secs) {
+                        // 夜裡撞見暗影嚇壞了：不論原本跟隨／閒晃／安置待命，一律拔腿竄回最近玩家腳邊
+                        // 貼近依偎討庇護（速度比平常跟隨更急、貼得更近）；暗影傷不到牠，牠只是需要你。
+                        if let Some((px, pz)) = nearest {
+                            if vpetfright::should_close_huddle_gap(nearest_dist_sq) {
+                                vr::step_toward(&world, &mut a.body, *px, *pz, dt, vpetfright::HUDDLE_SPEED);
+                            } else {
+                                vr::gravity_step(&world, &mut a.body, dt);
+                            }
+                        } else {
+                            vr::gravity_step(&world, &mut a.body, dt);
+                        }
+                        a.wait_timer = 0.0;
+                        if let Some(yaw) = vr::yaw_from_move(a.body.x - bx, a.body.z - bz) {
+                            a.yaw = yaw;
+                        }
+                        continue;
+                    }
                     // 寵物指令「安置／召回」v1（898）：安置（待命）中一律不跟隨，只在被放下的
                     // 家域點小範圍徘徊；否則沿用既有跟隨手感。
                     a.following = vwild::follow_when_settleable(a.settled, a.following, nearest_dist_sq);
@@ -10740,6 +10799,32 @@ fn tick_wildlife(dt: f32) {
                 let nearest_dist_sq = nearest
                     .map(|(px, pz)| (a.body.x - px).powi(2) + (a.body.z - pz).powi(2))
                     .unwrap_or(f32::MAX);
+                // 臨危依偎 v1（903）：已馴服的雞夜裡撞見暗影同樣會嚇得竄回你腳邊依偎（比照兔子分支）。
+                if a.tamed {
+                    a.spooked_secs = vpetfright::next_spook_secs(a.spooked_secs, false, dt);
+                    if vpetfright::is_spooked(a.spooked_secs) {
+                        if let Some((px, pz)) = nearest {
+                            if vpetfright::should_close_huddle_gap(nearest_dist_sq) {
+                                vr::step_toward(&world, &mut a.body, *px, *pz, dt, vpetfright::HUDDLE_SPEED);
+                            } else {
+                                vr::gravity_step(&world, &mut a.body, dt);
+                            }
+                        } else {
+                            vr::gravity_step(&world, &mut a.body, dt);
+                        }
+                        a.wait_timer = 0.0;
+                        // 受驚時仍照常倒數下蛋（生理機能不因驚嚇中斷，比照原分支邏輯）。
+                        a.lay_cd -= dt;
+                        if vchicken::should_lay(a.lay_cd) {
+                            egg_layers.push((a.body.x, a.body.y, a.body.z));
+                            a.lay_cd = vchicken::next_lay_cooldown(rand::random::<f32>());
+                        }
+                        if let Some(yaw) = vr::yaw_from_move(a.body.x - bx, a.body.z - bz) {
+                            a.yaw = yaw;
+                        }
+                        continue;
+                    }
+                }
                 // 寵物指令「安置／召回」v1（898）：安置（待命）中的雞一律不跟隨、只在原地小範圍踱步。
                 let now_following =
                     a.tamed && vwild::follow_when_settleable(a.settled, a.following, nearest_dist_sq);
@@ -10851,6 +10936,7 @@ fn maybe_breed_rabbits() {
             lay_cd: 0.0,
             name: None,
             settled: false,
+            spooked_secs: 0.0,
         });
         vwild::baby_line(rand::random::<u64>() as usize).to_string()
     }; // wildlife 寫鎖釋放
