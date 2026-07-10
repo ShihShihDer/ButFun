@@ -5217,6 +5217,12 @@ function connect() {
         updateGiftBtn();
         appendMsg("sys", "🍞 " + (m.resident_name || "居民") + " 見你餓著肚子，遞了份 " + iname + " ×" + m.qty + " 給你！");
       }
+    } else if (m.t === "night_guard") {
+      // 守夜恩人 v1（自主提案切片，ROADMAP 888）：你替近旁居民驅散了逼近的暗影，只有當事玩家
+      // 收到這則道謝提示（居民頭頂的道謝泡泡則全服可見，走既有 say 廣播）。
+      if (m.player === myName) {
+        appendMsg("sys", "🛡️ " + (m.resident_name || "居民") + " 感激你為ta驅散了逼近的暗影！");
+      }
     } else if (m.t === "recipe_taught") {
       // 居民教你一道獨門配方 v1（自主提案切片，ROADMAP 849）：只有當事玩家才記到 knownRecipes
       // 並顯示提示；當下若正打開背包面板，重繪一次讓合成格立刻反映「學會了」。
