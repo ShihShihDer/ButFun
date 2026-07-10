@@ -11717,6 +11717,11 @@ fn tick_residents(dt: f32) {
     if first_snow_just_started {
         vfeed::append_feed("初雪", "乙太方界", vsnow::first_snow_feed_detail());
     }
+    // 冬寒圍爐 v1（ROADMAP 901）：把「當前是否冬季」「是否正飄雪」拉成本 tick 旗標，供下方
+    // 營火取暖段判定——冬天不分晝夜都冷（營火快照白天也備妥）、機率隨寒冷升高、台詞扣天寒。
+    // 飄雪＝冬季 ∧ 下雨（與 900 冬雪前端渲染同一判定，單一事實來源）。
+    let is_winter = current_season == vseason::Season::Winter;
+    let snowing = is_winter && raining;
     // 夜間歸巢遮蔽：批次快照各居民已蓋好的小屋座標（goals 讀鎖即釋），
     // 供下面 residents 寫鎖那段挑閒晃中心用——不與 residents 鎖巢狀（守死鎖鐵律）。
     let house_locations: HashMap<String, (i32, i32, i32)> = {
@@ -11882,7 +11887,9 @@ fn tick_residents(dt: f32) {
     // 營火取暖事件（乙太營火 v1）：某居民夜裡路過火邊駐足圍暖時鎖內收集；記憶寫＋Feed 在居民鎖
     // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在旁才記交情，否則 None 只上 Feed。
     // (居民 id, 居民名, 火邊玩家名 Option, pick)。
-    let mut campfire_warm_events: Vec<(String, &'static str, Option<String>, usize)> = Vec::new();
+    // 末位 bool＝是否冬寒版（901）：true 走冬寒台詞／記憶／Feed，false 走原本泛用暖語。
+    let mut campfire_warm_events: Vec<(String, &'static str, Option<String>, usize, bool)> =
+        Vec::new();
     // 木長椅歇腳事件（木長椅 v1）：某居民白天路過椅邊坐下歇腳時鎖內收集；記憶寫＋Feed 在居民鎖
     // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在旁才記交情，否則 None 只上 Feed。
     // (居民 id, 居民名, 椅邊玩家名 Option, pick)。
@@ -11945,13 +11952,15 @@ fn tick_residents(dt: f32) {
     // 居民也會生病 v1：本 tick 鄰居陪伴事件 (陪伴者 id, 陪伴者名, 被陪伴者 id, 被陪伴者名)，
     // 鎖外落地雙方記憶 + 情誼加溫 + 城鎮動態（比照 800 飢餓時的守望相助的鎖外處理，守死鎖鐵律）。
     let mut illness_care_events: Vec<(String, &'static str, String, &'static str)> = Vec::new();
-    // 乙太營火 v1：夜裡才需要一份營火座標快照。短鎖 clone 即釋，避免在 residents 寫鎖迴圈內
-    // 再取 campfires 讀鎖（不巢狀鎖，守 prod 死鎖鐵律）；非夜晚時空 Vec，跳過整段判定。
-    let campfire_spots: Vec<(i32, i32, i32)> = if matches!(phase, TimePhase::Night) {
-        hub().campfires.read().unwrap().clone()
-    } else {
-        Vec::new()
-    };
+    // 乙太營火 v1＋冬寒圍爐 v1（901）：夜裡（原本行為）或冬季（不分晝夜都冷，本刀新增）才需要
+    // 一份營火座標快照。短鎖 clone 即釋，避免在 residents 寫鎖迴圈內再取 campfires 讀鎖（不巢狀鎖，
+    // 守 prod 死鎖鐵律）；非取暖時段時空 Vec，跳過整段判定。
+    let campfire_spots: Vec<(i32, i32, i32)> =
+        if vcamp::warming_active(is_deep_night, is_winter) {
+            hub().campfires.read().unwrap().clone()
+        } else {
+            Vec::new()
+        };
     // 木長椅 v1：與營火相反——白天（清醒時段：拂曉／白晝／黃昏）才需要一份長椅座標快照，
     // 讓路過的居民坐下歇腳。短鎖 clone 即釋，不巢狀鎖（守 prod 死鎖鐵律）；夜裡居民本就睡了，空 Vec 跳過整段。
     let bench_spots: Vec<(i32, i32, i32)> =
@@ -14648,10 +14657,18 @@ fn tick_residents(dt: f32) {
                 && r.expedition.is_none()
                 && vcamp::nearest_campfire(&campfire_spots, r.body.x, r.body.z, vcamp::WARM_RADIUS)
                     .is_some()
-                && vcamp::should_warm(true, 0.0, rand::random::<f32>(), vcamp::WARM_CHANCE)
+                // 冬寒圍爐 v1（901）：機率隨寒冷升高（非冬季沿用原 WARM_CHANCE，冬季更高、飄雪最高）。
+                && vcamp::should_warm(
+                    true,
+                    0.0,
+                    rand::random::<f32>(),
+                    vcamp::warm_chance_for(is_winter, snowing),
+                )
             {
                 r.campfire_warm_cooldown = vcamp::WARM_COOLDOWN_SECS;
                 let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                // 冬季＝冷天，選冬寒版台詞／記憶／Feed（明確點出天寒）；否則沿用原本泛用暖語。
+                let cold = is_winter;
                 // 火邊最近的玩家：夠近（WARM_PLAYER_RADIUS 內）且是登入玩家（名非空）→ 暖語點你名、記交情。
                 let near_player = nearest_player_info(r.body.x, r.body.z, &player_pts)
                     .filter(|(d2, pname)| {
@@ -14660,19 +14677,27 @@ fn tick_residents(dt: f32) {
                     })
                     .map(|(_, pname)| pname.to_string());
                 if let Some(pname) = near_player {
-                    r.say = vcamp::warm_bubble_with_player(&pname, pick)
-                        .chars()
-                        .take(50)
-                        .collect();
+                    r.say = if cold {
+                        vcamp::cold_warm_bubble_with_player(&pname, pick)
+                    } else {
+                        vcamp::warm_bubble_with_player(&pname, pick)
+                    }
+                    .chars()
+                    .take(50)
+                    .collect();
                     r.say_timer = SAY_SECS;
                     r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
-                    campfire_warm_events.push((r.id.clone(), r.name, Some(pname), pick));
+                    campfire_warm_events.push((r.id.clone(), r.name, Some(pname), pick, cold));
                 } else {
                     // 沒有玩家在火邊（或只有訪客）：獨自圍暖念句通用暖語，上 Feed、不寫玩家交情。
-                    r.say = vcamp::warm_bubble(pick).to_string();
+                    r.say = if cold {
+                        vcamp::cold_warm_bubble(pick).to_string()
+                    } else {
+                        vcamp::warm_bubble(pick).to_string()
+                    };
                     r.say_timer = SAY_SECS;
                     r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
-                    campfire_warm_events.push((r.id.clone(), r.name, None, pick));
+                    campfire_warm_events.push((r.id.clone(), r.name, None, pick, cold));
                 }
             }
 
@@ -15648,9 +15673,10 @@ fn tick_residents(dt: f32) {
         // 2c-2) 圍火講往事掃描（圍火講往事 v1）：入夜後，若兩位醒著、沒在說話的居民恰好聚在**同一座**
         // 營火邊、且其中一位講述冷卻到期，偶爾其中一位把心裡的一段往事講給對方聽。每 tick 最多一對、
         // 有長冷卻，天然節流、不干擾物理主迴圈。沿用 2c 的 `snaps` 位置快照（i≠j 循序索引、不雙重借用）；
-        // 講述者記憶以短讀鎖取一次即釋（比照招呼段的記憶讀取，不巢狀寫鎖，守死鎖鐵律）。非夜晚時
-        // `campfire_spots` 為空 → 整段早退零成本。
-        if !campfire_spots.is_empty() {
+        // 講述者記憶以短讀鎖取一次即釋（比照招呼段的記憶讀取，不巢狀寫鎖，守死鎖鐵律）。
+        // 圍火講往事維持**夜間限定**（本刀 901 讓 `campfire_spots` 冬季白天也備妥供取暖，故此處
+        // 顯式用 `is_deep_night` 鎖回夜間，白天／非夜晚整段早退零成本，不擴散講故事到冬季白天）。
+        if is_deep_night && !campfire_spots.is_empty() {
             let mut tale_pair: Option<(usize, usize)> = None; // (講述者 i, 聆聽者 j)
             'tscan: for i in 0..snaps.len() {
                 // 講述者：此刻沒在說話（讀 live，避免 2c 剛讓他開口）、沒睡著、講述冷卻到期、不在朝聖/遠行途中。
@@ -17317,15 +17343,22 @@ fn tick_residents(dt: f32) {
 
     // 乙太營火 v1：夜裡圍暖事件落地——玩家在火邊時把「一起圍爐」記進交情（掛玩家名下），
     // 無論有無玩家都上動態牆。記憶寫鎖短取即釋、Feed 走 IO，皆在 residents 鎖釋放後（守死鎖鐵律）。
-    for (rid, rname, pname_opt, _pick) in &campfire_warm_events {
+    for (rid, rname, pname_opt, _pick, cold) in &campfire_warm_events {
         if let Some(pname) = pname_opt {
-            hub()
-                .memory
-                .write()
-                .unwrap()
-                .add_memory(rid, pname, &vcamp::warm_memory_line(pname)); // 記憶寫鎖即釋
+            // 冬寒版（901）記憶掛玩家名下走冬寒文案，否則沿用原本泛用取暖記憶。
+            let mline = if *cold {
+                vcamp::cold_warm_memory_line(pname)
+            } else {
+                vcamp::warm_memory_line(pname)
+            };
+            hub().memory.write().unwrap().add_memory(rid, pname, &mline); // 記憶寫鎖即釋
         }
-        vfeed::append_feed("營火取暖", rname, &vcamp::warm_feed_line(rname));
+        let (kind, fline) = if *cold {
+            ("冬寒圍爐", vcamp::cold_warm_feed_line(rname))
+        } else {
+            ("營火取暖", vcamp::warm_feed_line(rname))
+        };
+        vfeed::append_feed(kind, rname, &fline);
     }
 
     // 木長椅 v1：白天坐下歇腳事件落地——玩家在椅邊時把「和你同坐歇腳」記進交情（掛玩家名下），

@@ -25,6 +25,11 @@ pub const WARM_RADIUS: f32 = 4.0;
 pub const WARM_COOLDOWN_SECS: f32 = 100.0;
 /// 每次符合條件（夜晚＋靠近火＋冷卻到期）時的取暖觸發機率——其餘時候只是安靜路過。
 pub const WARM_CHANCE: f32 = 0.30;
+/// 冬寒圍爐 v1（ROADMAP 901）：冬季（非飄雪）取暖機率。冬天不分晝夜都冷，湊到火邊
+/// 取暖的意願高於平時夜裡（WARM_CHANCE）。
+pub const WINTER_WARM_CHANCE: f32 = 0.45;
+/// 冬季正飄雪時的取暖機率——外頭下著雪，最想窩在火邊；為三檔之最高。
+pub const SNOW_WARM_CHANCE: f32 = 0.60;
 /// 「你也在火邊」的判定半徑（世界方塊）——你在這麼近，居民的暖語就會點你名、記進交情。
 pub const WARM_PLAYER_RADIUS: f32 = 6.0;
 
@@ -85,6 +90,66 @@ pub fn warm_memory_line(player: &str) -> String {
 /// 動態牆播報（非同步層，訪客回來能讀到誰在火邊取過暖）。
 pub fn warm_feed_line(rname: &str) -> String {
     format!("{rname}在營火邊烤了會兒火，暖暖的。")
+}
+
+// ── 冬寒圍爐 v1（ROADMAP 901）：把冬雪（900）× 季節（798）× 營火（791）第一次扣在一起 ──
+// 換維度而非疊維度：營火取暖原本「夜間限定＋路過被動」，本刀讓「冬季寒冷」第一次真正驅動
+// 居民行為——冬天裡（尤其飄雪時）不分晝夜都想湊到火邊取暖，念一句點明天寒的冷天暖語。
+// 純函式層零 LLM／零鎖／可測；接線（何時備妥火堆快照、選機率／台詞／Feed）留在 voxel_ws.rs。
+
+/// 這一刻營火是否「值得取暖」——夜裡（原本行為）或冬天（不分晝夜都冷）。
+/// 決定 voxel_ws 是否備妥營火座標快照：兩者皆非時整段判定零成本跳過。
+pub fn warming_active(is_night: bool, is_winter: bool) -> bool {
+    is_night || is_winter
+}
+
+/// 依季節／天氣算這一刻的取暖觸發機率：非冬季沿用 WARM_CHANCE；冬季更想烤火、
+/// 冬季又正飄雪時最想烤火。回傳值恆夾在 `[0,1]`。
+pub fn warm_chance_for(is_winter: bool, snowing: bool) -> f32 {
+    let c = if is_winter {
+        if snowing {
+            SNOW_WARM_CHANCE
+        } else {
+            WINTER_WARM_CHANCE
+        }
+    } else {
+        WARM_CHANCE
+    };
+    c.clamp(0.0, 1.0)
+}
+
+/// 冬寒版通用暖語（無玩家在旁）——明確點出天寒，與泛用 `warm_bubble` 完全不重疊。
+/// 刻意不寫死「正在下雪」（冬季未必飄雪），只扣「冷」，避免不飄雪時說謊。
+pub fn cold_warm_bubble(pick: usize) -> &'static str {
+    const LINES: [&str; 4] = [
+        "天寒地凍的，這火堆真是救命。",
+        "外頭冷得直哆嗦，火邊暖和多了。",
+        "呼……手都凍紅了，烤烤火才活過來。",
+        "這樣的冷天，就得守著一堆火。",
+    ];
+    LINES[pick % LINES.len()]
+}
+
+/// 冬寒版點名暖語（玩家在火邊）——點你名、記進交情，語氣扣著冬天。
+pub fn cold_warm_bubble_with_player(player: &str, pick: usize) -> String {
+    let name = clip_name(player);
+    const TEMPLATES: [&str; 4] = [
+        "{name}，天這麼冷，快來火邊暖暖手。",
+        "有{name}一起守著火，這寒冬也不難熬了。",
+        "{name}，這麼冷的天，湊近點一起烤火吧。",
+        "跟{name}一起圍著火過冬，心裡也暖。",
+    ];
+    TEMPLATES[pick % TEMPLATES.len()].replace("{name}", &name)
+}
+
+/// 冬寒版動態牆文案——上 Feed 時明確帶出「寒冬／取暖」。
+pub fn cold_warm_feed_line(rname: &str) -> String {
+    format!("{rname}在寒冬裡守著營火烤暖了身子。")
+}
+
+/// 冬寒版記憶文案——玩家在旁時掛玩家名下（把「一起圍火過冬」記進交情）。
+pub fn cold_warm_memory_line(player: &str) -> String {
+    format!("寒冬裡和{}一起圍著營火取暖，暖進了心裡。", clip_name(player)).replace('\n', " ")
 }
 
 /// 掃描整個 world delta，找出所有仍是營火的方塊座標（啟動時重建取暖清單用）。
@@ -202,5 +267,69 @@ mod tests {
         voxel::set_block(&mut world, 8, 64, 8, Block::Campfire);
         voxel::set_block(&mut world, 8, 64, 8, Block::Air);
         assert!(scan_campfires(&world).is_empty());
+    }
+
+    // ── 冬寒圍爐 v1（ROADMAP 901）── //
+
+    #[test]
+    fn warming_active_night_or_winter() {
+        // 夜裡（原本行為）或冬天皆需備妥火堆快照；白天且非冬季才整段跳過。
+        assert!(warming_active(true, false), "夜裡：需取暖");
+        assert!(warming_active(false, true), "冬季白天：也需取暖（本刀新行為）");
+        assert!(warming_active(true, true), "冬夜：更需取暖");
+        assert!(!warming_active(false, false), "非冬季白天：跳過");
+    }
+
+    #[test]
+    fn warm_chance_scales_with_cold() {
+        // 三檔嚴格遞增：非冬季 < 冬季不飄雪 < 冬季飄雪；且皆等於對應常數。
+        let base = warm_chance_for(false, false);
+        let winter = warm_chance_for(true, false);
+        let snowing = warm_chance_for(true, true);
+        assert_eq!(base, WARM_CHANCE);
+        assert_eq!(winter, WINTER_WARM_CHANCE);
+        assert_eq!(snowing, SNOW_WARM_CHANCE);
+        assert!(base < winter && winter < snowing, "越冷越想烤火");
+        // 非冬季時 snowing 旗標無意義（不飄雪），仍取基礎值。
+        assert_eq!(warm_chance_for(false, true), WARM_CHANCE);
+    }
+
+    #[test]
+    fn warm_chance_always_in_range() {
+        for &w in &[true, false] {
+            for &s in &[true, false] {
+                let c = warm_chance_for(w, s);
+                assert!((0.0..=1.0).contains(&c), "機率須夾在[0,1]：{c}");
+            }
+        }
+    }
+
+    #[test]
+    fn cold_bubbles_rotate_distinct_and_in_frame() {
+        // 冬寒通用暖語輪替、非空、且與泛用版本完全不重疊。
+        for p in 0..8 {
+            assert!(!cold_warm_bubble(p).is_empty());
+            assert_ne!(
+                cold_warm_bubble(p),
+                warm_bubble(p),
+                "冬寒版須與泛用版互異，避免同軸重複"
+            );
+        }
+        assert_ne!(cold_warm_bubble(0), cold_warm_bubble(1));
+        // 點名版含玩家名、輪替、超長名截斷不破泡泡框。
+        let s = cold_warm_bubble_with_player("旅人", 0);
+        assert!(s.contains("旅人"));
+        let long = cold_warm_bubble_with_player("超級無敵長長長長長長長名字", 2);
+        assert!(long.chars().count() < 40, "超長名應被截斷不破框：{long}");
+    }
+
+    #[test]
+    fn cold_memory_and_feed_embed_names_no_newline() {
+        // 記憶不得含換行（防注入破壞記憶庫）；動態牆帶名。
+        let m = cold_warm_memory_line("諾娃\n注入");
+        assert!(m.contains("諾娃"));
+        assert!(!m.contains('\n'), "記憶不得含換行：{m}");
+        let f = cold_warm_feed_line("露娜");
+        assert!(f.contains("露娜") && f.contains("寒冬"));
     }
 }
