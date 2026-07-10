@@ -5095,6 +5095,14 @@ function connect() {
       // 暗影生物 v1：自己的挖擊命中——該暗影閃一下淡紫白（gone=true 時等 shadow_puff 收尾）。
       const ent = shadowEnts.get(m.id);
       if (ent) ent.hitFlash = 0.12;
+    } else if (m.t === "colony_discovered") {
+      // 分村殖民 v1：走近一座此前沒發現過的野外村落——浮出它的名字與立村故事（只給自己看）。
+      showMsg(m.line || "你發現了一座野外村落🏘️");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 4200);
+    } else if (m.t === "colony_founded") {
+      // 分村殖民 v1：世界某處剛奠下一座新村（人人可見的世界大事，稀有）——浮出立村捷報。
+      showMsg("🏘️ 世界長出了新村落「" + (m.name || "野外村落") + "」——" + (m.story || ""));
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 5000);
     } else if (m.t === "firework") {
       // 乙太煙火 v1（785）：全場任一玩家施放的煙火——在該座標上方綻放一朵火花（人人可見）。
       spawnFirework(m.x, m.y, m.z, m.palette | 0);

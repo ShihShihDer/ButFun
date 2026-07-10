@@ -48,6 +48,7 @@ use crate::voxel_feed as vfeed;
 use crate::voxel_village as vvillage;
 use crate::voxel_discovery as vdisc;
 use crate::voxel_landmark_note as vlmark;
+use crate::voxel_colony as vcolony;
 use crate::voxel_craft as vcraft;
 use crate::voxel_inventory::{self as vinv, InvStore};
 use crate::voxel_memory::{self as vmem, VoxelMemory};
@@ -247,6 +248,10 @@ fn resident_count() -> usize {
 /// 會嘗試載入 `data/voxel_last_birth`；有值就用值繼續計算 elapsed，無值才記 now 為基準）。
 /// 重啟後由檔案還原，elapsed 跨重啟累積——修正 prod 每 15 分重啟導致永遠生不出居民的 bug。
 static LAST_BIRTH_UNIX: AtomicU64 = AtomicU64::new(0);
+/// 上次奠基殖民地的 unix 秒（分村殖民 v1·奠基節流）。0＝尚未從持久化載入（首次
+/// `maybe_found_colony` 會嘗試載入 `data/voxel_last_colony`；有值就用值續算 elapsed，
+/// 無值才記 now 為基準）。重啟後由檔還原，elapsed 跨重啟累積（比照 [`LAST_BIRTH_UNIX`]）。
+static LAST_COLONY_UNIX: AtomicU64 = AtomicU64::new(0);
 /// 居民閒晃半徑下/上限（方塊）：挑下一個目標時離當前位置的距離區間。
 const WANDER_MIN_R: f32 = 4.0;
 const WANDER_MAX_R: f32 = 12.0;
@@ -2025,6 +2030,9 @@ struct VoxelHub {
     /// 玩家熟練度 v1（自主提案切片，ROADMAP 842）：⛏️採集／🌾耕種／🎣垂釣三條連續經驗值。
     /// 持久化到 data/voxel_mastery.jsonl（append-only，重啟後熟練度仍在）。
     mastery: RwLock<MasteryStore>,
+    /// 分村殖民 v1（自主提案切片，承 PLAN_ETHERVOX §7）：全世界已奠基的野外殖民地名冊。
+    /// 持久化到 data/voxel_colonies.jsonl（append-only，重啟後村落與立村故事仍在）。
+    colonies: RwLock<vcolony::ColonyRegistry>,
     /// 同帳號去重——踢舊連線用的 oneshot 信號表（ROADMAP fix 幽靈分身）。
     /// 連線 UUID → 踢信號發送端；有同 email 的新連線進來時，從此表取出舊 UUID 的發送端並送 ()，
     /// 讓舊連線的 select! 觸發、優雅退出（幽靈分身消失）。
@@ -2694,6 +2702,8 @@ fn hub() -> &'static VoxelHub {
             discovery: RwLock::new(vdisc::DiscoveryStore::from_entries(vdisc::load_discoveries())),
             landmark_notes: RwLock::new(vlmark::LandmarkNoteStore::from_entries(vlmark::load_notes())),
             mastery: RwLock::new(MasteryStore::from_entries(vmastery::load_mastery())),
+            // 啟動時從 data/voxel_colonies.jsonl 載回已奠基的野外殖民地（重啟後村落仍在）。
+            colonies: RwLock::new(vcolony::ColonyRegistry::from_entries(vcolony::load_colonies())),
             // 同帳號去重：啟動空，每條連線進場時登記、離場時清除。純記憶體、無需持久化。
             conn_kick: RwLock::new(HashMap::new()),
             // 玩家生存指標：啟動時從 data/voxel_player_stats.jsonl 載回血/飢（重登保留，比照 #1024）。
@@ -4106,6 +4116,37 @@ async fn handle_socket(
                     }
                 }
                 was_near_outpost = near_outpost.is_some();
+                // 分村殖民 v1：玩家遠行走近一座此前沒發現過的野外村落 → 記進探索紀事、單播立村
+                // 故事（同一座村只記第一次，用村中心格當去重鍵）。短讀鎖快照最近的殖民地即釋，
+                // 再短寫鎖 record 去重——只有首次發現才落地/單播，之後路過零副作用。
+                let near_colony = {
+                    let reg = hub().colonies.read().unwrap();
+                    reg.nearest_within(px, pz, vcolony::DISCOVER_RADIUS).cloned()
+                }; // colonies 讀鎖釋放
+                if let Some(c) = near_colony {
+                    let found = {
+                        let mut d = hub().discovery.write().unwrap();
+                        d.record(
+                            &name,
+                            vdisc::LandmarkKind::Colony,
+                            (c.cx, c.cz),
+                            c.cx,
+                            py.floor() as i32,
+                            c.cz,
+                        )
+                    }; // discovery 寫鎖釋放
+                    if let Some(entry) = found {
+                        vdisc::append_discovery(&entry);
+                        let _ = out_tx
+                            .try_send(Message::Text(
+                                serde_json::json!({
+                                    "t": "colony_discovered",
+                                    "line": vcolony::discover_line(&c),
+                                })
+                                .to_string(),
+                            ));
+                    }
+                }
                 // 溺水扣血走統一傷害路徑（含死亡→重生判定、廣播、持久化）。
                 if drown_dmg > 0 {
                     apply_player_damage(&name, drown_dmg, &out_tx).await;
@@ -8605,6 +8646,7 @@ pub fn spawn_farm_tick() {
             maybe_breed_rabbits(); // 馴服兔子生寶寶 v1（自主提案切片 855）：同節拍檢查是否誕生一隻小兔子。
             maybe_pet_admire(); // 居民注意到你身邊跟著的馴服動物 v1（自主提案切片 875）：同節拍檢查身邊有無寵物觸發讚賞。
             maybe_proximity_teach(); // 就地指導 v1（自主提案切片）：同節拍檢查有無卡關居民身邊剛好站著會解法的老朋友。
+            maybe_found_colony(); // 分村殖民 v1：低頻檢查主村是否夠成熟、該外派拓荒隊奠下第二座村。
             tick_dropitem_expire(); // 掉落物 v1（自主提案切片 828）：同節拍清掉沒人撿的過期掉落物。
             tick_stall_expire(); // 玩家自由市集 v1（自主提案切片 832）：同節拍清掉逾時沒人接手的攤位、退還材料。
         }
@@ -8773,6 +8815,158 @@ fn maybe_birth() {
         format!("在{parent_name}家附近誕生了")
     };
     vfeed::append_feed("新居民誕生", new_name, &detail);
+}
+
+/// 分村殖民 v1（自主提案切片，承 PLAN_ETHERVOX §7「居民散佈世界各處住」＋維護者 2026-07-10
+/// IDEAS「分村(殖民)機制」）：主村夠成熟時，低頻檢查是否該外派拓荒隊到遠方異群系，親手奠下
+/// 第二座**有名字、有立村故事**的野外村落殘核。比照 [`maybe_birth`]：便宜早退 → 讀成熟度 →
+/// 跨重啟間隔節流 → 選址/選人/命名（純函式）→ 落地奠基殘核（golden safe pattern）→ 記名冊
+/// ＋世界公告＋拓荒者記憶。全程守短鎖鐵律（每把鎖短取即釋、不巢狀、不持鎖 await）。
+fn maybe_found_colony() {
+    let pop = resident_count();
+    // 最便宜的早退：人口未達門檻，連任何鎖都不碰。
+    if pop < vcolony::MIN_POP_TO_FOUND {
+        return;
+    }
+    // 主村街廓還沒鋪好（一次性整理未完成）＝主村都還沒成形，先別談分村。
+    if !vvillage::village_done() {
+        return;
+    }
+
+    let now = vfarm::now_secs();
+    // 首次呼叫（LAST_COLONY_UNIX 仍為 0）：先嘗試從持久化檔載回基準（跨重啟累積 elapsed）。
+    if LAST_COLONY_UNIX.load(Ordering::Relaxed) == 0 {
+        match vcolony::load_last_found_unix() {
+            Some(saved) => LAST_COLONY_UNIX.store(saved, Ordering::Relaxed),
+            None => {
+                // 真正首次（檔缺）：記當下為基準並存檔，本輪不奠基（避免一啟動就冒殖民地）。
+                LAST_COLONY_UNIX.store(now, Ordering::Relaxed);
+                vcolony::save_last_found_unix(now); // 鐵律：鎖外 IO（此處無持任何鎖）
+                return;
+            }
+        }
+    }
+    let elapsed = now.saturating_sub(LAST_COLONY_UNIX.load(Ordering::Relaxed));
+
+    // 成熟度信號（短讀鎖各取即釋）：已認領地塊數、目前殖民地數與下一序號。
+    let claimed = hub().village.read().unwrap().claimed_count();
+    let (colonies_count, next_seq) = {
+        let reg = hub().colonies.read().unwrap();
+        (reg.count(), reg.next_seq())
+    };
+    if !vcolony::should_found(pop, claimed, true, colonies_count, elapsed) {
+        return;
+    }
+
+    // 主村中心（優先讀持久化中心；缺就從家域群聚算）。
+    let (mx, mz) = vvillage::load_village_center().unwrap_or_else(|| {
+        let home_bases: Vec<(i32, i32)> = {
+            let rs = hub().residents.read().unwrap();
+            rs.iter().map(|r| (r.home_x.floor() as i32, r.home_z.floor() as i32)).collect()
+        };
+        vvillage::village_center(&home_bases)
+    });
+
+    // 選址（確定性、隨序號往外推）。若巧合離既有殖民地太近，本輪先不奠、等下一輪（不硬推）。
+    let (cx, cz) = vcolony::pick_site(next_seq, mx, mz);
+    if hub().colonies.read().unwrap().too_close_to_existing(cx, cz) {
+        return;
+    }
+
+    // 群系 / 村名 / 方位 / 拓荒者 / 立村故事（全純函式）。
+    let biome = voxel::biome_at_voxel(cx, cz);
+    let name = vcolony::colony_name(biome, next_seq);
+    let bearing = vcolony::bearing_label(mx, mz, cx, cz);
+    let names: Vec<String> = {
+        let rs = hub().residents.read().unwrap();
+        rs.iter().map(|r| r.name.to_string()).collect()
+    };
+    let founders = vcolony::pick_founders(&names, next_seq);
+    let story = vcolony::founding_story(&name, &founders, biome, bearing);
+
+    // ── 落地奠基殘核（golden safe pattern：surface_y 鎖外算 → deltas 寫鎖批次即釋 →
+    //    鎖外廣播＋持久化）。逐格守則：地表重鋪層只覆蓋自然地表；地表之上層只放空氣格，
+    //    絕不拆任何既有方塊（雖選在遠方空地，仍冪等安全）。
+    let sy = vbuild::surface_y(cx, cz);
+    let blocks = vcolony::nucleus_blocks(cx, cz, sy, biome);
+    let mut placed: Vec<(i32, i32, i32, Block)> = Vec::new();
+    {
+        let mut world = hub().deltas.write().unwrap();
+        for &(x, y, z, b, ground) in &blocks {
+            let cur = voxel::effective_block_at(&world, x, y, z);
+            if cur == b {
+                continue; // 已是目標（重跑冪等）。
+            }
+            let ok = if ground {
+                vvillage::is_natural_ground(cur)
+            } else {
+                cur == Block::Air
+            };
+            if ok {
+                voxel::set_block(&mut world, x, y, z, b);
+                placed.push((x, y, z, b));
+            }
+        }
+    } // deltas 寫鎖釋放
+    for &(x, y, z, b) in &placed {
+        broadcast_block(x, y, z, b);
+        vbuild::append_world_block(x, y, z, b as u8);
+    }
+
+    // ── 記進殖民地名冊（記憶體 push + append 落地，重啟後村落與立村故事仍在）。
+    let colony = vcolony::Colony {
+        seq: next_seq,
+        name: name.clone(),
+        cx,
+        cz,
+        biome: vcolony::biome_wire(biome).to_string(),
+        founders: founders.clone(),
+        story: story.clone(),
+        founded_unix: now,
+    };
+    hub().colonies.write().unwrap().push(colony.clone());
+    vcolony::append_colony(&colony);
+
+    // ── 更新節流基準（記憶體 + 落地，跨重啟累積）。
+    LAST_COLONY_UNIX.store(now, Ordering::Relaxed);
+    vcolony::save_last_found_unix(now);
+
+    // ── 拓荒者冒出立村泡泡（世界裡看得見的一刻）＋收集其 id 供記憶。
+    let founder_ids: Vec<String> = {
+        let mut rs = hub().residents.write().unwrap();
+        let bubble = vcolony::embark_bubble(&name, bearing);
+        let mut ids = Vec::new();
+        for r in rs.iter_mut() {
+            if founders.iter().any(|f| f == r.name) {
+                r.say = bubble.chars().take(60).collect();
+                r.say_timer = SAY_SECS;
+                ids.push(r.id.clone());
+            }
+        }
+        ids
+    }; // residents 寫鎖釋放
+    for rid in &founder_ids {
+        let summary = vcolony::founder_memory_summary(&name, biome);
+        let entry = hub().memory.write().unwrap().add_memory(rid, vcolony::COLONY_MEMORY_PLAYER, &summary);
+        vmem::append_memory(&entry);
+    }
+
+    // ── 世界動態 feed（非同步層可回看）＋世界級公告（additive WS 型別，前端未認得即忽略）。
+    let lead = founders.first().cloned().unwrap_or_else(|| "拓荒隊".to_string());
+    vfeed::append_feed("分村", &lead, &vcolony::founding_feed_line(&name, biome, bearing));
+    let _ = hub().tx.send(std::sync::Arc::new(
+        serde_json::json!({
+            "t": "colony_founded",
+            "name": name,
+            "biome": vcolony::biome_wire(biome),
+            "bearing": bearing,
+            "story": story,
+            "cx": cx,
+            "cz": cz,
+        })
+        .to_string(),
+    ));
+    tracing::info!("分村殖民：奠下野外村落「{name}」於 ({cx},{cz}) {}", vcolony::biome_label(biome));
 }
 
 /// 水流 tick 頻率（秒）：0.5s（2Hz）——水一格一格漫開，像麥塊那樣「看得到在流」，
@@ -9424,8 +9618,8 @@ pub async fn voxel_discoveries_handler(
 ) -> axum::response::Response {
     use axum::http::header;
     let player_name = params.get("player").map(|s| s.as_str()).unwrap_or("").trim().to_string();
-    let (items, ruins, springs, outposts) = if player_name.is_empty() {
-        (Vec::new(), 0usize, 0usize, 0usize)
+    let (items, ruins, springs, outposts, colonies) = if player_name.is_empty() {
+        (Vec::new(), 0usize, 0usize, 0usize, 0usize)
     } else {
         // 短讀鎖一次性快照這位玩家的探索紀事 → 立即釋放，不與其他鎖巢狀。
         let store = hub().discovery.read().unwrap();
@@ -9444,9 +9638,10 @@ pub async fn voxel_discoveries_handler(
             })
             .collect();
         let (r, s, o) = store.counts_for(&player_name);
-        (list, r, s, o)
+        let c = store.colony_count_for(&player_name);
+        (list, r, s, o, c)
     };
-    let body = serde_json::json!({ "items": items, "ruins": ruins, "springs": springs, "outposts": outposts }).to_string();
+    let body = serde_json::json!({ "items": items, "ruins": ruins, "springs": springs, "outposts": outposts, "colonies": colonies }).to_string();
     axum::response::Response::builder()
         .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-cache")

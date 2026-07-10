@@ -46,6 +46,8 @@ pub enum LandmarkKind {
     /// 邊陲營地（881）——居民親手搭起、有床有立牌的荒野據點。與前兩者不同：座標非世界生成
     /// 種子決定，而是由該居民的家座標純函式算出（見 `voxel_ws.rs::player_near_built_outpost`）。
     Outpost,
+    /// 野外殖民地（分村殖民 v1）——居民奠基的有名字聚落，遠行撞見的人為地標。
+    Colony,
 }
 
 impl LandmarkKind {
@@ -55,6 +57,7 @@ impl LandmarkKind {
             LandmarkKind::Ruin => "古代遺跡",
             LandmarkKind::HotSpring => "溫泉",
             LandmarkKind::Outpost => "邊陲營地",
+            LandmarkKind::Colony => "野外村落",
         }
     }
 
@@ -65,6 +68,7 @@ impl LandmarkKind {
             LandmarkKind::Ruin => "ruin",
             LandmarkKind::HotSpring => "hot_spring",
             LandmarkKind::Outpost => "outpost",
+            LandmarkKind::Colony => "colony",
         }
     }
 
@@ -74,6 +78,7 @@ impl LandmarkKind {
             LandmarkKind::Ruin => "🏛️",
             LandmarkKind::HotSpring => "♨️",
             LandmarkKind::Outpost => "⛺",
+            LandmarkKind::Colony => "🏘️",
         }
     }
 }
@@ -177,6 +182,15 @@ impl DiscoveryStore {
         let springs = list.iter().filter(|e| e.kind == LandmarkKind::HotSpring).count();
         let outposts = list.iter().filter(|e| e.kind == LandmarkKind::Outpost).count();
         (ruins, springs, outposts)
+    }
+
+    /// 這位玩家發現過幾座野外殖民地（供面板頂部小計，與 [`counts_for`](Self::counts_for)
+    /// 並列；殖民地是分村殖民 v1 新增的地標種類，另開一支計數以維持 `counts_for` 舊契約）。
+    pub fn colony_count_for(&self, player: &str) -> usize {
+        self.by_player
+            .get(player)
+            .map(|l| l.iter().filter(|e| e.kind == LandmarkKind::Colony).count())
+            .unwrap_or(0)
     }
 }
 
