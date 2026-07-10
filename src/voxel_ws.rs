@@ -948,6 +948,73 @@ fn structure_names(
     N.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+/// 全域 per-IP 連線數計數器（治安三件套②·連線數上限）：跨所有連線共用一份，以真實 IP 為鍵，
+/// 擋「一個腳本開幾十條連線並行灌 talk（繞過 per-connection 冷卻）」。連線建立時 try_acquire、
+/// 結束時 release。
+fn ip_conn_limiter() -> &'static std::sync::Mutex<vrl::IpConnLimiter> {
+    static L: std::sync::OnceLock<std::sync::Mutex<vrl::IpConnLimiter>> = std::sync::OnceLock::new();
+    L.get_or_init(|| std::sync::Mutex::new(vrl::IpConnLimiter::new()))
+}
+
+/// 全域 per-IP 內容違規計數器（治安三件套①·累犯加長冷卻）：以真實 IP 為鍵記「累積命中審查幾次」。
+/// 玩家每被內容審查（注入／NSFW／辱罵）攔一次就 +1；違規越多、下一次對話的額外冷卻越長，
+/// 讓反覆試探的人自然被拖慢，正常人零感知（永遠不會命中）。純記憶體、單調累加、無界性由
+/// 「命中審查者本就稀少」天然約束（不像每 IP 都有的 rate 桶會長大）。
+fn ip_violations() -> &'static std::sync::Mutex<std::collections::HashMap<String, u32>> {
+    static V: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u32>>> =
+        std::sync::OnceLock::new();
+    V.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 記一次某 IP 的內容違規並回傳「累積違規次數」（含這次）。短鎖即釋、不 await（守鎖紀律）。
+fn record_violation(ip: &str) -> u32 {
+    let mut v = ip_violations().lock().unwrap();
+    let c = v.entry(ip.to_string()).or_insert(0);
+    *c = c.saturating_add(1);
+    *c
+}
+
+/// 累犯額外冷卻（毫秒）：純函式。違規 n 次 → 額外 min(n, CAP) × STEP 毫秒，封頂避免無限長。
+/// 第一次違規（n=1）就給一點冷卻，反覆試探者遞增到上限；正常玩家永不命中審查、恆 0。
+fn violation_cooldown_ms(violations: u32) -> u64 {
+    const STEP_MS: u64 = 2000; // 每次違規多 2 秒
+    const CAP: u64 = 30; // 封頂 30 次 → 最多額外 60 秒
+    (violations as u64).min(CAP) * STEP_MS
+}
+
+/// 同一 IP 的同時連線數上限（治安三件套②）：讀 `BUTFUN_MAX_CONN_PER_IP`，未設／壞值／0 →
+/// 退預設 `vrl::MAX_CONN_PER_IP`（5）。維護者可視需要調整；下限 clamp 到 1（永不歸零把人全鎖死）。
+fn max_conn_per_ip() -> usize {
+    std::env::var("BUTFUN_MAX_CONN_PER_IP")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(vrl::MAX_CONN_PER_IP)
+}
+
+/// 純函式：某 IP 是否在「連線數／速率」限流白名單內（QA／localhost 豁免）。
+/// - localhost（`127.0.0.1`、`::1`、解不出 IP 的保底桶 `unknown`）恆豁免——本機冒煙／隔離
+///   測試不受上限干擾（prod 的真流量一律經 CF tunnel，帶真實 `cf-connecting-ip`，永遠不是這些）。
+/// - 另可用 `whitelist`（由呼叫端傳入，來自 env `BUTFUN_RL_WHITELIST` 逗號分隔）補充。
+fn ip_limit_exempt(ip: &str, whitelist: &[String]) -> bool {
+    matches!(ip, "127.0.0.1" | "::1" | "unknown") || whitelist.iter().any(|w| w == ip)
+}
+
+/// 便捷層：讀 env 白名單清單（逗號分隔、去空白、濾空）。未設 → 空 Vec（只剩內建 localhost 豁免）。
+fn rl_whitelist() -> Vec<String> {
+    std::env::var("BUTFUN_RL_WHITELIST")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// 便捷層：這條連線的 IP 是否豁免限流（讀 env 白名單 + 內建 localhost）。
+fn ip_is_exempt(ip: &str) -> bool {
+    ip_limit_exempt(ip, &rl_whitelist())
+}
+
 /// 當前 UNIX 毫秒時間戳（餵給 token bucket；時鐘不可用時退 0，限流器內部對回退安全）。
 fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
@@ -1156,11 +1223,13 @@ fn resident_talk_system_prompt(name: &str, persona: ResidentPersona, desire: Opt
         })
         .unwrap_or_default();
     let honesty = resident_honesty_guide();
+    // 治安三件套①：拒絕成人／露骨內容、溫和轉移話題的一小段守則（內建過濾是主閘，這段是補強）。
+    let refusal = vmod::refusal_guide();
     format!(
         "{base}\n\n你現在身處『乙太方界』——一片由方塊構成、寧靜清新的新生天地，你是這裡的居民。{desire_note}\
         此刻有一位來訪的旅人向你搭話。請以你的身份、用繁體中文自然回應，1 到 2 句、口吻溫暖親切，\
         可以聊聊你在這片方塊天地裡的生活或當下的心情；絕不跳出角色，也不要提到你是 AI 或語言模型。\
-        \n\n{honesty}"
+        \n\n{honesty}\n\n{refusal}"
     )
 }
 
@@ -3221,6 +3290,43 @@ async fn apply_player_damage(
     persist_player_stats(); // 血變動落地（登入玩家重登保留）
 }
 
+/// 邊陲營地探索 v1（自主提案切片，接續 881 立牌）：判定玩家此刻是否站在某位居民親手搭起的
+/// 邊陲營地床邊。**與遺跡／溫泉的關鍵差異**：後兩者座標由世界生成種子決定（純座標函式，
+/// 與玩家/居民狀態無關）；邊陲營地座標由該居民的**家座標**純函式算出（`vexp::outpost_seq`
+/// → `pick_frontier` → `outpost_bed_center`，與 `voxel_ws.rs` 遠行狀態機算落點的手法完全
+/// 一致），且只有小棚真的搭起（`Block::Bed` 已落地）才算數——半路経過空地不算發現。
+/// 只掃能遠行的人格（`vexp::expedition_motive` 有值，目前 2 位），成本可忽略。
+/// 找到就回傳 `(居民 id, 居民名, 床的世界座標)`；找不到回 `None`。
+/// **鎖紀律**：residents 讀鎖只取一次快照即釋、deltas 讀鎖只取一次即釋，兩者不巢狀。
+fn player_near_built_outpost(px: f32, pz: f32) -> Option<(String, &'static str, i32, i32, i32)> {
+    let candidates: Vec<(String, &'static str, f32, f32)> = {
+        let rs = hub().residents.read().unwrap();
+        rs.iter()
+            .filter(|r| vexp::expedition_motive(r.persona).is_some())
+            .map(|r| (r.id.clone(), r.name, r.home_x, r.home_z))
+            .collect()
+    }; // residents 讀鎖釋放
+    for (rid, rname, home_x, home_z) in candidates {
+        let seq = vexp::outpost_seq(home_x, home_z);
+        let (fx, fz, _bearing) = vexp::pick_frontier(home_x, home_z, seq);
+        let (tx, tz) = (fx.round() as i32, fz.round() as i32);
+        let (bedx, bedz) = vexp::outpost_bed_center(tx, tz);
+        if !vexp::near_outpost_bed(px, pz, bedx, bedz) {
+            continue;
+        }
+        let (ax, az) = vexp::shelter_anchor(tx, tz);
+        let ay = vbuild::surface_y(ax, az);
+        let built = {
+            let _w = hub().deltas.read().unwrap();
+            voxel::block_at(ax, ay, az) == Block::Bed
+        }; // deltas 讀鎖釋放
+        if built {
+            return Some((rid, rname, ax, ay, az));
+        }
+    }
+    None
+}
+
 /// 地標旅人留言 v1（自主提案切片，ROADMAP 862）：把這處地標目前的留言簿（可能是空的）
 /// 單播給這位玩家，並附上 `(x,y,z)`——前端據此讓玩家能就地回送 `LeaveLandmarkNote`
 /// 寫下自己的一句話（溫泉不看座標，附的是玩家此刻的腳下位置即可；遺跡則必須是乙太礦
@@ -3417,6 +3523,27 @@ async fn handle_socket(
     let (mut sender, mut receiver) = socket.split();
     let my_id = Uuid::new_v4();
 
+    // 治安三件套②·連線數上限：同一真實 IP 只准這麼多條同時連線（預設 5，env 可調），擋
+    // 「開幾十條連線並行灌 talk 繞過 per-connection 冷卻」。白名單（localhost / QA / env）豁免，
+    // 讓本機冒煙與隔離測試不受限。超上限 → 直接關這條連線（連 Join 都不讀，最省資源）。
+    // 短鎖即釋、不 await（守鎖紀律）。豁免連線不佔名額、也不需 release（一致性由 exempt 判定守住）。
+    let conn_exempt = ip_is_exempt(&client_ip);
+    if !conn_exempt {
+        let acquired = ip_conn_limiter()
+            .lock()
+            .unwrap()
+            .try_acquire(&client_ip, max_conn_per_ip());
+        if !acquired {
+            // 名額已滿：不建 writer、不進場，直接讓 socket 隨函式結束而關閉。
+            return;
+        }
+    }
+    // 名額守衛：確保任何離開路徑（早退 / 正常收攤）都會釋放這條連線的名額（豁免者不佔名額）。
+    let _conn_guard = ConnSlotGuard {
+        ip: client_ip.clone(),
+        active: !conn_exempt,
+    };
+
     // 出站訊息統一走 mpsc → 單一 writer task，避免「轉發任務」與「讀取迴圈」同時寫 socket。
     let (out_tx, mut out_rx) = mpsc::channel::<Message>(64);
     let writer = tokio::spawn(async move {
@@ -3435,7 +3562,7 @@ async fn handle_socket(
             join_name = n;
         }
     } else {
-        // 連線一開始就斷/非文字 → 收攤。
+        // 連線一開始就斷/非文字 → 收攤（_conn_guard 於函式結束時自動釋放名額）。
         writer.abort();
         return;
     }
@@ -3748,6 +3875,9 @@ async fn handle_socket(
 
     // 對話冷卻：記這條連線上次跟居民說話的時刻（per-connection 節流，防灌爆 LLM）。
     let mut last_talk: Option<std::time::Instant> = None;
+    // 內容審查累犯罰則（治安三件套①）：反覆命中審查者，這條連線被推遲到此刻後才准再對話。
+    // None＝目前無罰則（正常玩家永遠是 None，零感知）。
+    let mut talk_penalty_until: Option<std::time::Instant> = None;
 
     // 位置持久化 v1：上次存位置的 unix 秒（0 = 從未存；第一次 Move 後 30 秒內觸發第一次存）。
     let mut last_pos_save_ts: u64 = 0;
@@ -3794,6 +3924,11 @@ async fn handle_socket(
     // 溫泉遺跡 v1（世界第二種可探索地標，自主提案切片）：這條連線上一 tick 是否正泡在溫泉裡，
     // 用來偵測「剛踏進去」的那一刻只提示一次（per-connection、斷線即清，不必持久化）。
     let mut was_soaking = false;
+
+    // 邊陲營地探索 v1（自主提案切片，接續 881）：這條連線上一 tick 是否正站在某位居民的邊陲
+    // 營地床邊，用來偵測「剛走近」的那一刻只嘗試記一次探索紀事（避免逗留原地時每秒都取一次
+    // discovery 寫鎖；record() 本身已冪等，此旗標純粹省一趟鎖，非正確性必要）。
+    let mut was_near_outpost = false;
 
     // 玩家生存指標 tick（溫和版）：per-connection 每秒推進一次飢餓衰減／溺水／飽食回血，
     // 並在指標變動時單播 player_stats（只給玩家自己，減噪）。放這條連線的 select loop 裡跑，
@@ -3862,6 +3997,30 @@ async fn handle_socket(
                     }
                 }
                 was_soaking = soaking;
+                // 邊陲營地探索 v1（自主提案切片，接續 881 立牌）：881 讓居民自己在營地立牌、登記
+                // 進地標系統（居民視角），但玩家視角走到同一處荒野據點，此前完全不會被世界記住——
+                // 探索紀事／旅人留言簿只認遺跡與溫泉。這一刀讓玩家第一次走近某位居民親手搭起的
+                // 邊陲營地床邊時，也留下一筆探索紀事、解鎖里程碑、順手看看先前旅人的留言。
+                let near_outpost = player_near_built_outpost(px, pz);
+                if let Some((rid, rname, ax, ay, az)) = &near_outpost {
+                    if !was_near_outpost {
+                        try_unlock_milestone(&name, "first_outpost_discover", &out_tx);
+                        let found = {
+                            let mut d = hub().discovery.write().unwrap();
+                            d.record(&name, vdisc::LandmarkKind::Outpost, (*ax, *az), *ax, *ay, *az)
+                        }; // discovery 寫鎖釋放
+                        if let Some(entry) = found {
+                            vdisc::append_discovery(&entry);
+                            send_landmark_notes(vdisc::LandmarkKind::Outpost, (*ax, *az), *ax, *ay, *az, &out_tx).await;
+                            vfeed::append_feed(
+                                "探索",
+                                &name,
+                                &format!("走進荒野，找到了{rname}親手搭起的邊陲營地"),
+                            );
+                        }
+                    }
+                }
+                was_near_outpost = near_outpost.is_some();
                 // 溺水扣血走統一傷害路徑（含死亡→重生判定、廣播、持久化）。
                 if drown_dmg > 0 {
                     apply_player_damage(&name, drown_dmg, &out_tx).await;
@@ -4780,7 +4939,14 @@ async fn handle_socket(
                     continue;
                 };
                 // 2) per-connection 冷卻：太頻繁就忽略（保護免費 LLM 額度）。
+                //    累犯罰則（治安三件套①）：反覆命中內容審查者，`talk_penalty_until` 會被推遲到
+                //    未來一段時間——這段內連 per-connection 冷卻都直接擋，把試探者自然拖慢。
                 let now = std::time::Instant::now();
+                if let Some(until) = talk_penalty_until {
+                    if now < until {
+                        continue; // 罰則冷卻中：靜默忽略（已提示過），別再燒 LLM
+                    }
+                }
                 if let Some(prev) = last_talk {
                     if !talk_cooldown_ok(now.duration_since(prev).as_millis() as u64) {
                         continue;
@@ -4791,7 +4957,8 @@ async fn handle_socket(
                 //     開多條 WebSocket 連線」繞過（每連線各有 last_talk）→ 白嫖／燒爆免費 LLM。
                 //     這道以真實 IP 為鍵的 token bucket 設一道跨連線天花板；超量→在玩家自己頭上
                 //     冒一句溫柔提示、跳過（絕不觸發 LLM）。短鎖即釋、不持鎖 await（守鎖紀律）。
-                {
+                //     白名單 IP（localhost / QA / env）豁免，讓隔離測試與本機冒煙不受限。
+                if !conn_exempt {
                     let allowed = ip_talk_limiter()
                         .lock()
                         .unwrap()
@@ -4805,13 +4972,21 @@ async fn handle_socket(
                         continue;
                     }
                 }
-                // 2c) 內容審查（治安三件套②）：文字長度/速率合格不代表「內容」乾淨。玩家對話會
-                //     ①直達免費 LLM（居民的腦）②廣播成泡泡給所有人看——這道純邏輯審查攔 prompt
-                //     injection/越獄注入（想劫持居民的腦、套系統提示）與明顯辱罵；命中→在玩家自己
-                //     頭上冒一句溫柔提示、跳過（絕不觸發 LLM、絕不把原文廣播出去）。零鎖純比對。
+                // 2c) 內容審查（治安三件套①·進 LLM 前）：文字長度/速率合格不代表「內容」乾淨。
+                //     玩家對話會 ①直達免費 LLM（居民的腦）②廣播成泡泡給所有人看——這道純邏輯審查
+                //     攔 prompt injection/越獄注入、成人露骨（NSFW）與明顯辱罵；命中→在玩家自己
+                //     頭上冒一句居民得體的迴避、記一次該 IP 違規（累犯加長冷卻）、跳過（絕不觸發
+                //     LLM、絕不把原文廣播出去）。零鎖純比對；違規計數短鎖即釋。
                 {
                     let verdict = vmod::screen(&clean);
                     if verdict != vmod::Screen::Clean {
+                        // 累犯罰則：記一次違規、依累積次數推遲這條連線的下次可對話時間。
+                        let n = record_violation(&client_ip);
+                        let penalty = violation_cooldown_ms(n);
+                        if penalty > 0 {
+                            talk_penalty_until =
+                                Some(now + std::time::Duration::from_millis(penalty));
+                        }
                         let mut players = hub().players.write().unwrap();
                         if let Some(p) = players.get_mut(&my_id) {
                             p.say = vmod::gentle_notice(verdict).to_string();
@@ -5489,7 +5664,15 @@ async fn handle_socket(
                         )
                         .await
                         {
-                            Ok(Some(t)) => t.chars().take(TALK_REPLY_MAX_CHARS).collect(),
+                            Ok(Some(t)) => {
+                                // 治安三件套①·LLM 出來後（出口過濾）：小模型偶爾被誘導吐出露骨/失格
+                                // 內容——出口再過一遍，命中就改罐頭（守住出口，絕不把失格內容廣播）。
+                                if vmod::reply_flagged(&t) {
+                                    resident_canned_reply(rname)
+                                } else {
+                                    t.chars().take(TALK_REPLY_MAX_CHARS).collect()
+                                }
+                            }
                             _ => resident_canned_reply(rname), // 逾時 / LLM 未啟用 → 罐頭後備
                         };
                         let msg = serde_json::json!({
@@ -6323,18 +6506,23 @@ async fn handle_socket(
                 // 判定這裡是不是一處已知地標：遺跡看瞄準座標（`ruin_ore_at` 純座標判定，
                 // 挖掉後仍成立，但要求觸及範圍內，比照告示牌/敲鐘同一套 reach 護欄）；
                 // 溫泉不看瞄準座標，改看玩家此刻是否真的泡在溫泉裡（比照溫泉回血 tick
-                // 同一套判定），避免對著遠方喊話就騙過伺服器。
+                // 同一套判定）；邊陲營地（自主提案切片，接續 881）不看瞄準座標、也不看泡水，
+                // 改看玩家此刻是否站在某位居民親手搭起的營地床邊（`player_near_built_outpost`，
+                // 與探索紀事 tick 偵測同一套判定）——三者皆避免對著遠方喊話就騙過伺服器。
                 let landmark = if voxel::in_reach(px, py, pz, x, y, z) && voxel::ruin_ore_at(x, y, z) {
-                    Some((vdisc::LandmarkKind::Ruin, (x, z)))
+                    Some((vdisc::LandmarkKind::Ruin, (x, z), x, y, z))
                 } else if feet_in_hot_spring(px, py, pz) {
                     let cell = voxel::hot_spring_cell_of(px.floor() as i32, pz.floor() as i32);
-                    Some((vdisc::LandmarkKind::HotSpring, cell))
+                    let (ix, iy, iz) = (px.floor() as i32, py.floor() as i32, pz.floor() as i32);
+                    Some((vdisc::LandmarkKind::HotSpring, cell, ix, iy, iz))
+                } else if let Some((_, _, ax, ay, az)) = player_near_built_outpost(px, pz) {
+                    Some((vdisc::LandmarkKind::Outpost, (ax, az), ax, ay, az))
                 } else {
                     None
                 };
-                let Some((kind, dedup_key)) = landmark else {
+                let Some((kind, dedup_key, lx, ly, lz)) = landmark else {
                     let _ = out_tx.send(Message::Text(serde_json::json!({
-                        "t": "landmark_note_fail", "reason": "這裡不是已知的地標，找一處遺跡或溫泉試試看。"
+                        "t": "landmark_note_fail", "reason": "這裡不是已知的地標，找一處遺跡、溫泉或邊陲營地試試看。"
                     }).to_string())).await;
                     continue;
                 };
@@ -6374,7 +6562,7 @@ async fn handle_socket(
                     vlmark::append_note(&entry);
                     try_unlock_milestone(&name, "first_landmark_note", &out_tx);
                     // 回傳這處地標目前的完整留言簿（含剛寫入的這一筆），前端據此更新面板。
-                    send_landmark_notes(kind, dedup_key, x, y, z, &out_tx).await;
+                    send_landmark_notes(kind, dedup_key, lx, ly, lz, &out_tx).await;
                 }
             }
             // ── 個人路標 v1（自主提案切片，ROADMAP 869）─────────────────────────
@@ -8016,6 +8204,21 @@ async fn handle_socket(
     broadcast_players();
 }
 
+/// 連線名額守衛（治安三件套②）：`handle_socket` 任一離開路徑（早退／正常收攤／panic 展開）
+/// 都會在此 drop，自動釋放這條連線在 per-IP 連線數計數器裡佔的名額。`active==false`（豁免的
+/// localhost/QA 連線）則不佔名額、drop 時也不動計數，行為一致。短鎖即釋、不 await（守鎖紀律）。
+struct ConnSlotGuard {
+    ip: String,
+    active: bool,
+}
+impl Drop for ConnSlotGuard {
+    fn drop(&mut self) {
+        if self.active {
+            ip_conn_limiter().lock().unwrap().release(&self.ip);
+        }
+    }
+}
+
 /// 把玩家移出登錄、清除踢信號、並中止 writer task。
 /// **鎖紀律**：players 寫鎖短取即釋，conn_kick 寫鎖另一把短取即釋，不巢狀。
 fn cleanup(id: Uuid, writer: &tokio::task::JoinHandle<()>) {
@@ -8885,8 +9088,8 @@ pub async fn voxel_discoveries_handler(
 ) -> axum::response::Response {
     use axum::http::header;
     let player_name = params.get("player").map(|s| s.as_str()).unwrap_or("").trim().to_string();
-    let (items, ruins, springs) = if player_name.is_empty() {
-        (Vec::new(), 0usize, 0usize)
+    let (items, ruins, springs, outposts) = if player_name.is_empty() {
+        (Vec::new(), 0usize, 0usize, 0usize)
     } else {
         // 短讀鎖一次性快照這位玩家的探索紀事 → 立即釋放，不與其他鎖巢狀。
         let store = hub().discovery.read().unwrap();
@@ -8904,10 +9107,10 @@ pub async fn voxel_discoveries_handler(
                 })
             })
             .collect();
-        let (r, s) = store.counts_for(&player_name);
-        (list, r, s)
+        let (r, s, o) = store.counts_for(&player_name);
+        (list, r, s, o)
     };
-    let body = serde_json::json!({ "items": items, "ruins": ruins, "springs": springs }).to_string();
+    let body = serde_json::json!({ "items": items, "ruins": ruins, "springs": springs, "outposts": outposts }).to_string();
     axum::response::Response::builder()
         .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-cache")
@@ -18738,6 +18941,52 @@ mod tests {
         assert!(!talk_allowed_for_identity(false), "訪客應被擋下、不可觸發 LLM");
         // 訪客提示非空、且是面向玩家的溫柔字串（i18n 集中於此常數）。
         assert!(!TALK_GUEST_NOTICE.is_empty());
+    }
+
+    #[test]
+    fn violation_cooldown_grows_and_caps() {
+        // 治安三件套①·累犯加長冷卻：0 次違規＝零冷卻；違規越多冷卻越長；封頂不無限長。
+        assert_eq!(violation_cooldown_ms(0), 0, "無違規＝零冷卻（正常玩家零感知）");
+        assert!(violation_cooldown_ms(1) > 0, "第一次違規就有一點冷卻");
+        assert!(
+            violation_cooldown_ms(3) > violation_cooldown_ms(1),
+            "違規越多冷卻越長（遞增）"
+        );
+        // 封頂：極多次違規不會爆長（30 步封頂）。
+        assert_eq!(
+            violation_cooldown_ms(1000),
+            violation_cooldown_ms(30),
+            "冷卻有封頂、不無限長"
+        );
+    }
+
+    #[test]
+    fn ip_limit_whitelist_exempts_localhost_and_env() {
+        // 治安三件套②：localhost / 保底桶恆豁免（本機冒煙、隔離測試不受連線數/速率上限干擾）。
+        assert!(ip_limit_exempt("127.0.0.1", &[]));
+        assert!(ip_limit_exempt("::1", &[]));
+        assert!(ip_limit_exempt("unknown", &[]));
+        // 一般公網 IP 不豁免（照常受限）。
+        assert!(!ip_limit_exempt("203.0.113.7", &[]));
+        // env 白名單補充命中。
+        let wl = vec!["10.0.0.9".to_string()];
+        assert!(ip_limit_exempt("10.0.0.9", &wl));
+        assert!(!ip_limit_exempt("10.0.0.10", &wl));
+    }
+
+    #[test]
+    fn max_conn_per_ip_defaults_and_clamps() {
+        // 未設 env → 用預設（vrl::MAX_CONN_PER_IP）。
+        std::env::remove_var("BUTFUN_MAX_CONN_PER_IP");
+        assert_eq!(max_conn_per_ip(), vrl::MAX_CONN_PER_IP);
+        // 壞值 / 0 → 退預設；合法值 → 採用。
+        std::env::set_var("BUTFUN_MAX_CONN_PER_IP", "0");
+        assert_eq!(max_conn_per_ip(), vrl::MAX_CONN_PER_IP, "0 不可把人全鎖死，退預設");
+        std::env::set_var("BUTFUN_MAX_CONN_PER_IP", "abc");
+        assert_eq!(max_conn_per_ip(), vrl::MAX_CONN_PER_IP, "壞值退預設");
+        std::env::set_var("BUTFUN_MAX_CONN_PER_IP", "8");
+        assert_eq!(max_conn_per_ip(), 8);
+        std::env::remove_var("BUTFUN_MAX_CONN_PER_IP");
     }
 
     #[test]
