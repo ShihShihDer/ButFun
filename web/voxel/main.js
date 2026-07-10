@@ -287,17 +287,19 @@ const COLOR = {
   [SWORD_IRON]:  [0.86, 0.88, 0.94], // 鐵劍——明亮銀白，精煉金屬鋒芒
 };
 
-// ── 裝飾植物十字貼片渲染 v1 ─────────────────────────────────────────────
+// ── 裝飾植物十字貼片渲染 v2 ─────────────────────────────────────────────
 // 維護者玩到時把一顆「藍色方塊」納悶成積木、打掉才發現是小花——根因是每種方塊都被
 // 畫成平色立方體。這批「本該是插在地上的細植物」改走十字貼片（cross-billboard）：
-// 兩片交叉的直立四邊形（X 字形），比整格窄、貼地長，用該方塊既有顏色 + 綠莖，
-// 一眼就是「一小株植物」而非方塊。只改長相，碰撞/採集/放置沿用後端語意不動。
+// 兩片交叉的直立四邊形（X 字形），比整格窄、貼地長，一眼就是「一小株植物」而非方塊。
+// v2 精緻化（維護者回報 v1 花偏大偏粗、像大植物）：沿高度分段收放寬度、疊莖/花萼/花冠/
+// 花心多段頂點色，讓野花嬌小可辨、紅/黃/藍更好分（詳見 emitCross）。
+// 只改長相，碰撞/採集/放置沿用後端語意不動。
 const CROSS_PLANTS = new Set([
   WILDFLOWER_RED, WILDFLOWER_YELLOW, WILDFLOWER_BLUE, // 三色野花——本刀主角
   SAPLING,                                            // 樹苗——抽芽幼苗
   BERRY_BUSH, BERRY_BUSH_RIPE,                         // 莓果叢苗／結果莓果叢
 ]);
-// 莖色——統一的柔綠，讓花朵頂端的花色與地面/彼此更好分辨（頂花色＋底莖綠的簡單雙色）。
+// 莖色——統一的柔綠，作為花萼/葉叢的基底色，讓花冠的花色與地面/彼此更好分辨。
 const STEM_COLOR = [0.24, 0.5, 0.22];
 
 const DEBUG = location.search.includes("debug");
@@ -1425,7 +1427,7 @@ function rebuildChunk(key) {
           // 裝飾植物：走十字貼片（兩片交叉直立四邊形），一眼是「插在地上的一小株」而非方塊。
           // 併入不透明 mesh（opaqueMat 為 DoubleSide，兩面都畫，花不會半透明破洞）。
           // （window.__qaCubePlants 僅供 QA 對比截圖用，切回舊的整格立方體渲染。）
-          emitCross(pos, norm, col, idx, lx, ly, lz, variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz));
+          emitCross(pos, norm, col, idx, lx, ly, lz, variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz), b);
         } else {
           const c = variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz);
           for (const f of FACES) {
@@ -1475,28 +1477,71 @@ function emitFace(pos, norm, col, idx, lx, ly, lz, f, c) {
   idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
 }
 
-// 十字貼片（cross-billboard）：把裝飾植物畫成兩片交叉的直立四邊形（俯視成 X），
-// 比整格窄（寬 0.8）、貼地長（高 0.7），底莖綠、頂花色的簡單雙色，一眼是「一小株」。
-// 法線一律朝上：讓花草固定吃頂光、不因側面背光而發黑，紅/黃/藍花更好辨識。
-// 座標用 chunk 局部（mesh 自身有 position 偏移）；材質 opaqueMat 為 DoubleSide→兩面都畫。
-function emitCross(pos, norm, col, idx, lx, ly, lz, topC) {
-  const cx = lx + 0.5, cz = lz + 0.5;   // 格中心
-  const half = 0.4;                     // 半寬（寬 0.8）
-  const y0 = ly, y1 = ly + 0.7;         // 貼地、高 0.7
-  const bot = STEM_COLOR, top = topC;
-  // 兩片交叉四邊形，各 4 頂點（左下、右下、右上、左上）；沿兩條對角線立起。
-  const quads = [
-    [[cx - half, cz - half], [cx + half, cz + half]], // 對角線 A
-    [[cx - half, cz + half], [cx + half, cz - half]], // 對角線 B
-  ];
-  for (const [a, bb] of quads) {
-    const start = pos.length / 3;
-    // 左下(莖)、右下(莖)、右上(花)、左上(花)
-    pos.push(a[0], y0, a[1]);   norm.push(0, 1, 0); col.push(bot[0], bot[1], bot[2]);
-    pos.push(bb[0], y0, bb[1]); norm.push(0, 1, 0); col.push(bot[0], bot[1], bot[2]);
-    pos.push(bb[0], y1, bb[1]); norm.push(0, 1, 0); col.push(top[0], top[1], top[2]);
-    pos.push(a[0], y1, a[1]);   norm.push(0, 1, 0); col.push(top[0], top[1], top[2]);
-    idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
+// 色彩線性內插小工具：mix(a,b,t)=a→b 走 t（0..1）。用來把莖綠、花萼、花冠、花心
+// 疊出層次頂點色（不引入外部圖檔，純程式生成的多段漸層）。
+function mixCol(a, b, t) {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+}
+
+// 沿一條對角線推一段「梯形」四邊形：底邊在 yb、寬 halfB；頂邊在 yt、寬 halfT；
+// 底/頂各自頂點色 cB/cT（做出漸層）。(ux,uz) 為該對角線的單位方向。
+// 底頂寬可不同→把「細莖收窄底 → 鼓起的花冠 → 收成尖的花心」堆成一小株。
+function emitCrossSeg(pos, norm, col, idx, cx, cz, ux, uz, yb, yt, halfB, halfT, cB, cT) {
+  const start = pos.length / 3;
+  // 左下、右下（底，寬 halfB）、右上、左上（頂，寬 halfT）
+  pos.push(cx - ux * halfB, yb, cz - uz * halfB); norm.push(0, 1, 0); col.push(cB[0], cB[1], cB[2]);
+  pos.push(cx + ux * halfB, yb, cz + uz * halfB); norm.push(0, 1, 0); col.push(cB[0], cB[1], cB[2]);
+  pos.push(cx + ux * halfT, yt, cz + uz * halfT); norm.push(0, 1, 0); col.push(cT[0], cT[1], cT[2]);
+  pos.push(cx - ux * halfT, yt, cz - uz * halfT); norm.push(0, 1, 0); col.push(cT[0], cT[1], cT[2]);
+  idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
+}
+
+// 十字貼片（cross-billboard）v2：把裝飾植物畫成兩片交叉的直立四邊形（俯視成 X）。
+// v1 是一片填滿大半格的粗 X（寬 0.8、單純底綠頂花色），讀起來像大植物；v2 精緻化成
+// 「一小株」——沿高度分段收放寬度、疊多段頂點色：
+//   花（三色野花）：細莖(收窄底) → 綠花萼 → 鼓起的彩色花冠 → 收成尖的淺色花心，
+//                  花冠最寬僅 ~0.52、總高 ~0.58，嬌小可辨、紅/黃/藍更好分。
+//   苗（樹苗／莓果叢）：細莖 → 上寬的葉叢再收頂，像一株小苗而非填滿格的方塊。
+// 法線一律朝上：讓花草固定吃頂光、不因側面背光而發黑。座標用 chunk 局部（mesh 有偏移）；
+// 材質 opaqueMat 為 DoubleSide→兩面都畫，花不會半透明破洞。
+function emitCross(pos, norm, col, idx, lx, ly, lz, topC, b) {
+  const cx = lx + 0.5, cz = lz + 0.5, y0 = ly;
+  const s = Math.SQRT1_2;                       // 對角線單位分量（1/√2）
+  const dirs = [[s, s], [s, -s]];               // 兩條對角線方向
+  const isFlower = (b === WILDFLOWER_RED || b === WILDFLOWER_YELLOW || b === WILDFLOWER_BLUE);
+
+  // 依植物型別排出「分段梯形」表：[底y, 頂y, 底半寬, 頂半寬, 底色, 頂色]。
+  const stem = STEM_COLOR;
+  const stemDark = mixCol(stem, [0, 0, 0], 0.25);  // 莖底稍暗，貼地陰影感
+  let segs;
+  if (isFlower) {
+    const crown = topC;                            // 花冠＝該野花的飽和色
+    const calyx = mixCol(stem, crown, 0.35);       // 花萼＝莖綠帶一點花色，承接綠與彩
+    const center = mixCol(crown, [1, 1, 1], 0.42); // 花心＝花色提亮，做出花瓣中心亮點
+    segs = [
+      // 細莖：底收窄(0.025)微張到 0.05，一株纖細的莖
+      [y0 + 0.00, y0 + 0.30, 0.025, 0.05, stemDark, stem],
+      // 花萼：從細莖張開，綠→花萼色
+      [y0 + 0.28, y0 + 0.37, 0.05, 0.16, stem, calyx],
+      // 花冠下半：鼓起到最寬(0.26→寬 0.52)，花萼→花冠
+      [y0 + 0.36, y0 + 0.47, 0.15, 0.26, calyx, crown],
+      // 花冠上半：收成尖端、提亮成花心，一朵有中心的小花
+      [y0 + 0.47, y0 + 0.58, 0.26, 0.06, crown, center],
+    ];
+  } else {
+    // 樹苗／莓果叢：細莖 → 上寬葉叢 → 收頂，一株小苗（莓果叢結果時 topC 偏紅＝綴果）
+    const foliage = topC;
+    segs = [
+      [y0 + 0.00, y0 + 0.22, 0.03, 0.06, stemDark, stem],
+      [y0 + 0.20, y0 + 0.55, 0.06, 0.24, stem, foliage],
+      [y0 + 0.55, y0 + 0.70, 0.24, 0.05, foliage, foliage],
+    ];
+  }
+
+  for (const [ux, uz] of dirs) {
+    for (const [yb, yt, hB, hT, cB, cT] of segs) {
+      emitCrossSeg(pos, norm, col, idx, cx, cz, ux, uz, yb, yt, hB, hT, cB, cT);
+    }
   }
 }
 
