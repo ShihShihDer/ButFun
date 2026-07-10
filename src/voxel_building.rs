@@ -731,6 +731,56 @@ fn generate_blocks(kind: BuildKind, cx: i32, cy: i32, cz: i32, style: &BuildStyl
     out
 }
 
+// ── 居民搬新家（引導式都更）：舊家方塊集合重算 + 拆除安全過濾（純函式，可測）──────
+//
+// 搬家流程的拆除段**只准拆她自己舊家的方塊**。做法：用建當年同一套確定性函式
+// （`BuildStyle::for_resident` + `generate_blocks`）就地重算舊家錨點的完整方塊集合，
+// 逐格比對「現在世界上那格真的是計畫裡那塊」才拆——玩家平台 / 告示牌 / 箱子 / 鄰居的
+// 建物 / 路面永遠不在集合裡或型別對不上，機制性一塊都碰不到。保守方向：舊版引擎蓋的
+// 家若與今日重算略有出入，差異格會因比對不合而**留下不拆**（絕不誤拆，寧可留）。
+
+/// 重算某位居民「當年在這個錨點蓋的家」的完整方塊集合（純函式、確定性、可測）。
+/// 與 `new_plan` 用同一套 `BuildStyle::for_resident`（樣式 #1023）＋ `generate_blocks`，
+/// 同居民同錨點永遠得到同一份清單（重啟一致 → 拆除中斷可冪等重算恢復，免存拆除游標）。
+pub fn house_blocks_at(resident: &str, cx: i32, cy: i32, cz: i32) -> Vec<BuildBlock> {
+    let biome = biome_at_voxel(cx, cz);
+    let style = BuildStyle::for_resident(resident, biome, cx, cz);
+    generate_blocks(BuildKind::House, cx, cy, cz, &style)
+}
+
+/// **拆除安全過濾**（純函式、可測）：舊家計畫裡的一格，現在世界上是 `current`——可以拆嗎？
+/// 只有「現況方塊正是她當年放的那塊」才准拆；唯一的寬容是門的開關狀態（她蓋的是
+/// `DoorClosed`，有人開過門變 `DoorOpen`，仍是同一扇她的門）。其餘任何出入
+/// （空氣＝早拆過/被挖走、流動水、玩家後放的箱子/告示牌/任何別種方塊）一律不拆。
+pub fn demolish_allowed(expected: u8, current: Block) -> bool {
+    if current == Block::Air || current.is_flowing_water() {
+        return false; // 已是空/水：沒東西可拆（也絕不把水「拆」成材料）
+    }
+    if current as u8 == expected {
+        return true;
+    }
+    // 門的開關寬容：計畫是關著的門、現況是開著的同一扇門。
+    expected == Block::DoorClosed as u8 && current == Block::DoorOpen
+}
+
+/// 拆下一格後，該格回復成什麼（純函式、可測）：自然程序基底是實心且可放置
+/// （草/土/沙/石…）→ 回復基底（拆到地板層時地表恢復自然，不留一格深的坑）；
+/// 否則（自然本就是空氣等）→ 空氣。與村莊大修復的回填精神一致。
+pub fn demolition_restore(x: i32, y: i32, z: i32) -> Block {
+    let base = block_at(x, y, z);
+    if base.is_solid() && base.is_placeable() {
+        base
+    } else {
+        Block::Air
+    }
+}
+
+/// 拆下一格入包該記哪種材料（純函式、可測）：一律記「她當年放的那塊」——
+/// 開著的門收回的是門（`DoorClosed`），不是「開著」這個狀態。
+pub fn demolition_yield(expected: u8) -> u8 {
+    expected
+}
+
 // ── 居民建造台詞（純函式，零 LLM）────────────────────────────────────────────
 
 /// 生成居民在建造不同階段冒泡的台詞（進度百分比驅動）。
@@ -1766,6 +1816,75 @@ mod tests {
             "cx":0,"cy":64,"cz":0,"remaining":[],"total":0,"seq":1}"#;
         let plan: BuildPlan = serde_json::from_str(old_json).expect("舊格式應可解析");
         assert!(plan.helpers.is_empty());
+    }
+
+    // ── 居民搬新家：舊家方塊集合重算 + 拆除安全過濾 ─────────────────────────────
+
+    #[test]
+    fn house_blocks_at_matches_what_new_plan_built() {
+        // 拆除清單必須與「當年建造引擎放下的那份清單」逐塊一致——這是「只拆她自己家」的根基。
+        let mut s = BuildStore::new();
+        let plan = s.new_plan("vox_res_0", BuildKind::House, -150, 9, 80, false, None);
+        let built: Vec<BuildBlock> = plan.remaining.iter().cloned().collect();
+        let recomputed = house_blocks_at("vox_res_0", -150, 9, 80);
+        assert_eq!(recomputed, built, "重算的舊家方塊集合應與建造計畫逐塊一致");
+    }
+
+    #[test]
+    fn house_blocks_at_is_deterministic_and_owner_specific() {
+        let a = house_blocks_at("vox_res_0", 30, 9, -40);
+        let b = house_blocks_at("vox_res_0", 30, 9, -40);
+        assert_eq!(a, b, "同居民同錨點重算永遠一致（中斷可冪等恢復）");
+        // 換一位居民（同錨點）通常是另一份藍圖——集合綁定「誰的家」，不是「哪裡有房」。
+        let c = house_blocks_at("vox_res_3", 30, 9, -40);
+        assert_ne!(a, c, "不同居民的家藍圖應不同（樣式因人而異）");
+    }
+
+    #[test]
+    fn demolish_allowed_only_exact_match() {
+        // 現況正是她放的那塊 → 准拆。
+        assert!(demolish_allowed(Block::Plank as u8, Block::Plank));
+        assert!(demolish_allowed(Block::Bed as u8, Block::Bed));
+        // 型別不符（玩家/鄰居後放的東西、路面）→ 一律不拆。
+        assert!(!demolish_allowed(Block::Plank as u8, Block::Chest));
+        assert!(!demolish_allowed(Block::Plank as u8, Block::Sign));
+        assert!(!demolish_allowed(Block::Plank as u8, Block::SmoothStone));
+        assert!(!demolish_allowed(Block::Wood as u8, Block::Plank));
+    }
+
+    #[test]
+    fn demolish_allowed_skips_air_and_water() {
+        // 已是空氣（早拆過/被挖走）或流動水 → 沒東西可拆。
+        assert!(!demolish_allowed(Block::Plank as u8, Block::Air));
+        assert!(!demolish_allowed(Block::Plank as u8, Block::WaterFlow3));
+        assert!(!demolish_allowed(Block::Plank as u8, Block::Water));
+    }
+
+    #[test]
+    fn demolish_allowed_tolerates_opened_door() {
+        // 她蓋的是關著的門，有人開過變 DoorOpen——仍是她的門，准拆。
+        assert!(demolish_allowed(Block::DoorClosed as u8, Block::DoorOpen));
+        // 但反向不寬容：計畫不是門的格，現況是門 → 不拆（那是別人的門）。
+        assert!(!demolish_allowed(Block::Plank as u8, Block::DoorOpen));
+        assert!(!demolish_allowed(Block::Plank as u8, Block::DoorClosed));
+    }
+
+    #[test]
+    fn demolition_yield_returns_expected_material() {
+        assert_eq!(demolition_yield(Block::Plank as u8), Block::Plank as u8);
+        // 開著的門收回的是門本身。
+        assert_eq!(demolition_yield(Block::DoorClosed as u8), Block::DoorClosed as u8);
+    }
+
+    #[test]
+    fn demolition_restore_returns_solid_base_or_air() {
+        // 地表層（surface_y-1）自然基底是實心 → 回復基底（地表復原、不留坑）。
+        let sy = surface_y(0, 0);
+        let ground = demolition_restore(0, sy - 1, 0);
+        assert!(ground.is_solid() && ground.is_placeable(), "地表層應回復實心基底");
+        assert_eq!(ground, block_at(0, sy - 1, 0), "回復的正是自然程序基底");
+        // 地表之上自然是空氣 → 回 Air（牆/屋頂拆掉就是空）。
+        assert_eq!(demolition_restore(0, sy + 2, 0), Block::Air);
     }
 
     // ── surface_y 純函式 ──────────────────────────────────────────────────────
