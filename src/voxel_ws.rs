@@ -104,6 +104,7 @@ use crate::voxel_bonds::{self as vbonds, ResidentBonds};
 use crate::voxel_romance::{self as vromance, ResidentRomance};
 use crate::voxel_lover_seek as vlover;
 use crate::voxel_wildlife as vwild;
+use crate::voxel_pettreat as vtreat;
 use crate::voxel_fish as vfishlife;
 use crate::voxel_chicken as vchicken;
 use crate::voxel_player_recipe as vprecipe;
@@ -6627,24 +6628,53 @@ async fn handle_socket(
                 let Some((px, _py, pz)) = player_pos(my_id) else {
                     continue;
                 };
-                let snap: Option<(bool, bool, f32)> = {
+                // 快照多帶一個 pet 名字（寵愛回饋句要喊出牠的名字，895）；讀鎖即釋。
+                let snap: Option<(bool, bool, f32, Option<String>)> = {
                     let animals = hub().wildlife.read().unwrap();
                     animals.iter().find(|a| a.id == id).map(|a| {
                         let dx = px - a.body.x;
                         let dz = pz - a.body.z;
-                        (matches!(a.kind, WildlifeKind::Rabbit), a.tamed, dx * dx + dz * dz)
+                        (matches!(a.kind, WildlifeKind::Rabbit), a.tamed, dx * dx + dz * dz, a.name.clone())
                     })
                 };
-                let Some((is_rabbit, already_tamed, dist_sq)) = snap else {
+                let Some((is_rabbit, already_tamed, dist_sq, pet_name)) = snap else {
                     continue; // 這隻動物已消失（id 過期）——靜默忽略
                 };
                 if !is_rabbit {
                     continue; // 目前只有野兔可餵（魚不需要馴服）——靜默忽略，非錯誤
                 }
-                if !vwild::should_tame(already_tamed, dist_sq) {
-                    let reason = if already_tamed { "牠已經不怕你了，不用再餵" } else { "走近一點再餵" };
+                // 寵愛你的夥伴 v1（ROADMAP 899）：已馴服的兔子再餵，不再是死路（舊「不用再餵」），
+                // 而是遞一份零食換一次撒嬌——鎖序：inventory 寫（消耗胡蘿蔔）→ drop，不改任何持久狀態。
+                if already_tamed {
+                    if !vtreat::in_treat_reach(dist_sq) {
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({ "t": "feed_wildlife_fail", "reason": "走近一點再逗逗牠～" }).to_string(),
+                        ));
+                        continue;
+                    }
+                    // 濫用防護：一份零食＝真扣一根胡蘿蔔（伺服器必查真實庫存，前端不自報），
+                    // 自然限流——沒胡蘿蔔就疼不了，不會靠狂點洗版撒嬌泡泡。
+                    let Some(inv_entry) = hub().inventory.write().unwrap().take(&name, vfarm::CARROT_ID, 1) else {
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({ "t": "feed_wildlife_fail", "reason": "想疼牠？先種點胡蘿蔔當零食吧" }).to_string(),
+                        ));
+                        continue;
+                    };
+                    vinv::append_inv(&inv_entry);
+                    try_unlock_milestone(&name, "first_treat", &out_tx);
+                    let remain = hub().inventory.read().unwrap().count(&name, vfarm::CARROT_ID);
                     let _ = out_tx.try_send(Message::Text(
-                        serde_json::json!({ "t": "feed_wildlife_fail", "reason": reason }).to_string(),
+                        serde_json::json!({ "t": "inv_update", "block_id": vfarm::CARROT_ID, "count": remain }).to_string(),
+                    ));
+                    let pick = rand::random::<u64>() as usize;
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "pet_treat_ok", "id": id, "say": vtreat::treat_line(true, pet_name.as_deref(), pick) }).to_string(),
+                    ));
+                    continue;
+                }
+                if !vwild::should_tame(already_tamed, dist_sq) {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "feed_wildlife_fail", "reason": "走近一點再餵" }).to_string(),
                     ));
                     continue;
                 }
@@ -6680,24 +6710,51 @@ async fn handle_socket(
                 let Some((px, _py, pz)) = player_pos(my_id) else {
                     continue;
                 };
-                let snap: Option<(bool, bool, f32)> = {
+                // 快照多帶 pet 名字（寵愛回饋句要喊出牠的名字，895）；讀鎖即釋。
+                let snap: Option<(bool, bool, f32, Option<String>)> = {
                     let animals = hub().wildlife.read().unwrap();
                     animals.iter().find(|a| a.id == id).map(|a| {
                         let dx = px - a.body.x;
                         let dz = pz - a.body.z;
-                        (matches!(a.kind, WildlifeKind::Chicken), a.tamed, dx * dx + dz * dz)
+                        (matches!(a.kind, WildlifeKind::Chicken), a.tamed, dx * dx + dz * dz, a.name.clone())
                     })
                 };
-                let Some((is_chicken, already_tamed, dist_sq)) = snap else {
+                let Some((is_chicken, already_tamed, dist_sq, pet_name)) = snap else {
                     continue; // 這隻動物已消失（id 過期）——靜默忽略
                 };
                 if !is_chicken {
                     continue; // 目前只有雞可餵（兔子/魚走各自的餵食路徑）——靜默忽略，非錯誤
                 }
-                if !vwild::should_tame(already_tamed, dist_sq) {
-                    let reason = if already_tamed { "牠已經不怕你了，不用再餵" } else { "走近一點再餵" };
+                // 寵愛你的夥伴 v1（ROADMAP 899）：已馴服的雞再餵，遞一把種子換一次撒嬌（不改持久狀態）。
+                if already_tamed {
+                    if !vtreat::in_treat_reach(dist_sq) {
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({ "t": "feed_chicken_fail", "reason": "走近一點再逗逗牠～" }).to_string(),
+                        ));
+                        continue;
+                    }
+                    // 濫用防護：一份零食＝真扣一把種子（伺服器必查真實庫存），自然限流不洗版。
+                    let Some(inv_entry) = hub().inventory.write().unwrap().take(&name, vfarm::SEEDS_ID, 1) else {
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({ "t": "feed_chicken_fail", "reason": "想疼牠？先留點小麥種子當零食吧" }).to_string(),
+                        ));
+                        continue;
+                    };
+                    vinv::append_inv(&inv_entry);
+                    try_unlock_milestone(&name, "first_treat", &out_tx);
+                    let remain = hub().inventory.read().unwrap().count(&name, vfarm::SEEDS_ID);
                     let _ = out_tx.try_send(Message::Text(
-                        serde_json::json!({ "t": "feed_chicken_fail", "reason": reason }).to_string(),
+                        serde_json::json!({ "t": "inv_update", "block_id": vfarm::SEEDS_ID, "count": remain }).to_string(),
+                    ));
+                    let pick = rand::random::<u64>() as usize;
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "pet_treat_ok", "id": id, "say": vtreat::treat_line(false, pet_name.as_deref(), pick) }).to_string(),
+                    ));
+                    continue;
+                }
+                if !vwild::should_tame(already_tamed, dist_sq) {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "feed_chicken_fail", "reason": "走近一點再餵" }).to_string(),
                     ));
                     continue;
                 }
