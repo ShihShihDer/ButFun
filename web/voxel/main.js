@@ -305,6 +305,7 @@ const DEBUG = location.search.includes("debug");
 const isTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
 const hudEl = document.getElementById("hud");
 const dbgEl = document.getElementById("dbg");
+const clockEl = document.getElementById("clock"); // 時段指示器（ROADMAP 896）
 
 // ── 操作設定 v1（麥塊 Bedrock 式：準心+按鈕防誤觸、靈敏度、慣用手、自動跳、預設人稱）──
 // 全部存 localStorage、重載保留；合理預設。純前端顯示/手感層，不動遊戲規則或後端。
@@ -402,6 +403,49 @@ const SKY_KEYS = [
 
 function _hc(hex) {
   return [(hex >> 16 & 0xff) / 255, (hex >> 8 & 0xff) / 255, (hex & 0xff) / 255];
+}
+
+// ── 時段指示器 v1（ROADMAP 896）─────────────────────────────────────────────
+// 多位居民（玩家建議箱）反映：黃昏/夜晚只能靠天空亮度猜，沒有明確的「當前時段」提示。
+// 本函式把 worldTime(0..1) 對映成四個時段，邊界刻意對齊 SKY_KEYS 的天色轉折——
+// 徽章顯示的時段永遠和玩家眼前的天色一致（黎明橙紅升起=黎明、天藍=白天、夕紅=黃昏、繁星=夜晚）。
+// 純函式、確定性、零副作用，供 HUD 徽章與 QA 共用。
+const CLOCK_PHASES = {
+  dawn:  { icon: "🌅", name: "黎明", cls: "cl-dawn" },
+  day:   { icon: "☀️", name: "白天", cls: "cl-day" },
+  dusk:  { icon: "🌆", name: "黃昏", cls: "cl-dusk" },
+  night: { icon: "🌙", name: "夜晚", cls: "cl-night" },
+};
+function voxelClockPhase(t) {
+  // 夾進 [0,1) 後判段（容錯 NaN/越界，指示器永不空白）。
+  let x = Number.isFinite(t) ? t - Math.floor(t) : 0.5;
+  if (x >= 0.22 && x < 0.38) return CLOCK_PHASES.dawn;  // 黎明前橙紅→清晨金黃（SKY 0.22~0.38）
+  if (x >= 0.38 && x < 0.70) return CLOCK_PHASES.day;   // 白晝湛藍（SKY 0.38~0.70）
+  if (x >= 0.70 && x < 0.88) return CLOCK_PHASES.dusk;  // 傍晚橙→黃昏深紅→入夜（SKY 0.70~0.88）
+  return CLOCK_PHASES.night;                            // 深夜（SKY 0.88~1.0、0.0~0.22）
+}
+// worldTime(0..1) → 概略 24 小時制 "HH:MM"（t=0=00:00、0.25=06:00、0.5=12:00、0.75=18:00）。
+function voxelClockTime(t) {
+  const x = Number.isFinite(t) ? t - Math.floor(t) : 0.5;
+  const total = Math.floor(x * 1440) % 1440; // 一天 1440 分
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return `${h < 10 ? "0" : ""}${h}:${m < 10 ? "0" : ""}${m}`;
+}
+// 供 QA 對映驗證（純函式，無渲染副作用）。
+if (typeof window !== "undefined") { window.__voxelClockPhase = voxelClockPhase; window.__voxelClockTime = voxelClockTime; }
+
+let _clockCls = ""; // 記住目前套用的時段 class，只在跨時段時才改 DOM（省重繪）
+function updateClock() {
+  if (!clockEl) return;
+  const ph = voxelClockPhase(worldTime);
+  if (ph.cls !== _clockCls) {
+    clockEl.className = ph.cls;
+    clockEl.querySelector(".cl-icon").textContent = ph.icon;
+    clockEl.querySelector(".cl-name").textContent = ph.name;
+    _clockCls = ph.cls;
+  }
+  clockEl.querySelector(".cl-time").textContent = voxelClockTime(worldTime);
 }
 
 // 季節輪替 v1（ROADMAP 798）：各季節的天地染色 [r, g, b, 權重]（皆 0..1）。
@@ -5839,6 +5883,7 @@ function loop() {
   dbgT += dt;
   if (dbgT >= 0.25) {
     dbgT = 0;
+    updateClock(); // 時段指示器（ROADMAP 896）：每 0.25 秒依 worldTime 刷新徽章
     // 觸控裝置顯示精簡文字，避免直式螢幕頂部 HUD 溢出
     hudEl.textContent = isTouch
       ? `乙太方界 · ${myName}\n${settings.touchMode === "crosshair" ? "拖曳看・⛏挖鈕・放置鈕" : "輕點挖・放置鈕放"}\nchunk:${chunks.size} 線上:${others.size + 1} 居民:${residents.size}`
@@ -6711,6 +6756,18 @@ window.__voxel = {
   get meshes() { return meshes.size; },
   get fps() { return fps; },
   get player() { return player; },
+  // ── 時段指示器 v1 QA 用（ROADMAP 896）：讀徽章目前顯示、就地撥鐘（純視覺、無權威影響）──
+  get clock() {
+    return {
+      cls: clockEl ? clockEl.className : "",
+      name: clockEl ? (clockEl.querySelector(".cl-name")?.textContent || "") : "",
+      icon: clockEl ? (clockEl.querySelector(".cl-icon")?.textContent || "") : "",
+      time: clockEl ? (clockEl.querySelector(".cl-time")?.textContent || "") : "",
+      worldTime,
+    };
+  },
+  // 就地撥鐘：只動本地 worldTime＋天色＋徽章（不送任何訊息、不影響伺服器權威時間），供 QA 驗徽章對映。
+  qaSetWorldTime(t) { worldTime = t; updateSkyAndLight(worldTime); updateClock(); return this.clock; },
   // ── 踏階平滑 QA 用：讀視覺 Y（平滑後）與補間偏移 ──
   get stepSmooth() { return stepSmooth; },
   get visualY() { return player.y - stepSmooth; },
