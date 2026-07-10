@@ -1453,6 +1453,12 @@ impl InventedSkillStore {
         self.skills.iter().filter(|k| k.resident == resident).collect()
     }
 
+    /// 全村技能庫的唯讀快照（名匠聲望 v1·ROADMAP 888）：聲望要橫掃所有居民的
+    /// 發明與師承紀錄才算得出來，故給一支全量存取點（短讀鎖內取用即釋，不外洩內部結構）。
+    pub fn all(&self) -> &[InventedSkillRecord] {
+        &self.skills
+    }
+
     /// 這位居民已會技能的**目標材料 id 集合**（好奇心第三刀：可能性目錄
     /// 「排掉她已會的」用——會了的東西不再列進「世界上還能學什麼」）。
     pub fn known_goals_for(&self, resident: &str) -> HashSet<u8> {
