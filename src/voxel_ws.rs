@@ -8158,11 +8158,23 @@ async fn handle_socket(
                 last_shadow_swing = Some(now);
                 // ② 觸及驗證：伺服器記載的玩家位置 → 打不打得到由伺服器算，不信客戶端。
                 let Some((px, py, pz)) = player_pos(my_id) else { continue };
+                // 驅影之劍 v1（ROADMAP 887）：讀玩家手持物 → 若是劍就一擊更重。
+                // 濫用防護：前端自報 held（隨 Move），這裡**必查背包確認真持有該劍**才給加成，
+                // 防偽報白嫖一擊即散＋雙倍掉落（比照 790 工具加成同一態度）。徒手／未持劍＝1 點。
+                let held_sword: Option<u8> = {
+                    let hid = hub().players.read().unwrap().get(&my_id).and_then(|p| p.held);
+                    match hid {
+                        Some(id) if vcraft::is_sword(id)
+                            && hub().inventory.read().unwrap().count(&name, id) >= 1 => Some(id),
+                        _ => None,
+                    }
+                }; // players / inventory 讀鎖各自短取即釋
+                let power = held_sword.map_or(1, vcraft::sword_power);
                 let outcome: Option<(vshadow::Wisp, bool)> = {
                     let mut ws = hub().shadows.write().unwrap();
                     match ws.iter().position(|w| w.id == id) {
                         Some(i) if vshadow::hit_in_reach(px, py, pz, &ws[i]) => {
-                            let (nh, dead) = vshadow::register_hit(ws[i].hits);
+                            let (nh, dead) = vshadow::register_hit_with(ws[i].hits, power);
                             ws[i].hits = nh;
                             let snap = ws[i].clone();
                             if dead {
@@ -8179,13 +8191,15 @@ async fn handle_socket(
                     "t": "shadow_hit_ok", "id": w.id, "hits": w.hits, "gone": dead
                 }).to_string())).await;
                 if dead {
-                    // 化成一縷輕煙 + 掉一枚乙太礦（溫柔獎勵；走近自動撿起，見 Move handler）。
+                    // 化成一縷輕煙 + 掉乙太礦（溫柔獎勵；走近自動撿起，見 Move handler）。
+                    // 鐵劍雙倍：基礎 1 枚 + sword_extra_shards（鐵劍 +1）。
                     broadcast_shadow_puff(w.x, w.y, w.z);
+                    let shards = 1 + held_sword.map_or(0, vcraft::sword_extra_shards);
                     let spawned = {
-                        hub().drops.write().unwrap().spawn(w.x, w.y, w.z, vshadow::SHARD_ITEM_ID, 1, &name, vfarm::now_secs())
+                        hub().drops.write().unwrap().spawn(w.x, w.y, w.z, vshadow::SHARD_ITEM_ID, shards, &name, vfarm::now_secs())
                     }; // drops 寫鎖釋放
                     if let Some(did) = spawned {
-                        broadcast_item_dropped(did, w.x, w.y, w.z, vshadow::SHARD_ITEM_ID, 1, &name);
+                        broadcast_item_dropped(did, w.x, w.y, w.z, vshadow::SHARD_ITEM_ID, shards, &name);
                     }
                 }
             }
