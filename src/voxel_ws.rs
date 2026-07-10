@@ -78,6 +78,7 @@ use crate::voxel_player_stats as vstats;
 use crate::voxel_smelt as vsmelt;
 use crate::voxel_return_gift::{self as vret, ReturnGiftStore};
 use crate::voxel_playercare as vcare;
+use crate::voxel_nightguard as vguard;
 use crate::voxel_admire as vadmire;
 use crate::voxel_farm_admire as vfarmadmire;
 use crate::voxel_structure_name as vstructname;
@@ -2070,6 +2071,9 @@ struct VoxelHub {
     /// 暗影生物 v1：居民害怕反應冷卻（居民 id → 上次冒害怕泡泡的時刻），避免整夜洗版。
     /// 純記憶體、黎明清空。
     shadow_fear_cd: std::sync::Mutex<HashMap<String, std::time::Instant>>,
+    /// 守夜恩人 v1（ROADMAP 888）：居民對你的道謝冷卻（居民 id → 上次道謝的時刻），避免整夜
+    /// 你連驅數團暗影、同一位居民連環道謝洗版。純記憶體、黎明清空。
+    nightguard_cd: std::sync::Mutex<HashMap<String, std::time::Instant>>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -2727,6 +2731,7 @@ fn hub() -> &'static VoxelHub {
             shadows: RwLock::new(Vec::new()),
             shadow_lights: RwLock::new(Vec::new()),
             shadow_fear_cd: std::sync::Mutex::new(HashMap::new()),
+            nightguard_cd: std::sync::Mutex::new(HashMap::new()),
             tx,
         }
     })
@@ -8202,6 +8207,89 @@ async fn handle_socket(
                     if let Some(did) = spawned {
                         broadcast_item_dropped(did, w.x, w.y, w.z, vshadow::SHARD_ITEM_ID, shards, &name);
                     }
+                    // 守夜恩人 v1（自主提案切片，ROADMAP 888）：這團暗影散在近旁一位醒著的居民身邊
+                    // ——她剛才正被它威脅（對齊 FEAR 半徑），現在注意到是你替她解了圍，冒一句道謝、心情
+                    // 亮一格，並把「那夜你為我驅散了暗影」記進她心裡。戰鬥（人對怪）第一次長出社交後果。
+                    // 只在登入玩家（名字非空）驅散時觸發——訪客/幽靈探針無名，不掛人情。
+                    // 鎖序：residents 讀鎖快照即釋 → nightguard_cd mutex 短取即釋 → residents 寫鎖設
+                    // say/mood 即釋 → memory 寫即釋 → Feed，全程短取即釋、不巢狀（守 prod 死鎖鐵律）。
+                    if !name.is_empty() {
+                        // ① 快照近旁醒著、say 為空的居民，挑水平距離最近的一位當「被你救到的人」。
+                        let saved: Option<(String, &'static str, usize)> = {
+                            let rs = hub().residents.read().unwrap();
+                            rs.iter()
+                                .filter(|r| !r.asleep && r.say.is_empty())
+                                .map(|r| {
+                                    let d2 = vguard::horiz_dist_sq(r.body.x, r.body.z, w.x, w.z);
+                                    (d2, r)
+                                })
+                                .filter(|(d2, _)| vguard::within_rescue(*d2))
+                                .min_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                                .map(|(d2, r)| {
+                                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                                    let _ = d2;
+                                    (r.id.clone(), r.name, pick)
+                                })
+                        }; // residents 讀鎖釋放
+                        if let Some((rid, rname, pick)) = saved {
+                            // ② 道謝冷卻＋機率閘（三閘的距離閘已在 ① 過濾，這裡補冷卻＋骰）。
+                            let cd_ok = {
+                                let mut cd = hub().nightguard_cd.lock().unwrap();
+                                let now = std::time::Instant::now();
+                                match cd.get(&rid) {
+                                    Some(prev)
+                                        if now.duration_since(*prev).as_secs_f32()
+                                            < vguard::GRATITUDE_COOLDOWN_SECS =>
+                                    {
+                                        false
+                                    }
+                                    _ => {
+                                        cd.insert(rid.clone(), now);
+                                        true
+                                    }
+                                }
+                            }; // nightguard_cd mutex 釋放
+                            if cd_ok && rand::random::<f32>() < vguard::THANK_CHANCE {
+                                // ③ 設道謝泡泡 + 心情亮一格（短寫鎖即釋；再確認 say 仍為空避免蓋掉他人）。
+                                {
+                                    let mut rs = hub().residents.write().unwrap();
+                                    if let Some(r) = rs.iter_mut().find(|r| r.id == rid) {
+                                        if r.say.is_empty() {
+                                            r.say = vguard::thanks_bubble(&name, pick)
+                                                .chars()
+                                                .take(vguard::SAY_CHARS)
+                                                .collect();
+                                            r.say_timer = SAY_SECS;
+                                            r.mood_boost_secs =
+                                                r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                        }
+                                    }
+                                } // residents 寫鎖釋放
+                                // ④ 記進她心裡（掛你名下，append-only）+ 動態牆 + 單播 toast 給你。
+                                hub().memory.write().unwrap().add_memory(
+                                    &rid,
+                                    &name,
+                                    &vguard::guard_memory_line(&name),
+                                ); // 記憶寫鎖即釋
+                                vfeed::append_feed(
+                                    vguard::FEED_KIND,
+                                    rname,
+                                    &vguard::guard_feed_line(rname, &name),
+                                );
+                                let _ = out_tx
+                                    .send(Message::Text(
+                                        serde_json::json!({
+                                            "t": "night_guard",
+                                            "resident_id": rid,
+                                            "resident_name": rname,
+                                            "player": name,
+                                        })
+                                        .to_string(),
+                                    ))
+                                    .await;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -8548,6 +8636,7 @@ fn tick_shadows(dt: f32) {
             }
             SHADOW_FEED_SENT.store(false, Ordering::Relaxed);
             hub().shadow_fear_cd.lock().unwrap().clear();
+            hub().nightguard_cd.lock().unwrap().clear(); // 守夜恩人 v1：黎明清道謝冷卻，新的一夜重新開始
         }
         return;
     }
