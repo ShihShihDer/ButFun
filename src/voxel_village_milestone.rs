@@ -43,6 +43,12 @@ pub fn is_known(id: &str) -> bool {
     TIERS.iter().any(|t| t.id == id)
 }
 
+/// 門檻 id 在 [`TIERS`] 中的序位（0-based）——供村碑（`voxel_monument`）依「第幾階」逐段拔高。
+/// 未知 id 回 `None`。
+pub fn tier_index(id: &str) -> Option<usize> {
+    TIERS.iter().position(|t| t.id == id)
+}
+
 /// 純函式：地標數 `count` 底下，第一個「已達門檻、但尚未解鎖過」的門檻定義（沒有就回 `None`）。
 /// 門檻間距（3/8/15）皆大於單次命名只會 +1 的幅度，正常情況一次呼叫至多命中一個門檻；
 /// 就算 `count` 一口氣跳過不只一個門檻（例如追加歷史資料），也只回傳最早那個尚未解鎖的，
