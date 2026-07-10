@@ -1167,6 +1167,188 @@ function updateFertSparkle(dt) {
   }
 }
 
+// ── 世界環境氛圍 v1（ROADMAP 905）：環境微生物 ────────────────────────────────────
+// 純前端視覺點綴，讓安靜的世界多一點活氣：白天草原/花叢旁飄幾隻蝴蝶、夜裡水邊/暗處有螢火蟲
+// 微光（呼應暗影的光主題）。依「時段 × 玩家附近地表」自然生成，離開範圍或換時段即淡出。
+// 非可互動實體、無後端權威（比照 firework/humNotes 的前端粒子作法）。
+// 效能鐵律：兩型各一個「精靈池」（開場預建、之後只切 visible/位置/透明度，零配置churn）；
+//   數量有硬上限、只在玩家附近生成、frustumCulled 讓背後的不進 draw；非該時段整池隱藏近零成本。
+const AMB_BUTTERFLY_MAX = 7;    // 白天蝴蝶同時上限
+const AMB_FIREFLY_MAX = 12;     // 夜間螢火蟲同時上限
+const AMB_SPAWN_RANGE = 14;     // 生成半徑（格，僅玩家附近）
+const AMB_DESPAWN_RANGE = 24;   // 錨點離玩家超過此距離就淡出回收
+const AMB_SPAWN_INTERVAL = 0.55;// 生成評估節流（秒），非每幀掃地表
+const AMB_FADE_SPEED = 1.6;     // 淡入/淡出速度（透明度/秒）——柔和不突兀
+
+// 蝴蝶貼圖：🦋 emoji 一張共用（暖色、融進草原不刺眼）。
+function makeButterflyTexture() {
+  const s = 64;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = s;
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, s, s);
+  ctx.font = "48px serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("🦋", s / 2, s / 2 + 2);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.needsUpdate = true;
+  return tex;
+}
+// 螢火蟲貼圖：柔和暖黃綠的徑向光暈（非 emoji），配加法混合＝夜裡一點溫暖微光。
+function makeFireflyTexture() {
+  const s = 64;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = s;
+  const ctx = cv.getContext("2d");
+  const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  g.addColorStop(0.0, "rgba(240,255,180,1)");   // 核心：亮暖黃綠
+  g.addColorStop(0.35, "rgba(200,240,120,0.7)");
+  g.addColorStop(1.0, "rgba(160,220,90,0)");    // 邊緣淡出
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.needsUpdate = true;
+  return tex;
+}
+const BUTTERFLY_TEX = makeButterflyTexture();
+const FIREFLY_TEX = makeFireflyTexture();
+
+// 預建一型精靈池：每隻一個 Sprite（自動 billboard），各自材質以便獨立淡入淡出。開場全隱藏。
+function makeAmbientPool(n, tex, additive, baseScale, peakOp) {
+  const arr = [];
+  for (let i = 0; i < n; i++) {
+    const mat = new THREE.SpriteMaterial({
+      map: tex, transparent: true, opacity: 0, depthWrite: false, fog: true,
+      ...(additive ? { blending: THREE.AdditiveBlending } : {}),
+    });
+    const sp = new THREE.Sprite(mat);
+    sp.visible = false;
+    // frustumCulled 預設 true：背後/視野外的不進 draw call，守 FPS。
+    scene.add(sp);
+    arr.push({
+      sp, mat, alive: false, fade: 0, peakOp, baseScale,
+      age: 0, ttl: 0, ax: 0, ay: 0, az: 0,
+      phase: Math.random() * Math.PI * 2,   // 飄動相位（各隻錯開）
+      scaleJit: 0.8 + Math.random() * 0.5,  // 大小微抖，避免整齊劃一
+    });
+  }
+  return arr;
+}
+const butterflies = makeAmbientPool(AMB_BUTTERFLY_MAX, BUTTERFLY_TEX, false, 0.55, 0.95);
+const fireflies = makeAmbientPool(AMB_FIREFLY_MAX, FIREFLY_TEX, true, 0.45, 0.9);
+
+// 從玩家附近某 (wx,wz) 由上往下找地表：回傳第一個非空氣方塊的 {y,id}；未載入或找不到回 null。
+function ambSurface(wx, wz) {
+  const top = Math.floor(player.y) + 5;
+  const bot = Math.floor(player.y) - 8;
+  for (let wy = top; wy >= bot; wy--) {
+    const b = getRaw(wx, wy, wz);
+    if (b === -1) return null;   // chunk 未載入 → 放棄這次取樣
+    if (b === AIR) continue;
+    return { y: wy, id: b };
+  }
+  return null;
+}
+
+// 取一隻閒置精靈啟用：設定錨點、壽命、淡入起點。找不到閒置隻回 false。
+function activateAmbient(pool, ax, ay, az, ttl) {
+  for (const c of pool) {
+    if (c.alive) continue;
+    c.alive = true; c.fade = 0; c.age = 0; c.ttl = ttl;
+    c.ax = ax; c.ay = ay; c.az = az;
+    c.phase = Math.random() * Math.PI * 2;
+    c.sp.visible = true;
+    return true;
+  }
+  return false;
+}
+
+// 白天在花叢/草地上方生成一隻蝴蝶（偏好野花，草地機率減半以聚向花叢）。
+function trySpawnButterfly() {
+  let n = 0; for (const c of butterflies) if (c.alive) n++;
+  if (n >= AMB_BUTTERFLY_MAX) return;
+  const ang = Math.random() * Math.PI * 2;
+  const rad = 5 + Math.random() * (AMB_SPAWN_RANGE - 5);
+  const wx = Math.floor(player.x + Math.cos(ang) * rad);
+  const wz = Math.floor(player.z + Math.sin(ang) * rad);
+  const surf = ambSurface(wx, wz);
+  if (!surf) return;
+  const isFlower = surf.id === WILDFLOWER_RED || surf.id === WILDFLOWER_YELLOW || surf.id === WILDFLOWER_BLUE;
+  if (!isFlower && surf.id !== GRASS) return;          // 只在花/草上方
+  if (!isFlower && Math.random() < 0.5) return;         // 草地降半機率 → 花叢更熱鬧
+  const ay = surf.y + 1.2 + Math.random() * 0.9;
+  activateAmbient(butterflies, wx + 0.5, ay, wz + 0.5, 9 + Math.random() * 10);
+}
+
+// 夜間在水邊（優先）或暗處近地面生成一點螢火蟲微光。
+function trySpawnFirefly() {
+  let n = 0; for (const c of fireflies) if (c.alive) n++;
+  if (n >= AMB_FIREFLY_MAX) return;
+  const ang = Math.random() * Math.PI * 2;
+  const rad = 4 + Math.random() * (AMB_SPAWN_RANGE - 4);
+  const wx = Math.floor(player.x + Math.cos(ang) * rad);
+  const wz = Math.floor(player.z + Math.sin(ang) * rad);
+  const surf = ambSurface(wx, wz);
+  if (!surf) return;
+  const nearWater = isWaterId(surf.id);
+  if (!nearWater && Math.random() < 0.55) return;       // 非水邊降低機率 → 多數聚水邊
+  const ay = surf.y + 0.7 + Math.random() * (nearWater ? 1.0 : 1.3);
+  activateAmbient(fireflies, wx + 0.5, ay, wz + 0.5, 8 + Math.random() * 12);
+}
+
+// 推進一隻精靈的移動與淡入淡出。wantAlive=此時段是否仍該存在。alive 消退時自動隱藏。
+function stepAmbient(c, dt, wantAlive, isFirefly) {
+  c.age += dt;
+  const dx = c.ax - player.x, dz = c.az - player.z;
+  const tooFar = dx * dx + dz * dz > AMB_DESPAWN_RANGE * AMB_DESPAWN_RANGE;
+  const keep = wantAlive && c.age < c.ttl && !tooFar;
+  // 淡入/淡出（柔和）
+  c.fade += (keep ? 1 : -1) * AMB_FADE_SPEED * dt;
+  if (c.fade <= 0) { c.fade = 0; c.alive = false; c.sp.visible = false; return; }
+  if (c.fade > 1) c.fade = 1;
+  const a = c.age, p = c.phase;
+  let x, y, z, op = c.peakOp * c.fade;
+  if (isFirefly) {
+    // 螢火蟲：慢飄 + 明滅閃爍（加法混合下明滅＝一點忽明忽暗的暖光）。
+    x = c.ax + Math.sin(a * 0.8 + p) * 0.6;
+    y = c.ay + Math.sin(a * 0.6 + p * 1.3) * 0.4;
+    z = c.az + Math.cos(a * 0.7 + p) * 0.6;
+    op *= 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(a * 2.2 + p)); // 明滅
+  } else {
+    // 蝴蝶：小幅快速振翅飄動 + 錨點緩慢平移（隨風悠悠）。
+    c.ax += Math.cos(p) * 0.12 * dt;
+    c.az += Math.sin(p) * 0.12 * dt;
+    x = c.ax + Math.sin(a * 3.0 + p) * 0.45;
+    y = c.ay + Math.sin(a * 5.0 + p) * 0.28;
+    z = c.az + Math.cos(a * 2.6 + p) * 0.45;
+  }
+  c.sp.position.set(x, y, z);
+  const sc = c.baseScale * c.scaleJit;
+  c.sp.scale.set(sc, sc, sc);
+  c.mat.opacity = op;
+}
+
+// 每幀推進環境微生物：依時段決定該出蝴蝶還是螢火蟲，節流評估生成，逐隻移動/淡出。
+// 非任何生物的時段（如陰雨、正午與午夜交界）該池自然淡空、visible=false 近零成本。
+let ambSpawnTimer = 0;
+function updateAmbientLife(dt) {
+  const nf = nightFactor(worldTime);
+  const calm = !isRaining;                 // 陰雨天不出來（療癒、也省事）
+  const dayOut = calm && nf < 0.25;        // 白天出蝴蝶
+  const nightOut = calm && nf > 0.55;      // 夜裡出螢火蟲
+  // 推進現有個體（時段不符即淡出回收）
+  for (const c of butterflies) if (c.alive) stepAmbient(c, dt, dayOut, false);
+  for (const c of fireflies) if (c.alive) stepAmbient(c, dt, nightOut, true);
+  // 節流生成
+  ambSpawnTimer -= dt;
+  if (ambSpawnTimer <= 0) {
+    ambSpawnTimer = AMB_SPAWN_INTERVAL;
+    if (dayOut) trySpawnButterfly();
+    else if (nightOut) trySpawnFirefly();
+  }
+}
+
 // 方塊用 Lambert + 頂點色（每方塊上色），對光反應但靠半球光保底不黑。
 // DoubleSide：切片① 求穩，避免任一面纏繞方向算錯被背面剔除成破洞/黑屏（perf 微讓步，之後可收回 FrontSide）。
 const opaqueMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
@@ -6159,6 +6341,7 @@ function update(dt) {
   updateHumNotes(dt);  // 居民哼歌 v1（788）：推進頭頂飄浮音符
   updateHearts(dt);    // 寵愛你的夥伴 v1（899）：推進小夥伴頭頂的愛心
   updateFertSparkle(dt); // 乙太沃肥 v1（789）：推進施肥綠火花
+  updateAmbientLife(dt); // 世界環境氛圍 v1（905）：白天蝴蝶／夜間螢火蟲環境微生物
   streamChunks(dt);
   sendMove(dt);
   updateMyHeldItem(); // 手持工具可見 v1：即時反映熱鍵切換，不等節流送出的回音
@@ -7110,6 +7293,13 @@ window.__voxel = {
     player.yaw = Math.atan2(-dx, -dz);
     camPitch = -Math.atan2(dy, Math.hypot(dx, dz));
     clampPitch();
+  },
+  // 世界環境氛圍 v1（905）QA 用：讀此刻活著的蝴蝶／螢火蟲數＋各自位置（驗依時段真的生成、供取景）。
+  get ambientCounts() {
+    const bp = [], fp = [];
+    for (const c of butterflies) if (c.alive) bp.push({ x: c.sp.position.x, y: c.sp.position.y, z: c.sp.position.z });
+    for (const c of fireflies) if (c.alive) fp.push({ x: c.sp.position.x, y: c.sp.position.y, z: c.sp.position.z });
+    return { butterflies: bp.length, fireflies: fp.length, butterflyPos: bp, fireflyPos: fp };
   },
   // 挖擊一隻暗影（headless QA 無法 pointer lock 時的替代路徑；與點擊送同一則訊息，
   // 打不打得到仍由伺服器權威驗 reach/節奏——玩家用 console 呼叫也佔不到任何便宜）。
