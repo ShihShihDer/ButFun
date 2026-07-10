@@ -131,6 +131,7 @@ use crate::voxel_moderation as vmod;
 use crate::voxel_cheer as vcheer;
 use crate::voxel_chest as vchest;
 use crate::voxel_chest_contribute as vchestgive;
+use crate::voxel_harvest_stock as vharveststock;
 use crate::voxel_envy as venvy;
 use crate::voxel_sign as vsign;
 use crate::voxel_readsign as vreadsign;
@@ -2113,6 +2114,10 @@ struct VoxelHub {
     /// 冬季飄雪 v1（ROADMAP 900）：季內初雪偵測狀態機（純記憶體，比照天氣／季節等世界暫態，
     /// 重啟歸零）。每輪 tick_residents 依「當前是否冬季 ∧ 是否下雨」推進，偵測本冬第一次飄雪。
     snow_tracker: RwLock<vsnow::SnowSeasonTracker>,
+    /// 秋收囤糧過冬 v1（自主提案）：本秋是否已播過「初囤」城鎮時刻的追蹤器（純記憶體，比照
+    /// 飄雪／季節等世界暫態，重啟歸零）。每輪 tick_residents 依「當前是否秋季」推進；秋天內
+    /// 第一次真的有人囤糧那刻播一則季節動態，離開秋天即重置、下一個秋天再播一次。
+    autumn_stock: RwLock<vharveststock::AutumnStockTracker>,
     /// 上一場「暮聚」發生的世界日（村莊自發習俗 v1，村莊自發習俗）：每到黃昏、村子已有廣場中心、
     /// 在場閒人達門檻時，居民自發聚到廣場村碑邊——用「當日累計日數」比對確保**每日黃昏至多一場**
     /// （同一天已聚過就不再重複觸發）。純記憶體、重啟歸零（最壞重啟後當日再聚一次，無資料風險）。
@@ -2828,6 +2833,8 @@ fn hub() -> &'static VoxelHub {
             last_season: RwLock::new(vseason::season_for_day(0)),
             // 冬季飄雪 v1（ROADMAP 900）：啟動時尚未飄雪、本冬未播初雪；之後靠 tick_residents 逐 tick 推進。
             snow_tracker: RwLock::new(vsnow::SnowSeasonTracker::new()),
+            // 秋收囤糧過冬 v1（自主提案）：啟動時本秋尚未播過初囤時刻；之後靠 tick_residents 逐 tick 推進。
+            autumn_stock: RwLock::new(vharveststock::AutumnStockTracker::new()),
             // 村莊自發習俗 v1（暮聚）：啟動時尚無任何一場暮聚發生過。
             last_custom_day: RwLock::new(None),
             // 協助建造感激記憶冷卻：啟動空（純記憶體、無需持久化）。
@@ -12010,6 +12017,13 @@ fn tick_residents(dt: f32) {
     if season_just_turned {
         vfeed::append_feed("季節", "乙太方界", vseason::season_feed_detail(current_season));
     }
+    // 秋收囤糧過冬 v1（自主提案）：每輪把「當前是否秋季」餵給初囤追蹤器（短寫鎖即釋、不巢狀）——
+    // 一離開秋天就重置本秋旗標，讓下一個秋天能再播一次「秋收開始囤糧」的城鎮時刻。
+    hub()
+        .autumn_stock
+        .write()
+        .unwrap()
+        .sync_season(current_season == vseason::Season::Autumn);
 
     // 0a-2) 居民誕辰紀念 v1：本 tick 的目前 unix 秒（純讀系統時鐘，無鎖），供下方逐居民算滿週歲數。
     let now_unix = vfarm::now_secs();
@@ -13220,18 +13234,29 @@ fn tick_residents(dt: f32) {
                         vchestgive::CONTRIBUTE_RADIUS,
                     )
                 }); // chest 讀鎖釋放
+                // 秋收囤糧過冬 v1（自主提案）：秋天＝收成季，把每 tick 存料機率調高一檔（乘完仍
+                // 夾在 [0,1]、仍走回饋糧倉既有的每人長冷卻，天然防洗版）；非秋季原封不動。
                 if vchestgive::should_contribute(
                     bag_pick.is_some(),
                     chest_hit.is_some(),
                     rand::random::<f32>(),
-                    vchestgive::CONTRIBUTE_CHANCE_PER_TICK,
+                    vharveststock::contribute_chance(
+                        current_season,
+                        vchestgive::CONTRIBUTE_CHANCE_PER_TICK,
+                    ),
                 ) {
                     let (item_id, qty) = bag_pick.expect("should_contribute 已保證 bag_pick 為 Some");
                     let (cx, cy, cz) =
                         chest_hit.expect("should_contribute 已保證 chest_hit 為 Some");
                     let item_name = vgift::item_name_zh(item_id);
                     let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                    r.say = vchestgive::contribute_bubble(item_name, qty, pick)
+                    // 秋天走惦記寒冬的「多囤點過冬」台詞，其餘季節沿用泛用「順手存一份」。
+                    let bubble = if current_season == vseason::Season::Autumn {
+                        vharveststock::stockpile_bubble(item_name, qty, pick)
+                    } else {
+                        vchestgive::contribute_bubble(item_name, qty, pick)
+                    };
+                    r.say = bubble
                         .chars()
                         .take(vchestgive::CONTRIBUTE_SAY_MAX_CHARS)
                         .collect();
@@ -17483,6 +17508,9 @@ fn tick_residents(dt: f32) {
     // 居民回饋糧倉 v1（自主提案）：把決定拍時選中的材料，真的從居民背包移進箱子（零和守恆、
     // 不憑空生料，鏡像 748 分享的雙重確認精神）。鎖序：deltas 讀（即釋，確認箱子沒被同 tick
     // 破壞掉）→ res_inv 寫（即釋，再次確認居民此刻仍握有足量）→ chest 寫（即釋）→ 持久化/Feed（鎖外）。
+    // 秋收囤糧過冬 v1（自主提案）：本秋是否在這輪 flush 裡第一次真的完成一次囤糧——
+    // 若是，迴圈跑完鎖外補一則城鎮動態「秋收開始囤糧」（追蹤器保證一個秋天只播一次）。
+    let mut autumn_stock_first = false;
     for (rid, rname, cx, cy, cz, item_id, qty) in chest_contribute_events {
         let still_chest = {
             let world = hub().deltas.read().unwrap();
@@ -17509,10 +17537,31 @@ fn tick_residents(dt: f32) {
         let entry = { hub().chest.write().unwrap().put(&pos, item_id, taken) }; // chest 寫鎖釋放
         vchest::append_chest(&entry);
         let item_name = vgift::item_name_zh(item_id);
+        // 秋收囤糧過冬 v1：秋天走「為過冬囤進箱子」的動態牆文案＋秋收分類，其餘季節沿用泛用版；
+        // 並在本秋第一次真的成功囤糧那刻認領一次性初囤時刻（短寫鎖即釋、不巢狀，守死鎖鐵律）。
+        if current_season == vseason::Season::Autumn {
+            if hub().autumn_stock.write().unwrap().claim_first() {
+                autumn_stock_first = true;
+            }
+            vfeed::append_feed(
+                vharveststock::FEED_KIND,
+                rname,
+                &vharveststock::stockpile_feed_line(rname, item_name, taken),
+            );
+        } else {
+            vfeed::append_feed(
+                vchestgive::FEED_KIND,
+                rname,
+                &vchestgive::contribute_feed_line(rname, item_name, taken),
+            );
+        }
+    }
+    // 每個秋天第一次有人囤糧的城鎮時刻（一個秋天只播一次，由追蹤器把關）。
+    if autumn_stock_first {
         vfeed::append_feed(
-            vchestgive::FEED_KIND,
-            rname,
-            &vchestgive::contribute_feed_line(rname, item_name, taken),
+            vharveststock::FEED_KIND,
+            "乙太方界",
+            vharveststock::FIRST_STOCKPILE_FEED,
         );
     }
 
