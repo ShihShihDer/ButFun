@@ -19281,6 +19281,10 @@ fn tick_residents(dt: f32) {
                         let inv = hub().invented.read().unwrap();
                         inv.known_goals_for(&rid)
                     }; // invented 讀鎖釋放
+                    // 純技能庫（她已發明技能能產出的 block）——階梯式挑目標時，這些是往上
+                    // 搆的積木（收成 1 步 use_skill）。先留一份純的，excluded 接著會被背包/
+                    // 退避污染，不能拿去當「積木集合」用。
+                    let known_goals = excluded.clone();
                     {
                         let bags = hub().res_inv.read().unwrap();
                         if let Some(bag) = bags.get(&rid) {
@@ -19298,7 +19302,9 @@ fn tick_residents(dt: f32) {
                     let catalog = vinvent::possibility_catalog(&excluded);
                     // 確定性種子：她此刻的位置 bits——同居民不同時刻挑到不同樣、可重現。
                     let seed = (rx as i64 as u64) ^ ((rz as i64 as u64) << 20);
-                    match vinvent::curiosity_pick(&catalog, seed) {
+                    // 階梯式挑選（真進化·踏腳石）：優先挑「以現有能力＋已學技能估算搆得著」
+                    // 的目標，先發明踏得到的踏腳石，複雜目標等前置技能攢夠再浮現。
+                    match vinvent::curiosity_pick_laddered(&catalog, &known_goals, seed) {
                         Some(goal) => {
                             let new_desire = {
                                 let mut des = hub().desires.write().unwrap();
