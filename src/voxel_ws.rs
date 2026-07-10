@@ -1528,6 +1528,16 @@ fn init_residents() -> Vec<VoxelResident> {
     for (i, home_x, home_z, body, birth_unix, parent_name) in specs {
         out.push(build_resident(i, home_x, home_z, body, birth_unix, parent_name));
     }
+    // 居民搬新家（引導式都更）：已搬完（或新家已完工、正拆舊家）的居民，家域中心跟著
+    // 新家走（重啟持久）——初始居民的 resident_home_base / 名冊 home_base 只是出生預設，
+    // 搬過家的以搬家記錄為準（她的日常活動圈從此繞著村裡的新家）。
+    let reloc = vvillage::RelocationStore::from_entries(vvillage::load_relocations());
+    for r in &mut out {
+        if let Some((nx, _ny, nz)) = reloc.home_override(&r.id) {
+            r.home_x = nx as f32 + 0.5;
+            r.home_z = nz as f32 + 0.5;
+        }
+    }
     // 在世人口（含出生居民）→ resident_count() 無鎖回報的單一事實來源。
     RESIDENT_POP.store(out.len(), Ordering::Relaxed);
     out
@@ -1793,6 +1803,10 @@ struct VoxelHub {
     /// 村莊地塊認領註冊表（村莊系統 v1）：誰認領了哪塊沿路地塊。持久化到 data/voxel_village_plots.jsonl。
     /// 居民新建築（含新生兒的家）改成「認領最近的空地塊」當錨點 → 蓋在地塊上自動沿路對齊、不再散落。
     village: RwLock<vvillage::PlotRegistry>,
+    /// 居民搬新家（引導式都更）：搬家進度狀態機（**全村一次一位**）。持久化到
+    /// data/voxel_relocations.jsonl——重啟後接著搬（新家續蓋、舊家拆除冪等重算恢復），
+    /// 搬完的居民進 done 名單永不重搬。
+    relocations: RwLock<vvillage::RelocationStore>,
     /// 居民小背包（agency v1·純記憶體）：採集挖到的材料進這裡（rid → block_id → 數量）。
     /// 「她真的在做事」的成果；與玩家背包（inventory）分開，互不干涉。
     res_inv: RwLock<HashMap<String, HashMap<u8, u32>>>,
@@ -2497,6 +2511,10 @@ fn hub() -> &'static VoxelHub {
             goals: RwLock::new(GoalStore::from_entries(vskill::load_goals())),
             // 村莊系統 v1：啟動時從 data/voxel_village_plots.jsonl 載回地塊認領（重啟後仍記得誰住哪塊）。
             village: RwLock::new(vvillage::PlotRegistry::from_entries(vvillage::load_plot_claims())),
+            // 居民搬新家：啟動時從 data/voxel_relocations.jsonl 載回搬家進度（重啟後接著搬）。
+            relocations: RwLock::new(vvillage::RelocationStore::from_entries(
+                vvillage::load_relocations(),
+            )),
             // 居民小背包純記憶體（採集成果；重啟重置，與農地一致）。
             res_inv: RwLock::new(HashMap::new()),
             // 啟動時從 data/voxel_inventory.jsonl 載回玩家背包（重啟後存量還在）。
@@ -9573,6 +9591,22 @@ fn tick_residents(dt: f32) {
             .map(|(rid, t)| (rid.clone(), (t.cx, t.cz, t.radius, t.pave.is_some())))
             .collect()
     }; // directed_tasks 讀鎖釋放
+    // 居民搬新家（引導式都更）：進行中搬家的快照（relocations 讀鎖即釋），供 residents
+    // 寫鎖段用——拆除段把她排除出 agency 候選（搬家中不接其他任務）、閒晃中心貼著當前
+    // 工地（蓋新家貼新地塊、拆舊家貼舊家），不與 residents 鎖巢狀（守死鎖鐵律）。
+    // 元組＝(居民 id, 工地焦點 x, 工地焦點 z, 是否在拆除段)。
+    let reloc_snap: Option<(String, f32, f32, bool)> = {
+        let reloc = hub().relocations.read().unwrap();
+        reloc.active().map(|a| {
+            let demolishing = a.phase == vvillage::RELOC_PHASE_DEMOLISH;
+            let (fx, fz) = if demolishing {
+                (a.old_x as f32 + 0.5, a.old_z as f32 + 0.5)
+            } else {
+                (a.new_x as f32 + 0.5, a.new_z as f32 + 0.5)
+            };
+            (a.resident.clone(), fx, fz, demolishing)
+        })
+    }; // relocations 讀鎖釋放
     // 本 tick 已抵達工地、要整地一批的居民（鎖內收集，鎖外套用方塊改動）。
     let mut level_workers: Vec<String> = Vec::new();
     // say_updates 提前宣告，過渡台詞與建造台詞共用同一張 Vec，在末尾一次套用。
@@ -13148,7 +13182,14 @@ fn tick_residents(dt: f32) {
                     // 聚會中（ROADMAP 711）：以聚會點為中心，讓一群人看起來聚在一塊；
                     // 邊陲探友逗留中（ROADMAP 821）：以朋友的邊陲落點為中心，讓兩人在荒野一小片範圍相聚；
                     // 夜間遮蔽：以自己蓋的小屋為中心；否則：以自己家域中心為基準（正常行為）。
-                    let (center_x, center_z) = if let Some((vx, vz, _)) = &r.visiting {
+                    // 搬家中的居民（引導式都更）：閒晃中心貼著當前工地——蓋新家段貼新地塊、
+                    // 拆除段貼舊家——玩家全程看得到她在搬家現場忙活（優先於探訪/遠行/遮蔽）。
+                    let reloc_here: Option<(f32, f32)> = reloc_snap
+                        .as_ref()
+                        .and_then(|(id, fx, fz, _)| (*id == r.id).then_some((*fx, *fz)));
+                    let (center_x, center_z) = if let Some((fx, fz)) = reloc_here {
+                        (fx, fz)
+                    } else if let Some((vx, vz, _)) = &r.visiting {
                         (*vx, *vz)
                     } else if let Some((ex, ez, _)) = &r.expedition {
                         (*ex, *ez)
@@ -13165,7 +13206,10 @@ fn tick_residents(dt: f32) {
                     // 探訪中用探訪範圍；遠行逗留用遠行範圍（在邊陲一小片走動）；聚會中用更小的聚會範圍
                     //（不散開）；邊陲探友逗留用探友範圍；夜間遮蔽用更小的遮蔽半徑（緊靠自家）；
                     // 否則用家域半徑（正常行為）。
-                    let wander_r = if r.visiting.is_some() {
+                    let wander_r = if reloc_here.is_some() {
+                        // 搬家工地：緊貼著打轉（看得出她在忙搬家，不是路過）。
+                        RELOC_WANDER_RADIUS
+                    } else if r.visiting.is_some() {
                         vvisit::VISIT_WANDER_RADIUS
                     } else if r.expedition.is_some() {
                         vexp::EXPEDITION_WANDER_RADIUS
@@ -13317,6 +13361,11 @@ fn tick_residents(dt: f32) {
                 && !directed_snaps.contains_key(&r.id)
                 && r.follow.is_none()
                 && r.fetch.is_none()
+                // 搬家拆除段的居民不進 agency 候選（搬家中不接其他任務；拆除由搬家
+                // tick 自己推進，不受 build_cooldown 影響）。蓋新家段照常進（推進計畫）。
+                && !reloc_snap
+                    .as_ref()
+                    .map_or(false, |(id, _, _, demolishing)| *demolishing && *id == r.id)
             {
                 // 居民 id 格式固定 "vox_res_{i}"，取末位數字當 index。
                 let idx = r.id.trim_start_matches("vox_res_").parse::<usize>().unwrap_or(0);
@@ -16177,6 +16226,10 @@ fn tick_residents(dt: f32) {
         }
     }
 
+    // ── 居民搬新家（引導式都更）：排程 / 推進（全村一次一位、錯開；低頻節奏內建，
+    //    平時每 tick 只付一次倒數遞減的成本）。全部短鎖即釋、循序不巢狀、不 await。
+    tick_home_relocation(dt, &mut say_updates);
+
     for (rid, rname, rx, ry, rz, _ridx) in build_candidates {
         // ── 技能發明/重用執行（優先於一般 agency：她正專心驗證自己的點子）────────
         // 有進行中的 InventRun → 推進一步（逾時/失敗/成功都在裡面收尾）→ 本輪不做別的。
@@ -17698,6 +17751,418 @@ fn reset_build_tick(rid: &str, interval: f32) {
     if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
         r.build_tick = interval;
     }
+}
+
+// ── 居民搬新家（引導式都更）：搬家任務 tick ──────────────────────────────────────
+//
+// 維護者拍板：「城鎮破破爛爛」不 god-mode 重建、不放生——老家不在村莊地塊上的居民，
+// **一次一位、錯開地**自己搬進村：(a) 認領地塊 →(b) Feed 昭告 →(c) 用她的樣式在地塊上
+// 蓋新家（走既有 BuildPlan 引擎，完工收尾/立牌全沿用）→(d) 走回舊家逐塊拆除、材料回收
+// 入她的小背包 →(e) 錨點與家域中心遷到新家。純邏輯（名單判定/一次一位狀態機/舊家方塊
+// 集合重算/拆除安全過濾/重啟恢復）在 voxel_village / voxel_building / voxel_skills，
+// 這裡只做排程與世界 IO——嚴守短鎖即釋、循序不巢狀、不 await 的死鎖鐵律。
+
+/// 搬家排程的節奏狀態（純記憶體）：`timer`＝下次掃名單/推進一步的倒數；
+/// `walk_stall`＝拆除段「她還沒走到舊家」的累計秒數（超時就地開拆，保證有進展）。
+struct RelocPace {
+    timer: f32,
+    walk_stall: f32,
+}
+
+static RELOC_PACE: std::sync::Mutex<RelocPace> =
+    std::sync::Mutex::new(RelocPace { timer: 30.0, walk_stall: 0.0 });
+
+/// 搬家節奏可用 `BUTFUN_RELOC_FAST=1` 加速（隔離實測用；prod 不設＝正常節奏）。
+fn reloc_fast() -> bool {
+    static FAST: OnceLock<bool> = OnceLock::new();
+    *FAST.get_or_init(|| std::env::var("BUTFUN_RELOC_FAST").map_or(false, |v| v == "1"))
+}
+
+/// 沒有搬家進行中時，多久掃一次待都更名單（秒）。
+fn reloc_scan_secs() -> f32 {
+    if reloc_fast() { 3.0 } else { 30.0 }
+}
+/// 搬家進行中，多久推進一步（秒）——比照建造節奏（BUILD_INTERVAL_SECS）。
+fn reloc_step_secs() -> f32 {
+    if reloc_fast() { 1.0 } else { BUILD_INTERVAL_SECS }
+}
+/// 拆除段一步拆幾塊（與建造同節奏、但一步多拆幾塊——拆比蓋快是誠實的體感，
+/// 也讓全村在一兩個遊戲天內看得見地自我重組）。
+fn reloc_demolish_per_step() -> usize {
+    if reloc_fast() { 6 } else { 3 }
+}
+/// 蓋新家段每步「加放」幾塊：疊在既有建造引擎（8 秒一塊）之上等效加速——
+/// 搬家戶多時才趕得上「全村 1-2 遊戲天搬完」的節奏；只對搬家中的計畫生效。
+fn reloc_extra_build_per_step() -> usize {
+    if reloc_fast() { 4 } else { 1 }
+}
+/// 一位搬完後隔多久才輪下一位（錯開；全村不會同時工地連天）。
+fn reloc_gap_secs() -> f32 {
+    if reloc_fast() { 3.0 } else { 90.0 }
+}
+/// 拆除段：走不到舊家的累計超時（秒）——超過就地開拆（誠實推進，不無限空等）。
+fn reloc_walk_timeout_secs() -> f32 {
+    if reloc_fast() { 10.0 } else { 60.0 }
+}
+/// 拆除段：走回舊家的抵達判定距離（水平，格）。
+const RELOC_ARRIVE_DIST: f32 = 9.0;
+/// 搬家中居民的閒晃半徑（緊貼工地打轉，看得出她在忙搬家）。
+const RELOC_WANDER_RADIUS: f32 = 3.0;
+
+/// 搬家任務主 tick（tick_residents 每輪呼叫；節奏閘讓平時只付一次倒數遞減成本）。
+/// 無進行中搬家 → 低頻掃待都更名單開新的一件；有 → 依階段推進（蓋新家加放 / 拆舊家）。
+fn tick_home_relocation(dt: f32, say_updates: &mut Vec<(String, String)>) {
+    {
+        let mut pace = RELOC_PACE.lock().unwrap();
+        pace.timer -= dt;
+        if pace.timer > 0.0 {
+            return;
+        }
+    } // RELOC_PACE mutex 釋放（各分支自行重設 timer）
+    let active: Option<vvillage::RelocationRecord> =
+        hub().relocations.read().unwrap().active().cloned(); // relocations 讀鎖即釋
+
+    let Some(rec) = active else {
+        relocation_kickoff(say_updates);
+        RELOC_PACE.lock().unwrap().timer = reloc_scan_secs();
+        return;
+    };
+
+    let rid = rec.resident.clone();
+    match rec.phase.as_str() {
+        vvillage::RELOC_PHASE_BUILD => {
+            let has_plan = { hub().builds.read().unwrap().has_plan(&rid) }; // builds 讀鎖釋放
+            let new_anchor = (rec.new_x, rec.new_y, rec.new_z);
+            if has_plan {
+                // 建造引擎照常 8 秒一塊；這裡每步再加放幾塊（等效加速，留最後一塊給
+                // 主引擎收尾——完工 Feed/錨點登記/立牌走既有唯一路徑，不重複）。
+                relocation_place_extra_blocks(&rid, reloc_extra_build_per_step());
+            } else if hub()
+                .goals
+                .read()
+                .unwrap()
+                .anchor_built(&rid, vbuild::BuildKind::House, new_anchor)
+            {
+                // 新家完工（完工收尾已由建造引擎統一處理）→ (d) 走回舊家、進拆除段。
+                let advanced = { hub().relocations.write().unwrap().advance_to_demolish() };
+                if let Some(adv) = advanced {
+                    vvillage::append_relocation(&adv);
+                    let rname = resident_name_of(&rid);
+                    vfeed::append_feed("都更搬家", rname, &vvillage::reloc_demolish_feed_line(rname));
+                    say_updates.push((rid.clone(), vvillage::reloc_demolish_say_line().to_string()));
+                    {
+                        let mut residents = hub().residents.write().unwrap();
+                        if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                            r.target_x = rec.old_x as f32 + 0.5;
+                            r.target_z = rec.old_z as f32 + 0.5;
+                            r.wait_timer = 0.0;
+                        }
+                    } // residents 寫鎖釋放
+                    RELOC_PACE.lock().unwrap().walk_stall = 0.0;
+                    tracing::info!(resident = %rid, "都更搬家：新家完工，回舊家拆料");
+                }
+            } else {
+                // 中斷恢復（極少：搬家已登記、計畫卻遺失且新家未完工）→ 冪等重建計畫續蓋。
+                let plan = {
+                    let mut builds = hub().builds.write().unwrap();
+                    if builds.has_plan(&rid) {
+                        None
+                    } else {
+                        Some(builds.new_plan(
+                            &rid,
+                            vbuild::BuildKind::House,
+                            rec.new_x,
+                            rec.new_y,
+                            rec.new_z,
+                            false,
+                            None,
+                        ))
+                    }
+                }; // builds 寫鎖釋放
+                if let Some(p) = &plan {
+                    vbuild::append_build(p);
+                }
+            }
+            RELOC_PACE.lock().unwrap().timer = reloc_step_secs();
+        }
+        vvillage::RELOC_PHASE_DEMOLISH => {
+            RELOC_PACE.lock().unwrap().timer = reloc_step_secs();
+            relocation_demolish_step(&rec, say_updates);
+        }
+        _ => {
+            // 防呆：不明階段（理論到不了）→ 收尾釋放名額，別卡死全村輪替。
+            if let Some(f) = hub().relocations.write().unwrap().finish() {
+                vvillage::append_relocation(&f);
+            }
+            RELOC_PACE.lock().unwrap().timer = reloc_gap_secs();
+        }
+    }
+}
+
+/// 掃待都更名單、挑第一位「此刻閒著」的居民開工搬家（一次至多開一件）。
+/// (a) 認領地塊 →(b) Feed「開始把家搬到村裡的新地塊」→(c) 動工新家（既有 BuildPlan 引擎）。
+fn relocation_kickoff(say_updates: &mut Vec<(String, String)>) {
+    // 村莊還沒規劃（無釘死中心）→ 沒有地塊可搬，安靜早退（舊世界向後相容）。
+    let Some((vcx, vcz)) = vvillage::load_village_center() else { return };
+    let plots = vvillage::plot_layout(vcx, vcz); // 純函式、鎖外算
+    let houses = { hub().goals.read().unwrap().all_houses() }; // goals 讀鎖釋放
+    let done = { hub().relocations.read().unwrap().done_residents() }; // relocations 讀鎖釋放
+    let cands = vvillage::relocation_candidates(&houses, &plots, &done);
+    for (rid, old) in cands {
+        // 此刻在忙（已有建造計畫/被指派整地/發明/跑腿/跟隨/採集/睡著）→ 這輪先跳過她，
+        // 搬家不打斷手上的事（比照既有 gating 精神，下輪掃描再看）。
+        if hub().builds.read().unwrap().has_plan(&rid) {
+            continue; // builds 讀鎖釋放
+        }
+        if hub().directed_tasks.read().unwrap().contains_key(&rid) {
+            continue; // directed_tasks 讀鎖釋放
+        }
+        let busy = {
+            let residents = hub().residents.read().unwrap();
+            residents.iter().find(|r| r.id == rid).map_or(true, |r| {
+                r.invent_run.is_some()
+                    || r.fetch.is_some()
+                    || r.follow.is_some()
+                    || r.gather.is_some()
+                    || r.asleep
+            })
+        }; // residents 讀鎖釋放
+        if busy {
+            continue;
+        }
+        // (a) 認領地塊（已認領過＝沿用同一塊；村滿認不到 → 這位搬不了，換下一位）。
+        let (pcx, pcz) = claim_or_reuse_plot(&rid, old.0, old.2);
+        if hub().village.read().unwrap().claim_of(&rid).is_none() {
+            continue; // village 讀鎖釋放
+        }
+        // 挑新家錨位：避開她既有建物錨點（同地塊上可能已有花圃/水井等）。
+        let spots: Vec<(i32, i32)> = (0..6).map(vskill::build_offset).collect();
+        let taken = { hub().goals.read().unwrap().anchors_xz_of(&rid) }; // goals 讀鎖釋放
+        let Some((bx, bz)) = vvillage::first_free_spot(pcx, pcz, &spots, &taken) else {
+            continue; // 她的地塊排不下新家（極少）→ 換下一位
+        };
+        let by = vbuild::surface_y(bx, bz);
+        // 一次一位硬閘（store 內建）：登記 build 階段並落地。
+        let rec = { hub().relocations.write().unwrap().begin(&rid, old, (bx, by, bz)) };
+        let Some(rec) = rec else { return }; // 併發防呆：已有人在搬 → 本輪收手
+        vvillage::append_relocation(&rec);
+        // (c) 動工新家：走既有 BuildPlan 引擎（她的樣式 BuildStyle::for_resident /
+        // 放塊節奏 / 進度冒泡 / 完工收尾與立牌全沿用，零新建造路徑）。
+        let plan = {
+            let mut builds = hub().builds.write().unwrap();
+            if builds.has_plan(&rid) {
+                None // double-check 併發安全
+            } else {
+                Some(builds.new_plan(&rid, vbuild::BuildKind::House, bx, by, bz, false, None))
+            }
+        }; // builds 寫鎖釋放
+        if let Some(p) = &plan {
+            vbuild::append_build(p);
+        }
+        // (b) Feed + 泡泡 + 她動身走向新地塊（閒晃中心由搬家焦點接管）。
+        let rname = resident_name_of(&rid);
+        vfeed::append_feed("都更搬家", rname, &vvillage::reloc_start_feed_line(rname));
+        say_updates.push((rid.clone(), vvillage::reloc_start_say_line().to_string()));
+        {
+            let mut residents = hub().residents.write().unwrap();
+            if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                r.target_x = bx as f32 + 0.5;
+                r.target_z = bz as f32 + 0.5;
+                r.wait_timer = 0.0;
+            }
+        } // residents 寫鎖釋放
+        tracing::info!(resident = %rid, old = ?old, new = ?(bx, by, bz), "都更搬家：認領地塊、動工新家");
+        return; // 一次只開一件（錯開）
+    }
+}
+
+/// 蓋新家段的「加放」：既有建造引擎（8 秒一塊）之外每步多放幾塊——只對搬家中的計畫
+/// 生效，且**永遠留最後一塊**給主引擎收尾（完工 Feed/錨點登記/心願閉環/立牌走既有唯一
+/// 路徑、不重複觸發）。放置流程與主引擎逐項相同：set_block → 廣播 → 水流喚醒 → 持久化。
+fn relocation_place_extra_blocks(rid: &str, n: usize) {
+    let mut placed = 0usize;
+    for _ in 0..n {
+        let bb = {
+            let mut builds = hub().builds.write().unwrap();
+            builds
+                .get_plan_mut(rid)
+                .and_then(|p| if p.remaining.len() > 1 { p.pop_next() } else { None })
+        }; // builds 寫鎖釋放
+        let Some(bb) = bb else { break };
+        if let Some(block) = Block::from_u8(bb.b) {
+            {
+                let mut world = hub().deltas.write().unwrap();
+                voxel::set_block(&mut world, bb.x, bb.y, bb.z, block);
+            } // deltas 寫鎖釋放
+            broadcast_block(bb.x, bb.y, bb.z, block);
+            enqueue_water_around(bb.x, bb.y, bb.z);
+            vbuild::append_world_block(bb.x, bb.y, bb.z, bb.b);
+            placed += 1;
+        }
+    }
+    if placed > 0 {
+        // 持久化更新後的計畫（remaining 已縮短，重啟後接著蓋）。
+        if let Some(plan) = hub().builds.read().unwrap().plans.get(rid) {
+            vbuild::append_build(plan);
+        } // builds 讀鎖釋放
+    }
+}
+
+/// 拆除段單步：她在舊家附近（或走路超時）→ 依**確定性重算**的舊家方塊集合拆幾塊、
+/// 材料回收入她的小背包；集合裡再也沒有可拆的格 → 搬家收尾（錨點/家域遷移）。
+/// 資料安全鐵律：只有「集合裡的座標 + 現況方塊正是她當年放的那塊」才拆
+/// （見 `vbuild::demolish_allowed`）——玩家平台/告示牌/箱子/鄰居建物機制性一塊碰不到。
+fn relocation_demolish_step(
+    rec: &vvillage::RelocationRecord,
+    say_updates: &mut Vec<(String, String)>,
+) {
+    let rid = &rec.resident;
+    // 她此刻的狀態快照（residents 讀鎖即釋）。
+    let snap = {
+        let residents = hub().residents.read().unwrap();
+        residents.iter().find(|r| r.id == *rid).map(|r| {
+            (
+                r.body.x,
+                r.body.y,
+                r.body.z,
+                r.asleep,
+                r.fetch.is_some() || r.follow.is_some(),
+            )
+        })
+    }; // residents 讀鎖釋放
+    let Some((px, py, pz, asleep, player_task)) = snap else {
+        // 居民不存在（理論到不了）→ 收尾釋放名額，別卡死全村輪替。
+        if let Some(f) = hub().relocations.write().unwrap().finish() {
+            vvillage::append_relocation(&f);
+        }
+        RELOC_PACE.lock().unwrap().timer = reloc_gap_secs();
+        return;
+    };
+    // 睡著／正被玩家指派任務（跟隨/跑腿/整地）→ 搬家讓路暫停，醒來/忙完下一步再續拆。
+    let directed = hub().directed_tasks.read().unwrap().contains_key(rid); // 讀鎖即釋
+    if asleep || player_task || directed {
+        return;
+    }
+    // 還沒走到舊家：繼續走（目標持續指向舊家），累計超時後就地開拆（誠實推進）。
+    let dx = px - (rec.old_x as f32 + 0.5);
+    let dz = pz - (rec.old_z as f32 + 0.5);
+    let near = (dx * dx + dz * dz).sqrt() <= RELOC_ARRIVE_DIST;
+    if !near {
+        let timed_out = {
+            let mut pace = RELOC_PACE.lock().unwrap();
+            pace.walk_stall += reloc_step_secs();
+            pace.walk_stall >= reloc_walk_timeout_secs()
+        }; // RELOC_PACE mutex 釋放
+        if !timed_out {
+            let mut residents = hub().residents.write().unwrap();
+            if let Some(r) = residents.iter_mut().find(|r| r.id == *rid) {
+                r.target_x = rec.old_x as f32 + 0.5;
+                r.target_z = rec.old_z as f32 + 0.5;
+            }
+            return; // residents 寫鎖釋放
+        }
+    }
+
+    // 舊家方塊集合（確定性重算，見 `vbuild::house_blocks_at`）——只有這份集合裡的格才可能被拆。
+    let expected = vbuild::house_blocks_at(rid, rec.old_x, rec.old_y, rec.old_z);
+    let mut removed = 0usize;
+    let mut skipped_body = 0usize;
+    let mut removable_left = false;
+    for bb in &expected {
+        // 現況（deltas 短讀鎖即釋，逐格取放——一步最多幾塊，非熱路徑）。
+        let current = {
+            let world = hub().deltas.read().unwrap();
+            voxel::effective_block_at(&world, bb.x, bb.y, bb.z)
+        }; // deltas 讀鎖釋放
+        if !vbuild::demolish_allowed(bb.b, current) {
+            continue; // 不是她當年放的那塊（早拆過/被改動/玩家物）→ 一律不動
+        }
+        if removed >= reloc_demolish_per_step() {
+            removable_left = true; // 本步額度用完，還有得拆 → 下一步繼續
+            break;
+        }
+        // 安全：不拆與她身體重疊的格（永不自拆站位；她挪開後下一步再拆）。
+        if vdt::cell_in_body(bb.x, bb.y, bb.z, px, py, pz) {
+            skipped_body += 1;
+            continue;
+        }
+        // 拆！地板層回復自然基底（地表不留坑）、其餘回空氣；廣播 + 水流喚醒 + 持久化。
+        let restore = vbuild::demolition_restore(bb.x, bb.y, bb.z);
+        {
+            let mut world = hub().deltas.write().unwrap();
+            voxel::set_block(&mut world, bb.x, bb.y, bb.z, restore);
+        } // deltas 寫鎖釋放
+        broadcast_block(bb.x, bb.y, bb.z, restore);
+        enqueue_water_around(bb.x, bb.y, bb.z);
+        vbuild::append_world_block(bb.x, bb.y, bb.z, restore as u8);
+        // 材料回收入她的小背包（res_inv 短鎖即釋，比照礦井挖掘入包慣例）。
+        {
+            let mut inv = hub().res_inv.write().unwrap();
+            *inv.entry(rid.to_string())
+                .or_default()
+                .entry(vbuild::demolition_yield(bb.b))
+                .or_insert(0) += 1;
+        } // res_inv 寫鎖釋放
+        removed += 1;
+    }
+
+    if removed == 0 && skipped_body > 0 {
+        // 只剩她站位擋著的那幾格：把她請往新家方向挪開，下一步就拆得到了。
+        let mut residents = hub().residents.write().unwrap();
+        if let Some(r) = residents.iter_mut().find(|r| r.id == *rid) {
+            r.target_x = rec.new_x as f32 + 0.5;
+            r.target_z = rec.new_z as f32 + 0.5;
+            r.wait_timer = 0.0;
+        }
+        return; // residents 寫鎖釋放
+    }
+    if removed == 0 && !removable_left && skipped_body == 0 {
+        // (e) 集合裡再也沒有可拆的格＝舊家拆完 → 搬家收尾。
+        relocation_finish(rec, say_updates);
+    }
+}
+
+/// 搬家收尾：舊家拆完 → 移舊錨點、小屋座標與家域中心遷到新家（含持久化）＋ Feed/泡泡，
+/// 釋放「一次一位」名額（隔 `reloc_gap_secs` 後輪下一位）。
+fn relocation_finish(
+    rec: &vvillage::RelocationRecord,
+    say_updates: &mut Vec<(String, String)>,
+) {
+    let rid = &rec.resident;
+    let fin = { hub().relocations.write().unwrap().finish() }; // relocations 寫鎖釋放
+    let Some(fin) = fin else { return };
+    vvillage::append_relocation(&fin);
+    // built_anchors 更新：移舊錨點、小屋座標遷到新家（新家錨點完工時已由建造引擎登記）。
+    let (removal, moved) = {
+        let mut goals = hub().goals.write().unwrap();
+        goals.relocate_house(
+            rid,
+            (rec.old_x, rec.old_y, rec.old_z),
+            (rec.new_x, rec.new_y, rec.new_z),
+        )
+    }; // goals 寫鎖釋放
+    vskill::append_goal(&removal);
+    vskill::append_goal(&moved);
+    // 家域中心遷到新家：日常活動圈（閒晃/歸巢/遠行基準）從此繞著村裡的新家。
+    {
+        let mut residents = hub().residents.write().unwrap();
+        if let Some(r) = residents.iter_mut().find(|r| r.id == *rid) {
+            r.home_x = rec.new_x as f32 + 0.5;
+            r.home_z = rec.new_z as f32 + 0.5;
+            r.target_x = r.home_x;
+            r.target_z = r.home_z;
+            r.wait_timer = 0.0;
+        }
+    } // residents 寫鎖釋放
+    let rname = resident_name_of(rid);
+    vfeed::append_feed("都更搬家", rname, &vvillage::reloc_done_feed_line(rname));
+    say_updates.push((rid.clone(), vvillage::reloc_done_say_line().to_string()));
+    {
+        let mut pace = RELOC_PACE.lock().unwrap();
+        pace.timer = reloc_gap_secs();
+        pace.walk_stall = 0.0;
+    } // RELOC_PACE mutex 釋放
+    tracing::info!(resident = %rid, "都更搬家：完成（舊家拆除回收、家域遷至新家）");
 }
 
 /// 為一位居民發起一次無鎖 async 思考：短鎖讀附近玩家 → drop → spawn → npc_think/npc_pray

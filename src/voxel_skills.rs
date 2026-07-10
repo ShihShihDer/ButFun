@@ -645,6 +645,16 @@ pub struct GoalRecord {
     /// `#[serde(default)]` 向後相容（舊行沒有這欄，一律 `false`）。
     #[serde(default)]
     pub anchor_only: bool,
+    /// 居民搬新家（引導式都更）：這筆是「家域遷移」記錄——此記錄的 x/y/z 是**新家錨點**，
+    /// 還原時把 `houses` 指到這裡（夜間歸巢等一切「回家」行為跟著搬）、登記新錨點；
+    /// **不**進 done、**不**加擴建額度。`#[serde(default)]` 向後相容（舊行一律 `false`）。
+    #[serde(default)]
+    pub relocated: bool,
+    /// 居民搬新家：這筆是「舊家錨點移除」記錄——此記錄的 x/y/z 是**已拆完的舊家錨點**，
+    /// 還原時把它從 `built_anchors` 移除（舊地已清空，那格重新可用、不再擋建）。
+    /// `#[serde(default)]` 向後相容（舊行一律 `false`）。
+    #[serde(default)]
+    pub removed: bool,
 }
 
 /// 一座「已完成的建物」的身分：種類 + 錨點座標。用來機制性擋掉「同一格同一種重蓋」。
@@ -683,10 +693,26 @@ impl GoalStore {
             if e.seq >= s.next_seq {
                 s.next_seq = e.seq.wrapping_add(1);
             }
+            // 居民搬新家：舊家錨點移除記錄——把它從 built_anchors 拿掉（舊地已拆清），
+            // **先於**下方的錨點登記處理（這筆的座標是要移除的，不是要登記的）。
+            if e.removed {
+                if let (Some(x), Some(y), Some(z)) = (e.x, e.y, e.z) {
+                    s.remove_anchor(&e.resident, &e.kind, (x, y, z));
+                }
+                continue;
+            }
             // 蓋家鬼打牆根治：不論首建/擴建/純錨點，只要帶座標就登記進 built_anchors。
             // 這是重啟後仍記得「這格這種已經蓋好」的硬事實，start_build 前查它擋重蓋。
             if let (Some(x), Some(y), Some(z)) = (e.x, e.y, e.z) {
                 s.record_anchor(&e.resident, &e.kind, (x, y, z));
+            }
+            // 居民搬新家：家域遷移記錄——小屋座標指到新家（夜間歸巢跟著搬）。
+            // 不進 done（House 早在裡面）、不加擴建額度。
+            if e.relocated {
+                if let (Some(x), Some(y), Some(z)) = (e.x, e.y, e.z) {
+                    s.houses.insert(e.resident.clone(), (x, y, z));
+                }
+                continue;
             }
             // 純錨點記錄只為保存錨點事實——不進 done、不加擴建額度、不動小屋座標。
             if e.anchor_only {
@@ -777,6 +803,8 @@ impl GoalStore {
             z: Some(loc.2),
             expansion: false,
             anchor_only: false,
+            relocated: false,
+            removed: false,
         };
         self.next_seq = self.next_seq.wrapping_add(1);
         Some(rec)
@@ -796,6 +824,8 @@ impl GoalStore {
             z: Some(loc.2),
             expansion: false,
             anchor_only: true,
+            relocated: false,
+            removed: false,
         };
         self.next_seq = self.next_seq.wrapping_add(1);
         rec
@@ -822,6 +852,8 @@ impl GoalStore {
             z: Some(loc.2),
             expansion: true,
             anchor_only: false,
+            relocated: false,
+            removed: false,
         };
         self.next_seq = self.next_seq.wrapping_add(1);
         rec
@@ -830,6 +862,72 @@ impl GoalStore {
     /// 此居民已蓋好的小屋世界座標（沒蓋過小屋則 `None`）。供夜間歸巢遮蔽查詢。
     pub fn house_of(&self, resident: &str) -> Option<(i32, i32, i32)> {
         self.houses.get(resident).copied()
+    }
+
+    /// 所有「已蓋好小屋」的居民與其小屋錨點快照（居民搬新家：待都更名單的輸入）。
+    /// 依居民 id 排序（確定性順序、可測）。
+    pub fn all_houses(&self) -> Vec<(String, (i32, i32, i32))> {
+        let mut v: Vec<(String, (i32, i32, i32))> =
+            self.houses.iter().map(|(k, &loc)| (k.clone(), loc)).collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
+    /// 此居民所有已完工建物錨點的 (x, z) 清單（居民搬新家：挑新家錨位時避開既有建物）。
+    pub fn anchors_xz_of(&self, resident: &str) -> Vec<(i32, i32)> {
+        self.built_anchors
+            .get(resident)
+            .map(|v| v.iter().map(|(_, x, _, z)| (*x, *z)).collect())
+            .unwrap_or_default()
+    }
+
+    /// 把某錨點自 built_anchors 移除（居民搬新家：舊家拆完，那格重新可用）。內部工具。
+    fn remove_anchor(&mut self, resident: &str, kind: &str, loc: (i32, i32, i32)) {
+        if let Some(v) = self.built_anchors.get_mut(resident) {
+            v.retain(|(k, x, y, z)| !(k == kind && (*x, *y, *z) == loc));
+        }
+    }
+
+    /// **居民搬新家收尾**：舊家拆完 → 移除舊家錨點、把小屋座標遷到新家。
+    /// 回傳兩筆記錄供呼叫端 append 落地（順序：先移除、後遷移；重啟 replay 同順序重建）。
+    /// 新家錨點在完工時已由 `mark_done`/`anchor_only_record` 登記過，這裡再登記一次＝冪等去重。
+    pub fn relocate_house(
+        &mut self,
+        resident: &str,
+        old_loc: (i32, i32, i32),
+        new_loc: (i32, i32, i32),
+    ) -> (GoalRecord, GoalRecord) {
+        let kind = BuildKind::House.as_str();
+        self.remove_anchor(resident, kind, old_loc);
+        self.record_anchor(resident, kind, new_loc);
+        self.houses.insert(resident.to_string(), new_loc);
+        let removal = GoalRecord {
+            resident: resident.to_string(),
+            kind: kind.to_string(),
+            seq: self.next_seq,
+            x: Some(old_loc.0),
+            y: Some(old_loc.1),
+            z: Some(old_loc.2),
+            expansion: false,
+            anchor_only: false,
+            relocated: false,
+            removed: true,
+        };
+        self.next_seq = self.next_seq.wrapping_add(1);
+        let moved = GoalRecord {
+            resident: resident.to_string(),
+            kind: kind.to_string(),
+            seq: self.next_seq,
+            x: Some(new_loc.0),
+            y: Some(new_loc.1),
+            z: Some(new_loc.2),
+            expansion: false,
+            anchor_only: false,
+            relocated: true,
+            removed: false,
+        };
+        self.next_seq = self.next_seq.wrapping_add(1);
+        (removal, moved)
     }
 }
 
@@ -1903,10 +2001,10 @@ mod tests {
     #[test]
     fn goal_store_from_entries_restores() {
         let entries = vec![
-            GoalRecord { resident: "r".into(), kind: "garden".into(), seq: 0, x: Some(1), y: Some(2), z: Some(3), expansion: false, anchor_only: false },
-            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 1, x: Some(10), y: Some(20), z: Some(30), expansion: false, anchor_only: false },
+            GoalRecord { resident: "r".into(), kind: "garden".into(), seq: 0, x: Some(1), y: Some(2), z: Some(3), expansion: false, anchor_only: false, relocated: false, removed: false },
+            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 1, x: Some(10), y: Some(20), z: Some(30), expansion: false, anchor_only: false, relocated: false, removed: false },
             // 重複行：去重。
-            GoalRecord { resident: "r".into(), kind: "garden".into(), seq: 2, x: Some(1), y: Some(2), z: Some(3), expansion: false, anchor_only: false },
+            GoalRecord { resident: "r".into(), kind: "garden".into(), seq: 2, x: Some(1), y: Some(2), z: Some(3), expansion: false, anchor_only: false, relocated: false, removed: false },
         ];
         let s = GoalStore::from_entries(entries);
         assert!(s.is_done("r", BuildKind::Garden));
@@ -1922,7 +2020,7 @@ mod tests {
     fn goal_store_from_entries_tolerates_missing_location() {
         // 舊資料沒有 x/y/z 欄位（serde default → None）：不應 panic，house_of 安全回 None。
         let entries = vec![
-            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 0, x: None, y: None, z: None, expansion: false, anchor_only: false },
+            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 0, x: None, y: None, z: None, expansion: false, anchor_only: false, relocated: false, removed: false },
         ];
         let s = GoalStore::from_entries(entries);
         assert!(s.is_done("r", BuildKind::House));
@@ -1962,9 +2060,9 @@ mod tests {
     #[test]
     fn goal_store_from_entries_restores_expansion_count_and_keeps_original_house() {
         let entries = vec![
-            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 0, x: Some(10), y: Some(20), z: Some(30), expansion: false, anchor_only: false },
+            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 0, x: Some(10), y: Some(20), z: Some(30), expansion: false, anchor_only: false, relocated: false, removed: false },
             // 擴建的第 2 間小屋：不應覆蓋原本的小屋座標（夜間歸巢遮蔽要認原屋）。
-            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 1, x: Some(99), y: Some(99), z: Some(99), expansion: true, anchor_only: false },
+            GoalRecord { resident: "r".into(), kind: "house".into(), seq: 1, x: Some(99), y: Some(99), z: Some(99), expansion: true, anchor_only: false, relocated: false, removed: false },
         ];
         let s = GoalStore::from_entries(entries);
         assert_eq!(s.expansion_count("r"), 1);
@@ -2005,8 +2103,8 @@ mod tests {
     fn from_entries_restores_anchor_flags_survives_restart() {
         // 重啟情境：從 jsonl 載回後，已完工的錨點仍被記得 → 不會重蓋（不倚賴 done/count 重推）。
         let entries = vec![
-            GoalRecord { resident: "vox_res_1".into(), kind: "well".into(), seq: 12, x: Some(-17), y: Some(4), z: Some(87), expansion: false, anchor_only: false },
-            GoalRecord { resident: "vox_res_1".into(), kind: "well".into(), seq: 16, x: Some(-14), y: Some(5), z: Some(74), expansion: true, anchor_only: false },
+            GoalRecord { resident: "vox_res_1".into(), kind: "well".into(), seq: 12, x: Some(-17), y: Some(4), z: Some(87), expansion: false, anchor_only: false, relocated: false, removed: false },
+            GoalRecord { resident: "vox_res_1".into(), kind: "well".into(), seq: 16, x: Some(-14), y: Some(5), z: Some(74), expansion: true, anchor_only: false, relocated: false, removed: false },
         ];
         let s = GoalStore::from_entries(entries);
         // 兩個曾完工的水井錨點都被記得（首建 + 擴建）。
@@ -2028,7 +2126,7 @@ mod tests {
         // 就地已擋。
         assert!(s.anchor_built("vox_res_1", BuildKind::Well, (-17, 4, 87)));
         // 重啟：把兩筆載回。
-        let first = GoalRecord { resident: "vox_res_1".into(), kind: "well".into(), seq: 0, x: Some(5), y: Some(5), z: Some(5), expansion: false, anchor_only: false };
+        let first = GoalRecord { resident: "vox_res_1".into(), kind: "well".into(), seq: 0, x: Some(5), y: Some(5), z: Some(5), expansion: false, anchor_only: false, relocated: false, removed: false };
         let s2 = GoalStore::from_entries(vec![first, ar]);
         assert!(s2.anchor_built("vox_res_1", BuildKind::Well, (-17, 4, 87)), "重啟後純錨點仍擋");
         assert_eq!(s2.done_count("vox_res_1"), 1, "純錨點不增 done");
@@ -2039,12 +2137,70 @@ mod tests {
     fn from_entries_ignores_legacy_records_without_coords() {
         // 向後相容：舊資料沒有 x/y/z（None）→ 不登記錨點、不 panic，done_kinds 照常還原。
         let entries = vec![
-            GoalRecord { resident: "r".into(), kind: "tower".into(), seq: 0, x: None, y: None, z: None, expansion: false, anchor_only: false },
+            GoalRecord { resident: "r".into(), kind: "tower".into(), seq: 0, x: None, y: None, z: None, expansion: false, anchor_only: false, relocated: false, removed: false },
         ];
         let s = GoalStore::from_entries(entries);
         assert_eq!(s.done_count("r"), 1, "舊記錄仍算進 done");
         // 沒座標的舊記錄不會誤登記任何錨點（查任何座標都 false）。
         assert!(!s.anchor_built("r", BuildKind::Tower, (0, 0, 0)));
+    }
+
+    // ── 居民搬新家：relocate_house（家域遷移 + 舊錨點移除 + 重啟持久）──────────────
+
+    #[test]
+    fn relocate_house_moves_home_and_frees_old_anchor() {
+        let mut s = GoalStore::new();
+        s.mark_done("vox_res_0", BuildKind::House, (-150, 9, 80)); // 舊家（村外）
+        s.anchor_only_record("vox_res_0", BuildKind::House, (27, 9, 16)); // 新家完工時登記
+        let (removal, moved) = s.relocate_house("vox_res_0", (-150, 9, 80), (27, 9, 16));
+        // 就地效果：小屋座標遷到新家、舊錨點移除（舊地重新可用）、新錨點仍擋重蓋。
+        assert_eq!(s.house_of("vox_res_0"), Some((27, 9, 16)), "夜間歸巢跟著新家");
+        assert!(!s.anchor_built("vox_res_0", BuildKind::House, (-150, 9, 80)), "舊家錨點應移除");
+        assert!(s.anchor_built("vox_res_0", BuildKind::House, (27, 9, 16)), "新家錨點仍在");
+        // 記錄旗標正確（先移除、後遷移）。
+        assert!(removal.removed && !removal.relocated);
+        assert!(moved.relocated && !moved.removed);
+        assert!(removal.seq < moved.seq);
+    }
+
+    #[test]
+    fn relocate_house_survives_restart_via_from_entries() {
+        // 重啟情境：首建 + 新家純錨點 + 搬家兩筆，replay 後狀態與搬家後一致。
+        let mut s = GoalStore::new();
+        let first = s.mark_done("vox_res_0", BuildKind::House, (-150, 9, 80)).unwrap();
+        let new_anchor = s.anchor_only_record("vox_res_0", BuildKind::House, (27, 9, 16));
+        let (removal, moved) = s.relocate_house("vox_res_0", (-150, 9, 80), (27, 9, 16));
+        let s2 = GoalStore::from_entries(vec![first, new_anchor, removal, moved]);
+        assert_eq!(s2.house_of("vox_res_0"), Some((27, 9, 16)), "重啟後家仍在新址");
+        assert!(!s2.anchor_built("vox_res_0", BuildKind::House, (-150, 9, 80)), "重啟後舊錨點仍是移除的");
+        assert!(s2.anchor_built("vox_res_0", BuildKind::House, (27, 9, 16)));
+        // done / 擴建不受搬家記錄污染。
+        assert_eq!(s2.done_count("vox_res_0"), 1);
+        assert_eq!(s2.expansion_count("vox_res_0"), 0);
+    }
+
+    #[test]
+    fn all_houses_and_anchors_xz_snapshot() {
+        let mut s = GoalStore::new();
+        s.mark_done("vox_res_1", BuildKind::House, (5, 9, 5));
+        s.mark_done("vox_res_0", BuildKind::House, (-150, 9, 80));
+        s.mark_done("vox_res_0", BuildKind::Garden, (-143, 9, 80));
+        let houses = s.all_houses();
+        assert_eq!(houses.len(), 2, "只列小屋（花圃不算家）");
+        assert_eq!(houses[0].0, "vox_res_0", "依 id 排序（確定性）");
+        assert_eq!(houses[1].0, "vox_res_1");
+        // anchors_xz_of 列出她所有建物錨點的 (x,z)（挑新家錨位避開用）。
+        let xz = s.anchors_xz_of("vox_res_0");
+        assert!(xz.contains(&(-150, 80)) && xz.contains(&(-143, 80)));
+        assert!(s.anchors_xz_of("vox_res_9").is_empty());
+    }
+
+    #[test]
+    fn goal_record_deserializes_without_relocation_fields() {
+        // 向後相容：舊 jsonl 沒有 relocated/removed 欄位 → 預設 false、不 panic。
+        let old_json = r#"{"resident":"vox_res_0","kind":"house","seq":3,"x":1,"y":2,"z":3,"expansion":false,"anchor_only":false}"#;
+        let rec: GoalRecord = serde_json::from_str(old_json).expect("舊格式應可解析");
+        assert!(!rec.relocated && !rec.removed);
     }
 
     #[test]
@@ -2054,8 +2210,8 @@ mod tests {
         let path = dir.join("voxel_goals.jsonl");
         let _ = std::fs::remove_file(&path);
         let pstr = path.to_str().unwrap();
-        let r1 = GoalRecord { resident: "vox_res_0".into(), kind: "garden".into(), seq: 0, x: Some(1), y: Some(2), z: Some(3), expansion: false, anchor_only: false };
-        let r2 = GoalRecord { resident: "vox_res_0".into(), kind: "house".into(), seq: 1, x: Some(10), y: Some(20), z: Some(30), expansion: false, anchor_only: false };
+        let r1 = GoalRecord { resident: "vox_res_0".into(), kind: "garden".into(), seq: 0, x: Some(1), y: Some(2), z: Some(3), expansion: false, anchor_only: false, relocated: false, removed: false };
+        let r2 = GoalRecord { resident: "vox_res_0".into(), kind: "house".into(), seq: 1, x: Some(10), y: Some(20), z: Some(30), expansion: false, anchor_only: false, relocated: false, removed: false };
         write_line(pstr, &serde_json::to_string(&r1).unwrap());
         write_line(pstr, &serde_json::to_string(&r2).unwrap());
         let loaded = read_lines(pstr);
