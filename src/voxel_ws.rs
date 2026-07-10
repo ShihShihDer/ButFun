@@ -10,7 +10,7 @@
 //! 3. 讀取：處理 `move`（更新並廣播）與 `req`（補送 chunk）。
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
@@ -96,6 +96,7 @@ use crate::voxel_residents::{self as vr, Body};
 use crate::voxel_nightwatch as vnwatch;
 use crate::voxel_roster as vroster;
 use crate::voxel_shadow as vshadow;
+use crate::voxel_siege as vsiege;
 use crate::voxel_time::{self as vt, WorldTime, TimePhase};
 use crate::voxel_announce as vannounce;
 use crate::voxel_bonds::{self as vbonds, ResidentBonds};
@@ -3279,6 +3280,15 @@ fn broadcast_item_removed(id: u64) {
 fn broadcast_shadow_puff(x: f32, y: f32, z: f32) {
     let msg = Arc::new(serde_json::json!({ "t": "shadow_puff", "x": x, "y": y, "z": z }).to_string());
     let _ = hub().tx.send(msg);
+}
+
+/// 廣播暗潮之夜橫幅（暗潮之夜 v1）：`phase` = "onset"（降臨）／"cleared"（退去），
+/// `msg` 是給前端直接 showMsg 的整句（面向玩家字串集中於 `voxel_siege`，i18n 友善）。
+fn broadcast_siege(phase: &str, msg: &str) {
+    let payload = Arc::new(
+        serde_json::json!({ "t": "siege", "phase": phase, "msg": msg }).to_string(),
+    );
+    let _ = hub().tx.send(payload);
 }
 
 /// 廣播世界上出現一個新交易攤（玩家自由市集 v1，自主提案切片 832）。不匿名——
@@ -8647,6 +8657,15 @@ static SHADOW_TICKS: AtomicU64 = AtomicU64::new(0);
 /// 首夜提示旗標：今晚第一隻暗影現身時上一則 Feed（教「光=庇護」玩法），黎明重置。
 static SHADOW_FEED_SENT: AtomicBool = AtomicBool::new(false);
 
+// ── 暗潮之夜（Shadow Siege）v1 狀態機（純旗標，tick_shadows 單執行緒循序推進，無資料競態）──
+/// 今晚是否已擲過「是不是暗潮之夜」的骰（每夜一次，黎明重置）：擋一夜擲多次。
+static SIEGE_ROLLED: AtomicBool = AtomicBool::new(false);
+/// 今晚是否為暗潮之夜（決定生成上限/機率/生成環/村心目標；黎明重置並在重置的那一刻觸發勝利）。
+static SIEGE_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// 暗潮之夜開戰時釘死的村莊中心（供生成環與村心目標讀取，避免每 tick 讀檔 IO）。
+static SIEGE_VCX: AtomicI32 = AtomicI32::new(0);
+static SIEGE_VCZ: AtomicI32 = AtomicI32::new(0);
+
 /// 推進暗影生物一個 tick：黎明整批消散 → 低頻重掃光源 → 低頻生成檢查 →
 /// 逐隻漂向最近目標（實體碰撞、不穿牆）→ 亮區消散 → 居民害怕反應。
 fn tick_shadows(dt: f32) {
@@ -8664,6 +8683,21 @@ fn tick_shadows(dt: f32) {
             hub().shadow_fear_cd.lock().unwrap().clear();
             hub().nightguard_cd.lock().unwrap().clear(); // 守夜恩人 v1：黎明清道謝冷卻，新的一夜重新開始
         }
+        // 暗潮之夜 v1：天亮那一刻（active→false 的唯一一次）觸發全村的勝利收尾——
+        // 不論玩家是否已清光暗影（黎明本就整批消散），只要今晚是暗潮之夜就一起鬆一口氣。
+        if SIEGE_ACTIVE.swap(false, Ordering::Relaxed) {
+            broadcast_siege("cleared", vsiege::VICTORY_MSG);
+            vfeed::append_feed(vsiege::FEED_KIND, vsiege::FEED_ACTOR, vsiege::VICTORY_FEED);
+            let seed = vfarm::now_secs() as usize;
+            let mut rs = hub().residents.write().unwrap();
+            for (i, r) in rs.iter_mut().filter(|r| !r.asleep).enumerate() {
+                if r.say.is_empty() {
+                    r.say = vsiege::cheer_line(seed + i).to_string();
+                    r.say_timer = SAY_SECS;
+                }
+            }
+        }
+        SIEGE_ROLLED.store(false, Ordering::Relaxed); // 新的一夜可重新擲骰決定是否暗潮之夜
         return;
     }
 
@@ -8692,28 +8726,93 @@ fn tick_shadows(dt: f32) {
         residents_snap.iter().filter(|(_, _, _, _, asleep)| !asleep).map(|(_, x, y, z, _)| (*x, *y, *z)),
     );
 
+    // 暗潮之夜 v1：每夜入夜後只擲一次骰決定今晚是不是暗潮之夜（需有玩家在線體驗＋有村莊可守）。
+    // 決定的那一刻：釘死村莊中心、播降臨橫幅＋動態牆、全村醒著的居民集體警醒奔回家躲避。
+    let siege = if SIEGE_ROLLED.load(Ordering::Relaxed) {
+        SIEGE_ACTIVE.load(Ordering::Relaxed) // 今晚已定調，沿用
+    } else if players.is_empty() || residents_snap.is_empty() {
+        false // 沒人在線／還沒有村莊 → 這一 tick 先不擲，留待稍後（不消耗這一夜的擲骰）
+    } else {
+        SIEGE_ROLLED.store(true, Ordering::Relaxed);
+        if vsiege::is_siege_night(rand::random::<f32>()) {
+            // 釘死村莊中心（供生成環＋村心目標讀取，避免每 tick 讀檔 IO）。fallback 用居民位置質心。
+            let (vcx, vcz) = vvillage::load_village_center().unwrap_or_else(|| {
+                let home_bases: Vec<(i32, i32)> = residents_snap
+                    .iter()
+                    .map(|(_, x, _, z, _)| (x.floor() as i32, z.floor() as i32))
+                    .collect();
+                vvillage::village_center(&home_bases)
+            });
+            SIEGE_VCX.store(vcx, Ordering::Relaxed);
+            SIEGE_VCZ.store(vcz, Ordering::Relaxed);
+            SIEGE_ACTIVE.store(true, Ordering::Relaxed);
+            broadcast_siege("onset", vsiege::ONSET_MSG);
+            vfeed::append_feed(vsiege::FEED_KIND, vsiege::FEED_ACTOR, vsiege::ONSET_FEED);
+            let seed = vfarm::now_secs() as usize;
+            let mut rs = hub().residents.write().unwrap();
+            for (i, r) in rs.iter_mut().filter(|r| !r.asleep).enumerate() {
+                if r.say.is_empty() {
+                    r.say = vsiege::alarm_line(seed + i).to_string();
+                    r.say_timer = SAY_SECS;
+                }
+                // 集體奔回家躲避（沿用害怕反應那套：折返家域，牆內即安全）。
+                r.target_x = r.home_x;
+                r.target_z = r.home_z;
+                r.wait_timer = 0.0;
+            } // residents 寫鎖釋放
+            true
+        } else {
+            false
+        }
+    };
+
+    // 暗潮之夜：把村莊中心也加進暗影的追逐目標，讓暗影不論玩家/居民在哪都朝村莊中心逼近
+    //（村心目標的 y 用地形高度純算，零鎖零 IO）；點亮的村子仍靠光圈把逼近的暗影化成輕煙。
+    if siege {
+        let (vcx, vcz) = (SIEGE_VCX.load(Ordering::Relaxed), SIEGE_VCZ.load(Ordering::Relaxed));
+        let vy = crate::voxel::height_at(vcx, vcz) as f32 + 1.0;
+        targets.push((vcx as f32 + 0.5, vy, vcz as f32 + 0.5));
+    }
+
     // 低頻生成檢查（每 SPAWN_INTERVAL_SECS 秒擲一次骰）：夜 + 未達上限 + 有玩家在線才生。
     let spawn_every = (vshadow::SPAWN_INTERVAL_SECS / dt).max(1.0) as u64;
     if tick_no % spawn_every == 0 && !players.is_empty() {
         let count = { hub().shadows.read().unwrap().len() };
-        if vshadow::can_spawn(count, true, rand::random::<f32>()) {
-            // 村莊中心（優先用一次性整理釘死的中心，否則由居民家域推算——比照村莊回填那套）。
-            let (vcx, vcz) = vvillage::load_village_center().unwrap_or_else(|| {
-                let home_bases: Vec<(i32, i32)> = {
-                    let rs = hub().residents.read().unwrap();
-                    rs.iter().map(|r| (r.home_x.floor() as i32, r.home_z.floor() as i32)).collect()
-                }; // residents 讀鎖釋放
-                vvillage::village_center(&home_bases)
-            });
-            // 挑一位玩家當錨點，在其視野邊緣試找「暗處、遠村、不卡實心」的生成點（至多 6 次）。
+        // 暗潮之夜吃更高的上限與生成機率（潮更滿、冒更快）；平時沿用暗影原本的克制參數。
+        let allow = if siege {
+            vsiege::siege_can_spawn(count, true, rand::random::<f32>())
+        } else {
+            vshadow::can_spawn(count, true, rand::random::<f32>())
+        };
+        if allow {
+            // 村莊中心：暗潮之夜用開戰時釘死的中心（原子讀、零 IO）；平時沿用檔案/家域推算。
+            let (vcx, vcz) = if siege {
+                (SIEGE_VCX.load(Ordering::Relaxed), SIEGE_VCZ.load(Ordering::Relaxed))
+            } else {
+                vvillage::load_village_center().unwrap_or_else(|| {
+                    let home_bases: Vec<(i32, i32)> = {
+                        let rs = hub().residents.read().unwrap();
+                        rs.iter().map(|r| (r.home_x.floor() as i32, r.home_z.floor() as i32)).collect()
+                    }; // residents 讀鎖釋放
+                    vvillage::village_center(&home_bases)
+                })
+            };
+            // 挑一位玩家當錨點（平時用），暗潮之夜則繞村莊中心成環。
             let anchor = players[(rand::random::<u32>() as usize) % players.len()];
             for _ in 0..6 {
                 let angle = rand::random::<f32>() * std::f32::consts::TAU;
-                let dist = vshadow::SPAWN_MIN_DIST
-                    + rand::random::<f32>() * (vshadow::SPAWN_MAX_DIST - vshadow::SPAWN_MIN_DIST);
-                let (sx, sz) = vshadow::spawn_candidate(anchor.0, anchor.2, angle, dist);
-                if !vshadow::far_from_village(sx, sz, vcx as f32, vcz as f32) {
-                    continue; // 村莊庇護半徑內絕不生成
+                // 生成點：暗潮繞村心成環（破庇護圈、逼近中心）；平時在玩家視野邊緣的暗處。
+                let (sx, sz) = if siege {
+                    let dist = vsiege::siege_spawn_dist(rand::random::<f32>());
+                    vshadow::spawn_candidate(vcx as f32, vcz as f32, angle, dist)
+                } else {
+                    let dist = vshadow::SPAWN_MIN_DIST
+                        + rand::random::<f32>() * (vshadow::SPAWN_MAX_DIST - vshadow::SPAWN_MIN_DIST);
+                    vshadow::spawn_candidate(anchor.0, anchor.2, angle, dist)
+                };
+                // 平時：村莊庇護半徑內絕不生成。暗潮之夜：刻意生在庇護圈內（破圈逼近），跳過此檢查。
+                if !siege && !vshadow::far_from_village(sx, sz, vcx as f32, vcz as f32) {
+                    continue;
                 }
                 let sy = {
                     let world = hub().deltas.read().unwrap();
@@ -8721,14 +8820,15 @@ fn tick_shadows(dt: f32) {
                 }; // deltas 讀鎖釋放
                 let Some(sy) = sy else { continue };
                 if vshadow::is_lit(sx, sy, sz, &lights) {
-                    continue; // 亮區不生成（光=庇護）
+                    continue; // 亮區不生成（光=庇護）——暗潮之夜也一樣，點亮的村子擋得住
                 }
                 let id = SHADOW_NEXT_ID.fetch_add(1, Ordering::Relaxed);
                 {
                     hub().shadows.write().unwrap().push(vshadow::Wisp { id, x: sx, y: sy, z: sz, hits: 0 });
                 } // shadows 寫鎖釋放
-                // 首夜提示（一夜一次，鎖外 IO）：Feed 教玩家「光=庇護」的玩法。
-                if !SHADOW_FEED_SENT.swap(true, Ordering::Relaxed) {
+                // 首夜提示（一夜一次，鎖外 IO）：只在平時夜色點綴時教「光=庇護」；
+                // 暗潮之夜已有自己的降臨橫幅＋動態牆，不再另發這則泛用提示。
+                if !siege && !SHADOW_FEED_SENT.swap(true, Ordering::Relaxed) {
                     vfeed::append_feed(
                         vshadow::SHADOW_FEED_KIND,
                         vshadow::SHADOW_FEED_ACTOR,
