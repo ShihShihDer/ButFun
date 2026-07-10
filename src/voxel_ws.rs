@@ -17909,8 +17909,9 @@ fn relocation_kickoff(say_updates: &mut Vec<(String, String)>) {
     let done = { hub().relocations.read().unwrap().done_residents() }; // relocations 讀鎖釋放
     let cands = vvillage::relocation_candidates(&houses, &plots, &done);
     for (rid, old) in cands {
-        // 此刻在忙（已有建造計畫/被指派整地/發明/跑腿/跟隨/採集/睡著）→ 這輪先跳過她，
-        // 搬家不打斷手上的事（比照既有 gating 精神，下輪掃描再看）。
+        // 此刻在忙（已有建造計畫/被指派整地/發明/跑腿/跟隨/睡著）→ 這輪先跳過她，
+        // 搬家不打斷玩家指派或進行中的大事（比照既有 gating 精神，下輪掃描再看）。
+        // 自發的散步採集（gather）不算大事——搬家開工時她會自己放下（見下方清除）。
         if hub().builds.read().unwrap().has_plan(&rid) {
             continue; // builds 讀鎖釋放
         }
@@ -17920,11 +17921,7 @@ fn relocation_kickoff(say_updates: &mut Vec<(String, String)>) {
         let busy = {
             let residents = hub().residents.read().unwrap();
             residents.iter().find(|r| r.id == rid).map_or(true, |r| {
-                r.invent_run.is_some()
-                    || r.fetch.is_some()
-                    || r.follow.is_some()
-                    || r.gather.is_some()
-                    || r.asleep
+                r.invent_run.is_some() || r.fetch.is_some() || r.follow.is_some() || r.asleep
             })
         }; // residents 讀鎖釋放
         if busy {
@@ -17959,13 +17956,14 @@ fn relocation_kickoff(say_updates: &mut Vec<(String, String)>) {
         if let Some(p) = &plan {
             vbuild::append_build(p);
         }
-        // (b) Feed + 泡泡 + 她動身走向新地塊（閒晃中心由搬家焦點接管）。
+        // (b) Feed + 泡泡 + 她放下手邊採集、動身走向新地塊（閒晃中心由搬家焦點接管）。
         let rname = resident_name_of(&rid);
         vfeed::append_feed("都更搬家", rname, &vvillage::reloc_start_feed_line(rname));
         say_updates.push((rid.clone(), vvillage::reloc_start_say_line().to_string()));
         {
             let mut residents = hub().residents.write().unwrap();
             if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                r.gather = None; // 搬家是大事：自發的散步採集先放下
                 r.target_x = bx as f32 + 0.5;
                 r.target_z = bz as f32 + 0.5;
                 r.wait_timer = 0.0;
@@ -18162,7 +18160,16 @@ fn relocation_finish(
         pace.timer = reloc_gap_secs();
         pace.walk_stall = 0.0;
     } // RELOC_PACE mutex 釋放
-    tracing::info!(resident = %rid, "都更搬家：完成（舊家拆除回收、家域遷至新家）");
+    // 誠實記錄：她背包目前的材料總數（含拆舊家回收的）——隔離實測據此驗「材料真的入包」。
+    let bag_total: u32 = {
+        let inv = hub().res_inv.read().unwrap();
+        inv.get(rid).map_or(0, |b| b.values().sum())
+    }; // res_inv 讀鎖釋放
+    tracing::info!(
+        resident = %rid, bag_total,
+        new_home = ?(rec.new_x, rec.new_y, rec.new_z),
+        "都更搬家：完成（舊家拆除回收、家域遷至新家）"
+    );
 }
 
 /// 為一位居民發起一次無鎖 async 思考：短鎖讀附近玩家 → drop → spawn → npc_think/npc_pray
