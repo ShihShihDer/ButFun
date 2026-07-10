@@ -159,12 +159,52 @@ pub const BREED_INTERVAL_SECS: f32 = 90.0;
 /// 節流窗口到了、且找得到湊近的一對時，這次判定的生育機率。
 pub const BREED_CHANCE: f32 = 0.35;
 
+// ── 春回兔繁 v1（自主提案切片）：季節（798）× 繁殖（855）首次機械交會 ──────────────
+// 繁殖（855）至今不分季節、恆用 [`BREED_CHANCE`]/[`BREED_INTERVAL_SECS`]；季節（798）至今
+// 只換天色＋觸發居民感言，從不牽動野生動物。本刀讓「春天＝萬物復甦的繁殖季」：春季裡馴服
+// 兔子繁殖更旺（機率更高、節流更短），玩家一眼看得出「春天兔寶寶特別多」。
+// **只獎不罰**（守療癒優先鐵律）：春季加成，其餘季節維持基礎值、不減速、不影響資料。
+
+/// 春季（繁殖季）的生育機率——明顯高於基礎 [`BREED_CHANCE`]（0.35），讓春天的繁殖旺盛有感。
+pub const SPRING_BREED_CHANCE: f32 = 0.55;
+/// 春季（繁殖季）的生育節流間隔（秒）——比基礎 [`BREED_INTERVAL_SECS`]（90）更短，春天生得更勤。
+pub const SPRING_BREED_INTERVAL_SECS: f32 = 60.0;
+
+/// 依季節回傳生育機率：春季用加成值，其餘季節維持基礎值（只獎不罰）。
+pub fn seasonal_breed_chance(season: crate::voxel_season::Season) -> f32 {
+    match season {
+        crate::voxel_season::Season::Spring => SPRING_BREED_CHANCE,
+        _ => BREED_CHANCE,
+    }
+}
+
+/// 依季節回傳生育節流間隔（秒）：春季更短，其餘季節維持基礎值（只獎不罰）。
+pub fn seasonal_breed_interval(season: crate::voxel_season::Season) -> f32 {
+    match season {
+        crate::voxel_season::Season::Spring => SPRING_BREED_INTERVAL_SECS,
+        _ => BREED_INTERVAL_SECS,
+    }
+}
+
 /// 判斷這一輪節流窗口是否該誕生一隻小兔子（純函式、可測）：
 /// 兔群數未達天花板 + 距上次生育夠久 + 機率骰命中。
 pub fn should_breed(current_rabbit_count: usize, elapsed_since_last: f32, roll: f32) -> bool {
     current_rabbit_count < MAX_RABBITS
         && elapsed_since_last >= BREED_INTERVAL_SECS
         && roll < BREED_CHANCE
+}
+
+/// 季節感知版繁殖判定（春回兔繁 v1）：等同 [`should_breed`]，但節流間隔與機率改用該季節值。
+/// 春季套加成（更短間隔、更高機率），其餘季節等同 [`should_breed`]（基礎值）。純函式、可測。
+pub fn should_breed_seasonal(
+    current_rabbit_count: usize,
+    elapsed_since_last: f32,
+    roll: f32,
+    season: crate::voxel_season::Season,
+) -> bool {
+    current_rabbit_count < MAX_RABBITS
+        && elapsed_since_last >= seasonal_breed_interval(season)
+        && roll < seasonal_breed_chance(season)
 }
 
 /// 在目前所有已馴服兔子的座標（`(索引, x, z)`）裡，找出第一對距離在 [`BREED_RADIUS`]
@@ -199,6 +239,19 @@ const BABY_LINES: [&str; 3] = [
 /// 依 `pick` 取一句誕生回饋（越界安全取模，永不 panic）。
 pub fn baby_line(pick: usize) -> &'static str {
     BABY_LINES[pick % BABY_LINES.len()]
+}
+
+/// 春回兔繁 v1：春季誕生的專屬動態牆感言（與四季通用的 [`baby_line`] 語氣區隔，讓「春天＝
+/// 繁殖季」在動態牆上看得見）。面向玩家字串集中此處，便於日後 i18n。
+const SPRING_BABY_LINES: [&str; 3] = [
+    "🌱🐇 春回大地，一窩小兔子在暖陽下睜開眼——這是萬物萌生的季節。",
+    "🌸🐇 繁花初綻的春天，兔群又添了個毛茸茸的新成員，蹦蹦跳跳追著父母。",
+    "🌿🐇 春意正濃，草地上多了一隻怯生生的小兔子，正是繁衍生息的好時節。",
+];
+
+/// 依 `pick` 取一句春季誕生回饋（越界安全取模，永不 panic）。
+pub fn spring_baby_line(pick: usize) -> &'static str {
+    SPRING_BABY_LINES[pick % SPRING_BABY_LINES.len()]
 }
 
 /// 由兔子座標與（最近）玩家座標算出「逃離玩家」的目標點（純幾何、無隨機性、可測）。
@@ -414,6 +467,85 @@ mod tests {
     #[test]
     fn baby_line_pick_wraps_without_panic() {
         let _ = baby_line(usize::MAX);
+    }
+
+    // ── 春回兔繁 v1（自主提案切片）：季節 × 繁殖 ────────────────────────────────
+    use crate::voxel_season::Season;
+
+    #[test]
+    fn spring_boosts_breed_chance_and_shortens_interval() {
+        // 春季機率高於基礎、間隔短於基礎（繁殖旺盛）。
+        assert!(seasonal_breed_chance(Season::Spring) > BREED_CHANCE);
+        assert!(seasonal_breed_interval(Season::Spring) < BREED_INTERVAL_SECS);
+        assert_eq!(seasonal_breed_chance(Season::Spring), SPRING_BREED_CHANCE);
+        assert_eq!(seasonal_breed_interval(Season::Spring), SPRING_BREED_INTERVAL_SECS);
+    }
+
+    #[test]
+    fn non_spring_seasons_keep_base_values() {
+        // 只獎不罰：夏／秋／冬皆維持基礎值，不加成也不減速。
+        for s in [Season::Summer, Season::Autumn, Season::Winter] {
+            assert_eq!(seasonal_breed_chance(s), BREED_CHANCE, "非春季機率應為基礎值");
+            assert_eq!(seasonal_breed_interval(s), BREED_INTERVAL_SECS, "非春季間隔應為基礎值");
+        }
+    }
+
+    #[test]
+    fn should_breed_seasonal_matches_should_breed_off_spring() {
+        // 非春季時，季節感知版與原版判定完全一致（回歸保證）。
+        for s in [Season::Summer, Season::Autumn, Season::Winter] {
+            for &(cnt, elapsed, roll) in &[
+                (0usize, BREED_INTERVAL_SECS, 0.0f32),
+                (MAX_RABBITS, BREED_INTERVAL_SECS, 0.0),
+                (4, BREED_INTERVAL_SECS - 1.0, 0.0),
+                (4, BREED_INTERVAL_SECS, BREED_CHANCE),
+                (4, BREED_INTERVAL_SECS, BREED_CHANCE - 0.001),
+            ] {
+                assert_eq!(
+                    should_breed_seasonal(cnt, elapsed, roll, s),
+                    should_breed(cnt, elapsed, roll),
+                    "非春季季節感知版應等同原版"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn should_breed_seasonal_spring_breeds_when_base_would_not() {
+        // 一個「基礎判定不會生、但春季加成會生」的具體情境：
+        // 間隔介於春季門檻與基礎門檻之間，且骰值介於基礎機率與春季機率之間。
+        let elapsed = (SPRING_BREED_INTERVAL_SECS + BREED_INTERVAL_SECS) / 2.0;
+        let roll = (BREED_CHANCE + SPRING_BREED_CHANCE) / 2.0;
+        assert!(!should_breed(0, elapsed, roll), "基礎判定：間隔未到＋機率沒中，不生");
+        assert!(
+            should_breed_seasonal(0, elapsed, roll, Season::Spring),
+            "春季加成：間隔已過門檻＋機率命中，該生"
+        );
+    }
+
+    #[test]
+    fn should_breed_seasonal_spring_respects_cap() {
+        // 春季再旺盛也守兔群天花板（防無限增長）。
+        assert!(!should_breed_seasonal(MAX_RABBITS, SPRING_BREED_INTERVAL_SECS, 0.0, Season::Spring));
+    }
+
+    #[test]
+    fn spring_baby_line_picks_vary_and_stay_nonempty() {
+        let seen: std::collections::HashSet<&str> =
+            (0..SPRING_BABY_LINES.len()).map(spring_baby_line).collect();
+        assert_eq!(seen.len(), SPRING_BABY_LINES.len(), "春季三句應各不相同");
+        for pick in 0..SPRING_BABY_LINES.len() {
+            assert!(!spring_baby_line(pick).is_empty());
+        }
+        // 春季句與通用句應語氣區隔、不重複。
+        for sp in SPRING_BABY_LINES {
+            assert!(!BABY_LINES.contains(&sp), "春季句不應與通用句重複");
+        }
+    }
+
+    #[test]
+    fn spring_baby_line_pick_wraps_without_panic() {
+        let _ = spring_baby_line(usize::MAX);
     }
 
     // ── 寵物指令「安置／召回」v1（ROADMAP 898）────────────────────────────

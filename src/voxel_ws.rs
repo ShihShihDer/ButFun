@@ -11061,6 +11061,13 @@ static NEXT_BABY_RABBIT_SEQ: AtomicU64 = AtomicU64::new(0);
 fn maybe_breed_rabbits() {
     let now = vfarm::now_secs();
     let elapsed = now.saturating_sub(LAST_BREED_UNIX.load(Ordering::Relaxed)) as f32;
+    // 春回兔繁 v1（自主提案切片）：季節 798 × 繁殖 855 首次交會——春季繁殖更旺。
+    // 短讀鎖即釋、不巢狀（守 prod 死鎖鐵律），比照 tick_residents 取季節慣例。
+    let current_season = {
+        let day = hub().world_time.read().unwrap().days_elapsed();
+        vseason::season_for_day(day)
+    };
+    let is_spring = current_season == vseason::Season::Spring;
     let feed_line = {
         let mut animals = hub().wildlife.write().unwrap();
         let rabbit_count = animals.iter().filter(|a| a.kind == WildlifeKind::Rabbit).count();
@@ -11073,7 +11080,8 @@ fn maybe_breed_rabbits() {
         let Some((ia, ib)) = vwild::find_breeding_pair(&tamed_positions) else {
             return;
         };
-        if !vwild::should_breed(rabbit_count, elapsed, rand::random::<f32>()) {
+        if !vwild::should_breed_seasonal(rabbit_count, elapsed, rand::random::<f32>(), current_season)
+        {
             return;
         }
         LAST_BREED_UNIX.store(now, Ordering::Relaxed);
@@ -11101,7 +11109,12 @@ fn maybe_breed_rabbits() {
             settled: false,
             spooked_secs: 0.0,
         });
-        vwild::baby_line(rand::random::<u64>() as usize).to_string()
+        // 春季誕生用專屬感言（春回兔繁 v1），其餘季節沿用四季通用句。
+        if is_spring {
+            vwild::spring_baby_line(rand::random::<u64>() as usize).to_string()
+        } else {
+            vwild::baby_line(rand::random::<u64>() as usize).to_string()
+        }
     }; // wildlife 寫鎖釋放
     vfeed::append_feed("兔子誕生", "野兔", &feed_line);
 }
