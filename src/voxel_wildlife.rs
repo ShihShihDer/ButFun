@@ -104,6 +104,42 @@ pub fn should_close_follow_gap(player_dist_sq: f32) -> bool {
     player_dist_sq > FOLLOW_STOP_DIST * FOLLOW_STOP_DIST
 }
 
+// ── 寵物指令「安置／召回」v1（自主提案切片，ROADMAP 898）─────────────────────
+// 馴服→跟隨（851）→取名（895）這條羈絆線至今，寵物永遠只會**黏著你走**——你走到哪牠
+// 跟到哪，一刻也停不下來。跟隨 v1（851）的說明自己講明「不能召回/放開」；你沒有一條路能
+// 叫牠「乖乖在這等我」。本刀補上那半：**點一下你取過名的小夥伴，就在「跟著你」與「在這安家
+// 待命」之間切換**——叫牠待命，牠便在你放下牠的那一小塊地方安穩踱步，成為你家園的固定風景，
+// 直到你再喚牠跟上。馴服的動物第一次真正「聽你的」。
+
+/// 命令的觸及範圍（方塊，XZ 平面）——你得走到小夥伴身邊才能安置／召回牠。
+/// 沿用取名同款「站到牠身邊」的親近距離（比餵食馴服 [`TAME_REACH`] 稍寬一點點）。
+pub const COMMAND_REACH: f32 = 3.5;
+
+/// 安置（待命）中的寵物在原地小範圍徘徊的半徑（方塊）——遠比一般閒晃（[`WANDER_MAX_R`]=6）
+/// 收斂，牠只在你放牠下來的那一小塊地方安穩踱步，不會晃遠，成為你家園的固定風景。
+pub const SETTLE_WANDER_R: f32 = 2.0;
+
+/// 這一 tick 已馴服的寵物該不該跟隨你——在「安置（待命）」狀態下一律不跟
+///（`settled=true` 蓋過一切距離判定，牠乖乖待在原地）；否則沿用既有 [`should_follow`]
+/// 的兩段式遲滯。純函式、可窮舉測試。
+pub fn follow_when_settleable(
+    settled: bool,
+    currently_following: bool,
+    nearest_player_dist_sq: f32,
+) -> bool {
+    !settled && should_follow(currently_following, nearest_player_dist_sq)
+}
+
+/// 安置／召回成功那一刻回饋給玩家的暖句（`settled=true` 是叫牠待命、`false` 是喚牠跟上）。
+/// 面向玩家、i18n 友善、含寵物名；確定性、可窮舉測試。名字已在呼叫端經清洗，這裡只組句。
+pub fn command_ack_line(settled: bool, name: &str) -> String {
+    if settled {
+        format!("🐾『{name}』乖乖在這兒待命，等你回來。")
+    } else {
+        format!("🐾『{name}』又蹦蹦跳跳地跟上你了！")
+    }
+}
+
 /// 依「目前是否已受驚」+「與最近玩家的距離平方」，判斷這一 tick 該不該受驚（或維持受驚）。
 ///
 /// 用遲滯避免抖動：平靜時要近到 [`FLEE_RADIUS`] 內才受驚；已受驚時要遠到
@@ -378,5 +414,52 @@ mod tests {
     #[test]
     fn baby_line_pick_wraps_without_panic() {
         let _ = baby_line(usize::MAX);
+    }
+
+    // ── 寵物指令「安置／召回」v1（ROADMAP 898）────────────────────────────
+    #[test]
+    fn settled_pet_never_follows_regardless_of_distance() {
+        // 安置（待命）狀態蓋過一切距離判定：不管玩家貼多近、原本跟不跟，一律不跟。
+        for &was_following in &[false, true] {
+            for &d in &[0.0f32, 1.0, FOLLOW_RADIUS * FOLLOW_RADIUS, 1e9] {
+                assert!(
+                    !follow_when_settleable(true, was_following, d),
+                    "安置中不該跟隨（was_following={was_following}, d²={d}）"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unsettled_pet_matches_should_follow() {
+        // 未安置時，follow_when_settleable 完全等同既有 should_follow（不改變跟隨手感）。
+        for &was_following in &[false, true] {
+            for &d in &[0.0f32, 60.0, 120.0, 200.0, 1e9] {
+                assert_eq!(
+                    follow_when_settleable(false, was_following, d),
+                    should_follow(was_following, d),
+                    "未安置應與 should_follow 一致（was_following={was_following}, d²={d}）"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn command_ack_line_contains_name_and_differs_by_state() {
+        let stay = command_ack_line(true, "露露");
+        let come = command_ack_line(false, "露露");
+        assert!(stay.contains("露露") && come.contains("露露"), "回饋句應含寵物名");
+        assert_ne!(stay, come, "待命／召回兩句應不同");
+        for line in [&stay, &come] {
+            assert!(!line.is_empty());
+            assert!(!line.contains('\n'), "名牌／泡泡單行，不可含換行");
+        }
+    }
+
+    #[test]
+    fn command_ack_line_handles_odd_names_without_panic() {
+        // 名字已在呼叫端清洗，但組句本身對空字串／長字串也不該 panic。
+        let _ = command_ack_line(true, "");
+        let _ = command_ack_line(false, &"喵".repeat(64));
     }
 }
