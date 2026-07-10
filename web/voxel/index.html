@@ -56,6 +56,24 @@
     #clock.cl-day   { background: rgba(40,72,110,0.60); border-color: rgba(160,200,240,0.28); }
     #clock.cl-dusk  { background: rgba(120,44,28,0.68); border-color: rgba(255,110,50,0.38); }
     #clock.cl-night { background: rgba(16,22,44,0.72); border-color: rgba(90,120,190,0.32); }
+    /* 季節指示器（ROADMAP 897）：時段徽章正下方一枚小徽章，一眼知道現在是春/夏/秋/冬＋這一季第幾天，
+       不必再靠刻意極輕的天色染色去猜。底色隨季節換調（春嫩綠、夏濃綠、秋暖橙、冬冷藍）。點不到、純顯示。 */
+    #season {
+      position: fixed; left: 50%; top: 44px; transform: translateX(-50%); z-index: 6;
+      background: rgba(20,28,40,0.58); color: #eaf2ff; padding: 3px 10px;
+      border-radius: 999px; font-size: 12px; line-height: 1.2; white-space: nowrap;
+      pointer-events: none; box-shadow: 0 1px 5px rgba(0,0,0,0.30);
+      border: 1px solid rgba(255,255,255,0.10);
+      transition: background 1.2s linear, border-color 1.2s linear;
+      display: flex; align-items: center; gap: 5px;
+    }
+    #season .se-icon { font-size: 14px; }
+    #season .se-day { opacity: 0.72; font-variant-numeric: tabular-nums; font-size: 11px; }
+    /* 各季節底色（與天地季節染色同調，讓徽章與環境呼應） */
+    #season.se-spring { background: rgba(52,92,52,0.60); border-color: rgba(150,220,150,0.30); }
+    #season.se-summer { background: rgba(40,96,52,0.62); border-color: rgba(140,230,150,0.30); }
+    #season.se-autumn { background: rgba(112,64,28,0.64); border-color: rgba(240,160,80,0.34); }
+    #season.se-winter { background: rgba(40,60,96,0.64); border-color: rgba(150,190,240,0.32); }
     #dbg {
       position: fixed; right: 10px; top: 10px; z-index: 6;
       background: rgba(0,0,0,0.55); color: #9effa0; padding: 6px 10px;
@@ -1511,6 +1529,8 @@
   <div id="hud">載入中…</div>
   <!-- 時段指示器（ROADMAP 896）：內容由 main.js 每 tick 依 worldTime 更新 -->
   <div id="clock" class="cl-day"><span class="cl-icon">☀️</span><span class="cl-name">白天</span><span class="cl-time">12:00</span></div>
+  <!-- 季節指示器（ROADMAP 897）：時段徽章下方一枚小徽章，內容由 main.js 依快照 season/season_day 更新 -->
+  <div id="season" class="se-spring"><span class="se-icon">🌸</span><span class="se-name">春天</span><span class="se-day">第1天</span></div>
   <!-- Google 登入帳號 chip（內容由 main.js 依登入態填）-->
   <div id="acct"></div>
   <div id="dbg"></div>

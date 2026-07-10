@@ -2869,9 +2869,10 @@ fn players_snapshot_json() -> String {
     // 雨後彩虹 v1（ROADMAP 780，短鎖、不巢狀）：> 0 tick = 天邊正掛著彩虹，前端據此顯示彩虹弧。
     let rainbow: bool = *hub().rainbow_ticks.read().unwrap() > 0;
     // 季節輪替 v1（ROADMAP 798，短鎖、不巢狀）：由世界累計日數推算當前季節，帶給前端隨季節微染天地色調。
-    let season: &str = {
+    // 季節指示器 v1（ROADMAP 897）：一併帶「這一季第幾天」給前端 HUD 徽章，補上「今日」這層時間感。
+    let (season, season_day): (&str, u64) = {
         let day = hub().world_time.read().unwrap().days_elapsed();
-        vseason::season_for_day(day).as_str()
+        (vseason::season_for_day(day).as_str(), vseason::day_of_season(day))
     };
     // 野兔快照（野兔 v1，ROADMAP 847，短鎖、不巢狀）：純位置/朝向，前端渲染環境點綴用。
     let wildlife: Vec<WildlifeView> = {
@@ -2895,6 +2896,7 @@ fn players_snapshot_json() -> String {
         "raining": raining,
         "rainbow": rainbow,
         "season": season,
+        "season_day": season_day,
     }).to_string()
 }
 
