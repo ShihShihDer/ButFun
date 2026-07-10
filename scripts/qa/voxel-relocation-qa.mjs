@@ -221,13 +221,12 @@ async function openBrowser() {
       if (world.get(`${b.x},${b.y},${b.z}`) !== b.b) neighborTouched++;
     }
     check(neighborTouched === 0, `鄰居舊家B 在第一位搬完當下毫髮無傷（被動 ${neighborTouched} 塊）`);
-    // 材料入包（server.log 的完成行帶 bag_total）。
-    const log = readFileSync(join(OUT, "server.log"), "utf8");
-    const m = log.match(/都更搬家：完成.*/) || log.match(/bag_total=(\d+).*都更搬家：完成/);
+    // 材料入包（server.log 的完成行帶 bag_total）。先剝掉 tracing 的 ANSI 顏色碼再比對。
+    // eslint-disable-next-line no-control-regex
+    const log = readFileSync(join(OUT, "server.log"), "utf8").replace(/\x1b\[[0-9;]*m/g, "");
     const bagLine = log.split("\n").find((l) => l.includes("都更搬家：完成"));
     const bag = bagLine && bagLine.match(/bag_total=(\d+)/);
     check(!!bag && Number(bag[1]) > 0, `拆下的材料回收入她的背包（bag_total=${bag ? bag[1] : "?"}）`);
-    void m;
   }
 
   // ── 第二位接著開始（錯開）＋ 中斷可恢復 ───────────────────────────────────
@@ -236,7 +235,7 @@ async function openBrowser() {
     180000, "第二位搬家動工");
   check(!!startB, "Feed：第二位接著開始（錯開，一次只有一位）");
   if (startB && doneA) {
-    check(startB.ts >= doneA.ts, `第二位動工不早於第一位完成（${startB.ts} ≥ ${doneA.ts}）`);
+    check(startB.ts_secs >= doneA.ts_secs, `第二位動工不早於第一位完成（${startB.ts_secs} ≥ ${doneA.ts_secs}）`);
   }
 
   // 第二位進行中：重啟伺服器 → 驗中斷可恢復（拆除冪等重算、計畫續蓋）。
