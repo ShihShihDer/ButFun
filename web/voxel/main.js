@@ -5148,6 +5148,14 @@ function connect() {
       // 暗影生物 v1：自己的挖擊命中——該暗影閃一下淡紫白（gone=true 時等 shadow_puff 收尾）。
       const ent = shadowEnts.get(m.id);
       if (ent) ent.hitFlash = 0.12;
+    } else if (m.t === "siege") {
+      // 暗潮之夜 v1：全村級的降臨（onset）／退去（cleared）橫幅——整句由伺服器給，i18n 集中在後端。
+      // 降臨時橫幅多留一會兒（是一整夜的事，不像一般提示一閃即逝）。
+      showMsg(m.msg || (m.phase === "onset" ? "🌑 暗潮之夜——暗影正湧向村莊！" : "🌅 暗潮退去了。"));
+      if (m.phase === "onset") {
+        const el = document.getElementById("msg");
+        if (el) { clearTimeout(el._hideTimer); el._hideTimer = setTimeout(() => { el.style.display = "none"; }, 6000); }
+      }
     } else if (m.t === "colony_discovered") {
       // 分村殖民 v1：走近一座此前沒發現過的野外村落——浮出它的名字與立村故事（只給自己看）。
       showMsg(m.line || "你發現了一座野外村落🏘️");
