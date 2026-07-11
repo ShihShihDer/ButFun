@@ -165,6 +165,7 @@ use crate::voxel_bucket as vbucket;
 use crate::voxel_hoe as vhoe;
 use crate::voxel_tool as vtool;
 use crate::voxel_clique as vclique;
+use crate::voxel_stroll as vstroll;
 use crate::voxel_quarrel as vquarrel;
 use crate::voxel_teach as vteach;
 use crate::voxel_mastery_fame as vfame;
@@ -463,6 +464,12 @@ struct VoxelResident {
     clique_wait: f32,
     /// 小圈子聚會冷卻倒數（秒，ROADMAP 711）：歸零後才可能再被選入下一場聚會。
     clique_cooldown: f32,
+    /// 摯友結伴同行（ROADMAP 925）：Some((leader 顯示名, 剩餘秒數)) = 這位是 follower、正貼著那位
+    /// leader 此刻的位置並肩散步；None = 沒在結伴。leader 本身不設此欄（就只是正常閒晃，被貼著走）。
+    /// 逾時／leader 睡了／自己接了別的任務／入夜下雨即清空，回到平常的一天。
+    stroll_partner: Option<(String, f32)>,
+    /// 結伴同行冷卻倒數（秒，ROADMAP 925）：一段散步落幕後歸零前不會再被選中，避免同一對反覆黏著。
+    stroll_cooldown: f32,
     /// 村莊自發習俗·暮聚（村莊自發習俗 v1）：Some((廣場中心 x, z)) = 正被今日這場暮聚吸引、朝村碑
     /// 廣場走去並聚著閒晃；None = 沒參與暮聚。以廣場中心座標偏移閒晃中心（沿用小圈子聚會的手法），
     /// 讓一群人看起來湊在廣場邊。與其他任務不互斥而是「讓位」：只在平常閒晃分支生效，
@@ -1833,6 +1840,9 @@ fn build_resident(
             clique_meet: None,
             clique_wait: 0.0,
             clique_cooldown: vclique::GATHER_COOLDOWN_SECS + i as f32 * 40.0,
+            // 摯友結伴同行（ROADMAP 925）：入場沒在結伴；初始冷卻錯開，讓交情先累積到摯友門檻。
+            stroll_partner: None,
+            stroll_cooldown: vstroll::STROLL_COOLDOWN_SECS + i as f32 * 30.0,
             // 村莊自發習俗·暮聚（村莊自發習俗 v1）：入場沒有暮聚任務。
             custom_meet: None,
             custom_wait: 0.0,
@@ -13234,6 +13244,10 @@ fn tick_residents(dt: f32) {
     // 格式：(seeker_id, seeker_name, partner_id, partner_name)。
     let mut lover_arrivals: Vec<(String, &'static str, String, String)> = Vec::new();
 
+    // 摯友結伴同行起步事件（ROADMAP 925）：鎖內偵測配對，鎖外寫雙方各一筆散步記憶＋一則全村 Feed。
+    // 格式：(leader_id, leader_name, follower_id, follower_name)。
+    let mut stroll_starts: Vec<(String, &'static str, String, &'static str)> = Vec::new();
+
     // 居民回禮事件（ROADMAP 667）：鎖內偵測，鎖外執行（加入背包 + 廣播）。
     // 格式：(resident_id, resident_name, player_name, block_id, qty, message)
     let mut return_gift_events: Vec<(String, &'static str, String, u8, u32, String)> = Vec::new();
@@ -14858,6 +14872,39 @@ fn tick_residents(dt: f32) {
                         r.lover_seek = None;
                         r.lover_seek_cooldown = vlover::SEEK_COOLDOWN_SECS * 0.25;
                     }
+                }
+            }
+
+            // 摯友結伴同行 v1（ROADMAP 925）：follower 每 tick 依名字重查 leader 此刻的座標（他可能在
+            // 移動），閒晃中心貼著他走（實際覆寫在下方閒晃中心鏈）；這裡只管「還要不要繼續結伴」的狀態機：
+            // 剩餘秒數遞減，leader 睡了／逾時／自己這一 tick 接了別的既定任務／入夜或下雨（散步是白天好
+            // 天氣的閒事）就放下這份結伴、上冷卻。手法比照戀人牽掛（852）每 tick 依名字重查、狀態自然了結。
+            if r.stroll_cooldown > 0.0 {
+                r.stroll_cooldown -= dt;
+            }
+            if let Some((lead_name, remaining)) = r.stroll_partner.clone() {
+                let remaining = remaining - dt;
+                let lead_awake = lover_status_by_name
+                    .get(lead_name.as_str())
+                    .map(|&(_, _, asleep, _)| !asleep)
+                    .unwrap_or(false);
+                // 這一 tick 是否已被更高優先的既定任務接手（那些分支在下方閒晃中心鏈更前面、會蓋過結伴）。
+                let busy = r.visiting.is_some()
+                    || r.expedition.is_some()
+                    || r.follow.is_some()
+                    || r.clique_meet.is_some()
+                    || r.custom_meet.is_some()
+                    || r.frontier_visit.is_some()
+                    || r.summon.is_some()
+                    || r.gather.is_some()
+                    || r.fetch.is_some()
+                    || r.asleep;
+                if lead_awake && remaining > 0.0 && !busy && !is_night && !raining {
+                    r.stroll_partner = Some((lead_name, remaining));
+                } else {
+                    // 散步落幕：放下結伴、上冷卻，回到平常的閒晃。
+                    r.stroll_partner = None;
+                    r.stroll_cooldown = vstroll::STROLL_COOLDOWN_SECS;
                 }
             }
 
@@ -16778,6 +16825,13 @@ fn tick_residents(dt: f32) {
                         (*mx, *mz)
                     } else if let Some((fx, fz, _, _)) = &r.frontier_visit {
                         (*fx, *fz)
+                    } else if let Some((lead_name, _)) = &r.stroll_partner {
+                        // 摯友結伴同行（ROADMAP 925）：follower 以 leader「此刻的位置」為閒晃中心，
+                        // 貼著他並肩漫步（leader 在動就步步跟上）；查不到就退回自己家域（容錯不 panic）。
+                        lover_status_by_name
+                            .get(lead_name.as_str())
+                            .map(|&(x, z, _, _)| (x, z))
+                            .unwrap_or((r.home_x, r.home_z))
                     } else if sheltering {
                         let (hx, _hy, hz) = house_locations[&r.id];
                         (hx as f32 + 0.5, hz as f32 + 0.5)
@@ -16801,6 +16855,9 @@ fn tick_residents(dt: f32) {
                         vcustom::GATHER_WANDER_RADIUS
                     } else if r.frontier_visit.is_some() {
                         vfvisit::WANDER_RADIUS
+                    } else if r.stroll_partner.is_some() {
+                        // 結伴同行：小半徑，貼著 leader 並肩、不散開（ROADMAP 925）。
+                        vstroll::STROLL_WANDER_RADIUS
                     } else if sheltering {
                         vr::SHELTER_WANDER_RADIUS
                     } else {
@@ -17682,6 +17739,94 @@ fn tick_residents(dt: f32) {
             }
         }
 
+        // 2f-2) 摯友結伴同行觸發（ROADMAP 925）：白天好天氣，找第一對互為摯友（BondTier::Friend）、
+        // 都閒著、正相鄰的居民，偶爾一位邀另一位一起在村裡散步一段。複用小圈子的 tier_matrix（零額外鎖、
+        // 同一把 bonds 讀鎖已釋放）；居民數極少、兩兩掃描零效能疑慮；一個 tick 至多開一對，確定性掃描
+        // （id 序）不搶不亂。follower 貼著 leader 走的閒晃中心覆寫在上方閒晃中心鏈、下一 tick 生效。
+        if !is_night && !raining {
+            let free_for_stroll = |r: &VoxelResident| -> bool {
+                !r.asleep
+                    && r.say.is_empty()
+                    && r.stroll_partner.is_none()
+                    && r.stroll_cooldown <= 0.0
+                    && r.clique_meet.is_none()
+                    && r.custom_meet.is_none()
+                    && r.cheer_target.is_none()
+                    && r.visiting.is_none()
+                    && r.expedition.is_none()
+                    && r.frontier_visit.is_none()
+                    && r.follow.is_none()
+                    && r.summon.is_none()
+                    && r.gather.is_none()
+                    && r.fetch.is_none()
+                    && r.pilgrimage.is_none()
+                    && r.lover_seek.is_none()
+                    && !directed_snaps.contains_key(&r.id)
+            };
+            let mut chosen: Option<(usize, usize)> = None;
+            'stroll_scan: for a in 0..residents.len() {
+                if !free_for_stroll(&residents[a]) {
+                    continue;
+                }
+                for b in (a + 1)..residents.len() {
+                    let tier = tier_matrix
+                        .get(&(residents[a].id.clone(), residents[b].id.clone()))
+                        .copied()
+                        .unwrap_or(vbonds::BondTier::Stranger);
+                    if tier != vbonds::BondTier::Friend {
+                        continue;
+                    }
+                    if !free_for_stroll(&residents[b]) {
+                        continue;
+                    }
+                    let dx = residents[a].body.x - residents[b].body.x;
+                    let dz = residents[a].body.z - residents[b].body.z;
+                    // tier（摯友）已在上面把關，這裡只判「都閒＋夠近」，兩個 free 傳 true。
+                    if vstroll::eligible_pair(true, true, dx * dx + dz * dz)
+                        && rand::random::<f32>() < vstroll::STROLL_CHANCE
+                    {
+                        chosen = Some((a, b));
+                        break 'stroll_scan;
+                    }
+                }
+            }
+            if let Some((a, b)) = chosen {
+                // leader＝id 字典序較小者（確定性、與掃描順序無關），另一位當 follower 貼著他走。
+                let (lead_i, foll_i) =
+                    if residents[a].id <= residents[b].id { (a, b) } else { (b, a) };
+                let lead_id = residents[lead_i].id.clone();
+                let lead_name = residents[lead_i].name;
+                let foll_id = residents[foll_i].id.clone();
+                let foll_name = residents[foll_i].name;
+                let (lead_x, lead_z) = (residents[lead_i].body.x, residents[lead_i].body.z);
+                let pick = ((residents[lead_i].body.x as i64)
+                    .wrapping_add(residents[foll_i].body.z as i64)) as usize;
+                // follower 掛上結伴、初始目標朝 leader、上冷卻，並冒一句應邀。
+                {
+                    let f = &mut residents[foll_i];
+                    f.stroll_partner = Some((lead_name.to_string(), vstroll::STROLL_DURATION_SECS));
+                    f.stroll_cooldown = vstroll::STROLL_COOLDOWN_SECS;
+                    f.target_x = lead_x;
+                    f.target_z = lead_z;
+                    f.wait_timer = 0.0;
+                    if f.say.is_empty() {
+                        f.say = vstroll::join_line(lead_name, pick).chars().take(40).collect();
+                        f.say_timer = SAY_SECS;
+                    }
+                }
+                // leader 只是被貼著走（不設 stroll_partner，維持正常閒晃），上冷卻＋冒一句邀約。
+                {
+                    let l = &mut residents[lead_i];
+                    l.stroll_cooldown = vstroll::STROLL_COOLDOWN_SECS;
+                    if l.say.is_empty() {
+                        l.say = vstroll::invite_line(foll_name, pick).chars().take(40).collect();
+                        l.say_timer = SAY_SECS;
+                    }
+                }
+                stroll_starts.push((lead_id, lead_name, foll_id, foll_name));
+            }
+        }
+
         // 2g) 小圈子聚會抵達判定（ROADMAP 711）：同場聚會全員都已站在聚會點附近 → 觸發。
         // 一個 tick 只處理一組觸發，避免複雜度；未到齊的組別留到下個 tick 再檢查。
         {
@@ -18152,6 +18297,25 @@ fn tick_residents(dt: f32) {
             vclique::FEED_KIND,
             all_names[0],
             &format!("和{}難得聚在一起，說說笑笑", all_names[1..].join("、")),
+        );
+    }
+
+    // 4a-2f-2) 摯友結伴同行起步落地（ROADMAP 925）：鎖已全釋放。每開一對散步，雙方各記一筆
+    // 並肩散步的溫暖 episodic 記憶（掛在同行的朋友名下、累積對彼此的好感），再上一則全村動態牆。
+    // 鎖序：memory 寫（逐筆即釋、不巢狀）→ Feed append（鎖外 IO）；append-only 不破壞既有資料、守死鎖鐵律。
+    for (lead_id, lead_name, foll_id, foll_name) in &stroll_starts {
+        for (id, other) in [(lead_id, *foll_name), (foll_id, *lead_name)] {
+            let mem_line = vstroll::stroll_memory_line(other);
+            let e = {
+                let mut mem = hub().memory.write().unwrap();
+                mem.add_memory(id, other, &mem_line)
+            }; // memory 寫鎖釋放（逐筆即釋、不巢狀）
+            vmem::append_memory(&e);
+        }
+        vfeed::append_feed(
+            vstroll::FEED_KIND,
+            lead_name,
+            &vstroll::stroll_feed_line(lead_name, foll_name),
         );
     }
 
