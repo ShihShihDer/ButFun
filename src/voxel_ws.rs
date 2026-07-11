@@ -9,7 +9,7 @@
 //! 2. 轉發：把 hub 廣播的「玩家位置快照」轉給此客戶端。
 //! 3. 讀取：處理 `move`（更新並廣播）與 `req`（補送 chunk）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
@@ -192,6 +192,7 @@ use crate::voxel_pathwear as vpath;
 use crate::voxel_expedition as vexp;
 use crate::voxel_frontier_visit as vfvisit;
 use crate::voxel_farvisit as vfarv;
+use crate::voxel_onboard as vonboard;
 use crate::voxel_sendoff as vsend;
 use crate::voxel_illness as villness;
 use crate::voxel_welcome as vwelcome;
@@ -289,6 +290,9 @@ static LAST_BIRTH_UNIX: AtomicU64 = AtomicU64::new(0);
 /// `maybe_found_colony` 會嘗試載入 `data/voxel_last_colony`；有值就用值續算 elapsed，
 /// 無值才記 now 為基準）。重啟後由檔還原，elapsed 跨重啟累積（比照 [`LAST_BIRTH_UNIX`]）。
 static LAST_COLONY_UNIX: AtomicU64 = AtomicU64::new(0);
+/// 上次迎新居民冒「歡迎泡泡」的 unix 秒（居民迎新 v1，ROADMAP 948）：全域冷卻——
+/// 訪客反覆重連／多開連線也不能讓居民頭上刷屏（引導卡照發，只有泡泡受此限）。
+static LAST_ONBOARD_GREET_UNIX: AtomicU64 = AtomicU64::new(0);
 /// 居民閒晃半徑下/上限（方塊）：挑下一個目標時離當前位置的距離區間。
 const WANDER_MIN_R: f32 = 4.0;
 const WANDER_MAX_R: f32 = 12.0;
@@ -2262,6 +2266,10 @@ struct VoxelHub {
     /// 玩家里程碑 v1（ROADMAP 724）：玩家自己的療癒循環第一次做成可回頭翻閱的成就徽章。
     /// 持久化到 data/voxel_milestones.jsonl（append-only，重啟後徽章仍在）。
     milestones: RwLock<MilestoneStore>,
+    /// 居民迎新 v1（自主提案切片 ROADMAP 948）：已走完新手引導的登入玩家名帳本——畢業一生一次、
+    /// 跨重啟不重迎（訪客無持久身分，不入此帳本、重連重來也無利可圖）。
+    /// 持久化到 data/voxel_onboard_done.jsonl（append-only）。
+    onboard_done: RwLock<HashSet<String>>,
     /// 長大成人 v1（ROADMAP 942）：已行過成年禮的居民 id 帳本，保證成年禮一生只辦一次、跨重啟
     /// 不重觸發（否則會每次重啟就重寫一筆永久記憶）。持久化到 data/voxel_coming_of_age.jsonl（append-only）。
     coming_of_age: RwLock<vcoa::ComingOfAgeStore>,
@@ -2373,6 +2381,108 @@ const FRIEND_AFFINITY_THRESHOLD: usize = 3;
 /// 玩家里程碑 v1（ROADMAP 724）：嘗試解鎖一枚成就徽章；若這次才第一次達成，
 /// 落地持久化 + 單播 `milestone_unlocked` 慶祝訊息給該玩家自己（不廣播全員，是私人旅程）。
 /// **鎖紀律**：milestones 寫鎖短取即釋，append/送訊息都在鎖外，不巢狀、不持鎖 await。
+/// 居民迎新 v1（自主提案切片 ROADMAP 948）：組一則引導卡進度單播訊息。
+/// steps 陣列（標籤＋完成與否）與下一步提示全由後端策展（面向玩家字串集中、i18n 友善）。
+fn onboard_progress_msg(done: u8, greeter: &str) -> String {
+    let steps: Vec<serde_json::Value> = [
+        vonboard::STEP_TALK,
+        vonboard::STEP_BREAK,
+        vonboard::STEP_CRAFT,
+        vonboard::STEP_PLACE,
+    ]
+    .iter()
+    .map(|&s| {
+        serde_json::json!({ "label": vonboard::step_label(s), "done": done & s != 0 })
+    })
+    .collect();
+    serde_json::json!({
+        "t": "onboard",
+        "greeter": greeter,
+        "steps": steps,
+        "hint": vonboard::next_step(done).map(vonboard::step_hint).unwrap_or(""),
+    })
+    .to_string()
+}
+
+/// 居民迎新 v1（948）：畢業收尾——迎新居民冒祝福泡泡 → 見面禮（火把）入背包並落地 →
+/// 寫進迎新居民的長期記憶＋畢業旗標持久化（迎新只給登入玩家，身分必為持久帳號）→
+/// 城鎮動態牆一行。回傳要單播給玩家的訊息（inv_sync＋onboard_done），由呼叫端送出。
+/// 鎖序：residents 寫 → inventory 寫 → inventory 讀 → memory 寫 → onboard_done 寫，
+/// 全程循序短取即釋、不巢狀；append 落地與 Feed 皆在鎖外（守 prod 死鎖鐵律）。
+fn finish_onboard(ob: &vonboard::Onboard, player: &str) -> Vec<String> {
+    let pick = player.chars().count();
+    // ① 迎新居民冒祝福泡泡（她此刻正說著別的話就不搶——祝福已在禮物與引導卡裡）。
+    {
+        let mut rs = hub().residents.write().unwrap();
+        if let Some(r) = rs.iter_mut().find(|r| r.id == ob.greeter_id) {
+            if r.say.is_empty() {
+                r.say = vonboard::grad_bubble(player, pick);
+                r.say_timer = SAY_SECS;
+            }
+        }
+    } // residents 寫鎖釋放
+    // ② 見面禮：火把入背包（後端權威給予），append 落地在鎖外。
+    let entry = {
+        hub().inventory.write().unwrap().give(player, vonboard::GIFT_ITEM, vonboard::GIFT_COUNT)
+    }; // inventory 寫鎖釋放
+    vinv::append_inv(&entry);
+    let pairs = { hub().inventory.read().unwrap().pairs(player) }; // inventory 讀鎖釋放
+    // ③ 她從此**記得**是她迎你進來的（長期記憶）＋畢業旗標落地（一生一次）。
+    //    迎新只給登入玩家（`should_onboard` 把關），走到這裡身分必為持久帳號。
+    let ev = hub().memory.write().unwrap().add_memory(
+        &ob.greeter_id,
+        player,
+        &vonboard::grad_memory_line(player),
+    ); // memory 寫鎖釋放
+    vmem::append_memory(&ev);
+    let fresh = { hub().onboard_done.write().unwrap().insert(player.to_string()) }; // 寫鎖釋放
+    if fresh {
+        vonboard::append_graduated(player); // 鎖外 IO
+    }
+    // ④ 城鎮動態牆一行——這個世界迎接過每一位旅人。
+    vfeed::append_feed(
+        vonboard::FEED_KIND,
+        ob.greeter_name,
+        &vonboard::grad_feed_line(ob.greeter_name, player),
+    );
+    vec![
+        serde_json::json!({ "t": "inv_sync", "items": pairs }).to_string(),
+        serde_json::json!({
+            "t": "onboard_done",
+            "greeter": ob.greeter_name,
+            "gift_name": vgift::item_name_zh(vonboard::GIFT_ITEM),
+            "gift_count": vonboard::GIFT_COUNT,
+        })
+        .to_string(),
+    ]
+}
+
+/// 居民迎新 v1（948）：推進一步引導。回傳要單播給玩家的訊息們（冪等：這一步早完成過回空）。
+/// 畢業那一次做完整收尾（泡泡／送禮／記憶／旗標／Feed）並讓引導功成身退（`*onboard = None`）。
+fn onboard_step(
+    onboard: &mut Option<vonboard::Onboard>,
+    step: u8,
+    player: &str,
+) -> Vec<String> {
+    let Some(ob) = onboard.as_mut() else {
+        return Vec::new();
+    };
+    let (new_done, newly, graduated) = vonboard::advance(ob.done, step);
+    if !newly {
+        return Vec::new();
+    }
+    ob.done = new_done;
+    let msgs = if graduated {
+        finish_onboard(ob, player)
+    } else {
+        vec![onboard_progress_msg(new_done, ob.greeter_name)]
+    };
+    if graduated {
+        *onboard = None;
+    }
+    msgs
+}
+
 fn try_unlock_milestone(player: &str, id: &str, out_tx: &mpsc::Sender<Message>) {
     let newly = { hub().milestones.write().unwrap().unlock(player, id) }; // milestones 寫鎖釋放
     if !newly {
@@ -2989,6 +3099,8 @@ fn hub() -> &'static VoxelHub {
             pathwear: RwLock::new(vpath::PathWear::new()),
             // 啟動時從 data/voxel_milestones.jsonl 載回玩家已達成的成就徽章（重啟後仍記得）。
             milestones: RwLock::new(MilestoneStore::from_entries(vmiles::load_milestones())),
+            // 居民迎新 v1（948）：啟動時從 data/voxel_onboard_done.jsonl 載回已畢業的玩家（重啟後不重迎）。
+            onboard_done: RwLock::new(vonboard::load_graduated()),
             // 長大成人 v1（942）：啟動時從 data/voxel_coming_of_age.jsonl 載回已成年的居民（重啟後不重辦成年禮）。
             coming_of_age: RwLock::new(vcoa::ComingOfAgeStore::from_entries(vcoa::load_entries())),
             // 啟動時從 data/voxel_lifeprojects.jsonl 載回居民長程專案進度（重啟後接著做，取每人最高進度）。
@@ -4099,6 +4211,55 @@ async fn handle_socket(
         }
     }
 
+    // 居民迎新 v1（自主提案切片 ROADMAP 948）：背包空空如也（世界對他一無所知）且沒畢業過
+    // ＝全新旅人——挑最近一位醒著的居民親自迎接（招呼泡泡受全域冷卻，訪客反覆重連／多開
+    // 連線也催發不了洗版；引導卡是單播私訊照發），四步（交談→採集→合成→放置）的完成鉤子
+    // 掛在各自既有 handler 的成功路徑上。純記憶體 per-連線狀態；登入玩家畢業旗標持久化。
+    // 鎖序：inventory 讀 → onboard_done 讀 → residents 寫，循序短取即釋、不巢狀（守死鎖鐵律）。
+    let mut onboard: Option<vonboard::Onboard> = None;
+    {
+        let bag_empty = { hub().inventory.read().unwrap().pairs(&name).is_empty() };
+        let graduated = { hub().onboard_done.read().unwrap().contains(&name) };
+        if vonboard::should_onboard(is_account, bag_empty, graduated) {
+            let now = vfarm::now_secs();
+            let greet_ok = now
+                .saturating_sub(LAST_ONBOARD_GREET_UNIX.load(Ordering::Relaxed))
+                >= vonboard::GREET_BUBBLE_COOLDOWN_SECS;
+            let picked = {
+                let mut rs = hub().residents.write().unwrap();
+                let idx = rs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| !r.asleep)
+                    .min_by(|(_, a), (_, b)| {
+                        let da = (a.body.x - sx).powi(2) + (a.body.z - sz).powi(2);
+                        let db = (b.body.x - sx).powi(2) + (b.body.z - sz).powi(2);
+                        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(i, _)| i);
+                idx.and_then(|i| rs.get_mut(i)).map(|r| {
+                    if greet_ok && r.say.is_empty() {
+                        r.say = vonboard::greet_bubble(name.chars().count());
+                        r.say_timer = SAY_SECS;
+                        LAST_ONBOARD_GREET_UNIX.store(now, Ordering::Relaxed);
+                    }
+                    (r.id.clone(), r.name)
+                })
+            }; // residents 寫鎖釋放
+            // 全村都睡了（深夜進場）就沒有迎新人——不吵醒任何人，本次連線不引導，
+            // 下次白天連線再迎（教學的第一步本來就是找居民說話，總得有人醒著）。
+            if let Some((gid, gname)) = picked {
+                let ob = vonboard::Onboard { done: 0, greeter_id: gid, greeter_name: gname };
+                let msg = onboard_progress_msg(ob.done, ob.greeter_name);
+                onboard = Some(ob);
+                if out_tx.send(Message::Text(msg)).await.is_err() {
+                    cleanup(my_id, &writer);
+                    return;
+                }
+            }
+        }
+    }
+
     // 玩家生存指標 v1（溫和版）：登入玩家從存檔載回血/飢（重登保留，比照 #1024）；
     // 訪客／首次登入 → 預設滿血滿飢。取得後單播 player_stats 給玩家自己（別人看不到，減噪）。
     // **後端權威**：這裡從伺服器狀態組出，客戶端只顯示、不自報。
@@ -4731,6 +4892,10 @@ async fn handle_socket(
                     // 水流動：剛挖出一個空格 → 排入這格 + 鄰格，讓相鄰水體往缺口流過來
                     //（delta 鎖已釋放，只短暫持 water_queue 鎖，不 await，守鎖紀律）。
                     enqueue_water_around(x, y, z);
+                    // 居民迎新 v1（948）：第一次成功敲下方塊＝完成「採集」一步。
+                    for m in onboard_step(&mut onboard, vonboard::STEP_BREAK, &name) {
+                        let _ = out_tx.send(Message::Text(m)).await;
+                    }
                     // 告示牌 v1（ROADMAP 740）：破壞告示牌時清掉牌面文字，不留孤兒浮字。
                     // 牌子方塊本身走後面「其餘實心方塊掉落自身」的通用路徑歸還背包（不在此 continue）。
                     if matches!(target_block, Block::Sign) {
@@ -5208,6 +5373,10 @@ async fn handle_socket(
                     vinv::append_inv(&inv_e); // 放置成功才持久化消耗記錄
                     // 玩家里程碑 v1（ROADMAP 724）：人生第一次成功放下方塊。
                     try_unlock_milestone(&name, "first_place", &out_tx);
+                    // 居民迎新 v1（948）：第一次成功放下方塊＝完成「放置」一步。
+                    for m in onboard_step(&mut onboard, vonboard::STEP_PLACE, &name) {
+                        let _ = out_tx.send(Message::Text(m)).await;
+                    }
                     broadcast_block(x, y, z, block);
                     // 植樹造林 v1（ROADMAP 738）：剛種下的樹苗記進 grove store，
                     // 由 `tick_grove`（15 秒節拍）計時，約 150 秒後長成一株樹。
@@ -5698,6 +5867,11 @@ async fn handle_socket(
                 //    誠實而願意地答應（她現在真的做得到）；否則走既有 LLM 對話路徑。
                 //    整地任務條件：命中整地意圖詞 + 非大範圍 + 不落在其他超能力類別（指揮他人/城鎮規劃）。
                 if let Some((addr_id, rname, rpersona)) = addressed.clone() {
+                    // 居民迎新 v1（948）：第一次真的跟一位居民說上話＝完成「交談」一步
+                    //（不管接下來走整地／鋪面／LLM 哪條回話路徑，開口本身就算數）。
+                    for m in onboard_step(&mut onboard, vonboard::STEP_TALK, &name) {
+                        let _ = out_tx.send(Message::Text(m)).await;
+                    }
                     // 鋪面（C 階段）先於整地判斷：鋪面句必帶材料名、整地句不帶，兩者互斥；
                     // 「整平然後鋪成石磚」這類複合句走鋪面（鋪面本就內含整平）。
                     let pave_mat = vdt::detect_pave_command(&clean);
@@ -6561,6 +6735,10 @@ async fn handle_socket(
                             ));
                             // 開爐也算「動手合成」的第一步，一併解里程碑。
                             try_unlock_milestone(&name, "first_craft", &out_tx);
+                            // 居民迎新 v1（948）：第一次合成成功＝完成「合成」一步。
+                            for m in onboard_step(&mut onboard, vonboard::STEP_CRAFT, &name) {
+                                let _ = out_tx.send(Message::Text(m)).await;
+                            }
                         } else {
                             // 步驟 4：瞬間給產出方塊（第二把寫鎖，在第一把釋放後取）。
                             let out_e = hub().inventory.write().unwrap().give(
@@ -6585,6 +6763,10 @@ async fn handle_socket(
                             ));
                             // 玩家里程碑 v1（ROADMAP 724）：人生第一次成功合成出成品。
                             try_unlock_milestone(&name, "first_craft", &out_tx);
+                            // 居民迎新 v1（948）：第一次合成成功＝完成「合成」一步。
+                            for m in onboard_step(&mut onboard, vonboard::STEP_CRAFT, &name) {
+                                let _ = out_tx.send(Message::Text(m)).await;
+                            }
                         }
                     } else {
                         let _ = out_tx.try_send(Message::Text(
