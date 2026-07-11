@@ -21879,6 +21879,23 @@ fn tick_residents(dt: f32) {
                     // （這正是 res_1 水井連續「完工」數十次的洞）。
                     vskill::append_goal(&ar);
                 }
+                // 小屋座標補漏（殖民地補蓋／遠古資料）：House 完工、卻查無她的小屋座標
+                //（遠古 GoalRecord 無座標欄，replay 後 house_of 失傳）→ 就地認養這座當她的家
+                //（夜間歸巢/搬家引擎從此有座標可循，重啟後不再失傳）。goals 寫鎖短取即釋。
+                if kind == vbuild::BuildKind::House {
+                    let adopt = {
+                        let mut goals = hub().goals.write().unwrap();
+                        if goals.house_of(&rid).is_none() {
+                            Some(goals.adopt_house(&rid, plan_anchor))
+                        } else {
+                            None
+                        }
+                    }; // goals 寫鎖釋放
+                    if let Some(a) = adopt {
+                        vskill::append_goal(&a);
+                        tracing::info!(resident = %rid, anchor = ?plan_anchor, "小屋座標補漏：認養剛完工的家");
+                    }
+                }
             }
             // 完工 Feed（每個建物只發一次，不洗版）。合力蓋家 v1（ROADMAP 834）：有協力者
             // 就在建物名後標注「（與 X、Y 合力）」，讓 696 的幫忙在完工瞬間也被看見。
@@ -23460,8 +23477,9 @@ fn tick_home_relocation(dt: f32, say_updates: &mut Vec<(String, String)>) {
 
     let Some(rec) = active else {
         // 殖民地真居住 v1：拓荒者遷居殖民地優先於主村內都更（兩者共用「一次一位」名額與
-        // 同一套搬家引擎）。沒有待遷的拓荒者才輪主村都更掃描。
-        if !migration_kickoff(say_updates) {
+        // 同一套搬家引擎）；殖民者補蓋（遷居時因遠古資料座標失傳而漏蓋的家，冪等補上）
+        // 次之；沒有待遷/待補的才輪主村都更掃描。
+        if !migration_kickoff(say_updates) && !colonist_house_repair(say_updates) {
             relocation_kickoff(say_updates);
         }
         RELOC_PACE.lock().unwrap().timer = reloc_scan_secs();
@@ -23545,8 +23563,11 @@ fn tick_home_relocation(dt: f32, say_updates: &mut Vec<(String, String)>) {
 ///
 /// 流程：認領殖民地小地塊（自動釋放主村舊地塊）＋鋪短路 → 聚落歸屬落地（冪等閘：之後
 /// 重掃不再列入）→ 有完工小屋＝走既有搬家引擎（蓋新家→拆舊回收→錨點/家域遷移）；
-/// 沒有小屋（極少）＝即刻遷家（done 型紀錄，重啟後 home_override 還原，之後她的蓋家
-/// agency 自會在殖民地小地塊上蓋起小屋）。已存在的殖民地（如風禾屯）部署後自動觸發。
+/// 沒有小屋座標（遠古 GoalRecord 無座標欄、replay 後 house_of 失傳——prod 實況）＝
+/// 即刻遷家（done 型紀錄，重啟後 home_override 還原），她的家由下一輪
+/// [`colonist_house_repair`] 補蓋（**不能**指望蓋家 agency 自發：done 集合裡 house 已在，
+/// agency 永不再自發蓋家——這正是「居民住空地」bug 的成因之一）。
+/// 已存在的殖民地（如風禾屯）部署後自動觸發。
 /// 鎖紀律：colonies/residents/settlements/goals/village/relocations/builds 各短取即釋、
 /// 循序不巢狀；落地/Feed/鋪路全在鎖外（守 prod 死鎖鐵律）。
 fn migration_kickoff(say_updates: &mut Vec<(String, String)>) -> bool {
@@ -23704,6 +23725,128 @@ fn migration_kickoff(say_updates: &mut Vec<(String, String)>) -> bool {
             }
         }
         return true; // 一次只開一件（與主村都更共用錯開節奏）
+    }
+    false
+}
+
+/// **殖民者補蓋**（prod 真 bug 修復 + 長期防護網）：已定居殖民地、地塊上卻沒有家的居民，
+/// 冪等補開一張蓋家 BuildPlan。
+///
+/// **背景**：res_0~res_3 的 house 完成紀錄是遠古格式（無 x/y/z），重啟 replay 後
+/// `house_of` 失傳（None）——migration_kickoff 把「有小屋但座標失傳」誤判為「沒小屋」，
+/// 走了即刻遷家：家域落到殖民地空地、Feed 也發了「正式遷居」，卻**從來沒有人替她蓋家**
+/// （她的 done 集合裡 house 已在 → 蓋家 agency 也永不再自發蓋）。本函式每輪搬家掃描時
+/// 低頻檢查：聚落歸屬非主村、無進行中搬家、無建造計畫、小屋不在她地塊的家園佔地內
+/// （[`vsettle::house_missing_near`]）→ 在她的殖民地小地塊上補開 House BuildPlan——
+/// 完工時主建造引擎的「小屋座標補漏」會把這座認養成她的家（座標從此不再失傳）。
+/// **冪等**：補蓋中 `has_plan` 擋、補蓋完成後 `house_of` 就在地塊上 → 永久跳過；
+/// 跨重啟由 builds/goals jsonl 恢復。一次只開一件（與遷居/都更共用錯開節奏）。
+/// 鎖紀律：各鎖短取即釋、循序不巢狀；落地/Feed 全在鎖外（守 prod 死鎖鐵律）。
+fn colonist_house_repair(say_updates: &mut Vec<(String, String)>) -> bool {
+    // 已遷居殖民地的居民（settlements 讀鎖即釋）。沒有＝零成本早退。
+    let colonists: Vec<String> = { hub().settlements.read().unwrap().nonmain_assigned() };
+    if colonists.is_empty() {
+        return false;
+    }
+    // 進行中搬家的居民（她的新家正由搬家引擎蓋，別重複開工）。relocations 讀鎖即釋。
+    let active_reloc: Option<String> =
+        { hub().relocations.read().unwrap().active().map(|a| a.resident.clone()) };
+    // 殖民地名冊快照（colonies 讀鎖即釋）。
+    let colonies: Vec<(u64, String, i32, i32)> = {
+        let reg = hub().colonies.read().unwrap();
+        reg.all().iter().map(|c| (c.seq, c.name.clone(), c.cx, c.cz)).collect()
+    }; // colonies 讀鎖釋放
+    for rid in colonists {
+        if active_reloc.as_deref() == Some(rid.as_str()) {
+            continue; // 搬家進行中：新家由搬家引擎負責，補蓋讓路
+        }
+        if hub().builds.read().unwrap().has_plan(&rid) {
+            continue; // 正在蓋東西（含補蓋中）→ 冪等擋重複開工
+        }
+        let sid = { hub().settlements.read().unwrap().settlement_of(&rid) }; // 讀鎖釋放
+        let Some(cseq) = vsettle::settlement_colony_seq(sid) else { continue };
+        let Some((_, cname, ccx, ccz)) = colonies.iter().find(|(s, ..)| *s == cseq) else {
+            continue;
+        };
+        // 她在這座殖民地的小地塊：既有認領若就是本殖民地的某塊 → 沿用；否則（沒認領/
+        // 認領還留在別處——震盪時代的殘留）重新認領最近空塊（換塊語意自動釋放舊塊）。
+        let plots = vsettle::colony_plots(*ccx, *ccz);
+        let existing = { hub().village.read().unwrap().claim_of(&rid) }; // village 讀鎖釋放
+        let plot_here = existing.and_then(|(cx, cz)| {
+            plots.iter().find(|p| (p.cx, p.cz) == (cx, cz)).copied()
+        });
+        let plot = match plot_here {
+            Some(p) => p,
+            None => {
+                let claimed = {
+                    let mut village = hub().village.write().unwrap();
+                    match village.nearest_free_plot(&plots, *ccx, *ccz) {
+                        Some(p) => Some((p, village.claim(&rid, p.cx, p.cz))),
+                        None => None,
+                    }
+                }; // village 寫鎖釋放
+                let Some((p, rec)) = claimed else { continue }; // 殖民地全滿（極少）→ 換下一位
+                vvillage::append_plot_claim(&rec); // 鎖外落地
+                pave_colony_access(*ccx, *ccz, p.cx, p.cz);
+                p
+            }
+        };
+        // 缺家判定：小屋座標不存在（遠古資料失傳）或不在她地塊的家園佔地內 → 該補蓋。
+        let house = { hub().goals.read().unwrap().house_of(&rid) }; // goals 讀鎖釋放
+        if !vsettle::house_missing_near(house, plot.cx, plot.cz, vvillage::Plot::HOMESTEAD_HALF) {
+            continue; // 家好好的在地塊上 → 不補（冪等收斂點）
+        }
+        // 此刻在忙（被指派/發明/跑腿/跟隨/睡著）→ 這輪先跳過她（比照遷居 kickoff）。
+        if hub().directed_tasks.read().unwrap().contains_key(&rid) {
+            continue; // directed_tasks 讀鎖釋放
+        }
+        let busy = {
+            let residents = hub().residents.read().unwrap();
+            residents.iter().find(|r| r.id == rid).map_or(true, |r| {
+                r.invent_run.is_some() || r.fetch.is_some() || r.follow.is_some() || r.asleep
+            })
+        }; // residents 讀鎖釋放
+        if busy {
+            continue;
+        }
+        // 補蓋錨位：避開她既有建物錨點（與遷居 kickoff 同一套確定性挑位；即刻遷家時
+        // 家域就設在 offset 0 的位子，這裡會挑回同一格——家蓋在她已經住著的位置上）。
+        let spots: Vec<(i32, i32)> = (0..6).map(vskill::build_offset).collect();
+        let taken = { hub().goals.read().unwrap().anchors_xz_of(&rid) }; // goals 讀鎖釋放
+        let Some((bx, bz)) = vvillage::first_free_spot(plot.cx, plot.cz, &spots, &taken) else {
+            continue; // 地塊排不下（理論極少）→ 換下一位
+        };
+        let by = vbuild::surface_y(bx, bz);
+        // 這個確切錨點已完工過 House（極端：認養前重啟丟了 houses 但錨點在）→ 不重蓋。
+        if hub().goals.read().unwrap().anchor_built(&rid, vbuild::BuildKind::House, (bx, by, bz)) {
+            continue;
+        }
+        // 開工（走既有 BuildPlan 引擎：她的樣式/放塊節奏/進度冒泡/完工收尾與立牌全沿用）。
+        let plan = {
+            let mut builds = hub().builds.write().unwrap();
+            if builds.has_plan(&rid) {
+                None // double-check 併發安全
+            } else {
+                Some(builds.new_plan(&rid, vbuild::BuildKind::House, bx, by, bz, false, None))
+            }
+        }; // builds 寫鎖釋放
+        let Some(p) = plan else { continue };
+        vbuild::append_build(&p);
+        let rname = resident_name_of(&rid);
+        vfeed::append_feed("殖民安家", rname, &vsettle::repair_build_feed_line(rname, cname));
+        say_updates.push((rid.clone(), vsettle::repair_build_say_line(cname)));
+        {
+            let mut residents = hub().residents.write().unwrap();
+            if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                r.gather = None;
+                r.build_cooldown = 0.0; // 別讓建造冷卻卡住補蓋收尾
+                r.target_x = bx as f32 + 0.5;
+                r.target_z = bz as f32 + 0.5;
+                r.wait_timer = 0.0;
+            }
+        } // residents 寫鎖釋放
+        tracing::info!(resident = %rid, colony = %cname, anchor = ?(bx, by, bz), "殖民者補蓋：動工蓋家");
+        return true; // 一次只開一件（錯開）
     }
     false
 }
