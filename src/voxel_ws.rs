@@ -15299,14 +15299,26 @@ fn tick_residents(dt: f32) {
             // 圍暖、心情變好、說句暖心話；你也在火邊（WARM_PLAYER_RADIUS 內）時點你名並記進交情。
             // 三閘（靠近火＋冷卻＋機率）＋長冷卻＝天然節流。鎖序：純讀居民自身欄位＋鎖前備好的
             // `campfire_spots` 快照（不巢狀 campfires 讀鎖），記憶寫＋Feed 走鎖外 `campfire_warm_events`。
-            if !campfire_spots.is_empty()
+            // 取暖／雨中感嘆共用的基本閘（近火＋醒＋閒＋冷卻到期＋非朝聖／遠行）。
+            let near_campfire = !campfire_spots.is_empty()
                 && r.say.is_empty()
                 && !r.asleep
                 && r.campfire_warm_cooldown <= 0.0
                 && r.pilgrimage.is_none()
                 && r.expedition.is_none()
                 && vcamp::nearest_campfire(&campfire_spots, r.body.x, r.body.z, vcamp::WARM_RADIUS)
-                    .is_some()
+                    .is_some();
+            if near_campfire && vcamp::warming_suppressed_by_rain(raining) {
+                // 雨澆營火 v1：下雨把火打得又濕又弱、圍不到暖——取暖整段抑制（與 901 冬寒圍爐反向：
+                // 冷天更想圍暖、雨天圍不到暖）。偶爾停下對著滋滋作響的濕柴嘆一句（純氛圍惋惜：不加心情、
+                // 不點玩家名、不記交情、不上 Feed），沿用同一把取暖冷卻自然節流。
+                if vcamp::should_douse_lament(true, 0.0, rand::random::<f32>()) {
+                    r.campfire_warm_cooldown = vcamp::WARM_COOLDOWN_SECS;
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    r.say = vcamp::rain_douse_line(pick).chars().take(50).collect();
+                    r.say_timer = SAY_SECS;
+                }
+            } else if near_campfire
                 // 冬寒圍爐 v1（901）：機率隨寒冷升高（非冬季沿用原 WARM_CHANCE，冬季更高、飄雪最高）。
                 && vcamp::should_warm(
                     true,
