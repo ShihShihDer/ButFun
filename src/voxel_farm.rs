@@ -69,6 +69,17 @@ pub const POTATO_ID: u8 = 53;
 /// 由熔爐配方 `smelt_potato`（生馬鈴薯→烤地薯）產出。id 64 是 63(烤魚)之後首個空號。
 pub const BAKED_POTATO_ID: u8 = 64;
 
+/// 南瓜種子物品 id（季限作物·秋南瓜 v1；純 inventory 物品，無對應 Block enum）。
+/// 從野花(94/95/96)破壞後額外掉落（野花仍照舊掉落自身，種子是附加收穫，與胡蘿蔔種子
+/// 取自草地、馬鈴薯種子取自泥土區隔）。**只在秋天種得起來**（種植期季限判定見 `voxel_pumpkin`）。
+/// id 104 挑在既有物品號段（…101）之上首個乾淨空號。
+pub const PUMPKIN_SEEDS_ID: u8 = 104;
+
+/// 南瓜物品 id（季限作物·秋南瓜 v1；純 inventory 物品，從成熟南瓜(103)收割時掉落 ×3）。
+/// 慢熟＋季限換來全作物最大的一次收成量（比馬鈴薯的 2 顆更多）——秋日限定的沉甸甸豐收。
+/// 可送給居民當禮物，也是食物類贈禮之一。
+pub const PUMPKIN_ID: u8 = 105;
+
 /// 幼苗成熟所需秒數（~90 秒 = 1.5 分鐘）。調校讓玩家在一輪遊玩中體驗完整循環。
 pub const GROW_SECS: u64 = 90;
 
@@ -87,16 +98,25 @@ pub const POTATO_GROW_SECS: u64 = 120;
 /// 馬鈴薯水耕加速後的生長秒數（有水源鄰近時縮短為原本的一半）。
 pub const POTATO_IRRIGATED_GROW_SECS: u64 = 60;
 
+/// 南瓜生長秒數（~150 秒）——季限作物·秋南瓜 v1；四種作物中最慢，換來全作物最大收成量。
+/// 慢熟呼應「秋收的沉甸甸果實」，也讓「只在秋天種得起來」的季限有經營的餘裕。
+pub const PUMPKIN_GROW_SECS: u64 = 150;
+
+/// 南瓜水耕加速後的生長秒數（有水源鄰近時縮短為原本的一半）。
+pub const PUMPKIN_IRRIGATED_GROW_SECS: u64 = 75;
+
 /// 農田土偵測水源的最大曼哈頓距離（X/Z 各 ±4 格、Y 差 ±1 格）。
 pub const FARM_WATER_RANGE: i32 = 4;
 
-/// 作物種類（第二種作物 v1）——決定生長秒數與收成方塊/物品。
-/// 序列化為變體名字串（"Wheat"/"Carrot"/"Potato"），jsonl 人類可讀、向後相容。
+/// 作物種類（第二種作物 v1；季限作物·秋南瓜 v1 加上 `Pumpkin`）——決定生長秒數與收成方塊/物品。
+/// 序列化為變體名字串（"Wheat"/"Carrot"/"Potato"/"Pumpkin"），jsonl 人類可讀、向後相容
+///（舊存檔絕不含 "Pumpkin"，新變體只會出現在本版之後種下的南瓜，不影響任何既有記錄）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CropKind {
     Wheat,
     Carrot,
     Potato,
+    Pumpkin,
 }
 
 /// 依作物種類 + 水耕狀態回傳有效生長秒數。
@@ -108,6 +128,8 @@ pub fn effective_grow_secs(kind: CropKind, irrigated: bool) -> u64 {
         (CropKind::Carrot, true) => CARROT_IRRIGATED_GROW_SECS,
         (CropKind::Potato, false) => POTATO_GROW_SECS,
         (CropKind::Potato, true) => POTATO_IRRIGATED_GROW_SECS,
+        (CropKind::Pumpkin, false) => PUMPKIN_GROW_SECS,
+        (CropKind::Pumpkin, true) => PUMPKIN_IRRIGATED_GROW_SECS,
     }
 }
 
@@ -595,6 +617,61 @@ mod tests {
         assert_eq!(at_90.len(), 2); // 小麥 + 胡蘿蔔，馬鈴薯仍未熟
         let at_120 = s.mature_plots_irrigated(POTATO_GROW_SECS, |_, _, _| false);
         assert_eq!(at_120.len(), 3); // 三者皆熟
+    }
+
+    // ── 季限作物·秋南瓜 v1 ──────────────────────────────────────────────────────
+
+    #[test]
+    fn pumpkin_item_ids_unique_and_in_range() {
+        assert_ne!(PUMPKIN_SEEDS_ID, PUMPKIN_ID);
+        assert_ne!(PUMPKIN_SEEDS_ID, SEEDS_ID);
+        assert_ne!(PUMPKIN_SEEDS_ID, CARROT_SEEDS_ID);
+        assert_ne!(PUMPKIN_SEEDS_ID, POTATO_SEEDS_ID);
+        assert_ne!(PUMPKIN_ID, WHEAT_ID);
+        assert_ne!(PUMPKIN_ID, CARROT_ID);
+        assert_ne!(PUMPKIN_ID, POTATO_ID);
+        assert_ne!(PUMPKIN_ID, BREAD_ID);
+        assert_eq!(PUMPKIN_SEEDS_ID, 104);
+        assert_eq!(PUMPKIN_ID, 105);
+    }
+
+    #[test]
+    fn pumpkin_grows_slowest_of_all_crops() {
+        assert!(PUMPKIN_GROW_SECS > POTATO_GROW_SECS, "南瓜應比馬鈴薯還慢熟（全作物最慢）");
+        assert!(PUMPKIN_GROW_SECS > GROW_SECS);
+        assert!(PUMPKIN_GROW_SECS > CARROT_GROW_SECS);
+        assert!(
+            PUMPKIN_IRRIGATED_GROW_SECS < PUMPKIN_GROW_SECS,
+            "南瓜水耕應比南瓜乾燥快熟"
+        );
+    }
+
+    #[test]
+    fn effective_grow_secs_pumpkin_values() {
+        assert_eq!(effective_grow_secs(CropKind::Pumpkin, false), PUMPKIN_GROW_SECS);
+        assert_eq!(effective_grow_secs(CropKind::Pumpkin, true), PUMPKIN_IRRIGATED_GROW_SECS);
+    }
+
+    #[test]
+    fn pumpkin_plot_matures_at_pumpkin_pace() {
+        let mut s = FarmStore::new();
+        s.plant(0, 5, 0, 0, CropKind::Pumpkin);
+        let mature = s.mature_plots_irrigated(PUMPKIN_GROW_SECS, |_, _, _| false);
+        assert_eq!(mature.len(), 1);
+        assert_eq!(mature[0], ((0, 5, 0), CropKind::Pumpkin));
+        let mut s2 = FarmStore::new();
+        s2.plant(1, 5, 0, 0, CropKind::Pumpkin);
+        assert!(s2.mature_plots_irrigated(PUMPKIN_GROW_SECS - 1, |_, _, _| false).is_empty());
+    }
+
+    #[test]
+    fn pumpkin_crop_kind_serde_roundtrip() {
+        // 新變體序列化為 "Pumpkin" 字串、可反序列化回來（jsonl 向後相容關鍵）。
+        let e = FarmEvent { x: 1, y: 5, z: 1, planted_secs: Some(9), kind: Some(CropKind::Pumpkin), seq: 0 };
+        let s = serde_json::to_string(&e).unwrap();
+        assert!(s.contains("Pumpkin"), "南瓜作物應序列化為變體名 Pumpkin");
+        let back: FarmEvent = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.kind, Some(CropKind::Pumpkin));
     }
 
     #[test]

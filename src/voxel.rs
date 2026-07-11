@@ -266,6 +266,12 @@ pub enum Block {
     WildflowerYellow = 95,
     /// 藍野花（野花 v1）——與紅/黃野花同一套格狀確定性生成，只是花色不同（同座標永遠同色）。id 96。
     WildflowerBlue = 96,
+    /// 南瓜幼苗（季限作物·秋南瓜 v1，ROADMAP 933）——農田土上種下南瓜種子後的狀態方塊。id 102。
+    /// 比照 FarmSoilSeeded/CarrotSeeded/PotatoSeeded：實心、伺服器維護、玩家不可手動放置。
+    PumpkinSeeded = 102,
+    /// 成熟南瓜（季限作物·秋南瓜 v1，ROADMAP 933）——PumpkinSeeded 生長 ~150 秒後成熟。id 103。
+    /// 收割掉落南瓜(105)×3（全作物最大收量）＋南瓜種子(104)×1 ＋農田土(11)。
+    PumpkinMature = 103,
 }
 
 impl Block {
@@ -359,6 +365,8 @@ impl Block {
             94 => Some(Block::WildflowerRed),
             95 => Some(Block::WildflowerYellow),
             96 => Some(Block::WildflowerBlue),
+            102 => Some(Block::PumpkinSeeded),
+            103 => Some(Block::PumpkinMature),
             _ => None,
         }
     }
@@ -1532,6 +1540,17 @@ mod tests {
         assert!(!Block::CarrotMature.is_placeable(), "成熟胡蘿蔔不可手動放置");
         assert_eq!(Block::from_u8(46), Some(Block::CarrotSeeded));
         assert_eq!(Block::from_u8(47), Some(Block::CarrotMature));
+    }
+
+    /// 季限作物·秋南瓜 v1（id 102/103）：比照胡蘿蔔——實心、伺服器維護、不可手動放置、id 往返。
+    #[test]
+    fn pumpkin_blocks_solid_not_placeable_roundtrip() {
+        assert!(Block::PumpkinSeeded.is_solid(), "南瓜幼苗應為實心");
+        assert!(Block::PumpkinMature.is_solid(), "成熟南瓜應為實心");
+        assert!(!Block::PumpkinSeeded.is_placeable(), "南瓜幼苗不可手動放置");
+        assert!(!Block::PumpkinMature.is_placeable(), "成熟南瓜不可手動放置");
+        assert_eq!(Block::from_u8(102), Some(Block::PumpkinSeeded));
+        assert_eq!(Block::from_u8(103), Some(Block::PumpkinMature));
     }
 
     #[test]

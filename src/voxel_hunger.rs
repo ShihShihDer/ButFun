@@ -118,7 +118,7 @@ pub fn fed_feed_line(rname: &str, player: &str) -> String {
 
 /// 居民背包裡算「能吃的食物」的物品 id 清單（查 `voxel_farm` / `voxel_berry`）。
 /// 只列真正入口的食物，不含種子（種子是拿來種、不是拿來吃的）。
-pub const FOOD_IDS: [u8; 7] = [
+pub const FOOD_IDS: [u8; 8] = [
     vfarm::WHEAT_ID,        // 18 小麥顆粒
     vfarm::BREAD_ID,        // 19 麵包
     vfarm::CARROT_ID,       // 49 胡蘿蔔
@@ -126,14 +126,16 @@ pub const FOOD_IDS: [u8; 7] = [
     vfarm::BAKED_POTATO_ID, // 64 烤地薯
     vberry::BERRY_ID,       // 77 莓果
     vberry::JAM_ID,         // 78 果醬
+    vfarm::PUMPKIN_ID,      // 105 南瓜（季限作物·秋南瓜 v1）
 ];
 
 /// 挑食物吃時的**偏好順序**（越前面越優先吃）：加工／飽足感高的先吃（麵包、果醬、烤地薯），
 /// 生食料（莓果、胡蘿蔔、馬鈴薯、小麥顆粒）殿後——讓「吃」有點層次，也讓珍貴的加工品先派上用場。
-const EAT_PREFERENCE: [u8; 7] = [
+const EAT_PREFERENCE: [u8; 8] = [
     vfarm::BREAD_ID,        // 麵包（療癒農業循環終點，最頂）
     vberry::JAM_ID,         // 果醬
     vfarm::BAKED_POTATO_ID, // 烤地薯
+    vfarm::PUMPKIN_ID,      // 南瓜（沉甸甸一顆，飽足感高，排在生食料之前）
     vberry::BERRY_ID,       // 莓果
     vfarm::CARROT_ID,       // 胡蘿蔔
     vfarm::POTATO_ID,       // 生馬鈴薯
@@ -183,6 +185,7 @@ pub fn food_name_zh(id: u8) -> Option<&'static str> {
         x if x == vfarm::BAKED_POTATO_ID => "烤地薯",
         x if x == vberry::BERRY_ID => "莓果",
         x if x == vberry::JAM_ID => "果醬",
+        x if x == vfarm::PUMPKIN_ID => "南瓜",
         _ => return None,
     })
 }
@@ -196,6 +199,7 @@ pub fn harvest_food_of(b: Block) -> Option<(u8, u32, Block)> {
         Block::WheatMature => (vfarm::WHEAT_ID, 1, Block::FarmSoilSeeded),
         Block::CarrotMature => (vfarm::CARROT_ID, 1, Block::CarrotSeeded),
         Block::PotatoMature => (vfarm::POTATO_ID, 2, Block::PotatoSeeded), // 馬鈴薯量大是特色
+        Block::PumpkinMature => (vfarm::PUMPKIN_ID, 3, Block::PumpkinSeeded), // 南瓜全作物最大收量
         Block::BerryBushRipe => (vberry::BERRY_ID, vberry::BERRY_YIELD, Block::BerryBush),
         _ => return None,
     })
@@ -345,15 +349,17 @@ mod tests {
 
     #[test]
     fn food_ids_are_real_foods_not_seeds() {
-        // 七種入口食物都被認得是食物。
+        // 每種入口食物都被認得是食物（含季限作物·秋南瓜 v1 的南瓜）。
         for id in FOOD_IDS {
             assert!(is_food(id), "{id} 應被認作食物");
             assert!(food_name_zh(id).is_some(), "{id} 應有顯示名");
         }
+        assert!(is_food(vfarm::PUMPKIN_ID), "南瓜應是食物");
         // 種子不是食物（種是拿來種、不是拿來吃）。
         assert!(!is_food(vfarm::SEEDS_ID));
         assert!(!is_food(vfarm::CARROT_SEEDS_ID));
         assert!(!is_food(vfarm::POTATO_SEEDS_ID));
+        assert!(!is_food(vfarm::PUMPKIN_SEEDS_ID)); // 南瓜種子是拿來種、不是吃
         // 建材（石頭 id 之類）也不是食物。
         assert!(!is_food(0));
         assert!(!is_food(11)); // 農田土

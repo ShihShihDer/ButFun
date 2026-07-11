@@ -161,6 +161,7 @@ use crate::voxel_vigil as vvigil;
 use crate::voxel_mist as vmist;
 use crate::voxel_timely as vtimely;
 use crate::voxel_bounty as vbounty;
+use crate::voxel_pumpkin as vpumpkin;
 use crate::voxel_stargaze as vstar;
 use crate::voxel_firework as vfw;
 use crate::voxel_compost as vcompost;
@@ -4691,6 +4692,15 @@ async fn handle_socket(
                             Block::Dirt            => &[(Block::Dirt as u8, 1), (vfarm::POTATO_SEEDS_ID, 1)],
                             Block::PotatoSeeded    => &[(11, 1), (vfarm::POTATO_SEEDS_ID, 1)],
                             Block::PotatoMature    => &[(11, 1), (vfarm::POTATO_SEEDS_ID, 1), (vfarm::POTATO_ID, 2)],
+                            // 季限作物·秋南瓜 v1（ROADMAP 933）：
+                            //   野花(94/95/96) → 野花自身×1 + 南瓜種子(104)×1（原掉落不變，種子是附加收穫，
+                            //     與胡蘿蔔取自草地、馬鈴薯取自泥土區隔——南瓜種子藏在野花裡）。
+                            //   PumpkinSeeded(102) → 農田土(11)×1 + 南瓜種子(104)×1（取消種植退還）。
+                            //   PumpkinMature(103) → 農田土(11)×1 + 南瓜種子(104)×1 + 南瓜(105)×3（收割；全作物最大收量）。
+                            Block::WildflowerRed | Block::WildflowerYellow | Block::WildflowerBlue
+                                                   => &[(target_block as u8, 1), (vfarm::PUMPKIN_SEEDS_ID, 1)],
+                            Block::PumpkinSeeded   => &[(11, 1), (vfarm::PUMPKIN_SEEDS_ID, 1)],
+                            Block::PumpkinMature   => &[(11, 1), (vfarm::PUMPKIN_SEEDS_ID, 1), (vfarm::PUMPKIN_ID, 3)],
                             // 莓果叢 v1（ROADMAP 806）：採收結果的莓果叢 → 莓果×2（叢本身上面已就地回退成
                             // 莓果叢苗、不掉落方塊）。未結果的莓果叢苗(75) 不在此表 → 走 else 掉落自身退還。
                             Block::BerryBushRipe   => &[(vberry::BERRY_ID, vberry::BERRY_YIELD)],
@@ -4706,6 +4716,7 @@ async fn handle_socket(
                             Block::FarmSoilSeeded | Block::WheatMature
                                 | Block::CarrotSeeded | Block::CarrotMature
                                 | Block::PotatoSeeded | Block::PotatoMature
+                                | Block::PumpkinSeeded | Block::PumpkinMature
                         ) {
                             let farm_e = { hub().farm.write().unwrap().remove(x, y, z) };
                             if let Some(farm_e) = farm_e {
@@ -6474,16 +6485,38 @@ async fn handle_socket(
                     ));
                     continue;
                 }
-                // 依 seed 選作物種類（省略/非胡蘿蔔·馬鈴薯種子一律當小麥，向後相容舊客戶端）。
+                // 依 seed 選作物種類（省略/非胡蘿蔔·馬鈴薯·南瓜種子一律當小麥，向後相容舊客戶端）。
                 let is_carrot = seed == Some(vfarm::CARROT_SEEDS_ID);
                 let is_potato = seed == Some(vfarm::POTATO_SEEDS_ID);
+                let is_pumpkin = seed == Some(vfarm::PUMPKIN_SEEDS_ID);
                 let (seed_id, kind, seeded_block) = if is_carrot {
                     (vfarm::CARROT_SEEDS_ID, vfarm::CropKind::Carrot, Block::CarrotSeeded)
                 } else if is_potato {
                     (vfarm::POTATO_SEEDS_ID, vfarm::CropKind::Potato, Block::PotatoSeeded)
+                } else if is_pumpkin {
+                    (vfarm::PUMPKIN_SEEDS_ID, vfarm::CropKind::Pumpkin, Block::PumpkinSeeded)
                 } else {
                     (vfarm::SEEDS_ID, vfarm::CropKind::Wheat, Block::FarmSoilSeeded)
                 };
+                // 季限作物·秋南瓜 v1（ROADMAP 933）：南瓜**只在秋天種得起來**——非秋天溫柔攔截、
+                // 退還種子（連 inventory take 都還沒做，種子毫髮無傷）、回一句提示，不損任何玩家資料。
+                // season 讀鎖即釋、不巢狀（比照下方時令判定的讀鎖手法）。只擋不罰、療癒優先。
+                if is_pumpkin {
+                    let season = {
+                        let day = hub().world_time.read().unwrap().days_elapsed();
+                        vseason::season_for_day(day)
+                    };
+                    if !vpumpkin::can_plant(season) {
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({
+                                "t": "plant_fail",
+                                "reason": vpumpkin::out_of_season_hint(season)
+                            })
+                            .to_string(),
+                        ));
+                        continue;
+                    }
+                }
                 // 消耗 1 顆種子（inventory 寫鎖即釋）。
                 let seed_entry = hub().inventory.write().unwrap().take(&name, seed_id, 1);
                 let Some(seed_e) = seed_entry else {
@@ -6515,7 +6548,13 @@ async fn handle_socket(
                         {
                             vfarm::append_farm(&nudge_e); // head-start 也持久化，重啟仍算數
                         }
-                        Some(vtimely::in_season_line(kind, season))
+                        // 季限作物·秋南瓜 v1：南瓜只在秋天種得起來、種下即在時令，
+                        // 用它專屬的暖句（別跟一般時令句撞），其餘作物照舊走 811 時令句。
+                        if is_pumpkin {
+                            Some(vpumpkin::planted_line())
+                        } else {
+                            Some(vtimely::in_season_line(kind, season))
+                        }
                     } else {
                         None
                     }
@@ -6542,6 +6581,8 @@ async fn handle_socket(
                     serde_json::json!({
                         "t": "plant_ok", "x": x, "y": y, "z": z,
                         "irrigated": irrigated, "carrot": is_carrot, "potato": is_potato,
+                        // 季限作物·秋南瓜 v1（933）：種下的是南瓜 → 前端據此播南瓜幼苗視覺（舊客戶端忽略即可）。
+                        "pumpkin": is_pumpkin,
                         // 時令作物 v1（811）：種在時令季節時附一句暖回饋（非時令為 null，向後相容舊客戶端）。
                         "timely": timely_line
                     }).to_string(),
@@ -6601,6 +6642,7 @@ async fn handle_socket(
                 let crop = match target {
                     Block::CarrotSeeded => "胡蘿蔔",
                     Block::PotatoSeeded => "馬鈴薯",
+                    Block::PumpkinSeeded => "南瓜",
                     _ => "小麥",
                 };
                 let pick = rand::random::<u64>() as usize;
@@ -10540,6 +10582,7 @@ fn tick_farm() {
             vfarm::CropKind::Wheat => (Block::FarmSoilSeeded, Block::WheatMature),
             vfarm::CropKind::Carrot => (Block::CarrotSeeded, Block::CarrotMature),
             vfarm::CropKind::Potato => (Block::PotatoSeeded, Block::PotatoMature),
+            vfarm::CropKind::Pumpkin => (Block::PumpkinSeeded, Block::PumpkinMature),
         };
         // 農地持久化 v1 自癒守衛：唯有該格當下真的還是對應 Seeded 方塊才轉成熟。
         // 若計時器與世界方塊發生分歧（例：世界重置清了方塊卻沒清農地 jsonl），
@@ -19009,10 +19052,11 @@ fn tick_residents(dt: f32) {
         vbuild::append_world_block(gx, gy, gz, regrow as u8);
         // 農地計時：小麥/胡蘿蔔/馬鈴薯退回已播種態要重新起算「再長一輪」（比照玩家收割後續種）。
         // 莓果叢由 tick_berry 自行管理（退回苗即重啟計時），這裡只處理犁田三作物。
-        if matches!(regrow, Block::FarmSoilSeeded | Block::CarrotSeeded | Block::PotatoSeeded) {
+        if matches!(regrow, Block::FarmSoilSeeded | Block::CarrotSeeded | Block::PotatoSeeded | Block::PumpkinSeeded) {
             let kind = match regrow {
                 Block::CarrotSeeded => vfarm::CropKind::Carrot,
                 Block::PotatoSeeded => vfarm::CropKind::Potato,
+                Block::PumpkinSeeded => vfarm::CropKind::Pumpkin,
                 _ => vfarm::CropKind::Wheat,
             };
             let farm_e =

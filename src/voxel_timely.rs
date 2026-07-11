@@ -32,6 +32,7 @@ pub fn favored_season(kind: CropKind) -> Season {
         CropKind::Carrot => Season::Spring, // 初春播種的根菜
         CropKind::Wheat => Season::Summer,  // 金黃的盛夏麥浪
         CropKind::Potato => Season::Autumn, // 秋收的塊莖
+        CropKind::Pumpkin => Season::Autumn, // 秋收的沉甸甸果實（季限作物·秋南瓜 v1；也只在秋天種得起來）
     }
 }
 
@@ -57,6 +58,7 @@ pub fn crop_name_zh(kind: CropKind) -> &'static str {
         CropKind::Wheat => "小麥",
         CropKind::Carrot => "胡蘿蔔",
         CropKind::Potato => "馬鈴薯",
+        CropKind::Pumpkin => "南瓜",
     }
 }
 
@@ -161,5 +163,15 @@ mod tests {
         assert_eq!(crop_name_zh(CropKind::Wheat), "小麥");
         assert_eq!(crop_name_zh(CropKind::Carrot), "胡蘿蔔");
         assert_eq!(crop_name_zh(CropKind::Potato), "馬鈴薯");
+        assert_eq!(crop_name_zh(CropKind::Pumpkin), "南瓜");
+    }
+
+    /// 季限作物·秋南瓜 v1：南瓜的時令為秋天（吃得到 811 種植 head-start 與 812 收成豐收），
+    /// 冬天仍非其時令。
+    #[test]
+    fn pumpkin_favored_autumn() {
+        assert_eq!(favored_season(CropKind::Pumpkin), Season::Autumn);
+        assert!(is_in_season(CropKind::Pumpkin, Season::Autumn));
+        assert!(!is_in_season(CropKind::Pumpkin, Season::Winter));
     }
 }

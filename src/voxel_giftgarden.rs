@@ -29,7 +29,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::voxel_farm::{CropKind, CARROT_ID, POTATO_ID, WHEAT_ID};
+use crate::voxel_farm::{CropKind, CARROT_ID, POTATO_ID, PUMPKIN_ID, WHEAT_ID};
 use crate::voxel_season::Season;
 use crate::voxel_timely::is_in_season;
 
@@ -45,6 +45,10 @@ pub const HARVEST_CHANCE_PER_TICK: f32 = 0.05;
 pub const CROP_WHEAT: u8 = 0;
 pub const CROP_CARROT: u8 = 1;
 pub const CROP_POTATO: u8 = 2;
+/// 南瓜代碼（季限作物·秋南瓜 v1，933）。目前 `voxel_seedgift` 不把南瓜種子列為可代種
+/// （季限作物不宜讓居民代種到非秋天），故實務上不會有南瓜贈禮花園；此代碼僅為讓
+/// `crop_code` 對 `CropKind` 保持全覆蓋、編譯完整，並替日後開放代種預留位置。
+pub const CROP_PUMPKIN: u8 = 3;
 
 /// `CropKind` → 穩定代碼（存進 JSONL）。
 pub fn crop_code(kind: CropKind) -> u8 {
@@ -52,6 +56,7 @@ pub fn crop_code(kind: CropKind) -> u8 {
         CropKind::Wheat => CROP_WHEAT,
         CropKind::Carrot => CROP_CARROT,
         CropKind::Potato => CROP_POTATO,
+        CropKind::Pumpkin => CROP_PUMPKIN,
     }
 }
 
@@ -62,6 +67,7 @@ pub fn crop_kind(code: u8) -> Option<CropKind> {
         CROP_WHEAT => Some(CropKind::Wheat),
         CROP_CARROT => Some(CropKind::Carrot),
         CROP_POTATO => Some(CropKind::Potato),
+        CROP_PUMPKIN => Some(CropKind::Pumpkin),
         _ => None,
     }
 }
@@ -72,6 +78,7 @@ pub fn crop_name(code: u8) -> &'static str {
         CROP_WHEAT => "小麥",
         CROP_CARROT => "胡蘿蔔",
         CROP_POTATO => "馬鈴薯",
+        CROP_PUMPKIN => "南瓜",
         _ => "作物",
     }
 }
@@ -83,6 +90,7 @@ pub fn produce_gift(code: u8) -> (u8, u32) {
         CROP_WHEAT => (WHEAT_ID, 1),
         CROP_CARROT => (CARROT_ID, 1),
         CROP_POTATO => (POTATO_ID, 2),
+        CROP_PUMPKIN => (PUMPKIN_ID, 3), // 南瓜全作物最大收量
         _ => (WHEAT_ID, 1),
     }
 }
