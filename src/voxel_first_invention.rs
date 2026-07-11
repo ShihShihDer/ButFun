@@ -79,11 +79,15 @@ pub fn milestone_say_line(skill_name: &str, pick: usize) -> String {
     LINES[pick % LINES.len()].replace("{s}", skill_name)
 }
 
-/// 立碑寫進居民心裡的一筆記憶（第一人稱、含「一定」→ 被記憶系統判為永久精華事實，
+/// 立碑寫進居民心裡的一筆記憶（第一人稱、含「一定會」→ 被記憶系統判為永久精華事實，
 /// 成為她這輩子最重的一筆回憶：「第一次真的靠自己發明」）。
+///
+/// 技能名刻意**不**用「」包（比照 927/928 的 `wed_memory_line`/`family_memory_line`）：
+/// `voxel_memory::classify_importance` 會先 `extract_inner_quote`，若句中有「」就**只**拿引號內文字
+/// 去比對關鍵詞——技能名包在「」裡會把「一定會」擠到引號外、被吃掉，整句誤判為 Ephemeral。
 pub fn milestone_memory_line(skill_name: &str) -> String {
     format!(
-        "今天，我第一次真的靠自己想通、發明了「{skill_name}」，還在這裡立了一塊碑——\
+        "今天，我第一次真的靠自己想通、發明了{skill_name}，還在這裡立了一塊碑——\
         這是我一定會記一輩子的一刻，我自己想出來的，誰也拿不走。"
     )
 }
@@ -149,8 +153,28 @@ mod tests {
     fn memory_line_is_permanent_essence_phrasing() {
         let line = milestone_memory_line("拋光石");
         assert!(line.contains("拋光石"), "記憶要嵌技能名");
-        // 含「一定」→ 記憶系統判為永久精華（比照成婚誓言「一定會」的做法）。
+        // 含「一定會」→ 記憶系統判為永久精華（比照成婚誓言「一定會」的做法）。
         assert!(line.contains("一定"), "要用永久精華措辭讓這成為一生最重的一筆");
+    }
+
+    #[test]
+    fn memory_line_is_actually_classified_persistent_promise() {
+        // 真的跑一遍記憶系統的分類器：這筆「一生最重的記憶」必須被判為永久精華（Promise），
+        // 而不是只進 episodic 層、滿了就被淘汰。技能名不可被「」包起來——否則
+        // classify_importance 會先 extract_inner_quote 只拿引號內文字，「一定會」被吃掉、誤判 Ephemeral。
+        for skill in ["拋光石", "燒玻璃", "織藤"] {
+            let line = milestone_memory_line(skill);
+            match crate::voxel_memory::classify_importance(&line) {
+                crate::voxel_memory::Importance::Persistent(fact) => assert_eq!(
+                    fact.category,
+                    crate::voxel_memory::FactCategory::Promise,
+                    "首發立碑記憶（技能 {skill}）應被判為 Persistent(Promise)，才會真的變永久精華"
+                ),
+                other => panic!(
+                    "首發立碑記憶（技能 {skill}）被誤判為 {other:?}，不是永久精華——技能名別用「」包"
+                ),
+            }
+        }
     }
 
     #[test]
