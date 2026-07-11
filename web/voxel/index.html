@@ -1128,6 +1128,23 @@
     #viewBtn:hover { background: rgba(30,45,65,0.8); }
     @media (orientation: portrait) { #viewBtn { top: 96px; font-size: 12px; padding: 5px 9px; } }
 
+    /* ── 環境音效靜音鈕（環境音效 v1）：左側功能鈕欄底（gearBtn 之下），
+       一枚小喇叭一鍵開關世界的聲音床；狀態存 localStorage、重載保留。柔和半透明、
+       避開置中的時鐘/季節、右側 acct/選單與底部拇指區。 ── */
+    #soundBtn {
+      position: fixed; left: 10px; top: 200px; z-index: 6;
+      background: rgba(20,28,40,0.62); color: #cbd6e6;
+      border: 1px solid rgba(203,214,230,0.28);
+      width: 38px; height: 38px; border-radius: 999px;
+      font-size: 17px; line-height: 1; cursor: pointer; user-select: none;
+      pointer-events: auto; display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.35);
+      transition: background 0.25s linear, opacity 0.25s linear;
+    }
+    #soundBtn:hover { background: rgba(30,45,65,0.82); }
+    #soundBtn.muted { opacity: 0.62; }
+    @media (orientation: portrait) { #soundBtn { top: 166px; width: 34px; height: 34px; font-size: 15px; } }
+
     /* ── 操作設定齒輪鈕（開設定面板）：左側，viewBtn 下方，避開右側面板與底部搖桿 ── */
     #gearBtn {
       position: fixed; left: 10px; top: 158px; z-index: 6;
@@ -1531,6 +1548,9 @@
   <div id="clock" class="cl-day"><span class="cl-icon">☀️</span><span class="cl-name">白天</span><span class="cl-time">12:00</span></div>
   <!-- 季節指示器（ROADMAP 897）：時段徽章下方一枚小徽章，內容由 main.js 依快照 season/season_day 更新 -->
   <div id="season" class="se-spring"><span class="se-icon">🌸</span><span class="se-name">春天</span><span class="se-day">第1天</span></div>
+  <!-- 環境音效靜音鈕（環境音效 v1）：右上角小喇叭，一鍵開關世界聲音床，狀態存 localStorage。
+       首次需使用者手勢才能啟動 AudioContext（瀏覽器政策）→ 點它即當作啟動手勢。 -->
+  <button id="soundBtn" title="環境音效">🔊</button>
   <!-- Google 登入帳號 chip（內容由 main.js 依登入態填）-->
   <div id="acct"></div>
   <div id="dbg"></div>
