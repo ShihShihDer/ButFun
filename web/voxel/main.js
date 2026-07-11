@@ -2211,6 +2211,82 @@ function updateUnderwaterAtmosphere() {
 }
 // ── end 水下氛圍 v1 ───────────────────────────────────────────────────────────
 
+// ── 水體游泳深化 v1（ROADMAP 930）─────────────────────────────────────────────
+// 下水後從「純掉血負面感受」升級成有浮力/水阻/可浮可潛的療癒游泳。實際物理在此前端做
+// （移動是前端權威預測），做成與陸地移動不衝突的「水中分支」——只在身體泡進水裡時接管垂直
+// 動態，一離水立刻交還既有陸地重力/踏階/跳躍，絕不改動陸地手感。
+// 這些常數與純函式與後端 src/voxel_swim.rs **鏡像**（該檔有單元測試守著數學），改參數兩邊同步。
+const WATER_GRAVITY_MULT = 0.18;   // 水中重力只剩陸地一小截（緩緩下沉）
+const BUOYANCY_ACCEL = 4.8;        // 被動浮力（略偏上浮，會慢慢浮回水面透氣）
+const SWIM_UP_ACCEL = 16.0;        // 按跳＝主動上浮，一按就有感
+const SWIM_DOWN_ACCEL = 14.0;      // 按下潛（Shift/潛鈕）＝主動下沉
+const VERT_SPEED_CLAMP = 5.0;      // 水中上下游速度夾限（黏滯感＋防穿地）
+const SWIM_HORIZ_SPEED_MULT = 0.6; // 水中水平比陸地慢（水阻）
+
+// 水中等效下沉加速度（格/秒²，正＝往下）。純函式。
+function waterSinkAccel(landGravity) { return landGravity * WATER_GRAVITY_MULT; }
+
+// 依輸入意圖算水中垂直加速度（格/秒²，向上為正）。純函式、確定性，鏡像 Rust swim_vertical_accel。
+function swimVerticalAccel(landGravity, swimUp, swimDown) {
+  if (swimUp)   return SWIM_UP_ACCEL - waterSinkAccel(landGravity);      // 主動上浮：淨往上
+  if (swimDown) return -(SWIM_DOWN_ACCEL - BUOYANCY_ACCEL);             // 主動下潛：淨往下
+  return BUOYANCY_ACCEL - waterSinkAccel(landGravity);                  // 被動：略偏上浮
+}
+
+// 垂直速度水阻夾限。純函式。
+function clampWaterVy(vy) { return Math.max(-VERT_SPEED_CLAMP, Math.min(VERT_SPEED_CLAMP, vy)); }
+
+// 玩家身體（AABB 中段：腳底 + 半身高附近）是否泡在水裡 → 觸發游泳分支。
+// 取身體中央那格採樣：只要泡到腰以上就算「在水裡」，比只看腳底更貼近「浮起來」的感覺。
+function bodyInWater(x, y, z) {
+  const bx = Math.floor(x);
+  const by = Math.floor(y + PH * 0.5);
+  const bz = Math.floor(z);
+  return isWaterId(getRaw(bx, by, bz));
+}
+
+// 頭（眼睛高度那格）是否沒頂水下——比 bodyInWater 嚴格，用於憋氣/水下視覺判定。
+function headUnderwater(x, y, z) {
+  const bx = Math.floor(x);
+  const by = Math.floor(y + 1.5); // EYE_HEIGHT，與後端 head_in_water 對齊
+  const bz = Math.floor(z);
+  return isWaterId(getRaw(bx, by, bz));
+}
+
+// 憋氣曲線（鏡像後端 src/voxel_swim.rs，有單元測試守著）。純視覺提示，非傷害來源——
+// 扣血仍全交給既有溫柔溺水機制（tick_drown，伺服器權威）。
+const BREATH_GRACE_SECS = 8.0;  // 潛下去先撐這麼久才開始掉氣（比溺水緩衝 6 更寬）
+const BREATH_FULL_SECS = 20.0;  // 從頭沒頂到氣見底的總秒數
+let _submergedAcc = 0;          // 頭沒頂水下累計秒（離水歸零；純前端提示）
+const _breathEl = document.getElementById("breathMeter");
+const _breathBubbles = _breathEl ? Array.from(_breathEl.querySelectorAll(".bub")) : [];
+
+// 憋氣表推進一 tick，回新累計秒。純函式（鏡像 Rust tick_breath）。
+function tickBreath(headUW, acc, dt) { return headUW ? acc + dt : 0; }
+
+// 憋氣表顯示值（0..1，1＝滿氣）。純函式、確定性（鏡像 Rust breath_fraction）。壞值保守回 1。
+function breathFraction(acc) {
+  if (typeof acc !== "number" || !isFinite(acc) || acc <= BREATH_GRACE_SECS) return 1;
+  if (acc >= BREATH_FULL_SECS) return 0;
+  return Math.max(0, Math.min(1, 1 - (acc - BREATH_GRACE_SECS) / (BREATH_FULL_SECS - BREATH_GRACE_SECS)));
+}
+
+// 每幀更新憋氣表 DOM：滿氣時整條淡出（不擾畫面），開始掉氣才淡入、一顆顆熄。零 draw call。
+function updateBreathMeter(headUW, dt) {
+  _submergedAcc = tickBreath(headUW, _submergedAcc, dt);
+  if (!_breathEl) return;
+  const frac = breathFraction(_submergedAcc);
+  // 只在「頭沒頂且氣已開始下降」時顯示；滿氣或離水一律淡出（療癒：平常看不到壓力表）。
+  const show = headUW && frac < 0.999;
+  _breathEl.style.opacity = show ? "1" : "0";
+  if (!show) return;
+  const lit = Math.ceil(frac * _breathBubbles.length);
+  for (let i = 0; i < _breathBubbles.length; i++) {
+    _breathBubbles[i].classList.toggle("spent", i >= lit);
+  }
+}
+// ── end 水體游泳深化 v1 ────────────────────────────────────────────────────────
+
 // ── 晨霧 v1（ROADMAP 913）──────────────────────────────────────────────────────
 // 每個清晨，整片世界浮起一層薄霧：縮短 Three.js fog 的能見度，遠處的屋與樹在霧裡朦朧成剪影，
 // 日出後（太陽升高）再一點點散去。純前端、零後端、零協議、零 migration、零 LLM、零美術——
@@ -5613,6 +5689,9 @@ if (!isTouch) {
 // 觸控搖桿（isTouch 常數已在頁首定義）
 const touchEl = document.getElementById("touch");
 let joyVec = { x: 0, y: 0 };
+// 游泳深化 v1：觸控「潛↑↓」鈕按住狀態（水中才作用；陸地按了無效，見 update 的 swimming 判定）。
+let diveUpBtnHeld = false;
+let diveDownBtnHeld = false;
 // 準心+按鈕模式的挖掘狀態（挖鈕按住期間維持）＋準心是否對到居民（挖鈕切「說話」用）。
 let touchDigHeld = false;
 let crosshairResident = null; // rid 或 null：準心對到的居民（每幀節流更新）
@@ -5681,6 +5760,19 @@ if (isTouch) {
   jumpBtn.addEventListener("touchstart", (e) => { tryJump(); e.preventDefault(); }, { passive: false });
   const placeBtn = document.getElementById("place");
   placeBtn.addEventListener("touchstart", (e) => { placeAtTarget(); e.preventDefault(); }, { passive: false });
+  // 游泳深化 v1：上浮/下潛鈕（按住期間維持意圖，水中才作用）。touchend/cancel 都要放開。
+  const diveUpBtn = document.getElementById("diveUp");
+  const diveDownBtn = document.getElementById("diveDown");
+  if (diveUpBtn) {
+    diveUpBtn.addEventListener("touchstart", (e) => { diveUpBtnHeld = true; e.preventDefault(); }, { passive: false });
+    diveUpBtn.addEventListener("touchend", (e) => { diveUpBtnHeld = false; e.preventDefault(); }, { passive: false });
+    diveUpBtn.addEventListener("touchcancel", () => { diveUpBtnHeld = false; });
+  }
+  if (diveDownBtn) {
+    diveDownBtn.addEventListener("touchstart", (e) => { diveDownBtnHeld = true; e.preventDefault(); }, { passive: false });
+    diveDownBtn.addEventListener("touchend", (e) => { diveDownBtnHeld = false; e.preventDefault(); }, { passive: false });
+    diveDownBtn.addEventListener("touchcancel", () => { diveDownBtnHeld = false; });
+  }
   // 專屬「挖」按鈕（準心+按鈕模式核心）：長按對準心方塊計時挖掘（進度條），鬆手取消。
   //   若準心對到居民 → 改為互動（開對話），不挖（挖/互動分離、絕不混淆）。
   const digBtn = document.getElementById("dig");
@@ -6681,7 +6773,15 @@ function update(dt) {
     if (climbUp)        player.y += CLIMB_SPEED * dt;
     else if (climbDown) player.y -= CLIMB_SPEED * dt;
     // 水平仍可移動（側步可脫離梯子）
-  } else {
+  }
+
+  // ── 水體游泳深化 v1（ROADMAP 930）：身體泡進水裡 → 走「水中分支」（浮力/水阻/可浮可潛）──
+  // 只在非攀爬且身體進水時接管；一離水立刻交還陸地重力/踏階（下方 !swimming 分支）。
+  const swimming = !climbing && bodyInWater(player.x, player.y, player.z);
+  // 上浮意圖：跳鍵/跳鈕；下潛意圖：Shift/潛鈕（水中 S 仍是後退，下潛另用 Shift，不搶走走位）。
+  const swimUp = swimming && (keys["Space"] || diveUpBtnHeld);
+  const swimDown = swimming && (keys["ShiftLeft"] || keys["ShiftRight"] || diveDownBtnHeld);
+  if (!climbing && !swimming) {
     if ((keys["Space"]) && player.grounded) tryJump();
   }
 
@@ -6689,12 +6789,27 @@ function update(dt) {
   dir.addScaledVector(fwd, mz).addScaledVector(right, mx);
   if (dir.lengthSq() > 1e-4) {
     dir.normalize();
-    moveAxis("x", dir.x * SPEED * dt);
-    moveAxis("z", dir.z * SPEED * dt);
+    // 水中水平比陸地慢（水阻），陸地維持原速——手感差異只發生在水裡。
+    const horiz = swimming ? SPEED * SWIM_HORIZ_SPEED_MULT : SPEED;
+    moveAxis("x", dir.x * horiz * dt);
+    moveAxis("z", dir.z * horiz * dt);
   }
 
-  if (!climbing) {
-    // 重力 + 垂直碰撞（只在非攀爬模式下套用）
+  if (swimming) {
+    // 水中垂直：浮力/上浮/下潛加速度 → 夾限速度 → 逐軸碰撞（沿用陸地那套 overlaps 保護）。
+    player.vy += swimVerticalAccel(GRAVITY, swimUp, swimDown) * dt;
+    player.vy = clampWaterVy(player.vy);
+    player.grounded = false; // 水裡不算著地（避免水面上誤觸發跳躍）
+    let dy = Math.max(-1.5, Math.min(1.5, player.vy * dt));
+    const prevY = player.y;
+    player.y += dy;
+    if (overlaps()) {
+      player.y = prevY;
+      player.vy = 0; // 頂到水底/水中障礙就停住，別把人壓進方塊
+    }
+    if (player.y < -10) { player.y = 40; player.vy = 0; stepSmooth = 0; }
+  } else if (!climbing) {
+    // 重力 + 垂直碰撞（陸地：只在非攀爬非游泳模式下套用，維持既有手感）
     player.vy -= GRAVITY * dt;
     // 限制單幀垂直位移避免穿牆
     let dy = Math.max(-1.5, Math.min(1.5, player.vy * dt));
@@ -6795,6 +6910,16 @@ function update(dt) {
   // 水下氛圍：相機所在方塊是否為水（每幀一次 getRaw 查詢，成本極低）。
   updateUnderwaterAtmosphere();
   updateDawnMist(); // 晨霧 v1（913）：清晨縮短 fog 能見度、日出後漸散（須在水下判定後，水下時讓位給水下霧）
+
+  // 游泳深化 v1：憋氣表（頭沒頂才計時；純視覺提示）+ 觸控潛↑↓鈕只在下水時顯示。
+  updateBreathMeter(headUnderwater(player.x, player.y, player.z), dt);
+  if (isTouch) {
+    const swimNow = bodyInWater(player.x, player.y, player.z);
+    const upEl = document.getElementById("diveUp"), dnEl = document.getElementById("diveDown");
+    if (upEl) upEl.style.display = swimNow ? "flex" : "none";
+    if (dnEl) dnEl.style.display = swimNow ? "flex" : "none";
+    if (!swimNow) { diveUpBtnHeld = false; diveDownBtnHeld = false; } // 離水清掉殘留意圖
+  }
 
   updateRain(dt);
   updateRainbow(dt);
@@ -8043,6 +8168,38 @@ window.__voxel = {
   unstuckNow() { return unstuckIfNeeded(); },    // 手動觸發一次脫困（回傳是否有動）
   // 直接設玩家位置（QA 模擬出生卡住／走進未載入區後補載的情境）。
   setPlayerPos(x, y, z) { player.x = x; player.y = y; player.z = z; player.vy = 0; },
+  // ── 水體游泳深化 v1 QA 用（ROADMAP 930）：讀游泳狀態＋就近找一片水（供截圖取景）──
+  get swimState() {
+    return {
+      bodyInWater: bodyInWater(player.x, player.y, player.z),
+      headUnderwater: headUnderwater(player.x, player.y, player.z),
+      vy: player.vy,
+      breathFrac: breathFraction(_submergedAcc),
+      breathVisible: _breathEl ? _breathEl.style.opacity === "1" : false,
+      underwater: _isUnderwater,
+    };
+  },
+  isWaterAt(x, y, z) { return isWaterId(getRaw(x, y, z)); },
+  // 掃描已載入區塊，找**最深**的水柱（連續最多格水），供 QA 傳送過去游泳/潛水取景。
+  // 回 {x,y,z,depth}（x/z 置中、y 在水柱底格）；找不到回 null。
+  findWaterColumn() {
+    let best = null;
+    for (const key of chunks.keys()) {
+      const [cx, cy, cz] = key.split(",").map(Number);
+      for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+        const wx = cx * 16 + lx, wz = cz * 16 + lz;
+        for (let ly = 0; ly < 16; ly++) {
+          const wy = cy * 16 + ly;
+          if (!isWaterId(getRaw(wx, wy, wz))) continue;
+          if (isWaterId(getRaw(wx, wy - 1, wz))) continue; // 只從水柱底起算
+          let depth = 0;
+          while (isWaterId(getRaw(wx, wy + depth, wz))) depth++;
+          if (!best || depth > best.depth) best = { x: wx + 0.5, y: wy, z: wz + 0.5, depth };
+        }
+      }
+    }
+    return best;
+  },
   // ── 登入綁定 QA 用（比照 3D #821）──
   get isLoggedIn() { return isLoggedIn; },
   get myAccountName() { return myAccountName; },
