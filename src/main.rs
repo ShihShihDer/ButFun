@@ -244,6 +244,8 @@ mod voxel_morning;
 mod voxel_daybreak;
 // 乙太方界·居民久別重逢奔迎 v1：玩家久別歸來時，最惦記他的居民放下手邊的事奔向他、暖暖迎接（ROADMAP 747）。
 mod voxel_reunion;
+// 乙太方界·居民惦記離開的你 v1：玩家離線夠久，對他記憶最厚的居民主動想念、念叨一句上動態牆，回來也讀得到（自主提案切片）。
+mod voxel_longing;
 // 乙太方界·居民遠行探野 v1：Wanderer 人格居民偶爾獨自遠行到遠離主城的世界邊陲住上一陣子再返家——居民足跡第一次散進荒野（ROADMAP 756·item 7 散居維度）。
 mod voxel_expedition;
 // 乙太方界·久別重逢摘要 v1：玩家重連時把離線期間的重要事件彙整成一句私訊（ROADMAP 721）。

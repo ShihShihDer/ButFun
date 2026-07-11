@@ -17,7 +17,8 @@ pub const WELCOME_BACK_MIN_GAP_SECS: u64 = 180;
 pub const MAX_DIGEST_ITEMS: usize = 3;
 
 /// 值得寫進「久別重逢」摘要的 Feed 事件種類白名單。
-const NOTABLE_KINDS: &[&str] = &["蓋家完工", "蓋家擴建完工", "居民情誼", "技能傳授", "心願成真"];
+const NOTABLE_KINDS: &[&str] =
+    &["蓋家完工", "蓋家擴建完工", "居民情誼", "技能傳授", "心願成真", "居民想念"];
 
 /// 這個 Feed 事件種類值不值得放進摘要。
 pub fn is_notable(kind: &str) -> bool {
