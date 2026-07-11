@@ -921,16 +921,24 @@ fn worldtree_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
         return None;
     }
     let trunk_top = base_h + WORLDTREE_TRUNK_H;
-    // ①樹幹：3×3 主幹，自地表上方一路長到冠底。
-    if dx.abs() <= WORLDTREE_TRUNK_R && dz.abs() <= WORLDTREE_TRUNK_R && wy <= trunk_top {
-        return Some(Block::Wood);
-    }
-    // ②花冠：以冠心為中心的球（含樹幹頂上方一小段），球內填樹冠。
-    let canopy_cy = trunk_top; // 冠心大致落在樹幹頂
+    // 冠心落在樹幹頂那一格（canopy_cy == trunk_top）。花冠**優先於樹幹**判定，讓樹幹頂端
+    // 讓位給花冠——確保冠心正中心 (tx, trunk_top, tz) 確實是發光乙太花冠，而非被樹幹蓋掉。
+    let canopy_cy = trunk_top;
     let cdy = wy - canopy_cy;
     let dist2 = dx * dx + cdy * cdy + dz * dz;
     let r = WORLDTREE_CANOPY_R;
-    if dist2 <= r * r {
+    let in_canopy = dist2 <= r * r;
+    // ①樹幹：3×3 主幹，自地表上方一路長到冠底——但**花冠球內讓位給花冠**（in_canopy 時不畫樹幹），
+    // 免得樹幹一路長到冠心把中心的花冠蓋成木頭（原 bug）。樹幹只填花冠球以外的下段主幹。
+    if !in_canopy
+        && dx.abs() <= WORLDTREE_TRUNK_R
+        && dz.abs() <= WORLDTREE_TRUNK_R
+        && wy <= trunk_top
+    {
+        return Some(Block::Wood);
+    }
+    // ②花冠：以冠心為中心的球，球內填樹冠。
+    if in_canopy {
         // 內裡（近冠心）與冠頂綴發光乙太花冠，外圈是普通樹葉——一團泛著青綠幽光的巨大樹冠。
         // 用確定性 hash 在球內散佈發光花，約三成，其餘是葉；同座標永遠同判定。
         let inner2 = ((r - 3).max(0)) * ((r - 3).max(0));
@@ -3076,18 +3084,24 @@ mod tests {
 
     #[test]
     fn worldtree_trunk_is_solid_wood_column() {
-        // 樹心那一柱地表之上第 1 格起、往上 TRUNK_H 格應皆為木頭（粗壯主幹）。
+        // 樹心那一柱地表之上第 1 格起、直到**進入花冠球之前**應皆為木頭（粗壯主幹）——
+        // 花冠球內的上段樹心讓位給花冠（冠心是發光花冠、非木頭，見 worldtree_has_glowing_canopy_bloom）。
         let (tx, tz) = worldtree_base();
         let base_h = worldtree_base_height();
         // 前提：樹心落在乾燥陸地上（worldtree_base 保證挑落地方位；這裡再確認一次）。
         assert!(base_h > SEA_LEVEL + 1, "測試前提：世界樹樹心應在陸地上（base_h={base_h}）");
-        for wy in (base_h + 1)..=(base_h + WORLDTREE_TRUNK_H) {
+        // 花冠球以冠心 trunk_top 為中心、半徑 CANOPY_R；中軸上花冠球從 trunk_top-CANOPY_R 起。
+        // 純樹幹段（不被花冠球蓋到）為 base_h+1 ..= trunk_top - CANOPY_R - 1。
+        let trunk_top = base_h + WORLDTREE_TRUNK_H;
+        let pure_trunk_top = trunk_top - WORLDTREE_CANOPY_R - 1;
+        assert!(pure_trunk_top > base_h + 1, "純樹幹段應存在（樹幹夠高、花冠不至於蓋到地面）");
+        for wy in (base_h + 1)..=pure_trunk_top {
             assert_eq!(
                 block_at(tx, wy, tz), Block::Wood,
-                "樹幹中軸 y={wy} 應為木頭"
+                "純樹幹段中軸 y={wy} 應為木頭"
             );
         }
-        // 3×3 主幹：樹心四鄰同高也是木頭。
+        // 3×3 主幹：樹心四鄰同高（下段純樹幹）也是木頭。
         assert_eq!(block_at(tx + 1, base_h + 2, tz), Block::Wood);
         assert_eq!(block_at(tx, base_h + 2, tz - 1), Block::Wood);
     }
