@@ -2725,7 +2725,11 @@ function updateResidents(list) {
       if (moodEmoji) { setMoodEmoji(ent.moodIndicator, moodEmoji); ent.moodIndicator.visible = true; }
       else { ent.moodIndicator.visible = false; }
     }
-    ent.mood = moodEmoji; // 居民表情/肢體 v1：驅動彈跳/垂頭/搔頭的當前心情
+    // 居民表情/肢體 v1：驅動彈跳/垂頭/搔頭的當前心情。
+    // QA 覆寫（window.__voxelQaMoodOverride，僅 debug 截圖用）優先於伺服器快照，讓 headless
+    // 能穩定拍到各情緒姿態；正式遊玩恆為 undefined，一律跟伺服器權威 mood。
+    const ov = (typeof window !== "undefined" && window.__voxelQaMoodOverride) || null;
+    ent.mood = (ov && ov[r.id] != null) ? ov[r.id] : moodEmoji;
     // 距離 LOD：遠到接近霧盡頭就整個隱藏（省繪製，不崩 FPS）。
     const dx = r.x - player.x, dz = r.z - player.z;
     ent.group.visible = (dx * dx + dz * dz) < (RES_VISIBLE_DIST * RES_VISIBLE_DIST);
@@ -7893,7 +7897,12 @@ window.__voxel = {
   residentIds() { return [...residents.keys()]; },
   // 就地強制某位居民的情緒訊號（只動本地渲染狀態；下一則伺服器快照會覆寫回真值，
   // 玩家用 console 呼叫也佔不到任何便宜——這只是把「當下心情」提前塞給前端動畫）。
-  qaSetResidentMood(rid, mood) { const e = residents.get(rid); if (e) { e.mood = mood; } return this.residentPose(rid); },
+  // QA 覆寫心情：寫進 override map（撐得住每 100ms 的伺服器快照覆寫），供 headless 穩定截圖。
+  qaSetResidentMood(rid, mood) {
+    if (typeof window !== "undefined") { window.__voxelQaMoodOverride = window.__voxelQaMoodOverride || {}; window.__voxelQaMoodOverride[rid] = mood; }
+    const e = residents.get(rid); if (e) { e.mood = mood; } return this.residentPose(rid);
+  },
+  qaClearResidentMoodOverride() { if (typeof window !== "undefined") window.__voxelQaMoodOverride = null; },
   qaSetResidentHumming(rid, on) { const e = residents.get(rid); if (e) { e.humming = !!on; } return this.residentPose(rid); },
   qaTriggerResidentWave(rid) { const e = residents.get(rid); if (e) { e.wavePulse = 1.4; } return this.residentPose(rid); },
 };
