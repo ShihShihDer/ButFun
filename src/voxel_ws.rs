@@ -17936,8 +17936,14 @@ fn tick_residents(dt: f32) {
                             .unwrap_or(0);
                         let dx = rx - px;
                         let dz = rz - pz;
-                        if vwalkw::eligible(true, bond, dx * dx + dz * dz)
-                            && rand::random::<f32>() < vwalkw::WALK_CHANCE
+                        // free_for_stroll 已收斂各種「正忙」狀態，但**不含**同行冷卻——
+                        // 冷卻是本刀專屬（240 秒防同一位反覆黏著同行），在此顯式傳入純函式判定。
+                        if vwalkw::eligible(
+                            true,
+                            residents[i].walk_with_cooldown > 0.0,
+                            bond,
+                            dx * dx + dz * dz,
+                        ) && rand::random::<f32>() < vwalkw::WALK_CHANCE
                         {
                             walk_pick = Some((i, pname.clone()));
                             break 'walk_scan;

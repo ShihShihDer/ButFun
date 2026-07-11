@@ -60,9 +60,13 @@ pub const WALK_AFFINITY: usize = 3;
 pub const FEED_KIND: &str = "邀你同行";
 
 /// 判定這位居民此刻是否適合邀某位玩家同行：居民閒著（由呼叫端把各種「正忙」狀態收斂成一個 bool）、
+/// **不在同行冷卻中**（上一段同行落幕後 `WALK_COOLDOWN_SECS` 內不再邀你、防同一位反覆黏著）、
 /// 對這位玩家的好感達摯友門檻、且水平距離夠近。純函式、確定性、可測。
-pub fn eligible(resident_free: bool, bond: usize, dist_sq: f32) -> bool {
-    resident_free && bond >= WALK_AFFINITY && dist_sq <= WALK_START_DIST * WALK_START_DIST
+pub fn eligible(resident_free: bool, on_cooldown: bool, bond: usize, dist_sq: f32) -> bool {
+    resident_free
+        && !on_cooldown
+        && bond >= WALK_AFFINITY
+        && dist_sq <= WALK_START_DIST * WALK_START_DIST
 }
 
 /// 居民起意邀你時冒的一句（確定性輪替，`pick` 由呼叫端給隨機源；點名邀約的玩家更有溫度）。
@@ -93,24 +97,35 @@ mod tests {
     #[test]
     fn eligible_needs_free_bond_and_near() {
         let near = (WALK_START_DIST - 1.0).powi(2);
-        // 閒著＋交情夠厚＋夠近 → 成立。
-        assert!(eligible(true, WALK_AFFINITY, near));
-        assert!(eligible(true, WALK_AFFINITY + 2, near));
+        // 閒著＋不在冷卻＋交情夠厚＋夠近 → 成立。
+        assert!(eligible(true, false, WALK_AFFINITY, near));
+        assert!(eligible(true, false, WALK_AFFINITY + 2, near));
         // 在忙 → 不邀。
-        assert!(!eligible(false, WALK_AFFINITY, near));
+        assert!(!eligible(false, false, WALK_AFFINITY, near));
         // 交情不到門檻 → 不硬邀陌生人。
-        assert!(!eligible(true, WALK_AFFINITY - 1, near));
-        assert!(!eligible(true, 0, near));
+        assert!(!eligible(true, false, WALK_AFFINITY - 1, near));
+        assert!(!eligible(true, false, 0, near));
         // 交情夠但離太遠 → 不硬拉。
         let far = (WALK_START_DIST + 1.0).powi(2);
-        assert!(!eligible(true, WALK_AFFINITY, far));
+        assert!(!eligible(true, false, WALK_AFFINITY, far));
+    }
+
+    #[test]
+    fn eligible_respects_walk_cooldown() {
+        // 冷卻回歸釘死：上一段同行剛落幕、還在 240 秒冷卻中的居民，即使閒著＋交情夠厚
+        //＋就在你身邊，也**不會**又立刻邀你——冷卻不是形同虛設（防同一位反覆黏著同行）。
+        let near = (WALK_START_DIST - 1.0).powi(2);
+        assert!(!eligible(true, true, WALK_AFFINITY, near));
+        assert!(!eligible(true, true, WALK_AFFINITY + 5, near));
+        // 冷卻退掉後同樣條件才重新成立（對照組）。
+        assert!(eligible(true, false, WALK_AFFINITY, near));
     }
 
     #[test]
     fn eligible_exact_boundary_counts_as_near() {
         // 恰好等於門檻距離：視為夠近（<= 邊界含端點，確定性）。
         let exact = WALK_START_DIST * WALK_START_DIST;
-        assert!(eligible(true, WALK_AFFINITY, exact));
+        assert!(eligible(true, false, WALK_AFFINITY, exact));
     }
 
     #[test]
