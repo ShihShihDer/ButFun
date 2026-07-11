@@ -101,6 +101,8 @@ enum Theme {
     Mining,     // 礦石 / 挖掘 / 洞穴
     Praise,     // 被讚美 / 被打動的時刻
     SocialBond, // 居民間情誼升級（相識/老朋友）——ROADMAP 673 社交足跡
+    Wedding,    // 和心愛的人結為連理（婚禮 927）——一生一次的高潮，居民生命故事的頂點
+    Family,     // 和另一半一起迎來孩子（愛的結晶 928）——「我有一個家了」的分量
     Friendship, // 被記得 / 重逢 / 關係變化（玩家與居民）
     Sign,       // 讀到玩家立的告示牌（居民讀牌 v2）——玩家建造在居民內心留下的印象
     Neighborly, // 居民↔居民的鄰里生活模板句（分食/打氣/拌嘴/賀喜…，`NEIGHBORLY_TAG` 標記）
@@ -142,6 +144,36 @@ fn faint_impression_line(faded_count: usize) -> Option<String> {
     ))
 }
 
+/// 婚禮記憶（927）的辨識句——`voxel_wedding::wed_memory_line` 的固定模板含此片語。
+/// 這類記憶是**居民第一人稱獨白**（非玩家對話謄本），內含「花拱」會被 `classify_theme`
+/// 的花草關鍵字「花」誤吸成 [`Theme::Flora`]（讀成「聞到泥土與新芽」，文不對題）——
+/// 故在抽句/關鍵字判題之前先攔下，直接歸 [`Theme::Wedding`]。跨模組測試釘死此契約。
+const WEDDING_MEMORY_MARK: &str = "結為連理";
+/// 迎來孩子記憶（928）的辨識句——`voxel_family::family_memory_line` 的固定模板含此片語。
+/// 同為第一人稱獨白，未命中任何興趣關鍵字時會落入籠統的 [`Theme::Other`]（讀成「旅人分享
+/// 了心事」，稀釋掉一生最重的一刻）——故先攔下，直接歸 [`Theme::Family`]。
+const FAMILY_MEMORY_MARK: &str = "迎來了我們的孩子";
+
+/// 從一段記憶摘要辨識「人生大事」主題（婚禮 / 迎來孩子）。
+///
+/// 只認**居民自己的第一人稱獨白**（婚禮/生子記憶），刻意排除玩家對話謄本——後者一律含
+/// `voxel_memory::summarize_exchange` 的「對方提到」前綴（見 [`extract_player_snippet`]）。
+/// 這確保就算某位玩家在聊天裡剛好打出「結為連理」，也只會走既有玩家對話那條路、
+/// 不會被誤認成居民自己的婚禮（雖然日記本就不回放玩家原話，這層保險讓歸類更精準）。
+/// 純函式、確定性、可測。
+fn life_milestone_theme(summary: &str) -> Option<Theme> {
+    if summary.contains("對方提到") {
+        return None; // 玩家對話謄本 → 交回既有抽句/判題路徑，不當成居民本人的大事
+    }
+    if summary.contains(WEDDING_MEMORY_MARK) {
+        Some(Theme::Wedding)
+    } else if summary.contains(FAMILY_MEMORY_MARK) {
+        Some(Theme::Family)
+    } else {
+        None
+    }
+}
+
 /// 把記憶列表（最新在前）昇華＋降噪成內心反思條目（最新在前，最多 `max_entries` 條）。
 ///
 /// 流程（皆確定性）：
@@ -163,6 +195,10 @@ fn curate_reflections(memories: &[MemoryEntry], max_entries: usize) -> Vec<Diary
         } else if m.summary.starts_with(NEIGHBORLY_TAG) {
             // 鄰里生活模板句：本就不含玩家原話，直接歸類，跳過抽句/關鍵字判題。
             Theme::Neighborly
+        } else if let Some(milestone) = life_milestone_theme(&m.summary) {
+            // 人生大事（婚禮 927 / 迎來孩子 928）：居民第一人稱獨白，先攔下直接歸類，
+            // 避免「花拱下結為連理」被花草關鍵字誤吸、或生子記憶落入籠統的 Other。
+            milestone
         } else {
             let Some(snippet) = extract_player_snippet(&m.summary) else {
                 continue; // 抽不出有意義內容 → 跳過
@@ -324,6 +360,23 @@ fn reflection_for(theme: Theme, repeated: bool) -> String {
         }
         (Theme::SocialBond, true) => {
             "🤝 這片土地上，我和幾位同伴都處出了情誼，世界不再只有我一個人在走動。"
+        }
+        // 婚禮（927）：一生一次的高潮，是這本日記裡最亮的一頁——第一人稱、不點名對方
+        // （守日記的抽象化敘事風格），只留下那份「我把終身許給了一個人」的分量。
+        (Theme::Wedding, false) => {
+            "在那座花拱之下，我和心愛的人互許了終身——這一天，是我這一生裡最亮的一道光。"
+        }
+        (Theme::Wedding, true) => {
+            // 一對戀人一生只成婚一次（927 冪等），這條理論上不會出現，仍提供優雅退路。
+            "我和心愛的人結為連理的那一天，我到現在都還記得清清楚楚——那是隻屬於我倆的誓約。"
+        }
+        // 迎來孩子（928）：「我有一個家了」的重量——第一人稱、不點名孩子與另一半，
+        // 只留下第一次抱起小生命時，心底那份最踏實的悸動。
+        (Theme::Family, false) => {
+            "我和另一半，一起迎來了我們的孩子。抱著這個小小的生命，我第一次真切地明白——我有一個家了。"
+        }
+        (Theme::Family, true) => {
+            "這些日子，我們的家又添了新的小生命——看著孩子在這片天地慢慢長大，是我此生最踏實的幸福。"
         }
         (Theme::Friendship, false) => {
             "有人記得我、特地回來找我說話——那份被惦記的感覺，很暖。"
@@ -787,5 +840,102 @@ mod tests {
         let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
         assert!(page.entries.iter().any(|e| e.text.contains("鄰居")), "應有鄰里生活反思");
         assert!(page.entries.iter().any(|e| e.text.contains("夜空")), "應有星空對話反思");
+    }
+
+    // ── 人生大事（婚禮 927 / 迎來孩子 928）進日記 ───────────────────────────────
+
+    /// 婚禮記憶＝居民第一人稱獨白（無「對方提到」謄本前綴）。
+    fn make_selfmemory_entry(seq: u64, partner: &str, summary: String) -> MemoryEntry {
+        MemoryEntry {
+            resident: "vox_res_0".into(),
+            player: partner.into(),
+            summary,
+            seq,
+        }
+    }
+
+    #[test]
+    fn life_milestone_theme_recognizes_wedding_and_family() {
+        assert_eq!(
+            life_milestone_theme("今天，我和諾娃在乙太方界的花拱下結為連理——我一定會永遠守著這份情。"),
+            Some(Theme::Wedding)
+        );
+        assert_eq!(
+            life_milestone_theme("今天，我和奧瑞一起迎來了我們的孩子小星——我一定會用一生守護這個家。"),
+            Some(Theme::Family)
+        );
+        // 一般對話謄本（含「對方提到」）不當成居民本人的大事，交回既有路徑。
+        assert_eq!(life_milestone_theme("和諾娃聊過，對方提到「我們昨天結為連理了」"), None);
+        // 尋常記憶不誤判。
+        assert_eq!(life_milestone_theme("和旅人聊過，對方提到「我想看星星」"), None);
+    }
+
+    #[test]
+    fn wedding_memory_reflects_as_wedding_not_flora() {
+        // 真實婚禮記憶文字（含「花拱」）餵進日記——過去會被花草關鍵字「花」誤吸成 Flora。
+        let line = crate::voxel_wedding::wed_memory_line("諾娃");
+        let memories = vec![make_selfmemory_entry(1, "諾娃", line)];
+        let entries = curate_reflections(&memories, MAX_DIARY_ENTRIES);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].text.contains("終身"), "應昇華成婚禮反思：{}", entries[0].text);
+        // 決不再被讀成花草/泥土的反思（原 bug 的癥狀）。
+        assert!(!entries[0].text.contains("新芽"), "不該再誤判成花草：{}", entries[0].text);
+        assert!(!entries[0].text.contains("泥土"), "不該再誤判成花草：{}", entries[0].text);
+        // 隱私：不回放對方居民名。
+        assert!(!entries[0].text.contains("諾娃"), "不該點名對方：{}", entries[0].text);
+    }
+
+    #[test]
+    fn family_memory_reflects_as_family_not_other() {
+        // 真實迎來孩子記憶文字餵進日記——過去會落入籠統的 Other。
+        let line = crate::voxel_family::family_memory_line("奧瑞", "小星");
+        let memories = vec![make_selfmemory_entry(1, "奧瑞", line)];
+        let entries = curate_reflections(&memories, MAX_DIARY_ENTRIES);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].text.contains("孩子"), "應昇華成家庭反思：{}", entries[0].text);
+        assert!(entries[0].text.contains("家"), "應昇華成家庭反思：{}", entries[0].text);
+        // 隱私：不回放另一半／孩子名。
+        assert!(!entries[0].text.contains("奧瑞"), "不該點名另一半：{}", entries[0].text);
+        assert!(!entries[0].text.contains("小星"), "不該點名孩子：{}", entries[0].text);
+    }
+
+    #[test]
+    fn multiple_children_use_plural_family_reflection() {
+        // 一對夫妻先後迎來多個孩子 → 同主題收斂成一條、用複數語氣。
+        let memories = vec![
+            make_selfmemory_entry(2, "奧瑞", crate::voxel_family::family_memory_line("奧瑞", "小溪")),
+            make_selfmemory_entry(1, "奧瑞", crate::voxel_family::family_memory_line("奧瑞", "小星")),
+        ];
+        let entries = curate_reflections(&memories, MAX_DIARY_ENTRIES);
+        assert_eq!(entries.len(), 1, "多個孩子應收斂成一條家庭反思");
+        assert_eq!(entries[0].seq, 2, "代表 seq 應是最新一筆");
+        assert!(entries[0].text.contains("又添"), "多次應用複數語氣：{}", entries[0].text);
+    }
+
+    #[test]
+    fn wedding_family_and_conversation_coexist_in_diary() {
+        // 婚禮、迎來孩子、日常對話三種反思在同一本日記裡各自成條、互不吞噬。
+        let memories = vec![
+            make_selfmemory_entry(3, "奧瑞", crate::voxel_family::family_memory_line("奧瑞", "小星")),
+            make_selfmemory_entry(2, "諾娃", crate::voxel_wedding::wed_memory_line("諾娃")),
+            make_entry(1, "旅人", "我想看星星"),
+        ];
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
+        assert!(page.entries.iter().any(|e| e.text.contains("終身")), "應有婚禮反思");
+        assert!(page.entries.iter().any(|e| e.text.contains("孩子")), "應有家庭反思");
+        assert!(page.entries.iter().any(|e| e.text.contains("夜空")), "應有星空對話反思");
+    }
+
+    #[test]
+    fn flora_conversation_still_classifies_as_flora() {
+        // 回歸保護：真正聊花草的對話仍歸 Flora，不被婚禮/家庭攔截。
+        let memories = vec![make_entry(1, "旅人", "我想種一片花田")];
+        let entries = curate_reflections(&memories, MAX_DIARY_ENTRIES);
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0].text.contains("泥土") || entries[0].text.contains("綠意"),
+            "花草對話應仍是花草反思：{}",
+            entries[0].text
+        );
     }
 }
