@@ -1278,6 +1278,248 @@ function makeAmbientPool(n, tex, additive, baseScale, peakOp) {
 const butterflies = makeAmbientPool(AMB_BUTTERFLY_MAX, BUTTERFLY_TEX, false, 0.55, 0.95);
 const fireflies = makeAmbientPool(AMB_FIREFLY_MAX, FIREFLY_TEX, true, 0.45, 0.9);
 
+// ── 環境音效 v1（世界第一次有聲音）────────────────────────────────────────────
+// 全程序合成（Web Audio API：oscillator/noise/filter），零外部音檔——避開素材傳輸問題。
+// 一層柔和的環境音床，依時段/近水混音：
+//   · 底噪  ＝ 極輕的濾波白噪「微風」，永遠墊底，讓世界不再死寂。
+//   · 白天  ＝ 偶發的柔和鳥鳴啾啾（兩三聲一串、隨機音高，絕不機械循環）。
+//   · 夜裡  ＝ 蟲鳴唧唧（規律但輕），白噪更靜，鳥鳴退場。
+//   · 近水  ＝ 疊一層帶通濾波白噪的水流潺潺。
+// 療癒鐵律：音量小、柔和、無明顯循環感；預設可一鍵靜音（HUD 小喇叭鈕，存 localStorage）；
+// 首次需使用者手勢才能啟動 AudioContext（瀏覽器政策）。效能鐵律：單一 AudioContext、
+// 少量常駐節點（三條常駐音床＋偶發短音），靜音/離開即停，對 FPS 零影響。
+const AUDIO_LS_KEY = "butfun.voxel.sound.v1";
+// 讀取靜音偏好（預設：開聲音）。壞資料/禁 storage 一律 fallback 到「開」。
+function loadSoundMuted() {
+  try { return localStorage.getItem(AUDIO_LS_KEY) === "muted"; } catch (_) { return false; }
+}
+function saveSoundMuted(m) {
+  try { localStorage.setItem(AUDIO_LS_KEY, m ? "muted" : "on"); } catch (_) { /* 忽略 */ }
+}
+
+const audio = {
+  ctx: null,          // AudioContext（首次手勢才建立）
+  master: null,       // 總音量節點（靜音時淡到 0）
+  muted: loadSoundMuted(),
+  started: false,     // 是否已建立音床（首次手勢後）
+  // 常駐音床增益（依時段/近水每幀平滑趨近目標）
+  windGain: null, waterGain: null,
+  windTarget: 0, waterTarget: 0,
+  // 偶發短音的下次觸發倒數（秒）
+  chirpTimer: 2.0,    // 鳥鳴（白天）
+  cricketTimer: 1.5,  // 蟲鳴（夜裡）
+};
+
+// 建立一段循環的濾波白噪來源（微風/水流用）。回傳可掛增益的 GainNode（未接 master）。
+function makeNoiseBed(ctx, filterType, freq, q) {
+  // 2 秒白噪 buffer，loop 播放（夠長 → 聽不出循環接縫）。
+  const len = ctx.sampleRate * 2;
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  const src = ctx.createBufferSource();
+  src.buffer = buf; src.loop = true;
+  const filt = ctx.createBiquadFilter();
+  filt.type = filterType; filt.frequency.value = freq; if (q != null) filt.Q.value = q;
+  const g = ctx.createGain(); g.gain.value = 0;
+  src.connect(filt); filt.connect(g);
+  src.start();
+  return g;
+}
+
+// 首次使用者手勢時建立 AudioContext 與常駐音床。重入安全（started 後直接 resume）。
+function ensureAudioStarted() {
+  if (audio.started) {
+    if (audio.ctx && audio.ctx.state === "suspended") audio.ctx.resume().catch(() => {});
+    return;
+  }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return; // 極舊瀏覽器不支援 → 靜默略過，遊戲照玩
+  try {
+    const ctx = new AC();
+    const master = ctx.createGain();
+    master.gain.value = audio.muted ? 0 : 1;
+    master.connect(ctx.destination);
+    // 微風底噪：低通白噪，永遠墊底（音量極小）。
+    const wind = makeNoiseBed(ctx, "lowpass", 620, 0.7);
+    wind.connect(master);
+    // 水流潺潺：帶通白噪（偏高頻的水花感），只有近水才漸強。
+    const water = makeNoiseBed(ctx, "bandpass", 1400, 0.8);
+    water.connect(master);
+    audio.ctx = ctx; audio.master = master;
+    audio.windGain = wind; audio.waterGain = water;
+    audio.started = true;
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
+  } catch (_) { /* 建立失敗：靜默、遊戲照玩 */ }
+}
+
+// 播一聲柔和的鳥鳴啾啾（白天）：兩三個短音、隨機音高上揚，帶輕微顫音，絕不機械。
+function playBirdChirp() {
+  const ctx = audio.ctx; if (!ctx || audio.muted) return;
+  const t0 = ctx.currentTime;
+  const n = 2 + (Math.random() < 0.5 ? 0 : 1); // 兩到三聲
+  let base = 1800 + Math.random() * 900;
+  for (let i = 0; i < n; i++) {
+    const t = t0 + i * (0.09 + Math.random() * 0.05);
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    const f = base * (1 + i * 0.06) * (0.96 + Math.random() * 0.08);
+    osc.frequency.setValueAtTime(f, t);
+    osc.frequency.exponentialRampToValueAtTime(f * 1.18, t + 0.05); // 上揚
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.06, t + 0.012); // 極小音量
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+    osc.connect(g); g.connect(audio.master);
+    osc.start(t); osc.stop(t + 0.12);
+  }
+}
+
+// 播一聲蟲鳴唧唧（夜裡）：高頻方波快速顫動的一小串，輕而規律。
+function playCricket() {
+  const ctx = audio.ctx; if (!ctx || audio.muted) return;
+  const t0 = ctx.currentTime;
+  const f = 4200 + Math.random() * 600;
+  const pulses = 3 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < pulses; i++) {
+    const t = t0 + i * 0.035;
+    const osc = ctx.createOscillator();
+    osc.type = "square"; osc.frequency.value = f;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.018, t + 0.004); // 很小聲
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.025);
+    osc.connect(g); g.connect(audio.master);
+    osc.start(t); osc.stop(t + 0.03);
+  }
+}
+
+// 挖方塊一聲輕「叩」：低頻正弦快速衰減（木魚/敲擊感），不吵。
+function playDigThock() {
+  const ctx = audio.ctx; if (!ctx || audio.muted) return;
+  const t = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(220, t);
+  osc.frequency.exponentialRampToValueAtTime(90, t + 0.09);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.09, t + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.13);
+  osc.connect(g); g.connect(audio.master);
+  osc.start(t); osc.stop(t + 0.15);
+}
+
+// 放方塊一聲輕「噠」：比挖略高、更短促（放下的乾脆感）。
+function playPlaceTap() {
+  const ctx = audio.ctx; if (!ctx || audio.muted) return;
+  const t = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  osc.type = "triangle";
+  osc.frequency.setValueAtTime(360, t);
+  osc.frequency.exponentialRampToValueAtTime(180, t + 0.06);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.07, t + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+  osc.connect(g); g.connect(audio.master);
+  osc.start(t); osc.stop(t + 0.11);
+}
+
+// 極輕腳步：一小撮低頻濾波噪衝，走路落地時偶發（別吵）。
+function playFootstep() {
+  const ctx = audio.ctx; if (!ctx || audio.muted) return;
+  const t = ctx.currentTime;
+  const len = Math.floor(ctx.sampleRate * 0.05);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+  const src = ctx.createBufferSource(); src.buffer = buf;
+  const filt = ctx.createBiquadFilter(); filt.type = "lowpass"; filt.frequency.value = 380;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.03, t); // 很輕
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+  src.connect(filt); filt.connect(g); g.connect(audio.master);
+  src.start(t); src.stop(t + 0.06);
+}
+
+let _footstepTimer = 0;
+
+// 每幀推進環境音床：依 nightFactor / 近水判定平滑調整常駐音床增益，
+// 並按倒數觸發偶發鳥鳴（白天）/蟲鳴（夜裡）。未啟動或靜音時零成本早退。
+function updateAmbientAudio(dt) {
+  if (!audio.started || audio.muted || !audio.ctx) return;
+  const nf = nightFactor(worldTime); // 0=白天 1=深夜
+  // 近水判定：取玩家腳下地表 id（沿用 ambSurface）。找不到就當非水。
+  const surf = ambSurface(Math.floor(player.x), Math.floor(player.z));
+  const nearWater = surf ? isWaterId(surf.id) : false;
+
+  // 微風底噪：白天略強、夜裡更靜（乘個係數讓夜更寂靜）。
+  audio.windTarget = 0.05 * (1 - nf * 0.55);
+  // 水流：近水才漸強，離水淡出。
+  audio.waterTarget = nearWater ? 0.11 : 0.0;
+
+  // 常駐音床增益平滑趨近目標（frame-rate 無關的指數平滑，避免音量跳變）。
+  const k = 1 - Math.exp(-2.5 * dt);
+  if (audio.windGain) audio.windGain.gain.value += (audio.windTarget - audio.windGain.gain.value) * k;
+  if (audio.waterGain) audio.waterGain.gain.value += (audio.waterTarget - audio.waterGain.gain.value) * k;
+
+  // 白天鳥鳴：夜越深機率越低（nf 越大越少），間隔隨機（3~8 秒）避免循環感。
+  audio.chirpTimer -= dt;
+  if (audio.chirpTimer <= 0) {
+    if (nf < 0.6 && Math.random() < (1 - nf)) playBirdChirp();
+    audio.chirpTimer = 3 + Math.random() * 5;
+  }
+  // 夜裡蟲鳴：夜越深越常鳴（nf 越大越多），間隔隨機（2~5 秒）。
+  audio.cricketTimer -= dt;
+  if (audio.cricketTimer <= 0) {
+    if (nf > 0.4 && Math.random() < nf) playCricket();
+    audio.cricketTimer = 2 + Math.random() * 3;
+  }
+}
+
+// 靜音切換：更新狀態、存 localStorage、淡入/淡出 master、刷新喇叭鈕外觀。
+// 開聲音時同時當作使用者手勢 → 確保 AudioContext 已啟動。
+function setSoundMuted(m) {
+  audio.muted = m;
+  saveSoundMuted(m);
+  if (!m) ensureAudioStarted();
+  if (audio.master && audio.ctx) {
+    const t = audio.ctx.currentTime;
+    audio.master.gain.cancelScheduledValues(t);
+    audio.master.gain.setValueAtTime(audio.master.gain.value, t);
+    audio.master.gain.linearRampToValueAtTime(m ? 0 : 1, t + 0.25); // 柔和淡入淡出
+  }
+  const btn = document.getElementById("soundBtn");
+  if (btn) {
+    btn.textContent = m ? "🔇" : "🔊";
+    btn.classList.toggle("muted", m);
+    btn.title = m ? "環境音效（已靜音）" : "環境音效";
+  }
+}
+
+// 喇叭鈕接線：點擊＝切換靜音（且首次點擊當作啟動手勢）。
+(function wireSoundButton() {
+  const btn = document.getElementById("soundBtn");
+  if (!btn) return;
+  // 初始外觀依存的偏好。
+  btn.textContent = audio.muted ? "🔇" : "🔊";
+  btn.classList.toggle("muted", audio.muted);
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setSoundMuted(!audio.muted);
+  });
+})();
+
+// 首次任意使用者手勢（點/鍵/觸）→ 若沒靜音就啟動 AudioContext（瀏覽器自動播放政策）。
+// 只掛一次（once），之後靠喇叭鈕自行 resume。
+(function wireAudioUnlock() {
+  const unlock = () => { if (!audio.muted) ensureAudioStarted(); };
+  window.addEventListener("pointerdown", unlock, { once: true });
+  window.addEventListener("keydown", unlock, { once: true });
+  window.addEventListener("touchstart", unlock, { once: true });
+})();
+
 // 從玩家附近某 (wx,wz) 由上往下找地表：回傳第一個非空氣方塊的 {y,id}；未載入或找不到回 null。
 function ambSurface(wx, wz) {
   const top = Math.floor(player.y) + 5;
@@ -4930,6 +5172,7 @@ function tickMining(dt) {
     // 進度滿：送 break，立刻開始下一塊（如果按著）。
     // 工欲善其事 v1（790）：附上手持物品 id；伺服器查背包確認是真工具才給採集加成。
     ws.send(JSON.stringify({ t: "break", x: mining.x, y: mining.y, z: mining.z, tool: selectedBlock() }));
+    playDigThock(); // 環境音效 v1：挖掉一格一聲輕「叩」
     cancelMining();
     if (digHeld) startMining();
   } else {
@@ -4944,6 +5187,7 @@ function breakAtTarget() {
   const c = { x: target.bx, y: target.by, z: target.bz };
   // 工欲善其事 v1（790）：附上手持物品 id 讓伺服器判定採集加成（見上）。
   ws.send(JSON.stringify({ t: "break", x: c.x, y: c.y, z: c.z, tool: selectedBlock() }));
+  playDigThock(); // 環境音效 v1：行動裝置即時挖除也給一聲輕「叩」
   return c;
 }
 
@@ -5111,6 +5355,7 @@ function placeAtTarget() {
   if (px === Math.floor(player.x) && pz === Math.floor(player.z) &&
       (py === Math.floor(player.y) || py === Math.floor(player.y + 1))) return null;
   ws.send(JSON.stringify({ t: "place", x: px, y: py, z: pz, b: selectedBlock() }));
+  playPlaceTap(); // 環境音效 v1：放下一格一聲輕「噠」
   // 告示牌 v1（ROADMAP 740）：剛放下一塊新牌子 → 立刻讓玩家寫上文字。
   // place 與 sign_set 走同一條 socket、伺服器循序處理，故 sign_set 到達時牌子已立好。
   if (selectedBlock() === SIGN) {
@@ -6423,6 +6668,14 @@ function update(dt) {
   updateHearts(dt);    // 寵愛你的夥伴 v1（899）：推進小夥伴頭頂的愛心
   updateFertSparkle(dt); // 乙太沃肥 v1（789）：推進施肥綠火花
   updateAmbientLife(dt); // 世界環境氛圍 v1（905）：白天蝴蝶／夜間螢火蟲環境微生物
+  updateAmbientAudio(dt); // 環境音效 v1：依時段/近水混音環境音床＋偶發鳥鳴/蟲鳴
+  // 極輕腳步：站在地面移動時，每 ~0.34 秒一聲（走路節奏）。靜音/沒動/騰空時不觸發。
+  if (meMoving && player.grounded) {
+    _footstepTimer -= dt;
+    if (_footstepTimer <= 0) { playFootstep(); _footstepTimer = 0.34; }
+  } else {
+    _footstepTimer = 0;
+  }
   streamChunks(dt);
   sendMove(dt);
   updateMyHeldItem(); // 手持工具可見 v1：即時反映熱鍵切換，不等節流送出的回音
