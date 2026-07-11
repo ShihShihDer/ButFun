@@ -92,6 +92,26 @@ pub fn swim_horiz_speed(land_speed: f32) -> f32 {
     land_speed * SWIM_HORIZ_SPEED_MULT
 }
 
+// ── swim-out（麥塊式游出水）——#1200 手感 bug 修正 ───────────────────────────
+// 玩家實機回報「在水裡上不了地面」：浮力把人頂在水面，但往岸邊推時撞岸壁過不去——
+// 陸地踏階（step-up）只在 grounded 時生效，而游泳分支每幀強制 grounded=false，
+// 於是游泳中永遠蹬不上岸、被困在水裡。
+// 修法：游泳中、水平推進撞到岸壁、且岸塊上方有空間時，允許沿用既有踏階邏輯直接蹬上岸。
+// 「撞壁／上方有無空間」的幾何判定由前端 aabbHitsSolid 做（與陸地踏階同一套）；
+// 本函式只管「資格判定」的純邏輯——什麼輸入組合下允許水中踏階（可測、前端鏡像）。
+
+/// swim-out 資格判定：這幀游泳中的水平碰撞是否允許「蹬岸踏階」。純函式、確定性、可測。
+///
+/// - `swimming`：這幀是否在游泳（身體泡水）。false＝陸地 → 一律不允許——陸地踏階走
+///   既有 grounded 分支，本函式**絕不干涉陸地手感**。
+/// - `auto_jump`：玩家設定「自動跳躍」是否開啟（預設開）。開啟＝貼岸推進就自動蹬上去
+///   （麥塊式 swim-out，頭已出水在水面漂著也適用——這是最常見的卡點）。
+/// - `swim_up_held`：這幀是否按著跳／上浮。就算 auto_jump 關閉，「按住跳＋往前」也要能
+///   爬上一格高的岸（手動路徑，尊重關掉自動跳躍玩家的操作習慣）。
+pub fn swim_step_up_eligible(swimming: bool, auto_jump: bool, swim_up_held: bool) -> bool {
+    swimming && (auto_jump || swim_up_held)
+}
+
 /// 憋氣表推進一 tick（純函式）：回傳新的「頭沒頂水下累計秒」。
 ///
 /// - `head_underwater`：這幀頭是否沒頂在水下（比溺水判定嚴格：頭那格是水才算）。
@@ -228,6 +248,35 @@ mod tests {
             BREATH_GRACE_SECS,
             crate::voxel_player_stats::DROWN_GRACE_SECS
         );
+    }
+
+    #[test]
+    fn swim_out_auto_jump_climbs_without_pressing_jump() {
+        // 自動跳躍開啟（預設）：游泳貼岸推進就自動蹬上岸——麥塊式 swim-out。
+        assert!(swim_step_up_eligible(true, true, false));
+        // 同時按著跳也一樣允許。
+        assert!(swim_step_up_eligible(true, true, true));
+    }
+
+    #[test]
+    fn swim_out_jump_held_works_even_with_auto_jump_off() {
+        // 自動跳躍關閉：按住跳＋往前仍要能爬上一格高的岸（手動路徑）。
+        assert!(swim_step_up_eligible(true, false, true));
+    }
+
+    #[test]
+    fn swim_out_respects_auto_jump_off_without_jump_intent() {
+        // 自動跳躍關閉且沒按跳：不自動蹬——尊重玩家「撞一格要手動跳」的設定。
+        assert!(!swim_step_up_eligible(true, false, false));
+    }
+
+    #[test]
+    fn swim_out_never_touches_land_feel() {
+        // 陸地（swimming=false）：無論任何輸入組合一律 false——絕不干涉既有陸地踏階手感。
+        assert!(!swim_step_up_eligible(false, true, true));
+        assert!(!swim_step_up_eligible(false, true, false));
+        assert!(!swim_step_up_eligible(false, false, true));
+        assert!(!swim_step_up_eligible(false, false, false));
     }
 
     #[test]
