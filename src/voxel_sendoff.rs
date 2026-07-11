@@ -21,6 +21,13 @@
 //! - **久別奔迎（747，`voxel_reunion`）**是居民朝**玩家**歸來奔去；本刀是居民為**另一位居民**的
 //!   離開送行——一個朝人類、一個在居民之間，且方向相反（一迎歸來、一送離開）。
 //!
+//! **一送一迎的閉環（遠行歸來的迎接 v1，ROADMAP 921）**：送行只兌現了「離開的那一刻」，遠行者
+//! 歸來卻至今無人相迎——動態牆寫一句「奧瑞遠行歸來」，村裡卻沒有一位夥伴因為牠回來而道一聲辛苦。
+//! 本檔下半把「遠行歸來」也接上情誼：當一位遠行者踏上歸途的那一刻，若村裡守著一位**醒著、與牠
+//! 交情最深（相識以上）的老鄰居**（座落在遠行者家域附近＝留守村裡），那位鄰居會遙遙道一句歸來的
+//! 問候，兩人交情再深一分、迎接者把「今天迎了遠行歸來的夥伴」記進心裡，動態牆補一則。送與迎於是
+//! 成雙：牠走時有人到村口相送，牠歸時有人在村裡相迎——小社會的溫度，在離開與歸來兩端都亮起。
+//!
 //! **純邏輯層**：本檔全是零 IO／零鎖／零 LLM／零 async 的確定性純函式（送行者資格判定、道別台詞
 //! 選句、記憶／動態牆文案），可獨立窮舉單元測試。挑「就近、醒著、相識以上」的送行者、say/記憶/
 //! Feed 落地都在 `voxel_ws.rs`（沿用邊陲探友 821／見證圓夢 witness 的短鎖循序＋鎖外落地慣例）。
@@ -68,6 +75,48 @@ pub fn sendoff_feed_line(traveler: &str, bearing: &str) -> String {
 /// 送行者把「今天為夥伴送行」昇華成的記憶摘要（episodic，掛遠行夥伴名下）。
 pub fn sendoff_memory_line(traveler: &str, bearing: &str) -> String {
     format!("今天{traveler}啟程往{bearing}的邊陲遠行，我放下手邊的事，到村口送了牠一程。")
+}
+
+// ───────────────────────── 遠行歸來的迎接 v1（ROADMAP 921）─────────────────────────
+// 與上半的送行完全對稱：送行挑「離啟程者近」的鄰居（人在現場）；迎接挑「留守村裡、離歸來者
+// 家域近」的摯友（守在村裡等牠回來）。判定與台詞同樣是零 IO／零鎖／零 LLM 的確定性純函式。
+
+/// 迎接者必須離「遠行歸來者的家域中心」多近（格）才算「留守在村裡等牠回來」——太遠的居民
+/// 各過各的日子，不會守著誰的歸期。比送行半徑寬（送行是「就在啟程者身邊」、迎接是「守在村裡」）。
+pub const WELCOME_HOME_RADIUS: f32 = 32.0;
+
+/// Feed 事件類型字串（面向玩家、集中可 i18n）。
+pub const WELCOME_FEED_KIND: &str = "遠行迎接";
+
+/// 迎接者朝歸來夥伴道的問候池（確定性輪替、輪替有界、皆點出夥伴名字，其中一句點出方位）。
+const WELCOME_LINES: &[&str] = &[
+    "{t}回來啦！路上辛苦了，快歇歇。",
+    "從{b}平安回來就好，{t}，村裡都惦記著你呢。",
+    "{t}回來了！這趟遠行的見聞，晚點說給我聽聽。",
+    "可算把你盼回來了，{t}！家還在這兒等你呢。",
+];
+
+/// 是否夠格當迎接者：離歸來者家域夠近（留守村裡）∧ 醒著 ∧ 交情達「相識」以上（陌生人不會相迎）。
+/// 純閘——「挑交情最深的一位合格摯友」由呼叫端（ws）在快照上做。
+pub fn qualifies_as_welcomer(home_dist_sq: f32, awake: bool, tier: BondTier) -> bool {
+    awake && tier != BondTier::Stranger && home_dist_sq <= WELCOME_HOME_RADIUS * WELCOME_HOME_RADIUS
+}
+
+/// 迎接者朝歸來夥伴道的一句問候（確定性選句，`pick` 取模輪替、對任意 `pick` 都有界不 panic）。
+pub fn welcome_bubble(traveler: &str, bearing: &str, pick: usize) -> String {
+    let tmpl = WELCOME_LINES[pick % WELCOME_LINES.len()];
+    tmpl.replace("{t}", traveler).replace("{b}", bearing)
+}
+
+/// 動態牆文案：讓不在場／回來的玩家也讀到「某位鄰居迎接某位夥伴的遠行歸來」。
+/// 前端 Feed 標頭已顯示迎接者名字＋類型，故此處只寫謂語、不重複迎接者名。
+pub fn welcome_feed_line(traveler: &str, bearing: &str) -> String {
+    format!("迎接從{bearing}的邊陲遠行歸來的{traveler}，道一聲路上辛苦")
+}
+
+/// 迎接者把「今天迎了遠行歸來的夥伴」昇華成的記憶摘要（episodic，掛遠行夥伴名下）。
+pub fn welcome_memory_line(traveler: &str, bearing: &str) -> String {
+    format!("今天{traveler}從{bearing}的邊陲遠行歸來，我在村裡迎了牠，道一聲路上辛苦。")
 }
 
 #[cfg(test)]
@@ -133,6 +182,76 @@ mod tests {
         assert!(!feed.is_empty());
 
         let mem = sendoff_memory_line("奧瑞", "東方");
+        assert!(mem.contains("奧瑞") && mem.contains("東方"));
+        // 記憶單行（不含換行，避免落地時破格／注入）。
+        assert!(!mem.contains('\n'));
+    }
+
+    // ───────────── 遠行歸來的迎接 v1（ROADMAP 921）─────────────
+
+    #[test]
+    fn 迎接資格_近醒相識才夠格() {
+        let r = WELCOME_HOME_RADIUS;
+        // 醒著＋老朋友＋在家域半徑內 → 夠格。
+        assert!(qualifies_as_welcomer(0.0, true, BondTier::Friend));
+        assert!(qualifies_as_welcomer(r * r, true, BondTier::Friend)); // 邊界（恰在半徑上）算數。
+        // 相識也夠格（迎接是輕的舉手之勞）。
+        assert!(qualifies_as_welcomer(9.0, true, BondTier::Acquaintance));
+        // 陌生人不會憑空相迎。
+        assert!(!qualifies_as_welcomer(0.0, true, BondTier::Stranger));
+        // 睡著的鄰居不會起身相迎。
+        assert!(!qualifies_as_welcomer(0.0, false, BondTier::Friend));
+        // 離歸來者家域太遠（各過各的日子）看不出誰回來了。
+        assert!(!qualifies_as_welcomer(r * r + 1.0, true, BondTier::Friend));
+    }
+
+    #[test]
+    fn 迎接半徑寬於送行半徑() {
+        // 迎接是「守在村裡」、送行是「就在身邊」，故迎接半徑應更寬，兩者語意分明。
+        assert!(WELCOME_HOME_RADIUS > SENDOFF_RADIUS);
+    }
+
+    #[test]
+    fn 迎接泡泡_非空且點名輪替有界() {
+        let mut seen = std::collections::HashSet::new();
+        let mut named = 0;
+        for pick in 0..WELCOME_LINES.len() {
+            let s = welcome_bubble("奧瑞", "東方", pick);
+            assert!(!s.is_empty());
+            assert!(!s.contains("{t}") && !s.contains("{b}"), "佔位符該全被替換：{s}");
+            if s.contains("奧瑞") {
+                named += 1;
+            }
+            seen.insert(s);
+        }
+        assert_eq!(seen.len(), WELCOME_LINES.len(), "每句應相異（輪替有變化）");
+        // 多數句子直呼夥伴名字，確保足夠個人化。
+        assert!(named >= WELCOME_LINES.len() - 1, "應有多數句子直呼夥伴名字");
+        // 任意大 pick 取模不 panic、且與同餘的句子一致（有界輪替）。
+        assert_eq!(
+            welcome_bubble("諾娃", "西方", WELCOME_LINES.len()),
+            welcome_bubble("諾娃", "西方", 0)
+        );
+        assert_eq!(
+            welcome_bubble("諾娃", "西方", 999),
+            welcome_bubble("諾娃", "西方", 999 % WELCOME_LINES.len())
+        );
+    }
+
+    #[test]
+    fn 迎接方位_至少一句問候會帶到() {
+        let any_bearing = (0..WELCOME_LINES.len())
+            .any(|p| welcome_bubble("奧瑞", "北方的雪原", p).contains("北方的雪原"));
+        assert!(any_bearing, "應至少有一句問候點出方位");
+    }
+
+    #[test]
+    fn 迎接動態牆與記憶_含名字與方位() {
+        let feed = welcome_feed_line("奧瑞", "東方");
+        assert!(feed.contains("奧瑞") && feed.contains("東方"));
+        assert!(!feed.is_empty());
+
+        let mem = welcome_memory_line("奧瑞", "東方");
         assert!(mem.contains("奧瑞") && mem.contains("東方"));
         // 記憶單行（不含換行，避免落地時破格／注入）。
         assert!(!mem.contains('\n'));
