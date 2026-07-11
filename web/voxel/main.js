@@ -502,10 +502,28 @@ const SEASON_LEAF = {
 function foliageLeafColor(season) {
   return SEASON_LEAF[season] || SEASON_LEAF.summer;
 }
-// 換季時把已載入的 chunk 全部標記重建，讓樹葉重新套上當季顏色。沿用每幀節流的 dirty 佇列
-//（rebuildChunk 迴圈每幀最多重建 4 塊），換季的一次性重建成本分攤到數幀、不掉幀（FPS 鐵律）。
+// 換季時把已載入的 chunk 全部標記重建，讓樹葉（與冬雪覆地）重新套上當季外觀。沿用每幀節流
+// 的 dirty 佇列（rebuildChunk 迴圈每幀最多重建 4 塊），換季一次性重建成本分攤到數幀、不掉幀（FPS 鐵律）。
 function remeshForSeason() {
   for (const k of chunks.keys()) dirty.add(k);
+}
+
+// ── 冬雪覆地 v1（ROADMAP 922）─────────────────────────────────────────────
+// 四季樹葉（920）第一次讓「樹上的方塊」隨季節換色；但腳下那一大片草原一年到頭仍是同一片綠。
+// 本刀補上環境軸最後、也最有感的一塊：冬天一到，露天的鬆軟地面（草／土／沙）頂面積上一層雪白，
+// 整片大地一眼變成冬天。刻意只染「頂面」（`f.n[1]===1`）——雪是積在地表上、側面仍露出原本的
+// 泥土綠，一眼就是麥塊那種「雪蓋在地上」的真實感，而非把整塊換成雪磚。
+// 與既有元素 razor-sharp 區隔：920 四季樹葉＝樹葉方塊(LEAVES)換色；798 季節染色＝只染天空/霧；
+// 900 初雪／snow＝天上飄落的粒子；snowman＝單一堆出來的物件；本刀＝地面方塊本身的「頂蓋」隨冬天鋪雪。
+// 純視覺、零協議：前端依既有廣播的 worldSeason 本地決定，不新增任何 WS/HTTP 欄位、不動後端。
+const SNOW_CAP = [0.93, 0.95, 0.99]; // 積雪頂蓋的雪白（略帶冷藍，冬日調性）
+// 會積雪的鬆軟地面（自然裸露的地表）；刻意不含農田土（FARM_SOIL），免得雪蓋住玩家正在照顧的作物。
+const SNOW_GROUND = new Set([GRASS, DIRT, SAND]);
+// 冬天露天鬆軟地面的積雪頂蓋色；非冬天或非鬆軟地面回 null（不積雪）。
+// 沿用 variedBlockColor 讓雪面帶極淡的自然起伏、不死白一片。
+function winterSnowCapColor(season, blockId, wx, wy, wz) {
+  if (season !== "winter" || !SNOW_GROUND.has(blockId)) return null;
+  return variedBlockColor(SNOW_CAP, wx, wy, wz);
 }
 
 // 更新天空背景色、霧色、太陽方向/顏色、半球光強度。
@@ -1636,9 +1654,11 @@ function rebuildChunk(key) {
           // 四季樹葉 v1：樹葉方塊的基底色隨當前季節換色，其餘方塊沿用固定色。
           const base = b === LEAVES ? foliageLeafColor(worldSeason) : (COLOR[b] || COLOR[STONE]);
           const c = variedBlockColor(base, wx, wy, wz);
+          // 冬雪覆地 v1（ROADMAP 922）：冬天露天的鬆軟地面頂面（f.n[1]===1）鋪一層雪白，側面維持原色。
+          const snowCap = winterSnowCapColor(worldSeason, b, wx, wy, wz);
           for (const f of FACES) {
             if (!faceVisibleOpaque(wx + f.d[0], wy + f.d[1], wz + f.d[2])) continue;
-            emitFace(pos, norm, col, idx, lx, ly, lz, f, c);
+            emitFace(pos, norm, col, idx, lx, ly, lz, f, (snowCap && f.n[1] === 1) ? snowCap : c);
           }
         }
       }
