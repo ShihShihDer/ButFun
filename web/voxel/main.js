@@ -7124,6 +7124,13 @@ function connect() {
       if (fishBiteTimer) { clearTimeout(fishBiteTimer); fishBiteTimer = null; }
       showErr(m.reason || "沒法釣魚");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "onboard") {
+      // 居民迎新 v1（自主提案切片 ROADMAP 948）：一位居民親自迎接新旅人——
+      // 引導卡列出「交談→採集→合成→放置」四步進度＋下一步提示；每完成一步後端就推新卡。
+      renderOnboardCard(m);
+    } else if (m.t === "onboard_done") {
+      // 居民迎新 v1：畢業！迎新居民送見面禮（背包已由隨行的 inv_sync 同步），卡片慶祝後淡出。
+      finishOnboardCard(m);
     } else if (m.t === "milestone_unlocked") {
       // 玩家里程碑 v1（ROADMAP 724）：只有自己看得到的私人慶祝提示；若面板剛好開著同步刷新。
       showMsg((m.icon || "🏅") + " 成就達成：" + (m.name_zh || "里程碑") + "！");
@@ -8443,6 +8450,46 @@ document.addEventListener("pointerdown", (e) => {
 /** 簡短綠色提示（合成成功用；區別於 showErr 紅色錯誤）。 */
 function showMsg(text) {
   showMsgFor(text, 3000);
+}
+
+/** 居民迎新 v1（自主提案切片 ROADMAP 948）：渲染／更新引導小卡。
+ *  步驟標籤與提示全由後端策展（i18n 集中一處）；DOM 一律 textContent 組裝，杜絕注入。 */
+function renderOnboardCard(m) {
+  const card = document.getElementById("onboardCard");
+  if (!card) return;
+  card.textContent = "";
+  const head = document.createElement("div");
+  head.className = "ob-head";
+  head.textContent = "🌱 " + (m.greeter || "居民") + " 陪你走最初幾步";
+  card.appendChild(head);
+  for (const s of (m.steps || [])) {
+    const row = document.createElement("div");
+    row.className = "ob-step" + (s.done ? " done" : "");
+    row.textContent = (s.done ? "✅ " : "⬜ ") + (s.label || "");
+    card.appendChild(row);
+  }
+  if (m.hint) {
+    const hint = document.createElement("div");
+    hint.className = "ob-hint";
+    hint.textContent = "💡 " + m.hint;
+    card.appendChild(hint);
+  }
+  card.style.display = "block";
+  card.style.opacity = "1";
+}
+
+/** 居民迎新 v1：畢業收尾——見面禮揭曉提示＋卡片慶祝後淡出（引導功成身退）。 */
+function finishOnboardCard(m) {
+  showMsgFor(
+    "🎉 " + (m.greeter || "居民") + " 送你 " + (m.gift_name || "見面禮") + "×" + (m.gift_count || 1) +
+      "——歡迎成為乙太方界的一份子！",
+    5000
+  );
+  const card = document.getElementById("onboardCard");
+  if (!card) return;
+  card.textContent = "🎓 最初幾步走完啦，這片天地任你探索";
+  setTimeout(() => { card.style.opacity = "0"; }, 2600);
+  setTimeout(() => { card.style.display = "none"; }, 3600);
 }
 
 /** 綠色提示，可指定停留毫秒數（稀有魚驚喜等想多留一會兒的情境用）。 */

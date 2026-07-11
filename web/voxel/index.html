@@ -74,6 +74,22 @@
     #season.se-summer { background: rgba(40,96,52,0.62); border-color: rgba(140,230,150,0.30); }
     #season.se-autumn { background: rgba(112,64,28,0.64); border-color: rgba(240,160,80,0.34); }
     #season.se-winter { background: rgba(40,60,96,0.64); border-color: rgba(150,190,240,0.32); }
+    /* 居民迎新 v1（自主提案切片 ROADMAP 948）：新旅人的引導小卡——迎新居民名＋
+       「交談→採集→合成→放置」四步清單＋下一步提示；右上帳號列下方、點不到、畢業即淡出。 */
+    #onboardCard {
+      position: fixed; right: 10px; top: 52px; z-index: 6;
+      background: rgba(20,28,40,0.72); color: #eaf2ff; padding: 9px 12px;
+      border-radius: 10px; font-size: 12px; line-height: 1.55; max-width: min(240px, 62vw);
+      pointer-events: none; box-shadow: 0 1px 6px rgba(0,0,0,0.35);
+      border: 1px solid rgba(255,216,107,0.28); display: none;
+      transition: opacity 0.8s ease;
+    }
+    #onboardCard .ob-head { font-size: 12px; color: #ffe6a0; margin-bottom: 4px; }
+    #onboardCard .ob-step.done { opacity: 0.55; }
+    #onboardCard .ob-hint {
+      margin-top: 5px; opacity: 0.85;
+      border-top: 1px solid rgba(255,255,255,0.12); padding-top: 5px;
+    }
     #dbg {
       position: fixed; right: 10px; top: 10px; z-index: 6;
       background: rgba(0,0,0,0.55); color: #9effa0; padding: 6px 10px;
@@ -1582,6 +1598,8 @@
   <button id="soundBtn" title="環境音效">🔊</button>
   <!-- Google 登入帳號 chip（內容由 main.js 依登入態填）-->
   <div id="acct"></div>
+  <!-- 居民迎新 v1（ROADMAP 948）：新旅人引導小卡（由 onboard 訊息驅動，畢業後淡出） -->
+  <div id="onboardCard"></div>
   <div id="dbg"></div>
   <div id="err"></div>
   <div id="msg"></div>
