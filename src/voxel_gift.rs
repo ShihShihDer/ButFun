@@ -185,7 +185,7 @@ pub fn cave_treasure_thanks_line(player_name: &str, affinity: usize, pick: usize
         let pool: &[&str] = &[
             "哇……這結晶還在發光？你是從地底的洞穴帶回來的嗎，謝謝你！",
             "發光結晶！我聽說地底深處的洞穴才有，好美，謝謝你。",
-            "在黑暗裡也自己泛著光……你特地為我挖到那麼深嗎？",
+            "這結晶在黑暗裡也自己泛著光……你特地為我挖到那麼深的地方嗎？",
         ];
         pool[pick % pool.len()].to_string()
     } else {
