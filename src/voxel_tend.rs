@@ -69,6 +69,7 @@ pub fn crop_name(kind: CropKind) -> &'static str {
         CropKind::Wheat => "小麥",
         CropKind::Carrot => "胡蘿蔔",
         CropKind::Potato => "馬鈴薯",
+        CropKind::Pumpkin => "南瓜",
     }
 }
 

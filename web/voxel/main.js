@@ -65,6 +65,10 @@ const CARROT_SEEDS = 48, CARROT = 49;
 // 馬鈴薯幼苗/成熟馬鈴薯為伺服器狀態方塊；種子/收成為純物品，從泥土(DIRT)破壞額外掉落種子（與胡蘿蔔取自草地區隔）。
 const POTATO_SEEDED = 50, POTATO_MATURE = 51;
 const POTATO_SEEDS = 52, POTATO = 53;
+// 季限作物·秋南瓜 v1（ROADMAP 933）——**只在秋天種得起來**的季限作物，慢熟(150s/水耕75s)但收成量最大(×3)。
+// 南瓜幼苗/成熟南瓜為伺服器狀態方塊；種子/收成為純物品，從野花(WILDFLOWER_*)破壞額外掉落種子。
+const PUMPKIN_SEEDED = 107, PUMPKIN_MATURE = 108;
+const PUMPKIN_SEEDS = 109, PUMPKIN = 110;
 // 仙人掌 v1（生物群系第一刀）——沙漠群系程序生成，2格高；採集後可放置
 const CACTUS = 54;
 // 雪 v1（生物群系第二刀）——雪原群系地表覆蓋（取代草）；採集後可放置，白色建材
@@ -224,6 +228,11 @@ const COLOR = {
   // 第三種作物 v1（馬鈴薯）——土黃偏棕，與小麥金黃、胡蘿蔔橘都能一眼分辨
   [POTATO_SEEDED]: [0.32, 0.30, 0.18], // 馬鈴薯幼苗——暗土黃，埋在土裡的感覺
   [POTATO_MATURE]:  [0.78, 0.64, 0.38], // 成熟馬鈴薯——土黃偏棕，可收割
+  // 季限作物·秋南瓜 v1（933）——南瓜幼苗帶秋綠；成熟南瓜是飽和的南瓜橙，一眼認出秋日限定作物
+  [PUMPKIN_SEEDED]: [0.34, 0.40, 0.20], // 南瓜幼苗——帶綠的深色，藤蔓萌芽中
+  [PUMPKIN_MATURE]: [0.92, 0.50, 0.12], // 成熟南瓜——飽和南瓜橙，沉甸甸一顆，可收割
+  [PUMPKIN_SEEDS]:  [0.72, 0.62, 0.30], // 南瓜種子（背包圖示用，純物品不放置）
+  [PUMPKIN]:        [0.90, 0.48, 0.12], // 南瓜（背包圖示用，純物品不放置）——與成熟南瓜同色系
   // 生物群系第一刀
   [CACTUS]:         [0.25, 0.58, 0.22], // 仙人掌——飽和深綠，沙漠中一眼認出
   // 生物群系第二刀
@@ -3923,7 +3932,7 @@ if (speakToggleEl && speakBarEl && speakInputEl) {
 // 把採來的材料化作一份心意送給居民；居民記得你的照料，好感度 +2。
 
 /// 不可作為禮物的 block_id（純 inventory 物品 / 不合語意送出）。
-const GIFT_EXCLUDED = new Set([0, 7, 12, DOOR_OPEN, CARROT_SEEDED, POTATO_SEEDED]); // Air / Water / FarmSoilSeeded / DoorOpen / CarrotSeeded / PotatoSeeded（伺服器狀態，不可贈）
+const GIFT_EXCLUDED = new Set([0, 7, 12, DOOR_OPEN, CARROT_SEEDED, POTATO_SEEDED, PUMPKIN_SEEDED]); // Air / Water / FarmSoilSeeded / DoorOpen / CarrotSeeded / PotatoSeeded / PumpkinSeeded（伺服器狀態，不可贈）
 
 /**
  * 從背包（myInv: Map<blockId, count>）挑出最佳禮物。
@@ -3986,6 +3995,7 @@ function trySendGift() {
 const EDIBLE_FOODS = new Set([
   WHEAT, BREAD, CARROT, POTATO, BAKED_POTATO,
   FISH, AETHER_FISH, COOKED_FISH, STEW, BERRY, JAM,
+  PUMPKIN, // 季限作物·秋南瓜 v1（933）：南瓜是食物，手持可吃
 ]);
 
 /** 目前手持的方塊是否食物（手持食物時放置鈕會變「吃」）。 */
@@ -5328,6 +5338,9 @@ const BLOCK_NAME = {
   // 第三種作物 v1
   [POTATO_SEEDED]: "馬鈴薯幼苗", [POTATO_MATURE]: "成熟馬鈴薯",
   [POTATO_SEEDS]: "馬鈴薯種子", [POTATO]: "馬鈴薯",
+  // 季限作物·秋南瓜 v1（933）——只在秋天種得起來
+  [PUMPKIN_SEEDED]: "南瓜幼苗", [PUMPKIN_MATURE]: "成熟南瓜",
+  [PUMPKIN_SEEDS]: "南瓜種子", [PUMPKIN]: "南瓜",
   // 生物群系第一刀/第二刀
   [CACTUS]: "仙人掌", [SNOW]: "雪", [ICE_CRYSTAL]: "冰晶",
   // 冰晶燈 v1（冰晶合成）
@@ -5671,6 +5684,7 @@ const BLOCK_HARDNESS = {
   [FARM_SOIL]: 0.4, [FARM_SOIL_SEEDED]: 0.4, [WHEAT_MATURE]: 0.2,
   [CARROT_SEEDED]: 0.4, [CARROT_MATURE]: 0.2,
   [POTATO_SEEDED]: 0.4, [POTATO_MATURE]: 0.2,
+  [PUMPKIN_SEEDED]: 0.4, [PUMPKIN_MATURE]: 0.2, // 季限作物·秋南瓜 v1（933）：比照其他作物，輕鬆收割
   [WORKBENCH]: 1.2, [FURNACE]: 1.5,
   [TORCH]: 0.1,
   [LADDER]: 0.4,  // 梯子——木製，輕鬆打破
@@ -5873,7 +5887,8 @@ function placeAtTarget() {
   // （不偏移到面外側）；非幼苗（成熟作物/農田土/其他）靜默忽略——後端仍會權威複驗。
   if (selectedBlock() === FERTILIZER) {
     const hitRaw = getRaw(target.bx, target.by, target.bz);
-    if (hitRaw === FARM_SOIL_SEEDED || hitRaw === CARROT_SEEDED || hitRaw === POTATO_SEEDED) {
+    if (hitRaw === FARM_SOIL_SEEDED || hitRaw === CARROT_SEEDED || hitRaw === POTATO_SEEDED
+        || hitRaw === PUMPKIN_SEEDED) {
       ws.send(JSON.stringify({ t: "fertilize", x: target.bx, y: target.by, z: target.bz }));
       return { x: target.bx, y: target.by, z: target.bz };
     }
@@ -5929,11 +5944,14 @@ function placeAtTarget() {
   // 種子的特殊種植動作：目標是農田土本身（不偏移到面外側）。
   // 第二種作物 v1：胡蘿蔔種子選中時種下胡蘿蔔；第三種作物 v1：馬鈴薯種子選中時種下馬鈴薯，
   // 皆附帶 seed 欄位讓伺服器分辨作物種類。
-  if (selectedBlock() === SEEDS || selectedBlock() === CARROT_SEEDS || selectedBlock() === POTATO_SEEDS) {
+  if (selectedBlock() === SEEDS || selectedBlock() === CARROT_SEEDS || selectedBlock() === POTATO_SEEDS
+      || selectedBlock() === PUMPKIN_SEEDS) {
     const hitRaw = getRaw(target.bx, target.by, target.bz);
     if (hitRaw === FARM_SOIL) {
       const sel = selectedBlock();
-      const seed = sel === CARROT_SEEDS ? CARROT_SEEDS : sel === POTATO_SEEDS ? POTATO_SEEDS : undefined;
+      // 季限作物·秋南瓜 v1（933）：南瓜種子附 seed 欄位；伺服器會擋非秋天種植（回 plant_fail 提示）。
+      const seed = sel === CARROT_SEEDS ? CARROT_SEEDS : sel === POTATO_SEEDS ? POTATO_SEEDS
+                 : sel === PUMPKIN_SEEDS ? PUMPKIN_SEEDS : undefined;
       ws.send(JSON.stringify({ t: "plant", x: target.bx, y: target.by, z: target.bz, seed }));
       return { x: target.bx, y: target.by, z: target.bz };
     }
@@ -5954,7 +5972,7 @@ function placeAtTarget() {
   if (heldIsFood()) { tryEatDish(); return null; }
   // 麵包 v1（ROADMAP 668）+ 胡蘿蔔（第二種作物 v1）+ 馬鈴薯（第三種作物 v1）+ 漁獲（垂釣 v1）：純物品，不可放置——靜默忽略。
   if (selectedBlock() === WHEAT || selectedBlock() === BREAD || selectedBlock() === CARROT || selectedBlock() === POTATO
-      || selectedBlock() === FISH || selectedBlock() === AETHER_FISH) return null;
+      || selectedBlock() === PUMPKIN || selectedBlock() === FISH || selectedBlock() === AETHER_FISH) return null;
   // 一般放置：在命中方塊的面外側放置。
   const px = target.bx + target.nx, py = target.by + target.ny, pz = target.bz + target.nz;
   // 別把方塊放進自己身體（避免卡死）。
@@ -6603,6 +6621,8 @@ function connect() {
         ? (m.irrigated ? "💧 水耕！胡蘿蔔將在 30 秒後成熟 🥕" : "已種下胡蘿蔔種子！等 60 秒就成熟 🥕")
         : m.potato
         ? (m.irrigated ? "💧 水耕！馬鈴薯將在 60 秒後成熟 🥔" : "已種下馬鈴薯種子！等 120 秒就成熟，收成量大 🥔")
+        : m.pumpkin
+        ? (m.irrigated ? "💧 水耕！南瓜將在 75 秒後成熟 🎃" : "已種下南瓜種子！慢熟(150 秒)但收成量最大 🎃")
         : (m.irrigated ? "💧 水耕！種子將在 45 秒後成熟 🌾" : "已種下種子！等 90 秒小麥就成熟 🌾");
       // 時令作物 v1（811）：種在該作物的時令季節時，後端附一句暖回饋（m.timely），接在種植提示後。
       showMsg(m.timely ? (plantMsg + "　" + m.timely) : plantMsg);
@@ -6614,7 +6634,9 @@ function connect() {
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3200);
     } else if (m.t === "plant_fail") {
       // 種田 v1：種植失敗（非農田土 / 沒種子 / 太遠），短暫提示。
-      showErr("種植失敗：" + (m.reason || "未知原因"));
+      // 季限作物·秋南瓜 v1（933）：非當季種南瓜的提示本身已是完整暖句（🎃 開頭），直接顯示、不加「種植失敗：」前綴。
+      const r = m.reason || "未知原因";
+      showErr(r.startsWith("🎃") ? r : ("種植失敗：" + r));
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "gift_ok") {
       // 贈禮 v1：送禮成功——居民道謝訊息顯示在對話框；更新贈禮鈕顯示。
@@ -8456,6 +8478,8 @@ window.__voxel = {
   CARROT_SEEDED, CARROT_MATURE, CARROT_SEEDS, CARROT,
   // 第三種作物 v1 常數 QA 用
   POTATO_SEEDED, POTATO_MATURE, POTATO_SEEDS, POTATO,
+  // 季限作物·秋南瓜 v1 常數 QA 用（933）
+  PUMPKIN_SEEDED, PUMPKIN_MATURE, PUMPKIN_SEEDS, PUMPKIN,
   // ── 工作台 3×3 QA 用（ROADMAP 665）──
   WORKBENCH,
   get wbPanelVisible() { return wbPanelVisible(); },

@@ -17,7 +17,7 @@
 //! 回饋廣播全在 `voxel_ws.rs` 的收成（挖成熟作物）路徑接線（比照 738 砍葉附加掉樹苗的既有慣例）。
 
 use crate::voxel::Block;
-use crate::voxel_farm::{CropKind, CARROT_ID, POTATO_ID, WHEAT_ID};
+use crate::voxel_farm::{CropKind, CARROT_ID, POTATO_ID, PUMPKIN_ID, WHEAT_ID};
 use crate::voxel_season::Season;
 use crate::voxel_timely::{crop_name_zh, is_in_season};
 
@@ -34,6 +34,7 @@ pub fn crop_kind_of_mature_block(block: Block) -> Option<CropKind> {
         Block::WheatMature => Some(CropKind::Wheat),
         Block::CarrotMature => Some(CropKind::Carrot),
         Block::PotatoMature => Some(CropKind::Potato),
+        Block::PumpkinMature => Some(CropKind::Pumpkin),
         _ => None,
     }
 }
@@ -41,9 +42,10 @@ pub fn crop_kind_of_mature_block(block: Block) -> Option<CropKind> {
 /// 某作物收成後入袋的果實 item id（沿用 `voxel_farm` 既有常數，單一真相來源）。
 pub fn crop_item_id(kind: CropKind) -> u8 {
     match kind {
-        CropKind::Wheat => WHEAT_ID,   // 18
-        CropKind::Carrot => CARROT_ID, // 49
-        CropKind::Potato => POTATO_ID, // 53
+        CropKind::Wheat => WHEAT_ID,     // 18
+        CropKind::Carrot => CARROT_ID,   // 49
+        CropKind::Potato => POTATO_ID,   // 53
+        CropKind::Pumpkin => PUMPKIN_ID, // 110
     }
 }
 
@@ -113,6 +115,17 @@ mod tests {
         assert_eq!(crop_item_id(CropKind::Wheat), WHEAT_ID);
         assert_eq!(crop_item_id(CropKind::Carrot), CARROT_ID);
         assert_eq!(crop_item_id(CropKind::Potato), POTATO_ID);
+        assert_eq!(crop_item_id(CropKind::Pumpkin), PUMPKIN_ID);
+    }
+
+    /// 季限作物·秋南瓜 v1（933）：成熟南瓜方塊對回南瓜；南瓜的時令＝秋，故秋收有豐收紅利、其餘三季 0。
+    #[test]
+    fn pumpkin_mature_and_autumn_bounty() {
+        assert_eq!(crop_kind_of_mature_block(Block::PumpkinMature), Some(CropKind::Pumpkin));
+        assert_eq!(harvest_bonus(CropKind::Pumpkin, Season::Autumn), BOUNTY_EXTRA);
+        for s in [Season::Spring, Season::Summer, Season::Winter] {
+            assert_eq!(harvest_bonus(CropKind::Pumpkin, s), 0, "{s:?} 南瓜不該有豐收紅利");
+        }
     }
 
     /// 時令季節收成 → 額外 BOUNTY_EXTRA；非時令 → 0。

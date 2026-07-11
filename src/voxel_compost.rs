@@ -37,7 +37,7 @@ pub const FERTILIZER_BOOST_SECS: u64 = 40;
 pub fn is_growing_crop(block: Block) -> bool {
     matches!(
         block,
-        Block::FarmSoilSeeded | Block::CarrotSeeded | Block::PotatoSeeded
+        Block::FarmSoilSeeded | Block::CarrotSeeded | Block::PotatoSeeded | Block::PumpkinSeeded
     )
 }
 
@@ -71,6 +71,7 @@ mod tests {
         assert!(is_growing_crop(Block::FarmSoilSeeded));
         assert!(is_growing_crop(Block::CarrotSeeded));
         assert!(is_growing_crop(Block::PotatoSeeded));
+        assert!(is_growing_crop(Block::PumpkinSeeded));
         // 成熟作物、農田土、雜項方塊皆不可施肥（撒了無意義、不該消耗沃肥）。
         assert!(!is_growing_crop(Block::WheatMature));
         assert!(!is_growing_crop(Block::CarrotMature));

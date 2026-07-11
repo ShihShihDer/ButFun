@@ -287,6 +287,13 @@ pub enum Block {
     /// 採集後可放置（發光裝飾方塊），送給居民會換來對地底奇景的驚喜反應。
     /// id 106：97/98=護身符/乙太幣、99~101=木/石/鐵劍、102~105=裝飾傢俱已佔用，106 是首個空號。
     GlowCrystal = 106,
+    /// 南瓜幼苗（季限作物·秋南瓜 v1，ROADMAP 933）——農田土上種下南瓜種子後的狀態方塊。id 107
+    ///（102~105 傢俱、106 洞穴已佔用，107 是空號）。比照 FarmSoilSeeded/CarrotSeeded/PotatoSeeded：
+    /// 實心、伺服器維護、玩家不可手動放置。
+    PumpkinSeeded = 107,
+    /// 成熟南瓜（季限作物·秋南瓜 v1，ROADMAP 933）——PumpkinSeeded 生長 ~150 秒後成熟。id 108。
+    /// 收割掉落南瓜(110)×3（全作物最大收量）＋南瓜種子(109)×1 ＋農田土(11)。
+    PumpkinMature = 108,
 }
 
 impl Block {
@@ -385,6 +392,8 @@ impl Block {
             104 => Some(Block::Table),
             105 => Some(Block::Banner),
             106 => Some(Block::GlowCrystal),
+            107 => Some(Block::PumpkinSeeded),
+            108 => Some(Block::PumpkinMature),
             _ => None,
         }
     }
@@ -1687,6 +1696,17 @@ mod tests {
         assert!(!Block::CarrotMature.is_placeable(), "成熟胡蘿蔔不可手動放置");
         assert_eq!(Block::from_u8(46), Some(Block::CarrotSeeded));
         assert_eq!(Block::from_u8(47), Some(Block::CarrotMature));
+    }
+
+    /// 季限作物·秋南瓜 v1（id 107/108）：比照胡蘿蔔——實心、伺服器維護、不可手動放置、id 往返。
+    #[test]
+    fn pumpkin_blocks_solid_not_placeable_roundtrip() {
+        assert!(Block::PumpkinSeeded.is_solid(), "南瓜幼苗應為實心");
+        assert!(Block::PumpkinMature.is_solid(), "成熟南瓜應為實心");
+        assert!(!Block::PumpkinSeeded.is_placeable(), "南瓜幼苗不可手動放置");
+        assert!(!Block::PumpkinMature.is_placeable(), "成熟南瓜不可手動放置");
+        assert_eq!(Block::from_u8(107), Some(Block::PumpkinSeeded));
+        assert_eq!(Block::from_u8(108), Some(Block::PumpkinMature));
     }
 
     #[test]
