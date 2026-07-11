@@ -166,6 +166,7 @@ use crate::voxel_hoe as vhoe;
 use crate::voxel_tool as vtool;
 use crate::voxel_clique as vclique;
 use crate::voxel_stroll as vstroll;
+use crate::voxel_walk_with as vwalkw;
 use crate::voxel_quarrel as vquarrel;
 use crate::voxel_teach as vteach;
 use crate::voxel_mastery_fame as vfame;
@@ -470,6 +471,12 @@ struct VoxelResident {
     stroll_partner: Option<(String, f32)>,
     /// 結伴同行冷卻倒數（秒，ROADMAP 925）：一段散步落幕後歸零前不會再被選中，避免同一對反覆黏著。
     stroll_cooldown: f32,
+    /// 居民邀你散步同行（ROADMAP 926）：Some((玩家顯示名, 剩餘秒數)) = 這位居民正陪那位玩家散步、
+    /// 閒晃中心貼著玩家此刻的座標並肩漫步；None = 沒在陪玩家走。逾時／玩家離線／自己接了別的任務／
+    /// 入夜下雨即清空，回到平常的一天。
+    walk_with: Option<(String, f32)>,
+    /// 居民邀你散步同行冷卻倒數（秒，ROADMAP 926）：一段同行落幕後歸零前不會再邀你，避免反覆黏著。
+    walk_with_cooldown: f32,
     /// 村莊自發習俗·暮聚（村莊自發習俗 v1）：Some((廣場中心 x, z)) = 正被今日這場暮聚吸引、朝村碑
     /// 廣場走去並聚著閒晃；None = 沒參與暮聚。以廣場中心座標偏移閒晃中心（沿用小圈子聚會的手法），
     /// 讓一群人看起來湊在廣場邊。與其他任務不互斥而是「讓位」：只在平常閒晃分支生效，
@@ -1843,6 +1850,9 @@ fn build_resident(
             // 摯友結伴同行（ROADMAP 925）：入場沒在結伴；初始冷卻錯開，讓交情先累積到摯友門檻。
             stroll_partner: None,
             stroll_cooldown: vstroll::STROLL_COOLDOWN_SECS + i as f32 * 30.0,
+            // 居民邀你散步同行（ROADMAP 926）：入場沒在陪走；初始冷卻錯開，讓交情先累積到摯友門檻。
+            walk_with: None,
+            walk_with_cooldown: vwalkw::WALK_COOLDOWN_SECS + i as f32 * 25.0,
             // 村莊自發習俗·暮聚（村莊自發習俗 v1）：入場沒有暮聚任務。
             custom_meet: None,
             custom_wait: 0.0,
@@ -12894,6 +12904,41 @@ fn tick_residents(dt: f32) {
             .map(|(rid, t)| (rid.clone(), (t.cx, t.cz, t.radius, t.pave.is_some())))
             .collect()
     }; // directed_tasks 讀鎖釋放
+    // 居民邀你散步同行 v1（ROADMAP 926）：在**取 residents 鎖之前**快照此刻在線玩家的顯示名＋座標，
+    // 供下方 residents 段①判定「哪位對某玩家有交情的居民，就近邀他一起走一段」②結伴時把居民閒晃中心
+    // 貼著玩家此刻的位置漫步。一 tick 一快照、一拍延遲無感（比照 lover_status_by_name 每 tick 快照
+    // 居民座標的手法）；players 讀鎖即釋、不與 residents 鎖巢狀（守死鎖鐵律）。
+    let walk_online_players: Vec<(String, f32, f32)> = {
+        let players = hub().players.read().unwrap();
+        players
+            .values()
+            .filter(|p| !p.name.is_empty())
+            .map(|p| (p.name.clone(), p.x, p.z))
+            .collect()
+    }; // players 讀鎖釋放
+    // 玩家名 → 此刻座標：供結伴時的閒晃中心覆寫（居民貼著你走）。
+    let walk_player_pos: HashMap<String, (f32, f32)> = walk_online_players
+        .iter()
+        .map(|(n, x, z)| (n.clone(), (*x, *z)))
+        .collect();
+    // 每位在線玩家 × 每位居民的好感度快照（memory 讀鎖即釋、不與 residents 鎖巢狀）。只留 >0 的組合，
+    // 省得下面每 tick 反覆查 memory。居民數與在線玩家數都極少，兩兩快照零效能疑慮。
+    let walk_bond: HashMap<(String, String), usize> = if walk_online_players.is_empty() {
+        HashMap::new()
+    } else {
+        let mem = hub().memory.read().unwrap();
+        let mut m = HashMap::new();
+        for j in 0..resident_count() {
+            let rid = format!("vox_res_{j}");
+            for (pname, _, _) in &walk_online_players {
+                let c = mem.affinity_count(pname, &rid);
+                if c > 0 {
+                    m.insert((rid.clone(), pname.clone()), c);
+                }
+            }
+        }
+        m
+    }; // memory 讀鎖釋放
     // 居民搬新家（引導式都更）：進行中搬家的快照（relocations 讀鎖即釋），供 residents
     // 寫鎖段用——拆除段把她排除出 agency 候選（搬家中不接其他任務）、閒晃中心貼著當前
     // 工地（蓋新家貼新地塊、拆舊家貼舊家），不與 residents 鎖巢狀（守死鎖鐵律）。
@@ -13247,6 +13292,9 @@ fn tick_residents(dt: f32) {
     // 摯友結伴同行起步事件（ROADMAP 925）：鎖內偵測配對，鎖外寫雙方各一筆散步記憶＋一則全村 Feed。
     // 格式：(leader_id, leader_name, follower_id, follower_name)。
     let mut stroll_starts: Vec<(String, &'static str, String, &'static str)> = Vec::new();
+    // 居民邀你散步同行 v1（ROADMAP 926）：本 tick 新開的「陪玩家走」起步，鎖釋放後逐筆落地
+    // 記憶＋動態牆。格式：(resident_id, resident_name, player_name)。
+    let mut walk_starts: Vec<(String, &'static str, String)> = Vec::new();
 
     // 居民回禮事件（ROADMAP 667）：鎖內偵測，鎖外執行（加入背包 + 廣播）。
     // 格式：(resident_id, resident_name, player_name, block_id, qty, message)
@@ -14905,6 +14953,37 @@ fn tick_residents(dt: f32) {
                     // 散步落幕：放下結伴、上冷卻，回到平常的閒晃。
                     r.stroll_partner = None;
                     r.stroll_cooldown = vstroll::STROLL_COOLDOWN_SECS;
+                }
+            }
+
+            // 居民邀你散步同行 v1（ROADMAP 926）：陪玩家走的狀態機（比照上方摯友結伴同行 925）。剩餘秒數
+            // 遞減；玩家離線（不在 walk_player_pos）／逾時／自己這一 tick 接了別的既定任務／入夜或下雨
+            // （散步是白天好天氣的閒事）就放下這份陪走、上冷卻。閒晃中心貼著玩家此刻座標的覆寫在下方閒晃
+            // 中心鏈、下一 tick 生效。
+            if r.walk_with_cooldown > 0.0 {
+                r.walk_with_cooldown -= dt;
+            }
+            if let Some((pname, remaining)) = r.walk_with.clone() {
+                let remaining = remaining - dt;
+                let player_online = walk_player_pos.contains_key(&pname);
+                // 這一 tick 是否已被更高優先的既定任務接手（那些分支在下方閒晃中心鏈更前面、會蓋過陪走）。
+                let busy = r.visiting.is_some()
+                    || r.expedition.is_some()
+                    || r.follow.is_some()
+                    || r.clique_meet.is_some()
+                    || r.custom_meet.is_some()
+                    || r.frontier_visit.is_some()
+                    || r.summon.is_some()
+                    || r.gather.is_some()
+                    || r.fetch.is_some()
+                    || r.stroll_partner.is_some()
+                    || r.asleep;
+                if player_online && remaining > 0.0 && !busy && !is_night && !raining {
+                    r.walk_with = Some((pname, remaining));
+                } else {
+                    // 同行落幕：放下陪走、上冷卻，回到平常的閒晃。
+                    r.walk_with = None;
+                    r.walk_with_cooldown = vwalkw::WALK_COOLDOWN_SECS;
                 }
             }
 
@@ -16832,6 +16911,14 @@ fn tick_residents(dt: f32) {
                             .get(lead_name.as_str())
                             .map(|&(x, z, _, _)| (x, z))
                             .unwrap_or((r.home_x, r.home_z))
+                    } else if let Some((pname, _)) = &r.walk_with {
+                        // 居民邀你散步同行（ROADMAP 926）：以玩家「此刻的位置」為閒晃中心，貼著你並肩漫步
+                        //（你在走牠就步步跟上）；玩家已離線查不到就退回自己家域（容錯不 panic，下一 tick 由
+                        // 上方狀態機收掉這份陪走）。
+                        walk_player_pos
+                            .get(pname.as_str())
+                            .copied()
+                            .unwrap_or((r.home_x, r.home_z))
                     } else if sheltering {
                         let (hx, _hy, hz) = house_locations[&r.id];
                         (hx as f32 + 0.5, hz as f32 + 0.5)
@@ -16858,6 +16945,9 @@ fn tick_residents(dt: f32) {
                     } else if r.stroll_partner.is_some() {
                         // 結伴同行：小半徑，貼著 leader 並肩、不散開（ROADMAP 925）。
                         vstroll::STROLL_WANDER_RADIUS
+                    } else if r.walk_with.is_some() {
+                        // 居民邀你散步同行：小半徑，貼著玩家並肩、不散開（ROADMAP 926）。
+                        vwalkw::WALK_WANDER_RADIUS
                     } else if sheltering {
                         vr::SHELTER_WANDER_RADIUS
                     } else {
@@ -17749,6 +17839,7 @@ fn tick_residents(dt: f32) {
                     && r.say.is_empty()
                     && r.stroll_partner.is_none()
                     && r.stroll_cooldown <= 0.0
+                    && r.walk_with.is_none()
                     && r.clique_meet.is_none()
                     && r.custom_meet.is_none()
                     && r.cheer_target.is_none()
@@ -17824,6 +17915,61 @@ fn tick_residents(dt: f32) {
                     }
                 }
                 stroll_starts.push((lead_id, lead_name, foll_id, foll_name));
+            }
+
+            // 2f-3) 居民邀你散步同行觸發（ROADMAP 926）：白天好天氣，找第一位對某在線玩家有交情
+            //（好感達摯友門檻）、閒著、且離那位玩家夠近的居民，偶爾邀他一起在村裡走一段。複用上方
+            // stroll 掃描已建的 walk_online_players／walk_bond／free_for_stroll（零額外鎖）；居民數與
+            // 在線玩家數都極少、掃描零效能疑慮；一個 tick 至多開一位（確定性 id 序 × 玩家快照序，不搶不亂）。
+            // 居民陪你走的閒晃中心覆寫在上方閒晃中心鏈、下一 tick 生效。
+            if !walk_online_players.is_empty() {
+                let mut walk_pick: Option<(usize, String)> = None; // (居民 index, 玩家名)
+                'walk_scan: for i in 0..residents.len() {
+                    if !free_for_stroll(&residents[i]) {
+                        continue;
+                    }
+                    let (rx, rz) = (residents[i].body.x, residents[i].body.z);
+                    for (pname, px, pz) in &walk_online_players {
+                        let bond = walk_bond
+                            .get(&(residents[i].id.clone(), pname.clone()))
+                            .copied()
+                            .unwrap_or(0);
+                        let dx = rx - px;
+                        let dz = rz - pz;
+                        // free_for_stroll 已收斂各種「正忙」狀態，但**不含**同行冷卻——
+                        // 冷卻是本刀專屬（240 秒防同一位反覆黏著同行），在此顯式傳入純函式判定。
+                        if vwalkw::eligible(
+                            true,
+                            residents[i].walk_with_cooldown > 0.0,
+                            bond,
+                            dx * dx + dz * dz,
+                        ) && rand::random::<f32>() < vwalkw::WALK_CHANCE
+                        {
+                            walk_pick = Some((i, pname.clone()));
+                            break 'walk_scan;
+                        }
+                    }
+                }
+                if let Some((i, pname)) = walk_pick {
+                    let rid = residents[i].id.clone();
+                    let rname = residents[i].name;
+                    let pick = ((residents[i].body.x as i64)
+                        .wrapping_add(residents[i].body.z as i64)) as usize;
+                    let r = &mut residents[i];
+                    r.walk_with = Some((pname.clone(), vwalkw::WALK_DURATION_SECS));
+                    r.walk_with_cooldown = vwalkw::WALK_COOLDOWN_SECS;
+                    // 初始目標朝玩家（下一 tick 起閒晃中心貼著玩家走）。
+                    if let Some((px, pz)) = walk_player_pos.get(&pname).copied() {
+                        r.target_x = px;
+                        r.target_z = pz;
+                    }
+                    r.wait_timer = 0.0;
+                    if r.say.is_empty() {
+                        r.say = vwalkw::invite_line(&pname, pick).chars().take(40).collect();
+                        r.say_timer = SAY_SECS;
+                    }
+                    walk_starts.push((rid, rname, pname));
+                }
             }
         }
 
@@ -18317,6 +18463,20 @@ fn tick_residents(dt: f32) {
             lead_name,
             &vstroll::stroll_feed_line(lead_name, foll_name),
         );
+    }
+
+    // 4a-2f-3) 居民邀你散步同行起步落地（ROADMAP 926）：鎖已全釋放。每開一段陪走，居民記一筆並肩
+    // 散步的溫暖 episodic 記憶（掛在同行的玩家名下、累積對你的好感——你陪走越多、牠越把你當朋友，
+    // memory→behavior 正向回饋），再上一則全村動態牆。鎖序：memory 寫（逐筆即釋、不巢狀）→ Feed append
+    //（鎖外 IO）；append-only 不破壞既有資料、守死鎖鐵律。
+    for (rid, rname, pname) in &walk_starts {
+        let mem_line = vwalkw::walk_memory_line(pname);
+        let e = {
+            let mut mem = hub().memory.write().unwrap();
+            mem.add_memory(rid, pname, &mem_line)
+        }; // memory 寫鎖釋放（逐筆即釋、不巢狀）
+        vmem::append_memory(&e);
+        vfeed::append_feed(vwalkw::FEED_KIND, rname, &vwalkw::walk_feed_line(rname, pname));
     }
 
     // 4a-2h) 村莊自發習俗·暮聚落地（村莊自發習俗 v1）：鎖已全釋放。這一 tick 若開了一場暮聚
