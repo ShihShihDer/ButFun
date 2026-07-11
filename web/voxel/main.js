@@ -831,6 +831,145 @@ function updateMeteor(dt) {
   meteorMat.opacity = Math.sin(p * Math.PI) * 0.95;
 }
 
+// ── 極光天氣視覺 v1（ROADMAP 930）─────────────────────────────────────────────
+// 雪／冰群系的夜空，偶爾浮現一片柔和流動的青綠／紫色極光帶，緩緩波動，壯麗而療癒。
+// 純前端、零後端、零協議：前端用既有廣播的 worldTime（入夜程度）＋本地取樣玩家腳下附近是否
+// 為積雪／雪地（冬季雪蓋 or 雪群系的 SNOW 方塊）本地判定，不新增任何 WS/HTTP 欄位。
+// 效能鐵律：整片極光＝單一 THREE.Mesh（一次 draw call），走廉價 shader（無貼圖、無粒子、無逐幀
+// 幾何配置），流動全由 uTime uniform 驅動；非該情境時整片隱藏（visible=false）、零成本早退。
+// 稀有／緩慢：以一個很長的週期（AURORA_CYCLE_SECS）低機率浮現一段，不常駐洗版。與繁星（靜止）、
+// 流星（一瞬劃過）、彩虹（白天雨後）razor-sharp 區隔：這是夜裡雪原上「緩緩流動的一整片天幕」。
+const AURORA_CYCLE_SECS = 150;   // 一個完整「醞釀→浮現→退去」的週期長度（秒）——夠長 ⇒ 稀有、不洗版
+const AURORA_ACTIVE_FRAC = 0.32; // 週期內約三成時間可見（其餘天空乾淨），配合淡入淡出更顯珍稀
+const AURORA_PEAK_ALPHA = 0.55;  // 極光最亮時的整體不透明度（半透明、柔和不刺眼）
+const AURORA_FADE_SPEED = 0.25;  // 淡入／淡出速度（alpha/秒）——刻意慢，浮現與退去都從容
+const AURORA_WIDTH = 460;        // 天幕寬（格）：橫跨大半個天際
+const AURORA_HEIGHT = 150;       // 天幕高（格）：一片垂墜的極光簾
+const AURORA_DIST = 240;         // 掛在鏡頭前方多遠（格）：遠到看起來固定在天邊、隨鏡頭平移
+const AURORA_Y = 120;            // 天幕中心抬高（格）：掛在夜空高處，不壓地平線
+// 極光 shader：無貼圖、無粒子。片段著色器用幾層錯相位的正弦，沿水平方向織出「垂直光簾」的
+// 明暗帶，隨 uTime 緩緩橫向捲動＋上下起伏；顏色在青綠↔紫之間依位置與時間漸變；上下邊緣柔化
+// （簾頂淡、底端漸隱）以免出現硬邊。整體再乘上 uAlpha（本地淡入淡出）。
+const auroraUniforms = {
+  uTime: { value: 0 },
+  uAlpha: { value: 0 },
+};
+const auroraMat = new THREE.ShaderMaterial({
+  uniforms: auroraUniforms,
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  fog: false,
+  side: THREE.DoubleSide,
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    precision mediump float;
+    varying vec2 vUv;
+    uniform float uTime;
+    uniform float uAlpha;
+    void main() {
+      float x = vUv.x;
+      float y = vUv.y;
+      // 垂直光簾：幾層錯相位、不同頻率的正弦沿水平方向織出細密的明暗光柱，隨時間緩緩橫向捲動。
+      // 疊一層低頻大波當「整體亮度包絡」，讓極光呈一叢一叢的光束、而非均勻一片。
+      float t = uTime * 0.06;
+      float fine =
+          0.50 + 0.50 * sin(x * 34.0 + t * 2.2)
+        + 0.35 * sin(x * 61.0 - t * 1.4)
+        + 0.22 * sin(x * 97.0 + t * 0.8);
+      float envelope = 0.55 + 0.45 * sin(x * 5.0 - t * 0.9); // 一叢一叢的大尺度亮度包絡
+      float curtain = clamp(fine * 0.5, 0.0, 1.0) * (0.35 + 0.65 * clamp(envelope, 0.0, 1.0));
+      // 簾腳起伏：底緣隨水平位置＋時間上下波動，像被夜風輕拂的光簾。
+      float wave = 0.10 * sin(x * 6.0 + uTime * 0.20) + 0.06 * sin(x * 15.0 - uTime * 0.13);
+      float yy = y - wave;
+      // 上下輪廓：底端漸隱、頂端拖出柔光——極光下緣較亮實、往上散成霧狀輝光（真實極光的樣子）。
+      float vert = smoothstep(0.0, 0.28, yy) * (1.0 - smoothstep(0.55, 1.0, yy));
+      float topGlow = smoothstep(0.2, 0.85, yy) * 0.35; // 上半再補一層淡輝光
+      // 青綠↔紫的柔和漸變：依水平位置＋時間游移，且越往上越偏紫（極光高處常泛紫紅）。
+      float hue = clamp(0.4 + 0.35 * sin(x * 2.3 + uTime * 0.10) + 0.35 * yy, 0.0, 1.0);
+      vec3 teal   = vec3(0.35, 0.98, 0.68); // 青綠
+      vec3 violet = vec3(0.66, 0.42, 0.98); // 柔紫
+      vec3 col = mix(teal, violet, hue);
+      float intensity = (curtain * vert + topGlow * curtain) * 1.35;
+      gl_FragColor = vec4(col * intensity, intensity * uAlpha);
+    }
+  `,
+});
+const auroraMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(AURORA_WIDTH, AURORA_HEIGHT, 1, 1),
+  auroraMat,
+);
+auroraMesh.visible = false;
+scene.add(auroraMesh);
+
+let auroraAlpha = 0;             // 本地平滑不透明度（向目標 ease）
+let auroraPhase = 0;             // 週期相位累計（秒）——決定此刻是否在「浮現窗口」內
+let _auroraSnowTimer = 0;       // 雪地取樣節流計時（秒）：非每幀掃地，2 秒查一次即可
+let _auroraNearSnow = false;    // 上次取樣結果：玩家腳下附近是否為積雪／雪地
+
+// 玩家腳下附近是否處於「雪／冰」情境：冬季（全地圖鋪雪頂蓋）算數；或就地取樣腳下數格內
+// 是否有 SNOW 方塊（雪群系的地表），兩者其一即算「近雪」。純本地判定、零協議。
+function auroraNearSnow() {
+  if (worldSeason === "winter") return true; // 冬季：整片世界鋪雪 ⇒ 任何地方都算雪原
+  const px = Math.floor(camera.position.x);
+  const py = Math.floor(camera.position.y);
+  const pz = Math.floor(camera.position.z);
+  // 只掃腳下一小柱＋近鄰（少量 getRaw，2 秒一次，成本可忽略），命中 SNOW 即算雪群系。
+  for (let dy = -2; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        if (getRaw(px + dx, py + dy, pz + dz) === SNOW) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// 每幀更新極光：推進週期相位，決定此刻是否該浮現；只在「夜間 ＋ 近雪 ＋ 沒下雨 ＋ 週期窗口內」
+// 才把目標 alpha 拉高、否則歸零；alpha 向目標緩慢 ease。可見時把天幕掛到鏡頭前方遠處天邊、
+// 隨鏡頭平移（看似固定在天上）、繞 Y 軸朝向鏡頭；不亮時整片隱藏、零成本早退。
+function updateAurora(dt) {
+  auroraPhase += dt;
+  // 雪地取樣節流：非每幀掃，2 秒一次（玩家移動速度下足夠即時）。
+  _auroraSnowTimer -= dt;
+  if (_auroraSnowTimer <= 0) {
+    _auroraSnowTimer = 2.0;
+    _auroraNearSnow = auroraNearSnow();
+  }
+  // 週期內的「浮現窗口」：相位落在 [0, AURORA_ACTIVE_FRAC) 才算這段有極光。
+  const cyclePos = (auroraPhase % AURORA_CYCLE_SECS) / AURORA_CYCLE_SECS;
+  const inWindow = cyclePos < AURORA_ACTIVE_FRAC;
+  const nf = nightFactor(worldTime);
+  // 只在夜裡（星星已浮現）＋腳下近雪／冰＋沒下雨（烏雲蔽天）＋週期窗口內，才讓極光浮現。
+  const wantAurora = inWindow && nf > 0.4 && _auroraNearSnow && !isRaining;
+  const target = wantAurora ? AURORA_PEAK_ALPHA * nf : 0;
+  if (auroraAlpha < target) auroraAlpha = Math.min(target, auroraAlpha + AURORA_FADE_SPEED * dt);
+  else if (auroraAlpha > target) auroraAlpha = Math.max(target, auroraAlpha - AURORA_FADE_SPEED * dt);
+  if (auroraAlpha <= 0.001) { auroraMesh.visible = false; return; }
+  auroraMesh.visible = true;
+  auroraUniforms.uAlpha.value = auroraAlpha;
+  auroraUniforms.uTime.value += dt;
+  // 掛在鏡頭水平朝向的遠方天邊、隨鏡頭平移（視差可忽略 ⇒ 像掛在無限遠的夜空）。
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  dir.y = 0;
+  if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
+  dir.normalize();
+  auroraMesh.position.set(
+    camera.position.x + dir.x * AURORA_DIST,
+    camera.position.y + AURORA_Y,
+    camera.position.z + dir.z * AURORA_DIST,
+  );
+  // 天幕面正對鏡頭視線（繞 Y 軸只偏航、維持直立）。
+  auroraMesh.rotation.y = Math.atan2(dir.x, dir.z);
+}
+
 // ── 乙太煙火 v1（ROADMAP 785）────────────────────────────────────────────────
 // 玩家朝夜空施放的煙火:一束火花在施放者頭頂上方升空、綻放。伺服器廣播 firework{x,y,z,palette}
 // 給全場,前端在該位置上方生成一朵綻放的火花點雲。效能鐵律:每束煙火＝單一 THREE.Points
@@ -6661,6 +6800,7 @@ function update(dt) {
   updateRainbow(dt);
   updateMeteor(dt); // 流星許願 v1（904）：上升緣播一道劃過夜空的光痕
   updateNightSky(dt);
+  updateAurora(dt); // 極光天氣視覺 v1（930）：雪原夜空偶爾浮現一片流動的青綠／紫極光簾
   updateFireworks(dt); // 乙太煙火 v1（785）：推進進行中的煙火綻放
   updateShadowFx(dt);  // 暗影生物 v1：暗影浮動/微光呼吸/受擊閃白/輕煙淡出
   updateBellRings(dt); // 集會鐘 v1（自主提案切片）：推進進行中的鐘聲漣漪
@@ -7847,6 +7987,13 @@ window.__voxel = {
   get meteorOpacity() { return meteorMat.opacity; },
   triggerMeteor() { triggerMeteor(); return meteorMesh.visible; },
   updateMeteor(dt) { updateMeteor(dt); },
+  // ── 極光天氣視覺 v1 QA 用（ROADMAP 930）──：強制拉進浮現窗口＋讀可見度/alpha 截圖驗證
+  get auroraVisible() { return auroraMesh.visible; },
+  get auroraAlpha() { return auroraAlpha; },
+  get auroraNearSnow() { return auroraNearSnow(); },
+  // QA：把週期相位歸零（拉進浮現窗口）——配合夜間 worldTime＋近雪即可觸發極光。
+  _qaForceAurora() { auroraPhase = 0; _auroraSnowTimer = 0; _auroraNearSnow = auroraNearSnow(); return auroraMesh.visible; },
+  updateAurora(dt) { updateAurora(dt); },
   // ── 四季樹葉 v1 QA 用（自主提案切片）──：切季節、讀當季樹葉色、就地重建驗證換色
   get worldSeason() { return worldSeason; },
   setSeason(s) { if (s !== worldSeason) { worldSeason = s; updateSkyAndLight(worldTime); remeshForSeason(); } return worldSeason; },
