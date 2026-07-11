@@ -184,9 +184,15 @@ pub fn colony_plots(cx: i32, cz: i32) -> Vec<Plot> {
 
 // ── 遷居名單（純函式、確定性）────────────────────────────────────────────────────────
 
-/// 待遷居名單：每座殖民地的拓荒者（已換算成居民 id）中，還沒被劃歸到該殖民地的那些。
+/// 待遷居名單：每座殖民地的拓荒者（已換算成居民 id）中，**還住在主村、還沒遷去任何殖民地**的那些。
 /// `colony_founders`＝[(殖民地 seq, 拓荒者居民 id 們)]；輸出依（殖民地 seq、id）排序——
-/// 穩定順序讓「一次一位」輪流遷居時不跳號。冪等：已劃歸的不再列（部署後自動收斂）。
+/// 穩定順序讓「一次一位」輪流遷居時不跳號。冪等：已定居任一殖民地的不再列（部署後自動收斂）。
+///
+/// **只挑「仍在主村」的拓荒者**（而非「未劃歸到此殖民地」）是關鍵：同一位居民可能同時是**兩座**
+/// 殖民地的拓荒者（湧現系統裡她先後奠基了兩村），若只看「未劃歸到此殖民地」，她定居 A 後就會被
+/// 列為「未劃歸 B」→ 遷去 B → 又被列為「未劃歸 A」→ 遷回 A……在兩村間**無限來回搬家**（每輪
+/// 都 append 一筆聚落/搬家/記憶記錄，資料檔無界成長）。改看「仍在主村」後：她一旦定居最先掃到
+/// 的那座（seq 最小、確定性），`settlement_of != MAIN` 便從此不再列入，thrash 根絕。
 pub fn pending_migrations(
     store: &SettlementStore,
     colony_founders: &[(u64, Vec<String>)],
@@ -199,7 +205,8 @@ pub fn pending_migrations(
         let mut rs: Vec<&String> = rids.iter().collect();
         rs.sort();
         for rid in rs {
-            if store.settlement_of(rid) != sid {
+            // 已遷去自己這座殖民地或**任何一座**殖民地＝已安身，不再列（防身兼多村拓荒者的來回 thrash）。
+            if store.settlement_of(rid) == MAIN_SETTLEMENT {
                 out.push((rid.clone(), sid));
             }
         }
@@ -351,6 +358,26 @@ mod tests {
         store.assign("vox_res_1", 2);
         store.assign("vox_res_3", 2);
         assert!(pending_migrations(&store, &founders).is_empty());
+    }
+
+    #[test]
+    fn dual_colony_founder_does_not_thrash_between_settlements() {
+        // 回歸：同一位居民同時是兩座殖民地的拓荒者（湧現系統裡她先後奠基了兩村）。
+        // 修復前：她定居 A 後會被判「未劃歸 B」→ 遷 B → 又「未劃歸 A」→ 遷回 A，每輪來回。
+        let mut store = SettlementStore::new();
+        let founders = vec![
+            (0u64, vec!["vox_res_1".to_string()]), // 風禾屯 → sid 1
+            (1u64, vec!["vox_res_1".to_string()]), // 草浪屯 → sid 2（同一位拓荒者）
+        ];
+        // 起初在主村：兩座殖民地都把她列為待遷（migration_kickoff 一次只遷一位，取最先掃到的）。
+        let pending = pending_migrations(&store, &founders);
+        assert_eq!(pending, vec![("vox_res_1".to_string(), 1), ("vox_res_1".to_string(), 2)]);
+        // 她定居最先掃到的風禾屯（sid 1）後：不再被列入待遷——**絕不**被草浪屯（sid 2）拉走。
+        store.assign("vox_res_1", 1);
+        assert!(
+            pending_migrations(&store, &founders).is_empty(),
+            "身兼兩村拓荒者、已定居其一者不該再被另一村列為待遷（否則兩村間無限來回搬家）"
+        );
     }
 
     #[test]
