@@ -486,6 +486,28 @@ const SEASON_TINT = {
   winter: [0.80, 0.86, 0.96, 0.18],
 };
 
+// ── 四季樹葉 v1（自主提案切片）───────────────────────────────────────────────
+// 季節輪替(798)至今只把天空/霧/光「染色」，世界的「方塊」本身從不隨季節改變——森林一年到頭
+// 都是同一片濃綠。本刀讓樹葉（世界最大片的植被）第一次隨四季換上不同顏色：春嫩綠、夏濃綠、
+// 秋琥珀金、冬霜灰綠。是繼雨(700)/初雪(900)/彩虹(780)/流星(904)/晨霧(913) 一路只碰「天上落下或
+// 掛著的東西」之後，環境軸第一次真的改變「地上長著的方塊」本身的模樣。
+// 純視覺、零協議：前端用既有廣播的 worldSeason 本地決定樹葉基底色，換季時重建已載入的 chunk。
+const SEASON_LEAF = {
+  spring: [0.40, 0.66, 0.30], // 春——新葉嫩綠，比夏天更亮更黃嫩
+  summer: [0.24, 0.52, 0.24], // 夏——濃蔭深綠，一年最鬱鬱蔥蔥（近似預設樹葉色）
+  autumn: [0.82, 0.44, 0.14], // 秋——琥珀金橙，整片森林轉暖，本刀的主角
+  winter: [0.56, 0.62, 0.58], // 冬——霜覆的冷灰綠，葉色褪盡、蒙上一層寒霜
+};
+// 當前季節的樹葉基底色（容錯未知字串 → 回夏天濃綠，永不回傳空值）。
+function foliageLeafColor(season) {
+  return SEASON_LEAF[season] || SEASON_LEAF.summer;
+}
+// 換季時把已載入的 chunk 全部標記重建，讓樹葉重新套上當季顏色。沿用每幀節流的 dirty 佇列
+//（rebuildChunk 迴圈每幀最多重建 4 塊），換季的一次性重建成本分攤到數幀、不掉幀（FPS 鐵律）。
+function remeshForSeason() {
+  for (const k of chunks.keys()) dirty.add(k);
+}
+
 // 更新天空背景色、霧色、太陽方向/顏色、半球光強度。
 function updateSkyAndLight(t) {
   // 找所在的插值段。
@@ -1611,7 +1633,9 @@ function rebuildChunk(key) {
           // （window.__qaCubePlants 僅供 QA 對比截圖用，切回舊的整格立方體渲染。）
           emitCross(pos, norm, col, idx, lx, ly, lz, variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz), b);
         } else {
-          const c = variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz);
+          // 四季樹葉 v1：樹葉方塊的基底色隨當前季節換色，其餘方塊沿用固定色。
+          const base = b === LEAVES ? foliageLeafColor(worldSeason) : (COLOR[b] || COLOR[STONE]);
+          const c = variedBlockColor(base, wx, wy, wz);
           for (const f of FACES) {
             if (!faceVisibleOpaque(wx + f.d[0], wy + f.d[1], wz + f.d[2])) continue;
             emitFace(pos, norm, col, idx, lx, ly, lz, f, c);
@@ -5604,7 +5628,8 @@ function connect() {
       // 流星許願 v1（ROADMAP 904）：meteor 隨同一份快照送達，updateMeteor 於旗標「假→真」上升緣播一道光痕。
       if (typeof m.meteor === "boolean") meteorActive = m.meteor;
       // 季節輪替 v1（ROADMAP 798）：season 隨同一份快照送達，換季時整片天地換上不同色調。
-      if (typeof m.season === "string" && m.season !== worldSeason) { worldSeason = m.season; skyDirty = true; }
+      // window.__qaFreezeSeason 僅供 QA 凍結季節（不被伺服器快照覆寫）以截四季樹葉對照圖用；正常遊玩恆為 undefined。
+      if (!window.__qaFreezeSeason && typeof m.season === "string" && m.season !== worldSeason) { worldSeason = m.season; skyDirty = true; remeshForSeason(); /* 四季樹葉 v1：換季重建樹葉顏色 */ }
       // 季節指示器 v1（ROADMAP 897）：season_day（這一季第幾天）隨同一份快照送達，HUD 徽章顯示用。
       if (typeof m.season_day === "number") worldSeasonDay = m.season_day;
       if (skyDirty) updateSkyAndLight(worldTime);
@@ -7549,6 +7574,10 @@ window.__voxel = {
   get meteorOpacity() { return meteorMat.opacity; },
   triggerMeteor() { triggerMeteor(); return meteorMesh.visible; },
   updateMeteor(dt) { updateMeteor(dt); },
+  // ── 四季樹葉 v1 QA 用（自主提案切片）──：切季節、讀當季樹葉色、就地重建驗證換色
+  get worldSeason() { return worldSeason; },
+  setSeason(s) { if (s !== worldSeason) { worldSeason = s; updateSkyAndLight(worldTime); remeshForSeason(); } return worldSeason; },
+  foliageLeafColor(s) { return foliageLeafColor(s == null ? worldSeason : s); },
   // ── 真瀏覽器 QA 用：讀準心目標、讀方塊、觸發破壞/放置、選方塊 ──
   get target() { return target; },
   getBlock(x, y, z) { return getRaw(x, y, z); },
