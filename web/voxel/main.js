@@ -747,9 +747,26 @@ scene.add(starPoints);
 const moonMat = new THREE.MeshBasicMaterial({
   color: 0xf5f2e0, transparent: true, opacity: 0, depthWrite: false, fog: false,
 });
-const moon = new THREE.Mesh(new THREE.SphereGeometry(7, 20, 20), moonMat);
+const MOON_R = 7;                                   // 月球半徑(格)
+const moon = new THREE.Mesh(new THREE.SphereGeometry(MOON_R, 20, 20), moonMat);
 moon.visible = false;
+moon.renderOrder = 2;
 scene.add(moon);
+
+// 月有圓缺 v1(ROADMAP 946):月相受光比例(0=新月、1=滿月),由伺服器快照 moon_illum 現算後帶來;
+// 前端用一顆暗球「遮罩」削去圓月的一部分,削出當夜的相位(滿月不遮、弦月遮半、新月幾乎全遮)。
+// 純視覺、零新美術:沿用既有月球 mesh + 一顆暗球,非事件時整組隨月一起隱藏、零額外成本。
+let moonIllum = 1.0;                                // 預設滿月(舊快照無此欄位時保持圓月)
+const moonShadowMat = new THREE.MeshBasicMaterial({ // 暗夜色遮罩(近似夜空底色,遮住的部分自然「消失」)
+  color: 0x0b1020, transparent: true, opacity: 0, depthWrite: false, fog: false,
+});
+const moonShadow = new THREE.Mesh(new THREE.SphereGeometry(MOON_R * 1.03, 20, 20), moonShadowMat);
+moonShadow.visible = false;
+moonShadow.renderOrder = 3;                         // 疊在月之後(上)畫,才遮得住
+scene.add(moonShadow);
+const _moonToCam = new THREE.Vector3();             // 複用暫存向量,避免每幀配置
+const _moonRight = new THREE.Vector3();
+const _moonUp = new THREE.Vector3(0, 1, 0);
 
 // 入夜程度:1=深夜(繁星最盛)、0=白晝(無星),黎明/黃昏之間平滑過渡。與 SKY_KEYS 的深夜段對齊。
 function nightFactor(t) {
@@ -766,7 +783,7 @@ let starTwinkle = 0; // 星光微閃相位(廉價 sin,一次乘法)
 function updateNightSky(dt) {
   let nf = nightFactor(worldTime);
   if (isRaining) nf *= 0.15; // 下雨:烏雲蔽星,只留極淡一層
-  if (nf <= 0.001) { starPoints.visible = false; moon.visible = false; return; }
+  if (nf <= 0.001) { starPoints.visible = false; moon.visible = false; moonShadow.visible = false; return; }
   starTwinkle += dt;
   const twinkle = 0.85 + 0.15 * Math.sin(starTwinkle * 1.6); // 整片星光輕微明滅(非逐星,零額外成本)
   starPoints.visible = true;
@@ -781,6 +798,19 @@ function updateNightSky(dt) {
     camera.position.y + Math.sin(ang) * STAR_RADIUS * 0.85,
     camera.position.z + 25,
   );
+  // 月有圓缺 v1(ROADMAP 946):依受光比例 moonIllum 把暗球遮罩沿「螢幕水平」偏移,削出當夜相位。
+  // 偏移量 = illum·2R:滿月(illum=1)偏開整個直徑 ⇒ 完全不遮;新月(illum=0)疊在月心 ⇒ 幾乎全遮;
+  // 半月(illum=0.5)偏一個半徑 ⇒ 遮成弦月。螢幕水平軸 = (月→鏡頭)×上,故任何鏡頭朝向都削得自然。
+  const il = Math.max(0, Math.min(1, moonIllum));
+  moonShadow.visible = true;
+  // 與月同步淡入淡出;近滿月時遮罩本已偏開整個直徑,順手把它淡掉 ⇒ 天邊不留一顆多餘的暗點。
+  moonShadowMat.opacity = nf * Math.min(1, (1 - il) * 4);
+  _moonToCam.subVectors(camera.position, moon.position).normalize();
+  _moonRight.crossVectors(_moonToCam, _moonUp).normalize();    // 螢幕水平方向
+  const off = il * 2 * MOON_R;
+  moonShadow.position.copy(moon.position)
+    .addScaledVector(_moonRight, off)                          // 沿水平削去一側
+    .addScaledVector(_moonToCam, 0.6);                         // 略朝鏡頭 ⇒ 確保疊在月前
 }
 
 // ── 雨後彩虹 v1（ROADMAP 780）─────────────────────────────────────────────
@@ -6655,6 +6685,9 @@ function connect() {
       if (!window.__qaFreezeSeason && typeof m.season === "string" && m.season !== worldSeason) { worldSeason = m.season; skyDirty = true; remeshForSeason(); /* 四季樹葉 v1：換季重建樹葉顏色 */ }
       // 季節指示器 v1（ROADMAP 897）：season_day（這一季第幾天）隨同一份快照送達，HUD 徽章顯示用。
       if (typeof m.season_day === "number") worldSeasonDay = m.season_day;
+      // 月有圓缺 v1（ROADMAP 946）：moon_illum（0＝新月、1＝滿月）隨同一份快照送達，updateNightSky 依此
+      // 把那輪月削成當夜的相位。舊快照無此欄位時保持上一次值（預設滿月），零協議破壞。
+      if (typeof m.moon_illum === "number") moonIllum = m.moon_illum;
       if (skyDirty) updateSkyAndLight(worldTime);
     } else if (m.t === "talk") {
       // 居民對話回覆（單播）：
