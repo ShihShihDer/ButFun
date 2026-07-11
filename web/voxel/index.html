@@ -122,8 +122,8 @@
       color: #fff; font-size: 14px; display: none; align-items: center; justify-content: center;
       pointer-events: auto; user-select: none;
     }
-    #diveUp   { bottom: 234px; }
-    #diveDown { bottom: 150px; }
+    #diveUp   { bottom: 318px; } /* 疊圖修復：挖=150 潛=234 浮=318，右欄四鈕直排不重疊（手機直式實際比例驗過） */
+    #diveDown { bottom: 234px; }
     body.lefty #diveUp, body.lefty #diveDown { right: auto; left: 124px; }
     /* 觸控按鈕大小/透明度：吃設定面板的 CSS 變數（重載保留、即時生效）。
        用 transform scale 縮放，位置錨點不變（右下拇指區）。 */
