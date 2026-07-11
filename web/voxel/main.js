@@ -157,6 +157,9 @@ const COIN = 98;
 // 驅影之劍 v1（ROADMAP 887，自主提案切片）——世界第一批武器，握在手上驅散夜之暗影更快：
 // 木劍一擊抵兩下、石/鐵劍一擊即散，鐵劍還雙倍乙太礦。純物品、不可放置，99~101 是首個空號。
 const SWORD_WOOD = 99, SWORD_STONE = 100, SWORD_IRON = 101;
+// 發光結晶 v1（地下洞穴探索 v1，ROADMAP 933）——只生成在天然洞穴腔室岩壁上、泛柔和青綠幽光的
+// 礦晶；是「挖到豁然開朗地底洞穴」時值得駐足的發現＋照明。可放置的發光方塊，比照火把/乙太燈作法。
+const GLOW_CRYSTAL = 102;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -285,6 +288,9 @@ const COLOR = {
   [SWORD_WOOD]:  [0.64, 0.46, 0.26], // 木劍——深棕木刃
   [SWORD_STONE]: [0.62, 0.62, 0.64], // 石劍——冷灰石刃
   [SWORD_IRON]:  [0.86, 0.88, 0.94], // 鐵劍——明亮銀白，精煉金屬鋒芒
+  // 發光結晶 v1（地下洞穴探索 v1，ROADMAP 933）——高亮青綠幽光，一眼是黑暗洞穴裡自體發光的礦晶
+  // （比照火把/乙太燈純亮色作法，靠 lightColorFor 在四周投出柔和青綠點光）。
+  [GLOW_CRYSTAL]: [0.42, 0.95, 0.68],
 };
 
 // ── 裝飾植物十字貼片渲染 v2 ─────────────────────────────────────────────
@@ -1826,13 +1832,15 @@ const waterMat = makeWaterMat();
 const TORCH_LIGHT_COLOR = 0xff8820;      // 火把——暖橘黃（比火把顏色稍橘，光感更暖）
 const AETHER_LIGHT_COLOR = 0x66ccff;     // 乙太燈——清冷青藍（比火把冷、辨識度高）
 const CAMPFIRE_LIGHT_COLOR = 0xff6a1e;   // 營火——炙熱橘紅（比火把更飽和暖烈，一堆真的在燒的火）
+const GLOW_CRYSTAL_COLOR = 0x5cffb0;     // 發光結晶——柔和青綠（洞穴腔室岩壁上的天然幽光，冷而療癒）
 
 /** 此方塊是否為「發光方塊」（會被登記進光源池）。 */
-function isLightBlock(b) { return b === TORCH || b === AETHER_LAMP || b === CAMPFIRE; }
+function isLightBlock(b) { return b === TORCH || b === AETHER_LAMP || b === CAMPFIRE || b === GLOW_CRYSTAL; }
 /** 發光方塊的光色（不同方塊不同色調）。 */
 function lightColorFor(b) {
   if (b === AETHER_LAMP) return AETHER_LIGHT_COLOR;
   if (b === CAMPFIRE) return CAMPFIRE_LIGHT_COLOR;
+  if (b === GLOW_CRYSTAL) return GLOW_CRYSTAL_COLOR;
   return TORCH_LIGHT_COLOR;
 }
 
@@ -4916,6 +4924,8 @@ const BLOCK_NAME = {
   [COIN]: "乙太幣",
   // 驅影之劍 v1（ROADMAP 887，自主提案切片）
   [SWORD_WOOD]: "木劍", [SWORD_STONE]: "石劍", [SWORD_IRON]: "鐵劍",
+  // 地下洞穴探索 v1（ROADMAP 933）
+  [GLOW_CRYSTAL]: "發光結晶",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -5224,6 +5234,8 @@ const BLOCK_HARDNESS = {
   [TERRACOTTA_RED]: 1.6, [TERRACOTTA_BLACK]: 1.6, [TERRACOTTA_WHITE]: 1.6, [TERRACOTTA_BLUE]: 1.6,
   // 野花 v1（自主提案切片）——一叢嬌嫩野花，比照樹苗一敲即落，輕鬆採下帶走。
   [WILDFLOWER_RED]: 0.2, [WILDFLOWER_YELLOW]: 0.2, [WILDFLOWER_BLUE]: 0.2,
+  // 地下洞穴探索 v1（ROADMAP 933）——洞穴岩壁上的發光結晶，比照冰晶（結晶偏脆），輕鬆敲下採走。
+  [GLOW_CRYSTAL]: 1.2,
 };
 function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
 
