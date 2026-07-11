@@ -9215,15 +9215,21 @@ fn tick_longing() {
 // （站著不動不計，避免卡住/發呆的居民在腳下磨出一塊泥）。某格草皮累積被踏 vpath::PATHWEAR_THRESHOLD
 // 次後，就把那格草皮踏成泥土小徑——居民日復一日的動線，第一次自己走進了世界的地面。
 //
+// 對稱地：一條小徑若長期無人再走（連續 vpath::HEAL_IDLE_SAMPLES 次取樣都沒人踏上），且此刻仍是
+// 我們當初鋪的泥土（玩家沒改動過），就讓草重新長回來——村子的動線因此隨作息改變而「呼吸」，
+// 不會永遠留著一條條泥疤。走時踏上小徑會重置它的閒置，所以常走的動線永遠不會癒合。
+//
 // 純確定性、零 LLM。嚴守鎖紀律：residents 寫鎖（取樣＋更新上一步格）→ pathwear 寫鎖（記磨損、
-// 取達標格）→ deltas 讀鎖（確認地表仍是草）→ deltas 寫鎖（放土）各自短取即釋、循序不巢狀；
-// surface_y 純函式在鎖外算、廣播/持久化/Feed 全在鎖外（守死鎖鐵律）。低頻（每 PATHWEAR_SAMPLE_TICKS
-// 掃一次）——小徑是日積月累走出來的，不必每 tick 都算。
+// 取達標格、重置踏上者的閒置、推進閒置取待癒合格）→ deltas 讀鎖（確認地表）→ deltas 寫鎖（放土/放草）
+// 各自短取即釋、循序不巢狀；surface_y 純函式在鎖外算、廣播/持久化/Feed 全在鎖外（守死鎖鐵律）。
+// 低頻（每 PATHWEAR_SAMPLE_TICKS 掃一次）——小徑是日積月累走出來、也是日積月累褪回去的。
 static PATHWEAR_TICKS: AtomicU64 = AtomicU64::new(0);
 /// 每隔幾個 resident tick 取樣一次居民腳下（10Hz 下每 6 tick ≈ 1.7Hz，足以連成路、成本可忽略）。
 const PATHWEAR_SAMPLE_TICKS: u64 = 6;
 /// 全村第一次踏出小徑時上一則城鎮動態的一次性旗標（每個行程至多一次，避免逐格洗版）。
 static PATHWEAR_FIRST_FEED_DONE: AtomicBool = AtomicBool::new(false);
+/// 全村第一次有小徑因長期無人問津而癒合（草長回來）時上一則城鎮動態的一次性旗標。
+static PATHWEAR_FIRST_HEAL_FEED_DONE: AtomicBool = AtomicBool::new(false);
 
 fn tick_pathwear() {
     let tick_no = PATHWEAR_TICKS.fetch_add(1, Ordering::Relaxed);
@@ -9255,22 +9261,23 @@ fn tick_pathwear() {
         return;
     }
 
-    // ② 記磨損：達門檻的格子取出待轉（record_step 達標即回 true，隨即 clear 歸零——
-    //    不論之後是否真轉成小徑都歸零，避免非草格（結構/已成路）每步重複觸發）。
-    let reached: Vec<(i32, i32, i32)> = {
+    // ② 記磨損＋維護癒合追蹤：達門檻的草格取出待轉成小徑（record_step 達標即回 true，隨即
+    //    clear 歸零——不論之後是否真轉成小徑都歸零，避免非草格每步重複觸發）；同時每一步若踏在
+    //    既有小徑上就重置那格的閒置計數（這條路仍在用、不該癒合），最後推進所有小徑格的閒置、
+    //    取出長期無人問津者待癒合（草長回來）。
+    let (reached, to_heal): (Vec<(i32, i32, i32)>, Vec<(i32, i32, i32)>) = {
         let mut pw = hub().pathwear.write().unwrap();
         let mut hit = Vec::new();
-        for (cx, cz, gby) in stepped {
+        for &(cx, cz, gby) in &stepped {
             if pw.record_step(cx, cz) {
                 pw.clear(cx, cz);
                 hit.push((cx, cz, gby));
             }
+            pw.refresh_worn(cx, cz); // 這格若已是小徑、又有人踏上 → 閒置歸零，留住這條路
         }
-        hit
+        let heal = pw.advance_idle(); // 所有小徑格閒置 +1，達門檻者取出待癒合
+        (hit, heal)
     }; // pathwear 寫鎖釋放
-    if reached.is_empty() {
-        return;
-    }
 
     // ③ 逐格轉換：確認腳下那塊此刻真的是天然草皮才踏成泥土小徑（保護作物/建材/已成路）。
     for (cx, cz, gby) in reached {
@@ -9286,9 +9293,32 @@ fn tick_pathwear() {
         broadcast_block(cx, gby, cz, worn);
         // 持久化這格小徑（重啟後村子走出來的路仍在；走既有 append-only 路徑，零 migration）。
         vbuild::append_world_block(cx, gby, cz, worn as u8);
+        // 登記進癒合追蹤：這條剛成的小徑若日後長期無人再走，會被草重新長回來（見 ④）。
+        hub().pathwear.write().unwrap().note_worn(cx, cz, gby); // 短寫鎖即釋
         // 全村第一次踏出小徑時，上一則溫柔的城鎮動態（一次性、不逐格洗版）。
         if !PATHWEAR_FIRST_FEED_DONE.swap(true, Ordering::Relaxed) {
             vfeed::append_feed(vpath::FEED_KIND, "乙太方界", vpath::first_path_feed_line());
+        }
+    }
+
+    // ④ 逐格癒合：久無人問津的小徑，若此刻仍是我們當初鋪的泥土（玩家沒在上頭改動過），
+    //    就讓草重新長回來——村子的動線因此會隨作息改變而呼吸，不會永遠留著一條條泥疤。
+    for (cx, cz, gby) in to_heal {
+        let cur = { voxel::effective_block_at(&hub().deltas.read().unwrap(), cx, gby, cz) }; // deltas 讀鎖釋放
+        if !vpath::heals_back_to_grass(cur) {
+            continue; // 玩家/居民已在這格放了別的方塊 → 不覆蓋（追蹤已於 ② 移除）
+        }
+        let grass = vpath::healed_block();
+        {
+            let mut world = hub().deltas.write().unwrap();
+            voxel::set_block(&mut world, cx, gby, cz, grass);
+        } // deltas 寫鎖釋放
+        broadcast_block(cx, gby, cz, grass);
+        // 持久化這格癒合（重啟後草仍長著；append-only 覆寫，replay 時後寫的草蓋過先前的泥）。
+        vbuild::append_world_block(cx, gby, cz, grass as u8);
+        // 全村第一次有小徑癒合時，上一則溫柔的城鎮動態（一次性、不逐格洗版）。
+        if !PATHWEAR_FIRST_HEAL_FEED_DONE.swap(true, Ordering::Relaxed) {
+            vfeed::append_feed(vpath::FEED_KIND, "乙太方界", vpath::first_heal_feed_line());
         }
     }
 }
