@@ -831,6 +831,145 @@ function updateMeteor(dt) {
   meteorMat.opacity = Math.sin(p * Math.PI) * 0.95;
 }
 
+// ── 極光天氣視覺 v1（ROADMAP 930）─────────────────────────────────────────────
+// 雪／冰群系的夜空，偶爾浮現一片柔和流動的青綠／紫色極光帶，緩緩波動，壯麗而療癒。
+// 純前端、零後端、零協議：前端用既有廣播的 worldTime（入夜程度）＋本地取樣玩家腳下附近是否
+// 為積雪／雪地（冬季雪蓋 or 雪群系的 SNOW 方塊）本地判定，不新增任何 WS/HTTP 欄位。
+// 效能鐵律：整片極光＝單一 THREE.Mesh（一次 draw call），走廉價 shader（無貼圖、無粒子、無逐幀
+// 幾何配置），流動全由 uTime uniform 驅動；非該情境時整片隱藏（visible=false）、零成本早退。
+// 稀有／緩慢：以一個很長的週期（AURORA_CYCLE_SECS）低機率浮現一段，不常駐洗版。與繁星（靜止）、
+// 流星（一瞬劃過）、彩虹（白天雨後）razor-sharp 區隔：這是夜裡雪原上「緩緩流動的一整片天幕」。
+const AURORA_CYCLE_SECS = 150;   // 一個完整「醞釀→浮現→退去」的週期長度（秒）——夠長 ⇒ 稀有、不洗版
+const AURORA_ACTIVE_FRAC = 0.32; // 週期內約三成時間可見（其餘天空乾淨），配合淡入淡出更顯珍稀
+const AURORA_PEAK_ALPHA = 0.55;  // 極光最亮時的整體不透明度（半透明、柔和不刺眼）
+const AURORA_FADE_SPEED = 0.25;  // 淡入／淡出速度（alpha/秒）——刻意慢，浮現與退去都從容
+const AURORA_WIDTH = 460;        // 天幕寬（格）：橫跨大半個天際
+const AURORA_HEIGHT = 150;       // 天幕高（格）：一片垂墜的極光簾
+const AURORA_DIST = 240;         // 掛在鏡頭前方多遠（格）：遠到看起來固定在天邊、隨鏡頭平移
+const AURORA_Y = 120;            // 天幕中心抬高（格）：掛在夜空高處，不壓地平線
+// 極光 shader：無貼圖、無粒子。片段著色器用幾層錯相位的正弦，沿水平方向織出「垂直光簾」的
+// 明暗帶，隨 uTime 緩緩橫向捲動＋上下起伏；顏色在青綠↔紫之間依位置與時間漸變；上下邊緣柔化
+// （簾頂淡、底端漸隱）以免出現硬邊。整體再乘上 uAlpha（本地淡入淡出）。
+const auroraUniforms = {
+  uTime: { value: 0 },
+  uAlpha: { value: 0 },
+};
+const auroraMat = new THREE.ShaderMaterial({
+  uniforms: auroraUniforms,
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  fog: false,
+  side: THREE.DoubleSide,
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    precision mediump float;
+    varying vec2 vUv;
+    uniform float uTime;
+    uniform float uAlpha;
+    void main() {
+      float x = vUv.x;
+      float y = vUv.y;
+      // 垂直光簾：幾層錯相位、不同頻率的正弦沿水平方向織出細密的明暗光柱，隨時間緩緩橫向捲動。
+      // 疊一層低頻大波當「整體亮度包絡」，讓極光呈一叢一叢的光束、而非均勻一片。
+      float t = uTime * 0.06;
+      float fine =
+          0.50 + 0.50 * sin(x * 34.0 + t * 2.2)
+        + 0.35 * sin(x * 61.0 - t * 1.4)
+        + 0.22 * sin(x * 97.0 + t * 0.8);
+      float envelope = 0.55 + 0.45 * sin(x * 5.0 - t * 0.9); // 一叢一叢的大尺度亮度包絡
+      float curtain = clamp(fine * 0.5, 0.0, 1.0) * (0.35 + 0.65 * clamp(envelope, 0.0, 1.0));
+      // 簾腳起伏：底緣隨水平位置＋時間上下波動，像被夜風輕拂的光簾。
+      float wave = 0.10 * sin(x * 6.0 + uTime * 0.20) + 0.06 * sin(x * 15.0 - uTime * 0.13);
+      float yy = y - wave;
+      // 上下輪廓：底端漸隱、頂端拖出柔光——極光下緣較亮實、往上散成霧狀輝光（真實極光的樣子）。
+      float vert = smoothstep(0.0, 0.28, yy) * (1.0 - smoothstep(0.55, 1.0, yy));
+      float topGlow = smoothstep(0.2, 0.85, yy) * 0.35; // 上半再補一層淡輝光
+      // 青綠↔紫的柔和漸變：依水平位置＋時間游移，且越往上越偏紫（極光高處常泛紫紅）。
+      float hue = clamp(0.4 + 0.35 * sin(x * 2.3 + uTime * 0.10) + 0.35 * yy, 0.0, 1.0);
+      vec3 teal   = vec3(0.35, 0.98, 0.68); // 青綠
+      vec3 violet = vec3(0.66, 0.42, 0.98); // 柔紫
+      vec3 col = mix(teal, violet, hue);
+      float intensity = (curtain * vert + topGlow * curtain) * 1.35;
+      gl_FragColor = vec4(col * intensity, intensity * uAlpha);
+    }
+  `,
+});
+const auroraMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(AURORA_WIDTH, AURORA_HEIGHT, 1, 1),
+  auroraMat,
+);
+auroraMesh.visible = false;
+scene.add(auroraMesh);
+
+let auroraAlpha = 0;             // 本地平滑不透明度（向目標 ease）
+let auroraPhase = 0;             // 週期相位累計（秒）——決定此刻是否在「浮現窗口」內
+let _auroraSnowTimer = 0;       // 雪地取樣節流計時（秒）：非每幀掃地，2 秒查一次即可
+let _auroraNearSnow = false;    // 上次取樣結果：玩家腳下附近是否為積雪／雪地
+
+// 玩家腳下附近是否處於「雪／冰」情境：冬季（全地圖鋪雪頂蓋）算數；或就地取樣腳下數格內
+// 是否有 SNOW 方塊（雪群系的地表），兩者其一即算「近雪」。純本地判定、零協議。
+function auroraNearSnow() {
+  if (worldSeason === "winter") return true; // 冬季：整片世界鋪雪 ⇒ 任何地方都算雪原
+  const px = Math.floor(camera.position.x);
+  const py = Math.floor(camera.position.y);
+  const pz = Math.floor(camera.position.z);
+  // 只掃腳下一小柱＋近鄰（少量 getRaw，2 秒一次，成本可忽略），命中 SNOW 即算雪群系。
+  for (let dy = -2; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        if (getRaw(px + dx, py + dy, pz + dz) === SNOW) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// 每幀更新極光：推進週期相位，決定此刻是否該浮現；只在「夜間 ＋ 近雪 ＋ 沒下雨 ＋ 週期窗口內」
+// 才把目標 alpha 拉高、否則歸零；alpha 向目標緩慢 ease。可見時把天幕掛到鏡頭前方遠處天邊、
+// 隨鏡頭平移（看似固定在天上）、繞 Y 軸朝向鏡頭；不亮時整片隱藏、零成本早退。
+function updateAurora(dt) {
+  auroraPhase += dt;
+  // 雪地取樣節流：非每幀掃，2 秒一次（玩家移動速度下足夠即時）。
+  _auroraSnowTimer -= dt;
+  if (_auroraSnowTimer <= 0) {
+    _auroraSnowTimer = 2.0;
+    _auroraNearSnow = auroraNearSnow();
+  }
+  // 週期內的「浮現窗口」：相位落在 [0, AURORA_ACTIVE_FRAC) 才算這段有極光。
+  const cyclePos = (auroraPhase % AURORA_CYCLE_SECS) / AURORA_CYCLE_SECS;
+  const inWindow = cyclePos < AURORA_ACTIVE_FRAC;
+  const nf = nightFactor(worldTime);
+  // 只在夜裡（星星已浮現）＋腳下近雪／冰＋沒下雨（烏雲蔽天）＋週期窗口內，才讓極光浮現。
+  const wantAurora = inWindow && nf > 0.4 && _auroraNearSnow && !isRaining;
+  const target = wantAurora ? AURORA_PEAK_ALPHA * nf : 0;
+  if (auroraAlpha < target) auroraAlpha = Math.min(target, auroraAlpha + AURORA_FADE_SPEED * dt);
+  else if (auroraAlpha > target) auroraAlpha = Math.max(target, auroraAlpha - AURORA_FADE_SPEED * dt);
+  if (auroraAlpha <= 0.001) { auroraMesh.visible = false; return; }
+  auroraMesh.visible = true;
+  auroraUniforms.uAlpha.value = auroraAlpha;
+  auroraUniforms.uTime.value += dt;
+  // 掛在鏡頭水平朝向的遠方天邊、隨鏡頭平移（視差可忽略 ⇒ 像掛在無限遠的夜空）。
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  dir.y = 0;
+  if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
+  dir.normalize();
+  auroraMesh.position.set(
+    camera.position.x + dir.x * AURORA_DIST,
+    camera.position.y + AURORA_Y,
+    camera.position.z + dir.z * AURORA_DIST,
+  );
+  // 天幕面正對鏡頭視線（繞 Y 軸只偏航、維持直立）。
+  auroraMesh.rotation.y = Math.atan2(dir.x, dir.z);
+}
+
 // ── 乙太煙火 v1（ROADMAP 785）────────────────────────────────────────────────
 // 玩家朝夜空施放的煙火:一束火花在施放者頭頂上方升空、綻放。伺服器廣播 firework{x,y,z,palette}
 // 給全場,前端在該位置上方生成一朵綻放的火花點雲。效能鐵律:每束煙火＝單一 THREE.Points
@@ -1277,6 +1416,248 @@ function makeAmbientPool(n, tex, additive, baseScale, peakOp) {
 }
 const butterflies = makeAmbientPool(AMB_BUTTERFLY_MAX, BUTTERFLY_TEX, false, 0.55, 0.95);
 const fireflies = makeAmbientPool(AMB_FIREFLY_MAX, FIREFLY_TEX, true, 0.45, 0.9);
+
+// ── 環境音效 v1（世界第一次有聲音）────────────────────────────────────────────
+// 全程序合成（Web Audio API：oscillator/noise/filter），零外部音檔——避開素材傳輸問題。
+// 一層柔和的環境音床，依時段/近水混音：
+//   · 底噪  ＝ 極輕的濾波白噪「微風」，永遠墊底，讓世界不再死寂。
+//   · 白天  ＝ 偶發的柔和鳥鳴啾啾（兩三聲一串、隨機音高，絕不機械循環）。
+//   · 夜裡  ＝ 蟲鳴唧唧（規律但輕），白噪更靜，鳥鳴退場。
+//   · 近水  ＝ 疊一層帶通濾波白噪的水流潺潺。
+// 療癒鐵律：音量小、柔和、無明顯循環感；預設可一鍵靜音（HUD 小喇叭鈕，存 localStorage）；
+// 首次需使用者手勢才能啟動 AudioContext（瀏覽器政策）。效能鐵律：單一 AudioContext、
+// 少量常駐節點（三條常駐音床＋偶發短音），靜音/離開即停，對 FPS 零影響。
+const AUDIO_LS_KEY = "butfun.voxel.sound.v1";
+// 讀取靜音偏好（預設：開聲音）。壞資料/禁 storage 一律 fallback 到「開」。
+function loadSoundMuted() {
+  try { return localStorage.getItem(AUDIO_LS_KEY) === "muted"; } catch (_) { return false; }
+}
+function saveSoundMuted(m) {
+  try { localStorage.setItem(AUDIO_LS_KEY, m ? "muted" : "on"); } catch (_) { /* 忽略 */ }
+}
+
+const audio = {
+  ctx: null,          // AudioContext（首次手勢才建立）
+  master: null,       // 總音量節點（靜音時淡到 0）
+  muted: loadSoundMuted(),
+  started: false,     // 是否已建立音床（首次手勢後）
+  // 常駐音床增益（依時段/近水每幀平滑趨近目標）
+  windGain: null, waterGain: null,
+  windTarget: 0, waterTarget: 0,
+  // 偶發短音的下次觸發倒數（秒）
+  chirpTimer: 2.0,    // 鳥鳴（白天）
+  cricketTimer: 1.5,  // 蟲鳴（夜裡）
+};
+
+// 建立一段循環的濾波白噪來源（微風/水流用）。回傳可掛增益的 GainNode（未接 master）。
+function makeNoiseBed(ctx, filterType, freq, q) {
+  // 2 秒白噪 buffer，loop 播放（夠長 → 聽不出循環接縫）。
+  const len = ctx.sampleRate * 2;
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  const src = ctx.createBufferSource();
+  src.buffer = buf; src.loop = true;
+  const filt = ctx.createBiquadFilter();
+  filt.type = filterType; filt.frequency.value = freq; if (q != null) filt.Q.value = q;
+  const g = ctx.createGain(); g.gain.value = 0;
+  src.connect(filt); filt.connect(g);
+  src.start();
+  return g;
+}
+
+// 首次使用者手勢時建立 AudioContext 與常駐音床。重入安全（started 後直接 resume）。
+function ensureAudioStarted() {
+  if (audio.started) {
+    if (audio.ctx && audio.ctx.state === "suspended") audio.ctx.resume().catch(() => {});
+    return;
+  }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return; // 極舊瀏覽器不支援 → 靜默略過，遊戲照玩
+  try {
+    const ctx = new AC();
+    const master = ctx.createGain();
+    master.gain.value = audio.muted ? 0 : 1;
+    master.connect(ctx.destination);
+    // 微風底噪：低通白噪，永遠墊底（音量極小）。
+    const wind = makeNoiseBed(ctx, "lowpass", 620, 0.7);
+    wind.connect(master);
+    // 水流潺潺：帶通白噪（偏高頻的水花感），只有近水才漸強。
+    const water = makeNoiseBed(ctx, "bandpass", 1400, 0.8);
+    water.connect(master);
+    audio.ctx = ctx; audio.master = master;
+    audio.windGain = wind; audio.waterGain = water;
+    audio.started = true;
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
+  } catch (_) { /* 建立失敗：靜默、遊戲照玩 */ }
+}
+
+// 播一聲柔和的鳥鳴啾啾（白天）：兩三個短音、隨機音高上揚，帶輕微顫音，絕不機械。
+function playBirdChirp() {
+  const ctx = audio.ctx; if (!ctx || audio.muted) return;
+  const t0 = ctx.currentTime;
+  const n = 2 + (Math.random() < 0.5 ? 0 : 1); // 兩到三聲
+  let base = 1800 + Math.random() * 900;
+  for (let i = 0; i < n; i++) {
+    const t = t0 + i * (0.09 + Math.random() * 0.05);
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    const f = base * (1 + i * 0.06) * (0.96 + Math.random() * 0.08);
+    osc.frequency.setValueAtTime(f, t);
+    osc.frequency.exponentialRampToValueAtTime(f * 1.18, t + 0.05); // 上揚
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.06, t + 0.012); // 極小音量
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+    osc.connect(g); g.connect(audio.master);
+    osc.start(t); osc.stop(t + 0.12);
+  }
+}
+
+// 播一聲蟲鳴唧唧（夜裡）：高頻方波快速顫動的一小串，輕而規律。
+function playCricket() {
+  const ctx = audio.ctx; if (!ctx || audio.muted) return;
+  const t0 = ctx.currentTime;
+  const f = 4200 + Math.random() * 600;
+  const pulses = 3 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < pulses; i++) {
+    const t = t0 + i * 0.035;
+    const osc = ctx.createOscillator();
+    osc.type = "square"; osc.frequency.value = f;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.018, t + 0.004); // 很小聲
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.025);
+    osc.connect(g); g.connect(audio.master);
+    osc.start(t); osc.stop(t + 0.03);
+  }
+}
+
+// 挖方塊一聲輕「叩」：低頻正弦快速衰減（木魚/敲擊感），不吵。
+function playDigThock() {
+  const ctx = audio.ctx; if (!ctx || audio.muted) return;
+  const t = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(220, t);
+  osc.frequency.exponentialRampToValueAtTime(90, t + 0.09);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.09, t + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.13);
+  osc.connect(g); g.connect(audio.master);
+  osc.start(t); osc.stop(t + 0.15);
+}
+
+// 放方塊一聲輕「噠」：比挖略高、更短促（放下的乾脆感）。
+function playPlaceTap() {
+  const ctx = audio.ctx; if (!ctx || audio.muted) return;
+  const t = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  osc.type = "triangle";
+  osc.frequency.setValueAtTime(360, t);
+  osc.frequency.exponentialRampToValueAtTime(180, t + 0.06);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.07, t + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+  osc.connect(g); g.connect(audio.master);
+  osc.start(t); osc.stop(t + 0.11);
+}
+
+// 極輕腳步：一小撮低頻濾波噪衝，走路落地時偶發（別吵）。
+function playFootstep() {
+  const ctx = audio.ctx; if (!ctx || audio.muted) return;
+  const t = ctx.currentTime;
+  const len = Math.floor(ctx.sampleRate * 0.05);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+  const src = ctx.createBufferSource(); src.buffer = buf;
+  const filt = ctx.createBiquadFilter(); filt.type = "lowpass"; filt.frequency.value = 380;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.03, t); // 很輕
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+  src.connect(filt); filt.connect(g); g.connect(audio.master);
+  src.start(t); src.stop(t + 0.06);
+}
+
+let _footstepTimer = 0;
+
+// 每幀推進環境音床：依 nightFactor / 近水判定平滑調整常駐音床增益，
+// 並按倒數觸發偶發鳥鳴（白天）/蟲鳴（夜裡）。未啟動或靜音時零成本早退。
+function updateAmbientAudio(dt) {
+  if (!audio.started || audio.muted || !audio.ctx) return;
+  const nf = nightFactor(worldTime); // 0=白天 1=深夜
+  // 近水判定：取玩家腳下地表 id（沿用 ambSurface）。找不到就當非水。
+  const surf = ambSurface(Math.floor(player.x), Math.floor(player.z));
+  const nearWater = surf ? isWaterId(surf.id) : false;
+
+  // 微風底噪：白天略強、夜裡更靜（乘個係數讓夜更寂靜）。
+  audio.windTarget = 0.05 * (1 - nf * 0.55);
+  // 水流：近水才漸強，離水淡出。
+  audio.waterTarget = nearWater ? 0.11 : 0.0;
+
+  // 常駐音床增益平滑趨近目標（frame-rate 無關的指數平滑，避免音量跳變）。
+  const k = 1 - Math.exp(-2.5 * dt);
+  if (audio.windGain) audio.windGain.gain.value += (audio.windTarget - audio.windGain.gain.value) * k;
+  if (audio.waterGain) audio.waterGain.gain.value += (audio.waterTarget - audio.waterGain.gain.value) * k;
+
+  // 白天鳥鳴：夜越深機率越低（nf 越大越少），間隔隨機（3~8 秒）避免循環感。
+  audio.chirpTimer -= dt;
+  if (audio.chirpTimer <= 0) {
+    if (nf < 0.6 && Math.random() < (1 - nf)) playBirdChirp();
+    audio.chirpTimer = 3 + Math.random() * 5;
+  }
+  // 夜裡蟲鳴：夜越深越常鳴（nf 越大越多），間隔隨機（2~5 秒）。
+  audio.cricketTimer -= dt;
+  if (audio.cricketTimer <= 0) {
+    if (nf > 0.4 && Math.random() < nf) playCricket();
+    audio.cricketTimer = 2 + Math.random() * 3;
+  }
+}
+
+// 靜音切換：更新狀態、存 localStorage、淡入/淡出 master、刷新喇叭鈕外觀。
+// 開聲音時同時當作使用者手勢 → 確保 AudioContext 已啟動。
+function setSoundMuted(m) {
+  audio.muted = m;
+  saveSoundMuted(m);
+  if (!m) ensureAudioStarted();
+  if (audio.master && audio.ctx) {
+    const t = audio.ctx.currentTime;
+    audio.master.gain.cancelScheduledValues(t);
+    audio.master.gain.setValueAtTime(audio.master.gain.value, t);
+    audio.master.gain.linearRampToValueAtTime(m ? 0 : 1, t + 0.25); // 柔和淡入淡出
+  }
+  const btn = document.getElementById("soundBtn");
+  if (btn) {
+    btn.textContent = m ? "🔇" : "🔊";
+    btn.classList.toggle("muted", m);
+    btn.title = m ? "環境音效（已靜音）" : "環境音效";
+  }
+}
+
+// 喇叭鈕接線：點擊＝切換靜音（且首次點擊當作啟動手勢）。
+(function wireSoundButton() {
+  const btn = document.getElementById("soundBtn");
+  if (!btn) return;
+  // 初始外觀依存的偏好。
+  btn.textContent = audio.muted ? "🔇" : "🔊";
+  btn.classList.toggle("muted", audio.muted);
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setSoundMuted(!audio.muted);
+  });
+})();
+
+// 首次任意使用者手勢（點/鍵/觸）→ 若沒靜音就啟動 AudioContext（瀏覽器自動播放政策）。
+// 只掛一次（once），之後靠喇叭鈕自行 resume。
+(function wireAudioUnlock() {
+  const unlock = () => { if (!audio.muted) ensureAudioStarted(); };
+  window.addEventListener("pointerdown", unlock, { once: true });
+  window.addEventListener("keydown", unlock, { once: true });
+  window.addEventListener("touchstart", unlock, { once: true });
+})();
 
 // 從玩家附近某 (wx,wz) 由上往下找地表：回傳第一個非空氣方塊的 {y,id}；未載入或找不到回 null。
 function ambSurface(wx, wz) {
@@ -5006,6 +5387,7 @@ function tickMining(dt) {
     // 進度滿：送 break，立刻開始下一塊（如果按著）。
     // 工欲善其事 v1（790）：附上手持物品 id；伺服器查背包確認是真工具才給採集加成。
     ws.send(JSON.stringify({ t: "break", x: mining.x, y: mining.y, z: mining.z, tool: selectedBlock() }));
+    playDigThock(); // 環境音效 v1：挖掉一格一聲輕「叩」
     cancelMining();
     if (digHeld) startMining();
   } else {
@@ -5020,6 +5402,7 @@ function breakAtTarget() {
   const c = { x: target.bx, y: target.by, z: target.bz };
   // 工欲善其事 v1（790）：附上手持物品 id 讓伺服器判定採集加成（見上）。
   ws.send(JSON.stringify({ t: "break", x: c.x, y: c.y, z: c.z, tool: selectedBlock() }));
+  playDigThock(); // 環境音效 v1：行動裝置即時挖除也給一聲輕「叩」
   return c;
 }
 
@@ -5187,6 +5570,7 @@ function placeAtTarget() {
   if (px === Math.floor(player.x) && pz === Math.floor(player.z) &&
       (py === Math.floor(player.y) || py === Math.floor(player.y + 1))) return null;
   ws.send(JSON.stringify({ t: "place", x: px, y: py, z: pz, b: selectedBlock() }));
+  playPlaceTap(); // 環境音效 v1：放下一格一聲輕「噠」
   // 告示牌 v1（ROADMAP 740）：剛放下一塊新牌子 → 立刻讓玩家寫上文字。
   // place 與 sign_set 走同一條 socket、伺服器循序處理，故 sign_set 到達時牌子已立好。
   if (selectedBlock() === SIGN) {
@@ -6541,6 +6925,7 @@ function update(dt) {
   updateRainbow(dt);
   updateMeteor(dt); // 流星許願 v1（904）：上升緣播一道劃過夜空的光痕
   updateNightSky(dt);
+  updateAurora(dt); // 極光天氣視覺 v1（930）：雪原夜空偶爾浮現一片流動的青綠／紫極光簾
   updateFireworks(dt); // 乙太煙火 v1（785）：推進進行中的煙火綻放
   updateShadowFx(dt);  // 暗影生物 v1：暗影浮動/微光呼吸/受擊閃白/輕煙淡出
   updateBellRings(dt); // 集會鐘 v1（自主提案切片）：推進進行中的鐘聲漣漪
@@ -6548,6 +6933,14 @@ function update(dt) {
   updateHearts(dt);    // 寵愛你的夥伴 v1（899）：推進小夥伴頭頂的愛心
   updateFertSparkle(dt); // 乙太沃肥 v1（789）：推進施肥綠火花
   updateAmbientLife(dt); // 世界環境氛圍 v1（905）：白天蝴蝶／夜間螢火蟲環境微生物
+  updateAmbientAudio(dt); // 環境音效 v1：依時段/近水混音環境音床＋偶發鳥鳴/蟲鳴
+  // 極輕腳步：站在地面移動時，每 ~0.34 秒一聲（走路節奏）。靜音/沒動/騰空時不觸發。
+  if (meMoving && player.grounded) {
+    _footstepTimer -= dt;
+    if (_footstepTimer <= 0) { playFootstep(); _footstepTimer = 0.34; }
+  } else {
+    _footstepTimer = 0;
+  }
   streamChunks(dt);
   sendMove(dt);
   updateMyHeldItem(); // 手持工具可見 v1：即時反映熱鍵切換，不等節流送出的回音
@@ -7719,6 +8112,13 @@ window.__voxel = {
   get meteorOpacity() { return meteorMat.opacity; },
   triggerMeteor() { triggerMeteor(); return meteorMesh.visible; },
   updateMeteor(dt) { updateMeteor(dt); },
+  // ── 極光天氣視覺 v1 QA 用（ROADMAP 930）──：強制拉進浮現窗口＋讀可見度/alpha 截圖驗證
+  get auroraVisible() { return auroraMesh.visible; },
+  get auroraAlpha() { return auroraAlpha; },
+  get auroraNearSnow() { return auroraNearSnow(); },
+  // QA：把週期相位歸零（拉進浮現窗口）——配合夜間 worldTime＋近雪即可觸發極光。
+  _qaForceAurora() { auroraPhase = 0; _auroraSnowTimer = 0; _auroraNearSnow = auroraNearSnow(); return auroraMesh.visible; },
+  updateAurora(dt) { updateAurora(dt); },
   // ── 四季樹葉 v1 QA 用（自主提案切片）──：切季節、讀當季樹葉色、就地重建驗證換色
   get worldSeason() { return worldSeason; },
   setSeason(s) { if (s !== worldSeason) { worldSeason = s; updateSkyAndLight(worldTime); remeshForSeason(); } return worldSeason; },
