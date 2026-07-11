@@ -72,6 +72,7 @@ use crate::voxel_birthday as vbday;
 use crate::voxel_campfire as vcamp;
 use crate::voxel_campfire_tale as vtale;
 use crate::voxel_nightlife as vnight;
+use crate::voxel_nickname as vnick;
 use crate::voxel_custom as vcustom;
 use crate::voxel_bell as vbell;
 use crate::voxel_seedgift as vseed;
@@ -599,6 +600,12 @@ struct VoxelResident {
     /// 被夥伴在回家前道了晚安後、等這秒數到期再回一聲晚安（無需帶名，回應句通用）（居民夜間生活 v1）。
     /// 與 `pending_tale_reply`／`pending_response` 分開，讓夜裡的道別有專屬「晚安」語氣。純記憶體。
     pending_goodnight_reply: Option<f32>,
+    /// 居民互取親暱綽號 v1：取暱稱／用暱稱共用冷卻倒數（秒）。做過一次親暱互動後設
+    /// [`vnick::NICKNAME_COOLDOWN_SECS`]，歸零前這位居民不再對人取名／喊暱稱。各居民初始錯開。純記憶體。
+    nickname_cooldown: f32,
+    /// 居民互取親暱綽號 v1：這位居民為哪些對象取過綽號（對象居民 id → 綽號）。取下後日後相遇沿用招呼，
+    /// 是「命名→記住→沿用」記憶→行為閉環的記憶側。純記憶體、重啟歸零（比照其他世界暫態）。
+    nicknames_given: HashMap<String, String>,
     /// 相遇被老朋友就地教了一手後、等這秒數到期再冒「原來如此！」的應和（應和台詞, 剩餘秒）
     /// （技能互教·北極星第四刀）。與 `pending_tale_reply`／`pending_bench_reply` 分開，
     /// 讓受教有專屬的一來一往語氣。台詞在教學那刻就從句式池組好（零 LLM）。純記憶體。
@@ -1886,6 +1893,9 @@ fn build_resident(
             // 入場無待回應的晚安。
             nightlife_cooldown: 110.0 + i as f32 * 37.0,
             pending_goodnight_reply: None,
+            // 居民互取親暱綽號 v1：初始冷卻各居民錯開（避免同一 tick 一窩蜂取名），入場尚未為任何人取過綽號。
+            nickname_cooldown: 150.0 + i as f32 * 29.0,
+            nicknames_given: HashMap::new(),
             // 技能互教（北極星第四刀）：入場沒有待應和的教學。
             pending_teach_reply: None,
             // 集會鐘 v1：入場沒有正在應召的鐘；應召冷卻歸零（一出生就聽得到第一次鐘聲）。
@@ -12471,6 +12481,9 @@ fn tick_residents(dt: f32) {
     // 居民夜間生活 v1（睡前互道晚安）：入夜後兩位還醒著、走得夠近的居民在回家前互道晚安時，鎖內收集
     // 事件；一則城鎮動態在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。(發起者名, 回應者名)。
     let mut nightlife_goodnight_events: Vec<(&'static str, &'static str)> = Vec::new();
+    // 居民互取親暱綽號 v1：老朋友的兩位居民走近、其中一位為對方取下一個新綽號時，鎖內收集事件；
+    // 一則城鎮動態在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。(取名者名, 對象名, 綽號)。
+    let mut nickname_events: Vec<(&'static str, &'static str, String)> = Vec::new();
     // 長椅並坐閒聊 v1：白天兩位相識以上的居民同在一張長椅邊、一位招呼另一位並肩坐下閒聊時，鎖內收集
     // 事件；雙方交情記憶＋record_visit 加溫＋Feed 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖
     // 鐵律）。(發起者 id, 發起者名, 被招呼者 id, 被招呼者名)。
@@ -14296,6 +14309,10 @@ fn tick_residents(dt: f32) {
             // 居民夜間生活 v1（ROADMAP·自主提案）：夜生活冷卻遞減（許願／互道晚安共用，純記憶體、每 tick 一次）。
             if r.nightlife_cooldown > 0.0 {
                 r.nightlife_cooldown -= dt;
+            }
+            // 居民互取親暱綽號 v1：取暱稱／用暱稱共用冷卻倒數。
+            if r.nickname_cooldown > 0.0 {
+                r.nickname_cooldown -= dt;
             }
             // 村莊自發習俗·暮聚（村莊自發習俗 v1）：逗留倒數＋在廣場邊的閒話家常。
             // 逗留歸零＝這場暮聚對這位居民結束（散去回家，下方閒晃分支自然帶回）。逗留中且已站到
@@ -16472,6 +16489,108 @@ fn tick_residents(dt: f32) {
             }
         }
 
+        // 2c-2c) 居民互取親暱綽號掃描（居民互取親暱綽號 v1）：任何時段，若兩位醒著、沒在說話、交情已到
+        // **老朋友（Friend）**的居民走得夠近（[`vrel::SOCIAL_RANGE`]）、且發起者暱稱冷卻到期，這次相遇
+        // 二選一：①發起者還沒為對方取過綽號 → 低機率當面取一個親暱綽號、記進動態牆＋自己記憶體；
+        // ②已取過 → 略高機率直接用綽號招呼對方（取下的綽號日後真的被用到＝命名→記住→沿用的記憶→行為
+        // 閉環）。每 tick 最多一對、長冷卻＋機率門檻＝天然節流。沿用 2c 系列的 `snaps` 位置快照（i≠j 循序
+        // 索引、不雙重借用）；情誼層級以 bonds 短讀鎖取一次即釋（鎖序 residents 讀 → bonds 讀，不巢狀寫鎖，
+        // 比照長椅掃描，守死鎖鐵律）。
+        enum NickAction {
+            Coin,  // 取下一個新綽號
+            Greet, // 用既有綽號招呼
+        }
+        let nick_pair: Option<(usize, usize, NickAction)> = {
+            // bonds 讀鎖只在挑對期間持有、找到即釋。
+            let bonds = hub().bonds.read().unwrap();
+            let mut found: Option<(usize, usize, NickAction)> = None;
+            'nscan: for i in 0..snaps.len() {
+                // 發起者：此刻沒在說話（讀 live，避免前面各掃描剛讓她開口）、沒睡著、暱稱冷卻到期、
+                // 不在朝聖/遠行途中（不搶正事）。
+                if !residents[i].say.is_empty() || snaps[i].7 {
+                    continue;
+                }
+                if residents[i].nickname_cooldown > 0.0 {
+                    continue;
+                }
+                if residents[i].pilgrimage.is_some() || residents[i].expedition.is_some() {
+                    continue;
+                }
+                for j in 0..snaps.len() {
+                    if i == j {
+                        continue;
+                    }
+                    // 對象：此刻沒在說話、沒睡著、且走得夠近。
+                    if !residents[j].say.is_empty() || snaps[j].7 {
+                        continue;
+                    }
+                    if !vrel::pair_within_range(
+                        snaps[i].3, snaps[i].4, snaps[j].3, snaps[j].4, vrel::SOCIAL_RANGE,
+                    ) {
+                        continue;
+                    }
+                    // 記憶驅動行為的閘：只有交情到老朋友的兩人才會為彼此取／喚親暱綽號。
+                    if resident_tier_of(&bonds, &snaps[i].1, &snaps[j].1) != vbonds::BondTier::Friend
+                    {
+                        continue;
+                    }
+                    let has_nick = residents[i].nicknames_given.contains_key(&snaps[j].1);
+                    let action = if !has_nick {
+                        if vnick::should_coin(
+                            true, true, false, rand::random::<f32>(), vnick::COIN_CHANCE,
+                        ) {
+                            Some(NickAction::Coin)
+                        } else {
+                            None
+                        }
+                    } else if vnick::should_greet(
+                        true, true, rand::random::<f32>(), vnick::GREET_CHANCE,
+                    ) {
+                        Some(NickAction::Greet)
+                    } else {
+                        None
+                    };
+                    if let Some(a) = action {
+                        found = Some((i, j, a));
+                        break 'nscan;
+                    }
+                }
+            }
+            found
+        }; // bonds 讀鎖釋放
+        if let Some((i, j, action)) = nick_pair {
+            let coiner_name = snaps[i].2;
+            let target_name = snaps[j].2;
+            let target_id = snaps[j].1.clone();
+            let pick = (residents[i].body.x.to_bits() ^ residents[i].body.z.to_bits()) as usize;
+            match action {
+                NickAction::Coin => {
+                    let nickname = vnick::coin_nickname(target_name, pick);
+                    residents[i].say = vnick::coin_announce_bubble(&nickname, pick);
+                    residents[i].say_timer = SAY_SECS;
+                    residents[i].nickname_cooldown = vnick::NICKNAME_COOLDOWN_SECS;
+                    residents[i].mood_boost_secs =
+                        residents[i].mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    // 記住這個綽號（記憶側）：日後相遇會沿用來招呼對方。
+                    residents[i].nicknames_given.insert(target_id, nickname.clone());
+                    nickname_events.push((coiner_name, target_name, nickname));
+                }
+                NickAction::Greet => {
+                    // 用日前為對方取下的綽號招呼（記憶→行為的「沿用」一環）。純氛圍、不上動態牆。
+                    let nickname = residents[i]
+                        .nicknames_given
+                        .get(&target_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    residents[i].say = vnick::greet_bubble(&nickname, pick);
+                    residents[i].say_timer = SAY_SECS;
+                    residents[i].nickname_cooldown = vnick::NICKNAME_COOLDOWN_SECS;
+                    residents[i].mood_boost_secs =
+                        residents[i].mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                }
+            }
+        }
+
         // 2c-2b) 長椅並坐閒聊/拌嘴/和好掃描（長椅並坐閒聊 v1 + 長椅拌嘴/和好 v1）：白天，若兩位醒著、
         // 沒在說話、交情已到相識以上的居民恰好都走到**同一張**長椅邊、且發起者並坐冷卻到期，這次相遇
         // 三選一（互斥）：①若這對正彆扭中→保證和好（解除彆扭、交情回暖）；②若已是老朋友且未彆扭→
@@ -18120,6 +18239,16 @@ fn tick_residents(dt: f32) {
             vnight::GOODNIGHT_FEED_KIND,
             opener_name,
             &vnight::goodnight_feed_line(opener_name, other_name),
+        );
+    }
+
+    // 居民互取親暱綽號 v1：某位居民為老朋友取下一個親暱綽號時上一則城鎮動態，讓離線回訪的玩家也讀得到
+    // 村子關係網又多了一絲親密——鎖外統一 IO（不持居民鎖，守死鎖鐵律）。純氛圍，不寫記憶。
+    for (coiner_name, target_name, nickname) in &nickname_events {
+        vfeed::append_feed(
+            vnick::FEED_KIND,
+            coiner_name,
+            &vnick::coin_feed_line(coiner_name, target_name, nickname),
         );
     }
 
