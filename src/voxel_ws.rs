@@ -186,6 +186,7 @@ use crate::voxel_morning as vmorning;
 use crate::voxel_daybreak as vdaybreak;
 use crate::voxel_reunion as vreunion;
 use crate::voxel_longing as vlonging;
+use crate::voxel_farbond as vfar;
 use crate::voxel_pathwear as vpath;
 use crate::voxel_expedition as vexp;
 use crate::voxel_frontier_visit as vfvisit;
@@ -2222,6 +2223,9 @@ struct VoxelHub {
     /// 居民惦記離開的你 v1（自主提案切片）：玩家離線 → 對他記憶最厚的居民排一則「待送出的想念」，
     /// 到期後由某位醒著的居民念叨出口、上動態牆＋記進記憶。純記憶體、重啟歸零（比照 last_seen 慣例）。
     longing_queue: RwLock<vlonging::LongingQueue>,
+    /// 兩村相思 v1（自主提案切片 ROADMAP 945）：每位居民「上次念叨隔村摯友」的冷卻鐘，
+    /// 讓相思稀疏發生（每位居民各自獨立冷卻）。純記憶體、重啟歸零（比照 longing_queue 慣例）。
+    farbond_clock: RwLock<vfar::FarBondClock>,
     /// 居民踏出來的小徑 v1（自主提案切片）：全村草皮磨損計數器。居民反覆走過同一片草地
     /// 累積到門檻，該格草皮就踏成泥土小徑。純記憶體、重啟歸零（已成型的小徑本身已是持久化
     /// 的泥土方塊，重啟後仍在；歸零的只是還沒踏成的半途計數，比照 last_seen 慣例）。
@@ -2948,6 +2952,8 @@ fn hub() -> &'static VoxelHub {
             // 久別重逢摘要 v1：啟動空（純記憶體、無需持久化）。
             last_seen: RwLock::new(HashMap::new()),
             longing_queue: RwLock::new(vlonging::LongingQueue::new()),
+            // 兩村相思 v1：每位居民念叨隔村摯友的冷卻鐘（重啟歸零，比照 longing_queue）。
+            farbond_clock: RwLock::new(vfar::FarBondClock::new()),
             // 居民踏出來的小徑 v1：啟動空（純記憶體，已成型的小徑已是持久化的泥土方塊）。
             pathwear: RwLock::new(vpath::PathWear::new()),
             // 啟動時從 data/voxel_milestones.jsonl 載回玩家已達成的成就徽章（重啟後仍記得）。
@@ -9326,6 +9332,7 @@ pub fn spawn_residents() {
             tick_shadows(RESIDENT_DT); // 暗影生物 v1：同節拍，各自獨立鎖，零 LLM、上限 6 隻。
             tick_nightwatch(RESIDENT_DT); // 夜裡點燈守望 v1：低頻檢查、各自獨立鎖，見暗影靠近就近點盞燈。
             tick_longing(); // 居民惦記離開的你 v1：低頻掃待送出的想念，到期由醒著居民念叨出口。
+            tick_farbond(); // 兩村相思 v1：低頻掃分屬不同聚落的摯友，偶爾由醒著居民念叨一句隔村的老朋友。
             tick_pathwear(); // 居民踏出來的小徑 v1：低頻取樣居民腳下，日積月累把常走的草皮踏成泥土小徑。
         }
     });
@@ -9412,6 +9419,139 @@ fn tick_longing() {
     if voiced {
         broadcast_players();
     }
+}
+
+// ── 兩村相思 tick（自主提案切片 ROADMAP 945·記憶→行為 × 居民↔居民 × 散居的交會）──────────
+//
+// 殖民地真居住（942）讓拓荒者真的搬離主村、遷去遠方的第二座村；本 tick 讓「搬走之後」的分隔在世界裡
+// 留下回音：低頻掃描醒著、冷卻已滿的居民，若她有一位交情達 Friend 級、如今卻住在**別座村**的老朋友，
+// 就偶爾望向遠方念叨一句隔村的思念（點名朋友＋朋友現居村落名）——上城鎮動態牆、也記進兩人的記憶。
+// 因兩邊都是居民、各自獨立掃到對方，相思天生雙向往復（露娜念遠在風禾屯的諾娃、諾娃也念主村的露娜），
+// 無需編派方向。每位居民有 FARBOND_MIN_INTERVAL_SECS 冷卻，且每次掃描至多發一則，稀疏而有份量、不洗版。
+//
+// 純確定性、零 LLM。嚴守鎖紀律：residents 讀鎖（快照）→ farbond_clock 讀鎖（挑冷卻已滿的醒著候選）→
+// settlements 讀鎖（建聚落對照）→ bonds 讀鎖（蒐集 Friend 級老朋友＋來往次數）→ colonies 讀鎖（換算村落名）
+// → residents 寫鎖（設泡泡）→ farbond_clock 寫鎖（記冷卻）→ memory 寫鎖（記憶）各自短取即釋、循序不巢狀；
+// append_memory IO 與 Feed／broadcast 全在鎖外（守 prod 死鎖鐵律）。低頻（每 FARBOND_SCAN_TICKS 掃一次）。
+static FARBOND_TICKS: AtomicU64 = AtomicU64::new(0);
+/// 每隔幾個 resident tick 掃一次兩村相思（低頻即可，相思不急）。
+const FARBOND_SCAN_TICKS: u64 = 40;
+
+fn tick_farbond() {
+    let tick_no = FARBOND_TICKS.fetch_add(1, Ordering::Relaxed);
+    if tick_no % FARBOND_SCAN_TICKS != 0 {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // ① residents 讀鎖：快照全體居民 (index, id, name, 是否在睡)。
+    let snap: Vec<(usize, String, String, bool)> = {
+        let rs = hub().residents.read().unwrap();
+        rs.iter()
+            .enumerate()
+            .map(|(i, r)| (i, r.id.clone(), r.name.to_string(), r.asleep))
+            .collect()
+    }; // residents 讀鎖釋放
+
+    // ② farbond_clock 讀鎖：挑「醒著且冷卻已滿」的候選（穩定順序＝index 升序，確定性）。
+    let candidates: Vec<(String, String)> = {
+        let clock = hub().farbond_clock.read().unwrap();
+        snap.iter()
+            .filter(|(_, id, _, asleep)| !*asleep && clock.due(id, now))
+            .map(|(_, id, name, _)| (id.clone(), name.clone()))
+            .collect()
+    }; // farbond_clock 讀鎖釋放
+    if candidates.is_empty() {
+        return;
+    }
+
+    // ③ settlements 讀鎖：建「居民 → 聚落」對照（候選與其潛在朋友都要用）。
+    let settle_of: std::collections::HashMap<String, u64> = {
+        let st = hub().settlements.read().unwrap();
+        snap.iter()
+            .map(|(_, id, _, _)| (id.clone(), st.settlement_of(id)))
+            .collect()
+    }; // settlements 讀鎖釋放
+
+    // ④ bonds 讀鎖：為候選（依序）蒐集 Friend 級老朋友，交給純函式挑出最惦念的隔村那位。
+    //    相思稀有——每次掃描至多發一則：取第一位「真有隔村摯友」的候選。
+    let chosen: Option<(String, String, String, u64)> = {
+        let bonds = hub().bonds.read().unwrap();
+        let mut result = None;
+        for (mid, mname) in &candidates {
+            let my_settlement = *settle_of.get(mid).unwrap_or(&vsettle::MAIN_SETTLEMENT);
+            let mut friends: Vec<vfar::FarFriend> = Vec::new();
+            for (_, oid, oname, _) in &snap {
+                if oid == mid {
+                    continue;
+                }
+                if resident_tier_of(&bonds, mid, oid) == vbonds::BondTier::Friend {
+                    let settlement = *settle_of.get(oid).unwrap_or(&vsettle::MAIN_SETTLEMENT);
+                    let visits = bonds.visit_count(resident_name_of(mid), resident_name_of(oid));
+                    friends.push(vfar::FarFriend {
+                        name: oname.clone(),
+                        settlement,
+                        visits,
+                    });
+                }
+            }
+            if let Some(f) = vfar::pick_missed_friend(my_settlement, &friends) {
+                result = Some((mid.clone(), mname.clone(), f.name.clone(), f.settlement));
+                break;
+            }
+        }
+        result
+    }; // bonds 讀鎖釋放
+    let (misser_id, misser_name, friend_name, friend_settlement) = match chosen {
+        Some(c) => c,
+        None => return, // 所有候選的摯友都住同一村 → 這輪無人可相思。
+    };
+
+    // ⑤ colonies 讀鎖：把朋友現居聚落換算成村落名（主村＝「主村」，找不到殖民地退保底名）。
+    let place = if friend_settlement == vsettle::MAIN_SETTLEMENT {
+        "主村".to_string()
+    } else {
+        let reg = hub().colonies.read().unwrap();
+        vsettle::settlement_colony_seq(friend_settlement)
+            .and_then(|seq| reg.all().iter().find(|c| c.seq == seq))
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "遠方的村子".to_string())
+    }; // colonies 讀鎖釋放
+
+    // ⑥ residents 寫鎖：設相思泡泡（那位居民此刻仍醒著才說得出口；剛好睡了則作罷、不記冷卻、下輪再試）。
+    let pick = (now as usize).wrapping_add(friend_name.chars().count());
+    let said = {
+        let mut rs = hub().residents.write().unwrap();
+        rs.iter_mut()
+            .find(|r| r.id == misser_id && !r.asleep)
+            .map(|r| {
+                r.say = vfar::farbond_say_line(&friend_name, &place, pick);
+                r.say_timer = SAY_SECS;
+            })
+            .is_some()
+    }; // residents 寫鎖釋放
+    if !said {
+        return;
+    }
+
+    // ⑦ 落地：記冷卻鐘 → 記憶（讓兩人情誼記憶再厚一分）→ 城鎮動態牆，然後廣播泡泡。
+    hub().farbond_clock.write().unwrap().mark(&misser_id, now); // farbond_clock 寫鎖釋放
+    let summary = vfar::farbond_memory_summary(&friend_name, &place);
+    let entry = hub()
+        .memory
+        .write()
+        .unwrap()
+        .add_memory(&misser_id, &friend_name, &summary); // memory 寫鎖釋放
+    vmem::append_memory(&entry); // IO 在鎖外
+    vfeed::append_feed(
+        vfar::FEED_KIND,
+        &misser_name,
+        &vfar::farbond_feed_detail(&friend_name, &place),
+    );
+    broadcast_players();
 }
 
 // ── 居民踏出來的小徑 tick（自主提案切片·小社會湧現寫進世界地面）──────────────────
