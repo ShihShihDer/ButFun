@@ -81,6 +81,17 @@ pub fn pick_parent_index(pop: usize, seed: u64) -> usize {
     (seed % pop as u64) as usize
 }
 
+/// 長大成人 v1（ROADMAP 942）：從一組**合格（已成年）父母候選 index** 中，用種子確定性挑一位。
+/// 唯有長大成人的居民才能當父母（初始四位居民恆成年，故合格集永不為空）；候選為空時退回 0 純屬
+/// 防呆（呼叫端保證非空）。挑法與 [`pick_parent_index`] 同構（種子取模），只是把母體從「全體」
+/// 換成「已成年者」。
+pub fn pick_parent_index_among(eligible: &[usize], seed: u64) -> usize {
+    if eligible.is_empty() {
+        return 0;
+    }
+    eligible[(seed % eligible.len() as u64) as usize]
+}
+
 /// 兩點水平平方距離。
 fn dist2(ax: i32, az: i32, bx: i32, bz: i32) -> i64 {
     let dx = (ax - bx) as i64;
@@ -255,6 +266,23 @@ mod tests {
         }
         assert_eq!(pick_parent_index(0, 123), 0); // 空群安全
         assert_eq!(pick_parent_index(4, 6), 2); // 確定性：6 % 4 = 2
+    }
+
+    #[test]
+    fn pick_parent_among_only_picks_eligible() {
+        // 只從合格（已成年）候選裡挑，且落在候選集內。
+        let eligible = [0usize, 2, 5];
+        for seed in 0..50u64 {
+            let idx = pick_parent_index_among(&eligible, seed);
+            assert!(eligible.contains(&idx));
+        }
+        // 確定性：seed % len 取到對應候選。
+        assert_eq!(pick_parent_index_among(&eligible, 0), 0);
+        assert_eq!(pick_parent_index_among(&eligible, 1), 2);
+        assert_eq!(pick_parent_index_among(&eligible, 2), 5);
+        assert_eq!(pick_parent_index_among(&eligible, 3), 0); // 回捲
+        // 空候選 → 防呆退 0（呼叫端保證非空，此為保險）。
+        assert_eq!(pick_parent_index_among(&[], 7), 0);
     }
 
     #[test]

@@ -110,6 +110,7 @@ use crate::voxel_romance::{self as vromance, ResidentRomance};
 use crate::voxel_wedding::{self as vwed, ResidentWeddings};
 use crate::voxel_family as vfamily;
 use crate::voxel_sibling as vsibling;
+use crate::voxel_coming_of_age as vcoa;
 use crate::voxel_first_invention as vfirstinv;
 use crate::voxel_lover_seek as vlover;
 use crate::voxel_wildlife as vwild;
@@ -2219,6 +2220,9 @@ struct VoxelHub {
     /// 玩家里程碑 v1（ROADMAP 724）：玩家自己的療癒循環第一次做成可回頭翻閱的成就徽章。
     /// 持久化到 data/voxel_milestones.jsonl（append-only，重啟後徽章仍在）。
     milestones: RwLock<MilestoneStore>,
+    /// 長大成人 v1（ROADMAP 942）：已行過成年禮的居民 id 帳本，保證成年禮一生只辦一次、跨重啟
+    /// 不重觸發（否則會每次重啟就重寫一筆永久記憶）。持久化到 data/voxel_coming_of_age.jsonl（append-only）。
+    coming_of_age: RwLock<vcoa::ComingOfAgeStore>,
     /// 居民長程自主專案 v1（自主提案切片）：每居民一份「跨多天的個人大夢」進度帳本（key=居民 id）。
     /// 與 `desires`（當下心願）／`builds`（單次建造計畫）刻意區隔——這是「一直放在心上、一塊塊慢慢
     /// 做成」的長程夢想。持久化到 data/voxel_lifeprojects.jsonl（append-only，重啟後接著做）。
@@ -2936,6 +2940,8 @@ fn hub() -> &'static VoxelHub {
             pathwear: RwLock::new(vpath::PathWear::new()),
             // 啟動時從 data/voxel_milestones.jsonl 載回玩家已達成的成就徽章（重啟後仍記得）。
             milestones: RwLock::new(MilestoneStore::from_entries(vmiles::load_milestones())),
+            // 長大成人 v1（942）：啟動時從 data/voxel_coming_of_age.jsonl 載回已成年的居民（重啟後不重辦成年禮）。
+            coming_of_age: RwLock::new(vcoa::ComingOfAgeStore::from_entries(vcoa::load_entries())),
             // 啟動時從 data/voxel_lifeprojects.jsonl 載回居民長程專案進度（重啟後接著做，取每人最高進度）。
             life_projects: RwLock::new(vlife::LifeProjectStore::from_entries(vlife::load_entries())),
             // 啟動時從 data/voxel_discoveries.jsonl 載回玩家的探索紀事（重啟後仍記得）。
@@ -10051,6 +10057,16 @@ fn maybe_birth() {
     // 愛的結晶 v1（ROADMAP 928）：若村裡有一對成婚夫妻（雙方都還在當前人口內），這個孩子
     // 優先由這對夫妻**共同**迎來。先快照婚書並映射成 pop 內合法 index 對（weddings 讀鎖即釋、
     // 不巢狀）；沒有可用夫妻時 `couple==None`、完全回退既有單親出生（向後相容）。
+    // 長大成人 v1（ROADMAP 942）：唯有**長大成人**的居民才能被選為父母——先短讀鎖快照全體居民的
+    // 出生時刻，算出「已成年」候選集（初始四位居民 birth_unix==0 恆成年，故合格集永不為空、生育不會
+    // 卡死）。這修掉了此前「剛出生五秒就可能被選中當爸媽」的怪異時序：你會親眼看著一個孩子慢慢長大、
+    // 直到成年，才輪到牠自己開枝散葉。residents 讀鎖短取即釋、不巢狀。
+    let adult: Vec<bool> = {
+        let rs = hub().residents.read().unwrap();
+        (0..pop).map(|i| vcoa::is_adult(rs.get(i).map(|r| r.birth_unix).unwrap_or(0), now)).collect()
+    }; // residents 讀鎖釋放
+    let eligible: Vec<usize> = (0..pop).filter(|&i| adult[i]).collect();
+
     let married_couples: Vec<(usize, usize)> = {
         let weddings = hub().weddings.read().unwrap();
         weddings
@@ -10059,14 +10075,15 @@ fn maybe_birth() {
             .filter_map(|(a, b)| {
                 let ia = RESIDENT_NAMES.iter().position(|&n| n == a.as_str())?;
                 let ib = RESIDENT_NAMES.iter().position(|&n| n == b.as_str())?;
-                (ia < pop && ib < pop).then_some((ia, ib))
+                // 夫妻雙方都須在人口內且都已成年才可當共同父母（成家的夫妻本就是成年者，此為一致性防呆）。
+                (ia < pop && ib < pop && adult[ia] && adult[ib]).then_some((ia, ib))
             })
             .collect()
     }; // weddings 讀鎖釋放
     let couple = vfamily::pick_married_couple(pop, &married_couples, seed);
     let parent_i = match couple {
         Some((a, _)) => a,
-        None => vroster::pick_parent_index(pop, seed),
+        None => vroster::pick_parent_index_among(&eligible, seed),
     };
     let co_parent_i: Option<usize> = couple.map(|(_, b)| b);
     let parent_id = format!("vox_res_{parent_i}");
@@ -13682,6 +13699,11 @@ fn tick_residents(dt: f32) {
         usize,
         Option<(u8, u32)>,
     )> = Vec::new();
+    // 長大成人 v1（ROADMAP 942）：某位世代傳承誕生的居民滿一個乙太年、剛長大成人時鎖內收集事件；
+    // 永久成長記憶＋父母欣慰記憶＋持久化＋Feed 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。
+    // 冪等落地靠 `coming_of_age` store（restart-safe），此處只收集本 tick 剛跨過門檻的候選。
+    // (居民 id, 居民名, 父母名)。
+    let mut coming_of_age_events: Vec<(String, &'static str, String)> = Vec::new();
     // 集會鐘 v1：某位應召的居民走到鐘邊聚攏時，鎖內收集事件；「你敲鐘召我來」的交情記憶＋Feed
     // 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。(居民 id, 居民名, 敲鐘者名)。
     let mut bell_gather_events: Vec<(String, &'static str, String)> = Vec::new();
@@ -13946,6 +13968,11 @@ fn tick_residents(dt: f32) {
             .map(|r| (r.id.clone(), r.name, r.body.x, r.body.z, r.asleep))
             .collect()
     }; // residents 讀鎖釋放
+
+    // 長大成人 v1（ROADMAP 942）：在取 residents 寫鎖**前**先快照「已行成年禮的居民 id」（coa 讀鎖
+    // 即釋），供下方 tick 判斷是否該觸發成年禮——避免在持 residents 寫鎖的迴圈裡再取 coa 鎖（守不巢狀
+    // 鐵律，比照 745/752 的「寫鎖前快照」慣例）。本世界居民極少，clone 成本可忽略。
+    let coa_done: std::collections::HashSet<String> = hub().coming_of_age.read().unwrap().snapshot();
 
     {
         let world = hub().deltas.read().unwrap();
@@ -16996,6 +17023,27 @@ fn tick_residents(dt: f32) {
             // 780 彩虹／798 換季），靠 `birthday_last_year` 記帳防同一週歲重複觸發。say 為空、醒著、
             // 不在朝聖/遠行才觸發（不搶正事）。鎖序：純讀居民自身欄位，記憶寫＋Feed 走鎖外
             // `birthday_events`（守 prod 死鎖鐵律）。
+            // 長大成人 v1（ROADMAP 942）：世代傳承誕生的孩子活過整整一個乙太年就長大成人，行一生
+            // 一次的成年禮。與誕辰紀念同刻交會（第一個生日＝成年禮）故放在生日判定**之前**：觸發時把
+            // `birthday_last_year` 一併設為當前年歲，避免同一年的生日再被慶祝（本 tick say 也已非空，
+            // 生日的 `r.say.is_empty()` 閘自然跳過）。冪等靠本 tick 前快照的 `coa_done`（restart-safe，
+            // 見 store）——已成年者不再觸發，泡泡不每幀重冒。永久記憶／父母欣慰／持久化／Feed 由
+            // `coming_of_age_events` 於居民鎖釋放後統一落地（守死鎖鐵律）。
+            if r.say.is_empty()
+                && !r.asleep
+                && r.pilgrimage.is_none()
+                && r.expedition.is_none()
+                && vcoa::is_coming_of_age_moment(r.birth_unix, now_unix, coa_done.contains(&r.id))
+            {
+                let age = vbday::age_years(now_unix, r.birth_unix);
+                r.birthday_last_year = r.birthday_last_year.max(age); // 成年禮＝第一個生日，別再重複慶祝這一年
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                r.say = vcoa::coming_of_age_say(r.name, pick).chars().take(vbday::SAY_CHARS).collect();
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                coming_of_age_events.push((r.id.clone(), r.name, r.birth_parent_name.clone()));
+            }
+
             if r.say.is_empty() && !r.asleep && r.pilgrimage.is_none() && r.expedition.is_none() {
                 let age = vbday::age_years(now_unix, r.birth_unix);
                 if vbday::is_birthday_moment(age, r.birthday_last_year) {
@@ -19922,6 +19970,45 @@ fn tick_residents(dt: f32) {
             .unwrap()
             .add_memory(rid, pname, &vffind::found_memory_line(pname, bearing)); // 記憶寫鎖即釋
         vfeed::append_feed(vffind::FEED_KIND, rname, &vffind::found_feed_line(rname, pname, bearing));
+    }
+
+    // 長大成人 v1（ROADMAP 942）：成年禮一生一次的落地——`coming_of_age` store 的 mark 冪等
+    //（restart 後 store 已載回，不會重觸發）；只在本次才第一次成年（mark 回 true）時才 append
+    // 持久化＋寫居民自己的永久成長記憶＋（父母若還在人口內）父母的欣慰記憶＋上動態牆。記憶寫鎖
+    // 短取即釋、持久化與 Feed 走鎖外 IO（守死鎖鐵律）。
+    for (rid, rname, parent_name) in &coming_of_age_events {
+        let first = { hub().coming_of_age.write().unwrap().mark(rid) }; // coa 寫鎖即釋
+        if !first {
+            continue; // 已成年過（極少數重啟／競態邊界）→ 不重複落地
+        }
+        vcoa::append_entry(&vcoa::ComingOfAgeEntry { resident: rid.clone() }); // 鎖外 IO 持久化
+
+        // 居民自己把「我長大成人了」記進心裡（含「一定會」→ 永久精華）。
+        let m_self = {
+            hub().memory.write().unwrap().add_memory(rid, "長大成人", &vcoa::coming_of_age_memory_line())
+        }; // memory 寫鎖即釋
+        vmem::append_memory(&m_self);
+
+        // 父母若還在人口內，記一筆看著孩子長大成人的欣慰記憶（含「一定會」→ 永久精華）。
+        // name → index 映射後須確認落在當前人口內（越界／已不在的父母安全略過）。
+        if !parent_name.is_empty() {
+            if let Some(pi) = RESIDENT_NAMES.iter().position(|&n| n == parent_name.as_str()) {
+                if pi < resident_count() {
+                    let parent_id = format!("vox_res_{pi}");
+                    let m_par = {
+                        hub().memory.write().unwrap().add_memory(
+                            &parent_id,
+                            rname,
+                            &vcoa::parent_pride_memory_line(rname),
+                        )
+                    }; // memory 寫鎖即釋
+                    vmem::append_memory(&m_par);
+                }
+            }
+        }
+
+        // 世界動態牆以「第二代開始獨當一面」的口吻播報（鎖外 IO）。
+        vfeed::append_feed(vcoa::FEED_KIND, rname, &vcoa::coming_of_age_feed_line(rname, parent_name));
     }
 
     // 居民誕辰紀念 v1：滿一個乙太年的事件落地——玩家在近旁時把「和你一起過了第 N 個生日」記進交情
