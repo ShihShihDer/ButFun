@@ -662,6 +662,39 @@ pub fn plan_quarry(world: &WorldDelta, rx: i32, rz: i32, well_seq: u32) -> Quarr
     QuarryDig { cells: vskill::staircase_well(sx, sy, sz, QUARRY_DEPTH), idx: 0 }
 }
 
+/// 規劃一口**定向礦井**（鑿井尋礦 v1）：不像 [`plan_quarry`] 在居民腳邊碰運氣，而是
+/// **反推井口位置**，讓 [`vskill::staircase_well`] 階梯井「第 k 階的腳邊那格」（踏面上方
+/// 第 1 格）恰好是目標礦石格 (ox,oy,oz)——沿井挖下去必然把那顆礦清出入袋（`quarry_step`
+/// 誠實入袋原方塊），途中順路撞見的其他礦也一併收下。
+///
+/// 幾何：階梯沿 [`vskill::STAIR_DIR`] 每階水平位移 1、踏面降 1 → 第 k 階清 (sx+k·dx,
+/// sy−k+1..+2, sz+k·dz)。取礦石為第 k 階腳邊格：k = sy − oy + 1、井口 = 礦石座標反推
+/// k 格。井口柱的地表高 sy 又依井口位置而變（地形起伏）→ **定點迭代**收斂（至多 8 輪，
+/// 平緩地形 1~2 輪即定），收斂後**驗證** cells 真的含礦石格——怪地形不收斂就回 `None`
+/// 誠實失敗，絕不開一口挖不到礦的井。階梯幾何本身保證永不自困（走得回地面）。
+/// 純函式（吃 &WorldDelta）、確定性、可測。
+pub fn plan_ore_well(world: &WorldDelta, ox: i32, oy: i32, oz: i32) -> Option<QuarryDig> {
+    let (dx, dz) = vskill::STAIR_DIR;
+    let (mut sx, mut sz) = (ox, oz); // 初值：礦石正上方（第一輪即被地表高修正）
+    let mut k = 0;
+    for _ in 0..8 {
+        let sy = ground_top(world, sx, sz)?;
+        k = sy - oy + 1; // 讓礦石落在第 k 階「腳邊那格」（tread_y + 1）
+        if k < 1 {
+            return None; // 礦石高於（或貼平）井口地表——不是往下挖搆得到的，誠實放棄
+        }
+        let (nsx, nsz) = (ox - dx * k, oz - dz * k);
+        if (nsx, nsz) == (sx, sz) {
+            break; // 收斂：井口定了
+        }
+        (sx, sz) = (nsx, nsz);
+    }
+    let sy = ground_top(world, sx, sz)?;
+    let cells = vskill::staircase_well(sx, sy, sz, k + 1);
+    // 最終驗證：這口井真的會把目標礦清出來（不收斂/地形怪 → 誠實 None）。
+    cells.contains(&(ox, oy, oz)).then_some(QuarryDig { cells, idx: 0 })
+}
+
 /// **礦井·一批**：從 q.idx 起處理至多 `max_cells` 格，回傳（要清的實心格與其原方塊, 新 idx）。
 /// 只回傳**實心**格（呼叫端：設為空氣＋原方塊入袋＝誠實收料）；空氣/水格直接跳過
 /// （不收料、也不動水——挖穿水脈讓水流進來是誠實的物理，交給水流模擬）。純函式、可測。
@@ -1887,5 +1920,37 @@ mod tests {
         }
         let top = ground_top(&w2, 800, 800).unwrap();
         assert!(top >= SEA_LEVEL + 1, "臨水柱整地後地表不應低於 SEA_LEVEL+1，got {top}");
+    }
+
+    // ── 鑿井尋礦 v1：定向礦井反推幾何 ─────────────────────────────────────────────
+
+    #[test]
+    fn plan_ore_well_digs_out_the_target_ore() {
+        // 真程序世界找一顆煤 → 定向井的清出格必須含那顆礦（幾何反推的核心保證），
+        // 且照 quarry_step 挖完整口井，那顆煤真的以煤礦身分入袋。
+        let world = WorldDelta::new();
+        let (ox, oy, oz) = vskill::find_nearest_ore_excl(&world, 400, 400, 64, Block::CoalOre, None)
+            .expect("程序世界應找得到煤礦");
+        let q = plan_ore_well(&world, ox, oy, oz).expect("平緩地形應規劃得出定向礦井");
+        assert_eq!(q.idx, 0);
+        assert!(q.cells.contains(&(ox, oy, oz)), "井的清出格必須含目標礦石格");
+        let (cells, nidx) = quarry_step(&world, &q, q.cells.len());
+        assert_eq!(nidx, q.cells.len());
+        assert!(
+            cells.iter().any(|&(x, y, z, b)| (x, y, z) == (ox, oy, oz) && b == Block::CoalOre),
+            "挖完整口井，目標煤礦應以煤礦身分入袋"
+        );
+        // 鐵礦同一套幾何也成立（更深一兩階而已）。
+        let (ix, iy, iz) = vskill::find_nearest_ore_excl(&world, 400, 400, 64, Block::IronOre, None)
+            .expect("程序世界應找得到鐵礦");
+        let qi = plan_ore_well(&world, ix, iy, iz).expect("鐵礦定向井也應規劃得出");
+        assert!(qi.cells.contains(&(ix, iy, iz)));
+    }
+
+    #[test]
+    fn plan_ore_well_rejects_target_above_ground() {
+        // 「礦」高於地表（不合理輸入）→ 不是往下挖搆得到的，誠實 None、絕不開井。
+        let world = WorldDelta::new();
+        assert!(plan_ore_well(&world, 100, BASE_HEIGHT + 6, 100).is_none());
     }
 }

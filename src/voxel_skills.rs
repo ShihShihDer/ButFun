@@ -99,6 +99,8 @@ pub fn build_offset(seq: usize) -> (i32, i32) {
 /// **註**：程序地形現在會長樹（見 `voxel::tree_in_cell`），故 v1 採集涵蓋**地表**真實存在的
 /// 草皮／沙／泥／石，外加**樹幹（木頭）**——居民走到最近的地表/樹旁，砍一塊放進小背包。
 /// 木頭是合成鏈（木頭→木板→工作台→3×3）的第一步原料，居民也得採得到才接得上。
+/// 煤礦／鐵礦（鑿井尋礦 v1）不在地表——得靠**定向階梯礦井**往深層石頭帶挖
+/// （見 [`find_nearest_ore_excl`] 與 `voxel_directed_task::plan_ore_well`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GatherResource {
     Grass,
@@ -107,9 +109,27 @@ pub enum GatherResource {
     Stone,
     /// 木頭（砍樹幹）：合成鏈的起點原料。
     Wood,
+    /// 煤礦（鑿井尋礦 v1）：深層石頭帶（y ≤ `COAL_ORE_DEPTH`）的黑礦——火把與冶煉鏈的
+    /// 燃料，地表永遠掃不到，發明採集會改開定向礦井。
+    CoalOre,
+    /// 鐵礦（鑿井尋礦 v1）：比煤更深更稀（y ≤ `IRON_ORE_DEPTH`）的鏽紅礦石——
+    /// 鐵錠冶煉（smelt_iron）的生料，鐵的時代由這一鎬開啟。
+    IronOre,
 }
 
 impl GatherResource {
+    /// 全部變體（**單一事實源**）：發明「可自採種子集」、階梯好奇心「葉節點」等所有
+    /// 需要「居民採得到的一切資源」的閉包，一律迭代這裡——新資源加進 enum 就自動
+    /// 進所有閉包，不必到處手動同步硬列。
+    pub const ALL: [GatherResource; 7] = [
+        GatherResource::Grass,
+        GatherResource::Sand,
+        GatherResource::Dirt,
+        GatherResource::Stone,
+        GatherResource::Wood,
+        GatherResource::CoalOre,
+        GatherResource::IronOre,
+    ];
     /// 對應的方塊型別。
     pub fn block(self) -> Block {
         match self {
@@ -118,6 +138,8 @@ impl GatherResource {
             GatherResource::Dirt => Block::Dirt,
             GatherResource::Stone => Block::Stone,
             GatherResource::Wood => Block::Wood,
+            GatherResource::CoalOre => Block::CoalOre,
+            GatherResource::IronOre => Block::IronOre,
         }
     }
 
@@ -134,6 +156,8 @@ impl GatherResource {
             GatherResource::Dirt => "泥土",
             GatherResource::Stone => "石頭",
             GatherResource::Wood => "木頭",
+            GatherResource::CoalOre => "煤礦",
+            GatherResource::IronOre => "鐵礦",
         }
     }
 
@@ -146,6 +170,8 @@ impl GatherResource {
             Block::Dirt => Some(GatherResource::Dirt),
             Block::Stone => Some(GatherResource::Stone),
             Block::Wood => Some(GatherResource::Wood),
+            Block::CoalOre => Some(GatherResource::CoalOre),
+            Block::IronOre => Some(GatherResource::IronOre),
             _ => None,
         }
     }
@@ -169,6 +195,9 @@ impl GatherResource {
             // 石／木本就是「往下挖礦道／砍半空樹幹」，留 Air 合理（非地表破洞）。
             GatherResource::Stone => Block::Air,
             GatherResource::Wood => Block::Air,
+            // 礦石鑿走後留礦道空腔（本就在深層井底，不破地表）。
+            GatherResource::CoalOre => Block::Air,
+            GatherResource::IronOre => Block::Air,
         }
     }
 }
@@ -594,6 +623,41 @@ pub fn find_nearest_resource_of_excl(
             return None;
         }
         escapable(x, y, z).then_some((x, y, z))
+    })
+}
+
+/// 這種採集資源是不是「深層礦石」（鑿井尋礦 v1）——礦石埋在深層石頭帶（永遠不會是
+/// 地表頂），在居民腳邊亂開井多半撲空，得改走 [`find_nearest_ore_excl`] 定向找礦
+/// ＋`voxel_directed_task::plan_ore_well` 反推井口的定向礦井路徑。純函式、可測。
+pub fn resource_is_ore(res: GatherResource) -> bool {
+    matches!(res, GatherResource::CoalOre | GatherResource::IronOre)
+}
+
+/// 從 (ox,oz) 螺旋向外找最近一顆**還沒被挖走**的指定礦石（鑿井尋礦 v1）。
+/// 逐柱掃 y ∈ [0, [`voxel::COAL_ORE_DEPTH`]]（礦石只生成於 y ≥ 0 的深層石頭帶、
+/// y < 0 是不可挖的地心基岩；鐵礦生成上限更低，多掃兩層只是空查、不誤判），用
+/// `effective_block_at`（帶 delta overlay）判定 → 已被挖走的礦自動不算、下一次
+/// 尋礦自然換到下一顆，永不對同一顆礦重複開井。`excl`＝離村禁區（動土紀律，
+/// 與其他自主採集一致；井口另由呼叫端對整口井驗禁區）。
+/// 回傳礦石格絕對座標；半徑內真的沒有（或全被挖光）→ `None`（呼叫端誠實失敗）。
+/// 純函式（吃 &WorldDelta）、確定性（螺旋由近到遠）、可測。
+pub fn find_nearest_ore_excl(
+    world: &WorldDelta,
+    ox: i32,
+    oz: i32,
+    max_radius: i32,
+    ore: Block,
+    excl: Option<(i32, i32, i32)>,
+) -> Option<(i32, i32, i32)> {
+    spiral_find(ox, oz, 0, max_radius, |x, z| {
+        if in_dig_exclusion(excl, x, z) {
+            return None; // 挖掘紀律：村內禁自主開挖 → 跳過，往村外找
+        }
+        // 由淺到深掃這柱的礦石生成帶：越淺的礦井越短，優先。
+        (0..=voxel::COAL_ORE_DEPTH)
+            .rev()
+            .find(|&y| voxel::effective_block_at(world, x, y, z) == ore)
+            .map(|y| (x, y, z))
     })
 }
 
@@ -2287,5 +2351,52 @@ mod tests {
         assert_eq!(s.done_count("vox_res_0"), 2);
         assert_eq!(s.house_of("vox_res_0"), Some((10, 20, 30)));
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── 鑿井尋礦 v1：礦石資源 + 定向找礦 ─────────────────────────────────────────
+
+    #[test]
+    fn gather_resource_ore_roundtrip_and_refill() {
+        for res in [GatherResource::CoalOre, GatherResource::IronOre] {
+            // block ↔ resource 雙向一致；礦鑿走留礦道空腔（Air）；是礦石。
+            assert_eq!(GatherResource::from_block(res.block()), Some(res));
+            assert_eq!(res.refill_after_gather(), Block::Air);
+            assert!(resource_is_ore(res));
+        }
+        assert!(!resource_is_ore(GatherResource::Stone), "石頭是地下資源但不是礦石");
+        assert_eq!(GatherResource::CoalOre.display_name(), "煤礦");
+        assert_eq!(GatherResource::IronOre.display_name(), "鐵礦");
+        // ALL 是「所有可自採資源」的單一事實源——變體數要跟 enum 同步（漏列會讓
+        // 發明種子集/好奇心葉節點默默缺資源）。
+        assert_eq!(GatherResource::ALL.len(), 7);
+    }
+
+    #[test]
+    fn find_nearest_ore_finds_real_coal_and_iron() {
+        // 真程序世界（空 delta）：兩種礦在生成帶內都找得到，且回報格真的是那種礦。
+        let world = WorldDelta::new();
+        for ore in [Block::CoalOre, Block::IronOre] {
+            let (x, y, z) = find_nearest_ore_excl(&world, 50, 50, 64, ore, None)
+                .unwrap_or_else(|| panic!("程序世界半徑 64 內應找得到 {ore:?}"));
+            assert_eq!(voxel::effective_block_at(&world, x, y, z), ore);
+            assert!((0..=voxel::COAL_ORE_DEPTH).contains(&y), "礦只生成在深層帶，got y={y}");
+        }
+    }
+
+    #[test]
+    fn find_nearest_ore_skips_mined_out_and_exclusion() {
+        let mut world = WorldDelta::new();
+        let first = find_nearest_ore_excl(&world, 50, 50, 64, Block::CoalOre, None)
+            .expect("應找得到第一顆煤");
+        // 挖走那顆（delta overlay）→ 再找自動換下一顆，永不對同一顆重複開井。
+        voxel::set_block(&mut world, first.0, first.1, first.2, Block::Air);
+        let second = find_nearest_ore_excl(&world, 50, 50, 64, Block::CoalOre, None)
+            .expect("挖走一顆後仍應找得到下一顆");
+        assert_ne!(first, second, "已挖走的礦不該再被選中");
+        // 離村禁區涵蓋第一顆的柱 → 該柱整柱跳過（動土紀律）。
+        let clean = WorldDelta::new();
+        let third = find_nearest_ore_excl(&clean, 50, 50, 64, Block::CoalOre, Some((first.0, first.2, 0)))
+            .expect("跳過禁區柱後仍應找得到礦");
+        assert_ne!((third.0, third.2), (first.0, first.2), "禁區內的礦柱不該被選中");
     }
 }
