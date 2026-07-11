@@ -108,6 +108,7 @@ use crate::voxel_bonds::{self as vbonds, ResidentBonds};
 use crate::voxel_romance::{self as vromance, ResidentRomance};
 use crate::voxel_wedding::{self as vwed, ResidentWeddings};
 use crate::voxel_family as vfamily;
+use crate::voxel_first_invention as vfirstinv;
 use crate::voxel_lover_seek as vlover;
 use crate::voxel_wildlife as vwild;
 use crate::voxel_pettreat as vtreat;
@@ -22275,14 +22276,27 @@ fn finish_invent_run(
                 Some(checked) => (canonical, checked),
                 None => (run.raw_steps.clone(), run.steps.clone()),
             };
-            let rec = {
+            // 立碑冪等性（ROADMAP 930）：在存進技能庫的**同一把寫鎖**內先查她此前「自己
+            // 發明」的筆數——0 表示這是她生涯第一次真的靠自己發明（繼承/師承的都有 source、
+            // 不算）。查完再 add，兩步同鎖不巢狀、避免競態。
+            let (rec, is_first_self_invention) = {
                 let mut inv = hub().invented.write().unwrap();
-                inv.add(rid, &run.skill_name, run.goal_block, store_steps)
+                let was_zero = inv.self_invented_count(rid) == 0;
+                let rec = inv.add(rid, &run.skill_name, run.goal_block, store_steps);
+                // 只有真的新存了一筆（rec=Some）、且此前自己發明筆數為 0，才是首次里程碑。
+                let is_first = was_zero && rec.is_some();
+                (rec, is_first)
             }; // invented 寫鎖釋放
-            if let Some(rec) = rec {
-                vinvent::append_invented_skill(&rec);
+            if let Some(rec) = &rec {
+                vinvent::append_invented_skill(rec);
             }
             tracing::info!(resident = %rid, skill = %run.skill_name, "技能發明成功：存入個人技能庫");
+            // 生涯第一次自己發明 → 就地立起一座永久的「發明之光碑」（真進化里程碑·比照
+            // maybe_wedding 花拱門的立碑模式：residents 讀取位置 → drop → deltas 讀找空錨點 →
+            // drop → deltas 寫放置 → drop → append_world_block/broadcast 全在鎖外，守死鎖鐵律）。
+            if is_first_self_invention {
+                maybe_erect_invention_monument(rid, rname, &run.skill_name, say_updates);
+            }
             say_updates.push((rid.to_string(), vinvent::learned_line(&run.skill_name)));
             vfeed::append_feed(
                 "學會技能",
@@ -22353,6 +22367,84 @@ fn finish_invent_run(
             say_updates.push((rid.to_string(), "唔……這次沒成，再想想。".to_string()));
         }
     }
+}
+
+/// 生涯第一次自己發明成功 → 就地立起一座永久的「發明之光碑」（真進化里程碑·ROADMAP 930）。
+///
+/// **鎖紀律**（守 prod 死鎖鐵律，比照 [`maybe_wedding`] 花拱門立碑）：residents 讀取居民
+/// 當下位置 → drop → deltas 讀鎖找一處上方兩格皆空的錨點 → drop → deltas 寫鎖放置 2 塊 →
+/// drop → `append_world_block`（永久持久化）／`broadcast_block`（廣播）全在鎖外；台詞推進
+/// `say_updates`（呼叫端稍後統一套用）、Feed／記憶各自短鎖即釋。四方向都放不下就本輪安靜
+/// 放棄（不留半截碑、也不影響已存的技能——碑只是額外的證物）。
+fn maybe_erect_invention_monument(
+    rid: &str,
+    rname: &str,
+    skill_name: &str,
+    say_updates: &mut Vec<(String, String)>,
+) {
+    // 1) 居民當下腳下座標（residents 讀鎖即釋）。
+    let pos = {
+        let residents = hub().residents.read().unwrap();
+        residents
+            .iter()
+            .find(|r| r.id == rid)
+            .map(|r| (r.body.x.floor() as i32, r.body.z.floor() as i32))
+    }; // residents 讀鎖釋放
+    let Some((fx, fz)) = pos else {
+        return;
+    };
+    // 2) 四方向擇一找能立下整座碑（上方兩格皆空氣）的錨點（deltas 讀鎖即釋）。
+    let pick = (fx as u32 ^ (fz as u32).rotate_left(16) ^ vfarm::now_secs() as u32) as usize;
+    let placement: Option<[(i32, i32, i32, Block); 2]> = {
+        let w = hub().deltas.read().unwrap();
+        (0..4).find_map(|d| {
+            let (ax, az) = vfirstinv::pick_anchor(fx, fz, pick + d);
+            let ay = vbuild::surface_y(ax, az);
+            let blocks = vfirstinv::monument_blocks(ax, ay, az);
+            let all_air = blocks
+                .iter()
+                .all(|&(x, y, z, _)| voxel::effective_block_at(&w, x, y, z) == Block::Air);
+            all_air.then_some(blocks)
+        })
+    }; // deltas 讀鎖釋放
+    let Some(blocks) = placement else {
+        return; // 腳邊四方向都放不下 → 本輪不立碑（技能仍已存，不影響進化本身）。
+    };
+    // 3) 立碑（deltas 寫鎖批次即釋）。
+    {
+        let mut world = hub().deltas.write().unwrap();
+        for &(x, y, z, b) in &blocks {
+            voxel::set_block(&mut world, x, y, z, b);
+        }
+    } // deltas 寫鎖釋放
+    // 4) 永久持久化（append-only）＋鎖外廣播。
+    for &(x, y, z, b) in &blocks {
+        vbuild::append_world_block(x, y, z, b as u8);
+        broadcast_block(x, y, z, b);
+    }
+    // 5) 她由衷冒一句（先於既有「我學會X了」推入 → 里程碑句勝出）、上城鎮動態牆、寫進永久記憶。
+    say_updates.push((
+        rid.to_string(),
+        vfirstinv::milestone_say_line(skill_name, pick),
+    ));
+    vfeed::append_feed(
+        "首次發明立碑",
+        rname,
+        &vfirstinv::milestone_feed_line(rname, skill_name),
+    );
+    let entry = {
+        let mut mem = hub().memory.write().unwrap();
+        mem.add_memory(
+            rid,
+            vdes::SELF_SPARK,
+            &vfirstinv::milestone_memory_line(skill_name),
+        )
+    }; // memory 寫鎖釋放
+    vmem::append_memory(&entry);
+    tracing::info!(
+        resident = %rid, skill = %skill_name,
+        "真進化里程碑：生涯第一次自己發明成功，就地立起發明之光碑"
+    );
 }
 
 /// 為一位居民發起一次「發明」：無鎖 async 請**便宜腦**（`agent_llm_chat` 思考路由：
