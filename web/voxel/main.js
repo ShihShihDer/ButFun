@@ -170,6 +170,11 @@ const CARPET = 102, FLOWERPOT = 103, TABLE = 104, BANNER = 105;
 // 礦晶；是「挖到豁然開朗地底洞穴」時值得駐足的發現＋照明。可放置的發光方塊，比照火把/乙太燈作法。
 // id 106：99~101=劍、102~105=裝飾傢俱已佔用，106 是首個空號。
 const GLOW_CRYSTAL = 106;
+// 世界奇觀·乙太世界樹 v1（ROADMAP 939）——全世界唯一一座天然大奇觀：一株遠離主村、由世界種子
+// 確定性決定座標的巨型古樹，粗壯樹幹頂著一團泛著青綠幽光的巨大花冠。乙太花冠(111)是那團花冠的
+// 方塊，為發光方塊（比照發光結晶靠 lightColorFor 投出柔和青綠點光）。純世界生成、玩家不可放置、
+// 砍不掉（後端保護）。id 111：0~110 皆已用（107/108=南瓜、109/110=南瓜種子/收成），111 是空號。
+const AETHER_BLOOM = 111;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -312,6 +317,9 @@ const COLOR = {
   // 發光結晶 v1（地下洞穴探索 v1，ROADMAP 934）——高亮青綠幽光，一眼是黑暗洞穴裡自體發光的礦晶
   // （比照火把/乙太燈純亮色作法，靠 lightColorFor 在四周投出柔和青綠點光）。
   [GLOW_CRYSTAL]: [0.42, 0.95, 0.68],
+  // 世界奇觀·乙太世界樹 v1（ROADMAP 939）——花冠泛著青綠幽光，比樹葉更亮更帶青，一眼是自體發光
+  // 的奇觀花冠（靠 lightColorFor 在四周投出柔和青綠點光）。
+  [AETHER_BLOOM]: [0.50, 0.98, 0.72],
 };
 
 // ── 裝飾植物十字貼片渲染 v2 ─────────────────────────────────────────────
@@ -2035,14 +2043,16 @@ const TORCH_LIGHT_COLOR = 0xff8820;      // 火把——暖橘黃（比火把顏
 const AETHER_LIGHT_COLOR = 0x66ccff;     // 乙太燈——清冷青藍（比火把冷、辨識度高）
 const CAMPFIRE_LIGHT_COLOR = 0xff6a1e;   // 營火——炙熱橘紅（比火把更飽和暖烈，一堆真的在燒的火）
 const GLOW_CRYSTAL_COLOR = 0x5cffb0;     // 發光結晶——柔和青綠（洞穴腔室岩壁上的天然幽光，冷而療癒）
+const AETHER_BLOOM_COLOR = 0x7cffb8;     // 乙太世界樹花冠——柔和青綠（比發光結晶更亮更帶青，遠遠望見的奇觀光暈）
 
 /** 此方塊是否為「發光方塊」（會被登記進光源池）。 */
-function isLightBlock(b) { return b === TORCH || b === AETHER_LAMP || b === CAMPFIRE || b === GLOW_CRYSTAL; }
+function isLightBlock(b) { return b === TORCH || b === AETHER_LAMP || b === CAMPFIRE || b === GLOW_CRYSTAL || b === AETHER_BLOOM; }
 /** 發光方塊的光色（不同方塊不同色調）。 */
 function lightColorFor(b) {
   if (b === AETHER_LAMP) return AETHER_LIGHT_COLOR;
   if (b === CAMPFIRE) return CAMPFIRE_LIGHT_COLOR;
   if (b === GLOW_CRYSTAL) return GLOW_CRYSTAL_COLOR;
+  if (b === AETHER_BLOOM) return AETHER_BLOOM_COLOR;
   return TORCH_LIGHT_COLOR;
 }
 
@@ -5392,6 +5402,7 @@ const BLOCK_NAME = {
   [CARPET]: "小地毯", [FLOWERPOT]: "花盆", [TABLE]: "小圓桌", [BANNER]: "掛旗",
   // 地下洞穴探索 v1（ROADMAP 934）
   [GLOW_CRYSTAL]: "發光結晶",
+  [AETHER_BLOOM]: "乙太花冠",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -6692,6 +6703,16 @@ function connect() {
       // 分村殖民 v1：走近一座此前沒發現過的野外村落——浮出它的名字與立村故事（只給自己看）。
       showMsg(m.line || "你發現了一座野外村落🏘️");
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 4200);
+    } else if (m.t === "wonder_discovered") {
+      // 世界奇觀·乙太世界樹 v1（ROADMAP 939）：跋涉到世界邊陲、首次走到那株唯一巨型古樹腳下的
+      // 那一刻——浮出一句敬畏提示（只給自己看，多停留一會兒，值得慢慢看清）。
+      showMsg(m.line || "你抵達了世界盡頭的巨型古樹——乙太世界樹🌳");
+      const _we = document.getElementById("msg");
+      if (_we) { clearTimeout(_we._hideTimer); _we._hideTimer = setTimeout(() => { _we.style.display = "none"; }, 6000); }
+    } else if (m.t === "wonder_protected") {
+      // 世界奇觀·乙太世界樹 v1：試圖砍奇觀——被後端擋下，浮出一句溫柔說明（別讓路過的人拆掉它）。
+      showMsg(m.line || "乙太世界樹是世界唯一的奇觀，它不會為任何人的鎬子讓步。");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3000);
     } else if (m.t === "colony_founded") {
       // 分村殖民 v1：世界某處剛奠下一座新村（人人可見的世界大事，稀有）——浮出立村捷報。
       showMsg("🏘️ 世界長出了新村落「" + (m.name || "野外村落") + "」——" + (m.story || ""));

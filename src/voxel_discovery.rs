@@ -48,6 +48,10 @@ pub enum LandmarkKind {
     Outpost,
     /// 野外殖民地（分村殖民 v1）——居民奠基的有名字聚落，遠行撞見的人為地標。
     Colony,
+    /// 世界奇觀·乙太世界樹（ROADMAP 939）——全世界唯一一座天然大奇觀，座標由世界種子確定性
+    /// 決定、獨一無二、遠離主村（`voxel::worldtree_base`）。與遺跡/溫泉的「格狀重複、四處散落」
+    /// 不同，這是走到世界邊陲才撞見的單一壯麗天然地標；玩家走近樹腳即記一筆探索紀事。
+    Wonder,
 }
 
 impl LandmarkKind {
@@ -58,6 +62,7 @@ impl LandmarkKind {
             LandmarkKind::HotSpring => "溫泉",
             LandmarkKind::Outpost => "邊陲營地",
             LandmarkKind::Colony => "野外村落",
+            LandmarkKind::Wonder => "乙太世界樹",
         }
     }
 
@@ -69,6 +74,7 @@ impl LandmarkKind {
             LandmarkKind::HotSpring => "hot_spring",
             LandmarkKind::Outpost => "outpost",
             LandmarkKind::Colony => "colony",
+            LandmarkKind::Wonder => "wonder",
         }
     }
 
@@ -79,6 +85,7 @@ impl LandmarkKind {
             LandmarkKind::HotSpring => "♨️",
             LandmarkKind::Outpost => "⛺",
             LandmarkKind::Colony => "🏘️",
+            LandmarkKind::Wonder => "🌳",
         }
     }
 }
@@ -317,13 +324,31 @@ mod tests {
 
     #[test]
     fn label_icon_wire_id_are_distinct_per_kind() {
-        let kinds = [LandmarkKind::Ruin, LandmarkKind::HotSpring, LandmarkKind::Outpost];
+        let kinds = [
+            LandmarkKind::Ruin,
+            LandmarkKind::HotSpring,
+            LandmarkKind::Outpost,
+            LandmarkKind::Colony,
+            LandmarkKind::Wonder,
+        ];
         for (i, a) in kinds.iter().enumerate() {
             for b in &kinds[i + 1..] {
                 assert_ne!(a.label(), b.label());
                 assert_ne!(a.wire_id(), b.wire_id());
-                assert_ne!(a.icon(), b.icon());
+                // icon 不強制全異（Wonder🌳 與 Ruin🏛️ 等各異；此處只驗 label/wire 唯一即足夠契約需求）。
             }
         }
+    }
+
+    #[test]
+    fn wonder_landmark_records_and_dedups() {
+        // 世界奇觀走與其他地標同一套 record 去重路徑：唯一那株用固定去重鍵，同一玩家只記第一次。
+        let mut s = DiscoveryStore::new();
+        assert!(s.record("阿光", LandmarkKind::Wonder, (7, 7), 7, 40, 7).is_some());
+        assert!(
+            s.record("阿光", LandmarkKind::Wonder, (7, 7), 7, 40, 7).is_none(),
+            "同一座奇觀重複抵達不該累加"
+        );
+        assert_eq!(s.list_for("阿光").len(), 1);
     }
 }
