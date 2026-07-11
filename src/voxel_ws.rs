@@ -167,6 +167,7 @@ use crate::voxel_timely as vtimely;
 use crate::voxel_bounty as vbounty;
 use crate::voxel_pumpkin as vpumpkin;
 use crate::voxel_stargaze as vstar;
+use crate::voxel_moonphase as vmoon;
 use crate::voxel_firework as vfw;
 use crate::voxel_compost as vcompost;
 use crate::voxel_bucket as vbucket;
@@ -568,6 +569,10 @@ struct VoxelResident {
     /// [`vstar::STARGAZE_COOLDOWN_SECS`]，歸零前不再觸發——星夜共賞是偶爾的浪漫一拍、不洗版。
     /// 各居民初始錯開。純記憶體、重啟歸零。
     stargaze_cooldown: f32,
+    /// 對月出神冷卻倒數（秒，月有圓缺 v1，ROADMAP 946）：滿月夜裡一次抬頭對月出神後設為
+    /// [`vmoon::MOONGAZE_COOLDOWN_SECS`]，歸零前不再觸發——月圓出神是滿月夜偶爾的靜謐一拍、不洗版，
+    /// 且與望星獨立冷卻、不撞。各居民初始錯開。純記憶體、重啟歸零。
+    moongaze_cooldown: f32,
     /// 這位居民擺在世界裡、你送的紀念物座標小佇列（睹物思人 v1，ROADMAP 784）：keepsake（732）
     /// 落地一件就記一筆（座標＋紀念物名＋送禮玩家名）；她日後閒晃恰好路過時偶爾駐足追憶。
     /// 上限 [`vkrecall::MAX_SPOTS`]、去重。純記憶體、重啟歸零（那塊方塊本身仍由 keepsake 持久化）。
@@ -1902,6 +1907,8 @@ fn build_resident(
             pilgrimage_cooldown: 180.0 + i as f32 * 60.0,
             // 繁星夜空 v1（ROADMAP 783）：望星冷卻各自錯開，避免同一個星夜大家一起邀。
             stargaze_cooldown: 120.0 + i as f32 * 45.0,
+            // 月有圓缺 v1（ROADMAP 946）：對月出神冷卻各自錯開，避免滿月夜大家同時抬頭。
+            moongaze_cooldown: 150.0 + i as f32 * 50.0,
             // 睹物思人 v1（ROADMAP 784）：入場還沒擺出任何你送的紀念物；追憶冷卻各自錯開。
             keepsake_spots: Vec::new(),
             keepsake_recall_cooldown: 90.0 + i as f32 * 40.0,
@@ -2168,6 +2175,10 @@ struct VoxelHub {
     /// 本場遷徙的走向（候鳥遷徙 v1，ROADMAP 944）：入春＝`Arrival`（歸來）、入秋＝`Departure`（離去）；
     /// 隨快照廣播 `migration_kind` 供前端決定鳥群飛行方向。純記憶體、與 `migration_ticks` 同壽命。
     migration_kind: RwLock<Option<vmigration::MigrationKind>>,
+    /// 上一輪是否處於「滿月＋夜」狀態（月有圓缺 v1，ROADMAP 946）：`tick_residents` 每輪由世界時鐘
+    /// 現算月相受光比例、合成「滿月夜」旗標與此比對——`false→true` 的上升緣才上一則「今夜月圓」城鎮
+    /// 動態（每個滿月夜只播一次、不逐 tick 洗版）。純記憶體、重啟歸零（比照流星 `meteor_ticks` 慣例）。
+    was_full_moon_night: RwLock<bool>,
     /// 上一輪偵測到的季節（季節輪替 v1，ROADMAP 798）：`tick_residents` 每輪由世界時鐘累計日數
     /// 推算當前季節，與此比對——不同即「換季」，設下方一次性旗標並上一則城鎮動態。純記憶體、重啟
     /// 從初春重新流轉（比照天氣／彩虹狀態）。
@@ -2923,6 +2934,8 @@ fn hub() -> &'static VoxelHub {
             // 候鳥遷徙 v1（ROADMAP 944）：啟動時天上無候鳥（入春／入秋換季那一刻才觸發一場遷徙）。
             migration_ticks: RwLock::new(0),
             migration_kind: RwLock::new(None),
+            // 月有圓缺 v1（ROADMAP 946）：啟動時尚未進入任何滿月夜（等世界時鐘走到滿月相位＋入夜才觸發）。
+            was_full_moon_night: RwLock::new(false),
             // 季節輪替 v1（ROADMAP 798）：啟動時世界日數為 0 ＝初春；之後靠 tick_residents 逐日推進換季。
             last_season: RwLock::new(vseason::season_for_day(0)),
             // 冬季飄雪 v1（ROADMAP 900）：啟動時尚未飄雪、本冬未播初雪；之後靠 tick_residents 逐 tick 推進。
@@ -3104,6 +3117,12 @@ fn players_snapshot_json() -> String {
         let day = hub().world_time.read().unwrap().days_elapsed();
         (vseason::season_for_day(day).as_str(), vseason::day_of_season(day))
     };
+    // 月有圓缺 v1（ROADMAP 946，短鎖、不巢狀）：由世界時鐘現算此刻月相受光比例（0＝新月、1＝滿月），
+    // 隨快照帶給前端把那輪月削成當夜的相位（弦月／細月）。純唯讀新增欄位，舊前端安全忽略、零協議破壞。
+    let moon_illum: f64 = {
+        let wt = hub().world_time.read().unwrap();
+        vmoon::illumination(wt.days_elapsed(), wt.time_of_day())
+    };
     // 野兔快照（野兔 v1，ROADMAP 847，短鎖、不巢狀）：純位置/朝向，前端渲染環境點綴用。
     let wildlife: Vec<WildlifeView> = {
         let a = hub().wildlife.read().unwrap();
@@ -3139,6 +3158,7 @@ fn players_snapshot_json() -> String {
         "migration_kind": migration_kind,
         "season": season,
         "season_day": season_day,
+        "moon_illum": moon_illum,
     }).to_string()
 }
 
@@ -13584,6 +13604,24 @@ fn tick_residents(dt: f32) {
     // Evening 仍有夜生活、只縮小活動；到 Night 才就寢。醒來則沿用 is_night 判定
     // （只要離開夜間系列＝天色轉亮就起床）。
     let is_deep_night = matches!(phase, TimePhase::Night);
+    // 月有圓缺 v1（ROADMAP 946）：由世界時鐘現算此刻月相受光比例（隨乙太曆盈虧），合成「滿月夜」旗標。
+    // 短讀鎖即釋、不巢狀。`is_full_moon_night` 供下方居民對月出神迴圈消費。
+    let moon_illum = {
+        let wt = hub().world_time.read().unwrap();
+        vmoon::illumination(wt.days_elapsed(), wt.time_of_day())
+    }; // world_time 讀鎖在此釋放
+    let is_full_moon_night = vmoon::is_full_moon(moon_illum) && is_night;
+    // 滿月夜城鎮動態牆：進入「滿月＋夜」狀態的上升緣（`false→true`）才播一次，之後同一個滿月夜不再重播
+    // （跨 tick 用 hub 旗標去重）。短寫鎖即釋、不巢狀；Feed append 走鎖外（不持任何鎖做 IO，守死鎖鐵律）。
+    let announce_full_moon = {
+        let mut was = hub().was_full_moon_night.write().unwrap();
+        let rising = is_full_moon_night && !*was;
+        *was = is_full_moon_night;
+        rising
+    }; // was_full_moon_night 寫鎖在此釋放
+    if announce_full_moon {
+        vfeed::append_feed(vmoon::FEED_KIND, "乙太方界", vmoon::full_moon_feed_line());
+    }
     // 下雨天氣（700）接上居民行為（ROADMAP 701）：短讀鎖取目前是否下雨。
     let raining = *hub().weather.read().unwrap();
     // 雨剛開始的一次性旗標：consume-once（讀到就清回 false），供下方觸發居民雨天反應台詞。
@@ -15807,6 +15845,10 @@ fn tick_residents(dt: f32) {
             if r.stargaze_cooldown > 0.0 {
                 r.stargaze_cooldown -= dt;
             }
+            // 月有圓缺 v1（ROADMAP 946）：對月出神冷卻遞減（純記憶體、每 tick 一次）。
+            if r.moongaze_cooldown > 0.0 {
+                r.moongaze_cooldown -= dt;
+            }
             // 睹物思人 v1（ROADMAP 784）：追憶冷卻遞減（純記憶體、每 tick 一次）。
             if r.keepsake_recall_cooldown > 0.0 {
                 r.keepsake_recall_cooldown -= dt;
@@ -16852,6 +16894,31 @@ fn tick_residents(dt: f32) {
                             r.say_timer = SAY_SECS;
                             r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                         }
+                    }
+                }
+            }
+
+            // 月有圓缺·滿月出神 v1（ROADMAP 946）：滿月夜裡（say 為空、醒著）靠近你的居民偶爾抬頭對著
+            // 那輪圓月出神、輕聲許一句願，心情跟著微亮一格（`mood_boost` 是驅動行為的真狀態）。與繁星
+            // 望星（783）razor-sharp 區隔：只在滿月那數夜、台詞專講「圓月」；獨立冷卻，且因外層已確認
+            // `r.say` 為空，天然不與同 tick 剛觸發的望星搶話。純讀居民自身欄位（已持居民寫鎖），
+            // 不寫記憶、不上 Feed（滿月夜的城鎮動態已在本 tick 頂端一次性播過），零鎖外 IO。
+            if is_full_moon_night && r.say.is_empty() && !r.asleep && r.moongaze_cooldown <= 0.0 {
+                if let Some((d2, _pname)) = nearest_player_info(r.body.x, r.body.z, &player_pts) {
+                    let in_range = d2 < vmoon::MOONGAZE_RANGE * vmoon::MOONGAZE_RANGE;
+                    if vmoon::should_moongaze(
+                        is_full_moon_night,
+                        in_range,
+                        r.moongaze_cooldown <= 0.0,
+                        false, // say 已在外層確認為空
+                        false, // asleep 已在外層確認為醒
+                        rand::random::<f32>(),
+                    ) {
+                        r.moongaze_cooldown = vmoon::MOONGAZE_COOLDOWN_SECS;
+                        let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                        r.say = vmoon::moongaze_line(pick).to_string();
+                        r.say_timer = SAY_SECS;
+                        r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                     }
                 }
             }
