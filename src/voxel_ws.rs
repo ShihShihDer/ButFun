@@ -154,6 +154,7 @@ use crate::voxel_weather as vweather;
 use crate::voxel_season as vseason;
 use crate::voxel_snow as vsnow;
 use crate::voxel_snowman as vsnowman;
+use crate::voxel_vigil as vvigil;
 use crate::voxel_mist as vmist;
 use crate::voxel_timely as vtimely;
 use crate::voxel_bounty as vbounty;
@@ -2130,6 +2131,10 @@ struct VoxelHub {
     /// 居民堆雪人 v1（ROADMAP 918）：冬天居民堆起的雪人清單（純記憶體、重啟即消失，比照 smelt/invent
     /// 的世界暫態）。每個記著它佔用的方塊座標，冬天一結束就逐格清回空氣（融化）。
     snowmen: RwLock<Vec<vsnowman::Snowman>>,
+    /// 居民為你留一盞燈 v1（ROADMAP 919）：某位居民在夜裡替離開的某位玩家點的守夜燈清單（純記憶體、
+    /// 重啟即消失，比照雪人慣例）。每盞記著座標＋替誰守＋誰點的，天亮全數熄滅、或那位玩家在燈還亮著
+    /// 時回來由點燈的居民親手熄去。
+    vigil_lights: RwLock<Vec<vvigil::VigilLight>>,
     /// 晨霧 v1（ROADMAP 913）：追蹤「今天清晨的晨霧是否已播報過」（純記憶體，比照天氣／季節等
     /// 世界暫態，重啟歸零）。每輪 tick_residents 依「當前是否清晨 ∧ 世界第幾天」推進，偵測
     /// 每天清晨第一次霧起那一刻，讓附近醒著居民抬頭冒句晨霧感言＋動態牆留一則。
@@ -2858,6 +2863,7 @@ fn hub() -> &'static VoxelHub {
             snow_tracker: RwLock::new(vsnow::SnowSeasonTracker::new()),
             // 居民堆雪人 v1（ROADMAP 918）：啟動時世界上沒有任何雪人（純記憶體、重啟即空）。
             snowmen: RwLock::new(Vec::new()),
+            vigil_lights: RwLock::new(Vec::new()),
             // 晨霧 v1（ROADMAP 913）：啟動時尚未播過任何一天的晨霧；世界初始為白天（非清晨），
             // 故啟動當下不會誤觸發，第一縷晨霧落在隔天清晨。之後靠 tick_residents 逐 tick 推進。
             mist_tracker: RwLock::new(vmist::MistDayTracker::new()),
@@ -4094,6 +4100,9 @@ async fn handle_socket(
             // 居民惦記離開的你 v1：你回來了 → 清掉任何還沒說出口的「待送出的想念」（迎接改由奔迎接手，
             // 別再讓居民對著已經回來的你念叨「好久沒看到你」）。短鎖即釋、不巢狀。
             hub().longing_queue.write().unwrap().cancel(&name);
+            // 居民為你留一盞燈 v1（ROADMAP 919）：你若在燈還亮著的夜裡回來，由點燈的居民親手熄燈、
+            // 迎你一句「這盞燈我一直替你留著」並記進記憶＋動態牆。沒人替你留燈則靜靜歸來、無回響。
+            redeem_vigil_light(&name);
             if let Some(last_secs) = last {
                 let gap = now.saturating_sub(last_secs);
                 if vreunion::should_rush(gap, rand::random::<f32>()) {
@@ -9640,6 +9649,8 @@ pub fn spawn_farm_tick() {
             maybe_breed_rabbits(); // 馴服兔子生寶寶 v1（自主提案切片 855）：同節拍檢查是否誕生一隻小兔子。
             maybe_build_snowman(); // 居民堆雪人 v1（自主提案切片 918）：冬天飄雪時同節拍檢查是否有閒著的居民堆起一個小雪人。
             maybe_melt_snowmen(); // 居民堆雪人 v1（自主提案切片 918）：冬天一結束就把世界上所有雪人融化清除。
+            maybe_light_vigil(); // 居民為你留一盞燈 v1（自主提案切片 919）：夜裡替離開夠久的熟客，由對他記憶最厚的居民點一盞守夜燈。
+            maybe_extinguish_vigil(); // 居民為你留一盞燈 v1（自主提案切片 919）：天一亮就把所有守夜燈熄滅清除。
             maybe_pet_admire(); // 居民注意到你身邊跟著的馴服動物 v1（自主提案切片 875）：同節拍檢查身邊有無寵物觸發讚賞。
             maybe_envoy_recall(); // 引夢使者印記深化 v1（自主提案切片）：同節拍檢查身邊有無曾受你恩惠的居民、偶爾回想提起你為她做過的具體好事。
             maybe_crown_masters(); // 名匠聲望 v1（ROADMAP 888）：同節拍以既有發明/師承紀錄重算村裡每門手藝的公認名匠、公告新加冕、刷新「卡關優先找名匠」快照（須在就地指導前跑，讓本輪教學偏好讀到最新名匠）。
@@ -11428,6 +11439,266 @@ fn maybe_melt_snowmen() {
         vsnowman::FEED_KIND_MELT,
         "乙太方界",
         &vsnowman::melt_feed_line(melted.len()),
+    );
+}
+
+/// 全村點守夜燈的冷卻閘（unix 秒，單調更新，比照 `LAST_SNOWMAN_UNIX`）。
+static LAST_VIGIL_UNIX: AtomicU64 = AtomicU64::new(0);
+
+/// 居民為你留一盞燈 v1（自主提案切片，ROADMAP 919，低頻併入 15 秒節拍）：夜裡，替一位「離開夠久
+/// （≥ [`vvigil::VIGIL_OFFLINE_SECS`]）、且此刻不在線」的熟客，由對他記憶最厚（好感度 ≥
+/// [`vvigil::VIGIL_AFFINITY`]）、此刻**醒著**的那位居民，在牠身旁點一盞火把守著。燈只存在記憶體＋
+/// 世界 delta（**不落地持久化**），天亮全數熄滅（[`maybe_extinguish_vigil`]）、或那位玩家在燈還亮
+/// 著的夜裡回來時由點燈的居民親手熄去（連線端）。
+///
+/// **鎖紀律**：各把鎖短取即釋、循序不巢狀（守 prod 死鎖鐵律，比照 `maybe_build_snowman`）：
+/// vigil 讀鎖數數＋快照既有錨點與已守玩家名即釋 → players 讀鎖取在線名單即釋 → last_seen 讀鎖挑
+/// 離開的熟客即釋 → residents 讀鎖快照名冊即釋 → memory 讀鎖逐一算好感挑點燈人即釋 → deltas 讀鎖驗
+/// 該格空氣即釋 → deltas 寫鎖放置即釋 → 鎖外廣播（live-only）→ vigil 寫鎖登記即釋 → residents 寫鎖
+/// 設 say 即釋 → memory 寫鎖記憶即釋 → Feed（鎖外）。
+fn maybe_light_vigil() {
+    // 夜晚才點守夜燈（白天由 maybe_extinguish_vigil 負責熄）。
+    let is_night = vmeteor::is_night(hub().world_time.read().unwrap().time_of_day());
+    if !is_night {
+        return;
+    }
+    let now = vfarm::now_secs();
+    let cooldown_ready = now.saturating_sub(LAST_VIGIL_UNIX.load(Ordering::Relaxed))
+        >= vvigil::BUILD_COOLDOWN_SECS;
+    // 1) 既有守夜燈：數量＋錨點快照＋已被守候的玩家名集合（vigil 讀鎖即釋）。
+    let (count, existing_anchors, lit_players): (
+        usize,
+        Vec<(i32, i32)>,
+        std::collections::HashSet<String>,
+    ) = {
+        let lights = hub().vigil_lights.read().unwrap();
+        let anchors: Vec<(i32, i32)> = lights.iter().map(|l| (l.pos.0, l.pos.2)).collect();
+        let players: std::collections::HashSet<String> =
+            lights.iter().map(|l| l.player_name.clone()).collect();
+        (lights.len(), anchors, players)
+    };
+    if !vvigil::should_light(is_night, cooldown_ready, count, rand::random::<f32>()) {
+        return;
+    }
+    // 2) 此刻在線玩家名單（守候的前提是「你不在」）。
+    let online: std::collections::HashSet<String> = {
+        let players = hub().players.read().unwrap();
+        players.values().map(|p| p.name.clone()).collect()
+    }; // players 讀鎖釋放
+    // 3) 挑離開夠久、不在線、且還沒有人替他守燈的熟客（last_seen 讀鎖即釋）。
+    let away_players: Vec<String> = {
+        let last_seen = hub().last_seen.read().unwrap();
+        last_seen
+            .iter()
+            .filter(|(pname, &seen)| {
+                !pname.is_empty()
+                    && !online.contains(*pname)
+                    && !lit_players.contains(*pname)
+                    && vvigil::is_away(seen, now)
+            })
+            .map(|(pname, _)| pname.clone())
+            .collect()
+    }; // last_seen 讀鎖釋放
+    if away_players.is_empty() {
+        return;
+    }
+    // 4) 居民名冊快照（residents 讀鎖即釋）：id／名／是否在睡／座標。
+    let roster: Vec<(String, &'static str, bool, f32, f32)> = {
+        let rs = hub().residents.read().unwrap();
+        rs.iter()
+            .map(|r| (r.id.clone(), r.name, r.asleep, r.body.x, r.body.z))
+            .collect()
+    }; // residents 讀鎖釋放
+    // 5) 逐位離開的熟客，找對他記憶最厚（達門檻）且此刻醒著的那位居民；取第一個湊得成的組合。
+    let mut chosen: Option<(String, String, &'static str, f32, f32)> = None; // (player, rid, rname, rx, rz)
+    for pname in &away_players {
+        let affinities: Vec<usize> = {
+            let mem = hub().memory.read().unwrap();
+            roster.iter().map(|(id, _, _, _, _)| mem.affinity_count(pname, id)).collect()
+        }; // memory 讀鎖釋放
+        if let Some(idx) = vvigil::most_bonded_threshold(&affinities) {
+            let (rid, rname, asleep, rx, rz) = &roster[idx];
+            if *asleep {
+                continue; // 那位最惦記他的居民正在熟睡 → 這輪先擱著，換下一位熟客或下一輪。
+            }
+            chosen = Some((pname.clone(), rid.clone(), rname, *rx, *rz));
+            break;
+        }
+    }
+    let Some((player_name, rid, rname, rx, rz)) = chosen else {
+        return;
+    };
+    // 6) 選錨點（居民身旁一格），驗離既有守夜燈夠遠。
+    let pick = (rx.to_bits() ^ rz.to_bits() ^ now as u32) as usize;
+    let (ax, az) = vvigil::pick_anchor(rx, rz, pick);
+    if !vvigil::far_enough(ax, az, &existing_anchors) {
+        return;
+    }
+    let ay = vbuild::surface_y(ax, az); // 地面正上方一格（純函式，鎖外算）。
+    // 7) 該格必須是空氣才放（不覆蓋地形／樹／水／既有建物）——deltas 讀鎖快照即釋。
+    let is_air = {
+        let w = hub().deltas.read().unwrap();
+        voxel::effective_block_at(&w, ax, ay, az) == Block::Air
+    };
+    if !is_air {
+        return;
+    }
+    // 通過所有閘 → 先卡住全域冷卻（避免同拍多位居民都成）。
+    LAST_VIGIL_UNIX.store(now, Ordering::Relaxed);
+    // 8) 放置火把（deltas 寫鎖即釋）。
+    {
+        let mut world = hub().deltas.write().unwrap();
+        voxel::set_block(&mut world, ax, ay, az, vvigil::VIGIL_BLOCK);
+    } // deltas 寫鎖釋放
+    // 9) 廣播（鎖外，live-only：刻意不 append_world_block，讓守夜燈不落地持久化、天亮熄燈或重啟即淨）。
+    broadcast_block(ax, ay, az, vvigil::VIGIL_BLOCK);
+    // 10) 登記這盞燈（vigil 寫鎖即釋）。
+    {
+        hub().vigil_lights.write().unwrap().push(vvigil::VigilLight {
+            pos: (ax, ay, az),
+            player_name: player_name.clone(),
+            resident_id: rid.clone(),
+            resident_name: rname.to_string(),
+        });
+    }
+    // 11) 點燈者冒句溫柔話（residents 寫鎖即釋，只在牠仍醒著且沒別的話時才覆蓋）。
+    let said = {
+        let mut residents = hub().residents.write().unwrap();
+        residents
+            .iter_mut()
+            .find(|r| r.id == rid && !r.asleep && r.say.is_empty())
+            .map(|r| {
+                r.say = vvigil::light_say_line(&player_name, pick);
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            })
+            .is_some()
+    }; // residents 寫鎖釋放
+    if said {
+        broadcast_players();
+    }
+    // 12) 記進點燈者心裡（掛在被守候的玩家名下，讓這份牽掛累進對他的好感）＋城鎮動態牆一行。
+    let entry = hub().memory.write().unwrap().add_memory(
+        &rid,
+        &player_name,
+        &vvigil::light_memory_line(&player_name),
+    );
+    vmem::append_memory(&entry);
+    vfeed::append_feed(
+        vvigil::FEED_KIND_LIGHT,
+        rname,
+        &vvigil::light_feed_line(&player_name),
+    );
+}
+
+/// 居民為你留一盞燈 v1（自主提案切片，ROADMAP 919）：天一亮（`is_night == false`），把世界上所有
+/// 還亮著的守夜燈逐盞熄滅（清回空氣）。夜裡持續中則什麼都不做。只清「該格現在仍是守夜燈（火把）」
+/// 的座標——若玩家中途把某盞燈挖掉或換成別的東西，就不硬清、不誤刪玩家後放的方塊（比照雪人融化）。
+///
+/// **鎖紀律**：vigil 讀鎖判空即釋 → world_time 讀鎖算日夜即釋 → vigil 寫鎖 take 即釋 → deltas 寫鎖
+/// 批次清除即釋 → 鎖外廣播。
+fn maybe_extinguish_vigil() {
+    // 1) 清單為空就直接返回（讀鎖即釋），免每拍都算日夜。
+    if hub().vigil_lights.read().unwrap().is_empty() {
+        return;
+    }
+    let is_night = vmeteor::is_night(hub().world_time.read().unwrap().time_of_day());
+    if is_night {
+        return; // 夜裡持續中，守夜燈不熄。
+    }
+    // 2) 取出並清空守夜燈清單（vigil 寫鎖即釋）。
+    let lights: Vec<vvigil::VigilLight> = {
+        let mut v = hub().vigil_lights.write().unwrap();
+        if v.is_empty() {
+            return;
+        }
+        std::mem::take(&mut *v)
+    }; // vigil 寫鎖釋放
+    // 3) 逐盞清回空氣（deltas 寫鎖批次即釋）——只清仍是守夜燈方塊的格，蒐集實際清掉的座標供廣播。
+    let cleared: Vec<(i32, i32, i32)> = {
+        let mut world = hub().deltas.write().unwrap();
+        let mut cleared = Vec::new();
+        for l in &lights {
+            let (x, y, z) = l.pos;
+            if vvigil::is_vigil_block(voxel::effective_block_at(&world, x, y, z)) {
+                voxel::set_block(&mut world, x, y, z, Block::Air);
+                cleared.push((x, y, z));
+            }
+        }
+        cleared
+    }; // deltas 寫鎖釋放
+    // 4) 廣播每個被熄掉的格已成空氣（鎖外）。天亮熄燈是靜靜地，不上動態牆（不洗版）。
+    for (x, y, z) in &cleared {
+        broadcast_block(*x, *y, *z, Block::Air);
+    }
+}
+
+/// 居民為你留一盞燈 v1（自主提案切片，ROADMAP 919·連線端回響）：某位玩家連線回來時呼叫。若此刻
+/// 世界上還有人替**這位**玩家留著一盞守夜燈（燈還亮著、天還沒亮），就由點燈的那位居民親手把燈熄
+/// 去、迎他一句「這盞燈我一直替你留著」，並把這一刻記進她與他的記憶＋城鎮動態牆——你的歸來，第一
+/// 次撞見了世界替你留的一盞光。只熄「替這位玩家」的那一盞，別人的守夜燈不動。
+///
+/// **鎖紀律**：vigil 寫鎖 retain 取出即釋 → deltas 寫鎖清格即釋 → residents 寫鎖設 say 即釋 →
+/// memory 寫鎖記憶即釋 → Feed／廣播（鎖外）。各把短取即釋、循序不巢狀（守 prod 死鎖鐵律）。
+fn redeem_vigil_light(player_name: &str) {
+    if player_name.is_empty() {
+        return;
+    }
+    // 1) 取出替這位玩家留的守夜燈（可能不只一盞，理論上至多一盞；全數取出，vigil 寫鎖即釋）。
+    let mine: Vec<vvigil::VigilLight> = {
+        let mut v = hub().vigil_lights.write().unwrap();
+        let (mine, rest): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut *v).into_iter().partition(|l| l.player_name == player_name);
+        *v = rest;
+        mine
+    }; // vigil 寫鎖釋放
+    if mine.is_empty() {
+        return; // 沒人替你留燈（或天已亮燈已熄）→ 無回響，安靜歸來。
+    }
+    // 2) 逐盞熄燈（deltas 寫鎖批次即釋）——只清仍是守夜燈方塊的格。
+    let cleared: Vec<(i32, i32, i32)> = {
+        let mut world = hub().deltas.write().unwrap();
+        let mut cleared = Vec::new();
+        for l in &mine {
+            let (x, y, z) = l.pos;
+            if vvigil::is_vigil_block(voxel::effective_block_at(&world, x, y, z)) {
+                voxel::set_block(&mut world, x, y, z, Block::Air);
+                cleared.push((x, y, z));
+            }
+        }
+        cleared
+    }; // deltas 寫鎖釋放
+    for (x, y, z) in &cleared {
+        broadcast_block(*x, *y, *z, Block::Air);
+    }
+    // 3) 由點燈的那位居民（取第一盞的點燈人）迎你一句——只在牠此刻醒著且沒別的話時（residents 寫鎖即釋）。
+    let first = &mine[0];
+    let pick = player_name.len();
+    let said = {
+        let mut rs = hub().residents.write().unwrap();
+        rs.iter_mut()
+            .find(|r| r.id == first.resident_id && !r.asleep && r.say.is_empty())
+            .map(|r| {
+                r.say = vvigil::return_say_line(player_name, pick);
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            })
+            .is_some()
+    }; // residents 寫鎖釋放
+    if said {
+        broadcast_players();
+    }
+    // 4) 把「你回來撞見燈還亮著」記進點燈者心裡（掛你名下）＋城鎮動態牆一行。
+    let entry = hub().memory.write().unwrap().add_memory(
+        &first.resident_id,
+        player_name,
+        &vvigil::return_memory_line(player_name),
+    );
+    vmem::append_memory(&entry);
+    vfeed::append_feed(
+        vvigil::FEED_KIND_LIGHT,
+        &first.resident_name,
+        &vvigil::light_feed_line(player_name),
     );
 }
 
