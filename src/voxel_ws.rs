@@ -4693,10 +4693,10 @@ async fn handle_socket(
                             Block::PotatoSeeded    => &[(11, 1), (vfarm::POTATO_SEEDS_ID, 1)],
                             Block::PotatoMature    => &[(11, 1), (vfarm::POTATO_SEEDS_ID, 1), (vfarm::POTATO_ID, 2)],
                             // 季限作物·秋南瓜 v1（ROADMAP 933）：
-                            //   野花(94/95/96) → 野花自身×1 + 南瓜種子(104)×1（原掉落不變，種子是附加收穫，
+                            //   野花(94/95/96) → 野花自身×1 + 南瓜種子(109)×1（原掉落不變，種子是附加收穫，
                             //     與胡蘿蔔取自草地、馬鈴薯取自泥土區隔——南瓜種子藏在野花裡）。
-                            //   PumpkinSeeded(102) → 農田土(11)×1 + 南瓜種子(104)×1（取消種植退還）。
-                            //   PumpkinMature(103) → 農田土(11)×1 + 南瓜種子(104)×1 + 南瓜(105)×3（收割；全作物最大收量）。
+                            //   PumpkinSeeded(107) → 農田土(11)×1 + 南瓜種子(109)×1（取消種植退還）。
+                            //   PumpkinMature(108) → 農田土(11)×1 + 南瓜種子(109)×1 + 南瓜(110)×3（收割；全作物最大收量）。
                             Block::WildflowerRed | Block::WildflowerYellow | Block::WildflowerBlue
                                                    => &[(target_block as u8, 1), (vfarm::PUMPKIN_SEEDS_ID, 1)],
                             Block::PumpkinSeeded   => &[(11, 1), (vfarm::PUMPKIN_SEEDS_ID, 1)],

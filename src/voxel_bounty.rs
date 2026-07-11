@@ -45,7 +45,7 @@ pub fn crop_item_id(kind: CropKind) -> u8 {
         CropKind::Wheat => WHEAT_ID,     // 18
         CropKind::Carrot => CARROT_ID,   // 49
         CropKind::Potato => POTATO_ID,   // 53
-        CropKind::Pumpkin => PUMPKIN_ID, // 105
+        CropKind::Pumpkin => PUMPKIN_ID, // 110
     }
 }
 

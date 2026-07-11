@@ -126,7 +126,7 @@ pub const FOOD_IDS: [u8; 8] = [
     vfarm::BAKED_POTATO_ID, // 64 烤地薯
     vberry::BERRY_ID,       // 77 莓果
     vberry::JAM_ID,         // 78 果醬
-    vfarm::PUMPKIN_ID,      // 105 南瓜（季限作物·秋南瓜 v1）
+    vfarm::PUMPKIN_ID,      // 110 南瓜（季限作物·秋南瓜 v1）
 ];
 
 /// 挑食物吃時的**偏好順序**（越前面越優先吃）：加工／飽足感高的先吃（麵包、果醬、烤地薯），

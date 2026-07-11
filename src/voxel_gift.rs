@@ -100,10 +100,10 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         96 => "藍花",
         // 季限作物·秋南瓜 v1（ROADMAP 933）：對齊 voxel::Block::PumpkinSeeded/PumpkinMature
         // + voxel_farm::PUMPKIN_SEEDS_ID/PUMPKIN_ID。只在秋天種得起來的季限作物。
-        102 => "南瓜幼苗",
-        103 => "成熟南瓜",
-        104 => "南瓜種子",
-        105 => "南瓜",
+        107 => "南瓜幼苗",
+        108 => "成熟南瓜",
+        109 => "南瓜種子",
+        110 => "南瓜",
         // 乙太幣 v1（ROADMAP 873，自主提案切片）：原礦鑄成的通用貨幣，自由市集可標價收付。
         crate::voxel_craft::COIN_ID => "乙太幣",
         // 乙太沃肥 v1（ROADMAP 789）：雜草＋泥土漚成的催熟沃肥，此前漏補此名、可餽贈居民。
@@ -173,7 +173,7 @@ pub fn treasure_gift_thanks_line(player_name: &str, affinity: usize, pick: usize
 
 /// 是否為「食物」類禮物（麵包、胡蘿蔔、馬鈴薯、小魚、乙太魚、烤魚、烤地薯、野菜暖湯、莓果醬）——居民會給特別溫暖的回應。
 pub fn is_food_gift(block_id: u8) -> bool {
-    // BREAD_ID / CARROT_ID / POTATO_ID / PUMPKIN_ID(105) / FISH_ID / AETHER_FISH_ID / COOKED_FISH_ID
+    // BREAD_ID / CARROT_ID / POTATO_ID / PUMPKIN_ID(110) / FISH_ID / AETHER_FISH_ID / COOKED_FISH_ID
     //  / BAKED_POTATO_ID / STEW_ID(67) / JAM_ID(78)
     block_id == 19 || block_id == 49 || block_id == 53
         || block_id == crate::voxel_farm::PUMPKIN_ID // 南瓜（季限作物·秋南瓜 v1）
@@ -641,9 +641,9 @@ mod tests {
     fn is_food_gift_includes_pumpkin() {
         assert!(is_food_gift(crate::voxel_farm::PUMPKIN_ID)); // 南瓜算食物禮物
         assert!(!is_food_gift(crate::voxel_farm::PUMPKIN_SEEDS_ID)); // 南瓜種子不算食物禮物
-        // 南瓜幼苗/成熟南瓜是伺服器狀態方塊，不會當禮物送（不在此判定，但確認非食物禮物）。
-        assert!(!is_food_gift(102));
-        assert!(!is_food_gift(103));
+        // 南瓜幼苗(107)/成熟南瓜(108)是伺服器狀態方塊，不會當禮物送（不在此判定，但確認非食物禮物）。
+        assert!(!is_food_gift(107));
+        assert!(!is_food_gift(108));
     }
 
     #[test]

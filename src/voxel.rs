@@ -266,12 +266,28 @@ pub enum Block {
     WildflowerYellow = 95,
     /// 藍野花（野花 v1）——與紅/黃野花同一套格狀確定性生成，只是花色不同（同座標永遠同色）。id 96。
     WildflowerBlue = 96,
-    /// 南瓜幼苗（季限作物·秋南瓜 v1，ROADMAP 933）——農田土上種下南瓜種子後的狀態方塊。id 102。
-    /// 比照 FarmSoilSeeded/CarrotSeeded/PotatoSeeded：實心、伺服器維護、玩家不可手動放置。
-    PumpkinSeeded = 102,
-    /// 成熟南瓜（季限作物·秋南瓜 v1，ROADMAP 933）——PumpkinSeeded 生長 ~150 秒後成熟。id 103。
-    /// 收割掉落南瓜(105)×3（全作物最大收量）＋南瓜種子(104)×1 ＋農田土(11)。
-    PumpkinMature = 103,
+    /// 小地毯（玩家裝飾傢俱 v1，ROADMAP 931，自主提案切片）——背包 2×2 合成：3 葉片(6) → 2 小地毯。
+    /// 世界至今可放的方塊不是建材就是有用途的功能家具，唯獨缺**純為好看**的擺設；本刀補上第一批
+    /// 純裝飾傢俱。地毯是超薄貼地的一片織毯，鋪在家裡地板上暖腳。**純裝飾、零互動、零居民行為、
+    /// 零計時**——只是普通可放置實心方塊，破壞回收自身、走既有 world delta 持久化，重啟 replay
+    /// 自然還原。id 102：0~101 皆已用（純物品/方塊），102 是首個空號。
+    Carpet = 102,
+    /// 花盆（玩家裝飾傢俱 v1）——背包 2×2 合成：2 紅陶磚(89) + 1 葉片(6) → 1 花盆。陶盆盛土栽一小簇
+    /// 綠意，擺在窗邊桌角。純裝飾、零互動，破壞回收自身。id 103。
+    FlowerPot = 103,
+    /// 小圓桌（玩家裝飾傢俱 v1）——背包 2×2 合成：2 木板(8) + 1 石磚(9) → 1 小圓桌。一張矮矮的木圓桌，
+    /// 屋裡待客擺茶的中心。純裝飾、零互動，破壞回收自身。id 104。
+    Table = 104,
+    /// 掛旗（玩家裝飾傢俱 v1）——背包 2×2 合成：1 木頭(5) + 2 葉片(6) → 1 掛旗。一面垂掛的暖色旗幟，
+    /// 掛在牆上宣告「這是我家」。純裝飾、零互動，破壞回收自身。id 105。
+    Banner = 105,
+    /// 南瓜幼苗（季限作物·秋南瓜 v1，ROADMAP 933）——農田土上種下南瓜種子後的狀態方塊。id 107
+    ///（102~105 傢俱、106 洞穴已佔用，107 是空號）。比照 FarmSoilSeeded/CarrotSeeded/PotatoSeeded：
+    /// 實心、伺服器維護、玩家不可手動放置。
+    PumpkinSeeded = 107,
+    /// 成熟南瓜（季限作物·秋南瓜 v1，ROADMAP 933）——PumpkinSeeded 生長 ~150 秒後成熟。id 108。
+    /// 收割掉落南瓜(110)×3（全作物最大收量）＋南瓜種子(109)×1 ＋農田土(11)。
+    PumpkinMature = 108,
 }
 
 impl Block {
@@ -365,8 +381,12 @@ impl Block {
             94 => Some(Block::WildflowerRed),
             95 => Some(Block::WildflowerYellow),
             96 => Some(Block::WildflowerBlue),
-            102 => Some(Block::PumpkinSeeded),
-            103 => Some(Block::PumpkinMature),
+            102 => Some(Block::Carpet),
+            103 => Some(Block::FlowerPot),
+            104 => Some(Block::Table),
+            105 => Some(Block::Banner),
+            107 => Some(Block::PumpkinSeeded),
+            108 => Some(Block::PumpkinMature),
             _ => None,
         }
     }
@@ -385,7 +405,10 @@ impl Block {
             Block::AetherOre | Block::AetherLamp | Block::Sapling | Block::Sign |
             Block::Campfire | Block::Bell | Block::BerryBush | Block::Bench | Block::Coop |
             Block::TerracottaRed | Block::TerracottaBlack | Block::TerracottaWhite | Block::TerracottaBlue |
-            Block::WildflowerRed | Block::WildflowerYellow | Block::WildflowerBlue
+            Block::WildflowerRed | Block::WildflowerYellow | Block::WildflowerBlue |
+            // 玩家裝飾傢俱 v1（ROADMAP 931）：四樣純裝飾傢俱皆為玩家可放置的實心方塊，
+            // 破壞回收自身、走通用建材路徑（不需特殊索引/tick，見 voxel_furniture.rs）。
+            Block::Carpet | Block::FlowerPot | Block::Table | Block::Banner
             // BerryBushRipe / CoopReady 皆是伺服器維護的狀態方塊（由 tick_berry / tick_coop 長成），
             // 玩家不能手動放置。HotSpringWater 是世界生成的溫泉水，同來源水不可手動放置。
         )
@@ -1542,15 +1565,15 @@ mod tests {
         assert_eq!(Block::from_u8(47), Some(Block::CarrotMature));
     }
 
-    /// 季限作物·秋南瓜 v1（id 102/103）：比照胡蘿蔔——實心、伺服器維護、不可手動放置、id 往返。
+    /// 季限作物·秋南瓜 v1（id 107/108）：比照胡蘿蔔——實心、伺服器維護、不可手動放置、id 往返。
     #[test]
     fn pumpkin_blocks_solid_not_placeable_roundtrip() {
         assert!(Block::PumpkinSeeded.is_solid(), "南瓜幼苗應為實心");
         assert!(Block::PumpkinMature.is_solid(), "成熟南瓜應為實心");
         assert!(!Block::PumpkinSeeded.is_placeable(), "南瓜幼苗不可手動放置");
         assert!(!Block::PumpkinMature.is_placeable(), "成熟南瓜不可手動放置");
-        assert_eq!(Block::from_u8(102), Some(Block::PumpkinSeeded));
-        assert_eq!(Block::from_u8(103), Some(Block::PumpkinMature));
+        assert_eq!(Block::from_u8(107), Some(Block::PumpkinSeeded));
+        assert_eq!(Block::from_u8(108), Some(Block::PumpkinMature));
     }
 
     #[test]

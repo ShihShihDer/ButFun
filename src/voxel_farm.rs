@@ -72,13 +72,13 @@ pub const BAKED_POTATO_ID: u8 = 64;
 /// 南瓜種子物品 id（季限作物·秋南瓜 v1；純 inventory 物品，無對應 Block enum）。
 /// 從野花(94/95/96)破壞後額外掉落（野花仍照舊掉落自身，種子是附加收穫，與胡蘿蔔種子
 /// 取自草地、馬鈴薯種子取自泥土區隔）。**只在秋天種得起來**（種植期季限判定見 `voxel_pumpkin`）。
-/// id 104 挑在既有物品號段（…101）之上首個乾淨空號。
-pub const PUMPKIN_SEEDS_ID: u8 = 104;
+/// id 109（102~105 傢俱、106 洞穴、107/108 南瓜方塊皆已佔用，109 是空號）。
+pub const PUMPKIN_SEEDS_ID: u8 = 109;
 
-/// 南瓜物品 id（季限作物·秋南瓜 v1；純 inventory 物品，從成熟南瓜(103)收割時掉落 ×3）。
+/// 南瓜物品 id（季限作物·秋南瓜 v1；純 inventory 物品，從成熟南瓜(108)收割時掉落 ×3）。
 /// 慢熟＋季限換來全作物最大的一次收成量（比馬鈴薯的 2 顆更多）——秋日限定的沉甸甸豐收。
-/// 可送給居民當禮物，也是食物類贈禮之一。
-pub const PUMPKIN_ID: u8 = 105;
+/// 可送給居民當禮物，也是食物類贈禮之一。id 110。
+pub const PUMPKIN_ID: u8 = 110;
 
 /// 幼苗成熟所需秒數（~90 秒 = 1.5 分鐘）。調校讓玩家在一輪遊玩中體驗完整循環。
 pub const GROW_SECS: u64 = 90;
@@ -631,8 +631,8 @@ mod tests {
         assert_ne!(PUMPKIN_ID, CARROT_ID);
         assert_ne!(PUMPKIN_ID, POTATO_ID);
         assert_ne!(PUMPKIN_ID, BREAD_ID);
-        assert_eq!(PUMPKIN_SEEDS_ID, 104);
-        assert_eq!(PUMPKIN_ID, 105);
+        assert_eq!(PUMPKIN_SEEDS_ID, 109);
+        assert_eq!(PUMPKIN_ID, 110);
     }
 
     #[test]
