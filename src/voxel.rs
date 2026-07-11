@@ -294,6 +294,14 @@ pub enum Block {
     /// 成熟南瓜（季限作物·秋南瓜 v1，ROADMAP 933）——PumpkinSeeded 生長 ~150 秒後成熟。id 108。
     /// 收割掉落南瓜(110)×3（全作物最大收量）＋南瓜種子(109)×1 ＋農田土(11)。
     PumpkinMature = 108,
+    /// 乙太花冠（世界奇觀·乙太世界樹 v1，ROADMAP 940）——世界唯一一座天然大奇觀的招牌方塊：
+    /// 一株遠離主村、由世界種子確定性決定座標、獨一無二的巨型古樹，粗壯樹幹頂著一團泛著青綠
+    /// 幽光的巨大花冠，這就是那團花冠的方塊。**發光方塊**（前端比照發光結晶投出柔和青綠點光），
+    /// 遠遠就能望見一片光暈懸在世界邊陲，循著它跋涉過去，撞見時是「哇」的一刻。
+    /// 純世界生成、玩家不可手動放置（同溫泉水/遺跡的世界生成方塊）；砍不掉（`is_wonder_block`
+    /// 保護，讓這座獨一無二的奇觀不會被路過的人一斧拆掉、破壞所有人的探索）。
+    /// id 113：0~110 皆已用，111/112＝稀有魚（夜光魚/深海乙太魚，純物品）已佔，113 是首個空號。
+    AetherBloom = 113,
 }
 
 impl Block {
@@ -394,6 +402,7 @@ impl Block {
             106 => Some(Block::GlowCrystal),
             107 => Some(Block::PumpkinSeeded),
             108 => Some(Block::PumpkinMature),
+            113 => Some(Block::AetherBloom),
             _ => None,
         }
     }
@@ -824,6 +833,157 @@ const HOT_SPRING_MIN_DIST: i32 = 140;
 /// 池心半徑（含中心，不含池緣矮牆那圈）。
 const HOT_SPRING_RADIUS: i32 = 2;
 
+// ── 世界奇觀·乙太世界樹 v1（ROADMAP 940）──────────────────────────────────────────
+//
+// 與遺跡（RUIN_*）、溫泉（HOT_SPRING_*）這類「格狀重複、四處散落」的地標刻意區隔：世界奇觀
+// 是**整個世界唯一一座**、由世界種子確定性決定唯一座標的天然大奇觀。不用格狀機率，而是直接
+// 用固定種子算出一個離主村夠遠的座標（`worldtree_base`），全世界只有這一株。這株巨型古樹
+// 有粗壯樹幹＋巨大發光花冠，遠遠望見一片青綠光暈懸在世界邊陲，循著它跋涉去撞見。
+// 純函式、確定性、零狀態、零 IO；同座標永遠同結果。
+
+/// 世界樹噪聲種子（與遺跡/溫泉/地形/樹皆獨立）。
+const WORLDTREE_SEED: u32 = SEED ^ 0x_7A11_7A11;
+/// 世界樹離主村的距離（世界方塊）——比遺跡/溫泉的 MIN_DIST 更遠得多，是要認真遠行才會撞見的
+/// 世界盡頭級奇觀（不用格狀，直接把唯一那株放到離原點約這麼遠的方位）。
+const WORLDTREE_DIST: f32 = 640.0;
+/// 樹幹半徑（世界方塊）：以樹心為中心，|dx|,|dz| ≤ 此值皆是樹幹 → 3×3 的粗壯主幹。
+const WORLDTREE_TRUNK_R: i32 = 1;
+/// 樹幹高度（自地表往上長這麼多格）——高聳入雲的巨木，遠遠就望得見。
+const WORLDTREE_TRUNK_H: i32 = 26;
+/// 花冠半徑（世界方塊）：花冠中心球以此為半徑，撐開一團巨大的發光樹冠。
+const WORLDTREE_CANOPY_R: i32 = 7;
+
+/// 世界樹（唯一奇觀）候選方位數：從固定種子起、繞一圈均勻取這麼多個候選方位，
+/// 依序找第一個「落在乾燥陸地上」的方位放樹——確保這座奇觀一定生成得出來（不會巧落水裡消失）。
+const WORLDTREE_CANDIDATES: i32 = 16;
+
+/// 世界樹樹心座標的快取（唯一那株的座標只由固定常數決定，算一次即定；快取避免 `block_at`
+/// 熱路徑每次都重跑候選方位掃描——保 chunk 生成的 FPS 零影響）。
+static WORLDTREE_BASE: std::sync::OnceLock<(i32, i32)> = std::sync::OnceLock::new();
+
+/// 世界樹（唯一奇觀）的樹心底座座標（樹幹落腳的柱 (tx,tz)）。確定性純函式（結果快取）：
+/// 用固定種子挑一個起始方位角，繞一圈均勻取 WORLDTREE_CANDIDATES 個候選、依序挑第一個落在
+/// 乾燥陸地上的方位（保證奇觀一定生成，不會巧落水裡）；離原點 WORLDTREE_DIST 遠。
+/// 全世界只有這一株，座標由世界種子決定、獨一無二、遠離主村。純函式、零狀態。
+pub fn worldtree_base() -> (i32, i32) {
+    *WORLDTREE_BASE.get_or_init(worldtree_base_uncached)
+}
+
+/// 實際計算樹心座標（供 [`worldtree_base`] 首次呼叫時快取）。純函式、確定性。
+fn worldtree_base_uncached() -> (i32, i32) {
+    let base_ang = hash2(0, 0, WORLDTREE_SEED) * std::f32::consts::TAU;
+    let step = std::f32::consts::TAU / WORLDTREE_CANDIDATES as f32;
+    let mut first = None;
+    for i in 0..WORLDTREE_CANDIDATES {
+        let ang = base_ang + step * i as f32;
+        let tx = (ang.cos() * WORLDTREE_DIST).round() as i32;
+        let tz = (ang.sin() * WORLDTREE_DIST).round() as i32;
+        if first.is_none() {
+            first = Some((tx, tz)); // 記住第一個候選當保底（極端情況全落水時仍回一個確定座標）
+        }
+        if height_at(tx, tz) > SEA_LEVEL + 1 {
+            return (tx, tz);
+        }
+    }
+    // 保底：所有候選都落水（幾乎不可能）——回第一個候選，near_worldtree/worldtree_exists 會
+    // 據 worldtree_exists() 判定此奇觀未生成，玩家不會誤觸。
+    first.unwrap_or((0, 0))
+}
+
+/// 世界樹的樹心地表高度（樹幹自這裡往上長）。用樹心那一柱的地表高度，讓整株樹的基準一致，
+/// 免得地形略有起伏時樹身歪斜或懸空。純函式、確定性。
+pub fn worldtree_base_height() -> i32 {
+    let (tx, tz) = worldtree_base();
+    height_at(tx, tz)
+}
+
+/// 世界奇觀·乙太世界樹 v1（ROADMAP 940）——世界唯一一株巨型古樹的方塊。
+///
+/// 與遺跡/溫泉的格狀重複刻意不同：全世界只有這一株，座標由 [`worldtree_base`] 唯一決定。
+/// 一根 3×3 粗壯木頭主幹自地表拔高 [`WORLDTREE_TRUNK_H`] 格，頂端撐開一團半徑
+/// [`WORLDTREE_CANOPY_R`] 的巨大球形花冠：外圈是普通樹葉，內裡與冠頂綴著會發光的乙太花冠
+/// （`AetherBloom`），遠遠望見一片青綠光暈。純函式、確定性、零狀態、零 IO；同座標永遠同結果。
+fn worldtree_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
+    let (tx, tz) = worldtree_base();
+    let (dx, dz) = (wx - tx, wz - tz);
+    // 早退：離樹心水平方向超過花冠半徑（含樹幹）就一定不是世界樹的方塊——省掉高度計算。
+    let max_r = WORLDTREE_CANOPY_R.max(WORLDTREE_TRUNK_R);
+    if dx.abs() > max_r || dz.abs() > max_r {
+        return None;
+    }
+    let base_h = worldtree_base_height();
+    // 只在乾燥陸地上生成（樹心在水邊/水下就不長，同樹/遺跡慣例）。
+    if base_h <= SEA_LEVEL + 1 {
+        return None;
+    }
+    // 樹身只在地表之上（不埋進地底、不改動地形本身）。
+    if wy <= base_h {
+        return None;
+    }
+    let trunk_top = base_h + WORLDTREE_TRUNK_H;
+    // 冠心落在樹幹頂那一格（canopy_cy == trunk_top）。花冠**優先於樹幹**判定，讓樹幹頂端
+    // 讓位給花冠——確保冠心正中心 (tx, trunk_top, tz) 確實是發光乙太花冠，而非被樹幹蓋掉。
+    let canopy_cy = trunk_top;
+    let cdy = wy - canopy_cy;
+    let dist2 = dx * dx + cdy * cdy + dz * dz;
+    let r = WORLDTREE_CANOPY_R;
+    let in_canopy = dist2 <= r * r;
+    // ①樹幹：3×3 主幹，自地表上方一路長到冠底——但**花冠球內讓位給花冠**（in_canopy 時不畫樹幹），
+    // 免得樹幹一路長到冠心把中心的花冠蓋成木頭（原 bug）。樹幹只填花冠球以外的下段主幹。
+    if !in_canopy
+        && dx.abs() <= WORLDTREE_TRUNK_R
+        && dz.abs() <= WORLDTREE_TRUNK_R
+        && wy <= trunk_top
+    {
+        return Some(Block::Wood);
+    }
+    // ②花冠：以冠心為中心的球，球內填樹冠。
+    if in_canopy {
+        // 內裡（近冠心）與冠頂綴發光乙太花冠，外圈是普通樹葉——一團泛著青綠幽光的巨大樹冠。
+        // 用確定性 hash 在球內散佈發光花，約三成，其餘是葉；同座標永遠同判定。
+        let inner2 = ((r - 3).max(0)) * ((r - 3).max(0));
+        let is_bloom = dist2 <= inner2 || hash2(wx.wrapping_mul(31) ^ wy, wz, WORLDTREE_SEED ^ 0x_B100_0000) < 0.30;
+        if is_bloom {
+            return Some(Block::AetherBloom);
+        }
+        return Some(Block::Leaves);
+    }
+    None
+}
+
+/// 世界奇觀探索半徑（世界方塊）：玩家水平走到樹心這麼近，視為「抵達世界樹」→ 記一筆探索紀事。
+/// 比遺跡的「挖到礦」/溫泉的「泡進去」寬鬆——這株樹本體巨大、玩家未必爬得上冠，走到腳下就算到。
+pub const WONDER_DISCOVER_RADIUS: i32 = 6;
+
+/// 世界奇觀·乙太世界樹 v1：這座奇觀是否真的生成了（種子挑的方位可能巧落在水裡，那樣整株樹
+/// 不生成——此時不該讓玩家在那片空地上被誤判「抵達奇觀」）。純函式、確定性。
+pub fn worldtree_exists() -> bool {
+    worldtree_base_height() > SEA_LEVEL + 1
+}
+
+/// 世界奇觀·乙太世界樹 v1：玩家此刻是否已走到世界樹腳下（水平距樹心 ≤ WONDER_DISCOVER_RADIUS）。
+/// 純函式、確定性、零狀態；供 `voxel_ws.rs` 在玩家移動時偵測「抵達奇觀」。
+/// 奇觀未生成（樹心落水）時一律回 false，避免在空地誤判抵達。
+pub fn near_worldtree(px: f32, pz: f32) -> bool {
+    if !px.is_finite() || !pz.is_finite() {
+        return false;
+    }
+    if !worldtree_exists() {
+        return false;
+    }
+    let (tx, tz) = worldtree_base();
+    let dx = px - tx as f32;
+    let dz = pz - tz as f32;
+    let r = WONDER_DISCOVER_RADIUS as f32;
+    dx * dx + dz * dz <= r * r
+}
+
+/// 世界奇觀·乙太世界樹 v1：此方塊是否為世界樹本體（樹幹/樹葉/花冠）——供破壞保護用
+/// （不讓路過的人一斧把獨一無二的奇觀拆掉、破壞所有人的探索）。純函式、確定性。
+pub fn is_wonder_block(wx: i32, wy: i32, wz: i32) -> bool {
+    worldtree_block_at(wx, wy, wz).is_some()
+}
+
 /// 世界座標 → 生物群系。確定性純函式，同座標永遠同群系。
 /// 出生保護圈（BIOME_SPAWN_RADIUS 內）強制草原，確保玩家出生有樹有草。
 pub fn biome_at_voxel(wx: i32, wz: i32) -> VoxelBiome {
@@ -1246,6 +1406,11 @@ pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
         // （上面已 return），溫泉才輪到查。
         if let Some(hb) = hot_spring_block_at(wx, wy, wz) {
             return hb;
+        }
+        // 世界奇觀·乙太世界樹（ROADMAP 940）：全世界唯一一株巨型古樹，優先於一般樹——
+        // 巧合命中同一欄位時，這座奇觀理應蓋過恰好路過的普通樹苗。
+        if let Some(wtb) = worldtree_block_at(wx, wy, wz) {
+            return wtb;
         }
         // 再看是否為樹（樹幹/樹冠，只填到原本是空氣的格；樹只長在草地、樹塊恆高於海平面）。
         if let Some(tb) = tree_block_at(wx, wy, wz) {
@@ -2891,5 +3056,146 @@ mod tests {
             }
         }
         assert!(found, "雪原群系應有疏落的樹");
+    }
+
+    // ── 世界奇觀·乙太世界樹 v1（ROADMAP 940）────────────────────────────────────────
+    #[test]
+    fn worldtree_base_is_deterministic() {
+        // 全世界唯一那株的座標由固定種子決定，重複呼叫永遠同一點。
+        assert_eq!(worldtree_base(), worldtree_base());
+    }
+
+    #[test]
+    fn worldtree_is_far_from_all_spawn_anchors() {
+        // 奇觀必須遠離主村：離每個出生錨點都應遠得多（至少 400 格），值得認真跋涉。
+        let (tx, tz) = worldtree_base();
+        for (ax, az) in SPAWN_ANCHORS {
+            let (ddx, ddz) = ((tx - ax) as f32, (tz - az) as f32);
+            let dist = (ddx * ddx + ddz * ddz).sqrt();
+            assert!(dist > 400.0, "世界樹離出生錨點 ({ax},{az}) 太近（{dist}格）");
+        }
+    }
+
+    #[test]
+    fn worldtree_actually_exists_on_land() {
+        // worldtree_base 會繞候選方位挑第一個落地的方位——這座奇觀應真的生成得出來。
+        assert!(worldtree_exists(), "世界奇觀應生成在乾燥陸地上");
+    }
+
+    #[test]
+    fn worldtree_trunk_is_solid_wood_column() {
+        // 樹心那一柱地表之上第 1 格起、直到**進入花冠球之前**應皆為木頭（粗壯主幹）——
+        // 花冠球內的上段樹心讓位給花冠（冠心是發光花冠、非木頭，見 worldtree_has_glowing_canopy_bloom）。
+        let (tx, tz) = worldtree_base();
+        let base_h = worldtree_base_height();
+        // 前提：樹心落在乾燥陸地上（worldtree_base 保證挑落地方位；這裡再確認一次）。
+        assert!(base_h > SEA_LEVEL + 1, "測試前提：世界樹樹心應在陸地上（base_h={base_h}）");
+        // 花冠球以冠心 trunk_top 為中心、半徑 CANOPY_R；中軸上花冠球從 trunk_top-CANOPY_R 起。
+        // 純樹幹段（不被花冠球蓋到）為 base_h+1 ..= trunk_top - CANOPY_R - 1。
+        let trunk_top = base_h + WORLDTREE_TRUNK_H;
+        let pure_trunk_top = trunk_top - WORLDTREE_CANOPY_R - 1;
+        assert!(pure_trunk_top > base_h + 1, "純樹幹段應存在（樹幹夠高、花冠不至於蓋到地面）");
+        for wy in (base_h + 1)..=pure_trunk_top {
+            assert_eq!(
+                block_at(tx, wy, tz), Block::Wood,
+                "純樹幹段中軸 y={wy} 應為木頭"
+            );
+        }
+        // 3×3 主幹：樹心四鄰同高（下段純樹幹）也是木頭。
+        assert_eq!(block_at(tx + 1, base_h + 2, tz), Block::Wood);
+        assert_eq!(block_at(tx, base_h + 2, tz - 1), Block::Wood);
+    }
+
+    #[test]
+    fn worldtree_has_glowing_canopy_bloom() {
+        // 冠心（樹幹頂）應是發光乙太花冠——這株樹的招牌，遠遠望見的青綠光暈。
+        let (tx, tz) = worldtree_base();
+        let base_h = worldtree_base_height();
+        assert!(base_h > SEA_LEVEL + 1, "測試前提：世界樹樹心應在陸地上");
+        let canopy_cy = base_h + WORLDTREE_TRUNK_H;
+        // 冠心近處（內核）必為發光花冠。
+        assert_eq!(
+            block_at(tx, canopy_cy, tz), Block::AetherBloom,
+            "冠心應為發光乙太花冠"
+        );
+        // 花冠球內至少要同時存在葉與花冠（一團綴著幽光的巨大樹冠，不是純一色）。
+        let mut has_leaf = false;
+        let mut has_bloom = false;
+        for dy in -WORLDTREE_CANOPY_R..=WORLDTREE_CANOPY_R {
+            for dx in -WORLDTREE_CANOPY_R..=WORLDTREE_CANOPY_R {
+                for dz in -WORLDTREE_CANOPY_R..=WORLDTREE_CANOPY_R {
+                    match block_at(tx + dx, canopy_cy + dy, tz + dz) {
+                        Block::Leaves => has_leaf = true,
+                        Block::AetherBloom => has_bloom = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert!(has_leaf, "花冠應有普通樹葉外圈");
+        assert!(has_bloom, "花冠應綴有發光乙太花冠");
+    }
+
+    #[test]
+    fn worldtree_is_unique_no_second_bloom_near_spawn() {
+        // 只有這一株：出生點附近（半徑 300 格內、地表上下一段）掃不到任何乙太花冠方塊。
+        for x in (-300..=300i32).step_by(5) {
+            for z in (-300..=300i32).step_by(5) {
+                let h = height_at(x, z);
+                for y in (h + 1)..=(h + 40) {
+                    assert_ne!(
+                        block_at(x, y, z), Block::AetherBloom,
+                        "主村附近不該有世界樹花冠 @ ({x},{y},{z})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn near_worldtree_true_at_base_false_far() {
+        let (tx, tz) = worldtree_base();
+        assert!(near_worldtree(tx as f32, tz as f32), "站在樹心應判定抵達");
+        assert!(
+            near_worldtree(tx as f32 + WONDER_DISCOVER_RADIUS as f32 - 0.5, tz as f32),
+            "在探索半徑內應判定抵達"
+        );
+        assert!(
+            !near_worldtree(tx as f32 + WONDER_DISCOVER_RADIUS as f32 + 2.0, tz as f32),
+            "超出探索半徑不該判定抵達"
+        );
+        // 出生原點離奇觀極遠，不該誤判抵達。
+        assert!(!near_worldtree(0.0, 0.0));
+    }
+
+    #[test]
+    fn near_worldtree_rejects_nonfinite() {
+        assert!(!near_worldtree(f32::NAN, 0.0));
+        assert!(!near_worldtree(0.0, f32::INFINITY));
+    }
+
+    #[test]
+    fn is_wonder_block_matches_worldtree_body() {
+        // is_wonder_block 應在（且僅在）世界樹本體那些格回 true（供破壞保護）。
+        let (tx, tz) = worldtree_base();
+        let base_h = worldtree_base_height();
+        assert!(base_h > SEA_LEVEL + 1, "測試前提：世界樹樹心應在陸地上");
+        // 樹幹是奇觀。
+        assert!(is_wonder_block(tx, base_h + 3, tz));
+        // 冠心花冠是奇觀。
+        assert!(is_wonder_block(tx, base_h + WORLDTREE_TRUNK_H, tz));
+        // 樹身之外遠處的普通地表不是奇觀。
+        assert!(!is_wonder_block(tx + 100, base_h + 3, tz + 100));
+        // 樹心正下方的地底石頭不是奇觀（只保護地表之上的樹身）。
+        assert!(!is_wonder_block(tx, base_h - 5, tz));
+    }
+
+    #[test]
+    fn aether_bloom_roundtrips_u8() {
+        assert_eq!(Block::from_u8(Block::AetherBloom as u8), Some(Block::AetherBloom));
+        // 玩家不可手動放置這座奇觀方塊。
+        assert!(!Block::AetherBloom.is_placeable());
+        // 花冠是實心可站立的樹材（面剔除/碰撞正常）。
+        assert!(Block::AetherBloom.is_solid());
     }
 }

@@ -4289,6 +4289,9 @@ async fn handle_socket(
     // 營地床邊，用來偵測「剛走近」的那一刻只嘗試記一次探索紀事（避免逗留原地時每秒都取一次
     // discovery 寫鎖；record() 本身已冪等，此旗標純粹省一趟鎖，非正確性必要）。
     let mut was_near_outpost = false;
+    // 世界奇觀·乙太世界樹 v1（ROADMAP 940）：這條連線上一 tick 是否正站在世界樹腳下，用來偵測
+    // 「剛走到」那一刻只嘗試記一次探索紀事（同上，逗留原地時省一趟寫鎖）。
+    let mut was_near_worldtree = false;
 
     // 玩家生存指標 tick（溫和版）：per-connection 每秒推進一次飢餓衰減／溺水／飽食回血，
     // 並在指標變動時單播 player_stats（只給玩家自己，減噪）。放這條連線的 select loop 裡跑，
@@ -4427,6 +4430,36 @@ async fn handle_socket(
                             ));
                     }
                 }
+                // 世界奇觀·乙太世界樹 v1（ROADMAP 940）：玩家跋涉到世界邊陲、走到那株唯一巨型古樹
+                // 腳下的那一刻 → 記一筆探索紀事、解鎖里程碑、順手看看先前旅人的留言、浮出一句敬畏
+                // 提示。用世界樹樹心座標（唯一、確定性）當去重鍵，同一玩家對這座奇觀只記第一次。
+                let near_worldtree = voxel::near_worldtree(px, pz);
+                if near_worldtree && !was_near_worldtree {
+                    let (wtx, wtz) = voxel::worldtree_base();
+                    let wty = voxel::worldtree_base_height();
+                    let found = {
+                        let mut d = hub().discovery.write().unwrap();
+                        d.record(&name, vdisc::LandmarkKind::Wonder, (wtx, wtz), wtx, wty, wtz)
+                    }; // discovery 寫鎖釋放
+                    if let Some(entry) = found {
+                        vdisc::append_discovery(&entry);
+                        try_unlock_milestone(&name, "first_wonder", &out_tx);
+                        send_landmark_notes(vdisc::LandmarkKind::Wonder, (wtx, wtz), wtx, wty, wtz, &out_tx).await;
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({
+                                "t": "wonder_discovered",
+                                "line": "你抵達了世界盡頭的巨型古樹——乙太世界樹🌳，粗壯的樹幹頂著一團泛著青綠幽光的巨大花冠，靜靜矗立。",
+                            })
+                            .to_string(),
+                        ));
+                        vfeed::append_feed(
+                            "探索",
+                            &name,
+                            "跋涉到世界邊陲，撞見了獨一無二的乙太世界樹🌳",
+                        );
+                    }
+                }
+                was_near_worldtree = near_worldtree;
                 // 溺水扣血走統一傷害路徑（含死亡→重生判定、廣播、持久化）。
                 if drown_dmg > 0 {
                     apply_player_damage(&name, drown_dmg, &out_tx).await;
@@ -4554,6 +4587,23 @@ async fn handle_socket(
                 // 讀鎖快照目標方塊型別（delta 讀鎖，馬上釋放）。
                 let target_block =
                     voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
+                // 世界奇觀·乙太世界樹 v1（ROADMAP 940）：這株唯一的天然大奇觀砍不掉——別讓路過的
+                // 人一斧把獨一無二的奇觀拆掉、破壞所有人的探索。只保護「尚未被玩家改動的原生奇觀
+                // 方塊」（`is_wonder_block` 走無狀態世界生成判定）；玩家先前放置覆蓋的方塊不受影響。
+                if voxel::is_wonder_block(x, y, z)
+                    && !hub().deltas.read().unwrap().get(&voxel::chunk_of(x, y, z))
+                        .map(|c| c.contains_key(&voxel::world_local_index(x, y, z)))
+                        .unwrap_or(false)
+                {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({
+                            "t": "wonder_protected",
+                            "line": "乙太世界樹是世界唯一的奇觀，它不會為任何人的鎬子讓步——留給所有旅人一起仰望吧。",
+                        })
+                        .to_string(),
+                    ));
+                    continue;
+                }
                 // delta 寫鎖：驗證 + 設為空氣（循序取放，不嵌套）。
                 let broken = {
                     let mut world = hub().deltas.write().unwrap();
