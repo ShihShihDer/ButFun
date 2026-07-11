@@ -102,8 +102,8 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         crate::voxel_craft::COIN_ID => "乙太幣",
         // 乙太沃肥 v1（ROADMAP 789）：雜草＋泥土漚成的催熟沃肥，此前漏補此名、可餽贈居民。
         crate::voxel_compost::FERTILIZER_ID => "乙太沃肥",
-        // 地下洞穴探索 v1（ROADMAP 933）：天然洞穴腔室岩壁上的發光結晶，可採集餽贈居民。
-        102 => "發光結晶", // 對齊 voxel::Block::GlowCrystal
+        // 地下洞穴探索 v1（ROADMAP 934）：天然洞穴腔室岩壁上的發光結晶，可採集餽贈居民。
+        106 => "發光結晶", // 對齊 voxel::Block::GlowCrystal
         _ => "物品",
     }
 }
@@ -167,12 +167,12 @@ pub fn treasure_gift_thanks_line(player_name: &str, affinity: usize, pick: usize
     }
 }
 
-/// 是否為「地底奇景」類禮物——目前只有發光結晶（102，地下洞穴探索 v1，ROADMAP 933）。
+/// 是否為「地底奇景」類禮物——目前只有發光結晶（106，地下洞穴探索 v1，ROADMAP 934）。
 /// 發光結晶只長在天然洞穴腔室的岩壁上，玩家得一路往地底挖、挖到豁然開朗的洞穴才採得到。
 /// 與「雪原珍寶」（冰晶）刻意區隔情感register：冰晶是「寒冷雪原的閃亮寶物」，發光結晶是
 /// 「地底深處自體發光的奇景」——同是稀有礦晶的驚喜讚嘆，但一個向上跋涉雪原、一個向下深掘地心。
 pub fn is_cave_treasure_gift(block_id: u8) -> bool {
-    block_id == 102 // GlowCrystal（對齊 voxel::Block::GlowCrystal）
+    block_id == 106 // GlowCrystal（對齊 voxel::Block::GlowCrystal）
 }
 
 /// 居民收到「地底奇景」（發光結晶）時的珍愛道謝台詞（零 LLM，確定性）。
@@ -830,20 +830,20 @@ mod tests {
         assert!(!s.is_empty());
     }
 
-    // ── 地下洞穴探索 v1（ROADMAP 933）─────────────────────────────────────────────
+    // ── 地下洞穴探索 v1（ROADMAP 934）─────────────────────────────────────────────
 
     #[test]
     fn is_cave_treasure_gift_only_glow_crystal() {
-        assert!(is_cave_treasure_gift(102), "發光結晶應為地底奇景");
-        // 其餘常見禮物（含雪原冰晶）都不是地底奇景——兩類刻意區隔。
-        for id in [19u8, 49, 53, 8, 9, 10, 20, 21, 54, 55, 56, 58] {
+        assert!(is_cave_treasure_gift(106), "發光結晶應為地底奇景");
+        // 其餘常見禮物（含雪原冰晶、裝飾傢俱 102~105）都不是地底奇景——兩類刻意區隔。
+        for id in [19u8, 49, 53, 8, 9, 10, 20, 21, 54, 55, 56, 58, 102, 103, 104, 105] {
             assert!(!is_cave_treasure_gift(id), "id={id} 不應被判為地底奇景");
         }
     }
 
     #[test]
     fn item_name_glow_crystal() {
-        assert_eq!(item_name_zh(102), "發光結晶");
+        assert_eq!(item_name_zh(106), "發光結晶");
     }
 
     #[test]

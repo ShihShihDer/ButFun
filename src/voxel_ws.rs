@@ -7461,7 +7461,7 @@ async fn handle_socket(
                 } else if vgift::is_treasure_gift(item_id) {
                     vgift::treasure_gift_thanks_line(&name, affinity, pick)
                 } else if vgift::is_cave_treasure_gift(item_id) {
-                    // 地下洞穴探索 v1（ROADMAP 933）：發光結晶是玩家深掘地底、挖到天然洞穴才採得到的
+                    // 地下洞穴探索 v1（ROADMAP 934）：發光結晶是玩家深掘地底、挖到天然洞穴才採得到的
                     // 自體發光礦晶——與雪原珍寶（冰晶）刻意區隔，一個向下深掘、一個向上跋涉雪原。
                     vgift::cave_treasure_thanks_line(&name, affinity, pick)
                 } else if vgift::is_flower_gift(item_id) {

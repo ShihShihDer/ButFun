@@ -157,9 +157,15 @@ const COIN = 98;
 // 驅影之劍 v1（ROADMAP 887，自主提案切片）——世界第一批武器，握在手上驅散夜之暗影更快：
 // 木劍一擊抵兩下、石/鐵劍一擊即散，鐵劍還雙倍乙太礦。純物品、不可放置，99~101 是首個空號。
 const SWORD_WOOD = 99, SWORD_STONE = 100, SWORD_IRON = 101;
-// 發光結晶 v1（地下洞穴探索 v1，ROADMAP 933）——只生成在天然洞穴腔室岩壁上、泛柔和青綠幽光的
+// 玩家裝飾傢俱 v1（ROADMAP 931，自主提案切片）——世界可放方塊至今不是建材就是有用途的功能
+// 家具，唯獨缺純為好看擺著佈置家園的小傢俱；本刀補上第一批純裝飾傢俱：小地毯(102)/花盆(103)/
+// 小圓桌(104)/掛旗(105)。零互動、零居民行為、零計時，走矮塊/薄片造型一眼是傢俱而非建材。
+// 皆背包 2×2 合成、可放置、破壞回收自身（item_id == block_id）。
+const CARPET = 102, FLOWERPOT = 103, TABLE = 104, BANNER = 105;
+// 發光結晶 v1（地下洞穴探索 v1，ROADMAP 934）——只生成在天然洞穴腔室岩壁上、泛柔和青綠幽光的
 // 礦晶；是「挖到豁然開朗地底洞穴」時值得駐足的發現＋照明。可放置的發光方塊，比照火把/乙太燈作法。
-const GLOW_CRYSTAL = 102;
+// id 106：99~101=劍、102~105=裝飾傢俱已佔用，106 是首個空號。
+const GLOW_CRYSTAL = 106;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -288,7 +294,13 @@ const COLOR = {
   [SWORD_WOOD]:  [0.64, 0.46, 0.26], // 木劍——深棕木刃
   [SWORD_STONE]: [0.62, 0.62, 0.64], // 石劍——冷灰石刃
   [SWORD_IRON]:  [0.86, 0.88, 0.94], // 鐵劍——明亮銀白，精煉金屬鋒芒
-  // 發光結晶 v1（地下洞穴探索 v1，ROADMAP 933）——高亮青綠幽光，一眼是黑暗洞穴裡自體發光的礦晶
+  // 玩家裝飾傢俱 v1（ROADMAP 931，自主提案切片）——四樣皆暖色調、各自鮮明可辨，一眼是「一件傢俱」。
+  // 造型走矮塊/薄片（見 SHORT_BLOCK_H），一眼與整格建材分開。
+  [CARPET]:    [0.74, 0.28, 0.30], // 小地毯——暖織毯紅（比床稍柔），鋪地一片
+  [FLOWERPOT]: [0.72, 0.40, 0.26], // 花盆——赭陶盆棕（呼應紅陶磚），矮墩栽綠
+  [TABLE]:     [0.66, 0.48, 0.28], // 小圓桌——溫潤木桌棕（比長椅亮一階），矮桌感
+  [BANNER]:    [0.30, 0.44, 0.74], // 掛旗——沉穩靛藍旗面，牆上一面醒目的旗
+  // 發光結晶 v1（地下洞穴探索 v1，ROADMAP 934）——高亮青綠幽光，一眼是黑暗洞穴裡自體發光的礦晶
   // （比照火把/乙太燈純亮色作法，靠 lightColorFor 在四周投出柔和青綠點光）。
   [GLOW_CRYSTAL]: [0.42, 0.95, 0.68],
 };
@@ -307,6 +319,31 @@ const CROSS_PLANTS = new Set([
 ]);
 // 莖色——統一的柔綠，作為花萼/葉叢的基底色，讓花冠的花色與地面/彼此更好分辨。
 const STEM_COLOR = [0.24, 0.5, 0.22];
+
+// ── 玩家裝飾傢俱 v1（ROADMAP 931）矮塊／薄片造型 ──────────────────────────────
+// 這批純裝飾傢俱刻意**不**畫成整格立方體（那會與建材混淆），改用「短箱」造型——
+// 依 SHORT_BLOCKS 給的軸向範圍（0..1 局部座標）畫一個比整格小的箱子，一眼就是
+// 「一件傢俱」而非一塊建材：
+//   地毯＝超薄貼地一整片；圓桌＝矮桌腳＋較寬桌面；花盆＝矮陶盆＋頂上一小簇綠；
+//   掛旗＝貼一面牆的薄直立旗面。碰撞/採集/放置沿用後端語意不動（後端視為實心一格）。
+// 每項是一或多層 box：{ x:[min,max], y:[min,max], z:[min,max], c:色 }。c 省略＝用方塊本色。
+const FURNITURE_SHAPES = {
+  // 小地毯——鋪滿地板、僅 6% 高的薄毯（略內縮邊緣，看得出是一片鋪物）。
+  [CARPET]: [{ x: [0.04, 0.96], y: [0.0, 0.06], z: [0.04, 0.96] }],
+  // 花盆——下層赭陶矮盆（0..0.42），上層一小簇綠意（0.42..0.62，收窄）。
+  [FLOWERPOT]: [
+    { x: [0.28, 0.72], y: [0.0, 0.42], z: [0.28, 0.72] },
+    { x: [0.34, 0.66], y: [0.42, 0.62], z: [0.34, 0.66], c: [0.30, 0.60, 0.28] },
+  ],
+  // 小圓桌——四方收成的桌腳柱（0..0.5）＋較寬的桌面板（0.5..0.62）。
+  [TABLE]: [
+    { x: [0.34, 0.66], y: [0.0, 0.5], z: [0.34, 0.66] },
+    { x: [0.14, 0.86], y: [0.5, 0.62], z: [0.14, 0.86] },
+  ],
+  // 掛旗——貼牆的薄直立旗面（z 只佔前緣一薄片，y 從高處垂下），一面醒目的旗。
+  [BANNER]: [{ x: [0.16, 0.84], y: [0.14, 0.92], z: [0.06, 0.16] }],
+};
+const SHORT_BLOCKS = new Set([CARPET, FLOWERPOT, TABLE, BANNER]);
 
 const DEBUG = location.search.includes("debug");
 // 觸控裝置偵測（用於顯示精簡 HUD 文字 + 啟用搖桿/跳鈕/放置鈕）
@@ -975,6 +1012,162 @@ function updateAurora(dt) {
   // 天幕面正對鏡頭視線（繞 Y 軸只偏航、維持直立）。
   auroraMesh.rotation.y = Math.atan2(dir.x, dir.z);
 }
+
+// ── 天空雲彩 v1（ROADMAP 933）──────────────────────────────────────────────
+// 天空一路長出天色漸變、繁星（783）、彩虹（780）、流星（904）、極光（932），白天卻始終
+// 是一片空蕩蕩的藍——沒有一朵雲。本刀給白天的天空掛上幾團柔和飄動的白雲：緩緩橫移、隨鏡頭
+// 平移（像掛在無限遠的高空），顏色隨 worldTime 變化——正午雪白、黃昏染成暖橘紅、夜裡隱去或
+// 極淡、雨天轉成陰灰。純視覺、零協議、療癒調性（柔、慢、不擋視線）。
+// 與既有天象 razor-sharp 區隔：雲＝白天常駐、貼近整片天頂、緩緩飄動的氛圍；不像流星（一瞬）、
+// 彩虹（雨後半弧）、極光（雪原夜空光簾）、繁星（夜空靜止點）——時段、樣態、動態皆不同。
+// 效能鐵律：少量（9 片）軟邊 billboard plane 共用一張程序生成的徑向柔邊貼圖與一個材質，
+// 一次建立、之後只改位置/朝向/透明度/頂點色；白天以外整組隱藏、零成本早退。
+// 佈局：雲環繞鏡頭掛在遠空半徑上，各自散在天際弧的不同方位角＋高度、面朝鏡頭當直立背景幕，
+// 隨鏡頭平移（像掛在無限遠的高空）、方位角隨風緩緩橫掃並環繞循環（雲流連綿不絕）。
+const CLOUD_COUNT = 9;            // 雲片數（少量、便宜）
+const CLOUD_DIST = 300;          // 遠空半徑（格）：遠到隨鏡頭平移看似固定在高空
+const CLOUD_Y_MIN = 55;          // 雲層最低高度（格）：掛在地平線以上，不擋視線
+const CLOUD_Y_MAX = 130;         // 雲層最高高度（格）：高低錯落更自然
+const CLOUD_ARC = 2.6;           // 雲橫向散佈的角度半幅（弧度，約 ±149°）：散在大半個天際
+const CLOUD_DRIFT = 0.010;       // 雲整體角速度（弧度/秒）：緩慢橫掃天際、療癒
+const CLOUD_MIN = 60, CLOUD_MAX = 130; // 單片雲的尺寸範圍（格）：大團蓬鬆
+
+// 程序生成一張徑向柔邊「雲斑」貼圖（canvas）：中心白、邊緣漸透明，無硬邊、無外部素材。
+// 疊幾個偏移的徑向漸層讓輪廓不是正圓、而是一團蓬鬆的雲絮。
+function makeCloudTexture() {
+  const S = 128;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = S;
+  const ctx = cv.getContext("2d");
+  // 幾個大小/位置錯落的徑向漸層疊加，堆出蓬鬆不規則的雲團輪廓。
+  const blobs = [
+    [0.50, 0.52, 0.42, 1.00],
+    [0.34, 0.46, 0.30, 0.85],
+    [0.66, 0.48, 0.32, 0.85],
+    [0.44, 0.62, 0.26, 0.70],
+    [0.60, 0.38, 0.24, 0.70],
+  ];
+  for (const [cx, cy, r, a] of blobs) {
+    const g = ctx.createRadialGradient(cx * S, cy * S, 0, cx * S, cy * S, r * S);
+    g.addColorStop(0, `rgba(255,255,255,${a})`);
+    g.addColorStop(0.6, `rgba(255,255,255,${a * 0.5})`);
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, S, S);
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.needsUpdate = true;
+  return tex;
+}
+const cloudTex = (typeof document !== "undefined" && document.createElement) ? makeCloudTexture() : null;
+// 全部雲共用一個材質（vertexColors 讓每片雲各自帶自己的色調，仍是一次材質）。
+const cloudMat = new THREE.MeshBasicMaterial({
+  map: cloudTex,
+  transparent: true,
+  opacity: 1,
+  depthWrite: false,
+  depthTest: false,     // 掛在遠空、不與世界方塊爭深度（比照星空/極光的「遠空」處理）
+  fog: false,
+  vertexColors: true,
+});
+const cloudGroup = new THREE.Group();
+const cloudSprites = [];       // 每片雲的 mesh
+const cloudSeeds = [];         // 每片雲的基準位置/尺寸/相位（不隨鏡頭改，只在群組內偏移）
+for (let i = 0; i < CLOUD_COUNT; i++) {
+  const sz = CLOUD_MIN + Math.random() * (CLOUD_MAX - CLOUD_MIN);
+  const geom = new THREE.PlaneGeometry(sz, sz * (0.42 + Math.random() * 0.16)); // 扁一點更像雲
+  // 每片雲一份頂點色 buffer（4 頂點 × RGB）——之後只改這個 buffer 就能逐雲染色，仍共用材質。
+  const cols = new Float32Array(4 * 3).fill(1);
+  geom.setAttribute("color", new THREE.BufferAttribute(cols, 3));
+  const m = new THREE.Mesh(geom, cloudMat);
+  m.renderOrder = -1; // 在世界方塊之前畫（遠空背景），避免蓋住近景
+  cloudGroup.add(m);
+  cloudSprites.push(m);
+  cloudSeeds.push({
+    // 均勻分佈在天際弧上的基準方位角＋高度；ang 隨風緩緩橫掃、環繞循環。
+    ang0: (i / CLOUD_COUNT) * CLOUD_ARC * 2 - CLOUD_ARC + (Math.random() - 0.5) * 0.2,
+    y: CLOUD_Y_MIN + Math.random() * (CLOUD_Y_MAX - CLOUD_Y_MIN),
+    driftMul: 0.75 + Math.random() * 0.5, // 各雲飄速略異，避免整齊平移
+    colBuf: cols,
+  });
+}
+cloudGroup.visible = false;
+scene.add(cloudGroup);
+
+let cloudDriftT = 0; // 飄移相位累計（秒）
+
+// 白天程度：1=白晝最盛、0=夜裡無雲；黎明/黃昏之間平滑過渡。刻意在黎明/黃昏就淡入（那時最能
+// 看見暖色雲），入夜後幾乎隱去（夜空留給繁星/月/極光）。純函式、供 QA 共用。
+function cloudDayFactor(t) {
+  const x = Number.isFinite(t) ? t - Math.floor(t) : 0.5;
+  if (x < 0.20 || x >= 0.86) return 0;              // 深夜：無雲（留給星空）
+  if (x < 0.30) return (x - 0.20) / 0.10;           // 黎明：雲淡入
+  if (x < 0.76) return 1;                           // 白晝：雲最盛
+  return Math.max(0, 1 - (x - 0.76) / 0.10);        // 黃昏：雲淡出
+}
+
+// 依 worldTime 決定雲的染色（RGB，0..1）：白晝雪白、黃昏暖橘紅、雨天陰灰。
+// 與 updateSkyAndLight 的天色協調——白晝雲白於藍天，黃昏雲承接暖橘夕照，雨天融進灰天。
+const _cloudDay  = [0.98, 0.98, 1.00]; // 白晝：雪白略帶冷藍
+const _cloudDusk = [1.00, 0.66, 0.42]; // 黃昏：暖橘紅（夕照染雲）
+const _cloudRain = [0.55, 0.58, 0.62]; // 雨天：陰灰
+function cloudTint(t, out) {
+  const x = Number.isFinite(t) ? t - Math.floor(t) : 0.5;
+  // 黃昏權重：越接近傍晚橙~黃昏深紅越濃，白晝幾乎為 0；黎明也帶一點暖。
+  let dusk = 0;
+  if (x >= 0.62 && x < 0.86) dusk = Math.min(1, (x - 0.62) / 0.12);      // 傍晚起漸濃
+  else if (x >= 0.20 && x < 0.32) dusk = Math.min(1, (0.32 - x) / 0.12); // 黎明也帶一點暖
+  const r = _cloudDay[0] + (_cloudDusk[0] - _cloudDay[0]) * dusk;
+  const g = _cloudDay[1] + (_cloudDusk[1] - _cloudDay[1]) * dusk;
+  const b = _cloudDay[2] + (_cloudDusk[2] - _cloudDay[2]) * dusk;
+  if (isRaining) {
+    // 雨天：往陰灰混（蓋過暖色），讓雲更平更暗、融進灰天。
+    const rw = 0.7;
+    out[0] = r + (_cloudRain[0] - r) * rw;
+    out[1] = g + (_cloudRain[1] - g) * rw;
+    out[2] = b + (_cloudRain[2] - b) * rw;
+  } else {
+    out[0] = r; out[1] = g; out[2] = b;
+  }
+  return out;
+}
+const _cloudCol = [1, 1, 1];
+
+// 每幀更新雲：算白天程度→整組不透明度；白天/無雲時整組隱藏、零成本早退。可見時把整組掛到
+// 鏡頭上方遠處高空（隨鏡頭平移＝看似固定在天上），逐雲緩緩橫移＋環繞循環、依 worldTime 染色。
+function updateClouds(dt) {
+  const df = cloudDayFactor(worldTime);
+  const target = df * (isRaining ? 0.62 : 0.85); // 雨天雲稍淡、更融進灰天
+  if (target <= 0.001) { cloudGroup.visible = false; return; }
+  cloudGroup.visible = true;
+  cloudDriftT += dt;
+  // 整組隨鏡頭平移（像掛在無限遠的遠空）；各雲環繞鏡頭掛在遠空半徑上、面朝鏡頭當直立背景幕。
+  cloudGroup.position.copy(camera.position);
+  cloudTint(worldTime, _cloudCol);
+  const TWO_ARC = CLOUD_ARC * 2;
+  for (let i = 0; i < CLOUD_COUNT; i++) {
+    const s = cloudSeeds[i];
+    const m = cloudSprites[i];
+    // 方位角隨風緩緩橫掃，在 [-CLOUD_ARC, CLOUD_ARC] 弧內環繞循環（雲流連綿不絕）。
+    let a = s.ang0 + cloudDriftT * CLOUD_DRIFT * s.driftMul;
+    a = ((a + CLOUD_ARC) % TWO_ARC + TWO_ARC) % TWO_ARC - CLOUD_ARC;
+    // 方位角＋高度換成遠空位置（水平繞 Y、抬到 s.y 高）。
+    m.position.set(Math.sin(a) * CLOUD_DIST, s.y, -Math.cos(a) * CLOUD_DIST);
+    // 雲面繞 Y 軸朝向鏡頭中心（直立背景幕），隨方位角轉向、恆面對觀者。
+    m.rotation.set(0, a, 0);
+    // 逐雲染色（改頂點色 buffer；整體透明度由材質 opacity 統一）。
+    const cb = s.colBuf;
+    for (let v = 0; v < 4; v++) {
+      cb[v * 3 + 0] = _cloudCol[0];
+      cb[v * 3 + 1] = _cloudCol[1];
+      cb[v * 3 + 2] = _cloudCol[2];
+    }
+    m.geometry.getAttribute("color").needsUpdate = true;
+  }
+  cloudMat.opacity = target;
+}
+// 供 QA／純函式驗證（無渲染副作用）。
+if (typeof window !== "undefined") { window.__cloudDayFactor = cloudDayFactor; window.__cloudTint = cloudTint; }
 
 // ── 乙太煙火 v1（ROADMAP 785）────────────────────────────────────────────────
 // 玩家朝夜空施放的煙火:一束火花在施放者頭頂上方升空、綻放。伺服器廣播 firework{x,y,z,palette}
@@ -1984,8 +2177,11 @@ function faceShade(f) {
 function faceVisibleOpaque(nx, ny, nz) {
   const r = getRaw(nx, ny, nz);
   if (r === -1) return false;
-  // 梯子（LADDER=35）、木門（開）（DOOR_OPEN=44）是可穿越方塊，視覺上等同空氣
-  return r === AIR || isWaterId(r) || r === LADDER || r === DOOR_OPEN;
+  // 梯子（LADDER=35）、木門（開）（DOOR_OPEN=44）是可穿越方塊，視覺上等同空氣。
+  // 裝飾傢俱（矮塊/薄片，ROADMAP 931）與十字貼片植物本身比一格小、看得穿——鄰接它們的
+  // 整格方塊那一面仍要畫出來，否則傢俱沒填滿的縫隙後面會露出黑洞（未畫的鄰面）。
+  return r === AIR || isWaterId(r) || r === LADDER || r === DOOR_OPEN
+    || SHORT_BLOCKS.has(r) || CROSS_PLANTS.has(r);
 }
 // 水面可見性改由 rebuildChunk 內的水流分支就地判斷（含階梯落差牆），見 waterTopH/emitWaterFace。
 
@@ -2039,6 +2235,9 @@ function rebuildChunk(key) {
           // 併入不透明 mesh（opaqueMat 為 DoubleSide，兩面都畫，花不會半透明破洞）。
           // （window.__qaCubePlants 僅供 QA 對比截圖用，切回舊的整格立方體渲染。）
           emitCross(pos, norm, col, idx, lx, ly, lz, variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz), b);
+        } else if (SHORT_BLOCKS.has(b)) {
+          // 玩家裝飾傢俱 v1（ROADMAP 931）：走矮塊／薄片造型（一或多層短箱），一眼是傢俱而非建材。
+          emitFurniture(pos, norm, col, idx, lx, ly, lz, b, variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz));
         } else {
           // 四季樹葉 v1：樹葉方塊的基底色隨當前季節換色，其餘方塊沿用固定色。
           const base = b === LEAVES ? foliageLeafColor(worldSeason) : (COLOR[b] || COLOR[STONE]);
@@ -2090,6 +2289,38 @@ function emitFace(pos, norm, col, idx, lx, ly, lz, f, c) {
     if (col && c) col.push(Math.min(1, c[0] * shade), Math.min(1, c[1] * shade), Math.min(1, c[2] * shade));
   }
   idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
+}
+
+// 玩家裝飾傢俱 v1（ROADMAP 931）：把一件傢俱畫成一或多層「短箱」（比整格小的箱子），
+// 一眼是傢俱而非建材。六面全畫（箱子比一格小、內面也看得見，不做面剔除）。座標用 chunk
+// 局部（mesh 有偏移）。純視覺，碰撞/採集/放置沿用後端一格語意不動。FPS 零影響（一樣併進
+// chunk 合併 mesh，一件傢俱幾十個頂點，與整格立方體同數量級）。
+function emitFurniture(pos, norm, col, idx, lx, ly, lz, b, baseC) {
+  const layers = FURNITURE_SHAPES[b];
+  if (!layers) return;
+  for (const box of layers) {
+    const c = box.c || baseC;
+    const [x0, x1] = box.x, [y0, y1] = box.y, [z0, z1] = box.z;
+    // 各面的四角頂點（照 FACES 的繞序，法線朝外），套用該面的方向明暗。
+    const faces = [
+      { n: [1, 0, 0],  q: [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]] },
+      { n: [-1, 0, 0], q: [[x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [x0, y0, z0]] },
+      { n: [0, 1, 0],  q: [[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]] },
+      { n: [0, -1, 0], q: [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]] },
+      { n: [0, 0, 1],  q: [[x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [x0, y0, z1]] },
+      { n: [0, 0, -1], q: [[x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0]] },
+    ];
+    for (const f of faces) {
+      const shade = f.n[1] > 0 ? 1.07 : (f.n[1] < 0 ? 0.70 : 0.91);
+      const start = pos.length / 3;
+      for (const v of f.q) {
+        pos.push(lx + v[0], ly + v[1], lz + v[2]);
+        norm.push(f.n[0], f.n[1], f.n[2]);
+        col.push(Math.min(1, c[0] * shade), Math.min(1, c[1] * shade), Math.min(1, c[2] * shade));
+      }
+      idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
+    }
+  }
 }
 
 // 色彩線性內插小工具：mix(a,b,t)=a→b 走 t（0..1）。用來把莖綠、花萼、花冠、花心
@@ -2218,6 +2449,82 @@ function updateUnderwaterAtmosphere() {
   }
 }
 // ── end 水下氛圍 v1 ───────────────────────────────────────────────────────────
+
+// ── 水體游泳深化 v1（ROADMAP 930）─────────────────────────────────────────────
+// 下水後從「純掉血負面感受」升級成有浮力/水阻/可浮可潛的療癒游泳。實際物理在此前端做
+// （移動是前端權威預測），做成與陸地移動不衝突的「水中分支」——只在身體泡進水裡時接管垂直
+// 動態，一離水立刻交還既有陸地重力/踏階/跳躍，絕不改動陸地手感。
+// 這些常數與純函式與後端 src/voxel_swim.rs **鏡像**（該檔有單元測試守著數學），改參數兩邊同步。
+const WATER_GRAVITY_MULT = 0.18;   // 水中重力只剩陸地一小截（緩緩下沉）
+const BUOYANCY_ACCEL = 4.8;        // 被動浮力（略偏上浮，會慢慢浮回水面透氣）
+const SWIM_UP_ACCEL = 16.0;        // 按跳＝主動上浮，一按就有感
+const SWIM_DOWN_ACCEL = 14.0;      // 按下潛（Shift/潛鈕）＝主動下沉
+const VERT_SPEED_CLAMP = 5.0;      // 水中上下游速度夾限（黏滯感＋防穿地）
+const SWIM_HORIZ_SPEED_MULT = 0.6; // 水中水平比陸地慢（水阻）
+
+// 水中等效下沉加速度（格/秒²，正＝往下）。純函式。
+function waterSinkAccel(landGravity) { return landGravity * WATER_GRAVITY_MULT; }
+
+// 依輸入意圖算水中垂直加速度（格/秒²，向上為正）。純函式、確定性，鏡像 Rust swim_vertical_accel。
+function swimVerticalAccel(landGravity, swimUp, swimDown) {
+  if (swimUp)   return SWIM_UP_ACCEL - waterSinkAccel(landGravity);      // 主動上浮：淨往上
+  if (swimDown) return -(SWIM_DOWN_ACCEL - BUOYANCY_ACCEL);             // 主動下潛：淨往下
+  return BUOYANCY_ACCEL - waterSinkAccel(landGravity);                  // 被動：略偏上浮
+}
+
+// 垂直速度水阻夾限。純函式。
+function clampWaterVy(vy) { return Math.max(-VERT_SPEED_CLAMP, Math.min(VERT_SPEED_CLAMP, vy)); }
+
+// 玩家身體（AABB 中段：腳底 + 半身高附近）是否泡在水裡 → 觸發游泳分支。
+// 取身體中央那格採樣：只要泡到腰以上就算「在水裡」，比只看腳底更貼近「浮起來」的感覺。
+function bodyInWater(x, y, z) {
+  const bx = Math.floor(x);
+  const by = Math.floor(y + PH * 0.5);
+  const bz = Math.floor(z);
+  return isWaterId(getRaw(bx, by, bz));
+}
+
+// 頭（眼睛高度那格）是否沒頂水下——比 bodyInWater 嚴格，用於憋氣/水下視覺判定。
+function headUnderwater(x, y, z) {
+  const bx = Math.floor(x);
+  const by = Math.floor(y + 1.5); // EYE_HEIGHT，與後端 head_in_water 對齊
+  const bz = Math.floor(z);
+  return isWaterId(getRaw(bx, by, bz));
+}
+
+// 憋氣曲線（鏡像後端 src/voxel_swim.rs，有單元測試守著）。純視覺提示，非傷害來源——
+// 扣血仍全交給既有溫柔溺水機制（tick_drown，伺服器權威）。
+const BREATH_GRACE_SECS = 8.0;  // 潛下去先撐這麼久才開始掉氣（比溺水緩衝 6 更寬）
+const BREATH_FULL_SECS = 20.0;  // 從頭沒頂到氣見底的總秒數
+let _submergedAcc = 0;          // 頭沒頂水下累計秒（離水歸零；純前端提示）
+const _breathEl = document.getElementById("breathMeter");
+const _breathBubbles = _breathEl ? Array.from(_breathEl.querySelectorAll(".bub")) : [];
+
+// 憋氣表推進一 tick，回新累計秒。純函式（鏡像 Rust tick_breath）。
+function tickBreath(headUW, acc, dt) { return headUW ? acc + dt : 0; }
+
+// 憋氣表顯示值（0..1，1＝滿氣）。純函式、確定性（鏡像 Rust breath_fraction）。壞值保守回 1。
+function breathFraction(acc) {
+  if (typeof acc !== "number" || !isFinite(acc) || acc <= BREATH_GRACE_SECS) return 1;
+  if (acc >= BREATH_FULL_SECS) return 0;
+  return Math.max(0, Math.min(1, 1 - (acc - BREATH_GRACE_SECS) / (BREATH_FULL_SECS - BREATH_GRACE_SECS)));
+}
+
+// 每幀更新憋氣表 DOM：滿氣時整條淡出（不擾畫面），開始掉氣才淡入、一顆顆熄。零 draw call。
+function updateBreathMeter(headUW, dt) {
+  _submergedAcc = tickBreath(headUW, _submergedAcc, dt);
+  if (!_breathEl) return;
+  const frac = breathFraction(_submergedAcc);
+  // 只在「頭沒頂且氣已開始下降」時顯示；滿氣或離水一律淡出（療癒：平常看不到壓力表）。
+  const show = headUW && frac < 0.999;
+  _breathEl.style.opacity = show ? "1" : "0";
+  if (!show) return;
+  const lit = Math.ceil(frac * _breathBubbles.length);
+  for (let i = 0; i < _breathBubbles.length; i++) {
+    _breathBubbles[i].classList.toggle("spent", i >= lit);
+  }
+}
+// ── end 水體游泳深化 v1 ────────────────────────────────────────────────────────
 
 // ── 晨霧 v1（ROADMAP 913）──────────────────────────────────────────────────────
 // 每個清晨，整片世界浮起一層薄霧：縮短 Three.js fog 的能見度，遠處的屋與樹在霧裡朦朧成剪影，
@@ -2399,7 +2706,13 @@ const RES_BODY_MAT = new THREE.MeshLambertMaterial({ color: 0xd8b070 });
 const RES_HEAD_MAT = new THREE.MeshLambertMaterial({ color: 0xe8c89a });
 const RES_TORSO_GEO = new THREE.BoxGeometry(0.5, 1.0, 0.32);
 const RES_HEAD_GEO = new THREE.BoxGeometry(0.42, 0.42, 0.42);
+// 居民表情/肢體 v1：加一對細手臂做揮手/搔頭/縮身動作（共用幾何/材質，成本可忽略）。
+const RES_ARM_GEO = new THREE.BoxGeometry(0.14, 0.55, 0.18);
 const RES_VISIBLE_DIST = 110; // 超過此距離（接近霧盡頭）隱藏，省繪製
+// 肢體動畫只在鏡頭附近的居民跑（FPS 鐵律）：超過此距離只保留位置更新、不算補間。
+const RES_GESTURE_DIST = 42;
+// 暗影害怕半徑（前端偵測）：居民附近有暗影小靈就縮身顫抖，無需後端新增旗標。
+const RES_FEAR_DIST = 9;
 
 // ── 野兔 v1（自主提案切片，ROADMAP 847）＋水中游魚 v1（ROADMAP 848）──────────
 // 世界環境生物：純點綴、無名牌無泡泡。野兔=身體+兩隻耳朵、魚=身體+尾鰭，
@@ -2918,12 +3231,32 @@ async function refreshAffinity() {
 function buildResident(id, name) {
   const group = new THREE.Group();
   group.userData.rid = id;
+  // body：軀幹 + 頭 + 手臂全掛在一個 body 子 group 上，讓「開心彈跳/害怕縮身」能整體
+  //（含名牌以外的身體）位移縮放，不動到頭頂名牌/泡泡的座標基準。
+  const body = new THREE.Group();
+  group.add(body);
   const torso = new THREE.Mesh(RES_TORSO_GEO, RES_BODY_MAT);
   torso.position.y = 0.5; // 腳底在 group 原點，軀幹中心 0.5
-  group.add(torso);
+  body.add(torso);
+  // 頭掛在頸關節 pivot 上（頸部約 y=1.02），繞 x 軸微傾＝低頭/抬頭表情。
+  const headPivot = new THREE.Group();
+  headPivot.position.y = 1.02;
+  body.add(headPivot);
   const head = new THREE.Mesh(RES_HEAD_GEO, RES_HEAD_MAT);
-  head.position.y = 1.25;
-  group.add(head);
+  head.position.y = 0.23; // 頭中心相對頸關節（1.02+0.23=1.25，與原本一致）
+  headPivot.add(head);
+  // 手臂：pivot 掛在肩部（y≈0.95），臂往下垂、繞 pivot x 軸擺動＝揮手/搔頭/垂手。
+  function resArm(x) {
+    const pivot = new THREE.Group();
+    pivot.position.set(x, 0.95, 0);
+    const m = new THREE.Mesh(RES_ARM_GEO, RES_BODY_MAT);
+    m.position.y = -0.275; // 臂頂貼在肩上、往下垂
+    pivot.add(m);
+    body.add(pivot);
+    return pivot;
+  }
+  const armL = resArm(-0.32);
+  const armR = resArm(0.32);
   const label = makeTextSprite(name, false);
   label.position.y = 2.0;
   group.add(label);
@@ -2947,7 +3280,98 @@ function buildResident(id, name) {
   moodIndicator.visible = false;
   group.add(moodIndicator);
   scene.add(group);
-  return { group, label, desireLabel, bubble, affinityIndicator, moodIndicator, lastName: name, lastSay: "", lastDesire: "", lastAffinity: "", lastMood: "" };
+  return {
+    group, body, headPivot, armL, armR,
+    label, desireLabel, bubble, affinityIndicator, moodIndicator,
+    lastName: name, lastSay: "", lastDesire: "", lastAffinity: "", lastMood: "",
+    // 肢體動畫狀態（居民表情/肢體 v1）：
+    gestPhase: Math.random() * Math.PI * 2, // 起始相位打散，別讓全村同步呼吸
+    mood: "",        // 當前心情 emoji（驅動彈跳/垂頭/搔頭）
+    humming: false,  // 是否正哼歌（say 以 ♪ 起頭）→ 持續搖擺哼唱
+    wavePulse: 0,    // 打招呼/道賀揮手的一次性脈衝（新泡泡出現時觸發，倒數歸零）
+  };
+}
+
+// 依前端已知資訊（心情 emoji / 說話 / 附近暗影）程序化驅動居民的柔和肢體語言。
+// 純三角函數補間、無新後端欄位；只算鏡頭附近的居民（FPS 鐵律）。療癒調性＝動作慢、小、可愛。
+function animateResident(ent, dt, fearNear) {
+  const b = ent.body, hp = ent.headPivot, aL = ent.armL, aR = ent.armR;
+  // 距離門檻外：把身體回正到中性姿態一次即可，不再逐幀補間（省算）。
+  const dx = ent.group.position.x - player.x, dz = ent.group.position.z - player.z;
+  if (dx * dx + dz * dz > RES_GESTURE_DIST * RES_GESTURE_DIST) {
+    b.position.y = 0; b.scale.set(1, 1, 1); b.rotation.z = 0;
+    hp.rotation.x = 0; hp.rotation.z = 0; aL.rotation.x = 0; aL.rotation.z = 0;
+    aR.rotation.x = 0; aR.rotation.z = 0;
+    return;
+  }
+  ent.gestPhase += dt;
+  const t = ent.gestPhase;
+  const k = Math.min(1, dt * 6); // 姿態平滑係數（往目標補間，避免瞬跳）
+
+  // 目標姿態（預設中性），依情緒疊加。
+  let bobY = 0, sway = 0, crouch = 0, shiver = 0;
+  let headTilt = 0, headDroop = 0;
+  let armLx = 0, armRx = 0, armScratch = 0, waveAmt = 0;
+
+  const mood = ent.mood;
+  const asleep = mood === "💤";
+
+  if (fearNear && !asleep) {
+    // 害怕（附近有暗影）：縮身、微微後仰顫抖、雙手內收——最強、蓋過其他情緒。
+    crouch = 0.16;
+    shiver = Math.sin(t * 22) * 0.03;
+    headDroop = -0.15; // 微微仰頭警戒
+    armLx = 0.5; armRx = 0.5; // 雙手抬起護在身前
+  } else if (asleep) {
+    // 睡著：幾乎不動，只有極緩的呼吸起伏（頭微垂）。
+    bobY = Math.sin(t * 1.2) * 0.012;
+    headDroop = 0.28;
+  } else if (ent.humming) {
+    // 哼歌：左右輕搖 + 上下輕彈，最歡快可愛。
+    sway = Math.sin(t * 3.2) * 0.11;
+    bobY = Math.abs(Math.sin(t * 3.2)) * 0.05;
+    headTilt = Math.sin(t * 3.2) * 0.08;
+  } else if (mood === "😊" || mood === "🙂") {
+    // 開心：輕輕上下彈跳（越開心越明顯），偶爾點頭。
+    const amp = mood === "😊" ? 0.05 : 0.03;
+    bobY = Math.abs(Math.sin(t * 2.4)) * amp;
+    headTilt = Math.sin(t * 1.6) * 0.04;
+  } else if (mood === "😔") {
+    // 難過/寂寞：頭微垂、身體極緩慢地小幅搖，動作明顯變慢。
+    headDroop = 0.22;
+    sway = Math.sin(t * 1.0) * 0.03;
+  } else if (mood === "🤔") {
+    // 思考/發明：搔頭——右手抬到頭側來回蹭，頭跟著微側。
+    armScratch = 1;
+    armRx = 2.2 + Math.sin(t * 8) * 0.25; // 抬手到頭
+    headTilt = 0.12;
+  } else {
+    // 中性（😐 或無 emoji）：極輕的自然呼吸起伏，維持「活著」的感覺。
+    bobY = Math.sin(t * 1.5) * 0.012;
+  }
+
+  // 說話/道賀揮手：wavePulse 觸發時右手抬起來回揮（一次性、倒數歸零），蓋過上面的臂目標。
+  if (ent.wavePulse > 0) {
+    ent.wavePulse = Math.max(0, ent.wavePulse - dt);
+    waveAmt = 1;
+    armRx = 2.4;                 // 抬到肩上
+    armScratch = 0;
+  }
+
+  // ── 把目標姿態平滑補間到實際 mesh ──
+  b.position.y += ((bobY - crouch) - b.position.y) * k;
+  b.rotation.z += ((sway + shiver) - b.rotation.z) * k;
+  // 縮身時整體略壓扁（縮 y、微胖），害怕/難過收攏；平常回 1。
+  const targetScaleY = 1 - crouch * 0.9;
+  b.scale.y += (targetScaleY - b.scale.y) * k;
+  hp.rotation.x += (headDroop - hp.rotation.x) * k;
+  hp.rotation.z += (headTilt - hp.rotation.z) * k;
+  // 揮手時右手繞 z 軸來回擺（招手感）；搔頭時右手在頭側小幅蹭。
+  const waveZ = waveAmt ? Math.sin(t * 9) * 0.5 : (armScratch ? Math.sin(t * 8) * 0.15 : 0);
+  aR.rotation.x += (armRx - aR.rotation.x) * k;
+  aR.rotation.z += (waveZ - aR.rotation.z) * k;
+  aL.rotation.x += (armLx - aL.rotation.x) * k;
+  aL.rotation.z += (0 - aL.rotation.z) * k;
 }
 
 // 依伺服器快照更新所有居民（位置/朝向/名字/說的話）。新出現的就建、消失的就移除。
@@ -2974,9 +3398,13 @@ function updateResidents(list) {
         setSpriteText(ent.bubble, say, true); ent.bubble.visible = true;
         chatLogAppend("res", r.name, say, r.id); // 泡泡同步進聊天窗（去重會併掉截斷版）
         // 哼歌 v1（ROADMAP 788）：say 以音符「♪」起頭＝這是一段歌聲，於頭頂生成飄浮音符。
-        if (say.charAt(0) === "♪") spawnHumNotes(r.x, r.y, r.z);
+        const isHum = say.charAt(0) === "♪";
+        if (isHum) spawnHumNotes(r.x, r.y, r.z);
+        // 居民表情/肢體 v1：哼歌＝持續搖擺；一般說話＝觸發一次「打招呼／道賀」揮手脈衝。
+        ent.humming = isHum;
+        if (!isHum) ent.wavePulse = 1.4; // 揮手約 1.4 秒後收手
       }
-      else { ent.bubble.visible = false; }
+      else { ent.bubble.visible = false; ent.humming = false; }
     }
     // 好感度指示燈（ROADMAP 656）：依 myAffinity 決定顯示哪種心型（sig 保護不重建貼圖）。
     const affCount = myAffinity.get(r.id) || 0;
@@ -2993,12 +3421,35 @@ function updateResidents(list) {
       if (moodEmoji) { setMoodEmoji(ent.moodIndicator, moodEmoji); ent.moodIndicator.visible = true; }
       else { ent.moodIndicator.visible = false; }
     }
+    // 居民表情/肢體 v1：驅動彈跳/垂頭/搔頭的當前心情。
+    // QA 覆寫（window.__voxelQaMoodOverride，僅 debug 截圖用）優先於伺服器快照，讓 headless
+    // 能穩定拍到各情緒姿態；正式遊玩恆為 undefined，一律跟伺服器權威 mood。
+    const ov = (typeof window !== "undefined" && window.__voxelQaMoodOverride) || null;
+    ent.mood = (ov && ov[r.id] != null) ? ov[r.id] : moodEmoji;
     // 距離 LOD：遠到接近霧盡頭就整個隱藏（省繪製，不崩 FPS）。
     const dx = r.x - player.x, dz = r.z - player.z;
     ent.group.visible = (dx * dx + dz * dz) < (RES_VISIBLE_DIST * RES_VISIBLE_DIST);
   }
   for (const [id, ent] of residents) {
     if (!seen.has(id)) { scene.remove(ent.group); residents.delete(id); }
+  }
+}
+
+// 每幀推進所有居民的肢體語言（居民表情/肢體 v1）。應在 rAF 迴圈呼叫。
+// 害怕偵測純前端：居民附近（RES_FEAR_DIST 內）有可見暗影小靈就縮身顫抖，不需後端旗標。
+function animateResidents(dt) {
+  if (!residents.size) return;
+  for (const ent of residents.values()) {
+    if (!ent.group.visible) continue; // 遠處已隱藏的不算
+    let fearNear = false;
+    if (shadowEnts.size) {
+      const rx = ent.group.position.x, rz = ent.group.position.z;
+      for (const s of shadowEnts.values()) {
+        const dx = s.group.position.x - rx, dz = s.group.position.z - rz;
+        if (dx * dx + dz * dz < RES_FEAR_DIST * RES_FEAR_DIST) { fearNear = true; break; }
+      }
+    }
+    animateResident(ent, dt, fearNear);
   }
 }
 
@@ -4924,7 +5375,9 @@ const BLOCK_NAME = {
   [COIN]: "乙太幣",
   // 驅影之劍 v1（ROADMAP 887，自主提案切片）
   [SWORD_WOOD]: "木劍", [SWORD_STONE]: "石劍", [SWORD_IRON]: "鐵劍",
-  // 地下洞穴探索 v1（ROADMAP 933）
+  // 玩家裝飾傢俱 v1（ROADMAP 931，自主提案切片）
+  [CARPET]: "小地毯", [FLOWERPOT]: "花盆", [TABLE]: "小圓桌", [BANNER]: "掛旗",
+  // 地下洞穴探索 v1（ROADMAP 934）
   [GLOW_CRYSTAL]: "發光結晶",
 };
 let selectedSlot = 0; // HOTBAR 索引
@@ -5234,7 +5687,9 @@ const BLOCK_HARDNESS = {
   [TERRACOTTA_RED]: 1.6, [TERRACOTTA_BLACK]: 1.6, [TERRACOTTA_WHITE]: 1.6, [TERRACOTTA_BLUE]: 1.6,
   // 野花 v1（自主提案切片）——一叢嬌嫩野花，比照樹苗一敲即落，輕鬆採下帶走。
   [WILDFLOWER_RED]: 0.2, [WILDFLOWER_YELLOW]: 0.2, [WILDFLOWER_BLUE]: 0.2,
-  // 地下洞穴探索 v1（ROADMAP 933）——洞穴岩壁上的發光結晶，比照冰晶（結晶偏脆），輕鬆敲下採走。
+  // 玩家裝飾傢俱 v1（ROADMAP 931）——輕巧擺設，比照告示牌一敲即回收，方便隨手挪位重新佈置。
+  [CARPET]: 0.4, [FLOWERPOT]: 0.5, [TABLE]: 0.6, [BANNER]: 0.4,
+  // 地下洞穴探索 v1（ROADMAP 934）——洞穴岩壁上的發光結晶，比照冰晶（結晶偏脆），輕鬆敲下採走。
   [GLOW_CRYSTAL]: 1.2,
 };
 function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
@@ -5625,6 +6080,9 @@ if (!isTouch) {
 // 觸控搖桿（isTouch 常數已在頁首定義）
 const touchEl = document.getElementById("touch");
 let joyVec = { x: 0, y: 0 };
+// 游泳深化 v1：觸控「潛↑↓」鈕按住狀態（水中才作用；陸地按了無效，見 update 的 swimming 判定）。
+let diveUpBtnHeld = false;
+let diveDownBtnHeld = false;
 // 準心+按鈕模式的挖掘狀態（挖鈕按住期間維持）＋準心是否對到居民（挖鈕切「說話」用）。
 let touchDigHeld = false;
 let crosshairResident = null; // rid 或 null：準心對到的居民（每幀節流更新）
@@ -5693,6 +6151,19 @@ if (isTouch) {
   jumpBtn.addEventListener("touchstart", (e) => { tryJump(); e.preventDefault(); }, { passive: false });
   const placeBtn = document.getElementById("place");
   placeBtn.addEventListener("touchstart", (e) => { placeAtTarget(); e.preventDefault(); }, { passive: false });
+  // 游泳深化 v1：上浮/下潛鈕（按住期間維持意圖，水中才作用）。touchend/cancel 都要放開。
+  const diveUpBtn = document.getElementById("diveUp");
+  const diveDownBtn = document.getElementById("diveDown");
+  if (diveUpBtn) {
+    diveUpBtn.addEventListener("touchstart", (e) => { diveUpBtnHeld = true; e.preventDefault(); }, { passive: false });
+    diveUpBtn.addEventListener("touchend", (e) => { diveUpBtnHeld = false; e.preventDefault(); }, { passive: false });
+    diveUpBtn.addEventListener("touchcancel", () => { diveUpBtnHeld = false; });
+  }
+  if (diveDownBtn) {
+    diveDownBtn.addEventListener("touchstart", (e) => { diveDownBtnHeld = true; e.preventDefault(); }, { passive: false });
+    diveDownBtn.addEventListener("touchend", (e) => { diveDownBtnHeld = false; e.preventDefault(); }, { passive: false });
+    diveDownBtn.addEventListener("touchcancel", () => { diveDownBtnHeld = false; });
+  }
   // 專屬「挖」按鈕（準心+按鈕模式核心）：長按對準心方塊計時挖掘（進度條），鬆手取消。
   //   若準心對到居民 → 改為互動（開對話），不挖（挖/互動分離、絕不混淆）。
   const digBtn = document.getElementById("dig");
@@ -6693,7 +7164,15 @@ function update(dt) {
     if (climbUp)        player.y += CLIMB_SPEED * dt;
     else if (climbDown) player.y -= CLIMB_SPEED * dt;
     // 水平仍可移動（側步可脫離梯子）
-  } else {
+  }
+
+  // ── 水體游泳深化 v1（ROADMAP 930）：身體泡進水裡 → 走「水中分支」（浮力/水阻/可浮可潛）──
+  // 只在非攀爬且身體進水時接管；一離水立刻交還陸地重力/踏階（下方 !swimming 分支）。
+  const swimming = !climbing && bodyInWater(player.x, player.y, player.z);
+  // 上浮意圖：跳鍵/跳鈕；下潛意圖：Shift/潛鈕（水中 S 仍是後退，下潛另用 Shift，不搶走走位）。
+  const swimUp = swimming && (keys["Space"] || diveUpBtnHeld);
+  const swimDown = swimming && (keys["ShiftLeft"] || keys["ShiftRight"] || diveDownBtnHeld);
+  if (!climbing && !swimming) {
     if ((keys["Space"]) && player.grounded) tryJump();
   }
 
@@ -6701,12 +7180,27 @@ function update(dt) {
   dir.addScaledVector(fwd, mz).addScaledVector(right, mx);
   if (dir.lengthSq() > 1e-4) {
     dir.normalize();
-    moveAxis("x", dir.x * SPEED * dt);
-    moveAxis("z", dir.z * SPEED * dt);
+    // 水中水平比陸地慢（水阻），陸地維持原速——手感差異只發生在水裡。
+    const horiz = swimming ? SPEED * SWIM_HORIZ_SPEED_MULT : SPEED;
+    moveAxis("x", dir.x * horiz * dt);
+    moveAxis("z", dir.z * horiz * dt);
   }
 
-  if (!climbing) {
-    // 重力 + 垂直碰撞（只在非攀爬模式下套用）
+  if (swimming) {
+    // 水中垂直：浮力/上浮/下潛加速度 → 夾限速度 → 逐軸碰撞（沿用陸地那套 overlaps 保護）。
+    player.vy += swimVerticalAccel(GRAVITY, swimUp, swimDown) * dt;
+    player.vy = clampWaterVy(player.vy);
+    player.grounded = false; // 水裡不算著地（避免水面上誤觸發跳躍）
+    let dy = Math.max(-1.5, Math.min(1.5, player.vy * dt));
+    const prevY = player.y;
+    player.y += dy;
+    if (overlaps()) {
+      player.y = prevY;
+      player.vy = 0; // 頂到水底/水中障礙就停住，別把人壓進方塊
+    }
+    if (player.y < -10) { player.y = 40; player.vy = 0; stepSmooth = 0; }
+  } else if (!climbing) {
+    // 重力 + 垂直碰撞（陸地：只在非攀爬非游泳模式下套用，維持既有手感）
     player.vy -= GRAVITY * dt;
     // 限制單幀垂直位移避免穿牆
     let dy = Math.max(-1.5, Math.min(1.5, player.vy * dt));
@@ -6808,15 +7302,27 @@ function update(dt) {
   updateUnderwaterAtmosphere();
   updateDawnMist(); // 晨霧 v1（913）：清晨縮短 fog 能見度、日出後漸散（須在水下判定後，水下時讓位給水下霧）
 
+  // 游泳深化 v1：憋氣表（頭沒頂才計時；純視覺提示）+ 觸控潛↑↓鈕只在下水時顯示。
+  updateBreathMeter(headUnderwater(player.x, player.y, player.z), dt);
+  if (isTouch) {
+    const swimNow = bodyInWater(player.x, player.y, player.z);
+    const upEl = document.getElementById("diveUp"), dnEl = document.getElementById("diveDown");
+    if (upEl) upEl.style.display = swimNow ? "flex" : "none";
+    if (dnEl) dnEl.style.display = swimNow ? "flex" : "none";
+    if (!swimNow) { diveUpBtnHeld = false; diveDownBtnHeld = false; } // 離水清掉殘留意圖
+  }
+
   updateRain(dt);
   updateRainbow(dt);
   updateMeteor(dt); // 流星許願 v1（904）：上升緣播一道劃過夜空的光痕
   updateNightSky(dt);
   updateAurora(dt); // 極光天氣視覺 v1（930）：雪原夜空偶爾浮現一片流動的青綠／紫極光簾
+  updateClouds(dt); // 天空雲彩 v1（933）：白天天空掛幾團柔和飄動的雲，隨時段/天氣染色
   updateFireworks(dt); // 乙太煙火 v1（785）：推進進行中的煙火綻放
   updateShadowFx(dt);  // 暗影生物 v1：暗影浮動/微光呼吸/受擊閃白/輕煙淡出
   updateBellRings(dt); // 集會鐘 v1（自主提案切片）：推進進行中的鐘聲漣漪
   updateHumNotes(dt);  // 居民哼歌 v1（788）：推進頭頂飄浮音符
+  animateResidents(dt); // 居民表情/肢體 v1：依心情/說話/附近暗影驅動柔和肢體語言
   updateHearts(dt);    // 寵愛你的夥伴 v1（899）：推進小夥伴頭頂的愛心
   updateFertSparkle(dt); // 乙太沃肥 v1（789）：推進施肥綠火花
   updateAmbientLife(dt); // 世界環境氛圍 v1（905）：白天蝴蝶／夜間螢火蟲環境微生物
@@ -6958,6 +7464,12 @@ const RECIPES_JS = [
   // 對齊後端 voxel_craft::RECIPES：木劍 {5:1,8:2}、石劍 {3:2,8:1}（鐵劍在工作台，見下）。
   { id: "wood_sword",  name: "木劍", inputs: [[WOOD, 1], [PLANK, 2]], output_block: SWORD_WOOD,  out_count: 1 },
   { id: "stone_sword", name: "石劍", inputs: [[STONE, 2], [PLANK, 1]], output_block: SWORD_STONE, out_count: 1 },
+  // 玩家裝飾傢俱 v1（ROADMAP 931，自主提案切片）——世界第一批純裝飾傢俱，便宜好上手、四樣皆背包 2×2。
+  // 對齊後端 voxel_craft::RECIPES：地毯 {6:3}、花盆 {89:2,6:1}、圓桌 {8:2,9:1}、掛旗 {5:1,6:2}。
+  { id: "carpet",    name: "小地毯", inputs: [[LEAVES, 3]],                    output_block: CARPET,    out_count: 2 },
+  { id: "flowerpot", name: "花盆",   inputs: [[TERRACOTTA_RED, 2], [LEAVES, 1]], output_block: FLOWERPOT, out_count: 1 },
+  { id: "table",     name: "小圓桌", inputs: [[PLANK, 2], [STONE_BRICK, 1]],   output_block: TABLE,     out_count: 1 },
+  { id: "banner",    name: "掛旗",   inputs: [[WOOD, 1], [LEAVES, 2]],         output_block: BANNER,    out_count: 1 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
@@ -8006,6 +8518,12 @@ window.__voxel = {
   // QA：把週期相位歸零（拉進浮現窗口）——配合夜間 worldTime＋近雪即可觸發極光。
   _qaForceAurora() { auroraPhase = 0; _auroraSnowTimer = 0; _auroraNearSnow = auroraNearSnow(); return auroraMesh.visible; },
   updateAurora(dt) { updateAurora(dt); },
+  // ── 天空雲彩 v1 QA 用（ROADMAP 933）──：讀可見度/透明度/當前染色，配合設 worldTime 截圖驗證
+  get cloudsVisible() { return cloudGroup.visible; },
+  get cloudOpacity() { return cloudMat.opacity; },
+  cloudDayFactor(t) { return cloudDayFactor(t == null ? worldTime : t); },
+  cloudTint(t) { return cloudTint(t == null ? worldTime : t, [0, 0, 0]); },
+  updateClouds(dt) { updateClouds(dt); },
   // ── 四季樹葉 v1 QA 用（自主提案切片）──：切季節、讀當季樹葉色、就地重建驗證換色
   get worldSeason() { return worldSeason; },
   setSeason(s) { if (s !== worldSeason) { worldSeason = s; updateSkyAndLight(worldTime); remeshForSeason(); } return worldSeason; },
@@ -8018,6 +8536,8 @@ window.__voxel = {
   _qaSetBlock(x, y, z, id) { setLocalBlock(x, y, z, id); return getRaw(x, y, z); },
   CROSS_PLANTS: [...CROSS_PLANTS],
   WILDFLOWER_RED, WILDFLOWER_YELLOW, WILDFLOWER_BLUE, BERRY_BUSH,
+  // 玩家裝飾傢俱 v1（ROADMAP 931）QA 用：暴露四樣傢俱 id 供就地擺出佈置一角截圖。
+  CARPET, FLOWERPOT, TABLE, BANNER, PLANK, WOOD,
   // 純視覺 QA 用：切換「裝飾植物走舊的整格立方體」以便對比截圖，並就地重建所有已載入 chunk。
   _qaSetCubePlants(on) {
     window.__qaCubePlants = !!on;
@@ -8055,6 +8575,38 @@ window.__voxel = {
   unstuckNow() { return unstuckIfNeeded(); },    // 手動觸發一次脫困（回傳是否有動）
   // 直接設玩家位置（QA 模擬出生卡住／走進未載入區後補載的情境）。
   setPlayerPos(x, y, z) { player.x = x; player.y = y; player.z = z; player.vy = 0; },
+  // ── 水體游泳深化 v1 QA 用（ROADMAP 930）：讀游泳狀態＋就近找一片水（供截圖取景）──
+  get swimState() {
+    return {
+      bodyInWater: bodyInWater(player.x, player.y, player.z),
+      headUnderwater: headUnderwater(player.x, player.y, player.z),
+      vy: player.vy,
+      breathFrac: breathFraction(_submergedAcc),
+      breathVisible: _breathEl ? _breathEl.style.opacity === "1" : false,
+      underwater: _isUnderwater,
+    };
+  },
+  isWaterAt(x, y, z) { return isWaterId(getRaw(x, y, z)); },
+  // 掃描已載入區塊，找**最深**的水柱（連續最多格水），供 QA 傳送過去游泳/潛水取景。
+  // 回 {x,y,z,depth}（x/z 置中、y 在水柱底格）；找不到回 null。
+  findWaterColumn() {
+    let best = null;
+    for (const key of chunks.keys()) {
+      const [cx, cy, cz] = key.split(",").map(Number);
+      for (let lx = 0; lx < 16; lx++) for (let lz = 0; lz < 16; lz++) {
+        const wx = cx * 16 + lx, wz = cz * 16 + lz;
+        for (let ly = 0; ly < 16; ly++) {
+          const wy = cy * 16 + ly;
+          if (!isWaterId(getRaw(wx, wy, wz))) continue;
+          if (isWaterId(getRaw(wx, wy - 1, wz))) continue; // 只從水柱底起算
+          let depth = 0;
+          while (isWaterId(getRaw(wx, wy + depth, wz))) depth++;
+          if (!best || depth > best.depth) best = { x: wx + 0.5, y: wy, z: wz + 0.5, depth };
+        }
+      }
+    }
+    return best;
+  },
   // ── 登入綁定 QA 用（比照 3D #821）──
   get isLoggedIn() { return isLoggedIn; },
   get myAccountName() { return myAccountName; },
@@ -8147,4 +8699,29 @@ window.__voxel = {
   renderWaypointList() { renderWaypointList(); return waypointBodyEl && waypointBodyEl.innerHTML; },
   promptAddWaypoint() { return promptAddWaypoint(); },
   removeWaypoint(label) { removeWaypoint(label); },
+  // ── 居民表情/肢體 v1 QA 用（純視覺、無權威影響）──
+  // 讀某位居民當前的肢體姿態（身體位移/縮放/搖擺、頭傾、手臂角度），驗程序動畫真的動了。
+  residentPose(rid) {
+    const ent = rid ? residents.get(rid) : residents.values().next().value;
+    if (!ent) return null;
+    return {
+      id: ent.group.userData.rid, mood: ent.mood, humming: ent.humming, wavePulse: ent.wavePulse,
+      bodyY: ent.body.position.y, bodyScaleY: ent.body.scale.y, bodyRotZ: ent.body.rotation.z,
+      headX: ent.headPivot.rotation.x, headZ: ent.headPivot.rotation.z,
+      armRx: ent.armR.rotation.x, armRz: ent.armR.rotation.z,
+      armLx: ent.armL.rotation.x, visible: ent.group.visible,
+      x: ent.group.position.x, y: ent.group.position.y, z: ent.group.position.z,
+    };
+  },
+  residentIds() { return [...residents.keys()]; },
+  // 就地強制某位居民的情緒訊號（只動本地渲染狀態；下一則伺服器快照會覆寫回真值，
+  // 玩家用 console 呼叫也佔不到任何便宜——這只是把「當下心情」提前塞給前端動畫）。
+  // QA 覆寫心情：寫進 override map（撐得住每 100ms 的伺服器快照覆寫），供 headless 穩定截圖。
+  qaSetResidentMood(rid, mood) {
+    if (typeof window !== "undefined") { window.__voxelQaMoodOverride = window.__voxelQaMoodOverride || {}; window.__voxelQaMoodOverride[rid] = mood; }
+    const e = residents.get(rid); if (e) { e.mood = mood; } return this.residentPose(rid);
+  },
+  qaClearResidentMoodOverride() { if (typeof window !== "undefined") window.__voxelQaMoodOverride = null; },
+  qaSetResidentHumming(rid, on) { const e = residents.get(rid); if (e) { e.humming = !!on; } return this.residentPose(rid); },
+  qaTriggerResidentWave(rid) { const e = residents.get(rid); if (e) { e.wavePulse = 1.4; } return this.residentPose(rid); },
 };
