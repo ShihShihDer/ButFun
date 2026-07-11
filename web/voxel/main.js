@@ -2595,6 +2595,16 @@ function swimVerticalAccel(landGravity, swimUp, swimDown) {
 // 垂直速度水阻夾限。純函式。
 function clampWaterVy(vy) { return Math.max(-VERT_SPEED_CLAMP, Math.min(VERT_SPEED_CLAMP, vy)); }
 
+// swim-out（麥塊式游出水）資格判定——#1200 手感 bug 修：游泳中水平撞到岸壁時，
+// 是否允許沿用踏階邏輯蹬上岸。純函式、確定性，鏡像 Rust swim_step_up_eligible
+// （該檔有單元測試守著）。陸地（swimming=false）一律 false——絕不干涉既有陸地踏階手感。
+// autoJump 開（預設）＝貼岸推進就自動蹬；關＝按住跳＋往前仍能爬上一格高的岸（手動路徑）。
+function swimStepUpEligible(swimming, autoJump, swimUpHeld) {
+  return !!(swimming && (autoJump || swimUpHeld));
+}
+// 這幀是否允許水中踏階（update() 每幀依游泳狀態＋輸入更新；moveAxis 撞壁時查它）。
+let swimStepUpOk = false;
+
 // 玩家身體（AABB 中段：腳底 + 半身高附近）是否泡在水裡 → 觸發游泳分支。
 // 取身體中央那格採樣：只要泡到腰以上就算「在水裡」，比只看腳底更貼近「浮起來」的感覺。
 function bodyInWater(x, y, z) {
@@ -5696,7 +5706,9 @@ function moveAxis(axis, delta) {
   player[axis] += delta;
   if (!overlaps()) return;
   // 自動跳躍設定關閉時，撞到一格高就直接擋住（需手動按跳）；開啟＝維持既有踏階手感。
-  if (player.grounded && settings.autoJump) {
+  // swim-out（#1200）：游泳中（swimStepUpOk）也允許踏階——貼岸推進時直接蹬上岸；
+  // 陸地路徑條件原封不動（grounded && autoJump），不影響既有陸地手感。
+  if ((player.grounded && settings.autoJump) || swimStepUpOk) {
     const py = player.y;
     player.y += 1.05;
     if (!overlaps()) {
@@ -7329,6 +7341,9 @@ function update(dt) {
   // 上浮意圖：跳鍵/跳鈕；下潛意圖：Shift/潛鈕（水中 S 仍是後退，下潛另用 Shift，不搶走走位）。
   const swimUp = swimming && (keys["Space"] || diveUpBtnHeld);
   const swimDown = swimming && (keys["ShiftLeft"] || keys["ShiftRight"] || diveDownBtnHeld);
+  // swim-out（#1200 bug 修）：游泳中貼岸推進時允許踏階蹬上岸——頭已出水在水面漂著也適用。
+  // 陸地幀（swimming=false）恆為 false，moveAxis 的陸地踏階條件原封不動。
+  swimStepUpOk = swimStepUpEligible(swimming, settings.autoJump, swimUp);
   if (!climbing && !swimming) {
     if ((keys["Space"]) && player.grounded) tryJump();
   }
@@ -8757,8 +8772,14 @@ window.__voxel = {
       breathFrac: breathFraction(_submergedAcc),
       breathVisible: _breathEl ? _breathEl.style.opacity === "1" : false,
       underwater: _isUnderwater,
+      grounded: player.grounded,   // swim-out QA：上岸斷言（游泳中恆 false、蹬上岸落地後 true）
+      y: player.y,                 // swim-out QA：上岸前後腳底高度對比
     };
   },
+  // ── swim-out（#1200 bug 修）QA 用 ──：純函式直測 + 切自動跳躍設定（只改記憶體、不落
+  // localStorage，QA 完不污染玩家設定），驗證「autoJump 關閉時需按住跳才蹬岸」的門檻。
+  swimStepUpEligible,
+  _qaSetAutoJump(on) { settings.autoJump = !!on; return settings.autoJump; },
   isWaterAt(x, y, z) { return isWaterId(getRaw(x, y, z)); },
   // 掃描已載入區塊，找**最深**的水柱（連續最多格水），供 QA 傳送過去游泳/潛水取景。
   // 回 {x,y,z,depth}（x/z 置中、y 在水柱底格）；找不到回 null。
