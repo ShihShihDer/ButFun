@@ -4289,7 +4289,7 @@ async fn handle_socket(
     // 營地床邊，用來偵測「剛走近」的那一刻只嘗試記一次探索紀事（避免逗留原地時每秒都取一次
     // discovery 寫鎖；record() 本身已冪等，此旗標純粹省一趟鎖，非正確性必要）。
     let mut was_near_outpost = false;
-    // 世界奇觀·乙太世界樹 v1（ROADMAP 939）：這條連線上一 tick 是否正站在世界樹腳下，用來偵測
+    // 世界奇觀·乙太世界樹 v1（ROADMAP 940）：這條連線上一 tick 是否正站在世界樹腳下，用來偵測
     // 「剛走到」那一刻只嘗試記一次探索紀事（同上，逗留原地時省一趟寫鎖）。
     let mut was_near_worldtree = false;
 
@@ -4430,7 +4430,7 @@ async fn handle_socket(
                             ));
                     }
                 }
-                // 世界奇觀·乙太世界樹 v1（ROADMAP 939）：玩家跋涉到世界邊陲、走到那株唯一巨型古樹
+                // 世界奇觀·乙太世界樹 v1（ROADMAP 940）：玩家跋涉到世界邊陲、走到那株唯一巨型古樹
                 // 腳下的那一刻 → 記一筆探索紀事、解鎖里程碑、順手看看先前旅人的留言、浮出一句敬畏
                 // 提示。用世界樹樹心座標（唯一、確定性）當去重鍵，同一玩家對這座奇觀只記第一次。
                 let near_worldtree = voxel::near_worldtree(px, pz);
@@ -4587,7 +4587,7 @@ async fn handle_socket(
                 // 讀鎖快照目標方塊型別（delta 讀鎖，馬上釋放）。
                 let target_block =
                     voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
-                // 世界奇觀·乙太世界樹 v1（ROADMAP 939）：這株唯一的天然大奇觀砍不掉——別讓路過的
+                // 世界奇觀·乙太世界樹 v1（ROADMAP 940）：這株唯一的天然大奇觀砍不掉——別讓路過的
                 // 人一斧把獨一無二的奇觀拆掉、破壞所有人的探索。只保護「尚未被玩家改動的原生奇觀
                 // 方塊」（`is_wonder_block` 走無狀態世界生成判定）；玩家先前放置覆蓋的方塊不受影響。
                 if voxel::is_wonder_block(x, y, z)
@@ -7560,6 +7560,10 @@ async fn handle_socket(
                     // 野花 v1（自主提案切片）：世界第一句「收到花」的心動道謝——與珍寶（礦物向
                     // 驚喜）、食物（實用向感謝）都不同的情感register，純粹送禮示好的心意。
                     vgift::flower_gift_thanks_line(&name, affinity, pick)
+                } else if vgift::is_rare_fish_gift(item_id) {
+                    // 稀有魚 v1（ROADMAP 939）：夜光魚/深海乙太魚是玩家守夜/探深水才釣起的珍稀漁獲，
+                    // 用專屬驚喜道謝（比一般食物更雀躍、更珍視），依魚種與好感度分岔。
+                    vgift::rare_fish_thanks_line(item_id, &name, affinity, pick)
                 } else if item_id == vfish::COOKED_FISH_ID {
                     // 烤魚是玩家「釣起→烤熟」的一道熱佳餚，用專屬台詞（比一般食物更歡欣）。
                     vgift::cooked_fish_thanks_line(&name, affinity, pick)
@@ -8694,7 +8698,7 @@ async fn handle_socket(
                 let now = vfarm::now_secs();
                 // 1) 取這竿的上鉤時刻（pending_fish 讀鎖即釋）。
                 let pending = hub().pending_fish.read().unwrap().get(&name).copied();
-                let Some((ready_at, _fx, _fy, _fz)) = pending else {
+                let Some((ready_at, fx, fy, fz)) = pending else {
                     let _ = out_tx.send(Message::Text(serde_json::json!({
                         "t": "fish_fail", "reason": "你還沒拋竿呢。"
                     }).to_string())).await;
@@ -8710,9 +8714,34 @@ async fn handle_socket(
                 // 3) 時機到——移除這竿（寫鎖即釋），釣起漁獲。
                 { hub().pending_fish.write().unwrap().remove(&name); }
                 // 稀有度走真隨機（同專案慣例），玩家無法用收竿時機精算穩定釣起稀有魚。
-                // 雨天垂釣 v1（自主提案切片 841）：下雨時稀有乙太魚機率提高（只獎不罰）。
+                // 稀有魚 v1（ROADMAP 939）：組出這一竿的環境情境（天氣／時段／水深／群系），
+                // 讓深水、夜裡、雪原深湖釣得到專屬稀有魚。全部走短鎖快照、鎖外算，不巢狀。
                 let raining = *hub().weather.read().unwrap();
-                let fish_id = vfish::pick_catch_for(rand::random::<u64>(), raining);
+                // 夜晚判定：深夜（Night）與入夜（Evening）皆算夜——夜光魚只在夜裡咬鉤。
+                let night = matches!(
+                    hub().world_time.read().unwrap().phase(),
+                    vt::TimePhase::Night | vt::TimePhase::Evening
+                );
+                // 水深判定：從水面（拋竿目標）往下逐格探水，算連續水深（deltas 讀鎖快照即釋）。
+                let deep = {
+                    let deltas = hub().deltas.read().unwrap();
+                    let mut depth = 0i32;
+                    // 從水面下一格起往下探；超過所需深度即可停（省探測）。
+                    for dy in 1..=vfish::DEEP_WATER_DEPTH {
+                        let blk = voxel::effective_block_at(&deltas, fx, fy - dy, fz);
+                        if vfish::is_water_block(blk as u8) {
+                            depth += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    // 水面本身也算一格水深 → +1；達門檻即深水。
+                    vfish::is_deep_water(depth + 1)
+                };
+                // 群系判定：雪原深湖的極寒水域更容易釣起深海乙太魚（純函式、無鎖）。
+                let snow = voxel::biome_at_voxel(fx, fz) == voxel::VoxelBiome::Snow;
+                let ctx = vfish::FishContext { raining, night, deep, snow };
+                let fish_id = vfish::pick_catch_ctx(rand::random::<u64>(), ctx);
                 // 4) 漁獲進背包（inventory 寫鎖即釋 → append_inv → inv_update 單播）。
                 let entry = hub().inventory.write().unwrap().give(&name, fish_id, 1);
                 vinv::append_inv(&entry);
@@ -8727,6 +8756,8 @@ async fn handle_socket(
                     "item_id": fish_id,
                     "item_name": vfish::fish_name_zh(fish_id),
                     "line": vfish::catch_self_line(fish_id),
+                    // 稀有魚 v1（ROADMAP 939）：稀有漁獲上鉤 → 前端跳「哇」的驚喜提示。
+                    "rare": vfish::is_rare_catch(fish_id),
                 }).to_string())).await;
                 // 玩家里程碑 v1（ROADMAP 724）：人生第一次在水邊釣起魚。
                 try_unlock_milestone(&name, "first_fish", &out_tx);
