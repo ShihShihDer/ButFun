@@ -106,6 +106,7 @@ use crate::voxel_time::{self as vt, WorldTime, TimePhase};
 use crate::voxel_announce as vannounce;
 use crate::voxel_bonds::{self as vbonds, ResidentBonds};
 use crate::voxel_romance::{self as vromance, ResidentRomance};
+use crate::voxel_wedding::{self as vwed, ResidentWeddings};
 use crate::voxel_lover_seek as vlover;
 use crate::voxel_wildlife as vwild;
 use crate::voxel_pettreat as vtreat;
@@ -2090,6 +2091,9 @@ struct VoxelHub {
     /// 居民戀愛帳本（ROADMAP 846）：老朋友並坐閒聊時偶爾擦出心動火花，締結成一對戀人（一生
     /// 只有一位），持久化跨重啟。與 `bonds` 並行、鎖各自獨立短取即釋。
     romance: RwLock<ResidentRomance>,
+    /// 戀人成婚 v1（ROADMAP 927）：已成婚的戀人對（顯示名，一生一次）。持久化跨重啟，
+    /// 與 `romance`/`bonds` 並行、鎖各自獨立短取即釋。
+    weddings: RwLock<ResidentWeddings>,
     /// 欠飯帳本（知恩圖報 v1，ROADMAP 801）：記錄「誰欠誰一口飯」——被分過飯的居民（欠飯者 id）→
     /// 牠欠著一口飯的一群恩人（分食者 id）集合。純記憶體、重啟歸零（過場恩情、零 migration）；
     /// 800 分食 → owe，日後回報 → repay。以居民 id 記帳、與情誼帳本並行、鎖各自獨立短取即釋。
@@ -2848,6 +2852,8 @@ fn hub() -> &'static VoxelHub {
             envoy_recall_cd: std::sync::Mutex::new(HashMap::new()),
             // 居民戀愛 v1（ROADMAP 846）：啟動時從 data/voxel_romance.jsonl 載回已締結的戀人對。
             romance: RwLock::new(ResidentRomance::from_entries(vromance::load_romance())),
+            // 戀人成婚 v1（ROADMAP 927）：啟動時從 data/voxel_weddings.jsonl 載回已成婚的戀人對。
+            weddings: RwLock::new(ResidentWeddings::from_entries(vwed::load_weddings())),
             // 知恩圖報 v1（ROADMAP 801）：欠飯帳本純記憶體、啟動時空的（過場恩情、重啟歸零、零持久化）。
             meal_debts: RwLock::new(vgrat::MealDebts::default()),
             // 啟動時從 data/voxel_chests.jsonl 載回箱子存量（重啟後仍保留儲存物品）。
@@ -9795,6 +9801,7 @@ pub fn spawn_farm_tick() {
             tick_smelt(); // 熔爐煨煮 v1（自主提案）：同節拍交付熟成的爐（成品入背包 + 廣播）。
             maybe_birth(); // 人口成長 v1：低頻檢查聚落是否有餘裕誕生一位新居民。
             maybe_breed_rabbits(); // 馴服兔子生寶寶 v1（自主提案切片 855）：同節拍檢查是否誕生一隻小兔子。
+            maybe_wedding(); // 戀人成婚 v1（自主提案切片 927）：白天好天氣同節拍檢查是否有一對交情夠深、正相鄰的戀人就地結為連理、立起花拱門。
             maybe_build_snowman(); // 居民堆雪人 v1（自主提案切片 918）：冬天飄雪時同節拍檢查是否有閒著的居民堆起一個小雪人。
             maybe_melt_snowmen(); // 居民堆雪人 v1（自主提案切片 918）：冬天一結束就把世界上所有雪人融化清除。
             maybe_light_vigil(); // 居民為你留一盞燈 v1（自主提案切片 919）：夜裡替離開夠久的熟客，由對他記憶最厚的居民點一盞守夜燈。
@@ -11412,6 +11419,222 @@ fn maybe_breed_rabbits() {
         }
     }; // wildlife 寫鎖釋放
     vfeed::append_feed("兔子誕生", "野兔", &feed_line);
+}
+
+/// 全域辦婚禮節流時間戳記（戀人成婚 v1，自主提案切片，ROADMAP 927）。
+/// 純記憶體、重啟歸零——比照 `LAST_SNOWMAN_UNIX`：只用來限制辦婚禮頻率，婚書本身持久化。
+static LAST_WEDDING_UNIX: AtomicU64 = AtomicU64::new(0);
+
+/// 戀人成婚 v1（自主提案切片，ROADMAP 927，低頻併入 15 秒節拍）：白天好天氣，找第一對早已是
+/// 戀人（`romance`）、締結後交情又疊得夠深（累積拜訪 ≥ [`vwed::WED_MIN_VISITS`]）、尚未成婚、
+/// 此刻都閒著且正相鄰的居民——就地結為連理：兩人互許終身、身旁鄰居道賀，並在世界裡**永久立起
+/// 一座花拱門**當見證，各自把這一刻記進心裡、寫上城鎮動態牆。一對一生只辦一次（婚書冪等持久化）。
+///
+/// **鎖紀律**（守 prod 死鎖鐵律，各把鎖短取即釋、循序不巢狀，比照 `maybe_build_snowman`）：
+/// world_time／weather 讀（判白天好天氣）→ romance 讀（快照戀人對）→ weddings 讀（濾掉已婚）→
+/// bonds 讀（濾交情夠深）→ residents 讀（挑相鄰又都閒的一對＋座標）→ deltas 讀（驗拱門 7 格皆空氣）
+/// → deltas 寫（放拱門）→ 鎖外 append_world_block 落地＋broadcast → weddings 寫（登記，即釋）→
+/// weddings 讀（save，即釋）→ residents 寫（新人誓言＋鄰居道賀泡泡，即釋）→ memory 寫（雙方各一筆，
+/// 即釋）→ 鎖外 append_memory＋Feed。
+fn maybe_wedding() {
+    // 1) 白天好天氣才辦喜事（world_time／weather 短讀鎖循序即釋、不巢狀）。
+    let is_night = vmeteor::is_night(hub().world_time.read().unwrap().time_of_day());
+    let raining = *hub().weather.read().unwrap();
+    let good_day = !is_night && !raining;
+    if !good_day {
+        return;
+    }
+    let now = vfarm::now_secs();
+    let cooldown_ready = now.saturating_sub(LAST_WEDDING_UNIX.load(Ordering::Relaxed))
+        >= vwed::WED_COOLDOWN_SECS;
+    if !cooldown_ready {
+        return;
+    }
+    // 2) 戀人對快照（romance 讀鎖即釋）。
+    let sweethearts: Vec<(String, String)> = {
+        let romance = hub().romance.read().unwrap();
+        romance.all_pairs()
+    };
+    if sweethearts.is_empty() {
+        return;
+    }
+    // 3) 濾掉已成婚的（weddings 讀鎖即釋）。
+    let unwed: Vec<(String, String)> = {
+        let weddings = hub().weddings.read().unwrap();
+        sweethearts
+            .into_iter()
+            .filter(|(a, b)| !weddings.is_wed(a, b))
+            .collect()
+    };
+    if unwed.is_empty() {
+        return;
+    }
+    // 4) 濾出「締結後交情又疊得夠深」的戀人對（bonds 讀鎖即釋；bonds 以顯示名記帳，與戀人對同鍵）。
+    let deep_pairs: Vec<(String, String)> = {
+        let bonds = hub().bonds.read().unwrap();
+        unwed
+            .into_iter()
+            .filter(|(a, b)| bonds.visit_count(a, b) >= vwed::WED_MIN_VISITS)
+            .collect()
+    };
+    if deep_pairs.is_empty() {
+        return;
+    }
+    // 5) 在居民中找第一對「都閒＋相鄰」、過機率門檻的（residents 讀鎖即釋）。挑到就連 id／名字／
+    //    座標一起帶出，供後續放拱門與寫記憶（memory 以居民 id 記帳）。
+    let free = |r: &VoxelResident| -> bool {
+        !r.asleep
+            && r.say.is_empty()
+            && r.pilgrimage.is_none()
+            && r.expedition.is_none()
+            && r.visiting.is_none()
+            && r.clique_meet.is_none()
+            && r.custom_meet.is_none()
+            && r.savoring.is_none()
+            && r.lover_seek.is_none()
+            && r.stroll_partner.is_none()
+            && r.walk_with.is_none()
+            && r.follow.is_none()
+            && r.summon.is_none()
+            && r.gather.is_none()
+            && r.fetch.is_none()
+            && r.frontier_visit.is_none()
+            && r.cheer_target.is_none()
+    };
+    // chosen = (id_a, name_a, id_b, name_b, mid_x, mid_z)
+    let chosen: Option<(String, &'static str, String, &'static str, f32, f32)> = {
+        let residents = hub().residents.read().unwrap();
+        let mut found = None;
+        for (na, nb) in &deep_pairs {
+            let ra = residents.iter().find(|r| r.name == na.as_str());
+            let rb = residents.iter().find(|r| r.name == nb.as_str());
+            let (Some(ra), Some(rb)) = (ra, rb) else {
+                continue;
+            };
+            if !free(ra) || !free(rb) {
+                continue;
+            }
+            let dx = ra.body.x - rb.body.x;
+            let dz = ra.body.z - rb.body.z;
+            let dist_sq = dx * dx + dz * dz;
+            // sweetheart/未婚/交情已在上面各閘把關；這裡只判相鄰＋好天氣＋冷卻＋擲骰。
+            if vwed::should_wed(
+                true,
+                false,
+                vwed::WED_MIN_VISITS,
+                true,
+                dist_sq,
+                good_day,
+                cooldown_ready,
+                rand::random::<f32>(),
+            ) {
+                found = Some((
+                    ra.id.clone(),
+                    ra.name,
+                    rb.id.clone(),
+                    rb.name,
+                    (ra.body.x + rb.body.x) * 0.5,
+                    (ra.body.z + rb.body.z) * 0.5,
+                ));
+                break;
+            }
+        }
+        found
+    };
+    let Some((id_a, name_a, id_b, name_b, mid_x, mid_z)) = chosen else {
+        return;
+    };
+    // 6) 選一個能立下整座花拱門的錨點（四方向擇一皆空氣者；都放不下就本輪放棄、不消耗冷卻）。
+    let pick = (mid_x.to_bits() ^ mid_z.to_bits() ^ now as u32) as usize;
+    let placement: Option<[(i32, i32, i32, Block); 7]> = {
+        let w = hub().deltas.read().unwrap();
+        (0..4).find_map(|d| {
+            let (ax, az) = vwed::pick_anchor(mid_x, mid_z, pick + d);
+            let ay = vbuild::surface_y(ax, az);
+            let blocks = vwed::arch_blocks(ax, ay, az);
+            let all_air = blocks
+                .iter()
+                .all(|&(x, y, z, _)| voxel::effective_block_at(&w, x, y, z) == Block::Air);
+            all_air.then_some(blocks)
+        })
+    };
+    let Some(blocks) = placement else {
+        return;
+    };
+    // 通過所有閘 → 更新全域冷卻（先卡住節流，避免同拍多對戀人都成婚）。
+    LAST_WEDDING_UNIX.store(now, Ordering::Relaxed);
+    // 7) 立起花拱門（deltas 寫鎖批次即釋）。
+    {
+        let mut world = hub().deltas.write().unwrap();
+        for &(x, y, z, b) in &blocks {
+            voxel::set_block(&mut world, x, y, z, b);
+        }
+    } // deltas 寫鎖釋放
+    // 8) 落地持久化（花拱門是永久紀念物，走 append-only 路徑）＋鎖外廣播。
+    for &(x, y, z, b) in &blocks {
+        vbuild::append_world_block(x, y, z, b as u8);
+        broadcast_block(x, y, z, b);
+    }
+    // 9) 登記婚書（weddings 寫鎖即釋）→ 真正新成婚才落地持久化（weddings 讀鎖 save 即釋）。
+    let newly_wed = {
+        let mut weddings = hub().weddings.write().unwrap();
+        weddings.record_wedding(name_a, name_b)
+    }; // weddings 寫鎖釋放
+    if newly_wed {
+        let weddings = hub().weddings.read().unwrap();
+        vwed::save_weddings(&weddings);
+    } // weddings 讀鎖釋放
+    // 10) 新人各冒一句誓言、身旁醒著閒著的鄰居道賀（residents 寫鎖一次掃完即釋）。
+    {
+        let mut residents = hub().residents.write().unwrap();
+        // 新人誓言（只在仍閒著時覆蓋）。
+        if let Some(r) = residents.iter_mut().find(|r| r.id == id_a && r.say.is_empty()) {
+            r.say = vwed::vow_say_line(name_b, pick).chars().take(50).collect();
+            r.say_timer = SAY_SECS;
+            r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+        }
+        if let Some(r) = residents.iter_mut().find(|r| r.id == id_b && r.say.is_empty()) {
+            r.say = vwed::vow_say_line(name_a, pick + 1).chars().take(50).collect();
+            r.say_timer = SAY_SECS;
+            r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+        }
+        // 鄰居道賀：離婚禮中點夠近、醒著、閒著、沒在說話的（至多 MAX_CHEER 位）。
+        let cheer_sq = vwed::CHEER_RADIUS * vwed::CHEER_RADIUS;
+        let mut cheered = 0usize;
+        for i in 0..residents.len() {
+            if cheered >= vwed::MAX_CHEER {
+                break;
+            }
+            let r = &residents[i];
+            if r.id == id_a || r.id == id_b {
+                continue;
+            }
+            if r.asleep || !r.say.is_empty() {
+                continue;
+            }
+            let dx = r.body.x - mid_x;
+            let dz = r.body.z - mid_z;
+            if dx * dx + dz * dz > cheer_sq {
+                continue;
+            }
+            let r = &mut residents[i];
+            r.say = vwed::cheer_say_line(name_a, name_b, pick + cheered).chars().take(50).collect();
+            r.say_timer = SAY_SECS;
+            r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            cheered += 1;
+        }
+    } // residents 寫鎖釋放
+    broadcast_players();
+    // 11) 各自把這一刻記進心裡（memory 寫鎖即釋，掛對方名下；含「一定會」→ 升為永久精華）＋動態牆。
+    let ma = {
+        hub().memory.write().unwrap().add_memory(&id_a, name_b, &vwed::wed_memory_line(name_b))
+    };
+    vmem::append_memory(&ma);
+    let mb = {
+        hub().memory.write().unwrap().add_memory(&id_b, name_a, &vwed::wed_memory_line(name_a))
+    };
+    vmem::append_memory(&mb);
+    vfeed::append_feed(vwed::WEDDING_FEED_KIND, name_a, &vwed::wed_feed_line(name_a, name_b));
 }
 
 /// 全域堆雪人節流時間戳記（居民堆雪人 v1，自主提案切片，ROADMAP 918）。
