@@ -214,6 +214,27 @@ pub fn pending_migrations(
     out
 }
 
+// ── 拓荒者候選（純函式、確定性）──────────────────────────────────────────────────────
+
+/// 拓荒者只從主村挑（#1210 震盪 bug 的**源頭端**根治）：從（顯示名, 居民 id）清單裡濾出
+/// **目前仍住主村**的顯示名，供 `voxel_colony::pick_founders` 當候選池。
+///
+/// 為什麼必要：`pending_migrations` 的「住定即止」（上方）只治**遷居端**——已定居殖民地的
+/// 居民不再被自動遷居；但若奠基端仍從全體居民挑拓荒者，一位已住殖民地 A 的居民可能被選為
+/// 新殖民地 B 的 founder：她永遠不會搬去 B（遷居端擋住了），B 的立村故事卻寫著她「離開
+/// 擁擠的主村」——名實不符的幽靈拓荒者。從源頭排除：拓荒隊只從主村人口裡選，敘事與遷居
+/// 永遠一致。保序（照輸入順序回傳）＝不打亂 `pick_founders` 依 seq 錯開起點的確定性。
+pub fn main_settlement_names(
+    store: &SettlementStore,
+    residents: &[(String, String)],
+) -> Vec<String> {
+    residents
+        .iter()
+        .filter(|(_, rid)| store.settlement_of(rid) == MAIN_SETTLEMENT)
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
 // ── 句式池（面向玩家、i18n 友善集中此處；零 LLM）────────────────────────────────────
 
 /// 遷居動工 Feed：拓荒者動身去自己奠基的村子蓋新家。
@@ -378,6 +399,42 @@ mod tests {
             pending_migrations(&store, &founders).is_empty(),
             "身兼兩村拓荒者、已定居其一者不該再被另一村列為待遷（否則兩村間無限來回搬家）"
         );
+        // 重掃冪等（kickoff 每 30 秒掃一輪）：結果穩定為空，永不再啟動遷居。
+        assert!(pending_migrations(&store, &founders).is_empty(), "住定即止，重掃冪等");
+        // 即便（歷史震盪資料 last-wins 後）她被劃在草浪屯（sid 2），風禾屯也不再拉回——
+        // 住**任何**殖民地都算安身，兩端都收斂。
+        store.assign("vox_res_1", 2);
+        assert!(pending_migrations(&store, &founders).is_empty());
+    }
+
+    #[test]
+    fn main_settlement_names_excludes_colony_residents() {
+        // 源頭端（#1210 修②）：拓荒者候選池只留主村居民——已定居殖民地者不再入選新村拓荒隊。
+        let mut store = SettlementStore::new();
+        let residents: Vec<(String, String)> = [
+            ("露娜", "vox_res_0"),
+            ("諾娃", "vox_res_1"),
+            ("賽勒", "vox_res_2"),
+        ]
+        .iter()
+        .map(|(n, r)| (n.to_string(), r.to_string()))
+        .collect();
+        // 全員在主村：全數入選、保序（不打亂 pick_founders 依 seq 錯開起點的確定性）。
+        assert_eq!(
+            main_settlement_names(&store, &residents),
+            vec!["露娜".to_string(), "諾娃".to_string(), "賽勒".to_string()]
+        );
+        // 諾娃已定居草浪屯（sid 2）：她不再是新殖民地的拓荒者候選——不會再有
+        // 「立村故事寫她離開主村、人卻永遠不搬過去」的幽靈拓荒者。
+        store.assign("vox_res_1", 2);
+        assert_eq!(
+            main_settlement_names(&store, &residents),
+            vec!["露娜".to_string(), "賽勒".to_string()]
+        );
+        // 全員都遷走（理論極端）：候選池空——呼叫端該跳過本輪奠基，而不是奠一座沒人的村。
+        store.assign("vox_res_0", 1);
+        store.assign("vox_res_2", 1);
+        assert!(main_settlement_names(&store, &residents).is_empty());
     }
 
     #[test]
