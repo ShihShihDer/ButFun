@@ -970,6 +970,162 @@ function updateAurora(dt) {
   auroraMesh.rotation.y = Math.atan2(dir.x, dir.z);
 }
 
+// ── 天空雲彩 v1（ROADMAP 933）──────────────────────────────────────────────
+// 天空一路長出天色漸變、繁星（783）、彩虹（780）、流星（904）、極光（932），白天卻始終
+// 是一片空蕩蕩的藍——沒有一朵雲。本刀給白天的天空掛上幾團柔和飄動的白雲：緩緩橫移、隨鏡頭
+// 平移（像掛在無限遠的高空），顏色隨 worldTime 變化——正午雪白、黃昏染成暖橘紅、夜裡隱去或
+// 極淡、雨天轉成陰灰。純視覺、零協議、療癒調性（柔、慢、不擋視線）。
+// 與既有天象 razor-sharp 區隔：雲＝白天常駐、貼近整片天頂、緩緩飄動的氛圍；不像流星（一瞬）、
+// 彩虹（雨後半弧）、極光（雪原夜空光簾）、繁星（夜空靜止點）——時段、樣態、動態皆不同。
+// 效能鐵律：少量（9 片）軟邊 billboard plane 共用一張程序生成的徑向柔邊貼圖與一個材質，
+// 一次建立、之後只改位置/朝向/透明度/頂點色；白天以外整組隱藏、零成本早退。
+// 佈局：雲環繞鏡頭掛在遠空半徑上，各自散在天際弧的不同方位角＋高度、面朝鏡頭當直立背景幕，
+// 隨鏡頭平移（像掛在無限遠的高空）、方位角隨風緩緩橫掃並環繞循環（雲流連綿不絕）。
+const CLOUD_COUNT = 9;            // 雲片數（少量、便宜）
+const CLOUD_DIST = 300;          // 遠空半徑（格）：遠到隨鏡頭平移看似固定在高空
+const CLOUD_Y_MIN = 55;          // 雲層最低高度（格）：掛在地平線以上，不擋視線
+const CLOUD_Y_MAX = 130;         // 雲層最高高度（格）：高低錯落更自然
+const CLOUD_ARC = 2.6;           // 雲橫向散佈的角度半幅（弧度，約 ±149°）：散在大半個天際
+const CLOUD_DRIFT = 0.010;       // 雲整體角速度（弧度/秒）：緩慢橫掃天際、療癒
+const CLOUD_MIN = 60, CLOUD_MAX = 130; // 單片雲的尺寸範圍（格）：大團蓬鬆
+
+// 程序生成一張徑向柔邊「雲斑」貼圖（canvas）：中心白、邊緣漸透明，無硬邊、無外部素材。
+// 疊幾個偏移的徑向漸層讓輪廓不是正圓、而是一團蓬鬆的雲絮。
+function makeCloudTexture() {
+  const S = 128;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = S;
+  const ctx = cv.getContext("2d");
+  // 幾個大小/位置錯落的徑向漸層疊加，堆出蓬鬆不規則的雲團輪廓。
+  const blobs = [
+    [0.50, 0.52, 0.42, 1.00],
+    [0.34, 0.46, 0.30, 0.85],
+    [0.66, 0.48, 0.32, 0.85],
+    [0.44, 0.62, 0.26, 0.70],
+    [0.60, 0.38, 0.24, 0.70],
+  ];
+  for (const [cx, cy, r, a] of blobs) {
+    const g = ctx.createRadialGradient(cx * S, cy * S, 0, cx * S, cy * S, r * S);
+    g.addColorStop(0, `rgba(255,255,255,${a})`);
+    g.addColorStop(0.6, `rgba(255,255,255,${a * 0.5})`);
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, S, S);
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.needsUpdate = true;
+  return tex;
+}
+const cloudTex = (typeof document !== "undefined" && document.createElement) ? makeCloudTexture() : null;
+// 全部雲共用一個材質（vertexColors 讓每片雲各自帶自己的色調，仍是一次材質）。
+const cloudMat = new THREE.MeshBasicMaterial({
+  map: cloudTex,
+  transparent: true,
+  opacity: 1,
+  depthWrite: false,
+  depthTest: false,     // 掛在遠空、不與世界方塊爭深度（比照星空/極光的「遠空」處理）
+  fog: false,
+  vertexColors: true,
+});
+const cloudGroup = new THREE.Group();
+const cloudSprites = [];       // 每片雲的 mesh
+const cloudSeeds = [];         // 每片雲的基準位置/尺寸/相位（不隨鏡頭改，只在群組內偏移）
+for (let i = 0; i < CLOUD_COUNT; i++) {
+  const sz = CLOUD_MIN + Math.random() * (CLOUD_MAX - CLOUD_MIN);
+  const geom = new THREE.PlaneGeometry(sz, sz * (0.42 + Math.random() * 0.16)); // 扁一點更像雲
+  // 每片雲一份頂點色 buffer（4 頂點 × RGB）——之後只改這個 buffer 就能逐雲染色，仍共用材質。
+  const cols = new Float32Array(4 * 3).fill(1);
+  geom.setAttribute("color", new THREE.BufferAttribute(cols, 3));
+  const m = new THREE.Mesh(geom, cloudMat);
+  m.renderOrder = -1; // 在世界方塊之前畫（遠空背景），避免蓋住近景
+  cloudGroup.add(m);
+  cloudSprites.push(m);
+  cloudSeeds.push({
+    // 均勻分佈在天際弧上的基準方位角＋高度；ang 隨風緩緩橫掃、環繞循環。
+    ang0: (i / CLOUD_COUNT) * CLOUD_ARC * 2 - CLOUD_ARC + (Math.random() - 0.5) * 0.2,
+    y: CLOUD_Y_MIN + Math.random() * (CLOUD_Y_MAX - CLOUD_Y_MIN),
+    driftMul: 0.75 + Math.random() * 0.5, // 各雲飄速略異，避免整齊平移
+    colBuf: cols,
+  });
+}
+cloudGroup.visible = false;
+scene.add(cloudGroup);
+
+let cloudDriftT = 0; // 飄移相位累計（秒）
+
+// 白天程度：1=白晝最盛、0=夜裡無雲；黎明/黃昏之間平滑過渡。刻意在黎明/黃昏就淡入（那時最能
+// 看見暖色雲），入夜後幾乎隱去（夜空留給繁星/月/極光）。純函式、供 QA 共用。
+function cloudDayFactor(t) {
+  const x = Number.isFinite(t) ? t - Math.floor(t) : 0.5;
+  if (x < 0.20 || x >= 0.86) return 0;              // 深夜：無雲（留給星空）
+  if (x < 0.30) return (x - 0.20) / 0.10;           // 黎明：雲淡入
+  if (x < 0.76) return 1;                           // 白晝：雲最盛
+  return Math.max(0, 1 - (x - 0.76) / 0.10);        // 黃昏：雲淡出
+}
+
+// 依 worldTime 決定雲的染色（RGB，0..1）：白晝雪白、黃昏暖橘紅、雨天陰灰。
+// 與 updateSkyAndLight 的天色協調——白晝雲白於藍天，黃昏雲承接暖橘夕照，雨天融進灰天。
+const _cloudDay  = [0.98, 0.98, 1.00]; // 白晝：雪白略帶冷藍
+const _cloudDusk = [1.00, 0.66, 0.42]; // 黃昏：暖橘紅（夕照染雲）
+const _cloudRain = [0.55, 0.58, 0.62]; // 雨天：陰灰
+function cloudTint(t, out) {
+  const x = Number.isFinite(t) ? t - Math.floor(t) : 0.5;
+  // 黃昏權重：越接近傍晚橙~黃昏深紅越濃，白晝幾乎為 0；黎明也帶一點暖。
+  let dusk = 0;
+  if (x >= 0.62 && x < 0.86) dusk = Math.min(1, (x - 0.62) / 0.12);      // 傍晚起漸濃
+  else if (x >= 0.20 && x < 0.32) dusk = Math.min(1, (0.32 - x) / 0.12); // 黎明也帶一點暖
+  const r = _cloudDay[0] + (_cloudDusk[0] - _cloudDay[0]) * dusk;
+  const g = _cloudDay[1] + (_cloudDusk[1] - _cloudDay[1]) * dusk;
+  const b = _cloudDay[2] + (_cloudDusk[2] - _cloudDay[2]) * dusk;
+  if (isRaining) {
+    // 雨天：往陰灰混（蓋過暖色），讓雲更平更暗、融進灰天。
+    const rw = 0.7;
+    out[0] = r + (_cloudRain[0] - r) * rw;
+    out[1] = g + (_cloudRain[1] - g) * rw;
+    out[2] = b + (_cloudRain[2] - b) * rw;
+  } else {
+    out[0] = r; out[1] = g; out[2] = b;
+  }
+  return out;
+}
+const _cloudCol = [1, 1, 1];
+
+// 每幀更新雲：算白天程度→整組不透明度；白天/無雲時整組隱藏、零成本早退。可見時把整組掛到
+// 鏡頭上方遠處高空（隨鏡頭平移＝看似固定在天上），逐雲緩緩橫移＋環繞循環、依 worldTime 染色。
+function updateClouds(dt) {
+  const df = cloudDayFactor(worldTime);
+  const target = df * (isRaining ? 0.62 : 0.85); // 雨天雲稍淡、更融進灰天
+  if (target <= 0.001) { cloudGroup.visible = false; return; }
+  cloudGroup.visible = true;
+  cloudDriftT += dt;
+  // 整組隨鏡頭平移（像掛在無限遠的遠空）；各雲環繞鏡頭掛在遠空半徑上、面朝鏡頭當直立背景幕。
+  cloudGroup.position.copy(camera.position);
+  cloudTint(worldTime, _cloudCol);
+  const TWO_ARC = CLOUD_ARC * 2;
+  for (let i = 0; i < CLOUD_COUNT; i++) {
+    const s = cloudSeeds[i];
+    const m = cloudSprites[i];
+    // 方位角隨風緩緩橫掃，在 [-CLOUD_ARC, CLOUD_ARC] 弧內環繞循環（雲流連綿不絕）。
+    let a = s.ang0 + cloudDriftT * CLOUD_DRIFT * s.driftMul;
+    a = ((a + CLOUD_ARC) % TWO_ARC + TWO_ARC) % TWO_ARC - CLOUD_ARC;
+    // 方位角＋高度換成遠空位置（水平繞 Y、抬到 s.y 高）。
+    m.position.set(Math.sin(a) * CLOUD_DIST, s.y, -Math.cos(a) * CLOUD_DIST);
+    // 雲面繞 Y 軸朝向鏡頭中心（直立背景幕），隨方位角轉向、恆面對觀者。
+    m.rotation.set(0, a, 0);
+    // 逐雲染色（改頂點色 buffer；整體透明度由材質 opacity 統一）。
+    const cb = s.colBuf;
+    for (let v = 0; v < 4; v++) {
+      cb[v * 3 + 0] = _cloudCol[0];
+      cb[v * 3 + 1] = _cloudCol[1];
+      cb[v * 3 + 2] = _cloudCol[2];
+    }
+    m.geometry.getAttribute("color").needsUpdate = true;
+  }
+  cloudMat.opacity = target;
+}
+// 供 QA／純函式驗證（無渲染副作用）。
+if (typeof window !== "undefined") { window.__cloudDayFactor = cloudDayFactor; window.__cloudTint = cloudTint; }
+
 // ── 乙太煙火 v1（ROADMAP 785）────────────────────────────────────────────────
 // 玩家朝夜空施放的煙火:一束火花在施放者頭頂上方升空、綻放。伺服器廣播 firework{x,y,z,palette}
 // 給全場,前端在該位置上方生成一朵綻放的火花點雲。效能鐵律:每束煙火＝單一 THREE.Points
@@ -6801,6 +6957,7 @@ function update(dt) {
   updateMeteor(dt); // 流星許願 v1（904）：上升緣播一道劃過夜空的光痕
   updateNightSky(dt);
   updateAurora(dt); // 極光天氣視覺 v1（930）：雪原夜空偶爾浮現一片流動的青綠／紫極光簾
+  updateClouds(dt); // 天空雲彩 v1（933）：白天天空掛幾團柔和飄動的雲，隨時段/天氣染色
   updateFireworks(dt); // 乙太煙火 v1（785）：推進進行中的煙火綻放
   updateShadowFx(dt);  // 暗影生物 v1：暗影浮動/微光呼吸/受擊閃白/輕煙淡出
   updateBellRings(dt); // 集會鐘 v1（自主提案切片）：推進進行中的鐘聲漣漪
@@ -7994,6 +8151,12 @@ window.__voxel = {
   // QA：把週期相位歸零（拉進浮現窗口）——配合夜間 worldTime＋近雪即可觸發極光。
   _qaForceAurora() { auroraPhase = 0; _auroraSnowTimer = 0; _auroraNearSnow = auroraNearSnow(); return auroraMesh.visible; },
   updateAurora(dt) { updateAurora(dt); },
+  // ── 天空雲彩 v1 QA 用（ROADMAP 933）──：讀可見度/透明度/當前染色，配合設 worldTime 截圖驗證
+  get cloudsVisible() { return cloudGroup.visible; },
+  get cloudOpacity() { return cloudMat.opacity; },
+  cloudDayFactor(t) { return cloudDayFactor(t == null ? worldTime : t); },
+  cloudTint(t) { return cloudTint(t == null ? worldTime : t, [0, 0, 0]); },
+  updateClouds(dt) { updateClouds(dt); },
   // ── 四季樹葉 v1 QA 用（自主提案切片）──：切季節、讀當季樹葉色、就地重建驗證換色
   get worldSeason() { return worldSeason; },
   setSeason(s) { if (s !== worldSeason) { worldSeason = s; updateSkyAndLight(worldTime); remeshForSeason(); } return worldSeason; },
