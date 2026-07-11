@@ -10390,10 +10390,22 @@ fn maybe_found_colony() {
     let biome = voxel::biome_at_voxel(cx, cz);
     let name = vcolony::colony_name(biome, next_seq);
     let bearing = vcolony::bearing_label(mx, mz, cx, cz);
-    let names: Vec<String> = {
+    // 拓荒者**只從主村挑**（#1210 修②·源頭端）：已定居殖民地的居民不再入選新村拓荒隊——
+    // 否則她會成為「立村故事寫她離開主村、人卻永遠不搬過去」的幽靈拓荒者（遷居端的
+    // 住定即止會擋住她真的搬家）。residents/settlements 讀鎖各短取即釋、循序不巢狀。
+    let name_ids: Vec<(String, String)> = {
         let rs = hub().residents.read().unwrap();
-        rs.iter().map(|r| r.name.to_string()).collect()
-    };
+        rs.iter().map(|r| (r.name.to_string(), r.id.clone())).collect()
+    }; // residents 讀鎖釋放
+    let names: Vec<String> = {
+        let st = hub().settlements.read().unwrap();
+        vsettle::main_settlement_names(&st, &name_ids)
+    }; // settlements 讀鎖釋放
+    if names.is_empty() {
+        // 主村沒有可外派的居民（理論極端：全員已遷居殖民地）→ 本輪不奠基，
+        // 絕不奠一座「沒有任何拓荒者」的村。
+        return;
+    }
     let founders = vcolony::pick_founders(&names, next_seq);
     let story = vcolony::founding_story(&name, &founders, biome, bearing);
 
