@@ -152,6 +152,41 @@ pub fn cold_warm_memory_line(player: &str) -> String {
     format!("寒冬裡和{}一起圍著營火取暖，暖進了心裡。", clip_name(player)).replace('\n', " ")
 }
 
+// ── 雨澆營火 v1：天氣（下雨 700）× 營火（791／901）第一次交會 ──────────────────
+// 換維度而非疊維度：901「冬寒圍爐」讓寒冷「更想」圍暖（推高機率），本刀反向——下雨把火堆
+// 打得又濕又弱、圍不到暖：雨中營火取暖整段被抑制（不再湊到火邊），偶爾路過熄弱火堆的居民
+// 停下腳步、對著滋滋作響的濕柴嘆一句。雨一停、火重新旺起來，大家又聚回火邊。
+// 純函式層零 LLM／零鎖／可測；接線（雨閘、選機率／台詞）留在 voxel_ws.rs。
+
+/// 雨中路過熄弱火堆時、停下嘆一句的觸發機率——刻意低：多數時候只是安靜淋著雨走過。
+/// 比取暖機率更罕見（取暖是常態、雨中感嘆是偶爾），與 [`WARM_CHANCE`] 拉開。
+pub const RAIN_DOUSE_CHANCE: f32 = 0.12;
+
+/// 雨閘：下雨時營火取暖是否被抑制。純函式（`raining` 即抑制），給接線一個具名可測接縫。
+/// 語意＝「火被雨澆得太弱、圍不到暖」，回 `true` 表示這一刻不該觸發取暖。
+pub fn warming_suppressed_by_rain(raining: bool) -> bool {
+    raining
+}
+
+/// 雨中感嘆判定：靠近火（`near`）＋冷卻到期（`cooldown <= 0`）＋過機率門檻（`roll < RAIN_DOUSE_CHANCE`）
+/// → 這一 tick 停下對著濕柴嘆一句。與 [`should_warm`] 同型三閘，好窮舉測邊界。
+pub fn should_douse_lament(near: bool, cooldown: f32, roll: f32) -> bool {
+    near && cooldown <= 0.0 && roll < RAIN_DOUSE_CHANCE
+}
+
+/// 雨澆營火感嘆台詞（通用、不點名）——四句輪替，字數短不破泡泡框，明確扣「雨／濕／澆熄」，
+/// 與泛用 [`warm_bubble`]／冬寒 [`cold_warm_bubble`] 完全不重疊（沒有一句說「暖」）。
+/// 語氣仍守療癒基調：是對火被雨奪走那份暖的一點惋惜，不是抱怨或沮喪。
+pub fn rain_douse_line(pick: usize) -> &'static str {
+    const LINES: [&str; 4] = [
+        "這雨把火都快澆熄了，圍不到暖啊。",
+        "唉，濕柴滋滋響，火怎麼也旺不起來。",
+        "雨天的火堆冷冷清清，等雨停了再來烤吧。",
+        "雨水順著火堆滴下來，暖意都被澆走了。",
+    ];
+    LINES[pick % LINES.len()]
+}
+
 /// 掃描整個 world delta，找出所有仍是營火的方塊座標（啟動時重建取暖清單用）。
 ///
 /// 純函式（吃 delta overlay 的當前值）：只認 delta 裡目前值 == 營火的格；被破壞成空氣的
@@ -331,5 +366,61 @@ mod tests {
         assert!(!m.contains('\n'), "記憶不得含換行：{m}");
         let f = cold_warm_feed_line("露娜");
         assert!(f.contains("露娜") && f.contains("寒冬"));
+    }
+
+    // ── 雨澆營火 v1（天氣 700 × 營火）─────────────────────────────────────────
+
+    #[test]
+    fn warming_suppressed_only_when_raining() {
+        // 雨閘：下雨才抑制取暖，晴天不抑制。
+        assert!(warming_suppressed_by_rain(true));
+        assert!(!warming_suppressed_by_rain(false));
+    }
+
+    #[test]
+    fn douse_lament_needs_near_cooldown_and_roll() {
+        // 三閘：近火＋冷卻到期＋roll < RAIN_DOUSE_CHANCE 才嘆一句。
+        assert!(should_douse_lament(true, 0.0, 0.0));
+        assert!(should_douse_lament(true, 0.0, RAIN_DOUSE_CHANCE - 0.001));
+        // 機率門檻邊界：roll == chance 不觸發（嚴格小於）。
+        assert!(!should_douse_lament(true, 0.0, RAIN_DOUSE_CHANCE));
+        // 不近火不觸發。
+        assert!(!should_douse_lament(false, 0.0, 0.0));
+        // 冷卻未到期不觸發。
+        assert!(!should_douse_lament(true, 1.0, 0.0));
+    }
+
+    #[test]
+    fn douse_lament_rarer_than_warming() {
+        // 雨中感嘆刻意比取暖罕見：門檻低於平時取暖機率。
+        assert!(RAIN_DOUSE_CHANCE < WARM_CHANCE);
+    }
+
+    #[test]
+    fn rain_douse_line_non_empty_and_wraps() {
+        // 每句非空、pick 循環穩定、字數短不破泡泡框。
+        for pick in 0..12 {
+            let s = rain_douse_line(pick);
+            assert!(!s.is_empty());
+            assert!(s.chars().count() <= 25, "台詞應短不破框：{s}");
+        }
+        assert_eq!(rain_douse_line(0), rain_douse_line(4));
+        assert_eq!(rain_douse_line(1), rain_douse_line(5));
+    }
+
+    #[test]
+    fn rain_douse_lines_mention_rain_imagery() {
+        // 雨澆台詞必扣「雨／濕／澆／滴」其一（與泛用／冬寒暖語 razor-sharp 區隔：暖語從不提雨）。
+        for pick in 0..4 {
+            let s = rain_douse_line(pick);
+            assert!(
+                s.contains('雨') || s.contains('濕') || s.contains('澆') || s.contains('滴'),
+                "雨澆台詞應扣雨意象：{s}"
+            );
+        }
+        // 反向確認：泛用暖語與冬寒暖語都不提雨（區隔清晰）。
+        for pick in 0..5 {
+            assert!(!warm_bubble(pick).contains('雨'));
+        }
     }
 }
