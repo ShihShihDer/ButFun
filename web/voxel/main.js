@@ -896,6 +896,102 @@ function updateMeteor(dt) {
   meteorMat.opacity = Math.sin(p * Math.PI) * 0.95;
 }
 
+// ── 候鳥遷徙 v1（ROADMAP 944）─────────────────────────────────────────────────
+// 伺服器在「入春／入秋」換季那一刻，隨快照廣播 migration:bool（此刻天上是否有一群候鳥飛過，
+// 約 75 秒）＋ migration_kind:"arrival"|"departure"（走向）。前端只負責視覺：在旗標「假→真」的
+// 上升緣，於鏡頭前方高空生成一群 V 字隊形的候鳥剪影，緩緩飛越天際（arrival 由遠而近、略降＝歸來；
+// departure 由近而遠、略升而漸小＝離去），期間翅膀輕輕拍動，飛完自行隱藏。
+// 效能鐵律：整群候鳥＝單一可重用 Group（N 隻共用同一份幾何與材質），平時隱藏、未播放時零成本
+// 早退，不逐幀配置幾何。與流星（夜、一瞬）、彩虹（雨後、靜止）、極光（雪夜、靜態流動）razor-sharp
+// 區隔：這是白天由換季觸發、會飛會動的一群活物。
+let migrationActive = false;    // 伺服器快照旗標:此刻天上是否有候鳥飛過
+let migrationWasActive = false; // 上一幀旗標,偵測「假→真」上升緣(只在上升緣觸發一次動畫)
+let migrationKind = "";         // 走向:"arrival"(春回)|"departure"(秋去)
+let migrationAnimT = -1;        // 動畫進度(秒);< 0 = 未在播放
+const MIGRATION_FLY_SECS = 22;  // 一群候鳥飛越天際的視覺時長(秒)——從容飄過,配合 ~75 秒旗標窗
+const MIGRATION_FLOCK_N = 7;    // 一群幾隻(V 字隊形;少而清晰,效能無虞)
+// 一隻候鳥剪影幾何:淺淺的「︿」海鷗形(兩片小三角=雙翼),長軸沿本地 X、翅尖略上揚。
+// 共用一份幾何,所有候鳥實例化為 Mesh 掛進 flock Group。
+const _birdGeom = new THREE.BufferGeometry();
+_birdGeom.setAttribute("position", new THREE.BufferAttribute(new Float32Array([
+  // 左翼(三角)
+  0, 0, 0,   -1.0, 0.34, 0,   -0.85, 0.06, 0,
+  // 右翼(三角)
+  0, 0, 0,    0.85, 0.06, 0,   1.0, 0.34, 0,
+]), 3));
+_birdGeom.computeVertexNormals();
+const birdMat = new THREE.MeshBasicMaterial({
+  color: 0x3b3f4a, transparent: true, opacity: 0,
+  depthWrite: false, fog: false, side: THREE.DoubleSide,
+});
+const migrationGroup = new THREE.Group();
+const _birdMeshes = [];
+for (let i = 0; i < MIGRATION_FLOCK_N; i++) {
+  const b = new THREE.Mesh(_birdGeom, birdMat);
+  // V 字隊形:領頭在原點,其餘每隻往後(-Z)、左右交錯散開。
+  const rank = Math.ceil(i / 2);
+  const sideSign = (i % 2 === 0) ? 1 : -1;
+  b.position.set(sideSign * rank * 1.6, (i % 2) * 0.3, -rank * 1.8);
+  b.userData.phase = i * 0.7; // 各隻拍翅相位錯開,整群才不整齊劃一
+  b.userData.baseY = b.position.y;
+  migrationGroup.add(b);
+  _birdMeshes.push(b);
+}
+migrationGroup.visible = false;
+scene.add(migrationGroup);
+const _migFrom = new THREE.Vector3();
+const _migTo = new THREE.Vector3();
+// 觸發一場遷徙:依走向在鏡頭前方高空設起點/終點,開始播放飛越動畫。
+function triggerMigration() {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  dir.y = 0;
+  if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
+  dir.normalize();
+  const side = new THREE.Vector3(-dir.z, 0, dir.x); // 鏡頭水平右向量
+  if (migrationKind === "departure") {
+    // 秋去:由近而遠、略升——從鏡頭前方偏左的中空,飛向遠方高空(離去、漸小)。
+    _migFrom.set(camera.position.x + dir.x * 42 - side.x * 34, camera.position.y + 24, camera.position.z + dir.z * 42 - side.z * 34);
+    _migTo.set(camera.position.x + dir.x * 120 + side.x * 30, camera.position.y + 52, camera.position.z + dir.z * 120 + side.z * 30);
+  } else {
+    // 春回(預設):由遠而近、略降——從遠方高空飛回鏡頭前方偏左的中空(歸來、漸大)。
+    _migFrom.set(camera.position.x + dir.x * 118 + side.x * 34, camera.position.y + 50, camera.position.z + dir.z * 118 + side.z * 34);
+    _migTo.set(camera.position.x + dir.x * 40 - side.x * 30, camera.position.y + 22, camera.position.z + dir.z * 40 - side.z * 30);
+  }
+  // 整群朝行進方向(起→終的水平分量)轉正,V 字隊形才順著飛行方向。
+  const travel = new THREE.Vector3().subVectors(_migTo, _migFrom);
+  migrationGroup.rotation.y = Math.atan2(travel.x, travel.z);
+  migrationAnimT = 0;
+  migrationGroup.visible = true;
+}
+function updateMigration(dt) {
+  if (migrationActive && !migrationWasActive) triggerMigration(); // 上升緣:放一群候鳥飛過
+  migrationWasActive = migrationActive;
+  if (migrationAnimT < 0) return; // 未在播放:零成本早退
+  migrationAnimT += dt;
+  const p = migrationAnimT / MIGRATION_FLY_SECS;
+  if (p >= 1) { migrationAnimT = -1; migrationGroup.visible = false; birdMat.opacity = 0; return; }
+  // 位置:起→終線性內插。
+  migrationGroup.position.set(
+    _migFrom.x + (_migTo.x - _migFrom.x) * p,
+    _migFrom.y + (_migTo.y - _migFrom.y) * p,
+    _migFrom.z + (_migTo.z - _migFrom.z) * p,
+  );
+  // 遠近感:整群縮放——春回(arrival)由小而大(0.8→1.25)、秋去(departure)由大而小(1.2→0.55)。
+  const scale = (migrationKind === "departure") ? (1.2 - 0.65 * p) : (0.8 + 0.45 * p);
+  migrationGroup.scale.setScalar(scale);
+  // 不透明度包絡:前 15% 淡入、後 25% 淡出,中段全顯(剪影,峰值不必太濃)。
+  const fadeIn = Math.min(1, p / 0.15);
+  const fadeOut = Math.min(1, (1 - p) / 0.25);
+  birdMat.opacity = 0.72 * Math.min(fadeIn, fadeOut);
+  // 翅膀輕輕拍動:每隻依相位錯開,沿本地 X 軸微轉(翅尖上下擺),並整群輕微起伏,顯得是活物在飛。
+  const flap = migrationAnimT * 6.0;
+  for (const b of _birdMeshes) {
+    b.rotation.x = Math.sin(flap + b.userData.phase) * 0.5;
+    b.position.y = b.userData.baseY + Math.sin(flap * 0.5 + b.userData.phase) * 0.15;
+  }
+}
+
 // ── 極光天氣視覺 v1（ROADMAP 930）─────────────────────────────────────────────
 // 雪／冰群系的夜空，偶爾浮現一片柔和流動的青綠／紫色極光帶，緩緩波動，壯麗而療癒。
 // 純前端、零後端、零協議：前端用既有廣播的 worldTime（入夜程度）＋本地取樣玩家腳下附近是否
@@ -6550,6 +6646,10 @@ function connect() {
       if (typeof m.rainbow === "boolean") rainbowActive = m.rainbow;
       // 流星許願 v1（ROADMAP 904）：meteor 隨同一份快照送達，updateMeteor 於旗標「假→真」上升緣播一道光痕。
       if (typeof m.meteor === "boolean") meteorActive = m.meteor;
+      // 候鳥遷徙 v1（ROADMAP 944）：migration/migration_kind 隨同一份快照送達，updateMigration 於旗標
+      // 「假→真」上升緣放一群候鳥飛越天際（走向決定飛行方向）。先更新走向、再更新旗標（觸發時已讀得到最新走向）。
+      if (typeof m.migration_kind === "string") migrationKind = m.migration_kind;
+      if (typeof m.migration === "boolean") migrationActive = m.migration;
       // 季節輪替 v1（ROADMAP 798）：season 隨同一份快照送達，換季時整片天地換上不同色調。
       // window.__qaFreezeSeason 僅供 QA 凍結季節（不被伺服器快照覆寫）以截四季樹葉對照圖用；正常遊玩恆為 undefined。
       if (!window.__qaFreezeSeason && typeof m.season === "string" && m.season !== worldSeason) { worldSeason = m.season; skyDirty = true; remeshForSeason(); /* 四季樹葉 v1：換季重建樹葉顏色 */ }
@@ -7372,6 +7472,7 @@ function update(dt) {
   updateRain(dt);
   updateRainbow(dt);
   updateMeteor(dt); // 流星許願 v1（904）：上升緣播一道劃過夜空的光痕
+  updateMigration(dt); // 候鳥遷徙 v1（944）：上升緣放一群候鳥飛越天際（入春歸來／入秋離去）
   updateNightSky(dt);
   updateAurora(dt); // 極光天氣視覺 v1（930）：雪原夜空偶爾浮現一片流動的青綠／紫極光簾
   updateClouds(dt); // 天空雲彩 v1（933）：白天天空掛幾團柔和飄動的雲，隨時段/天氣染色
@@ -8575,6 +8676,14 @@ window.__voxel = {
   get meteorOpacity() { return meteorMat.opacity; },
   triggerMeteor() { triggerMeteor(); return meteorMesh.visible; },
   updateMeteor(dt) { updateMeteor(dt); },
+  // ── 候鳥遷徙 v1 QA 用（ROADMAP 944）──：設走向/旗標＋讀鳥群可見度/alpha/縮放，截圖驗證飛越動畫
+  set migrationKind(v) { migrationKind = String(v || ""); },
+  set migrationActive(v) { migrationActive = !!v; },
+  get migrationVisible() { return migrationGroup.visible; },
+  get migrationOpacity() { return birdMat.opacity; },
+  get migrationScale() { return migrationGroup.scale.x; },
+  triggerMigration() { triggerMigration(); return migrationGroup.visible; },
+  updateMigration(dt) { updateMigration(dt); },
   // ── 極光天氣視覺 v1 QA 用（ROADMAP 930）──：強制拉進浮現窗口＋讀可見度/alpha 截圖驗證
   get auroraVisible() { return auroraMesh.visible; },
   get auroraAlpha() { return auroraAlpha; },

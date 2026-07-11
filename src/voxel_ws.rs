@@ -63,6 +63,7 @@ use crate::voxel_keepsake as vkeep;
 use crate::voxel_keepsake_recall as vkrecall;
 use crate::voxel_humming as vhum;
 use crate::voxel_meteor as vmeteor;
+use crate::voxel_migration as vmigration;
 use crate::voxel_bench as vbench;
 use crate::voxel_bench_chat as vbenchchat;
 use crate::voxel_bench_tiff as vbtiff;
@@ -2158,6 +2159,14 @@ struct VoxelHub {
     /// 流星剛劃過的一次性旗標（ROADMAP 904）：`tick_farm` 夜裡擲中（流星 0→>0）時設 true，
     /// `tick_residents` 讀到後立即清回 false（consume-once），觸發附近醒著居民抬頭望見流星而許願＋心情補助。
     meteor_started_flag: RwLock<bool>,
+    /// 候鳥遷徙剩餘 tick（候鳥遷徙 v1，ROADMAP 944）：> 0 tick = 此刻天上有一群候鳥正飛過，隨快照
+    /// 廣播 `migration:bool` 給前端播鳥群動畫。純記憶體、無需持久化（重啟後從新一輪換季重新觸發）。
+    /// 由換季偵測（`tick_residents`）在入春／入秋那一刻重設為 [`vmigration::MIGRATION_TICKS`]，
+    /// 之後每次 `tick_farm`（15 秒）由純函式 `vmigration::next_migration_ticks` 逐 tick 遞減。
+    migration_ticks: RwLock<u32>,
+    /// 本場遷徙的走向（候鳥遷徙 v1，ROADMAP 944）：入春＝`Arrival`（歸來）、入秋＝`Departure`（離去）；
+    /// 隨快照廣播 `migration_kind` 供前端決定鳥群飛行方向。純記憶體、與 `migration_ticks` 同壽命。
+    migration_kind: RwLock<Option<vmigration::MigrationKind>>,
     /// 上一輪偵測到的季節（季節輪替 v1，ROADMAP 798）：`tick_residents` 每輪由世界時鐘累計日數
     /// 推算當前季節，與此比對——不同即「換季」，設下方一次性旗標並上一則城鎮動態。純記憶體、重啟
     /// 從初春重新流轉（比照天氣／彩虹狀態）。
@@ -2907,6 +2916,9 @@ fn hub() -> &'static VoxelHub {
             // 流星許願 v1（ROADMAP 904）：啟動時夜空無流星。
             meteor_ticks: RwLock::new(0),
             meteor_started_flag: RwLock::new(false),
+            // 候鳥遷徙 v1（ROADMAP 944）：啟動時天上無候鳥（入春／入秋換季那一刻才觸發一場遷徙）。
+            migration_ticks: RwLock::new(0),
+            migration_kind: RwLock::new(None),
             // 季節輪替 v1（ROADMAP 798）：啟動時世界日數為 0 ＝初春；之後靠 tick_residents 逐日推進換季。
             last_season: RwLock::new(vseason::season_for_day(0)),
             // 冬季飄雪 v1（ROADMAP 900）：啟動時尚未飄雪、本冬未播初雪；之後靠 tick_residents 逐 tick 推進。
@@ -3068,6 +3080,18 @@ fn players_snapshot_json() -> String {
     let rainbow: bool = *hub().rainbow_ticks.read().unwrap() > 0;
     // 流星許願 v1（ROADMAP 904，短鎖、不巢狀）：> 0 tick = 此刻剛劃過流星，前端據此播光痕動畫。
     let meteor: bool = *hub().meteor_ticks.read().unwrap() > 0;
+    // 候鳥遷徙 v1（ROADMAP 944，短鎖、不巢狀）：> 0 tick = 此刻天上有一群候鳥正飛過，前端據此播鳥群
+    // 動畫；一併帶走向 `migration_kind`（arrival／departure）供前端決定飛行方向（無遷徙時為空字串）。
+    let (migration, migration_kind): (bool, &str) = {
+        let ticks = *hub().migration_ticks.read().unwrap();
+        let kind = hub()
+            .migration_kind
+            .read()
+            .unwrap()
+            .map(|k| k.as_str())
+            .unwrap_or("");
+        (ticks > 0, kind)
+    };
     // 季節輪替 v1（ROADMAP 798，短鎖、不巢狀）：由世界累計日數推算當前季節，帶給前端隨季節微染天地色調。
     // 季節指示器 v1（ROADMAP 897）：一併帶「這一季第幾天」給前端 HUD 徽章，補上「今日」這層時間感。
     let (season, season_day): (&str, u64) = {
@@ -3105,6 +3129,8 @@ fn players_snapshot_json() -> String {
         "raining": raining,
         "rainbow": rainbow,
         "meteor": meteor,
+        "migration": migration,
+        "migration_kind": migration_kind,
         "season": season,
         "season_day": season_day,
     }).to_string()
@@ -10751,6 +10777,17 @@ fn tick_farm() {
             *hub().meteor_started_flag.write().unwrap() = true;
         }
     }
+    // 候鳥遷徙 v1（ROADMAP 944）：遷徙的「觸發」只發生在 tick_residents 的換季那一刻（設滿倒數），
+    // 這裡只負責逐 tick 遞減、讓鳥群飛過約 [`vmigration::MIGRATION_TICKS`]×15 秒後淡出（started 恆 false）。
+    // 到 0 時順手清掉走向（避免下一場遷徙前殘留舊 kind）。獨立短鎖即釋、不巢狀，守死鎖鐵律。
+    {
+        let mut mg = hub().migration_ticks.write().unwrap();
+        let next = vmigration::next_migration_ticks(*mg, false);
+        *mg = next;
+        if next == 0 {
+            *hub().migration_kind.write().unwrap() = None;
+        }
+    }
     let now = vfarm::now_secs();
     // 短讀鎖取 delta 快照用於水耕判斷（每 15s 一次，clone 代價小），馬上釋放。
     let deltas_snap: voxel::WorldDelta = hub().deltas.read().unwrap().clone();
@@ -13355,6 +13392,24 @@ fn tick_residents(dt: f32) {
     };
     if season_just_turned {
         vfeed::append_feed("季節", "乙太方界", vseason::season_feed_detail(current_season));
+    }
+    // 候鳥遷徙 v1（ROADMAP 944）：換季那一刻，若新季節是春（歸來）或秋（離去），天上升起一場候鳥
+    // 遷徙——設下遷徙倒數 tick＋走向（供快照廣播給前端播鳥群動畫），並上一則城鎮動態（不在線上的玩家
+    // 回來也讀得到天上飛過一群候鳥）。`migration_turned` 為本地一次性 Option，供下方居民抬頭反應迴圈
+    // 消費（與換季台詞同一拍，不需跨迴圈旗標）。短寫鎖即釋、不巢狀（守死鎖鐵律）；Feed append 走鎖外。
+    let migration_turned: Option<vmigration::MigrationKind> = if season_just_turned {
+        vmigration::migration_for_season_turn(current_season)
+    } else {
+        None
+    };
+    if let Some(kind) = migration_turned {
+        *hub().migration_ticks.write().unwrap() = vmigration::MIGRATION_TICKS; // 鳥群升空
+        *hub().migration_kind.write().unwrap() = Some(kind);
+        vfeed::append_feed(
+            vmigration::FEED_KIND,
+            "乙太方界",
+            vmigration::migration_feed_detail(kind),
+        );
     }
     // 秋收囤糧過冬 v1（自主提案）：每輪把「當前是否秋季」餵給初囤追蹤器（短寫鎖即釋、不巢狀）——
     // 一離開秋天就重置本秋旗標，讓下一個秋天能再播一次「秋收開始囤糧」的城鎮時刻。
@@ -16565,6 +16620,19 @@ fn tick_residents(dt: f32) {
                 r.say = vseason::season_turn_line(current_season, pick).to_string();
                 r.say_timer = SAY_SECS;
                 r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            }
+
+            // 候鳥遷徙 v1（ROADMAP 944）：入春／入秋換季那一刻天上升起一場候鳥遷徙，say 為空、醒著的
+            // 居民抬頭望見一群候鳥飛過而心頭一動、冒一句應景台詞（歸來的暖意／別離的悵惘，零 LLM、確定性
+            // 選句），心情也跟著微亮一格（`mood_boost` 是驅動行為的真狀態）。與換季台詞同屬一次性環境
+            // 事件、值得蓋過閒聊冷卻；擺在換季台詞之後（換季台詞優先，避免同一拍兩句都被搶著說）。
+            if let Some(kind) = migration_turned {
+                if !r.asleep && r.say.is_empty() {
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    r.say = vmigration::migration_line(kind, pick).to_string();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                }
             }
 
             // 冬季飄雪 v1（ROADMAP 900）：本冬第一次飄雪那一刻，say 為空、醒著的居民抬頭看見初雪落下，
