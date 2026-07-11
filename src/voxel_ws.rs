@@ -172,6 +172,7 @@ use crate::voxel_dreamshare as vdreamshare;
 use crate::voxel_morning as vmorning;
 use crate::voxel_daybreak as vdaybreak;
 use crate::voxel_reunion as vreunion;
+use crate::voxel_longing as vlonging;
 use crate::voxel_expedition as vexp;
 use crate::voxel_frontier_visit as vfvisit;
 use crate::voxel_sendoff as vsend;
@@ -2153,6 +2154,9 @@ struct VoxelHub {
     /// 久別重逢摘要 v1（ROADMAP 721）：玩家名 → 上次連線的 unix 秒。純記憶體、重啟清空
     /// （比照 pending_trades 慣例；重啟後首次連線只記錄基準點、不跳摘要，之後正常累積）。
     last_seen: RwLock<HashMap<String, u64>>,
+    /// 居民惦記離開的你 v1（自主提案切片）：玩家離線 → 對他記憶最厚的居民排一則「待送出的想念」，
+    /// 到期後由某位醒著的居民念叨出口、上動態牆＋記進記憶。純記憶體、重啟歸零（比照 last_seen 慣例）。
+    longing_queue: RwLock<vlonging::LongingQueue>,
     /// 玩家里程碑 v1（ROADMAP 724）：玩家自己的療癒循環第一次做成可回頭翻閱的成就徽章。
     /// 持久化到 data/voxel_milestones.jsonl（append-only，重啟後徽章仍在）。
     milestones: RwLock<MilestoneStore>,
@@ -2859,6 +2863,7 @@ fn hub() -> &'static VoxelHub {
             inventing: std::sync::Mutex::new(std::collections::HashSet::new()),
             // 久別重逢摘要 v1：啟動空（純記憶體、無需持久化）。
             last_seen: RwLock::new(HashMap::new()),
+            longing_queue: RwLock::new(vlonging::LongingQueue::new()),
             // 啟動時從 data/voxel_milestones.jsonl 載回玩家已達成的成就徽章（重啟後仍記得）。
             milestones: RwLock::new(MilestoneStore::from_entries(vmiles::load_milestones())),
             // 啟動時從 data/voxel_lifeprojects.jsonl 載回居民長程專案進度（重啟後接著做，取每人最高進度）。
@@ -4070,6 +4075,9 @@ async fn handle_socket(
         // 且此刻醒著的居民放下手邊的事奔去迎接（設 reunion_seek，實際走動／迎接／記憶在 tick_residents）。
         // 只在登入玩家（name 非空）觸發；last=None（首次見面／伺服器剛重啟）不觸發（無基準點、比照摘要）。
         if !name.is_empty() {
+            // 居民惦記離開的你 v1：你回來了 → 清掉任何還沒說出口的「待送出的想念」（迎接改由奔迎接手，
+            // 別再讓居民對著已經回來的你念叨「好久沒看到你」）。短鎖即釋、不巢狀。
+            hub().longing_queue.write().unwrap().cancel(&name);
             if let Some(last_secs) = last {
                 let gap = now.saturating_sub(last_secs);
                 if vreunion::should_rush(gap, rand::random::<f32>()) {
@@ -8995,6 +9003,32 @@ async fn handle_socket(
         persist_player_stats(); // IO 在鎖外（函式內短取讀鎖組快照即釋）
     }
 
+    // 居民惦記離開的你 v1（自主提案切片）：你離開了 → 挑對你記憶最厚（且達門檻）的居民，排一則
+    // 「待送出的想念」，到期後由 tick_longing 讓某位醒著的居民念叨出口。只在登入玩家（name 非空）
+    // 觸發；訪客名不穩定不入列。鎖序循序不巢狀（residents 讀鎖 → memory 讀鎖 → longing 寫鎖，各自短
+    // 取即釋、守死鎖鐵律）。
+    if !name.is_empty() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let roster: Vec<(String, String)> = {
+            let rs = hub().residents.read().unwrap();
+            rs.iter().map(|r| (r.id.clone(), r.name.to_string())).collect()
+        }; // residents 讀鎖釋放
+        let affinities: Vec<usize> = {
+            let mem = hub().memory.read().unwrap();
+            roster.iter().map(|(id, _)| mem.affinity_count(&name, id)).collect()
+        }; // memory 讀鎖釋放
+        if let Some(idx) = vlonging::most_bonded(&affinities) {
+            let (rid, rname) = roster[idx].clone();
+            hub().longing_queue
+                .write()
+                .unwrap()
+                .enqueue(&name, &rid, &rname, now); // longing 寫鎖釋放
+        }
+    }
+
     // 收攤：移除玩家、廣播、收掉任務。
     // 垂釣 v1：清掉這位玩家進行中的拋竿（純記憶體，斷線即散）。
     { hub().pending_fish.write().unwrap().remove(&name); }
@@ -9048,8 +9082,92 @@ pub fn spawn_residents() {
             tick_wildlife(RESIDENT_DT); // 野兔 v1：同節拍，各自獨立鎖，不與居民鎖巢狀。
             tick_shadows(RESIDENT_DT); // 暗影生物 v1：同節拍，各自獨立鎖，零 LLM、上限 6 隻。
             tick_nightwatch(RESIDENT_DT); // 夜裡點燈守望 v1：低頻檢查、各自獨立鎖，見暗影靠近就近點盞燈。
+            tick_longing(); // 居民惦記離開的你 v1：低頻掃待送出的想念，到期由醒著居民念叨出口。
         }
     });
+}
+
+// ── 居民惦記離開的你 tick（自主提案切片·記憶→行為的另一面）──────────────────────
+//
+// 玩家離線夠久 → 對他記憶最厚的居民排了一則「待送出的想念」（`cleanup` 收尾時入列）。這裡每
+// 隔幾秒掃一遍佇列：清掉逾期沒說出口的；對已到期的，逐則確認「那位玩家此刻仍不在線、那位居民
+// 此刻醒著」後，才真的讓她念叨一句——泡泡（若身邊有別的在線玩家看得到）＋城鎮動態牆一行（回來
+// 的本人與在線的別人都讀得到）＋記進她與那位玩家的記憶。說完即從佇列移除，一次離開只念一回。
+//
+// 純確定性、零 LLM。嚴守鎖紀律：各 store 短鎖循序取放、不巢狀、不持鎖 await/IO；記憶落地 IO 與
+// 廣播全在鎖外。低頻（每 LONGING_SCAN_TICKS 個 tick 掃一次）——想念是稀有而有份量的事，不必每
+// tick 都掃。
+static LONGING_TICKS: AtomicU64 = AtomicU64::new(0);
+/// 每隔幾個 resident tick 掃一次待送出的想念（低頻即可，想念不急）。
+const LONGING_SCAN_TICKS: u64 = 32;
+
+fn tick_longing() {
+    let tick_no = LONGING_TICKS.fetch_add(1, Ordering::Relaxed);
+    if tick_no % LONGING_SCAN_TICKS != 0 {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // ① 清掉逾期沒能說出口的（那位居民這段時間也許一直在睡），再取此刻該想念的快照。
+    let due: Vec<vlonging::LongingEntry> = {
+        let mut q = hub().longing_queue.write().unwrap();
+        q.prune_expired(now);
+        q.actionable(now)
+    }; // longing 寫鎖釋放
+    if due.is_empty() {
+        return;
+    }
+
+    // ② 此刻在線玩家名單（想念的前提是「你仍不在」；你若已回來、connect 早已 cancel，這裡再兜一層）。
+    let online: std::collections::HashSet<String> = {
+        let players = hub().players.read().unwrap();
+        players.values().map(|p| p.name.clone()).collect()
+    }; // players 讀鎖釋放
+
+    let mut voiced = false;
+    for e in due {
+        if online.contains(&e.player_name) {
+            // 玩家其實已在線 → 別念叨，直接撤掉這則待念。
+            hub().longing_queue.write().unwrap().cancel(&e.player_name);
+            continue;
+        }
+        // ③ 那位居民此刻醒著才說得出口；設好想念泡泡。睡著就這輪先擱著，下輪再試（逾期則被 prune）。
+        let pick = (now as usize).wrapping_add(e.player_name.len());
+        let said = {
+            let mut rs = hub().residents.write().unwrap();
+            rs.iter_mut()
+                .find(|r| r.id == e.resident_id && !r.asleep)
+                .map(|r| {
+                    r.say = vlonging::longing_say_line(&e.player_name, pick);
+                    r.say_timer = SAY_SECS;
+                })
+                .is_some()
+        }; // residents 寫鎖釋放
+        if !said {
+            continue; // 那位居民在睡 → 保留待念、下輪再試。
+        }
+        // ④ 說出口了 → 落地記憶（讓她更惦記你）＋城鎮動態牆一行，然後撤掉這則待念（一次離開只念一回）。
+        let summary = vlonging::longing_memory_summary(&e.player_name);
+        let entry = hub()
+            .memory
+            .write()
+            .unwrap()
+            .add_memory(&e.resident_id, &e.player_name, &summary); // memory 寫鎖釋放
+        vmem::append_memory(&entry); // IO 在鎖外
+        vfeed::append_feed(
+            vlonging::FEED_KIND,
+            &e.resident_name,
+            &vlonging::longing_feed_detail(&e.player_name),
+        );
+        hub().longing_queue.write().unwrap().cancel(&e.player_name);
+        voiced = true;
+    }
+    if voiced {
+        broadcast_players();
+    }
 }
 
 // ── 暗影生物 tick（怪物/抵禦第一刀·夜的張力）────────────────────────────────────
