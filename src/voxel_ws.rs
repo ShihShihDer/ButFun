@@ -153,6 +153,7 @@ use crate::voxel_player_home as vplayerhome;
 use crate::voxel_weather as vweather;
 use crate::voxel_season as vseason;
 use crate::voxel_snow as vsnow;
+use crate::voxel_snowman as vsnowman;
 use crate::voxel_mist as vmist;
 use crate::voxel_timely as vtimely;
 use crate::voxel_bounty as vbounty;
@@ -2126,6 +2127,9 @@ struct VoxelHub {
     /// 冬季飄雪 v1（ROADMAP 900）：季內初雪偵測狀態機（純記憶體，比照天氣／季節等世界暫態，
     /// 重啟歸零）。每輪 tick_residents 依「當前是否冬季 ∧ 是否下雨」推進，偵測本冬第一次飄雪。
     snow_tracker: RwLock<vsnow::SnowSeasonTracker>,
+    /// 居民堆雪人 v1（ROADMAP 918）：冬天居民堆起的雪人清單（純記憶體、重啟即消失，比照 smelt/invent
+    /// 的世界暫態）。每個記著它佔用的方塊座標，冬天一結束就逐格清回空氣（融化）。
+    snowmen: RwLock<Vec<vsnowman::Snowman>>,
     /// 晨霧 v1（ROADMAP 913）：追蹤「今天清晨的晨霧是否已播報過」（純記憶體，比照天氣／季節等
     /// 世界暫態，重啟歸零）。每輪 tick_residents 依「當前是否清晨 ∧ 世界第幾天」推進，偵測
     /// 每天清晨第一次霧起那一刻，讓附近醒著居民抬頭冒句晨霧感言＋動態牆留一則。
@@ -2852,6 +2856,8 @@ fn hub() -> &'static VoxelHub {
             last_season: RwLock::new(vseason::season_for_day(0)),
             // 冬季飄雪 v1（ROADMAP 900）：啟動時尚未飄雪、本冬未播初雪；之後靠 tick_residents 逐 tick 推進。
             snow_tracker: RwLock::new(vsnow::SnowSeasonTracker::new()),
+            // 居民堆雪人 v1（ROADMAP 918）：啟動時世界上沒有任何雪人（純記憶體、重啟即空）。
+            snowmen: RwLock::new(Vec::new()),
             // 晨霧 v1（ROADMAP 913）：啟動時尚未播過任何一天的晨霧；世界初始為白天（非清晨），
             // 故啟動當下不會誤觸發，第一縷晨霧落在隔天清晨。之後靠 tick_residents 逐 tick 推進。
             mist_tracker: RwLock::new(vmist::MistDayTracker::new()),
@@ -9632,6 +9638,8 @@ pub fn spawn_farm_tick() {
             tick_smelt(); // 熔爐煨煮 v1（自主提案）：同節拍交付熟成的爐（成品入背包 + 廣播）。
             maybe_birth(); // 人口成長 v1：低頻檢查聚落是否有餘裕誕生一位新居民。
             maybe_breed_rabbits(); // 馴服兔子生寶寶 v1（自主提案切片 855）：同節拍檢查是否誕生一隻小兔子。
+            maybe_build_snowman(); // 居民堆雪人 v1（自主提案切片 918）：冬天飄雪時同節拍檢查是否有閒著的居民堆起一個小雪人。
+            maybe_melt_snowmen(); // 居民堆雪人 v1（自主提案切片 918）：冬天一結束就把世界上所有雪人融化清除。
             maybe_pet_admire(); // 居民注意到你身邊跟著的馴服動物 v1（自主提案切片 875）：同節拍檢查身邊有無寵物觸發讚賞。
             maybe_envoy_recall(); // 引夢使者印記深化 v1（自主提案切片）：同節拍檢查身邊有無曾受你恩惠的居民、偶爾回想提起你為她做過的具體好事。
             maybe_crown_masters(); // 名匠聲望 v1（ROADMAP 888）：同節拍以既有發明/師承紀錄重算村裡每門手藝的公認名匠、公告新加冕、刷新「卡關優先找名匠」快照（須在就地指導前跑，讓本輪教學偏好讀到最新名匠）。
@@ -11245,6 +11253,182 @@ fn maybe_breed_rabbits() {
         }
     }; // wildlife 寫鎖釋放
     vfeed::append_feed("兔子誕生", "野兔", &feed_line);
+}
+
+/// 全域堆雪人節流時間戳記（居民堆雪人 v1，自主提案切片，ROADMAP 918）。
+/// 純記憶體、重啟歸零——比照 `LAST_BREED_UNIX`／雪人本身「重啟即消失」的暫態慣例。
+static LAST_SNOWMAN_UNIX: AtomicU64 = AtomicU64::new(0);
+
+/// 居民堆雪人 v1（自主提案切片，ROADMAP 918，低頻併入 15 秒節拍）：冬天飄雪時，挑一位閒著、
+/// 醒著、沒在忙別的事的居民，在牠身旁一格空地上堆一個小雪人（雪塊身＋雪塊頭＋冰燈頂）。
+/// 雪人只存在記憶體＋世界 delta（**不落地持久化、重啟即消失**），冬天一結束就融化
+/// （[`maybe_melt_snowmen`]）——是冬天限定的短暫歡樂。
+///
+/// **鎖紀律**：全程各把鎖短取即釋、循序不巢狀（守 prod 死鎖鐵律，比照 `maybe_pet_admire`）：
+/// snowmen 讀鎖數數＋快照既有錨點即釋 → residents 讀鎖挑閒著的候選即釋 → deltas 讀鎖驗三格皆空氣
+/// 即釋 → deltas 寫鎖批次放置即釋 → 鎖外廣播（live-only，不 append 持久化）→ snowmen 寫鎖登記即釋
+/// → residents 寫鎖設 say 即釋 → memory 寫鎖記憶即釋 → Feed（鎖外）。
+fn maybe_build_snowman() {
+    // 飄雪＝冬季 ∧ 下雨（與 900 冬雪同一事實來源）。短讀鎖循序即釋、不巢狀。
+    let current_season = {
+        let day = hub().world_time.read().unwrap().days_elapsed();
+        vseason::season_for_day(day)
+    };
+    let snowing = current_season == vseason::Season::Winter && *hub().weather.read().unwrap();
+    if !snowing {
+        return;
+    }
+    let now = vfarm::now_secs();
+    let cooldown_ready = now.saturating_sub(LAST_SNOWMAN_UNIX.load(Ordering::Relaxed))
+        >= vsnowman::BUILD_COOLDOWN_SECS;
+    // 1) 既有雪人數量＋錨點快照（snowmen 讀鎖即釋）。
+    let (count, existing_anchors): (usize, Vec<(i32, i32)>) = {
+        let snowmen = hub().snowmen.read().unwrap();
+        let anchors: Vec<(i32, i32)> = snowmen
+            .iter()
+            .filter_map(|s| s.blocks.first().map(|&(x, _, z)| (x, z)))
+            .collect();
+        (snowmen.len(), anchors)
+    };
+    if !vsnowman::should_build(snowing, cooldown_ready, count, rand::random::<f32>()) {
+        return;
+    }
+    // 2) 挑一位閒著、醒著、沒在朝聖／遠行／聚會／品嚐的候選居民（residents 讀鎖即釋，不巢狀）。
+    let cand: Option<(String, &'static str, f32, f32)> = {
+        let residents = hub().residents.read().unwrap();
+        residents
+            .iter()
+            .filter(|r| {
+                r.say.is_empty()
+                    && !r.asleep
+                    && r.pilgrimage.is_none()
+                    && r.expedition.is_none()
+                    && r.visiting.is_none()
+                    && r.clique_meet.is_none()
+                    && r.savoring.is_none()
+            })
+            .map(|r| (r.id.clone(), r.name, r.body.x, r.body.z))
+            .next()
+    };
+    let Some((rid, rname, rx, rz)) = cand else {
+        return;
+    };
+    // 3) 選錨點（居民身旁一格，確定性方向），驗離既有雪人夠遠。
+    let pick = (rx.to_bits() ^ rz.to_bits() ^ now as u32) as usize;
+    let (ax, az) = vsnowman::pick_anchor(rx, rz, pick);
+    if !vsnowman::far_enough(ax, az, &existing_anchors) {
+        return;
+    }
+    let ay = vbuild::surface_y(ax, az); // 地面正上方一格（純函式，鎖外算）。
+    let blocks = vsnowman::snowman_blocks(ax, ay, az);
+    // 4) 三格必須全是空氣才堆（不覆蓋地形／樹／水／既有建物）——deltas 讀鎖快照即釋。
+    let all_air = {
+        let w = hub().deltas.read().unwrap();
+        blocks
+            .iter()
+            .all(|&(x, y, z, _)| voxel::effective_block_at(&w, x, y, z) == Block::Air)
+    };
+    if !all_air {
+        return;
+    }
+    // 通過所有閘 → 更新全域冷卻（先卡住節流，避免同拍多位居民都成）。
+    LAST_SNOWMAN_UNIX.store(now, Ordering::Relaxed);
+    // 5) 放置（deltas 寫鎖批次即釋）。
+    {
+        let mut world = hub().deltas.write().unwrap();
+        for &(x, y, z, b) in &blocks {
+            voxel::set_block(&mut world, x, y, z, b);
+        }
+    } // deltas 寫鎖釋放
+    // 6) 廣播（鎖外，live-only：**刻意不 append_world_block**，讓雪人不落地持久化、
+    //    冬末融化或重啟即乾淨消失，不留孤兒方塊）。
+    for &(x, y, z, b) in &blocks {
+        broadcast_block(x, y, z, b);
+    }
+    // 7) 登記這個雪人（snowmen 寫鎖即釋），記下它佔用的三格供日後融化清除。
+    {
+        hub().snowmen.write().unwrap().push(vsnowman::Snowman {
+            blocks: blocks.iter().map(|&(x, y, z, _)| (x, y, z)).collect(),
+            builder_id: rid.clone(),
+            builder_name: rname,
+        });
+    }
+    // 8) 建造者冒句歡快話（residents 寫鎖即釋，只在牠仍閒著時才覆蓋）。
+    let said = {
+        let mut residents = hub().residents.write().unwrap();
+        residents
+            .iter_mut()
+            .find(|r| r.id == rid && r.say.is_empty())
+            .map(|r| {
+                r.say = vsnowman::build_say_line(pick).chars().take(50).collect();
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            })
+            .is_some()
+    }; // residents 寫鎖釋放
+    if said {
+        broadcast_players();
+    }
+    // 9) 記進建造者心裡（memory 寫鎖即釋）＋城鎮動態牆。
+    let entry = hub().memory.write().unwrap().add_memory(
+        &rid,
+        vsnowman::SNOWMAN_MEMORY_PLAYER,
+        &vsnowman::build_memory_line(),
+    );
+    vmem::append_memory(&entry);
+    vfeed::append_feed(vsnowman::FEED_KIND_BUILD, rname, &vsnowman::build_feed_line(rname));
+}
+
+/// 居民堆雪人 v1（自主提案切片，ROADMAP 918）：冬天一結束（`is_winter == false`），把世界上
+/// 所有雪人逐格清回空氣（融化），城鎮動態牆留一句「雪人們融化了」。冬季持續中則什麼都不做。
+///
+/// **鎖紀律**：snowmen 寫鎖 drain 即釋 → deltas 寫鎖批次清除即釋 → 鎖外廣播 → Feed（鎖外）。
+/// 融化時只清「現在仍是雪人方塊（雪／冰燈）」的格——若玩家中途把某格挖掉或換成別的東西，
+/// 就不硬清、不誤刪玩家後放的方塊。
+fn maybe_melt_snowmen() {
+    // 1) 先便宜地判斷：清單為空就直接返回（讀鎖即釋），免每拍都算季節。
+    if hub().snowmen.read().unwrap().is_empty() {
+        return;
+    }
+    let current_season = {
+        let day = hub().world_time.read().unwrap().days_elapsed();
+        vseason::season_for_day(day)
+    };
+    if current_season == vseason::Season::Winter {
+        return; // 冬季持續中，雪人不融。
+    }
+    // 2) 取出並清空雪人清單（snowmen 寫鎖即釋）。
+    let melted: Vec<vsnowman::Snowman> = {
+        let mut snowmen = hub().snowmen.write().unwrap();
+        if snowmen.is_empty() {
+            return;
+        }
+        std::mem::take(&mut *snowmen)
+    }; // snowmen 寫鎖釋放
+    // 3) 逐格清回空氣（deltas 寫鎖批次即釋）——只清仍是雪人方塊的格，蒐集實際清掉的座標供廣播。
+    let cleared: Vec<(i32, i32, i32)> = {
+        let mut world = hub().deltas.write().unwrap();
+        let mut cleared = Vec::new();
+        for s in &melted {
+            for &(x, y, z) in &s.blocks {
+                if vsnowman::is_snowman_block(voxel::effective_block_at(&world, x, y, z)) {
+                    voxel::set_block(&mut world, x, y, z, Block::Air);
+                    cleared.push((x, y, z));
+                }
+            }
+        }
+        cleared
+    }; // deltas 寫鎖釋放
+    // 4) 廣播每個被清掉的格已成空氣（鎖外）。
+    for (x, y, z) in &cleared {
+        broadcast_block(*x, *y, *z, Block::Air);
+    }
+    // 5) 城鎮動態牆記一句（一則、非每個雪人一則，不洗版）。
+    vfeed::append_feed(
+        vsnowman::FEED_KIND_MELT,
+        "乙太方界",
+        &vsnowman::melt_feed_line(melted.len()),
+    );
 }
 
 /// 居民注意到你身邊跟著的馴服動物 v1（自主提案切片，ROADMAP 875）：全域「居民→冷卻時刻」
