@@ -2010,7 +2010,13 @@ const RES_BODY_MAT = new THREE.MeshLambertMaterial({ color: 0xd8b070 });
 const RES_HEAD_MAT = new THREE.MeshLambertMaterial({ color: 0xe8c89a });
 const RES_TORSO_GEO = new THREE.BoxGeometry(0.5, 1.0, 0.32);
 const RES_HEAD_GEO = new THREE.BoxGeometry(0.42, 0.42, 0.42);
+// 居民表情/肢體 v1：加一對細手臂做揮手/搔頭/縮身動作（共用幾何/材質，成本可忽略）。
+const RES_ARM_GEO = new THREE.BoxGeometry(0.14, 0.55, 0.18);
 const RES_VISIBLE_DIST = 110; // 超過此距離（接近霧盡頭）隱藏，省繪製
+// 肢體動畫只在鏡頭附近的居民跑（FPS 鐵律）：超過此距離只保留位置更新、不算補間。
+const RES_GESTURE_DIST = 42;
+// 暗影害怕半徑（前端偵測）：居民附近有暗影小靈就縮身顫抖，無需後端新增旗標。
+const RES_FEAR_DIST = 9;
 
 // ── 野兔 v1（自主提案切片，ROADMAP 847）＋水中游魚 v1（ROADMAP 848）──────────
 // 世界環境生物：純點綴、無名牌無泡泡。野兔=身體+兩隻耳朵、魚=身體+尾鰭，
@@ -2529,12 +2535,32 @@ async function refreshAffinity() {
 function buildResident(id, name) {
   const group = new THREE.Group();
   group.userData.rid = id;
+  // body：軀幹 + 頭 + 手臂全掛在一個 body 子 group 上，讓「開心彈跳/害怕縮身」能整體
+  //（含名牌以外的身體）位移縮放，不動到頭頂名牌/泡泡的座標基準。
+  const body = new THREE.Group();
+  group.add(body);
   const torso = new THREE.Mesh(RES_TORSO_GEO, RES_BODY_MAT);
   torso.position.y = 0.5; // 腳底在 group 原點，軀幹中心 0.5
-  group.add(torso);
+  body.add(torso);
+  // 頭掛在頸關節 pivot 上（頸部約 y=1.02），繞 x 軸微傾＝低頭/抬頭表情。
+  const headPivot = new THREE.Group();
+  headPivot.position.y = 1.02;
+  body.add(headPivot);
   const head = new THREE.Mesh(RES_HEAD_GEO, RES_HEAD_MAT);
-  head.position.y = 1.25;
-  group.add(head);
+  head.position.y = 0.23; // 頭中心相對頸關節（1.02+0.23=1.25，與原本一致）
+  headPivot.add(head);
+  // 手臂：pivot 掛在肩部（y≈0.95），臂往下垂、繞 pivot x 軸擺動＝揮手/搔頭/垂手。
+  function resArm(x) {
+    const pivot = new THREE.Group();
+    pivot.position.set(x, 0.95, 0);
+    const m = new THREE.Mesh(RES_ARM_GEO, RES_BODY_MAT);
+    m.position.y = -0.275; // 臂頂貼在肩上、往下垂
+    pivot.add(m);
+    body.add(pivot);
+    return pivot;
+  }
+  const armL = resArm(-0.32);
+  const armR = resArm(0.32);
   const label = makeTextSprite(name, false);
   label.position.y = 2.0;
   group.add(label);
@@ -2558,7 +2584,98 @@ function buildResident(id, name) {
   moodIndicator.visible = false;
   group.add(moodIndicator);
   scene.add(group);
-  return { group, label, desireLabel, bubble, affinityIndicator, moodIndicator, lastName: name, lastSay: "", lastDesire: "", lastAffinity: "", lastMood: "" };
+  return {
+    group, body, headPivot, armL, armR,
+    label, desireLabel, bubble, affinityIndicator, moodIndicator,
+    lastName: name, lastSay: "", lastDesire: "", lastAffinity: "", lastMood: "",
+    // 肢體動畫狀態（居民表情/肢體 v1）：
+    gestPhase: Math.random() * Math.PI * 2, // 起始相位打散，別讓全村同步呼吸
+    mood: "",        // 當前心情 emoji（驅動彈跳/垂頭/搔頭）
+    humming: false,  // 是否正哼歌（say 以 ♪ 起頭）→ 持續搖擺哼唱
+    wavePulse: 0,    // 打招呼/道賀揮手的一次性脈衝（新泡泡出現時觸發，倒數歸零）
+  };
+}
+
+// 依前端已知資訊（心情 emoji / 說話 / 附近暗影）程序化驅動居民的柔和肢體語言。
+// 純三角函數補間、無新後端欄位；只算鏡頭附近的居民（FPS 鐵律）。療癒調性＝動作慢、小、可愛。
+function animateResident(ent, dt, fearNear) {
+  const b = ent.body, hp = ent.headPivot, aL = ent.armL, aR = ent.armR;
+  // 距離門檻外：把身體回正到中性姿態一次即可，不再逐幀補間（省算）。
+  const dx = ent.group.position.x - player.x, dz = ent.group.position.z - player.z;
+  if (dx * dx + dz * dz > RES_GESTURE_DIST * RES_GESTURE_DIST) {
+    b.position.y = 0; b.scale.set(1, 1, 1); b.rotation.z = 0;
+    hp.rotation.x = 0; hp.rotation.z = 0; aL.rotation.x = 0; aL.rotation.z = 0;
+    aR.rotation.x = 0; aR.rotation.z = 0;
+    return;
+  }
+  ent.gestPhase += dt;
+  const t = ent.gestPhase;
+  const k = Math.min(1, dt * 6); // 姿態平滑係數（往目標補間，避免瞬跳）
+
+  // 目標姿態（預設中性），依情緒疊加。
+  let bobY = 0, sway = 0, crouch = 0, shiver = 0;
+  let headTilt = 0, headDroop = 0;
+  let armLx = 0, armRx = 0, armScratch = 0, waveAmt = 0;
+
+  const mood = ent.mood;
+  const asleep = mood === "💤";
+
+  if (fearNear && !asleep) {
+    // 害怕（附近有暗影）：縮身、微微後仰顫抖、雙手內收——最強、蓋過其他情緒。
+    crouch = 0.16;
+    shiver = Math.sin(t * 22) * 0.03;
+    headDroop = -0.15; // 微微仰頭警戒
+    armLx = 0.5; armRx = 0.5; // 雙手抬起護在身前
+  } else if (asleep) {
+    // 睡著：幾乎不動，只有極緩的呼吸起伏（頭微垂）。
+    bobY = Math.sin(t * 1.2) * 0.012;
+    headDroop = 0.28;
+  } else if (ent.humming) {
+    // 哼歌：左右輕搖 + 上下輕彈，最歡快可愛。
+    sway = Math.sin(t * 3.2) * 0.11;
+    bobY = Math.abs(Math.sin(t * 3.2)) * 0.05;
+    headTilt = Math.sin(t * 3.2) * 0.08;
+  } else if (mood === "😊" || mood === "🙂") {
+    // 開心：輕輕上下彈跳（越開心越明顯），偶爾點頭。
+    const amp = mood === "😊" ? 0.05 : 0.03;
+    bobY = Math.abs(Math.sin(t * 2.4)) * amp;
+    headTilt = Math.sin(t * 1.6) * 0.04;
+  } else if (mood === "😔") {
+    // 難過/寂寞：頭微垂、身體極緩慢地小幅搖，動作明顯變慢。
+    headDroop = 0.22;
+    sway = Math.sin(t * 1.0) * 0.03;
+  } else if (mood === "🤔") {
+    // 思考/發明：搔頭——右手抬到頭側來回蹭，頭跟著微側。
+    armScratch = 1;
+    armRx = 2.2 + Math.sin(t * 8) * 0.25; // 抬手到頭
+    headTilt = 0.12;
+  } else {
+    // 中性（😐 或無 emoji）：極輕的自然呼吸起伏，維持「活著」的感覺。
+    bobY = Math.sin(t * 1.5) * 0.012;
+  }
+
+  // 說話/道賀揮手：wavePulse 觸發時右手抬起來回揮（一次性、倒數歸零），蓋過上面的臂目標。
+  if (ent.wavePulse > 0) {
+    ent.wavePulse = Math.max(0, ent.wavePulse - dt);
+    waveAmt = 1;
+    armRx = 2.4;                 // 抬到肩上
+    armScratch = 0;
+  }
+
+  // ── 把目標姿態平滑補間到實際 mesh ──
+  b.position.y += ((bobY - crouch) - b.position.y) * k;
+  b.rotation.z += ((sway + shiver) - b.rotation.z) * k;
+  // 縮身時整體略壓扁（縮 y、微胖），害怕/難過收攏；平常回 1。
+  const targetScaleY = 1 - crouch * 0.9;
+  b.scale.y += (targetScaleY - b.scale.y) * k;
+  hp.rotation.x += (headDroop - hp.rotation.x) * k;
+  hp.rotation.z += (headTilt - hp.rotation.z) * k;
+  // 揮手時右手繞 z 軸來回擺（招手感）；搔頭時右手在頭側小幅蹭。
+  const waveZ = waveAmt ? Math.sin(t * 9) * 0.5 : (armScratch ? Math.sin(t * 8) * 0.15 : 0);
+  aR.rotation.x += (armRx - aR.rotation.x) * k;
+  aR.rotation.z += (waveZ - aR.rotation.z) * k;
+  aL.rotation.x += (armLx - aL.rotation.x) * k;
+  aL.rotation.z += (0 - aL.rotation.z) * k;
 }
 
 // 依伺服器快照更新所有居民（位置/朝向/名字/說的話）。新出現的就建、消失的就移除。
@@ -2585,9 +2702,13 @@ function updateResidents(list) {
         setSpriteText(ent.bubble, say, true); ent.bubble.visible = true;
         chatLogAppend("res", r.name, say, r.id); // 泡泡同步進聊天窗（去重會併掉截斷版）
         // 哼歌 v1（ROADMAP 788）：say 以音符「♪」起頭＝這是一段歌聲，於頭頂生成飄浮音符。
-        if (say.charAt(0) === "♪") spawnHumNotes(r.x, r.y, r.z);
+        const isHum = say.charAt(0) === "♪";
+        if (isHum) spawnHumNotes(r.x, r.y, r.z);
+        // 居民表情/肢體 v1：哼歌＝持續搖擺；一般說話＝觸發一次「打招呼／道賀」揮手脈衝。
+        ent.humming = isHum;
+        if (!isHum) ent.wavePulse = 1.4; // 揮手約 1.4 秒後收手
       }
-      else { ent.bubble.visible = false; }
+      else { ent.bubble.visible = false; ent.humming = false; }
     }
     // 好感度指示燈（ROADMAP 656）：依 myAffinity 決定顯示哪種心型（sig 保護不重建貼圖）。
     const affCount = myAffinity.get(r.id) || 0;
@@ -2604,12 +2725,31 @@ function updateResidents(list) {
       if (moodEmoji) { setMoodEmoji(ent.moodIndicator, moodEmoji); ent.moodIndicator.visible = true; }
       else { ent.moodIndicator.visible = false; }
     }
+    ent.mood = moodEmoji; // 居民表情/肢體 v1：驅動彈跳/垂頭/搔頭的當前心情
     // 距離 LOD：遠到接近霧盡頭就整個隱藏（省繪製，不崩 FPS）。
     const dx = r.x - player.x, dz = r.z - player.z;
     ent.group.visible = (dx * dx + dz * dz) < (RES_VISIBLE_DIST * RES_VISIBLE_DIST);
   }
   for (const [id, ent] of residents) {
     if (!seen.has(id)) { scene.remove(ent.group); residents.delete(id); }
+  }
+}
+
+// 每幀推進所有居民的肢體語言（居民表情/肢體 v1）。應在 rAF 迴圈呼叫。
+// 害怕偵測純前端：居民附近（RES_FEAR_DIST 內）有可見暗影小靈就縮身顫抖，不需後端旗標。
+function animateResidents(dt) {
+  if (!residents.size) return;
+  for (const ent of residents.values()) {
+    if (!ent.group.visible) continue; // 遠處已隱藏的不算
+    let fearNear = false;
+    if (shadowEnts.size) {
+      const rx = ent.group.position.x, rz = ent.group.position.z;
+      for (const s of shadowEnts.values()) {
+        const dx = s.group.position.x - rx, dz = s.group.position.z - rz;
+        if (dx * dx + dz * dz < RES_FEAR_DIST * RES_FEAR_DIST) { fearNear = true; break; }
+      }
+    }
+    animateResident(ent, dt, fearNear);
   }
 }
 
@@ -6420,6 +6560,7 @@ function update(dt) {
   updateShadowFx(dt);  // 暗影生物 v1：暗影浮動/微光呼吸/受擊閃白/輕煙淡出
   updateBellRings(dt); // 集會鐘 v1（自主提案切片）：推進進行中的鐘聲漣漪
   updateHumNotes(dt);  // 居民哼歌 v1（788）：推進頭頂飄浮音符
+  animateResidents(dt); // 居民表情/肢體 v1：依心情/說話/附近暗影驅動柔和肢體語言
   updateHearts(dt);    // 寵愛你的夥伴 v1（899）：推進小夥伴頭頂的愛心
   updateFertSparkle(dt); // 乙太沃肥 v1（789）：推進施肥綠火花
   updateAmbientLife(dt); // 世界環境氛圍 v1（905）：白天蝴蝶／夜間螢火蟲環境微生物
@@ -7735,4 +7876,24 @@ window.__voxel = {
   renderWaypointList() { renderWaypointList(); return waypointBodyEl && waypointBodyEl.innerHTML; },
   promptAddWaypoint() { return promptAddWaypoint(); },
   removeWaypoint(label) { removeWaypoint(label); },
+  // ── 居民表情/肢體 v1 QA 用（純視覺、無權威影響）──
+  // 讀某位居民當前的肢體姿態（身體位移/縮放/搖擺、頭傾、手臂角度），驗程序動畫真的動了。
+  residentPose(rid) {
+    const ent = rid ? residents.get(rid) : residents.values().next().value;
+    if (!ent) return null;
+    return {
+      id: ent.group.userData.rid, mood: ent.mood, humming: ent.humming, wavePulse: ent.wavePulse,
+      bodyY: ent.body.position.y, bodyScaleY: ent.body.scale.y, bodyRotZ: ent.body.rotation.z,
+      headX: ent.headPivot.rotation.x, headZ: ent.headPivot.rotation.z,
+      armRx: ent.armR.rotation.x, armRz: ent.armR.rotation.z,
+      armLx: ent.armL.rotation.x, visible: ent.group.visible,
+      x: ent.group.position.x, y: ent.group.position.y, z: ent.group.position.z,
+    };
+  },
+  residentIds() { return [...residents.keys()]; },
+  // 就地強制某位居民的情緒訊號（只動本地渲染狀態；下一則伺服器快照會覆寫回真值，
+  // 玩家用 console 呼叫也佔不到任何便宜——這只是把「當下心情」提前塞給前端動畫）。
+  qaSetResidentMood(rid, mood) { const e = residents.get(rid); if (e) { e.mood = mood; } return this.residentPose(rid); },
+  qaSetResidentHumming(rid, on) { const e = residents.get(rid); if (e) { e.humming = !!on; } return this.residentPose(rid); },
+  qaTriggerResidentWave(rid) { const e = residents.get(rid); if (e) { e.wavePulse = 1.4; } return this.residentPose(rid); },
 };
