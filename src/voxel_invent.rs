@@ -16,6 +16,16 @@
 //! 採集→備料→蓋工作台→蓋熔爐→冶煉→等待」才碰得到的目標物。鐵/魚/薯/莓果醬等冶煉
 //! 配方的生料（礦石/漁獲/作物）仍不在她能自採的原語閉包內，誠實維持不可發明。
 //!
+//! **第五刀（鑿井尋礦，接續第四刀熔爐冶煉）**：把第四刀留在閉包外的**礦石**接進來——
+//! 煤礦/鐵礦進 `GatherResource`（單一事實源 `ALL`），可自採種子集隨之長大，火把、
+//! **鐵錠**（smelt_iron，1 鐵礦＋1 煤礦→2 鐵錠）、鐵磚、紅陶磚、花盆…整條鐵系鏈
+//! 第一次自動落進可發明閉包、也自動長進好奇心的「可能性目錄」。礦石稀疏散佈在深層
+//! 石頭帶（煤 y≤3、鐵 y≤1），腳邊亂開井多半撲空 → 採集步對礦石改走**定向礦井**：
+//! `voxel_skills::find_nearest_ore_excl` 先找最近一顆還沒被挖走的礦（delta overlay
+//! 誠實判定），`voxel_directed_task::plan_ore_well` 反推井口讓既有階梯井恰好把那顆
+//! 礦清出入袋——井挖到礦、礦入背包、走得回地面，發明引擎其餘一切照舊。漁獲/作物
+//! 生料仍不可自採，誠實留在閉包外。
+//!
 //! 北極星（維護者原話）：「我們沒說可以挖可以放，他就自己組合出來了」——
 //! 居民自己從基礎動作組合發明、存成自己的技能。這是 Voyager（MineDojo）式 skill library
 //! 的精神（吸收概念、原創實作，不抄任何外部碼），長在既有 agency 架構上。
@@ -153,6 +163,10 @@ pub fn resource_from_token(s: &str) -> Option<GatherResource> {
         "dirt" | "土" | "泥土" => Some(GatherResource::Dirt),
         "stone" | "石" | "石頭" => Some(GatherResource::Stone),
         "wood" | "木" | "木頭" => Some(GatherResource::Wood),
+        // 鑿井尋礦 v1：礦石可採（發明側自動改走定向礦井）。「鐵」單字不收——
+        // 與「鐵錠/鐵磚」歧義，逼便宜腦寫明確的 iron_ore／鐵礦。
+        "coal_ore" | "coal" | "煤" | "煤礦" => Some(GatherResource::CoalOre),
+        "iron_ore" | "iron" | "鐵礦" => Some(GatherResource::IronOre),
         _ => None,
     }
 }
@@ -165,17 +179,10 @@ pub fn resource_from_token(s: &str) -> Option<GatherResource> {
 pub fn obtainable_ids() -> &'static HashSet<u8> {
     static SET: OnceLock<HashSet<u8>> = OnceLock::new();
     SET.get_or_init(|| {
-        // 用 GatherResource 的 block_id 動態組種子集（不重複硬編 id，單一事實源在 voxel_skills）。
-        let mut set: HashSet<u8> = [
-            GatherResource::Grass,
-            GatherResource::Sand,
-            GatherResource::Dirt,
-            GatherResource::Stone,
-            GatherResource::Wood,
-        ]
-        .iter()
-        .map(|r| r.block_id())
-        .collect();
+        // 用 GatherResource::ALL 動態組種子集（不重複硬編 id，單一事實源在 voxel_skills）。
+        // 第五刀（鑿井尋礦）：煤礦/鐵礦進了種子集 → 火把、鐵錠（smelt_iron）、鐵磚、
+        // 紅陶磚、花盆…整條鐵系鏈第一次自動落進「她自己弄得到」的閉包。
+        let mut set: HashSet<u8> = GatherResource::ALL.iter().map(|r| r.block_id()).collect();
         loop {
             let mut grew = false;
             // 第四刀：熔爐冶煉配方也納入閉包——只有「配料全可自採/鏈上加工品」的冶煉
@@ -594,7 +601,7 @@ fn explain_bad_step(s: &PrimStep) -> String {
         PrimStep::Gather { resource, count } => {
             if resource_from_token(resource).is_none() {
                 format!(
-                    "採集資源「{resource}」不在白名單——只能是 grass / sand / dirt / stone / wood"
+                    "採集資源「{resource}」不在白名單——只能是 grass / sand / dirt / stone / wood / coal_ore / iron_ore"
                 )
             } else {
                 format!("採集數量 {count} 不在 1~{MAX_GATHER_COUNT} 範圍內")
@@ -855,8 +862,17 @@ pub fn next_action(
 /// 本函式讓呼叫端在地表無源時，對這兩種資源改開一口 [`crate::voxel_skills::staircase_well`]
 /// 階梯井（永不自困）採料。**細沙**（灘地地表）／**草皮**（地表頂）／**木頭**（樹）維持地表採集
 /// ——它們本就在地表、或礦井底下根本挖不到。純函式、可測。
+/// **第五刀（鑿井尋礦）**：煤礦／鐵礦也屬地下——但它們稀疏散佈在深層石頭帶，腳邊亂開井
+/// 多半撲空，呼叫端對礦石（`voxel_skills::resource_is_ore`）改走**定向礦井**：先
+/// `find_nearest_ore_excl` 找最近一顆礦、再 `plan_ore_well` 反推井口讓井恰好穿過它。
 pub fn resource_is_underground(res: GatherResource) -> bool {
-    matches!(res, GatherResource::Stone | GatherResource::Dirt)
+    matches!(
+        res,
+        GatherResource::Stone
+            | GatherResource::Dirt
+            | GatherResource::CoalOre
+            | GatherResource::IronOre
+    )
 }
 
 /// 對背包套用一次合成：配料夠 → 扣配料、加產物、回 `true`；不夠 → 不動、回 `false`。
@@ -1029,6 +1045,8 @@ pub fn token_of(res: GatherResource) -> &'static str {
         GatherResource::Dirt => "dirt",
         GatherResource::Stone => "stone",
         GatherResource::Wood => "wood",
+        GatherResource::CoalOre => "coal_ore",
+        GatherResource::IronOre => "iron_ore",
     }
 }
 
@@ -1641,7 +1659,8 @@ pub fn invention_prompt(
         "你是{resident_name}，乙太方界的居民。你要自己想辦法解決一個處境：把你會的基礎動作\
         組合成一個新技能。你只會這幾種基礎動作（原語）：\n\
         1. 採集：{{\"op\":\"gather\",\"resource\":\"<資源>\",\"count\":<數量1~{max_c}>}}，\
-        resource 只能是 grass / sand / dirt / stone / wood。\n\
+        resource 只能是 grass / sand / dirt / stone / wood / coal_ore / iron_ore\
+        （coal_ore=煤礦、iron_ore=鐵礦，埋在深層，你會自己鑿井挖到；礦石數量保守拿捏）。\n\
         2. 隨身合成（2×2）：{{\"op\":\"craft\",\"recipe\":\"<配方id>\"}}。\n\
         3. 工作台合成（3×3）：{{\"op\":\"craft_wb\",\"recipe\":\"<配方id>\"}}——\
         **必須先有工作台放在你旁邊**才能執行。\n\
@@ -1765,6 +1784,17 @@ pub fn fail_lesson(goal_name: &str) -> String {
     format!("我試著自己想辦法做出{goal_name}，這次沒成功——下次再想想別的路子")
 }
 
+/// 定向礦井開挖的 Feed 詳情（鑿井尋礦 v1；只在該次發明的**第一口**礦井播，不洗版）。
+/// 這一幕是「鐵的時代」開場——世界第一次看到有居民為了心裡的計畫往地底去。
+pub fn ore_well_feed(goal_name: &str, ore_name: &str) -> String {
+    format!("為了做出{goal_name}，朝著地底的{ore_name}鑿下一口階梯礦井——邊挖邊留階，挖得到也回得來")
+}
+
+/// 定向礦井開挖的頭頂冒泡（同上，第一口才冒）。
+pub fn ore_well_line(ore_name: &str) -> String {
+    format!("{ore_name}在地底下……我挖階梯下去找！")
+}
+
 /// 對話 system prompt 的「我會的技能」注入段（玩家問她會什麼時講得出來）。
 pub fn skills_talk_note(names: &[String]) -> Option<String> {
     if names.is_empty() {
@@ -1884,21 +1914,11 @@ pub fn curiosity_pick(catalog: &[MaterialGoal], seed: u64) -> Option<MaterialGoa
 // 前置後自然變得搆得著。下面用一支純函式估「這個目標她現在搆不搆得著」，讓好奇心優先挑
 // 「當前踏得到的一階」——玩家因此看得到居民能力**像階梯一樣往上長**。
 
-/// 可自採的基礎資源 block id 集合（草/沙/土/石/木）——「一個 gather op 就到手」的葉節點。
+/// 可自採的基礎資源 block id 集合（草/沙/土/石/木＋煤礦/鐵礦）——「一個 gather op
+/// 就到手」的葉節點（單一事實源：`GatherResource::ALL`，新資源自動進來）。
 fn base_resource_ids() -> &'static HashSet<u8> {
     static SET: OnceLock<HashSet<u8>> = OnceLock::new();
-    SET.get_or_init(|| {
-        [
-            GatherResource::Grass,
-            GatherResource::Sand,
-            GatherResource::Dirt,
-            GatherResource::Stone,
-            GatherResource::Wood,
-        ]
-        .iter()
-        .map(|r| r.block_id())
-        .collect()
-    })
+    SET.get_or_init(|| GatherResource::ALL.iter().map(|r| r.block_id()).collect())
 }
 
 /// 某產物需要的站台層級（None＝隨身 2×2／工作台／熔爐）。
@@ -2152,11 +2172,11 @@ mod tests {
 
     #[test]
     fn parse_rejects_non_inventable_recipe() {
-        // torch 配料要煤礦（居民採不到）→ 不可發明，拒絕。
-        let raw = r#"{"name":"做火把","steps":[{"op":"craft","recipe":"torch"}]}"#;
+        // 床要葉片、麵包要小麥（居民採不到）→ 不可發明，拒絕。
+        // （火把/鐵鎬在第五刀鑿井尋礦後礦石可採，已改為可發明，不再當反例。）
+        let raw = r#"{"name":"做床","steps":[{"op":"craft","recipe":"bed"}]}"#;
         assert!(parse_plan(raw).is_none());
-        // 鐵鎬要鐵錠（要冶煉，鏈外）→ craft_wb 也不可發明，拒絕。
-        let raw = r#"{"name":"鐵鎬","steps":[{"op":"craft_wb","recipe":"iron_pickaxe"}]}"#;
+        let raw = r#"{"name":"烤麵包","steps":[{"op":"craft","recipe":"bread"}]}"#;
         assert!(parse_plan(raw).is_none());
         // 兩張表都查無此 id → 拒絕。
         let raw = r#"{"name":"亂","steps":[{"op":"craft","recipe":"no_such_recipe"}]}"#;
@@ -2386,15 +2406,17 @@ mod tests {
         // 兩張表都查無此 id → 講清「兩張清單都查無」。
         let raw = r#"{"name":"亂","steps":[{"op":"craft_wb","recipe":"no_such"}]}"#;
         assert!(parse_plan_detailed(raw).unwrap_err().contains("不在任何一張配方清單"));
-        // 配料弄不到（火把要煤礦）→ 點名配方與原因。
-        let raw = r#"{"name":"火把","steps":[{"op":"craft","recipe":"torch"}]}"#;
+        // 配料弄不到（床要葉片；火把在第五刀後可發明，換反例）→ 點名配方與原因。
+        let raw = r#"{"name":"床","steps":[{"op":"craft","recipe":"bed"}]}"#;
         let err = parse_plan_detailed(raw).unwrap_err();
-        assert!(err.contains("torch") && err.contains("弄不到"), "要點名配方與原因：{err}");
-        // 亂 place token → 講白名單；亂資源 → 列出合法資源。
+        assert!(err.contains("bed") && err.contains("弄不到"), "要點名配方與原因：{err}");
+        // 亂 place token → 講白名單；亂資源（"iron" 第五刀起是合法鐵礦 token，換 "diamond"）
+        // → 列出合法資源（含新開放的礦石）。
         let raw = r#"{"name":"亂","steps":[{"op":"place","block":"chest"}]}"#;
         assert!(parse_plan_detailed(raw).unwrap_err().contains("place 只能放"));
-        let raw = r#"{"name":"亂","steps":[{"op":"gather","resource":"iron","count":2}]}"#;
-        assert!(parse_plan_detailed(raw).unwrap_err().contains("grass / sand / dirt / stone / wood"));
+        let raw = r#"{"name":"亂","steps":[{"op":"gather","resource":"diamond","count":2}]}"#;
+        let err = parse_plan_detailed(raw).unwrap_err();
+        assert!(err.contains("grass / sand / dirt / stone / wood") && err.contains("iron_ore"));
         // 空步驟/找不到 JSON 也都有具體原因。
         assert!(parse_plan_detailed("我不知道").unwrap_err().contains("JSON"));
         assert!(parse_plan_detailed(r#"{"name":"空","steps":[]}"#).unwrap_err().contains("steps"));
@@ -2471,7 +2493,8 @@ mod tests {
     #[test]
     fn parse_still_rejects_unrepairable_garbage() {
         // 修復退路不是「什麼都收」——語意壞的（白名單外資源）修好語法仍該被白名單擋下。
-        let raw = r#"{"name":"亂",steps:[{"op":"gather",resource:"iron",count:2}]}"#;
+        // （"iron" 第五刀起是合法鐵礦 token，反例換真的不存在的 "diamond"。）
+        let raw = r#"{"name":"亂",steps:[{"op":"gather",resource:"diamond",count:2}]}"#;
         assert!(parse_plan(raw).is_none(), "語法修好但白名單外資源仍應拒絕");
     }
 
@@ -3033,24 +3056,26 @@ mod tests {
         for want in ["glass", "plank", "stone_brick", "till", "workbench", "door", "ladder"] {
             assert!(ids.contains(&want), "{want} 應可發明");
         }
-        // 火把要煤礦、床要葉片、麵包要小麥 → 她弄不到料，仍不可發明（誠實邊界）。
-        for no in ["torch", "bed", "bread"] {
+        // 第五刀（鑿井尋礦）：煤礦可採 → 火把也可發明了。
+        assert!(ids.contains(&"torch"), "第五刀後火把（木＋煤礦）應可發明");
+        // 床要葉片、麵包要小麥 → 她弄不到料，仍不可發明（誠實邊界）。
+        for no in ["bed", "bread"] {
             assert!(!ids.contains(&no), "{no} 不應可發明");
         }
         // 3×3 工作台配方：熔爐（8 石）/箱子（8 木板）/大量玻璃…在鏈上 → 可發明；
-        // 鐵系（要冶煉出鐵錠）不在鏈上 → 不可發明（冶煉留給下一刀）。
+        // 第五刀後鐵錠（smelt_iron 冶煉）在鏈上 → 鐵系 3×3 也開放了。
         let wb_ids: Vec<&str> = inventable_wb_recipes().map(|r| r.id).collect();
         for want in ["furnace_wb", "chest", "glass_wb", "plank_wb", "stone_wood_mix", "farm_kit"] {
             assert!(wb_ids.contains(&want), "{want} 應可發明（工作台鏈）");
         }
-        for no in ["iron_block", "iron_pickaxe", "iron_axe", "iron_shovel"] {
-            assert!(!wb_ids.contains(&no), "{no} 不應可發明（要冶煉）");
+        for want in ["iron_block", "iron_pickaxe", "iron_axe", "iron_shovel"] {
+            assert!(wb_ids.contains(&want), "{want} 第五刀後鐵錠在鏈上，應可發明");
         }
-        // 閉包集合本身：熔爐/箱子可取得；第四刀後拋光石（配料是可自採的石頭）也進了閉包，
-        // 鐵錠（配料要鐵礦/煤礦，她弄不到生料）仍誠實排除在外。
+        // 閉包集合本身：熔爐/箱子可取得；第四刀後拋光石（配料是可自採的石頭）也進了閉包；
+        // 第五刀後鐵錠（鐵礦＋煤礦可自採冶煉）也第一次進了閉包。
         assert!(obtainable_ids().contains(&FURNACE_BLOCK_ID));
         assert!(obtainable_ids().contains(&42u8), "箱子在鏈上");
-        assert!(!obtainable_ids().contains(&22u8), "鐵錠要冶煉生料，不在鏈上");
+        assert!(obtainable_ids().contains(&22u8), "第五刀後鐵錠（礦石可採＋冶煉）在鏈上");
         assert!(obtainable_ids().contains(&17u8), "第四刀後拋光石（石頭冶煉）在鏈上");
     }
 
@@ -3058,11 +3083,12 @@ mod tests {
     fn inventable_furnace_recipes_respect_raw_material_closure() {
         // 熔爐冶煉配方（第四刀）：配料全可自採的才可發明；生料她弄不到的誠實排除。
         let ids: Vec<&str> = inventable_furnace_recipes().map(|r| r.id).collect();
-        for want in ["smelt_stone", "smelt_glass", "smelt_brick"] {
+        // 第五刀（鑿井尋礦）後礦石可採 → smelt_iron 也第一次可發明。
+        for want in ["smelt_stone", "smelt_glass", "smelt_brick", "smelt_iron"] {
             assert!(ids.contains(&want), "{want} 配料可自採，應可發明");
         }
-        for no in ["smelt_iron", "smelt_fish", "smelt_potato", "smelt_jam"] {
-            assert!(!ids.contains(&no), "{no} 生料弄不到（礦石/漁獲/作物），不應可發明");
+        for no in ["smelt_fish", "smelt_potato", "smelt_jam"] {
+            assert!(!ids.contains(&no), "{no} 生料弄不到（漁獲/作物），不應可發明");
         }
     }
 
@@ -3301,10 +3327,14 @@ mod tests {
 
     #[test]
     fn check_step_rejects_non_inventable_furnace_recipe() {
-        // 鐵錠冶煉配方存在，但生料（鐵礦/煤礦）她弄不到 → 誠實拒絕。
-        let s = PrimStep::Smelt { recipe: "smelt_iron".into() };
+        // 烤魚冶煉配方存在，但生料（漁獲）她弄不到 → 誠實拒絕。
+        // （smelt_iron 在第五刀鑿井尋礦後礦石可採，已改為可發明，不再當反例。）
+        let s = PrimStep::Smelt { recipe: "smelt_fish".into() };
         assert_eq!(check_step(&s), None);
         assert!(explain_bad_step(&s).contains("弄不到"), "{}", explain_bad_step(&s));
+        // 第五刀正例：鐵錠冶煉（礦石生料如今可自採）通過檢查。
+        let ok = PrimStep::Smelt { recipe: "smelt_iron".into() };
+        assert_eq!(check_step(&ok), Some(CheckedStep::Smelt { recipe_id: "smelt_iron" }));
     }
 
     #[test]
@@ -3562,8 +3592,8 @@ mod tests {
         assert!(sys.contains("workbench"), "要教她工作台配方 id");
         // grounded 工作台配方事實：熔爐那條一定在（8 石 → 熔爐）。
         assert!(sys.contains("furnace_wb") && sys.contains("石頭"));
-        // 鐵系不在鏈上 → 不該出現在可發明配方節錄裡。
-        assert!(!sys.contains("iron_pickaxe"), "鐵鎬要冶煉，不該列給她");
+        // 第五刀（鑿井尋礦）後鐵錠在鏈上 → 鐵鎬也進了可發明配方節錄。
+        assert!(sys.contains("iron_pickaxe"), "鐵鎬第五刀後在鏈上，應列給她");
         // user 帶「附近沒有工作台」的世界事實。
         assert!(user.contains("沒有工作台"));
         let (_, user2) = invention_prompt("露娜", &goal, "想要一座熔爐", "", true, false, &[]);
@@ -3643,8 +3673,12 @@ mod tests {
         for want in [8u8, 35, 16, 42, 60] {
             assert!(ids.contains(&want), "目錄應含 id {want}：{ids:?}");
         }
-        // 不可發明的誠實不列：火把(31 要煤礦)、床(45 要葉片)、鐵鎬、冰晶燈(57)、麵包(19)。
-        for bad in [31u8, 45, vcraft::PICKAXE_IRON_ID, 57, 19] {
+        // 第五刀（鑿井尋礦）後礦石可採：火把(31)、鐵鎬也自動長進目錄。
+        for want in [31u8, vcraft::PICKAXE_IRON_ID] {
+            assert!(ids.contains(&want), "id {want} 第五刀後在鏈上，應進目錄：{ids:?}");
+        }
+        // 不可發明的誠實不列：床(45 要葉片)、冰晶燈(57)、麵包(19 要小麥)。
+        for bad in [45u8, 57, 19] {
             assert!(!ids.contains(&bad), "id {bad} 她備不了料，不該進目錄");
         }
         // 去重：同產物（木板 8 同時是 2×2 與 3×3 產物）只列一次。
@@ -3685,8 +3719,10 @@ mod tests {
             Some(vcraft::PICKAXE_WOOD_ID)
         );
         assert_eq!(detect_missing_material("我想要釣竿去釣魚").map(|g| g.block_id), Some(60));
-        // 不可發明的仍誠實不觸發（火把要煤礦——她備不了料，別種死願）。
-        assert!(detect_missing_material("好想要火把").is_none());
+        // 第五刀（鑿井尋礦）後煤礦可採 → 火把第一次可觸發發明。
+        assert_eq!(detect_missing_material("好想要火把").map(|g| g.block_id), Some(31));
+        // 不可發明的仍誠實不觸發（床要葉片——她備不了料，別種死願）。
+        assert!(detect_missing_material("好想要一張床").is_none());
         // 一般詩意心願照舊不誤觸發。
         assert!(detect_missing_material("願市集的水果攤永遠新鮮").is_none());
     }
@@ -3926,5 +3962,55 @@ mod tests {
                 "退避目標 {bid} 應從目錄排除"
             );
         }
+    }
+
+    // ── 鑿井尋礦 v1（第五刀）：礦石進閉包、鐵系鏈開放 ────────────────────────────
+
+    #[test]
+    fn ore_tokens_roundtrip_and_underground() {
+        for res in [GatherResource::CoalOre, GatherResource::IronOre] {
+            assert_eq!(resource_from_token(token_of(res)), Some(res), "token 雙向一致");
+            assert!(resource_is_underground(res), "礦石屬地下資源、走礦井");
+        }
+        assert_eq!(resource_from_token("煤礦"), Some(GatherResource::CoalOre));
+        assert_eq!(resource_from_token("鐵礦"), Some(GatherResource::IronOre));
+        // 「鐵」單字與鐵錠/鐵磚歧義，誠實不收（逼便宜腦寫明確）。
+        assert_eq!(resource_from_token("鐵"), None);
+    }
+
+    #[test]
+    fn iron_chain_now_obtainable() {
+        // 第五刀核心：礦石進種子集 → 火把、鐵錠、紅陶磚整條鐵系鏈自動落進閉包。
+        let ids = obtainable_ids();
+        for b in [Block::CoalOre, Block::IronOre, Block::IronIngot, Block::Torch] {
+            assert!(ids.contains(&(b as u8)), "{b:?} 應在第五刀後的可取得閉包");
+        }
+        // 鐵錠（熔爐冶煉）成為可發明配方 → 心願提到「鐵錠」第一次觸發發明。
+        let g = detect_missing_material("好想要一塊鐵錠，聽說又硬又亮").expect("鐵錠應可觸發發明");
+        assert_eq!(g.block_id, Block::IronIngot as u8);
+        // 好奇心「可能性目錄」也自動長出火把——她們會自己想去學。
+        let catalog = possibility_catalog(&HashSet::new());
+        assert!(catalog.iter().any(|g| g.block_id == Block::Torch as u8), "目錄應含火把");
+    }
+
+    #[test]
+    fn torch_plan_with_ore_gather_simulates_ok() {
+        // 火把（1 木＋1 煤礦）：第五刀前 coal_ore 連白名單都過不了；現在全鏈可行。
+        let steps = vec![
+            PrimStep::Gather { resource: "wood".into(), count: 1 },
+            PrimStep::Gather { resource: "coal_ore".into(), count: 1 },
+            PrimStep::Craft { recipe: "torch".into() },
+        ];
+        let checked = check_steps(&steps).expect("礦石採集步應過白名單");
+        let bag: HashMap<u8, u32> = HashMap::new();
+        assert!(simulate_plan(&checked, &bag, Block::Torch as u8, false, false).is_ok());
+    }
+
+    #[test]
+    fn ore_well_feed_lines_mention_goal_and_ore() {
+        let feed = ore_well_feed("火把", "煤礦");
+        assert!(feed.contains("火把") && feed.contains("煤礦") && !feed.contains("{"));
+        let line = ore_well_line("鐵礦");
+        assert!(line.contains("鐵礦") && !line.contains("{"));
     }
 }

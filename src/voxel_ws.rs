@@ -23145,20 +23145,60 @@ fn advance_invent_run(
                             && wells < vinvent::INVENT_MAX_WELLS
                             && !in_village
                         {
-                            let q = {
+                            let planned = {
                                 let world = hub().deltas.read().unwrap();
-                                vdt::plan_quarry(&world, rx, rz, wells)
-                            }; // deltas 讀鎖釋放
-                            {
-                                let mut residents = hub().residents.write().unwrap();
-                                if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
-                                    r.invent_quarry = Some(q);
-                                    r.invent_quarry_wells = wells + 1;
-                                    r.wait_timer = r.wait_timer.max(BUILD_INTERVAL_SECS);
-                                    r.invent_run = Some(run);
+                                if vskill::resource_is_ore(resource) {
+                                    // 第五刀（鑿井尋礦）：礦石稀疏散佈深層石頭帶，腳邊亂挖多半
+                                    // 撲空 → 先定向找最近一顆**還沒被挖走**的礦（delta overlay
+                                    // 誠實判定；挖過的自動換下一顆），反推井口讓階梯井恰好把它
+                                    // 清出入袋。整口井任何一柱落在村內 → 不開（動土紀律），
+                                    // 交給下方 ④ 誠實失敗。
+                                    vskill::find_nearest_ore_excl(
+                                        &world,
+                                        rx,
+                                        rz,
+                                        vinvent::INVENT_GATHER_RADIUS,
+                                        resource.block(),
+                                        excl,
+                                    )
+                                    .and_then(|(ox, oy, oz)| vdt::plan_ore_well(&world, ox, oy, oz))
+                                    .filter(|q| {
+                                        !q.cells.iter().any(|&(cx, _, cz)| {
+                                            vskill::in_dig_exclusion(excl, cx, cz)
+                                        })
+                                    })
+                                } else {
+                                    Some(vdt::plan_quarry(&world, rx, rz, wells))
                                 }
-                            } // residents 寫鎖釋放
-                            return; // 下個 agency tick 起逐批開挖。
+                            }; // deltas 讀鎖釋放
+                            if let Some(q) = planned {
+                                // 第一口礦井開挖 Feed＋冒泡（低頻、只礦石；土石井維持安靜不洗版）。
+                                if vskill::resource_is_ore(resource) && wells == 0 {
+                                    vfeed::append_feed(
+                                        "鑿井尋礦",
+                                        rname,
+                                        &vinvent::ore_well_feed(
+                                            &run.goal_name,
+                                            resource.display_name(),
+                                        ),
+                                    );
+                                    say_updates.push((
+                                        rid.to_string(),
+                                        vinvent::ore_well_line(resource.display_name()),
+                                    ));
+                                }
+                                {
+                                    let mut residents = hub().residents.write().unwrap();
+                                    if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                                        r.invent_quarry = Some(q);
+                                        r.invent_quarry_wells = wells + 1;
+                                        r.wait_timer = r.wait_timer.max(BUILD_INTERVAL_SECS);
+                                        r.invent_run = Some(run);
+                                    }
+                                } // residents 寫鎖釋放
+                                return; // 下個 agency tick 起逐批開挖。
+                            }
+                            // 礦石定向失敗（半徑內沒礦可挖／井會動到村內）→ 掉到 ④ 誠實失敗。
                         }
                         // ④ 地表無源、且非地下資源或已達井上限 → 快速誠實失敗（別等逾時）。
                         // Feed 一句有人味的「這附近找不到…」，比沉默更有感。
