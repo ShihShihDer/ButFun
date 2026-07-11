@@ -49,6 +49,7 @@ use crate::voxel_village as vvillage;
 use crate::voxel_discovery as vdisc;
 use crate::voxel_landmark_note as vlmark;
 use crate::voxel_colony as vcolony;
+use crate::voxel_settle as vsettle;
 use crate::voxel_lovenest as vnest;
 use crate::voxel_craft as vcraft;
 use crate::voxel_inventory::{self as vinv, InvStore};
@@ -2234,6 +2235,10 @@ struct VoxelHub {
     /// 分村殖民 v1（自主提案切片，承 PLAN_ETHERVOX §7）：全世界已奠基的野外殖民地名冊。
     /// 持久化到 data/voxel_colonies.jsonl（append-only，重啟後村落與立村故事仍在）。
     colonies: RwLock<vcolony::ColonyRegistry>,
+    /// 殖民地真居住 v1（架構級大弧，承 PLAN_ETHERVOX §7）：居民 → 聚落歸屬
+    /// （0＝主村、殖民地 seq=s → s+1）。沒有記錄＝主村（向後相容）。
+    /// 持久化到 data/voxel_settlements.jsonl（append-only，重啟後仍記得誰住哪個聚落）。
+    settlements: RwLock<vsettle::SettlementStore>,
     /// 戀人愛巢 v1（自主提案切片，承 PLAN_ETHERVOX §4/§6）：全世界已築的戀人愛巢名冊。
     /// 持久化到 data/voxel_lovenest.jsonl（append-only，重啟後愛巢與登記的地標仍在）。
     lovenests: RwLock<vnest::NestRegistry>,
@@ -2939,6 +2944,8 @@ fn hub() -> &'static VoxelHub {
             mastery: RwLock::new(MasteryStore::from_entries(vmastery::load_mastery())),
             // 啟動時從 data/voxel_colonies.jsonl 載回已奠基的野外殖民地（重啟後村落仍在）。
             colonies: RwLock::new(vcolony::ColonyRegistry::from_entries(vcolony::load_colonies())),
+            // 啟動時從 data/voxel_settlements.jsonl 載回聚落歸屬（重啟後仍記得誰住哪個聚落）。
+            settlements: RwLock::new(vsettle::SettlementStore::from_entries(vsettle::load_settlements())),
             lovenests: RwLock::new(vnest::NestRegistry::from_entries(vnest::load_nests())),
             // 同帳號去重：啟動空，每條連線進場時登記、離場時清除。純記憶體、無需持久化。
             conn_kick: RwLock::new(HashMap::new()),
@@ -4421,11 +4428,21 @@ async fn handle_socket(
                     }; // discovery 寫鎖釋放
                     if let Some(entry) = found {
                         vdisc::append_discovery(&entry);
+                        // 殖民地真居住 v1：立村故事後附一句現居人口——玩家撞見的不再是空殼，
+                        // 是有人真正定居生活的第二村（settlements 讀鎖即釋、與 colonies 鎖循序不巢狀）。
+                        let pop = {
+                            let st = hub().settlements.read().unwrap();
+                            st.residents_of(vsettle::colony_settlement_id(c.seq)).len()
+                        }; // settlements 讀鎖釋放
+                        let mut line = vcolony::discover_line(&c);
+                        if pop > 0 {
+                            line.push_str(&vsettle::colony_population_line(pop));
+                        }
                         let _ = out_tx
                             .try_send(Message::Text(
                                 serde_json::json!({
                                     "t": "colony_discovered",
-                                    "line": vcolony::discover_line(&c),
+                                    "line": line,
                                 })
                                 .to_string(),
                             ));
@@ -10157,6 +10174,17 @@ fn maybe_birth() {
         birth_unix: now,
     });
 
+    // 殖民地真居住 v1：孩子承繼父母的聚落歸屬——父母已遷居殖民地的話，這個孩子就誕生在
+    // 殖民地（家域本就落在父母家旁，聚落歸屬跟上＝她長大蓋家/擴建也以殖民地為中心）。
+    // settlements 寫鎖短取即釋、append 鎖外（守 prod 死鎖鐵律）；主村（0）不留多餘記錄。
+    {
+        let parent_sid = { hub().settlements.read().unwrap().settlement_of(&parent_id) }; // 讀鎖釋放
+        if parent_sid != vsettle::MAIN_SETTLEMENT {
+            let srec = { hub().settlements.write().unwrap().assign(&new_id, parent_sid) }; // 寫鎖釋放
+            vsettle::append_settlement(&srec);
+        }
+    }
+
     // 愛的結晶 v1（ROADMAP 928）：雙親時，兩位父母各把「和另一半一起迎來孩子」記進心裡
     // （含「一定會」→ 升為一生最重的永久精華記憶，掛對方名下，比照 927 婚禮記憶），Feed 走
     // 家庭版；否則走既有單親「新居民誕生」。memory 寫鎖各取即釋、不巢狀（守 prod 死鎖鐵律）。
@@ -11376,6 +11404,48 @@ pub async fn voxel_village_map_handler() -> axum::response::Response {
         "plots": plots,
     })
     .to_string();
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
+/// 乙太方界·殖民地真居住 v1：野外殖民地名冊＋**現居人口**彙總 JSON（唯讀、零副作用）。
+///
+/// 分村殖民（884）奠下的野外村落此前只活在奠基那一刻的 Feed 與探索紀事裡；本端點讓玩家
+/// （與官網/工具）隨時看得到每座殖民地的名字、座標、立村故事、拓荒者——以及**現在真的
+/// 住在那裡的居民**（聚落歸屬帳本），第二村不再是空殼。
+/// 鎖紀律：colonies(讀) → settlements(讀) 各短取即釋、循序不巢狀。
+pub async fn voxel_colonies_handler() -> axum::response::Response {
+    use axum::http::header;
+    let colonies: Vec<vcolony::Colony> = { hub().colonies.read().unwrap().all().to_vec() }; // colonies 讀鎖釋放
+    let items: Vec<serde_json::Value> = {
+        let st = hub().settlements.read().unwrap();
+        colonies
+            .iter()
+            .map(|c| {
+                let residents: Vec<&'static str> = st
+                    .residents_of(vsettle::colony_settlement_id(c.seq))
+                    .iter()
+                    .map(|rid| resident_name_of(rid))
+                    .collect();
+                serde_json::json!({
+                    "seq": c.seq,
+                    "name": c.name,
+                    "cx": c.cx,
+                    "cz": c.cz,
+                    "biome": c.biome,
+                    "founders": c.founders,
+                    "story": c.story,
+                    "founded_unix": c.founded_unix,
+                    "population": residents.len(),
+                    "residents": residents,
+                })
+            })
+            .collect()
+    }; // settlements 讀鎖釋放
+    let body = serde_json::json!({ "colonies": items }).to_string();
     axum::response::Response::builder()
         .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-cache")
@@ -22758,6 +22828,18 @@ fn claim_or_reuse_plot(rid: &str, hx: i32, hz: i32) -> (i32, i32) {
     if let Some((cx, cz)) = hub().village.read().unwrap().claim_of(rid) {
         return (cx, cz);
     }
+    // 殖民地真居住 v1：已遷居殖民地的居民，認領的是**她那座殖民地中心周圍的小地塊**——
+    // 蓋家/擴建從此以殖民地為中心，第二村自己長。聚落歸屬（settlements 讀鎖即釋）＝主村
+    // 才走下方既有主村地塊路徑（零回歸）。
+    let sid = { hub().settlements.read().unwrap().settlement_of(rid) }; // settlements 讀鎖釋放
+    if sid != vsettle::MAIN_SETTLEMENT {
+        if let Some((cx, cz)) = claim_colony_plot(rid, sid, hx, hz) {
+            return (cx, cz);
+        }
+        // 殖民地小地塊全滿／名冊查無這座殖民地（理論極少）→ 保守退回家域中心
+        // （她的家已在殖民地，錨點仍落在殖民地一帶，絕不把她拉回主村）。
+        return (hx, hz);
+    }
     // 村莊中心：優先用一次性整理時**釘死的中心**（旗標檔），讓認領的地塊與已鋪的道路網對齊、
     // 不隨新生兒改變質心而漂移；旗標缺（極少：整理尚未跑）才退回即時質心。
     let (vcx, vcz) = match vvillage::load_village_center() {
@@ -22793,6 +22875,81 @@ fn claim_or_reuse_plot(rid: &str, hx: i32, hz: i32) -> (i32, i32) {
             (p.cx, p.cz)
         }
         _ => (hx, hz), // 保守退回家域中心（村莊全滿）
+    }
+}
+
+/// 殖民地真居住 v1：替一位已遷居殖民地的居民，在她那座殖民地中心周圍認領一塊小地塊
+/// （[`vsettle::colony_plots`] 的 8 塊環），並從殖民地中心鋪一小段路連過去（只加不拆）。
+/// 認領成功回地塊中心；殖民地全滿／名冊查無 → None（呼叫端保守退回家域中心）。
+/// 鎖紀律：colonies(讀) → village(寫) 各短取即釋、循序不巢狀；鋪路/落地/Feed 全在鎖外。
+fn claim_colony_plot(rid: &str, sid: u64, hx: i32, hz: i32) -> Option<(i32, i32)> {
+    let cseq = vsettle::settlement_colony_seq(sid)?;
+    // 這座殖民地的中心與名字（colonies 讀鎖即釋）。
+    let (ccx, ccz, cname) = {
+        let reg = hub().colonies.read().unwrap();
+        reg.all()
+            .iter()
+            .find(|c| c.seq == cseq)
+            .map(|c| (c.cx, c.cz, c.name.clone()))?
+    }; // colonies 讀鎖釋放
+    let plots = vsettle::colony_plots(ccx, ccz); // 純函式、鎖外算
+    // village 寫鎖：挑最近空地塊 + 認領（double-check 併發安全，比照主村路徑）。
+    // 認領會自動釋放她在主村的舊地塊（PlotRegistry::claim 內建換塊語意）——主村地塊讓給後人。
+    let (claim, plot) = {
+        let mut village = hub().village.write().unwrap();
+        if let Some((cx, cz)) = village.claim_of(rid) {
+            return Some((cx, cz)); // 併發下別的 tick 已幫這居民認領
+        }
+        match village.nearest_free_plot(&plots, hx, hz) {
+            Some(p) => (Some(village.claim(rid, p.cx, p.cz)), Some(p)),
+            None => (None, None), // 殖民地全滿（8 戶）→ 呼叫端保守退回
+        }
+    }; // village 寫鎖釋放
+    let (rec, p) = (claim?, plot?);
+    vvillage::append_plot_claim(&rec); // 鎖外落地
+    // 從殖民地中心鋪一小段路連到她的地塊（只鋪自然地表、遇東西即停——絕不拆作品）。
+    pave_colony_access(ccx, ccz, p.cx, p.cz);
+    let rname = resident_name_of(rid);
+    vfeed::append_feed(
+        "殖民安家",
+        rname,
+        &vvillage::plot_claim_feed_line_in(rname, &p, ccx, ccz, &cname),
+    );
+    Some((p.cx, p.cz))
+}
+
+/// 殖民地真居住 v1：從殖民地中心 (ccx,ccz) 鋪一條 L 形短路到 (px,pz)（重用主村
+/// `pave_path_cells`，路徑長 ≤ 2×[`vsettle::COLONY_PLOT_DIST`]，一次性小批量、非熱路徑）。
+/// 逐格守則與主村一次性整理相同：只有「該格地表是自然地表、其上方是空氣」才鋪，
+/// 遇建築/樹/水/農田即停——只加不拆。冪等：已是路面材質的格直接略過。
+/// 鎖紀律：surface_y 純函式鎖外算；deltas 寫鎖單次批量即釋；廣播/持久化全在鎖外。
+fn pave_colony_access(ccx: i32, ccz: i32, px: i32, pz: i32) {
+    let biome = voxel::biome_at_voxel(ccx, ccz);
+    let surf = vvillage::road_surface(biome);
+    // 各格的地表 y 先在鎖外算好（surface_y 走程序地形純函式，不碰 deltas 鎖）。
+    let cells: Vec<(i32, i32, i32)> = vvillage::pave_path_cells(ccx, ccz, px, pz)
+        .into_iter()
+        .map(|(x, z)| (x, vbuild::surface_y(x, z), z))
+        .collect();
+    let mut placed: Vec<(i32, i32, i32)> = Vec::new();
+    {
+        let mut world = hub().deltas.write().unwrap();
+        for &(x, sy, z) in &cells {
+            let gy = sy - 1; // 地表方塊本身那一層
+            let cur = voxel::effective_block_at(&world, x, gy, z);
+            if !vvillage::is_natural_ground(cur) || cur == surf {
+                continue; // 遇建築/樹/水/農田不動；已是路面＝冪等略過
+            }
+            if voxel::effective_block_at(&world, x, sy, z) != Block::Air {
+                continue; // 上方被佔＝路遇到東西，這格不鋪
+            }
+            voxel::set_block(&mut world, x, gy, z, surf);
+            placed.push((x, gy, z));
+        }
+    } // deltas 寫鎖釋放
+    for &(x, y, z) in &placed {
+        broadcast_block(x, y, z, surf);
+        vbuild::append_world_block(x, y, z, surf as u8);
     }
 }
 
@@ -22928,7 +23085,11 @@ fn tick_home_relocation(dt: f32, say_updates: &mut Vec<(String, String)>) {
         hub().relocations.read().unwrap().active().cloned(); // relocations 讀鎖即釋
 
     let Some(rec) = active else {
-        relocation_kickoff(say_updates);
+        // 殖民地真居住 v1：拓荒者遷居殖民地優先於主村內都更（兩者共用「一次一位」名額與
+        // 同一套搬家引擎）。沒有待遷的拓荒者才輪主村都更掃描。
+        if !migration_kickoff(say_updates) {
+            relocation_kickoff(say_updates);
+        }
         RELOC_PACE.lock().unwrap().timer = reloc_scan_secs();
         return;
     };
@@ -23004,6 +23165,175 @@ fn tick_home_relocation(dt: f32, say_updates: &mut Vec<(String, String)>) {
     }
 }
 
+/// 殖民地真居住 v1：掃「奠基紀錄裡的拓荒者、還沒真的遷居殖民地」的名單，挑第一位此刻
+/// 閒著的開工遷居（與主村都更共用「一次一位」名額與同一套搬家引擎）。回傳是否開了一件
+/// （或完成了一次即刻遷家）——true 時本輪不再掃主村都更。
+///
+/// 流程：認領殖民地小地塊（自動釋放主村舊地塊）＋鋪短路 → 聚落歸屬落地（冪等閘：之後
+/// 重掃不再列入）→ 有完工小屋＝走既有搬家引擎（蓋新家→拆舊回收→錨點/家域遷移）；
+/// 沒有小屋（極少）＝即刻遷家（done 型紀錄，重啟後 home_override 還原，之後她的蓋家
+/// agency 自會在殖民地小地塊上蓋起小屋）。已存在的殖民地（如風禾屯）部署後自動觸發。
+/// 鎖紀律：colonies/residents/settlements/goals/village/relocations/builds 各短取即釋、
+/// 循序不巢狀；落地/Feed/鋪路全在鎖外（守 prod 死鎖鐵律）。
+fn migration_kickoff(say_updates: &mut Vec<(String, String)>) -> bool {
+    // 殖民地快照（colonies 讀鎖即釋）。沒有殖民地＝零成本早退。
+    let colonies: Vec<(u64, String, i32, i32, Vec<String>)> = {
+        let reg = hub().colonies.read().unwrap();
+        reg.all()
+            .iter()
+            .map(|c| (c.seq, c.name.clone(), c.cx, c.cz, c.founders.clone()))
+            .collect()
+    }; // colonies 讀鎖釋放
+    if colonies.is_empty() {
+        return false;
+    }
+    // 拓荒者名字 → 居民 id（用當前人口對照；查無此人的名字略過——絕不誤遷別人）。
+    let name_to_rid: Vec<(String, String)> = {
+        let rs = hub().residents.read().unwrap();
+        rs.iter().map(|r| (r.name.to_string(), r.id.clone())).collect()
+    }; // residents 讀鎖釋放
+    let colony_founders: Vec<(u64, Vec<String>)> = colonies
+        .iter()
+        .map(|(seq, _, _, _, founders)| {
+            let rids = founders
+                .iter()
+                .filter_map(|f| name_to_rid.iter().find(|(n, _)| n == f).map(|(_, rid)| rid.clone()))
+                .collect();
+            (*seq, rids)
+        })
+        .collect();
+    let pending = {
+        let st = hub().settlements.read().unwrap();
+        vsettle::pending_migrations(&st, &colony_founders)
+    }; // settlements 讀鎖釋放
+    for (rid, sid) in pending {
+        // 此刻在忙（已有建造計畫/被指派/發明/跑腿/跟隨/睡著）→ 這輪先跳過她（比照主村都更）。
+        if hub().builds.read().unwrap().has_plan(&rid) {
+            continue; // builds 讀鎖釋放
+        }
+        if hub().directed_tasks.read().unwrap().contains_key(&rid) {
+            continue; // directed_tasks 讀鎖釋放
+        }
+        let snap = {
+            let residents = hub().residents.read().unwrap();
+            residents.iter().find(|r| r.id == rid).map(|r| {
+                (
+                    r.invent_run.is_some() || r.fetch.is_some() || r.follow.is_some() || r.asleep,
+                    (r.home_x.floor() as i32, r.home_z.floor() as i32),
+                )
+            })
+        }; // residents 讀鎖釋放
+        let Some((busy, (ohx, ohz))) = snap else { continue };
+        if busy {
+            continue;
+        }
+        let Some(cseq) = vsettle::settlement_colony_seq(sid) else { continue };
+        let Some((_, cname, ccx, ccz, _)) =
+            colonies.iter().find(|(s, ..)| *s == cseq)
+        else {
+            continue;
+        };
+        // 認領殖民地小地塊（換塊語意自動釋放主村舊地塊）＋鋪短路。全滿（8 戶）→ 這位遷不了，
+        // 換下一位（極少：v1 只遷 founders 兩位）。
+        let plot = {
+            let plots = vsettle::colony_plots(*ccx, *ccz);
+            let mut village = hub().village.write().unwrap();
+            match village.nearest_free_plot(&plots, *ccx, *ccz) {
+                Some(p) => {
+                    let rec = village.claim(&rid, p.cx, p.cz);
+                    Some((p, rec))
+                }
+                None => None,
+            }
+        }; // village 寫鎖釋放
+        let Some((plot, claim_rec)) = plot else { continue };
+        vvillage::append_plot_claim(&claim_rec); // 鎖外落地
+        pave_colony_access(*ccx, *ccz, plot.cx, plot.cz);
+        // 挑新家錨位：避開她既有建物錨點（全在主村，殖民地小地塊上必有空位）。
+        let spots: Vec<(i32, i32)> = (0..6).map(vskill::build_offset).collect();
+        let taken = { hub().goals.read().unwrap().anchors_xz_of(&rid) }; // goals 讀鎖釋放
+        let Some((bx, bz)) = vvillage::first_free_spot(plot.cx, plot.cz, &spots, &taken) else {
+            continue;
+        };
+        let by = vbuild::surface_y(bx, bz);
+        // 聚落歸屬先落地（冪等閘：從此不再列入待遷名單；她的蓋家/擴建從此以殖民地為中心）。
+        let srec = { hub().settlements.write().unwrap().assign(&rid, sid) }; // settlements 寫鎖釋放
+        vsettle::append_settlement(&srec);
+        let rname = resident_name_of(&rid);
+        let old_house = { hub().goals.read().unwrap().house_of(&rid) }; // goals 讀鎖釋放
+        match old_house {
+            Some(old) => {
+                // 有完工小屋：走既有搬家引擎全流程（蓋新家→拆舊回收→錨點/家域遷移）。
+                let rec = {
+                    hub().relocations.write().unwrap().begin_to(&rid, old, (bx, by, bz), sid)
+                }; // relocations 寫鎖釋放
+                let Some(rec) = rec else { return true }; // 併發防呆：已有人在搬 → 本輪收手
+                vvillage::append_relocation(&rec);
+                let plan = {
+                    let mut builds = hub().builds.write().unwrap();
+                    if builds.has_plan(&rid) {
+                        None // double-check 併發安全
+                    } else {
+                        Some(builds.new_plan(&rid, vbuild::BuildKind::House, bx, by, bz, false, None))
+                    }
+                }; // builds 寫鎖釋放
+                if let Some(p) = &plan {
+                    vbuild::append_build(p);
+                }
+                vfeed::append_feed("殖民遷居", rname, &vsettle::migrate_start_feed_line(rname, cname));
+                say_updates.push((rid.clone(), vsettle::migrate_start_say_line(cname)));
+                {
+                    let mut residents = hub().residents.write().unwrap();
+                    if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                        r.gather = None; // 遷居是大事：自發採集先放下
+                        r.build_cooldown = 0.0; // 比照都更：別讓建造冷卻卡住新家收尾
+                        r.target_x = bx as f32 + 0.5;
+                        r.target_z = bz as f32 + 0.5;
+                        r.wait_timer = 0.0;
+                    }
+                } // residents 寫鎖釋放
+                tracing::info!(resident = %rid, colony = %cname, new = ?(bx, by, bz), "殖民遷居：動工新家");
+            }
+            None => {
+                // 沒有完工小屋（極少）：即刻遷家——家域直接落到殖民地小地塊，之後她的蓋家
+                // agency 自會在這裡蓋起小屋（claim_or_reuse_plot 已回殖民地地塊）。
+                let oy = vbuild::surface_y(ohx, ohz);
+                let rec = {
+                    hub().relocations
+                        .write()
+                        .unwrap()
+                        .record_instant_move(&rid, (ohx, oy, ohz), (bx, by, bz), sid)
+                }; // relocations 寫鎖釋放
+                vvillage::append_relocation(&rec);
+                {
+                    let mut residents = hub().residents.write().unwrap();
+                    if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                        r.home_x = bx as f32 + 0.5;
+                        r.home_z = bz as f32 + 0.5;
+                        r.gather = None;
+                        r.target_x = r.home_x;
+                        r.target_z = r.home_z;
+                        r.wait_timer = 0.0;
+                    }
+                } // residents 寫鎖釋放
+                vfeed::append_feed("殖民遷居", rname, &vsettle::migrate_done_feed_line(rname, cname));
+                say_updates.push((rid.clone(), vsettle::migrate_done_say_line(cname)));
+                let entry = {
+                    hub().memory.write().unwrap().add_memory(
+                        &rid,
+                        vcolony::COLONY_MEMORY_PLAYER,
+                        &vsettle::migrate_memory_summary(cname),
+                    )
+                }; // memory 寫鎖釋放
+                vmem::append_memory(&entry);
+                tracing::info!(resident = %rid, colony = %cname, home = ?(bx, by, bz), "殖民遷居：即刻遷家（無舊屋可拆）");
+            }
+        }
+        return true; // 一次只開一件（與主村都更共用錯開節奏）
+    }
+    false
+}
+
 /// 掃待都更名單、挑第一位「此刻閒著」的居民開工搬家（一次至多開一件）。
 /// (a) 認領地塊 →(b) Feed「開始把家搬到村裡的新地塊」→(c) 動工新家（既有 BuildPlan 引擎）。
 fn relocation_kickoff(say_updates: &mut Vec<(String, String)>) {
@@ -23011,7 +23341,13 @@ fn relocation_kickoff(say_updates: &mut Vec<(String, String)>) {
     let Some((vcx, vcz)) = vvillage::load_village_center() else { return };
     let plots = vvillage::plot_layout(vcx, vcz); // 純函式、鎖外算
     let houses = { hub().goals.read().unwrap().all_houses() }; // goals 讀鎖釋放
-    let done = { hub().relocations.read().unwrap().done_residents() }; // relocations 讀鎖釋放
+    let done = {
+        let mut d = hub().relocations.read().unwrap().done_residents(); // relocations 讀鎖釋放
+        // 殖民地真居住 v1：已遷居殖民地的居民，家在殖民地、不在主村地塊上是**正確狀態**——
+        // 併進排除名單，絕不被主村都更拉回來（settlements 讀鎖即釋、不巢狀）。
+        d.extend(hub().settlements.read().unwrap().nonmain_assigned());
+        d
+    };
     let cands = vvillage::relocation_candidates(&houses, &plots, &done);
     for (rid, old) in cands {
         // 此刻在忙（已有建造計畫/被指派整地/發明/跑腿/跟隨/睡著）→ 這輪先跳過她，
@@ -23261,8 +23597,29 @@ fn relocation_finish(
         }
     } // residents 寫鎖釋放
     let rname = resident_name_of(rid);
-    vfeed::append_feed("都更搬家", rname, &vvillage::reloc_done_feed_line(rname));
-    say_updates.push((rid.clone(), vvillage::reloc_done_say_line().to_string()));
+    // 殖民地真居住 v1：這件搬家若是遷居殖民地（dest_settlement≠0），收尾走殖民版的
+    // Feed/泡泡/記憶——「露娜正式遷居風禾屯」＋主村想念一句（療癒調性：留下的人惦記著）。
+    let dest_colony: Option<String> = vsettle::settlement_colony_seq(fin.dest_settlement)
+        .and_then(|cseq| {
+            let reg = hub().colonies.read().unwrap();
+            reg.all().iter().find(|c| c.seq == cseq).map(|c| c.name.clone())
+        }); // colonies 讀鎖釋放
+    if let Some(cname) = &dest_colony {
+        vfeed::append_feed("殖民遷居", rname, &vsettle::migrate_done_feed_line(rname, cname));
+        say_updates.push((rid.clone(), vsettle::migrate_done_say_line(cname)));
+        let entry = {
+            hub().memory.write().unwrap().add_memory(
+                rid,
+                vcolony::COLONY_MEMORY_PLAYER,
+                &vsettle::migrate_memory_summary(cname),
+            )
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&entry);
+        vfeed::append_feed("殖民遷居", rname, &vsettle::village_miss_feed_line(rname, cname));
+    } else {
+        vfeed::append_feed("都更搬家", rname, &vvillage::reloc_done_feed_line(rname));
+        say_updates.push((rid.clone(), vvillage::reloc_done_say_line().to_string()));
+    }
     {
         let mut pace = RELOC_PACE.lock().unwrap();
         pace.timer = reloc_gap_secs();
