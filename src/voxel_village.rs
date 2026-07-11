@@ -413,8 +413,13 @@ pub fn village_feed_line() -> &'static str {
 /// 某居民在南/北/東/西哪個方位安了新家的 Feed 文字（認領地塊時用）。
 /// 依地塊中心相對村莊中心的方位給一句方向感描述（面向玩家、i18n 友善集中此處）。
 pub fn plot_claim_feed_line(name: &str, plot: &Plot, vcx: i32, vcz: i32) -> String {
+    plot_claim_feed_line_in(name, plot, vcx, vcz, "村子")
+}
+
+/// 同上，但聚落名可指定（殖民地真居住 v1：在「風禾屯」認領地塊時報上村名）。
+pub fn plot_claim_feed_line_in(name: &str, plot: &Plot, vcx: i32, vcz: i32, place: &str) -> String {
     let dir = compass_dir(plot.cx - vcx, plot.cz - vcz);
-    format!("{name}在村子{dir}的地塊安了新家。")
+    format!("{name}在{place}{dir}的地塊安了新家。")
 }
 
 /// 由相對位移給一個粗略方位詞（純函式、可測）。z 增為南、z 減為北；x 增為東、x 減為西。
@@ -679,6 +684,11 @@ pub struct RelocationRecord {
     pub phase: String,
     /// 單調遞增序號（越大越新；還原時同居民取最新一筆）。
     pub seq: u64,
+    /// 目的地聚落 id（殖民地真居住 v1）：0＝主村內都更（既有行為）；非 0＝遷居該殖民地
+    /// （`voxel_settle::colony_settlement_id`）。`#[serde(default)]`：既有落地行缺此欄＝0，
+    /// 向後相容、零 migration。
+    #[serde(default)]
+    pub dest_settlement: u64,
 }
 
 /// 搬家排程 store：**全村同時至多一位在搬**（錯開）＋已搬完名單（不重複搬）。
@@ -720,15 +730,32 @@ impl RelocationStore {
     }
 
     /// 開始一件搬家（一次一位的硬閘）：已有進行中的搬家、或這位居民已搬過 → None（不開工）。
-    /// 成功回落地記錄（phase=build）供 append。
+    /// 成功回落地記錄（phase=build）供 append。主村內都更（dest=0）的既有入口。
     pub fn begin(
         &mut self,
         resident: &str,
         old: (i32, i32, i32),
         new: (i32, i32, i32),
     ) -> Option<RelocationRecord> {
-        if self.active.is_some() || self.done.contains_key(resident) {
+        self.begin_to(resident, old, new, 0)
+    }
+
+    /// 開始一件搬家到指定聚落（殖民地真居住 v1）。一次一位的硬閘不變；差別在
+    /// `dest_settlement != 0`（遷居殖民地）時，**允許已搬過家的居民再遷**——主村內都更
+    /// 一生一次（防鬼打牆），但遷居殖民地是新的人生階段（冪等由聚落歸屬把關：已劃歸的
+    /// 不會再列入待遷名單）。成功回落地記錄（phase=build）供 append。
+    pub fn begin_to(
+        &mut self,
+        resident: &str,
+        old: (i32, i32, i32),
+        new: (i32, i32, i32),
+        dest_settlement: u64,
+    ) -> Option<RelocationRecord> {
+        if self.active.is_some() {
             return None;
+        }
+        if dest_settlement == 0 && self.done.contains_key(resident) {
+            return None; // 主村內都更一生一次（既有行為不變）
         }
         let rec = RelocationRecord {
             resident: resident.to_string(),
@@ -740,10 +767,39 @@ impl RelocationStore {
             new_z: new.2,
             phase: RELOC_PHASE_BUILD.to_string(),
             seq: self.next_seq,
+            dest_settlement,
         };
         self.next_seq = self.next_seq.wrapping_add(1);
         self.active = Some(rec.clone());
         Some(rec)
+    }
+
+    /// 即刻遷家（殖民地真居住 v1·無屋可拆的極少數路徑）：這位居民還沒有完工小屋，不需要
+    /// 蓋新家/拆舊家的完整搬家流程——直接記一筆 phase=done 的搬家紀錄（登記進已完成名單，
+    /// 讓 [`Self::home_override`] 在重啟後把她的家域還原到新址）。不占「一次一位」名額。
+    pub fn record_instant_move(
+        &mut self,
+        resident: &str,
+        old: (i32, i32, i32),
+        new: (i32, i32, i32),
+        dest_settlement: u64,
+    ) -> RelocationRecord {
+        let rec = RelocationRecord {
+            resident: resident.to_string(),
+            old_x: old.0,
+            old_y: old.1,
+            old_z: old.2,
+            new_x: new.0,
+            new_y: new.1,
+            new_z: new.2,
+            phase: RELOC_PHASE_DONE.to_string(),
+            seq: self.next_seq,
+            dest_settlement,
+        };
+        self.next_seq = self.next_seq.wrapping_add(1);
+        self.done
+            .insert(resident.to_string(), (new.0, new.1, new.2));
+        rec
     }
 
     /// 新家完工 → 進拆舊家階段。無進行中搬家、或不在 build 階段 → None（冪等防呆）。
@@ -1435,6 +1491,73 @@ mod tests {
         s.finish().unwrap();
         assert!(s.begin("vox_res_0", (-150, 9, 80), (20, 9, 0)).is_none(), "搬過的不再搬");
         assert!(s.done_residents().contains(&"vox_res_0".to_string()));
+    }
+
+    // ── 殖民地真居住 v1：begin_to / record_instant_move / serde 向後相容 ────────
+
+    #[test]
+    fn begin_to_colony_allows_second_move_after_village_reloc() {
+        let mut s = RelocationStore::new();
+        // 先在主村內都更一次（既有 #1145 行為）。
+        s.begin("vox_res_0", (-150, 9, 80), (20, 9, 0)).unwrap();
+        s.advance_to_demolish().unwrap();
+        s.finish().unwrap();
+        // 主村內再搬 → 擋（一生一次不變）；遷居殖民地（dest≠0）→ 放行（新的人生階段）。
+        assert!(s.begin_to("vox_res_0", (20, 9, 0), (30, 9, 30), 0).is_none());
+        let rec = s.begin_to("vox_res_0", (20, 9, 0), (506, 9, 173), 1).expect("遷居殖民地應放行");
+        assert_eq!(rec.dest_settlement, 1);
+        assert_eq!(rec.phase, RELOC_PHASE_BUILD);
+        // dest_settlement 一路帶到收尾（Feed 分支靠它認得這是殖民遷居）。
+        let adv = s.advance_to_demolish().unwrap();
+        assert_eq!(adv.dest_settlement, 1);
+        let fin = s.finish().unwrap();
+        assert_eq!(fin.dest_settlement, 1);
+        // 家域覆蓋跟著最新的家走（殖民地新家）。
+        assert_eq!(s.home_override("vox_res_0"), Some((506, 9, 173)));
+    }
+
+    #[test]
+    fn begin_to_still_one_at_a_time() {
+        let mut s = RelocationStore::new();
+        s.begin_to("vox_res_0", (0, 9, 0), (506, 9, 173), 1).unwrap();
+        assert!(s.begin_to("vox_res_1", (5, 9, 5), (484, 9, 195), 1).is_none(), "同時只一位在搬");
+    }
+
+    #[test]
+    fn record_instant_move_registers_home_override() {
+        let mut s = RelocationStore::new();
+        let rec = s.record_instant_move("vox_res_2", (10, 9, 10), (506, 9, 173), 1);
+        assert_eq!(rec.phase, RELOC_PHASE_DONE);
+        assert_eq!(rec.dest_settlement, 1);
+        assert_eq!(s.home_override("vox_res_2"), Some((506, 9, 173)));
+        assert!(s.active().is_none(), "即刻遷家不占一次一位名額");
+        // 重啟 roundtrip：done 紀錄還原後 home_override 仍指向新家。
+        let restored = RelocationStore::from_entries(vec![rec]);
+        assert_eq!(restored.home_override("vox_res_2"), Some((506, 9, 173)));
+    }
+
+    #[test]
+    fn relocation_record_serde_default_backward_compat() {
+        // 既有落地行（#1145 時代、沒有 dest_settlement 欄）→ 反序列化成 0（主村都更）。
+        let legacy = r#"{"resident":"vox_res_0","old_x":-150,"old_y":9,"old_z":80,"new_x":20,"new_y":9,"new_z":0,"phase":"done","seq":3}"#;
+        let rec: RelocationRecord = serde_json::from_str(legacy).expect("舊行必須可讀（零破壞）");
+        assert_eq!(rec.dest_settlement, 0);
+        // 新行 roundtrip。
+        let mut s = RelocationStore::new();
+        let rec = s.begin_to("vox_res_1", (0, 9, 0), (506, 9, 173), 2).unwrap();
+        let line = serde_json::to_string(&rec).unwrap();
+        let back: RelocationRecord = serde_json::from_str(&line).unwrap();
+        assert_eq!(back, rec);
+    }
+
+    #[test]
+    fn plot_claim_feed_line_in_mentions_place() {
+        let p = Plot { cx: 506, cz: 173 };
+        let line = plot_claim_feed_line_in("露娜", &p, 484, 173, "風禾屯");
+        assert!(line.contains("風禾屯") && line.contains("露娜"), "實得：{line}");
+        // 既有主村版行為不變。
+        let legacy = plot_claim_feed_line("露娜", &p, 484, 173);
+        assert!(legacy.contains("村子"));
     }
 
     #[test]
