@@ -191,6 +191,7 @@ use crate::voxel_farbond as vfar;
 use crate::voxel_pathwear as vpath;
 use crate::voxel_expedition as vexp;
 use crate::voxel_frontier_visit as vfvisit;
+use crate::voxel_farvisit as vfarv;
 use crate::voxel_sendoff as vsend;
 use crate::voxel_illness as villness;
 use crate::voxel_welcome as vwelcome;
@@ -770,6 +771,17 @@ struct VoxelResident {
     frontier_visit_timer: f32,
     /// 邊陲探友冷卻倒數（秒）：一次探友（尋得／放棄）後設定，稀少才有感、不洗版。各居民初始錯開。
     frontier_visit_cooldown: f32,
+    /// 相思成行·跨村探親（947，`voxel_farvisit`）：Some(目的地 x, z, 摯友現居村落名, 摯友顯示名)
+    /// ＝正走在前往另一座村的遠路上／已抵達重逢小聚；None＝沒在探親。由 945 兩村相思的念叨計數
+    /// 累積滿而觸發（tick_farbond），純記憶體、重啟歸零（這趟旅程自然作罷、居民照常回家域）。
+    far_visit: Option<(f32, f32, String, String)>,
+    /// 跨村探親重逢後的小聚倒數（秒）：> 0＝已與摯友重逢、正在她的村裡小聚，到 0 即道別踏上歸途。
+    far_visit_stay: f32,
+    /// 跨村探親去程逾時倒數（秒）：路太遠太難走（地形繞行）就折返，不無限跋涉。
+    far_visit_timer: f32,
+    /// 跨村探親冷卻倒數（秒）：一趟探親（重逢／撲空／折返）後設定——成行已由念叨計數天然稀有，
+    /// 這裡再兜一層底。
+    far_visit_cooldown: f32,
     /// 病況（居民也會生病 v1，ROADMAP 自主提案）：0.0=健康、[`villness::ILLNESS_MAX`]=剛病倒。
     /// 隨伺服器 tick 自然消退（[`villness::tick_recover`]）；鄰居陪伴／玩家送湯會加速消退。
     /// 純記憶體、重啟歸零（生病是數分鐘的過場狀態，零資料風險、零 migration）。
@@ -2002,6 +2014,12 @@ fn build_resident(
             frontier_visit_stay: 0.0,
             frontier_visit_timer: 0.0,
             frontier_visit_cooldown: vfvisit::COOLDOWN_SECS * 0.5 + i as f32 * 250.0,
+            // 相思成行·跨村探親 v1（947）：入場沒在探親；成行由 945 的念叨計數天然節流
+            // （至少 3 次 × 90 分鐘冷卻），冷卻只是兜底，無需再錯開。
+            far_visit: None,
+            far_visit_stay: 0.0,
+            far_visit_timer: 0.0,
+            far_visit_cooldown: 0.0,
             // 居民也會生病 v1（自主提案）：入場健康；首次發病冷卻各自大幅錯開，
             // 避免啟動後短時間全員扎堆病倒。
             illness_severity: 0.0,
@@ -9449,9 +9467,10 @@ fn tick_longing() {
 // 因兩邊都是居民、各自獨立掃到對方，相思天生雙向往復（露娜念遠在風禾屯的諾娃、諾娃也念主村的露娜），
 // 無需編派方向。每位居民有 FARBOND_MIN_INTERVAL_SECS 冷卻，且每次掃描至多發一則，稀疏而有份量、不洗版。
 //
-// 純確定性、零 LLM。嚴守鎖紀律：residents 讀鎖（快照）→ farbond_clock 讀鎖（挑冷卻已滿的醒著候選）→
+// 純確定性、零 LLM。嚴守鎖紀律：residents 讀鎖（快照）→ farbond_clock 讀鎖（挑冷卻已滿的醒著候選＋念叨計數）→
 // settlements 讀鎖（建聚落對照）→ bonds 讀鎖（蒐集 Friend 級老朋友＋來往次數）→ colonies 讀鎖（換算村落名）
-// → residents 寫鎖（設泡泡）→ farbond_clock 寫鎖（記冷卻）→ memory 寫鎖（記憶）各自短取即釋、循序不巢狀；
+// → residents 寫鎖（設泡泡；或相思成行 947：念叨滿了改設 far_visit 動身狀態）→ farbond_clock 寫鎖（記冷卻；
+// 成行則計數歸零）→ memory 寫鎖（記憶，僅念叨路徑）各自短取即釋、循序不巢狀；
 // append_memory IO 與 Feed／broadcast 全在鎖外（守 prod 死鎖鐵律）。低頻（每 FARBOND_SCAN_TICKS 掃一次）。
 static FARBOND_TICKS: AtomicU64 = AtomicU64::new(0);
 /// 每隔幾個 resident tick 掃一次兩村相思（低頻即可，相思不急）。
@@ -9467,21 +9486,23 @@ fn tick_farbond() {
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    // ① residents 讀鎖：快照全體居民 (index, id, name, 是否在睡)。
-    let snap: Vec<(usize, String, String, bool)> = {
+    // ① residents 讀鎖：快照全體居民 (index, id, name, 是否在睡, x, z)。座標供相思成行（947）
+    //    當作探親目的地——動身那一刻摯友所在的點（她是定居者，平日只在自己村的小半徑內活動）。
+    let snap: Vec<(usize, String, String, bool, f32, f32)> = {
         let rs = hub().residents.read().unwrap();
         rs.iter()
             .enumerate()
-            .map(|(i, r)| (i, r.id.clone(), r.name.to_string(), r.asleep))
+            .map(|(i, r)| (i, r.id.clone(), r.name.to_string(), r.asleep, r.body.x, r.body.z))
             .collect()
     }; // residents 讀鎖釋放
 
-    // ② farbond_clock 讀鎖：挑「醒著且冷卻已滿」的候選（穩定順序＝index 升序，確定性）。
-    let candidates: Vec<(String, String)> = {
+    // ② farbond_clock 讀鎖：挑「醒著且冷卻已滿」的候選（穩定順序＝index 升序，確定性），
+    //    順手帶出各自的念叨計數——相思成行（947）用它判斷「這次是念叨、還是該動身了」。
+    let candidates: Vec<(String, String, u32)> = {
         let clock = hub().farbond_clock.read().unwrap();
         snap.iter()
-            .filter(|(_, id, _, asleep)| !*asleep && clock.due(id, now))
-            .map(|(_, id, name, _)| (id.clone(), name.clone()))
+            .filter(|(_, id, _, asleep, _, _)| !*asleep && clock.due(id, now))
+            .map(|(_, id, name, _, _, _)| (id.clone(), name.clone(), clock.miss_count(id)))
             .collect()
     }; // farbond_clock 讀鎖釋放
     if candidates.is_empty() {
@@ -9492,19 +9513,20 @@ fn tick_farbond() {
     let settle_of: std::collections::HashMap<String, u64> = {
         let st = hub().settlements.read().unwrap();
         snap.iter()
-            .map(|(_, id, _, _)| (id.clone(), st.settlement_of(id)))
+            .map(|(_, id, _, _, _, _)| (id.clone(), st.settlement_of(id)))
             .collect()
     }; // settlements 讀鎖釋放
 
     // ④ bonds 讀鎖：為候選（依序）蒐集 Friend 級老朋友，交給純函式挑出最惦念的隔村那位。
     //    相思稀有——每次掃描至多發一則：取第一位「真有隔村摯友」的候選。
-    let chosen: Option<(String, String, String, u64)> = {
+    //    chosen ＝ (念叨者 id, 名, 念叨計數, 摯友名, 摯友聚落, 摯友當下 x, z)。
+    let chosen: Option<(String, String, u32, String, u64, f32, f32)> = {
         let bonds = hub().bonds.read().unwrap();
         let mut result = None;
-        for (mid, mname) in &candidates {
+        for (mid, mname, miss_count) in &candidates {
             let my_settlement = *settle_of.get(mid).unwrap_or(&vsettle::MAIN_SETTLEMENT);
             let mut friends: Vec<vfar::FarFriend> = Vec::new();
-            for (_, oid, oname, _) in &snap {
+            for (_, oid, oname, _, _, _) in &snap {
                 if oid == mid {
                     continue;
                 }
@@ -9519,16 +9541,32 @@ fn tick_farbond() {
                 }
             }
             if let Some(f) = vfar::pick_missed_friend(my_settlement, &friends) {
-                result = Some((mid.clone(), mname.clone(), f.name.clone(), f.settlement));
-                break;
+                // 摯友當下座標由 snap 查回（名字在本世界唯一）；查不到（理論上不會）就退回念叨路徑。
+                let pos = snap
+                    .iter()
+                    .find(|(_, _, oname, _, _, _)| *oname == f.name)
+                    .map(|(_, _, _, _, x, z)| (*x, *z));
+                if let Some((fx, fz)) = pos {
+                    result = Some((
+                        mid.clone(),
+                        mname.clone(),
+                        *miss_count,
+                        f.name.clone(),
+                        f.settlement,
+                        fx,
+                        fz,
+                    ));
+                    break;
+                }
             }
         }
         result
     }; // bonds 讀鎖釋放
-    let (misser_id, misser_name, friend_name, friend_settlement) = match chosen {
-        Some(c) => c,
-        None => return, // 所有候選的摯友都住同一村 → 這輪無人可相思。
-    };
+    let (misser_id, misser_name, miss_count, friend_name, friend_settlement, friend_x, friend_z) =
+        match chosen {
+            Some(c) => c,
+            None => return, // 所有候選的摯友都住同一村 → 這輪無人可相思。
+        };
 
     // ⑤ colonies 讀鎖：把朋友現居聚落換算成村落名（主村＝「主村」，找不到殖民地退保底名）。
     let place = if friend_settlement == vsettle::MAIN_SETTLEMENT {
@@ -9541,23 +9579,77 @@ fn tick_farbond() {
             .unwrap_or_else(|| "遠方的村子".to_string())
     }; // colonies 讀鎖釋放
 
-    // ⑥ residents 寫鎖：設相思泡泡（那位居民此刻仍醒著才說得出口；剛好睡了則作罷、不記冷卻、下輪再試）。
+    // ⑥ residents 寫鎖：相思成行（947）——念叨已滿、探親冷卻到期、且她此刻閒置自由（沒接任何
+    //    既定任務）時，這一次相思不再念叨，而是**真的動身**：設探親狀態、冒動身泡泡、腳步轉向
+    //    那座幾百格外的村子。否則照常念叨（泡泡；計數在⑦續累）。剛好睡了則作罷、不記冷卻、下輪再試。
     let pick = (now as usize).wrapping_add(friend_name.chars().count());
-    let said = {
+    // 0＝作罷、1＝念叨了、2＝動身了。
+    let outcome = {
         let mut rs = hub().residents.write().unwrap();
         rs.iter_mut()
             .find(|r| r.id == misser_id && !r.asleep)
             .map(|r| {
-                r.say = vfar::farbond_say_line(&friend_name, &place, pick);
-                r.say_timer = SAY_SECS;
+                // 閒置自由＝沒被任何既定任務接手（比照 821 邊陲探友的觸發閘，加上其後新增的狀態）。
+                let idle_free = r.gather.is_none()
+                    && r.fetch.is_none()
+                    && r.visiting.is_none()
+                    && r.expedition.is_none()
+                    && r.cheer_target.is_none()
+                    && !r.seeking_comfort
+                    && r.clique_meet.is_none()
+                    && r.custom_meet.is_none()
+                    && r.follow.is_none()
+                    && r.summon.is_none()
+                    && r.invent_run.is_none()
+                    && r.pilgrimage.is_none()
+                    && r.daybreak_seek.is_none()
+                    && r.reunion_seek.is_none()
+                    && r.frontier_visit.is_none()
+                    && r.far_visit.is_none()
+                    && r.stroll_partner.is_none()
+                    && r.walk_with.is_none();
+                if vfarv::should_embark(miss_count, r.far_visit_cooldown, idle_free, r.asleep) {
+                    r.far_visit =
+                        Some((friend_x, friend_z, place.clone(), friend_name.clone()));
+                    r.far_visit_stay = 0.0;
+                    r.far_visit_timer = vfarv::TIMEOUT_SECS;
+                    r.target_x = friend_x;
+                    r.target_z = friend_z;
+                    r.wait_timer = 0.0;
+                    r.say = vfarv::depart_bubble(&friend_name, &place, pick);
+                    r.say_timer = SAY_SECS;
+                    2
+                } else {
+                    r.say = vfar::farbond_say_line(&friend_name, &place, pick);
+                    r.say_timer = SAY_SECS;
+                    1
+                }
             })
-            .is_some()
+            .unwrap_or(0)
     }; // residents 寫鎖釋放
-    if !said {
+    if outcome == 0 {
         return;
     }
 
-    // ⑦ 落地：記冷卻鐘 → 記憶（讓兩人情誼記憶再厚一分）→ 城鎮動態牆，然後廣播泡泡。
+    if outcome == 2 {
+        // ⑦' 動身落地：歸零念叨計數（思念化成了腳步；冷卻時刻保留——回來後至少再隔一輪才開始
+        //     新的念叨）→ 城鎮動態牆播「思念推人上路了」。重逢的記憶與情誼加溫留到抵達那一刻
+        //    （far_visit 狀態機，見 tick 迴圈），這裡不預支。
+        {
+            let mut clock = hub().farbond_clock.write().unwrap();
+            clock.mark(&misser_id, now); // 這一次相思時刻照記（冷卻基準）……
+            clock.reset_count(&misser_id); // ……但計數歸零，思念重新從頭累積。
+        } // farbond_clock 寫鎖釋放
+        vfeed::append_feed(
+            vfarv::FEED_KIND,
+            &misser_name,
+            &vfarv::depart_feed_line(&friend_name, &place),
+        );
+        broadcast_players();
+        return;
+    }
+
+    // ⑦ 念叨落地：記冷卻鐘（計數 +1）→ 記憶（讓兩人情誼記憶再厚一分）→ 城鎮動態牆，然後廣播泡泡。
     hub().farbond_clock.write().unwrap().mark(&misser_id, now); // farbond_clock 寫鎖釋放
     let summary = vfar::farbond_memory_summary(&friend_name, &place);
     let entry = hub()
@@ -12072,6 +12164,7 @@ fn maybe_wedding() {
             && r.gather.is_none()
             && r.fetch.is_none()
             && r.frontier_visit.is_none()
+            && r.far_visit.is_none()
             && r.cheer_target.is_none()
     };
     // chosen = (id_a, name_a, id_b, name_b, mid_x, mid_z)
@@ -13895,6 +13988,12 @@ fn tick_residents(dt: f32) {
     let mut frontier_visit_arrive_events: Vec<(String, &'static str, String, String)> = Vec::new();
     // 邊陲探友純 Feed 事件（啟程／小聚結束返家／半路撲空放棄），鎖釋放後統一 append_feed。
     let mut frontier_visit_feed: Vec<(&'static str, String)> = Vec::new();
+    // 相思成行·跨村探親（947，voxel_farvisit）：鎖內收集「訪客走完遠路抵達摯友的村、兩人重逢」
+    // 事件，雙方記憶寫（摯友 id 於鎖外用名字查回）＋record_visit 情誼加溫＋Feed 在居民鎖釋放後
+    // 統一落地（不持居民鎖做 IO，守死鎖鐵律）。(訪客 id, 訪客名, 摯友名, 村落名)。
+    let mut far_visit_arrive_events: Vec<(String, &'static str, String, String)> = Vec::new();
+    // 跨村探親純 Feed 事件（道別踏上歸途／撲空折返／路途逾時折返），鎖釋放後統一 append_feed。
+    let mut far_visit_feed: Vec<(&'static str, String)> = Vec::new();
     // 繁星夜空·星夜共賞（v1，ROADMAP 783）：鎖內收集「某居民記得這位玩家愛看星星、在星夜喚他同賞」
     // 事件；記憶寫（add_memory）與 Feed（append_feed）全在居民鎖釋放後統一處理（不持居民鎖做 IO）。
     // (居民 id, 居民名, 玩家名)。
@@ -15785,6 +15884,7 @@ fn tick_residents(dt: f32) {
                     || r.clique_meet.is_some()
                     || r.custom_meet.is_some()
                     || r.frontier_visit.is_some()
+                    || r.far_visit.is_some()
                     || r.summon.is_some()
                     || r.gather.is_some()
                     || r.fetch.is_some()
@@ -15815,6 +15915,7 @@ fn tick_residents(dt: f32) {
                     || r.clique_meet.is_some()
                     || r.custom_meet.is_some()
                     || r.frontier_visit.is_some()
+                    || r.far_visit.is_some()
                     || r.summon.is_some()
                     || r.gather.is_some()
                     || r.fetch.is_some()
@@ -16621,6 +16722,7 @@ fn tick_residents(dt: f32) {
                     && r.pilgrimage.is_none()
                     && r.daybreak_seek.is_none()
                     && r.reunion_seek.is_none()
+                    && r.far_visit.is_none()
                     && !r.asleep;
                 if town_bound && idle_free && r.say.is_empty() && r.frontier_visit_cooldown <= 0.0 {
                     // 挑第一位交情達老朋友、此刻確實在邊陲的朋友（本世界僅 4 位居民，遍歷成本可忽略）。
@@ -16653,6 +16755,102 @@ fn tick_residents(dt: f32) {
                             r.say_timer = SAY_SECS;
                             frontier_visit_feed
                                 .push((r.name, vfvisit::depart_feed_line(friend_name, fbearing)));
+                        }
+                    }
+                }
+            }
+
+            // 相思成行·跨村探親 v1（ROADMAP 947，voxel_farvisit）：945 兩村相思的念叨累積滿後，
+            // tick_farbond 已替她設好 far_visit（動身那一刻摯友所在點＋村落名＋摯友名）；本狀態機
+            // 推進這趟旅程：去程持續朝目的地走（幾百格的遠路，半路上玩家可能在荒野撞見她）→ 抵達
+            // 時查 town_snap 摯友是否真在村裡（在＝重逢小聚：雙方泡泡＋鎖外記憶/情誼/Feed；不在＝
+            // 撲空折返）→ 小聚倒數歸零即道別踏上歸途 → 路途逾時（地形擋路）折返。
+            // 鎖序：只讀寫鎖前快照 town_snap 與本居民自身欄位，不另取任何鎖；記憶寫＋record_visit
+            // ＋Feed 走鎖外 far_visit_arrive_events／far_visit_feed（比照 821，守死鎖鐵律）。
+            if r.far_visit_cooldown > 0.0 {
+                r.far_visit_cooldown -= dt;
+            }
+            if let Some((tx, tz, place, friend)) = r.far_visit.clone() {
+                if r.far_visit_stay > 0.0 {
+                    // 已重逢、正在摯友的村裡小聚：倒數，歸零即道別踏上歸途。
+                    r.far_visit_stay -= dt;
+                    if r.far_visit_stay <= 0.0 {
+                        r.far_visit = None;
+                        r.far_visit_cooldown = vfarv::COOLDOWN_SECS;
+                        r.target_x = r.home_x;
+                        r.target_z = r.home_z;
+                        far_visit_feed.push((r.name, vfarv::depart_home_feed_line(&friend, &place)));
+                    }
+                } else {
+                    // 去程：持續朝動身時摯友所在的點走（她是定居者，平日只在村內小半徑活動）。
+                    r.target_x = tx;
+                    r.target_z = tz;
+                    r.wait_timer = 0.0;
+                    let dx = r.body.x - tx;
+                    let dz = r.body.z - tz;
+                    if dx * dx + dz * dz < vfarv::ARRIVE_DIST * vfarv::ARRIVE_DIST {
+                        // 抵達目的地：摯友此刻真的在村裡（快照座標離動身點夠近）才算重逢；
+                        // 她若恰好也出遠門了（遠行／探親），就是一趟撲空——緣分捉弄人，也是故事。
+                        let friend_here = town_snap
+                            .iter()
+                            .find(|(_, name, _, _, _)| *name == friend.as_str())
+                            .map(|(_, _, fx, fz, _)| {
+                                let fdx = fx - tx;
+                                let fdz = fz - tz;
+                                fdx * fdx + fdz * fdz
+                                    < vfarv::REUNION_NEAR_DIST * vfarv::REUNION_NEAR_DIST
+                            })
+                            .unwrap_or(false);
+                        if friend_here {
+                            // 重逢！沒在說別的話才冒泡（正巧在說話就等下 tick 再判一次）。
+                            if r.say.is_empty() {
+                                r.far_visit_stay = vfarv::STAY_SECS;
+                                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                                r.say = vfarv::arrive_bubble(&friend, pick);
+                                r.say_timer = SAY_SECS;
+                                far_visit_arrive_events.push((
+                                    r.id.clone(),
+                                    r.name,
+                                    friend.clone(),
+                                    place.clone(),
+                                ));
+                                // 被探望的摯友的驚喜回應（id 取自寫鎖前快照，不向已被 iter_mut
+                                // 借用的 residents 另要一次；她原本沒在說話才冒出，由 say_updates
+                                // 統一套用）。
+                                if let Some((friend_id, ..)) = town_snap
+                                    .iter()
+                                    .find(|(_, name, _, _, _)| *name == friend.as_str())
+                                {
+                                    say_updates.push((
+                                        friend_id.clone(),
+                                        vfarv::host_reply_bubble(r.name, pick),
+                                    ));
+                                }
+                            }
+                        } else {
+                            // 撲空：她不在村裡……在村口悵然片刻，折返回家。
+                            r.far_visit = None;
+                            r.far_visit_cooldown = vfarv::COOLDOWN_SECS;
+                            r.target_x = r.home_x;
+                            r.target_z = r.home_z;
+                            if r.say.is_empty() {
+                                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                                r.say = vfarv::not_home_bubble(&friend, pick);
+                                r.say_timer = SAY_SECS;
+                            }
+                            far_visit_feed
+                                .push((r.name, vfarv::not_home_feed_line(&friend, &place)));
+                        }
+                    } else {
+                        r.far_visit_timer -= dt;
+                        if r.far_visit_timer <= 0.0 {
+                            // 路太遠太難走：半途折返，不無限跋涉。
+                            r.far_visit = None;
+                            r.far_visit_cooldown = vfarv::COOLDOWN_SECS;
+                            r.target_x = r.home_x;
+                            r.target_z = r.home_z;
+                            far_visit_feed
+                                .push((r.name, vfarv::giveup_feed_line(&friend, &place)));
                         }
                     }
                 }
@@ -17785,6 +17983,7 @@ fn tick_residents(dt: f32) {
                         && r.expedition.is_none()
                         && r.clique_meet.is_none()
                         && r.frontier_visit.is_none()
+                        && r.far_visit.is_none()
                         && vr::should_shelter(is_night, raining, house_locations.contains_key(&r.id));
                     // 探訪中：以目的地為閒晃中心（讓居民在鄰居家附近自然走動）；
                     // 遠行逗留中（ROADMAP 756）：以邊陲落點為中心，讓牠在遠方一小片範圍自然走動、不被拉回家；
@@ -17808,6 +18007,10 @@ fn tick_residents(dt: f32) {
                         // 村莊自發習俗·暮聚：閒晃中心貼著村莊廣場（村碑腳下），一群人湊在一塊。
                         (*mx, *mz)
                     } else if let Some((fx, fz, _, _)) = &r.frontier_visit {
+                        (*fx, *fz)
+                    } else if let Some((fx, fz, _, _)) = &r.far_visit {
+                        // 相思成行·跨村探親（ROADMAP 947）：去程以目的地（摯友的村）為閒晃中心一路走去；
+                        // 重逢小聚時就在摯友身邊一小片範圍走動——不被夜間／下雨拉回幾百格外自己的家。
                         (*fx, *fz)
                     } else if let Some((lead_name, _)) = &r.stroll_partner {
                         // 摯友結伴同行（ROADMAP 925）：follower 以 leader「此刻的位置」為閒晃中心，
@@ -17847,6 +18050,9 @@ fn tick_residents(dt: f32) {
                         vcustom::GATHER_WANDER_RADIUS
                     } else if r.frontier_visit.is_some() {
                         vfvisit::WANDER_RADIUS
+                    } else if r.far_visit.is_some() {
+                        // 跨村探親：與邊陲探友同量級的小半徑，重逢時兩人聚在村口一小片範圍。
+                        vfarv::WANDER_RADIUS
                     } else if r.stroll_partner.is_some() {
                         // 結伴同行：小半徑，貼著 leader 並肩、不散開（ROADMAP 925）。
                         vstroll::STROLL_WANDER_RADIUS
@@ -18751,6 +18957,7 @@ fn tick_residents(dt: f32) {
                     && r.visiting.is_none()
                     && r.expedition.is_none()
                     && r.frontier_visit.is_none()
+                    && r.far_visit.is_none()
                     && r.follow.is_none()
                     && r.summon.is_none()
                     && r.gather.is_none()
@@ -18949,6 +19156,7 @@ fn tick_residents(dt: f32) {
                             && r.visiting.is_none()
                             && r.expedition.is_none()
                             && r.frontier_visit.is_none()
+                            && r.far_visit.is_none()
                             && r.follow.is_none()
                             && r.summon.is_none()
                             && r.gather.is_none()
@@ -20108,6 +20316,48 @@ fn tick_residents(dt: f32) {
             "邊陲探友",
             visitor_name,
             &vfvisit::arrive_feed_line(visitor_name, friend_name, bearing),
+        );
+    }
+
+    // 5c-2a''') 相思成行·跨村探親（ROADMAP 947）：純 Feed 事件（道別踏上歸途／撲空折返／路途逾時
+    // 折返），讓沒在現場的玩家也讀得到「這趟因想念而走的遠路」的每一種結局。
+    for (rname, detail) in &far_visit_feed {
+        vfeed::append_feed(vfarv::FEED_KIND, rname, detail);
+    }
+    // 跨村探親·重逢（ROADMAP 947）：雙方各寫一筆 episodic 記憶（掛對方名下）、交情因這趟遠路
+    // 真正加溫一格（record_visit，升級才 save + 比照 821 的鎖外處理）、上城鎮動態牆——945 的
+    // 「隔村惦記」在這一刻兌現成「見到了面」。摯友 id 以名字查回（residents 鎖此刻已釋放）。
+    for (visitor_id, visitor_name, friend_name, place) in &far_visit_arrive_events {
+        let ev = hub().memory.write().unwrap().add_memory(
+            visitor_id,
+            friend_name,
+            &vfarv::visitor_memory_line(friend_name, place),
+        ); // memory 寫鎖釋放
+        vmem::append_memory(&ev);
+        let friend_id = {
+            let residents = hub().residents.read().unwrap();
+            residents.iter().find(|r| r.name == friend_name.as_str()).map(|r| r.id.clone())
+        }; // residents 讀鎖釋放
+        if let Some(friend_id) = friend_id {
+            let eh = hub().memory.write().unwrap().add_memory(
+                &friend_id,
+                visitor_name,
+                &vfarv::host_memory_line(visitor_name, place),
+            ); // memory 寫鎖釋放
+            vmem::append_memory(&eh);
+        }
+        let (_tier, tier_changed) = {
+            let mut bonds = hub().bonds.write().unwrap();
+            bonds.record_visit(visitor_name, friend_name)
+        }; // bonds 寫鎖釋放
+        if tier_changed {
+            let bonds = hub().bonds.read().unwrap();
+            vbonds::save_bonds(&bonds);
+        } // bonds 讀鎖釋放
+        vfeed::append_feed(
+            vfarv::FEED_KIND,
+            visitor_name,
+            &vfarv::reunion_feed_line(visitor_name, friend_name, place),
         );
     }
 

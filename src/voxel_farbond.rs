@@ -106,9 +106,16 @@ pub fn farbond_feed_detail(friend: &str, place: &str) -> String {
 }
 
 /// 每位居民的「上次相思時刻」冷卻鐘：純記憶體、確定性，控制相思稀疏發生（每位居民各自獨立冷卻）。
+///
+/// **相思成行 v1（947，`voxel_farvisit`）擴充**：除了上次念叨時刻，再累積「已念叨幾次」——
+/// 念叨滿 [`crate::voxel_farvisit::EMBARK_AFTER_MISSES`] 次後，下一次相思時刻她就不再念叨、
+/// 而是真的動身去看那位隔村的摯友（成行後 [`Self::reset_count`] 歸零，思念重新從頭累積）。
+/// 計數以居民為鍵（非以「這對朋友」為鍵）——[`pick_missed_friend`] 是確定性挑選，同一位居民
+/// 每次念叨的幾乎都是同一位最惦念的摯友，per-居民計數即近似 per-對計數，不另開一張表。
 #[derive(Debug, Default)]
 pub struct FarBondClock {
-    last: HashMap<String, u64>,
+    /// 居民 id → （上次念叨的 unix 秒, 累積念叨次數）。
+    last: HashMap<String, (u64, u32)>,
 }
 
 impl FarBondClock {
@@ -121,13 +128,27 @@ impl FarBondClock {
     pub fn due(&self, resident_id: &str, now: u64) -> bool {
         match self.last.get(resident_id) {
             None => true,
-            Some(&last) => now.saturating_sub(last) >= FARBOND_MIN_INTERVAL_SECS,
+            Some(&(last, _)) => now.saturating_sub(last) >= FARBOND_MIN_INTERVAL_SECS,
         }
     }
 
-    /// 記下這位居民在 `now` 念叨了一次（重設其冷卻）。
+    /// 記下這位居民在 `now` 念叨了一次（重設其冷卻、念叨計數 +1）。
     pub fn mark(&mut self, resident_id: &str, now: u64) {
-        self.last.insert(resident_id.to_string(), now);
+        let entry = self.last.entry(resident_id.to_string()).or_insert((0, 0));
+        entry.0 = now;
+        entry.1 = entry.1.saturating_add(1);
+    }
+
+    /// 這位居民已累積念叨了幾次（從沒念叨過＝0）。相思成行（947）用它判斷「思念滿了沒」。
+    pub fn miss_count(&self, resident_id: &str) -> u32 {
+        self.last.get(resident_id).map(|&(_, n)| n).unwrap_or(0)
+    }
+
+    /// 成行後歸零這位居民的念叨計數（保留上次時刻——回來後至少再隔一輪冷卻才會開始新的念叨）。
+    pub fn reset_count(&mut self, resident_id: &str) {
+        if let Some(entry) = self.last.get_mut(resident_id) {
+            entry.1 = 0;
+        }
     }
 
     /// 目前有冷卻記錄的居民數（測試 / 觀測用）。
@@ -252,6 +273,27 @@ mod tests {
         // 別的居民互不影響。
         assert!(c.due("r2", 10_000));
         assert_eq!(c.len(), 1);
+    }
+
+    #[test]
+    fn clock_counts_misses_and_resets_for_embark() {
+        // 相思成行（947）：每次 mark 念叨計數 +1；reset_count 歸零但保留冷卻時刻。
+        let mut c = FarBondClock::new();
+        assert_eq!(c.miss_count("r1"), 0, "從沒念叨過＝0");
+        c.mark("r1", 10_000);
+        c.mark("r1", 10_000 + FARBOND_MIN_INTERVAL_SECS);
+        c.mark("r1", 10_000 + FARBOND_MIN_INTERVAL_SECS * 2);
+        assert_eq!(c.miss_count("r1"), 3);
+        assert_eq!(c.miss_count("r2"), 0, "別的居民互不影響");
+        c.reset_count("r1");
+        assert_eq!(c.miss_count("r1"), 0, "成行後思念歸零、重新累積");
+        assert!(
+            !c.due("r1", 10_000 + FARBOND_MIN_INTERVAL_SECS * 2),
+            "歸零不清冷卻時刻——回來後至少再隔一輪冷卻才開始新的念叨"
+        );
+        // 對從沒念叨過的居民 reset 是安全的 no-op。
+        c.reset_count("r9");
+        assert_eq!(c.miss_count("r9"), 0);
     }
 
     #[test]
