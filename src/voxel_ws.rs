@@ -176,6 +176,7 @@ use crate::voxel_morning as vmorning;
 use crate::voxel_daybreak as vdaybreak;
 use crate::voxel_reunion as vreunion;
 use crate::voxel_longing as vlonging;
+use crate::voxel_pathwear as vpath;
 use crate::voxel_expedition as vexp;
 use crate::voxel_frontier_visit as vfvisit;
 use crate::voxel_sendoff as vsend;
@@ -592,6 +593,10 @@ struct VoxelResident {
     /// 集會鐘應召冷卻倒數（秒，集會鐘 v1）：應召一次後設 [`vbell::SUMMON_COOLDOWN_SECS`]，歸零前
     /// 不再被鐘聲拉動——**濫用防護主閘**：狂敲鐘也拖不動同一位居民太頻繁。純記憶體、重啟歸零。
     summon_cooldown: f32,
+    /// 上一次 `tick_pathwear` 取樣時這位居民所在的地面格 (x,z)（居民踏出來的小徑 v1）。
+    /// 用來判斷「這一步是否踏進了新格子」——只有踏進新格才記一筆磨損，站著不動不計。
+    /// 純記憶體、重啟歸零（比照 `last_seen` 慣例）。
+    last_step_cell: Option<(i32, i32)>,
     /// 被夥伴在營火邊講了故事後、等這秒數到期再應和（講述者名字, 剩餘秒）（圍火講往事 v1）。
     /// 與 `pending_response` 分開，讓聆聽者冒的是「聽故事」味道的專屬應和，而非通用社交回應。純記憶體。
     pending_tale_reply: Option<(String, f32)>,
@@ -1903,6 +1908,8 @@ fn build_resident(
             // 集會鐘 v1：入場沒有正在應召的鐘；應召冷卻歸零（一出生就聽得到第一次鐘聲）。
             summon: None,
             summon_cooldown: 0.0,
+            // 居民踏出來的小徑 v1：入場尚未取樣過腳下格。
+            last_step_cell: None,
             // 登門撲空留心意 v1（ROADMAP 763）：入場門口沒有待感應的心意；首次感應冷卻各自錯開。
             pending_callers: Vec::new(),
             callingcard_cooldown: 20.0 + i as f32 * 15.0,
@@ -2176,6 +2183,10 @@ struct VoxelHub {
     /// 居民惦記離開的你 v1（自主提案切片）：玩家離線 → 對他記憶最厚的居民排一則「待送出的想念」，
     /// 到期後由某位醒著的居民念叨出口、上動態牆＋記進記憶。純記憶體、重啟歸零（比照 last_seen 慣例）。
     longing_queue: RwLock<vlonging::LongingQueue>,
+    /// 居民踏出來的小徑 v1（自主提案切片）：全村草皮磨損計數器。居民反覆走過同一片草地
+    /// 累積到門檻，該格草皮就踏成泥土小徑。純記憶體、重啟歸零（已成型的小徑本身已是持久化
+    /// 的泥土方塊，重啟後仍在；歸零的只是還沒踏成的半途計數，比照 last_seen 慣例）。
+    pathwear: RwLock<vpath::PathWear>,
     /// 玩家里程碑 v1（ROADMAP 724）：玩家自己的療癒循環第一次做成可回頭翻閱的成就徽章。
     /// 持久化到 data/voxel_milestones.jsonl（append-only，重啟後徽章仍在）。
     milestones: RwLock<MilestoneStore>,
@@ -2886,6 +2897,8 @@ fn hub() -> &'static VoxelHub {
             // 久別重逢摘要 v1：啟動空（純記憶體、無需持久化）。
             last_seen: RwLock::new(HashMap::new()),
             longing_queue: RwLock::new(vlonging::LongingQueue::new()),
+            // 居民踏出來的小徑 v1：啟動空（純記憶體，已成型的小徑已是持久化的泥土方塊）。
+            pathwear: RwLock::new(vpath::PathWear::new()),
             // 啟動時從 data/voxel_milestones.jsonl 載回玩家已達成的成就徽章（重啟後仍記得）。
             milestones: RwLock::new(MilestoneStore::from_entries(vmiles::load_milestones())),
             // 啟動時從 data/voxel_lifeprojects.jsonl 載回居民長程專案進度（重啟後接著做，取每人最高進度）。
@@ -9108,6 +9121,7 @@ pub fn spawn_residents() {
             tick_shadows(RESIDENT_DT); // 暗影生物 v1：同節拍，各自獨立鎖，零 LLM、上限 6 隻。
             tick_nightwatch(RESIDENT_DT); // 夜裡點燈守望 v1：低頻檢查、各自獨立鎖，見暗影靠近就近點盞燈。
             tick_longing(); // 居民惦記離開的你 v1：低頻掃待送出的想念，到期由醒著居民念叨出口。
+            tick_pathwear(); // 居民踏出來的小徑 v1：低頻取樣居民腳下，日積月累把常走的草皮踏成泥土小徑。
         }
     });
 }
@@ -9192,6 +9206,90 @@ fn tick_longing() {
     }
     if voiced {
         broadcast_players();
+    }
+}
+
+// ── 居民踏出來的小徑 tick（自主提案切片·小社會湧現寫進世界地面）──────────────────
+//
+// 每隔幾個 tick 取樣一次醒著、非遠行的居民腳下格：只在「踏進了新格子」那一步記一筆磨損
+// （站著不動不計，避免卡住/發呆的居民在腳下磨出一塊泥）。某格草皮累積被踏 vpath::PATHWEAR_THRESHOLD
+// 次後，就把那格草皮踏成泥土小徑——居民日復一日的動線，第一次自己走進了世界的地面。
+//
+// 純確定性、零 LLM。嚴守鎖紀律：residents 寫鎖（取樣＋更新上一步格）→ pathwear 寫鎖（記磨損、
+// 取達標格）→ deltas 讀鎖（確認地表仍是草）→ deltas 寫鎖（放土）各自短取即釋、循序不巢狀；
+// surface_y 純函式在鎖外算、廣播/持久化/Feed 全在鎖外（守死鎖鐵律）。低頻（每 PATHWEAR_SAMPLE_TICKS
+// 掃一次）——小徑是日積月累走出來的，不必每 tick 都算。
+static PATHWEAR_TICKS: AtomicU64 = AtomicU64::new(0);
+/// 每隔幾個 resident tick 取樣一次居民腳下（10Hz 下每 6 tick ≈ 1.7Hz，足以連成路、成本可忽略）。
+const PATHWEAR_SAMPLE_TICKS: u64 = 6;
+/// 全村第一次踏出小徑時上一則城鎮動態的一次性旗標（每個行程至多一次，避免逐格洗版）。
+static PATHWEAR_FIRST_FEED_DONE: AtomicBool = AtomicBool::new(false);
+
+fn tick_pathwear() {
+    let tick_no = PATHWEAR_TICKS.fetch_add(1, Ordering::Relaxed);
+    if tick_no % PATHWEAR_SAMPLE_TICKS != 0 {
+        return;
+    }
+
+    // ① 取樣：醒著、非遠行的居民腳下格。只收「踏進新格」那一步，並更新各人上一步格。
+    //    順帶捕捉「腳正踩著的那塊方塊 y」＝floor(feet_y)-1（延後到鎖外才讀方塊，這裡只算 y）。
+    let stepped: Vec<(i32, i32, i32)> = {
+        let mut residents = hub().residents.write().unwrap();
+        let mut acc = Vec::new();
+        for r in residents.iter_mut() {
+            if r.asleep || r.expedition.is_some() {
+                continue; // 睡著/遠行不計（醒著在村裡走動才踏路）
+            }
+            let cell = vpath::ground_cell(r.body.x, r.body.z);
+            let is_step = vpath::stepped_into(r.last_step_cell, cell);
+            r.last_step_cell = Some(cell);
+            if is_step {
+                // 腳正踩著的方塊在 floor(feet_y)-1（站在結構上時自然指向結構、而非埋在下面的草）。
+                let gby = r.body.y.floor() as i32 - 1;
+                acc.push((cell.0, cell.1, gby));
+            }
+        }
+        acc
+    }; // residents 寫鎖釋放
+    if stepped.is_empty() {
+        return;
+    }
+
+    // ② 記磨損：達門檻的格子取出待轉（record_step 達標即回 true，隨即 clear 歸零——
+    //    不論之後是否真轉成小徑都歸零，避免非草格（結構/已成路）每步重複觸發）。
+    let reached: Vec<(i32, i32, i32)> = {
+        let mut pw = hub().pathwear.write().unwrap();
+        let mut hit = Vec::new();
+        for (cx, cz, gby) in stepped {
+            if pw.record_step(cx, cz) {
+                pw.clear(cx, cz);
+                hit.push((cx, cz, gby));
+            }
+        }
+        hit
+    }; // pathwear 寫鎖釋放
+    if reached.is_empty() {
+        return;
+    }
+
+    // ③ 逐格轉換：確認腳下那塊此刻真的是天然草皮才踏成泥土小徑（保護作物/建材/已成路）。
+    for (cx, cz, gby) in reached {
+        let cur = { voxel::effective_block_at(&hub().deltas.read().unwrap(), cx, gby, cz) }; // deltas 讀鎖釋放
+        if !vpath::wears_into_path(cur) {
+            continue; // 站在結構上、或該格早已是泥/沙/農田 → 不動（計數已於 ② 歸零）
+        }
+        let worn = vpath::worn_block();
+        {
+            let mut world = hub().deltas.write().unwrap();
+            voxel::set_block(&mut world, cx, gby, cz, worn);
+        } // deltas 寫鎖釋放
+        broadcast_block(cx, gby, cz, worn);
+        // 持久化這格小徑（重啟後村子走出來的路仍在；走既有 append-only 路徑，零 migration）。
+        vbuild::append_world_block(cx, gby, cz, worn as u8);
+        // 全村第一次踏出小徑時，上一則溫柔的城鎮動態（一次性、不逐格洗版）。
+        if !PATHWEAR_FIRST_FEED_DONE.swap(true, Ordering::Relaxed) {
+            vfeed::append_feed(vpath::FEED_KIND, "乙太方界", vpath::first_path_feed_line());
+        }
     }
 }
 
