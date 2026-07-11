@@ -114,9 +114,20 @@
       pointer-events: auto; user-select: none;
     }
     #dig.talk { background: rgba(120,170,230,0.40); }
+    /* 游泳深化 v1：上浮/下潛鈕（下水才 display:block，JS 依 swimming 切）。
+       疊在跳鈕左側，藍色系呼應水；上浮在上、下潛在下。 */
+    #diveUp, #diveDown {
+      position: absolute; right: 124px; width: 76px; height: 66px;
+      border-radius: 50%; background: rgba(90,160,220,0.34); border: 2px solid rgba(255,255,255,0.4);
+      color: #fff; font-size: 14px; display: none; align-items: center; justify-content: center;
+      pointer-events: auto; user-select: none;
+    }
+    #diveUp   { bottom: 234px; }
+    #diveDown { bottom: 150px; }
+    body.lefty #diveUp, body.lefty #diveDown { right: auto; left: 124px; }
     /* 觸控按鈕大小/透明度：吃設定面板的 CSS 變數（重載保留、即時生效）。
        用 transform scale 縮放，位置錨點不變（右下拇指區）。 */
-    #jump, #place, #dig {
+    #jump, #place, #dig, #diveUp, #diveDown {
       transform: scale(var(--touch-btn-scale, 1));
       opacity: var(--touch-btn-opacity, 1);
     }
@@ -894,6 +905,19 @@
       opacity: 0;
       transition: opacity 0.35s ease;
     }
+    /* 憋氣表 v1（游泳深化）：只在氣開始下降時淡入，一串泡泡，越潛越少。療癒提示、非傷害。 */
+    #breathMeter {
+      position: fixed; left: 50%; top: 18%; transform: translateX(-50%); z-index: 8;
+      display: flex; gap: 6px; pointer-events: none;
+      opacity: 0; transition: opacity 0.4s ease;
+    }
+    #breathMeter .bub {
+      width: 14px; height: 14px; border-radius: 50%;
+      background: radial-gradient(circle at 35% 30%, rgba(255,255,255,0.95), rgba(150,210,255,0.6) 60%, rgba(90,150,220,0.35));
+      box-shadow: 0 0 6px rgba(150,210,255,0.6);
+      transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+    #breathMeter .bub.spent { opacity: 0.15; transform: scale(0.7); box-shadow: none; }
 
     /* ── 玩家里程碑（ROADMAP 724）────────────────────────────────────────── */
     #milestonesBtn {
@@ -1541,6 +1565,11 @@
   <div id="app"></div>
   <!-- 水下氛圍覆蓋層：相機在水方塊內時顯示淡藍色，JS 控制 opacity -->
   <div id="underwaterOverlay"></div>
+  <!-- 憋氣表 v1（游泳深化）：8 顆泡泡，潛久了一顆顆消（純視覺提示；扣血仍走既有溫柔溺水機制）-->
+  <div id="breathMeter">
+    <span class="bub"></span><span class="bub"></span><span class="bub"></span><span class="bub"></span>
+    <span class="bub"></span><span class="bub"></span><span class="bub"></span><span class="bub"></span>
+  </div>
   <!-- 受傷輕紅暈（玩家生存指標 v1·溫和版）：扣血時淡入一層極輕微紅色再淡出，別嚇人 -->
   <div id="damageFlash"></div>
   <div id="hud">載入中…</div>
@@ -1583,6 +1612,9 @@
     <div id="joy"><div id="joyNub"></div></div>
     <div id="place">放置</div>
     <div id="jump">跳</div>
+    <!-- 游泳深化 v1：下水才顯示（JS 依 swimming 切 display）；按住＝上浮/下潛 -->
+    <div id="diveUp">↑ 浮</div>
+    <div id="diveDown">↓ 潛</div>
     <!-- 專屬挖鈕（準心+按鈕模式）：長按挖準心對準的方塊；對到居民時 JS 改成「💬 說話」 -->
     <div id="dig">⛏ 挖</div>
   </div>
