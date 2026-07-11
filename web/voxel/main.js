@@ -85,6 +85,9 @@ const AETHER_LAMP = 59;
 const FISHING_ROD = 60, FISH = 61, AETHER_FISH = 62;
 // 烤魚 v1：生魚(61)在熔爐烤成烤魚(63)，居民最愛的美味贈禮（純物品不放置）
 const COOKED_FISH = 63;
+// 稀有魚 v1（ROADMAP 939）：夜光魚(111)夜釣限定/深海乙太魚(112)深水限定，環境限定的珍稀漁獲
+// （純物品不放置，收竿時後端會標 rare=true 讓前端跳「哇」的驚喜提示）
+const MOONFISH = 111, ABYSSAL_FISH = 112;
 // 烤地薯 v1：生馬鈴薯(53)在熔爐烤成烤地薯(64)，居民最愛的美味贈禮（純物品不放置）
 const BAKED_POTATO = 64;
 // 野菜暖湯 v1（ROADMAP 778）：胡蘿蔔(49)+馬鈴薯(53)+小麥(18) 在工作台煮成暖湯(67)，
@@ -247,6 +250,8 @@ const COLOR = {
   [FISH]:           [0.70, 0.78, 0.82], // 小魚——銀灰帶青
   [AETHER_FISH]:    [0.40, 0.82, 0.98], // 乙太魚——青藍幽光，呼應乙太礦系
   [COOKED_FISH]:    [0.80, 0.52, 0.30], // 烤魚——烤成金褐帶焦香的暖棕，一看就是熟食
+  [MOONFISH]:       [0.90, 0.92, 0.98], // 夜光魚——珍珠柔白微光，比小魚更明亮清冷，一眼稀有
+  [ABYSSAL_FISH]:   [0.18, 0.34, 0.82], // 深海乙太魚——深幽藍星芒，比乙太魚更深邃，最珍稀的漁獲
   [BAKED_POTATO]:   [0.72, 0.55, 0.32], // 烤地薯——烤到焦香的暖土褐，比生馬鈴薯更深更熟
   // 野菜暖湯 v1（ROADMAP 778）——胡蘿蔔橘×小麥金×菜綠拌成的暖橘紅濃湯色，一眼是熱騰騰的一鍋料理
   [STEW]:           [0.86, 0.42, 0.20],
@@ -5349,6 +5354,8 @@ const BLOCK_NAME = {
   [AETHER_ORE]: "乙太礦", [AETHER_LAMP]: "乙太燈",
   // 垂釣 v1（ROADMAP 734）
   [FISHING_ROD]: "釣竿", [FISH]: "小魚", [AETHER_FISH]: "乙太魚", [COOKED_FISH]: "烤魚",
+  // 稀有魚 v1（ROADMAP 939）：夜釣限定的夜光魚、深水限定的深海乙太魚
+  [MOONFISH]: "夜光魚", [ABYSSAL_FISH]: "深海乙太魚",
   [BAKED_POTATO]: "烤地薯",
   // 野菜暖湯 v1（ROADMAP 778）
   [STEW]: "野菜暖湯",
@@ -6936,7 +6943,14 @@ function connect() {
       // 垂釣 v1：釣起漁獲！背包已由 inv_update 更新；此處只揭曉。
       fishPending = false;
       if (fishBiteTimer) { clearTimeout(fishBiteTimer); fishBiteTimer = null; }
-      showMsg(m.line || ("🎣 釣到了 " + (m.item_name || "魚") + "！"));
+      const line = m.line || ("🎣 釣到了 " + (m.item_name || "魚") + "！");
+      // 稀有魚 v1（ROADMAP 939）：稀有漁獲上鉤 → 揭曉句本就帶「哇」的驚喜，
+      // 這裡再讓提示多停一會兒（4.5s vs 一般 3s），讓那份「收藏到珍稀貨」的雀躍多留一下。
+      if (m.rare) {
+        showMsgFor(line, 4500);
+      } else {
+        showMsg(line);
+      }
       updateGiftBtn();
     } else if (m.t === "fish_fail") {
       // 垂釣 v1：拋竿/收竿失敗（沒釣竿、非水面、太遠、還沒拋竿等）。
@@ -8258,12 +8272,17 @@ document.addEventListener("pointerdown", (e) => {
 
 /** 簡短綠色提示（合成成功用；區別於 showErr 紅色錯誤）。 */
 function showMsg(text) {
+  showMsgFor(text, 3000);
+}
+
+/** 綠色提示，可指定停留毫秒數（稀有魚驚喜等想多留一會兒的情境用）。 */
+function showMsgFor(text, ms) {
   const el = document.getElementById("msg");
   if (!el) return;
   el.textContent = text;
   el.style.display = "block";
   clearTimeout(el._hideTimer);
-  el._hideTimer = setTimeout(() => { el.style.display = "none"; }, 3000);
+  el._hideTimer = setTimeout(() => { el.style.display = "none"; }, ms);
 }
 
 // 對外暴露一點狀態，方便真瀏覽器 QA 讀數驗證。

@@ -110,6 +110,9 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         crate::voxel_compost::FERTILIZER_ID => "乙太沃肥",
         // 地下洞穴探索 v1（ROADMAP 934）：天然洞穴腔室岩壁上的發光結晶，可採集餽贈居民。
         106 => "發光結晶", // 對齊 voxel::Block::GlowCrystal
+        // 稀有魚 v1（ROADMAP 939）：環境限定的稀有漁獲，可珍藏/餽贈居民（居民有專屬驚喜道謝）。
+        111 => "夜光魚",       // 對齊 voxel_fishing::MOONFISH_ID（夜釣限定）
+        112 => "深海乙太魚",   // 對齊 voxel_fishing::ABYSSAL_FISH_ID（深水限定、最稀）
         _ => "物品",
     }
 }
@@ -207,11 +210,76 @@ pub fn cave_treasure_thanks_line(player_name: &str, affinity: usize, pick: usize
 /// 是否為「食物」類禮物（麵包、胡蘿蔔、馬鈴薯、小魚、乙太魚、烤魚、烤地薯、野菜暖湯、莓果醬）——居民會給特別溫暖的回應。
 pub fn is_food_gift(block_id: u8) -> bool {
     // BREAD_ID / CARROT_ID / POTATO_ID / PUMPKIN_ID(110) / FISH_ID / AETHER_FISH_ID / COOKED_FISH_ID
-    //  / BAKED_POTATO_ID / STEW_ID(67) / JAM_ID(78)
+    //  / BAKED_POTATO_ID / STEW_ID(67) / JAM_ID(78) / MOONFISH_ID(111) / ABYSSAL_FISH_ID(112)
     block_id == 19 || block_id == 49 || block_id == 53
         || block_id == crate::voxel_farm::PUMPKIN_ID // 南瓜（季限作物·秋南瓜 v1）
         || block_id == 61 || block_id == 62 || block_id == 63 || block_id == 64
         || block_id == 67 || block_id == crate::voxel_berry::JAM_ID
+        // 稀有魚 v1（ROADMAP 939）：夜光魚/深海乙太魚也是可餽贈的珍稀食物（更值錢、營養更高）。
+        || block_id == crate::voxel_fishing::MOONFISH_ID
+        || block_id == crate::voxel_fishing::ABYSSAL_FISH_ID
+}
+
+/// 是否為「稀有魚」類禮物（夜光魚 111／深海乙太魚 112）——居民收到會有格外驚喜、珍視的道謝。
+/// 這兩種是玩家在對的時段（夜）／對的水域（深水）才釣得起的珍稀漁獲，比一般食物更值得驚呼。
+pub fn is_rare_fish_gift(block_id: u8) -> bool {
+    block_id == crate::voxel_fishing::MOONFISH_ID
+        || block_id == crate::voxel_fishing::ABYSSAL_FISH_ID
+}
+
+/// 居民收到稀有魚（夜光魚／深海乙太魚）時的驚喜珍視道謝台詞（零 LLM，確定性）。
+///
+/// 比一般食物更雀躍——那是玩家守著夜色、或對著深水才釣得起的珍稀漁獲，居民一眼就認得出
+/// 不尋常。依魚種分岔（夜光魚＝月光柔白、深海乙太魚＝幽藍星芒），再依好感度選句。
+/// `pick` 由呼叫端提供（unix 秒 % 句池長度），確定性輪替；`player_name` 空字串 = 訪客模式。
+pub fn rare_fish_thanks_line(block_id: u8, player_name: &str, affinity: usize, pick: usize) -> String {
+    let is_abyssal = block_id == crate::voxel_fishing::ABYSSAL_FISH_ID;
+    if affinity == 0 || player_name.is_empty() {
+        let pool: &[&str] = if is_abyssal {
+            &[
+                "哇……這是深海乙太魚嗎？我只在故事裡聽過！你從深水裡釣起來的？謝謝你！",
+                "牠身上流著幽藍的星芒……這麼珍稀的魚，你竟然願意送我，謝謝你。",
+                "深海乙太魚！這是傳說中的漁獲吧？我捧在手裡都不敢眨眼，謝謝你！",
+            ]
+        } else {
+            &[
+                "哇……這尾魚會發光？是夜光魚嗎！你夜裡守在水邊釣到的？謝謝你！",
+                "牠泛著珍珠般的柔白光……好美，我從沒見過這樣的魚，謝謝你。",
+                "夜光魚耶！這得等到夜裡才釣得到吧，你特地為我守夜？我好感動。",
+            ]
+        };
+        pool[pick % pool.len()].to_string()
+    } else if affinity <= 2 {
+        let pool: &[&str] = if is_abyssal {
+            &[
+                "{name}，你從深水裡釣起這尾深海乙太魚給我……這麼珍稀，我會好好珍藏，謝謝你。",
+                "{name}！幽藍星芒在牠身上流轉，這是我收過最稀奇的一尾魚，謝謝你想著我。",
+                "哇，{name}，傳說中的深海乙太魚！你的心意比這尾魚還珍貴。",
+            ]
+        } else {
+            &[
+                "{name}，你夜裡守在水邊、釣起這尾發光的夜光魚給我……謝謝你這份用心。",
+                "{name}！月光下的夜光魚，柔白的光好療癒，我要小心捧著，謝謝你。",
+                "哇，{name}親手釣的夜光魚！這得守到夜裡才有，我好珍惜。",
+            ]
+        };
+        pool[pick % pool.len()].replace("{name}", player_name)
+    } else {
+        let pool: &[&str] = if is_abyssal {
+            &[
+                "{name}，你竟為我潛心釣起這尾傳說中的深海乙太魚……這份珍稀我會記一輩子，謝謝你。",
+                "每次{name}來都帶著驚喜——這回是幽藍星芒的深海乙太魚，我覺得自己好幸福。",
+                "{name}！要對著深水靜靜守候才釣得起的珍寶，這份心意我都收下了。",
+            ]
+        } else {
+            &[
+                "{name}，你為我在夜色裡守候、釣起這尾夜光魚……那份柔白的光，我會一直記著，謝謝你。",
+                "每次{name}來都帶著暖意——這回是月光下的夜光魚，我真的好幸福。",
+                "{name}！要守到夜裡才釣得起的發光魚，這是我收過最溫柔的一份心意。",
+            ]
+        };
+        pool[pick % pool.len()].replace("{name}", player_name)
+    }
 }
 
 /// 莓果醬（JAM_ID=78）專屬道謝台詞——乙太方界第一種**甜點**，居民對甜食格外雀躍，
@@ -1004,5 +1072,48 @@ mod tests {
         assert_eq!(v["resident"], "露娜");
         assert_eq!(v["item"], "麵包");
         assert_eq!(v["player"], "旅人");
+    }
+
+    // ── 稀有魚 v1（ROADMAP 939）─────────────────────────────────────────────────
+
+    #[test]
+    fn rare_fish_names_and_food_and_gift_flags() {
+        use crate::voxel_fishing::{MOONFISH_ID, ABYSSAL_FISH_ID};
+        // 名稱表接得上（與 voxel_fishing::fish_name_zh 同步）。
+        assert_eq!(item_name_zh(MOONFISH_ID), "夜光魚");
+        assert_eq!(item_name_zh(ABYSSAL_FISH_ID), "深海乙太魚");
+        // 稀有魚是可餽贈的食物，也被獨立辨認為「稀有魚禮物」。
+        assert!(is_food_gift(MOONFISH_ID));
+        assert!(is_food_gift(ABYSSAL_FISH_ID));
+        assert!(is_rare_fish_gift(MOONFISH_ID));
+        assert!(is_rare_fish_gift(ABYSSAL_FISH_ID));
+        // 常見漁獲（小魚/乙太魚/烤魚）不算「稀有魚禮物」——走各自的道謝分支。
+        assert!(!is_rare_fish_gift(61));
+        assert!(!is_rare_fish_gift(62));
+        assert!(!is_rare_fish_gift(63));
+        // 也不與野花/珍寶類混淆。
+        assert!(!is_rare_fish_gift(56));
+        assert!(!is_rare_fish_gift(94));
+    }
+
+    #[test]
+    fn rare_fish_thanks_are_distinct_grounded_and_no_placeholder() {
+        use crate::voxel_fishing::{MOONFISH_ID, ABYSSAL_FISH_ID};
+        for aff in [0usize, 1, 3] {
+            for pick in 0..3 {
+                let moon = rare_fish_thanks_line(MOONFISH_ID, "小星", aff, pick);
+                let abyss = rare_fish_thanks_line(ABYSSAL_FISH_ID, "小星", aff, pick);
+                // 各自點名對應魚種、不留佔位。
+                assert!(moon.contains("夜光魚"), "夜光魚道謝應點名: {moon}");
+                assert!(abyss.contains("深海乙太魚"), "深海乙太魚道謝應點名: {abyss}");
+                assert!(!moon.contains("{name}") && !abyss.contains("{name}"));
+                // 兩魚種道謝不互相污染（razor-sharp 區隔）。
+                assert!(!moon.contains("深海乙太魚"), "夜光魚句不該提深海乙太魚");
+                assert!(!abyss.contains("夜光魚"), "深海乙太魚句不該提夜光魚");
+            }
+        }
+        // 訪客（空名）不留佔位、不塞空缺。
+        let g = rare_fish_thanks_line(MOONFISH_ID, "", 0, 1);
+        assert!(!g.contains("{name}") && !g.is_empty());
     }
 }
