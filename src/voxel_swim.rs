@@ -112,7 +112,7 @@ pub fn tick_breath(head_underwater: bool, submerged_acc: f32, dt: f32) -> f32 {
 /// - 緩衝後到 [`BREATH_FULL_SECS`] 之間線性從 1 掉到 0。
 /// - 壞值（NaN/負）一律保守回 1.0（滿氣、永不誤扣、永不爆）。
 pub fn breath_fraction(submerged_acc: f32) -> f32 {
-    if !submerged_acc.is_finite() || submerged_acc <= BREATH_GRACE_SECS {
+    if submerged_acc.is_nan() || submerged_acc <= BREATH_GRACE_SECS {
         return 1.0;
     }
     if submerged_acc >= BREATH_FULL_SECS {
