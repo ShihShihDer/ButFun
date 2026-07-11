@@ -929,6 +929,32 @@ impl GoalStore {
         self.next_seq = self.next_seq.wrapping_add(1);
         (removal, moved)
     }
+
+    /// **認養小屋**（殖民地補蓋／遠古資料補漏）：一座 House 剛完工、`houses` 裡卻查無這位
+    /// 居民的小屋座標——遠古 GoalRecord 沒有座標欄，重啟 replay 後 `house_of` 失傳（None），
+    /// 之後任何「她的家在哪」的查詢（夜間歸巢遮蔽、搬家引擎的舊家判定）都會撲空。
+    /// 本方法把剛完工的這座就地認養成她的家：登記錨點＋指定小屋座標，回一筆 `relocated`
+    /// 型記錄供 append（replay 時 `from_entries` 對 relocated 記錄本就會 houses.insert，
+    /// 重啟後座標不再失傳）。不進 done、不動擴建額度。
+    pub fn adopt_house(&mut self, resident: &str, loc: (i32, i32, i32)) -> GoalRecord {
+        let kind = BuildKind::House.as_str();
+        self.record_anchor(resident, kind, loc);
+        self.houses.insert(resident.to_string(), loc);
+        let rec = GoalRecord {
+            resident: resident.to_string(),
+            kind: kind.to_string(),
+            seq: self.next_seq,
+            x: Some(loc.0),
+            y: Some(loc.1),
+            z: Some(loc.2),
+            expansion: false,
+            anchor_only: false,
+            relocated: true,
+            removed: false,
+        };
+        self.next_seq = self.next_seq.wrapping_add(1);
+        rec
+    }
 }
 
 // ── jsonl 持久化（append-only，比照 voxel_desires/voxel_building）─────────────
@@ -2177,6 +2203,47 @@ mod tests {
         // done / 擴建不受搬家記錄污染。
         assert_eq!(s2.done_count("vox_res_0"), 1);
         assert_eq!(s2.expansion_count("vox_res_0"), 0);
+    }
+
+    #[test]
+    fn adopt_house_backfills_lost_house_coords() {
+        // 遠古資料情境（prod 真 bug）：house 完成記錄沒有座標欄 → replay 後 house_of 失傳。
+        let legacy = GoalRecord {
+            resident: "vox_res_0".into(),
+            kind: "house".into(),
+            seq: 8,
+            x: None,
+            y: None,
+            z: None,
+            expansion: false,
+            anchor_only: false,
+            relocated: false,
+            removed: false,
+        };
+        let mut s = GoalStore::from_entries(vec![legacy]);
+        assert!(s.is_done("vox_res_0", BuildKind::House), "done 集合仍記得種類");
+        assert_eq!(s.house_of("vox_res_0"), None, "遠古記錄無座標 → 小屋座標失傳");
+        // 補蓋完工 → 認養這座當她的家：座標、錨點就地補回。
+        let rec = s.adopt_house("vox_res_0", (469, 8, 173));
+        assert_eq!(s.house_of("vox_res_0"), Some((469, 8, 173)));
+        assert!(s.anchor_built("vox_res_0", BuildKind::House, (469, 8, 173)), "認養也登記錨點擋重蓋");
+        assert_eq!(s.done_count("vox_res_0"), 1, "認養不重複進 done");
+        assert_eq!(s.expansion_count("vox_res_0"), 0, "認養不吃擴建額度");
+        // 重啟 roundtrip：認養記錄（relocated 型）replay 後座標不再失傳。
+        let legacy2 = GoalRecord {
+            resident: "vox_res_0".into(),
+            kind: "house".into(),
+            seq: 8,
+            x: None,
+            y: None,
+            z: None,
+            expansion: false,
+            anchor_only: false,
+            relocated: false,
+            removed: false,
+        };
+        let s2 = GoalStore::from_entries(vec![legacy2, rec]);
+        assert_eq!(s2.house_of("vox_res_0"), Some((469, 8, 173)), "重啟後認養的家仍在");
     }
 
     #[test]

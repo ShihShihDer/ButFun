@@ -235,7 +235,38 @@ pub fn main_settlement_names(
         .collect()
 }
 
+// ── 殖民者補蓋（純函式、確定性）──────────────────────────────────────────────────────
+
+/// 這位殖民地居民是否「缺一間在自己地塊上的家」（殖民地補蓋的判定核心）。
+///
+/// **背景（prod 真 bug）**：遠古 GoalRecord 沒有座標欄，重啟 replay 後 `house_of` 失傳
+/// （None）——migration_kickoff 把「有小屋但座標失傳」誤判為「沒小屋」走了即刻遷家，
+/// 居民的家域落在殖民地空地上、卻從來沒有人替她蓋家。本函式判定：`house` 為 None、
+/// 或小屋座標不在她地塊的家園佔地（Chebyshev ≤ `cheb`，取 [`Plot::HOMESTEAD_HALF`]）內
+/// → 該補蓋。純函式、可測；呼叫端另需排除「搬家進行中」的居民（她的新家正在蓋）。
+pub fn house_missing_near(
+    house: Option<(i32, i32, i32)>,
+    plot_cx: i32,
+    plot_cz: i32,
+    cheb: i32,
+) -> bool {
+    match house {
+        None => true,
+        Some((hx, _, hz)) => (hx - plot_cx).abs().max((hz - plot_cz).abs()) > cheb,
+    }
+}
+
 // ── 句式池（面向玩家、i18n 友善集中此處；零 LLM）────────────────────────────────────
+
+/// 殖民者補蓋動工 Feed：遷居時漏了蓋家（遠古資料座標失傳），現在補上。
+pub fn repair_build_feed_line(name: &str, colony: &str) -> String {
+    format!("{name}在「{colony}」的地塊上動工蓋起自己的新家。")
+}
+
+/// 殖民者補蓋動工泡泡。
+pub fn repair_build_say_line(colony: &str) -> String {
+    format!("在「{colony}」安了家，怎麼能沒有屋子——動工！")
+}
 
 /// 遷居動工 Feed：拓荒者動身去自己奠基的村子蓋新家。
 pub fn migrate_start_feed_line(name: &str, colony: &str) -> String {
@@ -435,6 +466,27 @@ mod tests {
         store.assign("vox_res_0", 1);
         store.assign("vox_res_2", 1);
         assert!(main_settlement_names(&store, &residents).is_empty());
+    }
+
+    #[test]
+    fn house_missing_near_detects_homeless_colonists() {
+        let cheb = Plot::HOMESTEAD_HALF;
+        // 遠古資料座標失傳（house_of None）＝缺家 → 該補蓋（prod 四位的實況）。
+        assert!(house_missing_near(None, 469, 173, cheb));
+        // 小屋就在地塊家園佔地內（含邊界）＝有家 → 不補（冪等：補蓋完成後永久跳過）。
+        assert!(!house_missing_near(Some((469, 8, 173)), 469, 173, cheb));
+        assert!(!house_missing_near(Some((469 + cheb, 8, 173 - cheb)), 469, 173, cheb));
+        // 小屋遠在主村（座標在、但不在殖民地地塊上）＝這裡沒有家 → 該補蓋。
+        assert!(house_missing_near(Some((-14, 8, 14)), 469, 173, cheb));
+        // 剛超出家園佔地一格 → 也算缺（Chebyshev 邊界明確）。
+        assert!(house_missing_near(Some((469 + cheb + 1, 8, 173)), 469, 173, cheb));
+    }
+
+    #[test]
+    fn repair_lines_mention_name_and_colony() {
+        let line = repair_build_feed_line("露娜", "風禾屯");
+        assert!(line.contains("露娜") && line.contains("風禾屯"), "實得：{line}");
+        assert!(repair_build_say_line("風禾屯").contains("風禾屯"));
     }
 
     #[test]
