@@ -397,6 +397,45 @@ pub const RECIPES: &[Recipe] = &[
         output_block: SWORD_STONE_ID,
         output_count: 1,
     },
+    // ── 玩家裝飾傢俱 v1（ROADMAP 931，自主提案切片）：世界第一批純裝飾傢俱 ──────────────────
+    // 世界可放方塊至今不是建材就是有用途的功能家具，唯獨缺純為好看擺著佈置家園的小傢俱。
+    // 四樣皆走背包 2×2、便宜好上手（葉片/木板/石磚/陶磚等常見料），讓「佈置一個屬於自己的
+    // 角落」一開始就伸手可得。四組多重集彼此互異、也與既有配方皆不相撞（見下方測試逐一核對）。
+    // 小地毯 {6:3}（3 葉片織一片毯）：床 {8:3,6:3}、雞舍 {5:4,6:2}、掛旗 {5:1,6:2} 皆相異；
+    // 沒有任何一條既有 2×2 配方是「只吃 3 葉片」。
+    Recipe {
+        id: "carpet",
+        name_zh: "小地毯",
+        inputs: &[(6, 3)], // 3 葉片 → 2 小地毯（一片織毯鋪地）
+        output_block: crate::voxel_furniture::CARPET_ID, // 102
+        output_count: 2,
+    },
+    // 花盆 {89:2,6:1}（2 紅陶磚捏一只陶盆 + 1 葉片栽株綠意）：沒有任何既有 2×2 配方消耗紅陶磚(89)。
+    Recipe {
+        id: "flowerpot",
+        name_zh: "花盆",
+        inputs: &[(89, 2), (6, 1)], // 2 紅陶磚 + 1 葉片 → 1 花盆
+        output_block: crate::voxel_furniture::FLOWERPOT_ID, // 103
+        output_count: 1,
+    },
+    // 小圓桌 {8:2,9:1}（2 木板作桌面 + 1 石磚作底座）：告示牌 {8:2}、木長椅 {5:2,8:2} 皆相異；
+    // 沒有任何既有 2×2 配方是「2 木板 + 1 石磚」。
+    Recipe {
+        id: "table",
+        name_zh: "小圓桌",
+        inputs: &[(8, 2), (9, 1)], // 2 木板 + 1 石磚 → 1 小圓桌
+        output_block: crate::voxel_furniture::TABLE_ID, // 104
+        output_count: 1,
+    },
+    // 掛旗 {5:1,6:2}（1 木頭作旗桿 + 2 葉片織旗面）：木劍 {5:1,8:2}、木鏟 {5:1,8:1} 皆相異；
+    // 沒有任何既有 2×2 配方是「1 木頭 + 2 葉片」。
+    Recipe {
+        id: "banner",
+        name_zh: "掛旗",
+        inputs: &[(5, 1), (6, 2)], // 1 木頭 + 2 葉片 → 1 掛旗
+        output_block: crate::voxel_furniture::BANNER_ID, // 105
+        output_count: 1,
+    },
 ];
 
 /// 工作台 3×3 合成配方（需放置工作台方塊後右鍵開啟面板才能合成）。
@@ -840,6 +879,43 @@ mod tests {
     }
 
     #[test]
+    fn find_recipe_furniture_in_bag_list() {
+        // 玩家裝飾傢俱 v1（ROADMAP 931）：四樣皆走背包 2×2、不在工作台表，產出對應方塊 id。
+        use crate::voxel_furniture::{BANNER_ID, CARPET_ID, FLOWERPOT_ID, TABLE_ID};
+        let cases: [(&str, u8, u32, &[(u8, u32)]); 4] = [
+            ("carpet", CARPET_ID, 2, &[(6, 3)]),
+            ("flowerpot", FLOWERPOT_ID, 1, &[(89, 2), (6, 1)]),
+            ("table", TABLE_ID, 1, &[(8, 2), (9, 1)]),
+            ("banner", BANNER_ID, 1, &[(5, 1), (6, 2)]),
+        ];
+        for (id, out_block, out_count, inputs) in cases {
+            let r = find_recipe(id).unwrap_or_else(|| panic!("裝飾傢俱「{id}」應在背包配方表"));
+            assert!(find_workbench_recipe(id).is_none(), "裝飾傢俱「{id}」不該在工作台配方表");
+            assert_eq!(r.output_block, out_block, "「{id}」產出方塊 id 不符");
+            assert_eq!(r.output_count, out_count, "「{id}」產出數量不符");
+            assert_eq!(r.inputs, inputs, "「{id}」配料不符");
+        }
+        // 四組多重集彼此互異，也與任何其餘背包配方皆不相撞（把 inputs 排序後當多重集鍵比對）。
+        fn key(inputs: &[(u8, u32)]) -> Vec<(u8, u32)> {
+            let mut v = inputs.to_vec();
+            v.sort();
+            v
+        }
+        let furniture_ids = ["carpet", "flowerpot", "table", "banner"];
+        for &fid in &furniture_ids {
+            let fk = key(find_recipe(fid).unwrap().inputs);
+            for other in RECIPES.iter().filter(|o| o.id != fid) {
+                assert_ne!(
+                    key(other.inputs),
+                    fk,
+                    "裝飾傢俱「{fid}」與配方「{}」多重集相撞",
+                    other.id
+                );
+            }
+        }
+    }
+
+    #[test]
     fn find_recipe_campfire_in_workbench_list() {
         // 營火是「營地大物」：走工作台 3×3（6 格材料）、不在背包 2×2 表。
         assert!(find_recipe("campfire").is_none(), "營火不該在背包配方表");
@@ -977,7 +1053,9 @@ mod tests {
                 || (r.output_block >= 89 && r.output_block <= 92) // 四色陶磚（染色建材 v1，自主提案切片）
                 || r.output_block == COIN_ID // 乙太幣（純物品 id=98，鑄幣 v1，ROADMAP 873 自主提案切片）
                 || r.output_block == SWORD_WOOD_ID   // 木劍（純物品 id=99，驅影之劍 v1，ROADMAP 887 自主提案切片）
-                || r.output_block == SWORD_STONE_ID; // 石劍（純物品 id=100，驅影之劍 v1）
+                || r.output_block == SWORD_STONE_ID  // 石劍（純物品 id=100，驅影之劍 v1）
+                || (r.output_block >= crate::voxel_furniture::CARPET_ID
+                    && r.output_block <= crate::voxel_furniture::BANNER_ID); // 四樣裝飾傢俱（可放置方塊 id=102~105，ROADMAP 931 自主提案切片）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
@@ -1190,6 +1268,7 @@ mod tests {
         store.give("旅人", 9, 10);  // StoneBrick（建築藍圖·水井/瞭望台配方用）
         store.give("旅人", 31, 10); // Torch（建築藍圖·涼亭配方用）
         store.give("旅人", 55, 10); // Snow（terracotta_white 白陶磚配方用，染色建材 v1）
+        store.give("旅人", 89, 10); // TerracottaRed（flowerpot 花盆配方用，裝飾傢俱 v1 ROADMAP 931）
         // 火把配方：1 木頭(5) + 1 煤礦(20) → 4 火把（Wood/CoalOre 已加，數量足夠）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);

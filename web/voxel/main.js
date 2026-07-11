@@ -157,6 +157,11 @@ const COIN = 98;
 // 驅影之劍 v1（ROADMAP 887，自主提案切片）——世界第一批武器，握在手上驅散夜之暗影更快：
 // 木劍一擊抵兩下、石/鐵劍一擊即散，鐵劍還雙倍乙太礦。純物品、不可放置，99~101 是首個空號。
 const SWORD_WOOD = 99, SWORD_STONE = 100, SWORD_IRON = 101;
+// 玩家裝飾傢俱 v1（ROADMAP 931，自主提案切片）——世界可放方塊至今不是建材就是有用途的功能
+// 家具，唯獨缺純為好看擺著佈置家園的小傢俱；本刀補上第一批純裝飾傢俱：小地毯(102)/花盆(103)/
+// 小圓桌(104)/掛旗(105)。零互動、零居民行為、零計時，走矮塊/薄片造型一眼是傢俱而非建材。
+// 皆背包 2×2 合成、可放置、破壞回收自身（item_id == block_id）。
+const CARPET = 102, FLOWERPOT = 103, TABLE = 104, BANNER = 105;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -285,6 +290,12 @@ const COLOR = {
   [SWORD_WOOD]:  [0.64, 0.46, 0.26], // 木劍——深棕木刃
   [SWORD_STONE]: [0.62, 0.62, 0.64], // 石劍——冷灰石刃
   [SWORD_IRON]:  [0.86, 0.88, 0.94], // 鐵劍——明亮銀白，精煉金屬鋒芒
+  // 玩家裝飾傢俱 v1（ROADMAP 931，自主提案切片）——四樣皆暖色調、各自鮮明可辨，一眼是「一件傢俱」。
+  // 造型走矮塊/薄片（見 SHORT_BLOCK_H），一眼與整格建材分開。
+  [CARPET]:    [0.74, 0.28, 0.30], // 小地毯——暖織毯紅（比床稍柔），鋪地一片
+  [FLOWERPOT]: [0.72, 0.40, 0.26], // 花盆——赭陶盆棕（呼應紅陶磚），矮墩栽綠
+  [TABLE]:     [0.66, 0.48, 0.28], // 小圓桌——溫潤木桌棕（比長椅亮一階），矮桌感
+  [BANNER]:    [0.30, 0.44, 0.74], // 掛旗——沉穩靛藍旗面，牆上一面醒目的旗
 };
 
 // ── 裝飾植物十字貼片渲染 v2 ─────────────────────────────────────────────
@@ -301,6 +312,31 @@ const CROSS_PLANTS = new Set([
 ]);
 // 莖色——統一的柔綠，作為花萼/葉叢的基底色，讓花冠的花色與地面/彼此更好分辨。
 const STEM_COLOR = [0.24, 0.5, 0.22];
+
+// ── 玩家裝飾傢俱 v1（ROADMAP 931）矮塊／薄片造型 ──────────────────────────────
+// 這批純裝飾傢俱刻意**不**畫成整格立方體（那會與建材混淆），改用「短箱」造型——
+// 依 SHORT_BLOCKS 給的軸向範圍（0..1 局部座標）畫一個比整格小的箱子，一眼就是
+// 「一件傢俱」而非一塊建材：
+//   地毯＝超薄貼地一整片；圓桌＝矮桌腳＋較寬桌面；花盆＝矮陶盆＋頂上一小簇綠；
+//   掛旗＝貼一面牆的薄直立旗面。碰撞/採集/放置沿用後端語意不動（後端視為實心一格）。
+// 每項是一或多層 box：{ x:[min,max], y:[min,max], z:[min,max], c:色 }。c 省略＝用方塊本色。
+const FURNITURE_SHAPES = {
+  // 小地毯——鋪滿地板、僅 6% 高的薄毯（略內縮邊緣，看得出是一片鋪物）。
+  [CARPET]: [{ x: [0.04, 0.96], y: [0.0, 0.06], z: [0.04, 0.96] }],
+  // 花盆——下層赭陶矮盆（0..0.42），上層一小簇綠意（0.42..0.62，收窄）。
+  [FLOWERPOT]: [
+    { x: [0.28, 0.72], y: [0.0, 0.42], z: [0.28, 0.72] },
+    { x: [0.34, 0.66], y: [0.42, 0.62], z: [0.34, 0.66], c: [0.30, 0.60, 0.28] },
+  ],
+  // 小圓桌——四方收成的桌腳柱（0..0.5）＋較寬的桌面板（0.5..0.62）。
+  [TABLE]: [
+    { x: [0.34, 0.66], y: [0.0, 0.5], z: [0.34, 0.66] },
+    { x: [0.14, 0.86], y: [0.5, 0.62], z: [0.14, 0.86] },
+  ],
+  // 掛旗——貼牆的薄直立旗面（z 只佔前緣一薄片，y 從高處垂下），一面醒目的旗。
+  [BANNER]: [{ x: [0.16, 0.84], y: [0.14, 0.92], z: [0.06, 0.16] }],
+};
+const SHORT_BLOCKS = new Set([CARPET, FLOWERPOT, TABLE, BANNER]);
 
 const DEBUG = location.search.includes("debug");
 // 觸控裝置偵測（用於顯示精簡 HUD 文字 + 啟用搖桿/跳鈕/放置鈕）
@@ -2132,8 +2168,11 @@ function faceShade(f) {
 function faceVisibleOpaque(nx, ny, nz) {
   const r = getRaw(nx, ny, nz);
   if (r === -1) return false;
-  // 梯子（LADDER=35）、木門（開）（DOOR_OPEN=44）是可穿越方塊，視覺上等同空氣
-  return r === AIR || isWaterId(r) || r === LADDER || r === DOOR_OPEN;
+  // 梯子（LADDER=35）、木門（開）（DOOR_OPEN=44）是可穿越方塊，視覺上等同空氣。
+  // 裝飾傢俱（矮塊/薄片，ROADMAP 931）與十字貼片植物本身比一格小、看得穿——鄰接它們的
+  // 整格方塊那一面仍要畫出來，否則傢俱沒填滿的縫隙後面會露出黑洞（未畫的鄰面）。
+  return r === AIR || isWaterId(r) || r === LADDER || r === DOOR_OPEN
+    || SHORT_BLOCKS.has(r) || CROSS_PLANTS.has(r);
 }
 // 水面可見性改由 rebuildChunk 內的水流分支就地判斷（含階梯落差牆），見 waterTopH/emitWaterFace。
 
@@ -2187,6 +2226,9 @@ function rebuildChunk(key) {
           // 併入不透明 mesh（opaqueMat 為 DoubleSide，兩面都畫，花不會半透明破洞）。
           // （window.__qaCubePlants 僅供 QA 對比截圖用，切回舊的整格立方體渲染。）
           emitCross(pos, norm, col, idx, lx, ly, lz, variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz), b);
+        } else if (SHORT_BLOCKS.has(b)) {
+          // 玩家裝飾傢俱 v1（ROADMAP 931）：走矮塊／薄片造型（一或多層短箱），一眼是傢俱而非建材。
+          emitFurniture(pos, norm, col, idx, lx, ly, lz, b, variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz));
         } else {
           // 四季樹葉 v1：樹葉方塊的基底色隨當前季節換色，其餘方塊沿用固定色。
           const base = b === LEAVES ? foliageLeafColor(worldSeason) : (COLOR[b] || COLOR[STONE]);
@@ -2238,6 +2280,38 @@ function emitFace(pos, norm, col, idx, lx, ly, lz, f, c) {
     if (col && c) col.push(Math.min(1, c[0] * shade), Math.min(1, c[1] * shade), Math.min(1, c[2] * shade));
   }
   idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
+}
+
+// 玩家裝飾傢俱 v1（ROADMAP 931）：把一件傢俱畫成一或多層「短箱」（比整格小的箱子），
+// 一眼是傢俱而非建材。六面全畫（箱子比一格小、內面也看得見，不做面剔除）。座標用 chunk
+// 局部（mesh 有偏移）。純視覺，碰撞/採集/放置沿用後端一格語意不動。FPS 零影響（一樣併進
+// chunk 合併 mesh，一件傢俱幾十個頂點，與整格立方體同數量級）。
+function emitFurniture(pos, norm, col, idx, lx, ly, lz, b, baseC) {
+  const layers = FURNITURE_SHAPES[b];
+  if (!layers) return;
+  for (const box of layers) {
+    const c = box.c || baseC;
+    const [x0, x1] = box.x, [y0, y1] = box.y, [z0, z1] = box.z;
+    // 各面的四角頂點（照 FACES 的繞序，法線朝外），套用該面的方向明暗。
+    const faces = [
+      { n: [1, 0, 0],  q: [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]] },
+      { n: [-1, 0, 0], q: [[x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [x0, y0, z0]] },
+      { n: [0, 1, 0],  q: [[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]] },
+      { n: [0, -1, 0], q: [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]] },
+      { n: [0, 0, 1],  q: [[x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [x0, y0, z1]] },
+      { n: [0, 0, -1], q: [[x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0]] },
+    ];
+    for (const f of faces) {
+      const shade = f.n[1] > 0 ? 1.07 : (f.n[1] < 0 ? 0.70 : 0.91);
+      const start = pos.length / 3;
+      for (const v of f.q) {
+        pos.push(lx + v[0], ly + v[1], lz + v[2]);
+        norm.push(f.n[0], f.n[1], f.n[2]);
+        col.push(Math.min(1, c[0] * shade), Math.min(1, c[1] * shade), Math.min(1, c[2] * shade));
+      }
+      idx.push(start, start + 1, start + 2, start, start + 2, start + 3);
+    }
+  }
 }
 
 // 色彩線性內插小工具：mix(a,b,t)=a→b 走 t（0..1）。用來把莖綠、花萼、花冠、花心
@@ -5292,6 +5366,8 @@ const BLOCK_NAME = {
   [COIN]: "乙太幣",
   // 驅影之劍 v1（ROADMAP 887，自主提案切片）
   [SWORD_WOOD]: "木劍", [SWORD_STONE]: "石劍", [SWORD_IRON]: "鐵劍",
+  // 玩家裝飾傢俱 v1（ROADMAP 931，自主提案切片）
+  [CARPET]: "小地毯", [FLOWERPOT]: "花盆", [TABLE]: "小圓桌", [BANNER]: "掛旗",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -5600,6 +5676,8 @@ const BLOCK_HARDNESS = {
   [TERRACOTTA_RED]: 1.6, [TERRACOTTA_BLACK]: 1.6, [TERRACOTTA_WHITE]: 1.6, [TERRACOTTA_BLUE]: 1.6,
   // 野花 v1（自主提案切片）——一叢嬌嫩野花，比照樹苗一敲即落，輕鬆採下帶走。
   [WILDFLOWER_RED]: 0.2, [WILDFLOWER_YELLOW]: 0.2, [WILDFLOWER_BLUE]: 0.2,
+  // 玩家裝飾傢俱 v1（ROADMAP 931）——輕巧擺設，比照告示牌一敲即回收，方便隨手挪位重新佈置。
+  [CARPET]: 0.4, [FLOWERPOT]: 0.5, [TABLE]: 0.6, [BANNER]: 0.4,
 };
 function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
 
@@ -7373,6 +7451,12 @@ const RECIPES_JS = [
   // 對齊後端 voxel_craft::RECIPES：木劍 {5:1,8:2}、石劍 {3:2,8:1}（鐵劍在工作台，見下）。
   { id: "wood_sword",  name: "木劍", inputs: [[WOOD, 1], [PLANK, 2]], output_block: SWORD_WOOD,  out_count: 1 },
   { id: "stone_sword", name: "石劍", inputs: [[STONE, 2], [PLANK, 1]], output_block: SWORD_STONE, out_count: 1 },
+  // 玩家裝飾傢俱 v1（ROADMAP 931，自主提案切片）——世界第一批純裝飾傢俱，便宜好上手、四樣皆背包 2×2。
+  // 對齊後端 voxel_craft::RECIPES：地毯 {6:3}、花盆 {89:2,6:1}、圓桌 {8:2,9:1}、掛旗 {5:1,6:2}。
+  { id: "carpet",    name: "小地毯", inputs: [[LEAVES, 3]],                    output_block: CARPET,    out_count: 2 },
+  { id: "flowerpot", name: "花盆",   inputs: [[TERRACOTTA_RED, 2], [LEAVES, 1]], output_block: FLOWERPOT, out_count: 1 },
+  { id: "table",     name: "小圓桌", inputs: [[PLANK, 2], [STONE_BRICK, 1]],   output_block: TABLE,     out_count: 1 },
+  { id: "banner",    name: "掛旗",   inputs: [[WOOD, 1], [LEAVES, 2]],         output_block: BANNER,    out_count: 1 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
@@ -8439,6 +8523,8 @@ window.__voxel = {
   _qaSetBlock(x, y, z, id) { setLocalBlock(x, y, z, id); return getRaw(x, y, z); },
   CROSS_PLANTS: [...CROSS_PLANTS],
   WILDFLOWER_RED, WILDFLOWER_YELLOW, WILDFLOWER_BLUE, BERRY_BUSH,
+  // 玩家裝飾傢俱 v1（ROADMAP 931）QA 用：暴露四樣傢俱 id 供就地擺出佈置一角截圖。
+  CARPET, FLOWERPOT, TABLE, BANNER, PLANK, WOOD,
   // 純視覺 QA 用：切換「裝飾植物走舊的整格立方體」以便對比截圖，並就地重建所有已載入 chunk。
   _qaSetCubePlants(on) {
     window.__qaCubePlants = !!on;
