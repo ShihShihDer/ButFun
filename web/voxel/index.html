@@ -114,9 +114,20 @@
       pointer-events: auto; user-select: none;
     }
     #dig.talk { background: rgba(120,170,230,0.40); }
+    /* 游泳深化 v1：上浮/下潛鈕（下水才 display:block，JS 依 swimming 切）。
+       疊在跳鈕左側，藍色系呼應水；上浮在上、下潛在下。 */
+    #diveUp, #diveDown {
+      position: absolute; right: 124px; width: 76px; height: 66px;
+      border-radius: 50%; background: rgba(90,160,220,0.34); border: 2px solid rgba(255,255,255,0.4);
+      color: #fff; font-size: 14px; display: none; align-items: center; justify-content: center;
+      pointer-events: auto; user-select: none;
+    }
+    #diveUp   { bottom: 234px; }
+    #diveDown { bottom: 150px; }
+    body.lefty #diveUp, body.lefty #diveDown { right: auto; left: 124px; }
     /* 觸控按鈕大小/透明度：吃設定面板的 CSS 變數（重載保留、即時生效）。
        用 transform scale 縮放，位置錨點不變（右下拇指區）。 */
-    #jump, #place, #dig {
+    #jump, #place, #dig, #diveUp, #diveDown {
       transform: scale(var(--touch-btn-scale, 1));
       opacity: var(--touch-btn-opacity, 1);
     }
@@ -894,6 +905,19 @@
       opacity: 0;
       transition: opacity 0.35s ease;
     }
+    /* 憋氣表 v1（游泳深化）：只在氣開始下降時淡入，一串泡泡，越潛越少。療癒提示、非傷害。 */
+    #breathMeter {
+      position: fixed; left: 50%; top: 18%; transform: translateX(-50%); z-index: 8;
+      display: flex; gap: 6px; pointer-events: none;
+      opacity: 0; transition: opacity 0.4s ease;
+    }
+    #breathMeter .bub {
+      width: 14px; height: 14px; border-radius: 50%;
+      background: radial-gradient(circle at 35% 30%, rgba(255,255,255,0.95), rgba(150,210,255,0.6) 60%, rgba(90,150,220,0.35));
+      box-shadow: 0 0 6px rgba(150,210,255,0.6);
+      transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+    #breathMeter .bub.spent { opacity: 0.15; transform: scale(0.7); box-shadow: none; }
 
     /* ── 玩家里程碑（ROADMAP 724）────────────────────────────────────────── */
     #milestonesBtn {
@@ -1127,6 +1151,23 @@
     }
     #viewBtn:hover { background: rgba(30,45,65,0.8); }
     @media (orientation: portrait) { #viewBtn { top: 96px; font-size: 12px; padding: 5px 9px; } }
+
+    /* ── 環境音效靜音鈕（環境音效 v1）：左側功能鈕欄底（gearBtn 之下），
+       一枚小喇叭一鍵開關世界的聲音床；狀態存 localStorage、重載保留。柔和半透明、
+       避開置中的時鐘/季節、右側 acct/選單與底部拇指區。 ── */
+    #soundBtn {
+      position: fixed; left: 10px; top: 200px; z-index: 6;
+      background: rgba(20,28,40,0.62); color: #cbd6e6;
+      border: 1px solid rgba(203,214,230,0.28);
+      width: 38px; height: 38px; border-radius: 999px;
+      font-size: 17px; line-height: 1; cursor: pointer; user-select: none;
+      pointer-events: auto; display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.35);
+      transition: background 0.25s linear, opacity 0.25s linear;
+    }
+    #soundBtn:hover { background: rgba(30,45,65,0.82); }
+    #soundBtn.muted { opacity: 0.62; }
+    @media (orientation: portrait) { #soundBtn { top: 166px; width: 34px; height: 34px; font-size: 15px; } }
 
     /* ── 操作設定齒輪鈕（開設定面板）：左側，viewBtn 下方，避開右側面板與底部搖桿 ── */
     #gearBtn {
@@ -1524,6 +1565,11 @@
   <div id="app"></div>
   <!-- 水下氛圍覆蓋層：相機在水方塊內時顯示淡藍色，JS 控制 opacity -->
   <div id="underwaterOverlay"></div>
+  <!-- 憋氣表 v1（游泳深化）：8 顆泡泡，潛久了一顆顆消（純視覺提示；扣血仍走既有溫柔溺水機制）-->
+  <div id="breathMeter">
+    <span class="bub"></span><span class="bub"></span><span class="bub"></span><span class="bub"></span>
+    <span class="bub"></span><span class="bub"></span><span class="bub"></span><span class="bub"></span>
+  </div>
   <!-- 受傷輕紅暈（玩家生存指標 v1·溫和版）：扣血時淡入一層極輕微紅色再淡出，別嚇人 -->
   <div id="damageFlash"></div>
   <div id="hud">載入中…</div>
@@ -1531,6 +1577,9 @@
   <div id="clock" class="cl-day"><span class="cl-icon">☀️</span><span class="cl-name">白天</span><span class="cl-time">12:00</span></div>
   <!-- 季節指示器（ROADMAP 897）：時段徽章下方一枚小徽章，內容由 main.js 依快照 season/season_day 更新 -->
   <div id="season" class="se-spring"><span class="se-icon">🌸</span><span class="se-name">春天</span><span class="se-day">第1天</span></div>
+  <!-- 環境音效靜音鈕（環境音效 v1）：右上角小喇叭，一鍵開關世界聲音床，狀態存 localStorage。
+       首次需使用者手勢才能啟動 AudioContext（瀏覽器政策）→ 點它即當作啟動手勢。 -->
+  <button id="soundBtn" title="環境音效">🔊</button>
   <!-- Google 登入帳號 chip（內容由 main.js 依登入態填）-->
   <div id="acct"></div>
   <div id="dbg"></div>
@@ -1563,6 +1612,9 @@
     <div id="joy"><div id="joyNub"></div></div>
     <div id="place">放置</div>
     <div id="jump">跳</div>
+    <!-- 游泳深化 v1：下水才顯示（JS 依 swimming 切 display）；按住＝上浮/下潛 -->
+    <div id="diveUp">↑ 浮</div>
+    <div id="diveDown">↓ 潛</div>
     <!-- 專屬挖鈕（準心+按鈕模式）：長按挖準心對準的方塊；對到居民時 JS 改成「💬 說話」 -->
     <div id="dig">⛏ 挖</div>
   </div>

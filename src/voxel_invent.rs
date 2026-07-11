@@ -1489,6 +1489,17 @@ impl InventedSkillStore {
             .collect()
     }
 
+    /// 這位居民**自己發明**的技能筆數（第一次發明立碑 v1·ROADMAP 930）：只數
+    /// `source.is_none()` 的記錄——出生承自父母（`承自XX`）或在世師承老師（`師承XX`）
+    /// 的技能都有 `source`，不算她「自己想出來的」。呼叫端用它判定「這是不是她生涯
+    /// 第一次真的靠自己發明」，是則就地立起發明之光碑。
+    pub fn self_invented_count(&self, resident: &str) -> usize {
+        self.skills
+            .iter()
+            .filter(|k| k.resident == resident && k.source.is_none())
+            .count()
+    }
+
     /// `teacher` 是否有一個 `student` 還不會的技能——可教（ROADMAP 717）。
     /// 依技能庫既有順序找第一筆符合的（決定性、非隨機）；教哪一筆、教誰由此決定，
     /// 呼叫端只負責機率門檻與台詞。
@@ -2958,6 +2969,27 @@ mod tests {
         assert_eq!(lineage_label(&inherited), "承自露娜");
         let taught = s.learn_from("vox_res_1", &invented, "露娜").unwrap();
         assert_eq!(lineage_label(&taught), "師承露娜");
+    }
+
+    #[test]
+    fn self_invented_count_counts_only_own_inventions() {
+        // 第一次發明立碑 v1：只數「自己發明」（source=None）的，繼承／師承的不算。
+        let plan = parse_plan(glass_plan_json()).unwrap();
+        let mut s = InventedSkillStore::new();
+        // 露娜（vox_res_0）自己發明第一項技能：0 → 1。
+        assert_eq!(s.self_invented_count("vox_res_0"), 0, "還沒發明過應為 0");
+        let invented = s.add("vox_res_0", "燒玻璃", 10, plan.raw_steps.clone()).unwrap();
+        assert_eq!(s.self_invented_count("vox_res_0"), 1, "自己發明一項後為 1");
+        // 諾娃（vox_res_4）出生承繼露娜的技能：source 有值 → 不算她自己發明。
+        s.inherit("vox_res_4", &invented, "露娜").unwrap();
+        assert_eq!(s.self_invented_count("vox_res_4"), 0, "繼承來的不算自己發明");
+        // 賽勒（vox_res_1）在世師承露娜：source 有值 → 一樣不算。
+        s.learn_from("vox_res_1", &invented, "露娜").unwrap();
+        assert_eq!(s.self_invented_count("vox_res_1"), 0, "師承來的不算自己發明");
+        // 賽勒之後又自己發明另一項（不同目標材料）：0 → 1。
+        let plan2 = parse_plan(glass_plan_json()).unwrap();
+        s.add("vox_res_1", "自己的拋光法", 16, plan2.raw_steps).unwrap();
+        assert_eq!(s.self_invented_count("vox_res_1"), 1, "師承後再自己發明才算 1");
     }
 
     #[test]
