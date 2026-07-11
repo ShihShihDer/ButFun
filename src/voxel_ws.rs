@@ -108,6 +108,7 @@ use crate::voxel_bonds::{self as vbonds, ResidentBonds};
 use crate::voxel_romance::{self as vromance, ResidentRomance};
 use crate::voxel_wedding::{self as vwed, ResidentWeddings};
 use crate::voxel_family as vfamily;
+use crate::voxel_sibling as vsibling;
 use crate::voxel_first_invention as vfirstinv;
 use crate::voxel_lover_seek as vlover;
 use crate::voxel_wildlife as vwild;
@@ -10192,6 +10193,69 @@ fn maybe_birth() {
             };
             vfeed::append_feed("新居民誕生", new_name, &detail);
         }
+    }
+
+    // ── 手足相伴 v1（ROADMAP 941）──────────────────────────────────────────────
+    // 若這個新生兒的父母（`parent_id`）此前已迎來過孩子（名冊裡查得到同一位父母的既有孩子），
+    // 新生兒就與那些哥哥姐姐相認為手足。名冊此時已 append 新生兒，靠 `new_id` 排除自身。
+    // load_roster 是鎖外 IO（此處無持任何鎖），純函式篩選，出生本就低頻。
+    let sibling_rows: Vec<(String, String, String)> = vroster::load_roster()
+        .into_iter()
+        .map(|e| (e.resident, e.name, e.parent))
+        .collect();
+    let older_siblings = vsibling::filter_older_siblings(&sibling_rows, &parent_id, &new_id);
+    if !older_siblings.is_empty() {
+        let sib_names: Vec<String> = older_siblings.iter().map(|(_, n)| n.clone()).collect();
+
+        // 新生兒把「我不是一個人來到這世界」記進心裡（含「一定會」→ 永久精華）。
+        let subject = sib_names.first().cloned().unwrap_or_else(|| "手足".to_string());
+        let m_new = {
+            hub().memory.write().unwrap().add_memory(
+                &new_id,
+                &subject,
+                &vsibling::newborn_sibling_memory_line(&sib_names),
+            )
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&m_new);
+
+        // 每位既有哥哥姐姐各記一筆「我當兄姊了」（含「一定會」→ 永久精華）。memory 寫鎖各取即釋、不巢狀。
+        for (sib_id, _) in &older_siblings {
+            let m_sib = {
+                hub().memory.write().unwrap().add_memory(
+                    sib_id,
+                    new_name,
+                    &vsibling::elder_sibling_memory_line(new_name),
+                )
+            }; // memory 寫鎖釋放
+            vmem::append_memory(&m_sib);
+        }
+
+        // 新生兒的出生泡泡改成與手足相認的口吻（有手足才走這句；沒手足時仍是既有親子/單親報名），
+        // 並讓其中一位哥哥姐姐當場轉頭迎接（若牠在人口內且當下沒在說話）。同一把短寫鎖即釋。
+        {
+            let mut rs = hub().residents.write().unwrap();
+            if let Some(baby) = rs.get_mut(new_i) {
+                baby.say = vsibling::newborn_sibling_say(new_name, &sib_names).chars().take(50).collect();
+                baby.say_timer = SAY_SECS;
+            }
+            for (pick, (sib_id, _)) in older_siblings.iter().enumerate() {
+                let si = vroster::resident_index(sib_id);
+                if let Some(elder) = rs.get_mut(si) {
+                    if elder.say.is_empty() {
+                        elder.say = vsibling::elder_sibling_say(new_name, pick).chars().take(50).collect();
+                        elder.say_timer = SAY_SECS;
+                        break; // 只讓最年長的一位開口，不整群洗版
+                    }
+                }
+            }
+        } // residents 寫鎖釋放
+
+        // 世界動態牆以手足口吻播報（鎖外）。
+        vfeed::append_feed(
+            vsibling::SIBLING_FEED_KIND,
+            new_name,
+            &vsibling::sibling_feed_line(parent_name, new_name, older_siblings.len()),
+        );
     }
 }
 
