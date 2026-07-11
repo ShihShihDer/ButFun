@@ -12871,6 +12871,9 @@ fn tick_residents(dt: f32) {
     // 遠行送行 v1（ROADMAP 902）：啟程那刻收集 (送行者 id, 送行者名, 遠行夥伴名, 方位)，
     // residents 寫鎖釋放後鎖外統一落地（memory 寫＋bonds 往來＋Feed，守死鎖鐵律）。
     let mut sendoff_events: Vec<(String, &'static str, &'static str, String)> = Vec::new();
+    // 遠行歸來的迎接 v1（ROADMAP 921）：踏上歸途那刻收集 (迎接者 id, 迎接者名, 遠行夥伴名, 方位)，
+    // 與送行對稱、residents 寫鎖釋放後鎖外統一落地（memory 寫＋bonds 往來＋Feed，守死鎖鐵律）。
+    let mut welcome_events: Vec<(String, &'static str, &'static str, String)> = Vec::new();
     // 邊陲探友（居民千里跋涉去邊陲探望遠行的夥伴 v1，ROADMAP 821）：鎖內收集「訪客抵達朋友邊陲落點、
     // 找到人」事件，記憶寫（雙方，朋友 id 於鎖外用名字查回）＋record_visit 加溫＋Feed 在居民鎖釋放後
     // 統一落地（不持居民鎖做 IO，守死鎖鐵律）。(訪客 id, 訪客名, 朋友名, 方位名)。
@@ -15255,6 +15258,54 @@ fn tick_residents(dt: f32) {
                                 biome,
                                 bearing.clone(),
                             ));
+                            // ── 遠行歸來的迎接 v1（ROADMAP 921·送行 902 的對稱閉環）──
+                            // 踏上歸途那一刻，找一位留守村裡（座落在歸來者家域附近）、醒著、與牠交情
+                            // 最深（相識以上）的老鄰居遙遙道一句歸來的問候。送行挑「離啟程者近」的鄰居、
+                            // 迎接挑「離歸來者家近」的摯友——一送一迎，語意分明。bonds 讀鎖只取一次即釋
+                            //（與 residents 為不同鎖，不巢狀、守死鎖鐵律）；迎接者道別走 say_updates
+                            //（統一「say 空才套」+ 截斷），記憶/交情/Feed 收進 welcome_events、鎖外落地。
+                            let traveler_name = r.name;
+                            let (hx, hz) = (r.home_x, r.home_z);
+                            let welcomer = {
+                                let bonds = hub().bonds.read().unwrap();
+                                town_snap
+                                    .iter()
+                                    .filter(|(id, name, x, z, asleep)| {
+                                        let dx = x - hx;
+                                        let dz = z - hz;
+                                        *id != r.id
+                                            && vsend::qualifies_as_welcomer(
+                                                dx * dx + dz * dz,
+                                                !*asleep,
+                                                bonds.tier_of(traveler_name, name),
+                                            )
+                                    })
+                                    // 交情最深者優先（相同交情時取離家域最近者，最像「守著等牠回來」）。
+                                    .max_by(|a, b| {
+                                        let ta = bonds.tier_of(traveler_name, a.1);
+                                        let tb = bonds.tier_of(traveler_name, b.1);
+                                        ta.cmp(&tb).then_with(|| {
+                                            let da = (a.2 - hx).powi(2) + (a.3 - hz).powi(2);
+                                            let db = (b.2 - hx).powi(2) + (b.3 - hz).powi(2);
+                                            db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
+                                        })
+                                    })
+                                    .map(|(id, name, ..)| (id.clone(), *name))
+                            }; // bonds 讀鎖釋放
+                            if let Some((welcomer_id, welcomer_name)) = welcomer {
+                                let wpick =
+                                    (hx.to_bits() ^ hz.to_bits() ^ traveler_name.len() as u32) as usize;
+                                say_updates.push((
+                                    welcomer_id.clone(),
+                                    vsend::welcome_bubble(traveler_name, &bearing, wpick),
+                                ));
+                                welcome_events.push((
+                                    welcomer_id,
+                                    welcomer_name,
+                                    traveler_name,
+                                    bearing.clone(),
+                                ));
+                            }
                         }
                         // 逗留期間不在此設 target：由下方 wander 以邊陲為中心自由走動（見 center 覆寫）。
                     }
@@ -18630,6 +18681,32 @@ fn tick_residents(dt: f32) {
             vsend::FEED_KIND,
             sender_name,
             &vsend::sendoff_feed_line(traveler_name, bearing),
+        );
+    }
+
+    // 遠行歸來的迎接 v1（ROADMAP 921）落地：與送行完全對稱、鎖已全釋；迎接者把「今天迎了遠行歸來
+    // 的夥伴」記進心裡（episodic，掛遠行夥伴名下）、這份守著等牠回來的心意讓兩人交情再深一分（bonds
+    // 往來）、並補一則動態牆。鎖序同送行：memory 寫（即釋）→ bonds 寫（即釋）→ bonds 讀（僅升級時
+    // 存檔、即釋）→ Feed IO，皆短取即釋、不巢狀（守死鎖鐵律）。
+    for (welcomer_id, welcomer_name, traveler_name, bearing) in &welcome_events {
+        let ev = hub().memory.write().unwrap().add_memory(
+            welcomer_id,
+            traveler_name,
+            &vsend::welcome_memory_line(traveler_name, bearing),
+        ); // memory 寫鎖釋放
+        vmem::append_memory(&ev);
+        let (_tier, tier_changed) = {
+            let mut bonds = hub().bonds.write().unwrap();
+            bonds.record_visit(welcomer_name, traveler_name)
+        }; // bonds 寫鎖釋放
+        if tier_changed {
+            let bonds = hub().bonds.read().unwrap();
+            vbonds::save_bonds(&bonds);
+        } // bonds 讀鎖釋放
+        vfeed::append_feed(
+            vsend::WELCOME_FEED_KIND,
+            welcomer_name,
+            &vsend::welcome_feed_line(traveler_name, bearing),
         );
     }
 
