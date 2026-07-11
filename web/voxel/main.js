@@ -166,6 +166,10 @@ const SWORD_WOOD = 99, SWORD_STONE = 100, SWORD_IRON = 101;
 // 小圓桌(104)/掛旗(105)。零互動、零居民行為、零計時，走矮塊/薄片造型一眼是傢俱而非建材。
 // 皆背包 2×2 合成、可放置、破壞回收自身（item_id == block_id）。
 const CARPET = 102, FLOWERPOT = 103, TABLE = 104, BANNER = 105;
+// 發光結晶 v1（地下洞穴探索 v1，ROADMAP 934）——只生成在天然洞穴腔室岩壁上、泛柔和青綠幽光的
+// 礦晶；是「挖到豁然開朗地底洞穴」時值得駐足的發現＋照明。可放置的發光方塊，比照火把/乙太燈作法。
+// id 106：99~101=劍、102~105=裝飾傢俱已佔用，106 是首個空號。
+const GLOW_CRYSTAL = 106;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -305,6 +309,9 @@ const COLOR = {
   [FLOWERPOT]: [0.72, 0.40, 0.26], // 花盆——赭陶盆棕（呼應紅陶磚），矮墩栽綠
   [TABLE]:     [0.66, 0.48, 0.28], // 小圓桌——溫潤木桌棕（比長椅亮一階），矮桌感
   [BANNER]:    [0.30, 0.44, 0.74], // 掛旗——沉穩靛藍旗面，牆上一面醒目的旗
+  // 發光結晶 v1（地下洞穴探索 v1，ROADMAP 934）——高亮青綠幽光，一眼是黑暗洞穴裡自體發光的礦晶
+  // （比照火把/乙太燈純亮色作法，靠 lightColorFor 在四周投出柔和青綠點光）。
+  [GLOW_CRYSTAL]: [0.42, 0.95, 0.68],
 };
 
 // ── 裝飾植物十字貼片渲染 v2 ─────────────────────────────────────────────
@@ -2027,13 +2034,15 @@ const waterMat = makeWaterMat();
 const TORCH_LIGHT_COLOR = 0xff8820;      // 火把——暖橘黃（比火把顏色稍橘，光感更暖）
 const AETHER_LIGHT_COLOR = 0x66ccff;     // 乙太燈——清冷青藍（比火把冷、辨識度高）
 const CAMPFIRE_LIGHT_COLOR = 0xff6a1e;   // 營火——炙熱橘紅（比火把更飽和暖烈，一堆真的在燒的火）
+const GLOW_CRYSTAL_COLOR = 0x5cffb0;     // 發光結晶——柔和青綠（洞穴腔室岩壁上的天然幽光，冷而療癒）
 
 /** 此方塊是否為「發光方塊」（會被登記進光源池）。 */
-function isLightBlock(b) { return b === TORCH || b === AETHER_LAMP || b === CAMPFIRE; }
+function isLightBlock(b) { return b === TORCH || b === AETHER_LAMP || b === CAMPFIRE || b === GLOW_CRYSTAL; }
 /** 發光方塊的光色（不同方塊不同色調）。 */
 function lightColorFor(b) {
   if (b === AETHER_LAMP) return AETHER_LIGHT_COLOR;
   if (b === CAMPFIRE) return CAMPFIRE_LIGHT_COLOR;
+  if (b === GLOW_CRYSTAL) return GLOW_CRYSTAL_COLOR;
   return TORCH_LIGHT_COLOR;
 }
 
@@ -5381,6 +5390,8 @@ const BLOCK_NAME = {
   [SWORD_WOOD]: "木劍", [SWORD_STONE]: "石劍", [SWORD_IRON]: "鐵劍",
   // 玩家裝飾傢俱 v1（ROADMAP 931，自主提案切片）
   [CARPET]: "小地毯", [FLOWERPOT]: "花盆", [TABLE]: "小圓桌", [BANNER]: "掛旗",
+  // 地下洞穴探索 v1（ROADMAP 934）
+  [GLOW_CRYSTAL]: "發光結晶",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -5692,6 +5703,8 @@ const BLOCK_HARDNESS = {
   [WILDFLOWER_RED]: 0.2, [WILDFLOWER_YELLOW]: 0.2, [WILDFLOWER_BLUE]: 0.2,
   // 玩家裝飾傢俱 v1（ROADMAP 931）——輕巧擺設，比照告示牌一敲即回收，方便隨手挪位重新佈置。
   [CARPET]: 0.4, [FLOWERPOT]: 0.5, [TABLE]: 0.6, [BANNER]: 0.4,
+  // 地下洞穴探索 v1（ROADMAP 934）——洞穴岩壁上的發光結晶，比照冰晶（結晶偏脆），輕鬆敲下採走。
+  [GLOW_CRYSTAL]: 1.2,
 };
 function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
 

@@ -7502,6 +7502,10 @@ async fn handle_socket(
                     vrequest::fulfil_thanks_line(&name, iname, pick)
                 } else if vgift::is_treasure_gift(item_id) {
                     vgift::treasure_gift_thanks_line(&name, affinity, pick)
+                } else if vgift::is_cave_treasure_gift(item_id) {
+                    // 地下洞穴探索 v1（ROADMAP 934）：發光結晶是玩家深掘地底、挖到天然洞穴才採得到的
+                    // 自體發光礦晶——與雪原珍寶（冰晶）刻意區隔，一個向下深掘、一個向上跋涉雪原。
+                    vgift::cave_treasure_thanks_line(&name, affinity, pick)
                 } else if vgift::is_flower_gift(item_id) {
                     // 野花 v1（自主提案切片）：世界第一句「收到花」的心動道謝——與珍寶（礦物向
                     // 驚喜）、食物（實用向感謝）都不同的情感register，純粹送禮示好的心意。
