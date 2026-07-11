@@ -102,6 +102,8 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         crate::voxel_craft::COIN_ID => "乙太幣",
         // 乙太沃肥 v1（ROADMAP 789）：雜草＋泥土漚成的催熟沃肥，此前漏補此名、可餽贈居民。
         crate::voxel_compost::FERTILIZER_ID => "乙太沃肥",
+        // 地下洞穴探索 v1（ROADMAP 934）：天然洞穴腔室岩壁上的發光結晶，可採集餽贈居民。
+        106 => "發光結晶", // 對齊 voxel::Block::GlowCrystal
         _ => "物品",
     }
 }
@@ -160,6 +162,37 @@ pub fn treasure_gift_thanks_line(player_name: &str, affinity: usize, pick: usize
             "{name}！你竟然為我跑到雪原採了冰晶……我會一輩子珍藏它。",
             "{name}，這冰晶在陽光下閃著寒光，好珍貴——謝謝你想著我。",
             "能收到{name}帶回來的雪原冰晶，我覺得自己是最幸福的人。",
+        ];
+        pool[pick % pool.len()].replace("{name}", player_name)
+    }
+}
+
+/// 是否為「地底奇景」類禮物——目前只有發光結晶（106，地下洞穴探索 v1，ROADMAP 934）。
+/// 發光結晶只長在天然洞穴腔室的岩壁上，玩家得一路往地底挖、挖到豁然開朗的洞穴才採得到。
+/// 與「雪原珍寶」（冰晶）刻意區隔情感register：冰晶是「寒冷雪原的閃亮寶物」，發光結晶是
+/// 「地底深處自體發光的奇景」——同是稀有礦晶的驚喜讚嘆，但一個向上跋涉雪原、一個向下深掘地心。
+pub fn is_cave_treasure_gift(block_id: u8) -> bool {
+    block_id == 106 // GlowCrystal（對齊 voxel::Block::GlowCrystal）
+}
+
+/// 居民收到「地底奇景」（發光結晶）時的珍愛道謝台詞（零 LLM，確定性）。
+///
+/// 比一般道謝更驚喜、更珍視——這是玩家一路深掘地底、挖到天然洞穴才採得到的自體發光礦晶。
+/// `pick` 由呼叫端提供（unix 秒 % 句池長度），確定性輪替。
+/// `player_name` 空字串 = 訪客模式，回不帶名字的句池。
+pub fn cave_treasure_thanks_line(player_name: &str, affinity: usize, pick: usize) -> String {
+    if affinity == 0 || player_name.is_empty() {
+        let pool: &[&str] = &[
+            "哇……這結晶還在發光？你是從地底的洞穴帶回來的嗎，謝謝你！",
+            "發光結晶！我聽說地底深處的洞穴才有，好美，謝謝你。",
+            "這結晶在黑暗裡也自己泛著光……你特地為我挖到那麼深的地方嗎？",
+        ];
+        pool[pick % pool.len()].to_string()
+    } else {
+        let pool: &[&str] = &[
+            "{name}！你竟然為我挖到地底的洞穴、採了發光結晶……我會把它擺在最亮的地方。",
+            "{name}，這結晶在黑暗裡也泛著青綠的光，好珍貴——謝謝你想著我。",
+            "能收到{name}從地底深處帶回來的發光結晶，我覺得自己是最幸福的人。",
         ];
         pool[pick % pool.len()].replace("{name}", player_name)
     }
@@ -795,6 +828,44 @@ mod tests {
         let s = treasure_gift_thanks_line("", 0, 1);
         assert!(!s.contains("{name}"), "訪客句不應有佔位");
         assert!(!s.is_empty());
+    }
+
+    // ── 地下洞穴探索 v1（ROADMAP 934）─────────────────────────────────────────────
+
+    #[test]
+    fn is_cave_treasure_gift_only_glow_crystal() {
+        assert!(is_cave_treasure_gift(106), "發光結晶應為地底奇景");
+        // 其餘常見禮物（含雪原冰晶、裝飾傢俱 102~105）都不是地底奇景——兩類刻意區隔。
+        for id in [19u8, 49, 53, 8, 9, 10, 20, 21, 54, 55, 56, 58, 102, 103, 104, 105] {
+            assert!(!is_cave_treasure_gift(id), "id={id} 不應被判為地底奇景");
+        }
+    }
+
+    #[test]
+    fn item_name_glow_crystal() {
+        assert_eq!(item_name_zh(106), "發光結晶");
+    }
+
+    #[test]
+    fn cave_treasure_thanks_non_empty_no_placeholders() {
+        for name in ["旅人", ""] {
+            for affinity in [0, 1, 2, 3, 5] {
+                for pick in 0..4 {
+                    let s = cave_treasure_thanks_line(name, affinity, pick);
+                    assert!(!s.is_empty(), "name={name} affinity={affinity} pick={pick} 回空");
+                    assert!(!s.contains("{name}"), "name={name} affinity={affinity} pick={pick} 未替換 name");
+                    assert!(s.contains("結晶"), "地底奇景道謝應提到結晶");
+                    // 與雪原珍寶刻意區隔：地底奇景句不該提「冰晶」/「雪原」。
+                    assert!(!s.contains("冰晶"), "地底奇景道謝不應提到冰晶");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cave_treasure_thanks_friend_contains_name() {
+        let s = cave_treasure_thanks_line("小星", 5, 0);
+        assert!(s.contains("小星"), "友人等級應含玩家名");
     }
 
     // ── 野花 v1（自主提案切片）─────────────────────────────────────────────────

@@ -281,6 +281,12 @@ pub enum Block {
     /// 掛旗（玩家裝飾傢俱 v1）——背包 2×2 合成：1 木頭(5) + 2 葉片(6) → 1 掛旗。一面垂掛的暖色旗幟，
     /// 掛在牆上宣告「這是我家」。純裝飾、零互動，破壞回收自身。id 105。
     Banner = 105,
+    /// 發光結晶（地下洞穴探索 v1，ROADMAP 934）——只生成在天然洞穴腔室的岩壁上（緊貼空腔的深層石頭），
+    /// 程序生成、確定性、極稀少。是一團泛著柔和青綠幽光的礦晶，讓「挖到豁然開朗的地底洞穴」那一刻
+    /// 有值得駐足的發現與照明——療癒向探索的招牌點綴（前端渲染成發光方塊，比照火把/乙太燈的純亮色作法）。
+    /// 採集後可放置（發光裝飾方塊），送給居民會換來對地底奇景的驚喜反應。
+    /// id 106：97/98=護身符/乙太幣、99~101=木/石/鐵劍、102~105=裝飾傢俱已佔用，106 是首個空號。
+    GlowCrystal = 106,
 }
 
 impl Block {
@@ -378,6 +384,7 @@ impl Block {
             103 => Some(Block::FlowerPot),
             104 => Some(Block::Table),
             105 => Some(Block::Banner),
+            106 => Some(Block::GlowCrystal),
             _ => None,
         }
     }
@@ -399,7 +406,8 @@ impl Block {
             Block::WildflowerRed | Block::WildflowerYellow | Block::WildflowerBlue |
             // 玩家裝飾傢俱 v1（ROADMAP 931）：四樣純裝飾傢俱皆為玩家可放置的實心方塊，
             // 破壞回收自身、走通用建材路徑（不需特殊索引/tick，見 voxel_furniture.rs）。
-            Block::Carpet | Block::FlowerPot | Block::Table | Block::Banner
+            Block::Carpet | Block::FlowerPot | Block::Table | Block::Banner |
+            Block::GlowCrystal
             // BerryBushRipe / CoopReady 皆是伺服器維護的狀態方塊（由 tick_berry / tick_coop 長成），
             // 玩家不能手動放置。HotSpringWater 是世界生成的溫泉水，同來源水不可手動放置。
         )
@@ -557,6 +565,120 @@ pub const IRON_ORE_DENSITY: f32 = 0.010;
 pub const AETHER_ORE_DEPTH: i32 = 0;
 /// 乙太礦在合格石層中的每格生成機率（0.6%，比鐵礦（1%）更稀少——全世界最難尋的礦脈）。
 pub const AETHER_ORE_DENSITY: f32 = 0.006;
+
+// ── 地下洞穴探索 v1（ROADMAP 934）─────────────────────────────────────────────
+// 「深層礦石（682）」是「礦石方塊」，這裡補的是「可探索的空間＋氛圍發現」：
+//   ① 天然洞穴腔室——深層石頭層裡有機率被平滑 3D 噪聲雕空成連續的空腔（挖到會豁然開朗）。
+//   ② 發光結晶——極稀少地綴在腔室岩壁上，泛柔和青綠幽光，是值得駐足的地底發現＋照明。
+// 全確定性、純函式、零狀態；只在深層（y ≤ CAVE_CEILING 且 y ≥ CAVE_FLOOR）動手，
+// 絕不碰地表/泥土層/建物——向後相容，玩家改過的方塊由 delta overlay 蓋過生成結果。
+
+/// 洞穴腔室的最高天花板（世界 y）：只在此值（含）以下的石層才可能被雕空。
+/// 取 COAL_ORE_DEPTH+1=4——確保腔室永遠深埋在地表泥土層（h-3..h）之下、不破表；
+/// 出生點附近地表 h≈8，故腔室頂距地表至少約 4 格實心石，走在地表毫無察覺。
+pub const CAVE_CEILING: i32 = 4;
+/// 洞穴腔室的最低地板（世界 y）：此值（含）以上才雕空；以下一律保留實心石當底，
+/// 避免腔室直通 y<0 基岩、讓玩家從世界底掉出去。
+pub const CAVE_FLOOR: i32 = 1;
+/// 洞穴噪聲門檻：平滑 3D 噪聲 [0,1) 大於此值的格子被雕空成空腔。
+/// 0.72 → 約 28% 的合格深層石被雕空，成片相連（平滑噪聲 ⇒ 連續腔室而非碎洞），
+/// 挖到時有「豁然開朗」的空間感，但整體石層仍以實心為主、不至於變空殼。
+pub const CAVE_THRESHOLD: f32 = 0.72;
+/// 洞穴噪聲的空間頻率（格）：值愈大腔室愈大愈舒展。24 ≈ 幾格到十幾格的柔和腔室。
+const CAVE_SCALE: f32 = 24.0;
+/// 洞穴噪聲種子（與高度/群系/礦石皆獨立）。
+const CAVE_SEED: u32 = SEED ^ 0x_CA_7E_C0_DE;
+/// 發光結晶在「緊貼腔室的岩壁石」上的生成機率（3%）——極稀少，讓每叢都是驚喜。
+pub const GLOW_CRYSTAL_DENSITY: f32 = 0.03;
+/// 發光結晶的獨立雜湊種子（與洞穴/礦石分佈脫鉤）。
+const GLOW_CRYSTAL_SEED: u32 = SEED ^ 0x_61_0C_C7_A1;
+
+/// 三維座標 → [0,1) 的確定性雜湊（格點值，供 3D value noise 內插用）。
+#[inline]
+fn hash3(x: i32, y: i32, z: i32, seed: u32) -> f32 {
+    let mut h = (x as u32)
+        .wrapping_mul(0x_27d4_eb2d)
+        .wrapping_add((y as u32).wrapping_mul(0x_85eb_ca77))
+        .wrapping_add((z as u32).wrapping_mul(0x_9e37_79b1))
+        .wrapping_add(seed);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x_85eb_ca6b);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0x_c2b2_ae35);
+    h ^= h >> 16;
+    (h as f32) / (u32::MAX as f32)
+}
+
+/// 三維 value noise：8 個格點雜湊 + smoothstep 三線性內插 → 平滑 [0,1)。
+/// 平滑讓被雕空的格子成片相連（連續腔室），而非零散白噪聲碎洞。
+fn value_noise3(x: f32, y: f32, z: f32, seed: u32) -> f32 {
+    let x0 = x.floor() as i32;
+    let y0 = y.floor() as i32;
+    let z0 = z.floor() as i32;
+    let fx = x - x0 as f32;
+    let fy = y - y0 as f32;
+    let fz = z - z0 as f32;
+    // smoothstep，讓格點之間平滑（去除格狀梯度）。
+    let sx = fx * fx * (3.0 - 2.0 * fx);
+    let sy = fy * fy * (3.0 - 2.0 * fy);
+    let sz = fz * fz * (3.0 - 2.0 * fz);
+    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    let c000 = hash3(x0, y0, z0, seed);
+    let c100 = hash3(x0 + 1, y0, z0, seed);
+    let c010 = hash3(x0, y0 + 1, z0, seed);
+    let c110 = hash3(x0 + 1, y0 + 1, z0, seed);
+    let c001 = hash3(x0, y0, z0 + 1, seed);
+    let c101 = hash3(x0 + 1, y0, z0 + 1, seed);
+    let c011 = hash3(x0, y0 + 1, z0 + 1, seed);
+    let c111 = hash3(x0 + 1, y0 + 1, z0 + 1, seed);
+    // 沿 x → y → z 三線性內插。
+    let x00 = lerp(c000, c100, sx);
+    let x10 = lerp(c010, c110, sx);
+    let x01 = lerp(c001, c101, sx);
+    let x11 = lerp(c011, c111, sx);
+    let y0i = lerp(x00, x10, sy);
+    let y1i = lerp(x01, x11, sy);
+    lerp(y0i, y1i, sz)
+}
+
+/// 這個世界座標「若原是深層石頭」是否會被雕空成天然洞穴腔室（純幾何判定，不看實際方塊）。
+/// 只在 `CAVE_FLOOR ≤ wy ≤ CAVE_CEILING` 的深層動手；其餘一律 false（地表/泥土層/基岩不受影響）。
+pub fn is_cave_void(wx: i32, wy: i32, wz: i32) -> bool {
+    if wy < CAVE_FLOOR || wy > CAVE_CEILING {
+        return false;
+    }
+    let n = value_noise3(
+        wx as f32 / CAVE_SCALE,
+        wy as f32 / CAVE_SCALE,
+        wz as f32 / CAVE_SCALE,
+        CAVE_SEED,
+    );
+    n > CAVE_THRESHOLD
+}
+
+/// 這格「緊貼腔室的深層岩壁石」上是否綴著一叢發光結晶（極稀少、確定性）。
+/// 條件：本格自己是實心（不在腔室裡）、位在洞穴深度帶、六方向至少一格是腔室空腔，
+/// 且獨立雜湊命中稀少門檻。純函式、確定性；同座標永遠同結果。
+pub fn is_glow_crystal(wx: i32, wy: i32, wz: i32) -> bool {
+    // 本格必須落在洞穴深度帶（結晶只長在地底腔室岩壁，不會出現在別處）。
+    if wy < CAVE_FLOOR || wy > CAVE_CEILING {
+        return false;
+    }
+    // 本格自己得是空腔的「壁」——即本格非腔室、但至少一個相鄰面是腔室空腔。
+    if is_cave_void(wx, wy, wz) {
+        return false;
+    }
+    let touches_void = is_cave_void(wx + 1, wy, wz)
+        || is_cave_void(wx - 1, wy, wz)
+        || is_cave_void(wx, wy + 1, wz)
+        || is_cave_void(wx, wy - 1, wz)
+        || is_cave_void(wx, wy, wz + 1)
+        || is_cave_void(wx, wy, wz - 1);
+    if !touches_void {
+        return false;
+    }
+    ore_hash3(wx, wy, wz, GLOW_CRYSTAL_SEED) < GLOW_CRYSTAL_DENSITY
+}
 
 /// 三維確定性雜湊→[0,1)，用於礦石生成。獨立 seed 讓煤礦/鐵礦分佈不重疊。
 #[inline]
@@ -1153,6 +1275,15 @@ pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
         }
         return Block::Dirt;
     }
+    // 地下洞穴探索 v1（ROADMAP 934）：深層石頭層有機率被雕空成天然腔室（挖到會豁然開朗）。
+    // 先判空腔——空腔內是空氣，比礦石/結晶優先（腔室不含礦，反而是「發現空間」本身）。
+    if is_cave_void(wx, wy, wz) {
+        return Block::Air;
+    }
+    // 發光結晶：緊貼腔室的岩壁石偶綴一叢，比礦石優先（結晶就是這面壁的招牌發現）。
+    if is_glow_crystal(wx, wy, wz) {
+        return Block::GlowCrystal;
+    }
     // 深層礦石（ROADMAP 682 / 乙太礦脈 v1）：距地表足夠深的石頭層有機率含礦。
     // 三種礦石使用不同 seed，分佈互不重疊；查詢順序 煤→鐵→乙太，愈深愈稀有。
     if wy <= COAL_ORE_DEPTH && ore_hash3(wx, wy, wz, 0xdead_beef) < COAL_ORE_DENSITY {
@@ -1270,10 +1401,12 @@ mod tests {
         // 地表是草、其下是土、再下是石、其上是空氣。
         assert_eq!(block_at(x, h, z), Block::Grass);
         assert_eq!(block_at(x, h - 1, z), Block::Dirt);
-        // 深層石層可能含礦石（ROADMAP 682 煤/鐵；乙太礦脈 v1 乙太礦只在 y≤0 最深層）。
+        // 深層石層可能含礦石（ROADMAP 682 煤/鐵；乙太礦脈 v1 乙太礦只在 y≤0 最深層），
+        // 也可能被雕成天然洞穴腔室（空氣）或岩壁綴發光結晶（地下洞穴探索 v1，ROADMAP 934）。
         assert!(matches!(
             block_at(x, h - 8, z),
             Block::Stone | Block::CoalOre | Block::IronOre | Block::AetherOre
+                | Block::Air | Block::GlowCrystal
         ));
         assert_eq!(block_at(x, h + 1, z), Block::Air);
         // 負 y 座標一律石頭（ROADMAP 682 礦石只在 y≥0 層生成）。
@@ -1887,6 +2020,153 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── 地下洞穴探索 v1（ROADMAP 934）────────────────────────────────────────────
+
+    #[test]
+    fn value_noise3_is_deterministic_and_in_range() {
+        // 平滑 3D 噪聲：確定性 + 值域 [0,1]。
+        for &(x, y, z) in &[(0.0, 0.0, 0.0), (12.3, 4.7, -8.1), (-99.9, 2.5, 42.2)] {
+            let a = value_noise3(x, y, z, CAVE_SEED);
+            let b = value_noise3(x, y, z, CAVE_SEED);
+            assert_eq!(a, b, "value_noise3 應為確定性");
+            assert!((0.0..=1.0).contains(&a), "value_noise3 應在 [0,1]：{a}");
+        }
+    }
+
+    #[test]
+    fn value_noise3_is_smooth() {
+        // 平滑性：相鄰整數格點間內插差異有限（不像白噪聲每格劇跳），
+        // 這正是腔室能成片相連的原因。抽幾組相鄰半格點驗證變化不劇烈。
+        for &(x, y, z) in &[(3.0, 2.0, 5.0), (-4.0, 1.0, 7.0)] {
+            let a = value_noise3(x, y, z, CAVE_SEED);
+            let b = value_noise3(x + 0.1, y, z, CAVE_SEED);
+            assert!((a - b).abs() < 0.4, "半格內變化應平滑：{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn cave_void_only_in_depth_band() {
+        // 洞穴腔室只在 CAVE_FLOOR..=CAVE_CEILING；帶外一律非空腔（保護地表/泥土層/基岩）。
+        for x in -60..60 {
+            for z in -60..60 {
+                // 帶上方（含地表附近）永不是腔室。
+                assert!(!is_cave_void(x, CAVE_CEILING + 1, z));
+                assert!(!is_cave_void(x, 30, z));
+                // 帶下方（基岩層）永不是腔室。
+                assert!(!is_cave_void(x, CAVE_FLOOR - 1, z));
+                assert!(!is_cave_void(x, -3, z));
+            }
+        }
+    }
+
+    #[test]
+    fn cave_void_is_deterministic() {
+        for &(x, y, z) in &[(5, 2, 5), (-30, 3, 17), (100, 1, -40)] {
+            assert_eq!(is_cave_void(x, y, z), is_cave_void(x, y, z));
+        }
+    }
+
+    #[test]
+    fn caves_exist_and_are_not_everything() {
+        // 掃深度帶一大片：確認真的有腔室被雕出來（值得探索），
+        // 但不是整層都被雕空（石層仍以實心為主、不變空殼）。
+        let (mut void, mut total) = (0u32, 0u32);
+        for x in -80..80 {
+            for z in -80..80 {
+                for y in CAVE_FLOOR..=CAVE_CEILING {
+                    total += 1;
+                    if is_cave_void(x, y, z) {
+                        void += 1;
+                    }
+                }
+            }
+        }
+        assert!(void > 0, "深層應有天然洞穴腔室：void={void}");
+        assert!(void < total, "腔室不應吃掉整個深層石層：void={void} total={total}");
+        // 概略比例落在合理區間（門檻 0.72 → 約 15%~40%），避免手滑把世界挖空。
+        let ratio = void as f32 / total as f32;
+        assert!(ratio < 0.5, "腔室比例應遠低於半數：ratio={ratio}");
+    }
+
+    #[test]
+    fn glow_crystal_only_on_cave_walls() {
+        // 發光結晶處必為：在深度帶內、本格非空腔、且至少一鄰面是空腔（岩壁）。
+        let mut found = false;
+        for x in -80..80 {
+            for z in -80..80 {
+                for y in CAVE_FLOOR..=CAVE_CEILING {
+                    if is_glow_crystal(x, y, z) {
+                        found = true;
+                        assert!(!is_cave_void(x, y, z), "結晶本格不應是空腔");
+                        let touches = is_cave_void(x + 1, y, z)
+                            || is_cave_void(x - 1, y, z)
+                            || is_cave_void(x, y + 1, z)
+                            || is_cave_void(x, y - 1, z)
+                            || is_cave_void(x, y, z + 1)
+                            || is_cave_void(x, y, z - 1);
+                        assert!(touches, "結晶必貼著腔室岩壁");
+                    }
+                }
+            }
+        }
+        assert!(found, "掃描區域內應能找到發光結晶");
+    }
+
+    #[test]
+    fn glow_crystal_never_outside_depth_band() {
+        // 深度帶外絕不生成結晶（地表/建物層乾淨）。
+        for x in &[-20, 0, 33] {
+            for z in &[-20, 0, 33] {
+                assert!(!is_glow_crystal(*x, CAVE_CEILING + 1, *z));
+                assert!(!is_glow_crystal(*x, 25, *z));
+                assert!(!is_glow_crystal(*x, CAVE_FLOOR - 1, *z));
+            }
+        }
+    }
+
+    #[test]
+    fn block_at_reflects_caves_and_crystals() {
+        // block_at 在深度帶真的會回傳腔室空氣與發光結晶（接線生效）。
+        let (mut air_in_band, mut crystal) = (false, false);
+        for x in -80..80 {
+            for z in -80..80 {
+                for y in CAVE_FLOOR..=CAVE_CEILING {
+                    match block_at(x, y, z) {
+                        Block::Air => air_in_band = true,
+                        Block::GlowCrystal => crystal = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert!(air_in_band, "深度帶應有腔室空氣（block_at 接線）");
+        assert!(crystal, "深度帶岩壁應有發光結晶（block_at 接線）");
+    }
+
+    #[test]
+    fn surface_never_becomes_cave_air() {
+        // 護欄：地表與其下的泥土層永遠不會因洞穴生成變成空氣（不破表、不破壞可走地表）。
+        for cand in 0..3000 {
+            let z = 7;
+            let h = height_at(cand, z);
+            if h > SEA_LEVEL + 2 {
+                // 地表層 + 其下三格泥土層應維持實心（非空氣）。
+                assert_ne!(block_at(cand, h, z), Block::Air, "地表不應被雕空");
+                for d in 1..=3 {
+                    assert_ne!(block_at(cand, h - d, z), Block::Air, "地表下泥土層不應被雕空");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn glow_crystal_roundtrips_solid_and_placeable() {
+        assert_eq!(Block::from_u8(106), Some(Block::GlowCrystal));
+        assert_eq!(Block::GlowCrystal as u8, 106);
+        assert!(Block::GlowCrystal.is_solid(), "發光結晶應為實心方塊");
+        assert!(Block::GlowCrystal.is_placeable(), "發光結晶應可放置");
     }
 
     // ── 生物群系（生物群系第一刀）────────────────────────────────────────────────
