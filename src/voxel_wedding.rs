@@ -124,6 +124,12 @@ impl ResidentWeddings {
         true
     }
 
+    /// 快照所有已成婚的配對（以顯示名，`(a, b)` 已正規化排序）。供出生系統查「村裡有沒有
+    /// 一對夫妻可以一起迎來孩子」（愛的結晶 v1，ROADMAP 928）。
+    pub fn all_pairs(&self) -> Vec<(String, String)> {
+        self.pairs.iter().cloned().collect()
+    }
+
     /// 快照成持久化記錄清單（供 `save_weddings` 整份 append 一行）。
     pub fn to_entries(&self) -> Vec<WeddingEntry> {
         self.pairs

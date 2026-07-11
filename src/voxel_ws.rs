@@ -107,6 +107,7 @@ use crate::voxel_announce as vannounce;
 use crate::voxel_bonds::{self as vbonds, ResidentBonds};
 use crate::voxel_romance::{self as vromance, ResidentRomance};
 use crate::voxel_wedding::{self as vwed, ResidentWeddings};
+use crate::voxel_family as vfamily;
 use crate::voxel_lover_seek as vlover;
 use crate::voxel_wildlife as vwild;
 use crate::voxel_pettreat as vtreat;
@@ -9901,9 +9902,31 @@ fn maybe_birth() {
     // ── 決定出生 ──
     let new_i = pop; // id 連續：新居民＝下一個索引 vox_res_{pop}
     let seed = now ^ (new_i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    let parent_i = vroster::pick_parent_index(pop, seed);
+    // 愛的結晶 v1（ROADMAP 928）：若村裡有一對成婚夫妻（雙方都還在當前人口內），這個孩子
+    // 優先由這對夫妻**共同**迎來。先快照婚書並映射成 pop 內合法 index 對（weddings 讀鎖即釋、
+    // 不巢狀）；沒有可用夫妻時 `couple==None`、完全回退既有單親出生（向後相容）。
+    let married_couples: Vec<(usize, usize)> = {
+        let weddings = hub().weddings.read().unwrap();
+        weddings
+            .all_pairs()
+            .iter()
+            .filter_map(|(a, b)| {
+                let ia = RESIDENT_NAMES.iter().position(|&n| n == a.as_str())?;
+                let ib = RESIDENT_NAMES.iter().position(|&n| n == b.as_str())?;
+                (ia < pop && ib < pop).then_some((ia, ib))
+            })
+            .collect()
+    }; // weddings 讀鎖釋放
+    let couple = vfamily::pick_married_couple(pop, &married_couples, seed);
+    let parent_i = match couple {
+        Some((a, _)) => a,
+        None => vroster::pick_parent_index(pop, seed),
+    };
+    let co_parent_i: Option<usize> = couple.map(|(_, b)| b);
     let parent_id = format!("vox_res_{parent_i}");
     let parent_name = RESIDENT_NAMES[parent_i];
+    let co_parent_id: Option<String> = co_parent_i.map(|i| format!("vox_res_{i}"));
+    let co_parent_name: Option<&'static str> = co_parent_i.map(|i| RESIDENT_NAMES[i]);
     let new_id = format!("vox_res_{new_i}");
     let new_name = RESIDENT_NAMES[new_i];
 
@@ -9924,13 +9947,21 @@ fn maybe_birth() {
     // 技能繼承（北極星）：父母技能庫挑最多 2 個複製給新生兒；invented 寫鎖內完成、append 鎖外。
     let (inherited_names, inherited_recs): (Vec<String>, Vec<vinvent::InventedSkillRecord>) = {
         let mut inv = hub().invented.write().unwrap();
-        let parent_skills = inv.inheritable_for(&parent_id);
         let mut names = Vec::new();
         let mut recs = Vec::new();
-        for from in parent_skills.iter().take(2) {
-            if let Some(rec) = inv.inherit(&new_id, from, parent_name) {
-                names.push(rec.name.clone());
-                recs.push(rec);
+        // 愛的結晶 v1：雙親時各承繼至多 1 個技能（讓孩子帶著父母雙方各一點本事）；
+        // 單親時沿用既有「至多 2 個」。總量不變、成本不變。
+        let plan: Vec<(&str, &'static str, usize)> = match (co_parent_id.as_deref(), co_parent_name) {
+            (Some(cid), Some(cname)) => vec![(parent_id.as_str(), parent_name, 1), (cid, cname, 1)],
+            _ => vec![(parent_id.as_str(), parent_name, 2)],
+        };
+        for (from_id, from_name, take) in plan {
+            let from_skills = inv.inheritable_for(from_id);
+            for from in from_skills.iter().take(take) {
+                if let Some(rec) = inv.inherit(&new_id, from, from_name) {
+                    names.push(rec.name.clone());
+                    recs.push(rec);
+                }
             }
         }
         (names, recs)
@@ -9941,20 +9972,43 @@ fn maybe_birth() {
 
     // 建構新居民 + 冒出生泡泡；residents 寫鎖內 append 並把人口 +1。
     let mut newcomer = build_resident(new_i, body.x, body.z, body, now, parent_name.to_string());
-    let birth_say: String = if let Some(first) = inherited_names.first() {
-        format!("我是{new_name}，剛來到這片天地～{parent_name}把「{first}」教給了我！")
-    } else {
-        format!("我是{new_name}，剛在這片天地誕生，請多指教！")
+    let birth_say: String = match co_parent_name {
+        // 雙親（愛的結晶 v1）：報上自己是這對夫妻的孩子。
+        Some(cname) => vfamily::child_birth_say(
+            new_name,
+            parent_name,
+            cname,
+            inherited_names.first().map(|s| s.as_str()),
+        ),
+        None => {
+            if let Some(first) = inherited_names.first() {
+                format!("我是{new_name}，剛來到這片天地～{parent_name}把「{first}」教給了我！")
+            } else {
+                format!("我是{new_name}，剛在這片天地誕生，請多指教！")
+            }
+        }
     };
-    newcomer.say = birth_say.chars().take(40).collect();
+    newcomer.say = birth_say.chars().take(50).collect();
     newcomer.say_timer = SAY_SECS;
     {
         let mut rs = hub().residents.write().unwrap();
-        // 讓父母也冒一句歡迎（若當下沒在說話）。
+        // 讓父母也冒一句歡迎（若當下沒在說話）。雙親時兩位各說一句不同的家庭歡迎詞。
         if let Some(parent) = rs.get_mut(parent_i) {
             if parent.say.is_empty() {
-                parent.say = format!("歡迎來到世界，{new_name}！").chars().take(40).collect();
+                let line = match co_parent_name {
+                    Some(_) => vfamily::parent_welcome_say(new_name, 0),
+                    None => format!("歡迎來到世界，{new_name}！"),
+                };
+                parent.say = line.chars().take(50).collect();
                 parent.say_timer = SAY_SECS;
+            }
+        }
+        if let Some(ci) = co_parent_i {
+            if let Some(coparent) = rs.get_mut(ci) {
+                if coparent.say.is_empty() {
+                    coparent.say = vfamily::parent_welcome_say(new_name, 1).chars().take(50).collect();
+                    coparent.say_timer = SAY_SECS;
+                }
             }
         }
         rs.push(newcomer);
@@ -9969,18 +10023,48 @@ fn maybe_birth() {
         name: new_name.to_string(),
         home_base_x: hox,
         home_base_z: hoz,
-        parent: parent_id,
+        parent: parent_id.clone(),
         parent_name: parent_name.to_string(),
         birth_unix: now,
     });
 
-    // Feed 廣播（鎖外）：世界動態上看得到「新居民誕生 + 承繼了誰的技能」。
-    let detail = if let Some(first) = inherited_names.first() {
-        format!("在{parent_name}家附近誕生了，承繼了{parent_name}的「{first}」")
-    } else {
-        format!("在{parent_name}家附近誕生了")
-    };
-    vfeed::append_feed("新居民誕生", new_name, &detail);
+    // 愛的結晶 v1（ROADMAP 928）：雙親時，兩位父母各把「和另一半一起迎來孩子」記進心裡
+    // （含「一定會」→ 升為一生最重的永久精華記憶，掛對方名下，比照 927 婚禮記憶），Feed 走
+    // 家庭版；否則走既有單親「新居民誕生」。memory 寫鎖各取即釋、不巢狀（守 prod 死鎖鐵律）。
+    match (co_parent_id.as_deref(), co_parent_name) {
+        (Some(co_id), Some(co_name)) => {
+            let ma = {
+                hub().memory.write().unwrap().add_memory(
+                    &parent_id,
+                    co_name,
+                    &vfamily::family_memory_line(co_name, new_name),
+                )
+            };
+            vmem::append_memory(&ma);
+            let mb = {
+                hub().memory.write().unwrap().add_memory(
+                    co_id,
+                    parent_name,
+                    &vfamily::family_memory_line(parent_name, new_name),
+                )
+            };
+            vmem::append_memory(&mb);
+            vfeed::append_feed(
+                vfamily::BIRTH_FAMILY_FEED_KIND,
+                new_name,
+                &vfamily::family_feed_line(parent_name, co_name, new_name),
+            );
+        }
+        _ => {
+            // Feed 廣播（鎖外）：世界動態上看得到「新居民誕生 + 承繼了誰的技能」。
+            let detail = if let Some(first) = inherited_names.first() {
+                format!("在{parent_name}家附近誕生了，承繼了{parent_name}的「{first}」")
+            } else {
+                format!("在{parent_name}家附近誕生了")
+            };
+            vfeed::append_feed("新居民誕生", new_name, &detail);
+        }
+    }
 }
 
 /// 分村殖民 v1（自主提案切片，承 PLAN_ETHERVOX §7「居民散佈世界各處住」＋維護者 2026-07-10
