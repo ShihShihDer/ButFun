@@ -936,6 +936,82 @@ fn write_world_line(path: &str, line: &str) {
     }
 }
 
+// ── Compaction（M4 防磁碟無界膨脹）─────────────────────────────────────────
+//
+// voxel_resident_blocks.jsonl 是「最終狀態型」append-only log：
+// 每個 (x,y,z) 座標最後一次改動為現況（後蓋的覆蓋先蓋的）。
+// 壓縮策略：對每個座標只保留最後一筆（最新的），原子重寫替換原檔。
+//
+// 鐵律：
+//   1. replay(原始) 與 replay(compact) 後的 delta map 完全等價。
+//   2. rename 前原檔不動；rename 失敗保住原檔。
+//   3. 向後相容：serde default，不 drop 任何欄位。
+
+/// 把 `path` 對應的 `voxel_resident_blocks.jsonl` 壓縮成「每座標最後一筆」最小序列
+/// （原子 rename 替換原檔）。失敗時只記 log、保住原檔、不 panic。
+/// 呼叫時機：伺服器啟動時（replay 完成後）或定期排程（鎖外呼叫）。
+pub fn compact_world_blocks(path: &str) {
+    let entries = load_world_blocks_from(path);
+    if entries.is_empty() {
+        return; // 空檔不必壓縮
+    }
+
+    // 每個座標只保留最後一筆（last-write-wins）
+    // 走線性掃描：後出現的覆蓋先前的。
+    use std::collections::HashMap;
+    let mut last: HashMap<(i32, i32, i32), BuildBlock> = HashMap::new();
+    let mut order: Vec<(i32, i32, i32)> = Vec::new();
+    for bb in entries {
+        let key = (bb.x, bb.y, bb.z);
+        if !last.contains_key(&key) {
+            order.push(key);
+        }
+        last.insert(key, bb);
+    }
+
+    // 按首次出現順序輸出（保持 replay 的 delta 套用語意）
+    let mut content = String::new();
+    for key in &order {
+        let bb = &last[key];
+        match serde_json::to_string(bb) {
+            Ok(line) => {
+                content.push_str(&line);
+                content.push('\n');
+            }
+            Err(e) => {
+                tracing::warn!("[voxel_building] compact 序列化失敗: {e}，放棄");
+                return;
+            }
+        }
+    }
+
+    // 原子替換：temp → rename
+    let tmp = format!("{path}.compact.tmp");
+    if std::fs::write(&tmp, &content).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        tracing::warn!("[voxel_building] compact rename 失敗: {e}，原檔保留");
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+/// 從指定路徑讀回所有 BuildBlock（供 compact 使用；壞行略過）。
+pub fn load_world_blocks_from(path: &str) -> Vec<BuildBlock> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    content
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            if l.is_empty() { None } else { serde_json::from_str::<BuildBlock>(l).ok() }
+        })
+        .collect()
+}
+
 fn write_line(path: &str, line: &str) {
     use std::io::Write;
     if let Some(parent) = std::path::Path::new(path).parent() {
@@ -1983,5 +2059,91 @@ mod tests {
         // 四個方向應有 -6, 0, 0, 6 各一
         assert_eq!(xs, vec![-6, 0, 0, 6]);
         assert_eq!(zs, vec![-6, 0, 0, 6]);
+    }
+
+    // ── compact_world_blocks：A==B 等價驗證（M4 資料安全閘）────────────────
+
+    use std::collections::HashMap;
+
+    /// 把 entries 轉成 「(x,y,z) → b」的最終狀態 map（last-write-wins）。
+    fn final_block_map(entries: &[BuildBlock]) -> HashMap<(i32, i32, i32), u8> {
+        let mut m = HashMap::new();
+        for bb in entries {
+            m.insert((bb.x, bb.y, bb.z), bb.b);
+        }
+        m
+    }
+
+    /// 把 BuildBlock slice 序列化成 jsonl tempfile。
+    fn write_blocks_tempfile(entries: &[BuildBlock]) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        for bb in entries {
+            writeln!(f, "{}", serde_json::to_string(bb).unwrap()).unwrap();
+        }
+        f
+    }
+
+    #[test]
+    fn compact_world_blocks_state_equivalent_simple() {
+        // 同一座標被改動兩次：只有最後一筆應留存
+        let entries = vec![
+            BuildBlock { x: 0, y: 0, z: 0, b: 1 },
+            BuildBlock { x: 0, y: 0, z: 0, b: 3 }, // 覆蓋
+            BuildBlock { x: 1, y: 0, z: 0, b: 2 },
+        ];
+        let tf = write_blocks_tempfile(&entries);
+        let path = tf.path().to_str().unwrap().to_string();
+
+        // 狀態 A：直接 replay 原始 entries
+        let state_a = final_block_map(&load_world_blocks_from(&path));
+
+        compact_world_blocks(&path);
+
+        // 狀態 B：replay compact 後的 entries
+        let state_b = final_block_map(&load_world_blocks_from(&path));
+
+        assert_eq!(state_a, state_b, "compact 前後現狀應完全等價（A==B）");
+    }
+
+    #[test]
+    fn compact_world_blocks_reduces_line_count() {
+        // 100 筆寫同一座標 → compact 後只剩 1 行
+        let entries: Vec<BuildBlock> = (0u8..100)
+            .map(|i| BuildBlock { x: 5, y: 5, z: 5, b: i % 8 })
+            .collect();
+        let tf = write_blocks_tempfile(&entries);
+        let path = tf.path().to_str().unwrap().to_string();
+
+        let state_a = final_block_map(&load_world_blocks_from(&path));
+        compact_world_blocks(&path);
+        let state_b = final_block_map(&load_world_blocks_from(&path));
+
+        assert_eq!(state_a, state_b, "A==B");
+        let after = load_world_blocks_from(&path);
+        assert_eq!(after.len(), 1, "同一座標 compact 後應只剩 1 行");
+    }
+
+    #[test]
+    fn compact_world_blocks_many_coords_preserved() {
+        // 多個不同座標 + 部分重複 → compact 後現狀完整保留
+        let mut entries = Vec::new();
+        for x in 0i32..5 {
+            // 每個座標寫三次，最後一次決定 b 值
+            for round in 0u8..3 {
+                entries.push(BuildBlock { x, y: 0, z: 0, b: round + 1 });
+            }
+        }
+        let tf = write_blocks_tempfile(&entries);
+        let path = tf.path().to_str().unwrap().to_string();
+
+        let state_a = final_block_map(&load_world_blocks_from(&path));
+        compact_world_blocks(&path);
+        let state_b = final_block_map(&load_world_blocks_from(&path));
+
+        assert_eq!(state_a, state_b, "A==B");
+        let after = load_world_blocks_from(&path);
+        // 5 個不同座標 → compact 後剛好 5 行
+        assert_eq!(after.len(), 5, "5 個不同座標 compact 後應剩 5 行");
     }
 }
