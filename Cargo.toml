@@ -34,6 +34,10 @@ sqlx = { version = "0.8", default-features = false, features = [
     "uuid",
 ] }
 
+[dev-dependencies]
+# 測試用暫存檔（feed 行數上限 / compaction 等價驗證）
+tempfile = "3"
+
 [profile.dev]
 opt-level = 1
 
