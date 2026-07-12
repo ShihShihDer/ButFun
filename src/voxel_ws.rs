@@ -24476,11 +24476,16 @@ fn relocation_demolish_step(
     if asleep || player_task || directed {
         return;
     }
+    // 跨聚落遷居（dest != 0）：舊家在遙遠的主村、她已住上千格外的殖民地，走回去拆永遠走不到，
+    // 且 walk_stall 計時器不持久化、每次部署重啟歸零→永不超時→這件 demolish 永久卡住、餓死全村
+    // 補蓋掃描（露娜等四位十幾小時零進展的真兇）。拆除本就按座標還原方塊、不需人在場——跨聚落
+    // 遷居直接就地按座標拆掉遠方舊家（`walk_back` 為 false 時略過走回與超時 gate）。
+    let walk_back = vvillage::demolish_requires_walk_back(rec.dest_settlement);
     // 還沒走到舊家：繼續走（目標持續指向舊家），累計超時後就地開拆（誠實推進）。
     let dx = px - (rec.old_x as f32 + 0.5);
     let dz = pz - (rec.old_z as f32 + 0.5);
     let near = (dx * dx + dz * dz).sqrt() <= RELOC_ARRIVE_DIST;
-    if !near {
+    if walk_back && !near {
         let timed_out = {
             let mut pace = RELOC_PACE.lock().unwrap();
             pace.walk_stall += reloc_step_secs();
