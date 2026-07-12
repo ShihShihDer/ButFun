@@ -1347,6 +1347,7 @@ function spawnFirework(x, y, z, palette) {
     const old = fireworkBursts.shift();
     scene.remove(old.points);
     old.points.geometry.dispose();
+    old.mat.dispose(); // L10：一次性特效材質也回收
   }
   const pal = FW_PALETTES[((palette % FW_PALETTES.length) + FW_PALETTES.length) % FW_PALETTES.length];
   const pos = new Float32Array(FW_PARTICLES * 3);
@@ -1391,6 +1392,7 @@ function updateFireworks(dt) {
     if (fw.age >= total) {
       scene.remove(fw.points);
       fw.points.geometry.dispose();
+      fw.mat.dispose(); // L10：煙火材質回收
       fireworkBursts.splice(b, 1);
       continue;
     }
@@ -1504,6 +1506,7 @@ function spawnHumNotes(x, y, z) {
     const old = humBursts.shift();
     scene.remove(old.points);
     old.points.geometry.dispose();
+    old.mat.dispose(); // L10：一次性特效材質也回收
   }
   const pos = new Float32Array(HUM_NOTES * 3);
   const seed = new Float32Array(HUM_NOTES); // 各音符的相位（左右飄動錯開）
@@ -1537,6 +1540,7 @@ function updateHumNotes(dt) {
     if (hb.age >= HUM_LIFE_SECS) {
       scene.remove(hb.points);
       hb.points.geometry.dispose();
+      hb.mat.dispose(); // L10：音符/愛心材質回收（貼圖共用不 dispose）
       humBursts.splice(b, 1);
       continue;
     }
@@ -1584,6 +1588,7 @@ function spawnHearts(x, y, z) {
     const old = heartBursts.shift();
     scene.remove(old.points);
     old.points.geometry.dispose();
+    old.mat.dispose(); // L10：一次性特效材質也回收
   }
   const pos = new Float32Array(HEART_NOTES * 3);
   const seed = new Float32Array(HEART_NOTES); // 各愛心的相位（左右飄動錯開）
@@ -1617,6 +1622,7 @@ function updateHearts(dt) {
     if (hb.age >= HEART_LIFE_SECS) {
       scene.remove(hb.points);
       hb.points.geometry.dispose();
+      hb.mat.dispose(); // L10：音符/愛心材質回收（貼圖共用不 dispose）
       heartBursts.splice(b, 1);
       continue;
     }
@@ -1645,6 +1651,7 @@ function spawnFertSparkle(x, y, z) {
     const old = fertBursts.shift();
     scene.remove(old.points);
     old.points.geometry.dispose();
+    old.mat.dispose(); // L10：一次性特效材質也回收
   }
   const pos = new Float32Array(FERT_SPARKS * 3);
   const vel = new Float32Array(FERT_SPARKS * 3);
@@ -1677,6 +1684,7 @@ function updateFertSparkle(dt) {
     if (fb.age >= FERT_LIFE_SECS) {
       scene.remove(fb.points);
       fb.points.geometry.dispose();
+      fb.mat.dispose(); // L10：施肥火花材質回收
       fertBursts.splice(b, 1);
       continue;
     }
@@ -2118,8 +2126,12 @@ function updateAmbientLife(dt) {
 }
 
 // 方塊用 Lambert + 頂點色（每方塊上色），對光反應但靠半球光保底不黑。
-// DoubleSide：切片① 求穩，避免任一面纏繞方向算錯被背面剔除成破洞/黑屏（perf 微讓步，之後可收回 FrontSide）。
-const opaqueMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+// FrontSide（M8）：實心方塊六面的繞序已驗證為 CCW／法線朝外（見 FACES＋emitFurniture 的
+// 頂點順序），關背面剔除＝每面少畫一遍背面，地形是全場覆蓋面積最大宗、手機量級收益。
+const opaqueMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.FrontSide });
+// 十字貼片植物（cross billboard）是「兩片交叉的直立四邊形」，法線一律朝上、兩面都要看得到——
+// 若沿用 FrontSide 單面會從某側整株消失。故拆到獨立 DoubleSide 材質、獨立 mesh 渲染。
+const crossPlantMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
 
 // ── 水體視覺升級 v1 ──────────────────────────────────────────────────────────
 // 水 mesh 走頂點色（vertexColors: true），以便依流動等級染不同深淺。
@@ -2343,12 +2355,16 @@ function rebuildChunk(key) {
   if (old) {
     if (old.solid) { scene.remove(old.solid); old.solid.geometry.dispose(); }
     if (old.water) { scene.remove(old.water); old.water.geometry.dispose(); }
+    if (old.cross) { scene.remove(old.cross); old.cross.geometry.dispose(); }
     meshes.delete(key);
   }
   if (!ch) return;
 
   const pos = [], norm = [], col = [], idx = [];
   const wpos = [], wnorm = [], wcol = [], widx = [];
+  // 十字貼片植物走獨立緩衝＋獨立 DoubleSide mesh（M8：實心地形切 FrontSide 後，
+  // 花草兩面材質分開才不會被背面剔除掉一半）。
+  const cpos = [], cnorm = [], ccol = [], cidx = [];
   const baseX = cx * CHUNK, baseY = cy * CHUNK, baseZ = cz * CHUNK;
 
   for (let ly = 0; ly < CHUNK; ly++) {
@@ -2382,9 +2398,9 @@ function rebuildChunk(key) {
           }
         } else if (CROSS_PLANTS.has(b) && !window.__qaCubePlants) {
           // 裝飾植物：走十字貼片（兩片交叉直立四邊形），一眼是「插在地上的一小株」而非方塊。
-          // 併入不透明 mesh（opaqueMat 為 DoubleSide，兩面都畫，花不會半透明破洞）。
+          // 走獨立 DoubleSide mesh（crossPlantMat），兩面都畫，花不會單面消失／半透明破洞。
           // （window.__qaCubePlants 僅供 QA 對比截圖用，切回舊的整格立方體渲染。）
-          emitCross(pos, norm, col, idx, lx, ly, lz, variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz), b);
+          emitCross(cpos, cnorm, ccol, cidx, lx, ly, lz, variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz), b);
         } else if (SHORT_BLOCKS.has(b)) {
           // 玩家裝飾傢俱 v1（ROADMAP 931）：走矮塊／薄片造型（一或多層短箱），一眼是傢俱而非建材。
           emitFurniture(pos, norm, col, idx, lx, ly, lz, b, variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz));
@@ -2403,7 +2419,7 @@ function rebuildChunk(key) {
     }
   }
 
-  const entry = { solid: null, water: null };
+  const entry = { solid: null, water: null, cross: null };
   if (idx.length) {
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
@@ -2414,6 +2430,18 @@ function rebuildChunk(key) {
     m.position.set(baseX, baseY, baseZ);
     scene.add(m);
     entry.solid = m;
+  }
+  if (cidx.length) {
+    // 十字貼片植物：獨立 DoubleSide mesh（兩面都畫）。
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(cpos, 3));
+    g.setAttribute("normal", new THREE.Float32BufferAttribute(cnorm, 3));
+    g.setAttribute("color", new THREE.Float32BufferAttribute(ccol, 3));
+    g.setIndex(cidx);
+    const m = new THREE.Mesh(g, crossPlantMat);
+    m.position.set(baseX, baseY, baseZ);
+    scene.add(m);
+    entry.cross = m;
   }
   if (widx.length) {
     const g = new THREE.BufferGeometry();
@@ -2721,12 +2749,26 @@ function updateDawnMist() {
 }
 // ── end 晨霧 v1 ───────────────────────────────────────────────────────────────
 
-// 把一個 chunk 連同鄰塊標記為待重建（鄰塊也要重算面剔除）。
-function markDirty(cx, cy, cz) {
+// 把一個 chunk 連同（必要的）鄰塊標記為待重建。
+// 鄰塊之所以要重建，是因為「這格的面剔除」會影響鄰塊貼著的那一面——但只有當改動的方塊
+// 正好貼在 chunk 邊界（lx/ly/lz===0 或 ===CHUNK-1）時，才會露出/遮住對應鄰塊的那一面。
+// L9：帶上局部座標 (lx,ly,lz) 時，只把「該格真的貼著」的邊界鄰塊標髒，砍掉約 6/7 的無效
+// 鄰塊重建（內部方塊完全不影響鄰塊）。不帶局部座標（批次/全量重建）時維持標全部 6 鄰塊。
+function markDirty(cx, cy, cz, lx, ly, lz) {
   dirty.add(ckey(cx, cy, cz));
-  dirty.add(ckey(cx + 1, cy, cz)); dirty.add(ckey(cx - 1, cy, cz));
-  dirty.add(ckey(cx, cy + 1, cz)); dirty.add(ckey(cx, cy - 1, cz));
-  dirty.add(ckey(cx, cy, cz + 1)); dirty.add(ckey(cx, cy, cz - 1));
+  const localKnown = (lx !== undefined && ly !== undefined && lz !== undefined);
+  if (!localKnown) {
+    dirty.add(ckey(cx + 1, cy, cz)); dirty.add(ckey(cx - 1, cy, cz));
+    dirty.add(ckey(cx, cy + 1, cz)); dirty.add(ckey(cx, cy - 1, cz));
+    dirty.add(ckey(cx, cy, cz + 1)); dirty.add(ckey(cx, cy, cz - 1));
+    return;
+  }
+  if (lx === CHUNK - 1) dirty.add(ckey(cx + 1, cy, cz));
+  if (lx === 0)         dirty.add(ckey(cx - 1, cy, cz));
+  if (ly === CHUNK - 1) dirty.add(ckey(cx, cy + 1, cz));
+  if (ly === 0)         dirty.add(ckey(cx, cy - 1, cz));
+  if (lz === CHUNK - 1) dirty.add(ckey(cx, cy, cz + 1));
+  if (lz === 0)         dirty.add(ckey(cx, cy, cz - 1));
 }
 
 // ── 玩家狀態（前端權威預測；位置同步回伺服器給別人看）──────────────────────
@@ -3048,6 +3090,20 @@ function setSpriteText(sprite, text, bubble) {
   sprite.material.needsUpdate = true;
 }
 
+// 離場實體回收慣例（比照野生動物移除 3712-3721 的 dispose）：一具角色 group 底下掛了
+// 名牌／泡泡／稱號牌等 Sprite（各自持一張 CanvasTexture + SpriteMaterial）。只 scene.remove
+// group 而不 dispose，貼圖與材質永遠留在 GPU 記憶體→其他玩家/居民反覆進出視野就漏。
+// 這裡遞迴走遍 group 內所有 Sprite，把 map + material 都 dispose 掉，離場即淨空。
+function disposeSpritesIn(group) {
+  if (!group) return;
+  group.traverse((o) => {
+    if (o.isSprite && o.material) {
+      if (o.material.map) o.material.map.dispose();
+      o.material.dispose();
+    }
+  });
+}
+
 // 特殊身分稱號牌（維護者的專屬身分）：金色「✦ 稱號 ✦」小標，穩定貼在他頭頂正上方一點點，
 // 與一般玩家（本來就沒名牌）明顯區別。只在後端 title 字串為真時掛上（不信客戶端自報）。
 // title＝稱號文字（如「引夢使者」「築夢工匠」）。
@@ -3202,9 +3258,25 @@ function makeDropSprite(itemId, count) {
   return sprite;
 }
 function addDropMarker(id, x, y, z, itemId, count) {
-  if (dropMarkers.has(id)) return;
+  const existing = dropMarkers.get(id);
+  if (existing) {
+    // 已存在同 id：內容（品項/數量）變了才刷新貼圖（換上新畫布、dispose 舊貼圖），
+    // 否則早退不重建（H3：早退導致內容變不刷新一併處理）。位置也順手更新。
+    if (existing.userData.itemId !== itemId || existing.userData.count !== count) {
+      if (existing.material.map) existing.material.map.dispose();
+      const fresh = makeDropSprite(itemId, count);
+      existing.material.map = fresh.material.map;
+      existing.material.needsUpdate = true;
+      existing.userData.itemId = itemId;
+      existing.userData.count = count;
+    }
+    existing.position.set(x, y, z);
+    return;
+  }
   const sprite = makeDropSprite(itemId, count);
   sprite.position.set(x, y, z);
+  sprite.userData.itemId = itemId;
+  sprite.userData.count = count;
   scene.add(sprite);
   dropMarkers.set(id, sprite);
 }
@@ -3256,9 +3328,23 @@ function makeStallSprite(giveItem, giveCount, wantItem, wantCount) {
 }
 function addStallMarker(x, y, z, giveItem, giveCount, wantItem, wantCount) {
   const key = x + "," + y + "," + z;
-  if (stallMarkers.has(key)) return;
+  const existing = stallMarkers.get(key);
+  if (existing) {
+    // 已存在同座標：攤位內容（給出/要求品項或數量）變了才刷新貼圖，否則早退不重建
+    //（H3：早退導致內容變不刷新一併處理）。
+    const sig = giveItem + "|" + giveCount + "|" + wantItem + "|" + wantCount;
+    if (existing.userData.sig !== sig) {
+      if (existing.material.map) existing.material.map.dispose();
+      const fresh = makeStallSprite(giveItem, giveCount, wantItem, wantCount);
+      existing.material.map = fresh.material.map;
+      existing.material.needsUpdate = true;
+      existing.userData.sig = sig;
+    }
+    return;
+  }
   const sprite = makeStallSprite(giveItem, giveCount, wantItem, wantCount);
   sprite.position.set(x + 0.5, y + 1.1, z + 0.5);
+  sprite.userData.sig = giveItem + "|" + giveCount + "|" + wantItem + "|" + wantCount;
   scene.add(sprite);
   stallMarkers.set(key, sprite);
 }
@@ -3591,7 +3677,13 @@ function updateResidents(list) {
     ent.group.visible = (dx * dx + dz * dz) < (RES_VISIBLE_DIST * RES_VISIBLE_DIST);
   }
   for (const [id, ent] of residents) {
-    if (!seen.has(id)) { scene.remove(ent.group); residents.delete(id); }
+    if (!seen.has(id)) {
+      // 離場：名牌／心願／泡泡／好感度／心情／表情 Sprite 的貼圖+材質一併 dispose，
+      //（比照野生動物移除的 dispose 慣例；只 remove 不 dispose 會漏 GPU 記憶體）。
+      disposeSpritesIn(ent.group);
+      scene.remove(ent.group);
+      residents.delete(id);
+    }
   }
 }
 
@@ -5822,7 +5914,8 @@ function setLocalBlock(wx, wy, wz, b) {
   if (isLightBlock(old)) unregisterTorchBlock(wx, wy, wz);
   ch[lx + lz * CHUNK + ly * CHUNK * CHUNK] = b;
   if (isLightBlock(b)) registerTorchBlock(wx, wy, wz, lightColorFor(b));
-  markDirty(cx, cy, cz); // markDirty 只標該 chunk + 6 鄰塊
+  // L9：帶局部座標→只重建真正貼著邊界的鄰塊（內部方塊零鄰塊重建，砍約 6/7 無效重建）。
+  markDirty(cx, cy, cz, lx, ly, lz);
 }
 
 // ── 採礦手感 v1（ROADMAP 687）─────────────────────────────────────────────────
@@ -6647,7 +6740,12 @@ function connect() {
         // 一般玩家 / 訪客 title 為 null，沒有名牌，不受影響。稱號變更即重建（換稱號也跟得上）。
         const ptitle = p.title || null;
         if (ptitle !== ent.titleText) {
-          if (ent.title) { ent.mesh.remove(ent.title); ent.title = null; }
+          if (ent.title) {
+            // 換稱號：舊稱號牌的貼圖+材質要 dispose（先前只 remove 會漏一張 CanvasTexture）。
+            if (ent.title.material.map) ent.title.material.map.dispose();
+            ent.title.material.dispose();
+            ent.mesh.remove(ent.title); ent.title = null;
+          }
           if (ptitle) {
             ent.title = makeTitleSprite(ptitle);
             ent.mesh.add(ent.title);
@@ -6672,7 +6770,11 @@ function connect() {
           else { ent.bubble.visible = false; }
         }
       }
-      for (const [id, ent] of others) if (!seen.has(id)) { scene.remove(ent.mesh); others.delete(id); }
+      for (const [id, ent] of others) if (!seen.has(id)) {
+        // 離場：頭上泡泡＋稱號牌的貼圖+材質一併 dispose（比照野生動物移除的 dispose 慣例）。
+        disposeSpritesIn(ent.mesh);
+        scene.remove(ent.mesh); others.delete(id);
+      }
       // 乙太方界 AI 居民（與玩家分開的陣列）：位置/名字/說的話。
       if (m.residents) updateResidents(m.residents);
       // 野兔 v1（自主提案切片，ROADMAP 847）：世界第一種環境生物，純位置/朝向。
@@ -7082,7 +7184,22 @@ function connect() {
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "sign_sync") {
       // 告示牌 v1（ROADMAP 740）：連線時一次收到世界上所有牌面文字，全部掛上。
-      for (const s of (m.signs || [])) applySign(s.x, s.y, s.z, s.text || "");
+      // reconcile（H3）：斷線期間被拆掉/清空的牌子，重連後 sync 清單裡不會有——
+      // 比照 updateResidents 的 seen-set，把本地多出來的舊牌面 remove+dispose（applySign
+      // 空字串走的就是這條移除路徑），避免幽靈牌面。applySign 對已存在 key 會更新文字。
+      {
+        const seen = new Set();
+        for (const s of (m.signs || [])) {
+          seen.add(s.x + "," + s.y + "," + s.z);
+          applySign(s.x, s.y, s.z, s.text || "");
+        }
+        for (const key of [...signSprites.keys()]) {
+          if (!seen.has(key)) {
+            const c = key.split(",");
+            applySign(+c[0], +c[1], +c[2], ""); // 空字串＝移除牌面浮字（含 dispose）
+          }
+        }
+      }
     } else if (m.t === "sign") {
       // 告示牌 v1：某面牌子的文字變了（寫字/清空/破壞）——單面更新。
       applySign(m.x, m.y, m.z, m.text || "");
@@ -7161,7 +7278,15 @@ function connect() {
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "bottle_sync") {
       // 漂流瓶 v1（自主提案切片 825）：連線時一次收到世界上所有尚未被撿走的瓶子座標，全部掛上浮標。
-      for (const b of (m.bottles || [])) addBottleMarker(b.x, b.y, b.z);
+      // reconcile（H3）：斷線期間被別人撿走的瓶子，重連 sync 清單裡沒有——把本地多的移除，
+      // 避免幽靈浮標。瓶子貼圖共用一張、removeBottleMarker 不 dispose（沿用既有慣例）。
+      {
+        const seen = new Set();
+        for (const b of (m.bottles || [])) { seen.add(b.x + "," + b.y + "," + b.z); addBottleMarker(b.x, b.y, b.z); }
+        for (const key of [...bottleMarkers.keys()]) {
+          if (!seen.has(key)) { const c = key.split(","); removeBottleMarker(+c[0], +c[1], +c[2]); }
+        }
+      }
     } else if (m.t === "bottle_dropped") {
       // 漂流瓶 v1：有人丟了一只新瓶子——只知座標，內文絕不外流。
       addBottleMarker(m.x, m.y, m.z);
@@ -7180,7 +7305,13 @@ function connect() {
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "drop_sync") {
       // 掉落物 v1（自主提案切片 828）：連線時一次收到世界上所有還沒被撿走的掉落物，全部掛上浮標。
-      for (const d of (m.items || [])) addDropMarker(d.id, d.x, d.y, d.z, d.item_id, d.count);
+      // reconcile（H3）：斷線期間被撿走/消散的掉落物，重連 sync 沒有——把本地多的移除
+      //（removeDropMarker 已 dispose 各自的 CanvasTexture），避免幽靈浮標+貼圖洩漏。
+      {
+        const seen = new Set();
+        for (const d of (m.items || [])) { seen.add(d.id); addDropMarker(d.id, d.x, d.y, d.z, d.item_id, d.count); }
+        for (const id of [...dropMarkers.keys()]) { if (!seen.has(id)) removeDropMarker(id); }
+      }
     } else if (m.t === "item_dropped") {
       // 掉落物 v1：有人丟下了一件材料——世界即時多一顆浮標。
       addDropMarker(m.id, m.x, m.y, m.z, m.item_id, m.count);
@@ -7194,7 +7325,18 @@ function connect() {
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "stall_sync") {
       // 玩家自由市集 v1（自主提案切片 832）：連線時一次收到世界上所有還在等人接手的攤位。
-      for (const s of (m.stalls || [])) addStallMarker(s.x, s.y, s.z, s.give_item, s.give_count, s.want_item, s.want_count);
+      // reconcile（H3）：斷線期間成交/收攤/逾時的攤位，重連 sync 沒有——把本地多的移除
+      //（removeStallMarker 已 dispose 各自的 CanvasTexture），避免幽靈交易看板+貼圖洩漏。
+      {
+        const seen = new Set();
+        for (const s of (m.stalls || [])) {
+          seen.add(s.x + "," + s.y + "," + s.z);
+          addStallMarker(s.x, s.y, s.z, s.give_item, s.give_count, s.want_item, s.want_count);
+        }
+        for (const key of [...stallMarkers.keys()]) {
+          if (!seen.has(key)) { const c = key.split(","); removeStallMarker(+c[0], +c[1], +c[2]); }
+        }
+      }
     } else if (m.t === "stall_open") {
       // 玩家自由市集 v1：有人擺了個新攤位——世界即時多一個交易看板。
       addStallMarker(m.x, m.y, m.z, m.give_item, m.give_count, m.want_item, m.want_count);
@@ -7316,6 +7458,47 @@ function streamChunks(dt) {
         ws.send(JSON.stringify({ t: "req", cx, cz }));
         sent++;
       }
+    }
+  }
+  // ── 卸載段（H2）：只載不卸會讓走過的每個 column 之 solid+water mesh 永久留在 scene，
+  // GPU 記憶體+draw call 隨探索面積線性長，手機必爆。同節拍把距玩家過遠（環距 > R+2）的
+  // chunk 從 scene 移除、dispose geometry、並清 chunks/requested/torchPositions——資料在伺服器，
+  // 走回來時 requested 已清可重新 req 重建，卸載零風險。
+  unloadFarChunks(pcx, pcz, R + 2);
+}
+
+// 卸載環距 > keepR 的 column（依 chunk 的 cx/cz 與玩家 column 的切比雪夫距離判定）。
+function unloadFarChunks(pcx, pcz, keepR) {
+  // 逐個已載入 chunk 檢查距離；過遠者移除 mesh + dispose geometry + 刪方塊資料。
+  const drop = [];
+  for (const key of chunks.keys()) {
+    const c = key.split(",");
+    const cx = +c[0], cz = +c[2];
+    if (Math.max(Math.abs(cx - pcx), Math.abs(cz - pcz)) > keepR) drop.push(key);
+  }
+  if (!drop.length) return;
+  const droppedColumns = new Set();
+  for (const key of drop) {
+    const mesh = meshes.get(key);
+    if (mesh) {
+      if (mesh.solid) { scene.remove(mesh.solid); mesh.solid.geometry.dispose(); }
+      if (mesh.water) { scene.remove(mesh.water); mesh.water.geometry.dispose(); }
+      if (mesh.cross) { scene.remove(mesh.cross); mesh.cross.geometry.dispose(); }
+      meshes.delete(key);
+    }
+    chunks.delete(key);
+    dirty.delete(key); // 別留待重建的殭屍 key
+    const c = key.split(",");
+    droppedColumns.add(c[0] + "," + c[2]); // 讓走回來能重新 req
+  }
+  // 這些 column 之後可再向伺服器要（清 requested）。
+  for (const col of droppedColumns) requested.delete(col);
+  // 清掉落在被卸載 chunk 內的發光方塊登記（火把光源池不再指向已卸載座標）。
+  if (torchPositions.size) {
+    for (const k of [...torchPositions.keys()]) {
+      const t = torchPositions.get(k);
+      const cx = Math.floor(t.wx / CHUNK), cz = Math.floor(t.wz / CHUNK);
+      if (Math.max(Math.abs(cx - pcx), Math.abs(cz - pcz)) > keepR) torchPositions.delete(k);
     }
   }
 }
