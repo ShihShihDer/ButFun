@@ -877,7 +877,16 @@ impl GoalStore {
     /// 蓋家鬼打牆補漏：某種建物早已完成（`mark_done` 回 None），但同一座又完工了一次——
     /// 就地登記錨點並回一筆**純錨點** GoalRecord 供落地，讓重啟後仍記得此錨點擋重蓋。
     /// 這筆不進 done、不加擴建額度，純粹保存「地上有這座」的事實（見 `GoalRecord::anchor_only`）。
-    pub fn anchor_only_record(&mut self, resident: &str, kind: BuildKind, loc: (i32, i32, i32)) -> GoalRecord {
+    ///
+    /// **冪等（churn 防護網）**：這個 `(resident, kind, x, y, z)` 錨點若**早已登記過**，
+    /// 就沒有任何新事實需要落地——回 `None`，呼叫端不寫檔。這道閘讓「同一座又完工一次」
+    /// 不再每次都 append 一筆重複的 `anchor_only` 目標（`voxel_goals.jsonl` 無界膨脹的防線；
+    /// 主因—重啟還原幽靈計畫—已由 `BuildStore::from_entries` last-wins 根治，這裡再補一層）。
+    pub fn anchor_only_record(&mut self, resident: &str, kind: BuildKind, loc: (i32, i32, i32)) -> Option<GoalRecord> {
+        // 已登記過這個確切錨點 → 純錨點記錄無新事實，別重寫（冪等去重）。
+        if self.anchor_built(resident, kind, loc) {
+            return None;
+        }
         self.record_anchor(resident, kind.as_str(), loc);
         let rec = GoalRecord {
             resident: resident.to_string(),
@@ -892,7 +901,7 @@ impl GoalStore {
             removed: false,
         };
         self.next_seq = self.next_seq.wrapping_add(1);
-        rec
+        Some(rec)
     }
 
     /// 標記某居民擴建完成了一座（種類早已蓋過，這是追加的第 2 座）；回傳新 record 供
@@ -2210,11 +2219,18 @@ mod tests {
         // mark_done 回 None，改落「純錨點」記錄。重啟後：錨點記得（擋重蓋）、done/擴建數不受污染。
         let mut s = GoalStore::new();
         s.mark_done("vox_res_1", BuildKind::Well, (5, 5, 5)); // 首建在別處
-        let ar = s.anchor_only_record("vox_res_1", BuildKind::Well, (-17, 4, 87));
+        let ar = s
+            .anchor_only_record("vox_res_1", BuildKind::Well, (-17, 4, 87))
+            .expect("首次登記此錨點應回一筆純錨點記錄");
         assert!(ar.anchor_only, "應為純錨點記錄");
         assert!(!ar.expansion, "純錨點不是擴建");
         // 就地已擋。
         assert!(s.anchor_built("vox_res_1", BuildKind::Well, (-17, 4, 87)));
+        // 冪等：同一座又完工一次 → 錨點已登記 → 回 None、不重寫（goals.jsonl 不膨脹）。
+        assert!(
+            s.anchor_only_record("vox_res_1", BuildKind::Well, (-17, 4, 87)).is_none(),
+            "同錨點重覆完工不再落新記錄（churn 防護）"
+        );
         // 重啟：把兩筆載回。
         let first = GoalRecord { resident: "vox_res_1".into(), kind: "well".into(), seq: 0, x: Some(5), y: Some(5), z: Some(5), expansion: false, anchor_only: false, relocated: false, removed: false };
         let s2 = GoalStore::from_entries(vec![first, ar]);
@@ -2241,7 +2257,7 @@ mod tests {
     fn relocate_house_moves_home_and_frees_old_anchor() {
         let mut s = GoalStore::new();
         s.mark_done("vox_res_0", BuildKind::House, (-150, 9, 80)); // 舊家（村外）
-        s.anchor_only_record("vox_res_0", BuildKind::House, (27, 9, 16)); // 新家完工時登記
+        s.anchor_only_record("vox_res_0", BuildKind::House, (27, 9, 16)); // 新家完工時登記（回 Option，這裡不需用）
         let (removal, moved) = s.relocate_house("vox_res_0", (-150, 9, 80), (27, 9, 16));
         // 就地效果：小屋座標遷到新家、舊錨點移除（舊地重新可用）、新錨點仍擋重蓋。
         assert_eq!(s.house_of("vox_res_0"), Some((27, 9, 16)), "夜間歸巢跟著新家");
@@ -2258,7 +2274,9 @@ mod tests {
         // 重啟情境：首建 + 新家純錨點 + 搬家兩筆，replay 後狀態與搬家後一致。
         let mut s = GoalStore::new();
         let first = s.mark_done("vox_res_0", BuildKind::House, (-150, 9, 80)).unwrap();
-        let new_anchor = s.anchor_only_record("vox_res_0", BuildKind::House, (27, 9, 16));
+        let new_anchor = s
+            .anchor_only_record("vox_res_0", BuildKind::House, (27, 9, 16))
+            .expect("首次登記新家錨點應回一筆記錄");
         let (removal, moved) = s.relocate_house("vox_res_0", (-150, 9, 80), (27, 9, 16));
         let s2 = GoalStore::from_entries(vec![first, new_anchor, removal, moved]);
         assert_eq!(s2.house_of("vox_res_0"), Some((27, 9, 16)), "重啟後家仍在新址");
