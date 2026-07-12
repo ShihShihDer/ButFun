@@ -628,6 +628,23 @@ pub fn home_on_any_plot(plots: &[Plot], hx: i32, hz: i32) -> bool {
     })
 }
 
+/// **跨聚落遷居的拆舊是否要「走回舊家」**（純函式、可測）。
+///
+/// **prod 真 bug（露娜等四位補蓋十幾小時零進展的真兇）**：主村內都更（`dest_settlement == 0`）
+/// 舊家就在同村、走回去拆是誠實體感；但**跨聚落遷居**（遷去殖民地，`dest != 0`）舊家留在
+/// 遙遠的主村，居民卻已住進上千格外的殖民地——要她走回主村拆舊家實際上永遠走不到。更糟的是
+/// 拆除段的「還沒走到就繼續走」倚賴 in-memory 的 `walk_stall` 計時器超時才就地開拆，而該計時器
+/// **不持久化**：prod 每次部署重啟都歸零，於是她永遠在「重新起步走回主村」→ 永不超時 → 這件
+/// 搬家的 **active demolish 階段永久卡住**。而搬家 tick 只在「無 active」時才掃殖民者補蓋，
+/// 一件卡死的跨聚落拆除便**餓死全村的補蓋掃描**——露娜（風禾屯）與其他三位的家於是永遠開不了工。
+///
+/// 修法：跨聚落遷居（`dest != 0`）的拆舊**不要求走回舊家**——拆除本就是按座標還原方塊、
+/// 不需人在場，直接就地按座標拆掉遠方舊家即可，active 名額立刻釋放、補蓋掃描恢復。
+/// 主村內都更（`dest == 0`）維持既有「走回去拆」的誠實體感，行為不變（向後相容）。
+pub fn demolish_requires_walk_back(dest_settlement: u64) -> bool {
+    dest_settlement == 0
+}
+
 /// **待都更名單判定**（純函式、確定性、可測）：所有「已完工的家不在任何村莊地塊上、
 /// 且還沒搬過家」的居民，依居民 id 排序（穩定順序 → 一次一位輪流搬時不跳號）。
 /// `houses`＝各居民已完工小屋錨點（GoalStore::house_of 的快照）；`done`＝已完成搬家的居民 id。
@@ -1466,6 +1483,20 @@ mod tests {
         assert_eq!(first_free_spot(100, 50, &spots, &[]), Some((107, 50)));
     }
 
+    #[test]
+    fn demolish_walk_back_only_for_main_village_relocation() {
+        // 主村內都更（dest=0）：舊家在同村，走回去拆＝誠實體感（既有行為不變）。
+        assert!(demolish_requires_walk_back(0), "主村都更仍走回舊家拆");
+        // 跨聚落遷居（dest!=0）：舊家在遙遠主村、人已住殖民地，不得要求走回（否則永遠走不到、
+        // walk_stall 每次重啟歸零→永不超時→active demolish 永久卡死→餓死全村補蓋掃描）。
+        for dest in [1u64, 2, 3, 4, 99] {
+            assert!(
+                !demolish_requires_walk_back(dest),
+                "跨聚落遷居 dest={dest} 應就地按座標拆、不走回舊家"
+            );
+        }
+    }
+
     // ── 居民搬新家：一次一位狀態機（RelocationStore）─────────────────────────────
 
     #[test]
@@ -1534,6 +1565,36 @@ mod tests {
         // 重啟 roundtrip：done 紀錄還原後 home_override 仍指向新家。
         let restored = RelocationStore::from_entries(vec![rec]);
         assert_eq!(restored.home_override("vox_res_2"), Some((506, 9, 173)));
+    }
+
+    #[test]
+    fn prod_stuck_cross_colony_demolish_starves_repair_until_fix() {
+        // prod 真實況重放（#1224 露娜等四位補蓋十幾小時零進展的根因）：res_0~res_3 的搬家都
+        // done、res_4（米拉）遷居旱井屯後卡在 **cross-colony demolish**（舊家在主村 -27,8、人已住
+        // 上千格外的 -990,-314）。from_entries 依 seq 還原後，這件未完成的 demolish 成為唯一 active。
+        let entries = vec![
+            // 四位已完成搬家（done）。
+            RelocationRecord { resident: "vox_res_0".into(), old_x: -14, old_y: 8, old_z: 14, new_x: 469, new_y: 8, new_z: 173, phase: RELOC_PHASE_DONE.into(), seq: 16, dest_settlement: 1 },
+            RelocationRecord { resident: "vox_res_1".into(), old_x: 513, old_y: 12, old_z: 173, new_x: -264, new_y: 9, new_z: 666, phase: RELOC_PHASE_DONE.into(), seq: 157, dest_settlement: 2 },
+            RelocationRecord { resident: "vox_res_2".into(), old_x: -75, old_y: 13, old_z: 0, new_x: -308, new_y: 4, new_z: 666, phase: RELOC_PHASE_DONE.into(), seq: 158, dest_settlement: 2 },
+            RelocationRecord { resident: "vox_res_3".into(), old_x: 75, old_y: 11, old_z: 0, new_x: 497, new_y: 11, new_z: -712, phase: RELOC_PHASE_DONE.into(), seq: 159, dest_settlement: 3 },
+            // 米拉：建家完工後進 demolish，卡住不動（walk_stall 每次重啟歸零、永不超時）。
+            RelocationRecord { resident: "vox_res_4".into(), old_x: -27, old_y: 9, old_z: 8, new_x: -990, new_y: 9, new_z: -314, phase: RELOC_PHASE_BUILD.into(), seq: 160, dest_settlement: 4 },
+            RelocationRecord { resident: "vox_res_4".into(), old_x: -27, old_y: 9, old_z: 8, new_x: -990, new_y: 9, new_z: -314, phase: RELOC_PHASE_DEMOLISH.into(), seq: 161, dest_settlement: 4 },
+        ];
+        let s = RelocationStore::from_entries(entries);
+        // 唯一 active 正是米拉的 cross-colony demolish——它 is_some()，於是搬家 tick 走不進
+        // 「無 active」的分支，migration_kickoff / colonist_house_repair **整村都掃不到**（餓死補蓋）。
+        let active = s.active().expect("prod 有一件卡住的 active 搬家");
+        assert_eq!(active.resident, "vox_res_4");
+        assert_eq!(active.phase, RELOC_PHASE_DEMOLISH);
+        assert_eq!(active.dest_settlement, 4, "跨聚落遷居（旱井屯）");
+        // #1224 修法：這件 demolish 是跨聚落（dest!=0）→ 不再要求走回舊家 → 就地按座標拆完 →
+        // active 名額釋放 → 露娜等四位的補蓋掃描恢復。
+        assert!(
+            !demolish_requires_walk_back(active.dest_settlement),
+            "跨聚落 demolish 必須就地拆、不走回，否則永久卡死餓死補蓋掃描"
+        );
     }
 
     #[test]
