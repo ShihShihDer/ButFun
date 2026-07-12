@@ -1089,6 +1089,60 @@ fn ip_talk_limiter() -> &'static std::sync::Mutex<vrl::IpTalkLimiter> {
     L.get_or_init(|| std::sync::Mutex::new(vrl::IpTalkLimiter::new()))
 }
 
+/// L6：全域 per-IP `/voxel/*` HTTP GET 限流器——跨所有 HTTP 請求共用一份，以真實 IP 為鍵，
+/// 給輕量 GET（feed / affinity / relations…）疊加 DoS 設一道天花板（WS 已另有限流，這裡補 HTTP 側）。
+/// 參數放寬鬆（見 `vrl::HTTP_GET_BUCKET_CAP`／`HTTP_GET_REFILL_PER_SEC`），正常玩家輪詢不誤傷。
+fn ip_http_limiter() -> &'static std::sync::Mutex<vrl::IpTalkLimiter> {
+    static L: std::sync::OnceLock<std::sync::Mutex<vrl::IpTalkLimiter>> = std::sync::OnceLock::new();
+    L.get_or_init(|| {
+        std::sync::Mutex::new(vrl::IpTalkLimiter::with_params(
+            vrl::HTTP_GET_BUCKET_CAP,
+            vrl::HTTP_GET_REFILL_PER_SEC,
+        ))
+    })
+}
+
+/// 從請求標頭解出真實 client IP（比照 WS 路徑：CF `cf-connecting-ip` 優先，退 `x-forwarded-for`
+/// 首段，皆無則保底桶 "unknown"）。純函式、不取鎖。
+fn client_ip_from_headers(headers: &HeaderMap) -> String {
+    headers
+        .get("cf-connecting-ip")
+        .or_else(|| headers.get("x-forwarded-for"))
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// L6 中介層：對 `/voxel/*` 的 HTTP 請求套 per-IP 輕量限流。
+/// - 只管 `/voxel/` 前綴、且**排除 WS 升級路徑 `/voxel/ws`**（WS 另有連線數/對話限流，別重複攔）。
+/// - 白名單（localhost/QA/env）豁免，本機冒煙不受限。
+/// - 超額 → 429 Too Many Requests；其餘照常往下。
+/// **鎖紀律**：limiter 短鎖即釋、不 await（在取鎖的 scope 內不跨 await）。
+pub async fn voxel_http_ratelimit(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let path = req.uri().path();
+    // 只限流 /voxel/ 前綴的 GET 類端點；WS 升級（/voxel/ws）交給既有 WS 限流，別在這裡攔。
+    let guard = path.starts_with("/voxel/") && path != "/voxel/ws";
+    if guard {
+        let ip = client_ip_from_headers(req.headers());
+        if !ip_is_exempt(&ip) {
+            let now = now_unix_ms();
+            let allowed = { ip_http_limiter().lock().unwrap().allow(&ip, now) }; // 短鎖即釋、不 await
+            if !allowed {
+                return (
+                    axum::http::StatusCode::TOO_MANY_REQUESTS,
+                    "請求太頻繁了，請稍後再試",
+                )
+                    .into_response();
+            }
+        }
+    }
+    next.run(req).await
+}
+
 /// 全域「作品命名」儲存（居民為你的建造作品取名字 v1；860 擴充納入居民自蓋的家）：
 /// 以分格座標為鍵記已取過的名字＋擁有者（`None`＝玩家蓋的，見 773/854；
 /// `Some(resident_id)`＝居民自己蓋的家，見 860，讓 858 見賢思齊能排除「羨慕自己的家」）。
@@ -4039,6 +4093,39 @@ fn resolve_identity(account_name: Option<&str>, join_name: Option<&str>) -> Stri
     String::from("旅人")
 }
 
+/// Move 座標守衛判定（M3 反瞬移 + L1 有限性）——純函式，方便測試。
+///
+/// - 任一分量非有限（NaN / ±Infinity）→ 丟棄該 Move（避免把 null/爆值廣播給所有人）。
+/// - 單則 Move 相對「伺服器目前權威位置」的位移超過寬鬆上限 → 丟棄（擋瞬移作弊）。
+///   上限刻意放很寬（`MAX_MOVE_STEP` 平方），正常高速移動/下墜/重連復位皆遠在其下；
+///   遊戲無 client 端合法傳送機制（唯一的重定位是伺服器權威重生，不走 Move），故不誤傷。
+///
+/// 回傳 `true` 表示這則 Move 合法可套用；`false` 表示應丟棄。
+fn move_is_acceptable(prev: (f32, f32, f32), next: (f32, f32, f32)) -> bool {
+    let (px, py, pz) = prev;
+    let (nx, ny, nz) = next;
+    // ① 有限性守衛：任一新座標非有限就丟棄。
+    if !(nx.is_finite() && ny.is_finite() && nz.is_finite()) {
+        return false;
+    }
+    // 舊座標理論上必為有限（先前已守衛），保險起見仍檢查：舊值異常時放行本則以自我修正。
+    if !(px.is_finite() && py.is_finite() && pz.is_finite()) {
+        return true;
+    }
+    // ② 反瞬移：單則位移平方超過寬鬆上限就丟棄。
+    let dx = nx - px;
+    let dy = ny - py;
+    let dz = nz - pz;
+    let dist_sq = dx * dx + dy * dy + dz * dz;
+    dist_sq <= MAX_MOVE_STEP_SQ
+}
+
+/// 單則 Move 允許的最大位移（格）。放得非常寬：正常走/跑/跳/下墜與重連復位都遠小於此，
+/// 只攔「一步跳幾十上百格」的明顯瞬移。若日後真加了合法傳送機制，走伺服器權威重定位、
+/// 不經 Move handler，或在此放行。
+const MAX_MOVE_STEP: f32 = 64.0;
+const MAX_MOVE_STEP_SQ: f32 = MAX_MOVE_STEP * MAX_MOVE_STEP;
+
 /// 同帳號去重：在 `players` 寫鎖內呼叫——搜出同 email 的舊 entry、移除並回傳其 UUID。
 /// 訪客（`email = ""`）或找不到舊 entry → 回 `None`，不動 `players`。
 ///
@@ -4745,9 +4832,15 @@ async fn handle_socket(
         };
         match serde_json::from_str::<ClientMsg>(&txt) {
             Ok(ClientMsg::Move { x, y, z, yaw, held }) => {
+                // M3+L1 反作弊守衛：非有限座標（NaN/Inf）或單則位移超寬鬆上限（瞬移）→ 直接丟棄本則。
+                // 守衛在寫鎖內用「伺服器目前權威位置」當前一點判定，短鎖即釋、無巢狀、不 await。
                 let changed = {
                     let mut players = hub().players.write().unwrap();
                     if let Some(p) = players.get_mut(&my_id) {
+                        if !move_is_acceptable((p.x, p.y, p.z), (x, y, z)) {
+                            // 丟棄這則 Move：不更新權威狀態、不撿物、不算跌落——當作沒收到。
+                            continue;
+                        }
                         p.x = x;
                         p.y = y;
                         p.z = z;
@@ -4759,7 +4852,9 @@ async fn handle_socket(
                     }
                 };
                 if changed {
-                    broadcast_players();
+                    // M9：不在此逐則全量廣播——位置更新統一靠 10Hz tick_residents 末尾的
+                    // broadcast_players()（≤100ms 延遲，療癒遊戲非競技可接受），消去 Move 路徑
+                    // 每則全量 clone+序列化整包的冗餘（10 人在線曾≈每秒 150 次多餘序列化）。
                     // 掉落物 v1：走近自動撿起，含撿回自己剛丟下的東西（自主提案切片 828）。
                     let picked = {
                         let mut store = hub().drops.write().unwrap();
@@ -8504,6 +8599,20 @@ async fn handle_socket(
                 if !voxel::can_break(&hub().deltas.read().unwrap(), px, py, pz, x, y, z) { continue; }
                 // 清洗玩家輸入（去控制字元、截長度）；空字串＝清空牌面。
                 let clean = vsign::sanitize_text(&text);
+                // L3 內容審查：告示牌是唯一未過內容審查的公開文字廣播入口——立牌文字會廣播給
+                // 所有人看到，套上與瓶中信/對話同款的 `vmod::screen`。命中→溫柔提示、絕不存檔／
+                // 絕不廣播原文；空字串（清空牌面）不必審。players 寫鎖短取即釋、不巢狀。
+                if !clean.is_empty() {
+                    let verdict = vmod::screen(&clean);
+                    if verdict != vmod::Screen::Clean {
+                        let mut players = hub().players.write().unwrap();
+                        if let Some(p) = players.get_mut(&my_id) {
+                            p.say = vmod::gentle_notice(verdict).to_string();
+                            p.say_timer = PLAYER_SAY_SECS;
+                        }
+                        continue;
+                    }
+                }
                 // 居民認得你的家 v1（自主提案切片，ROADMAP 830）：伺服器權威記下這塊牌是哪位
                 // 玩家立的——只有已登入帳號才記名（比照瓶中信的登入護欄），訪客的牌 owner 永遠
                 // None，行為與今日完全一致；清空牌面（clean 為空）也不必記歸屬。
@@ -9503,7 +9612,35 @@ async fn handle_socket(
     { hub().pending_fish.write().unwrap().remove(&name); }
     forward.abort();
     cleanup(my_id, &writer);
+    // M5：訪客斷線 → 清掉以「顯示名」為鍵、且無持久化價值的記憶體 entry（player_stats /
+    // inventory / last_seen），擋「訪客反覆連新名塞爆 map」。**只清訪客**（account_email==None）：
+    // 登入玩家的 stats/inventory 是持久資料，一律保留（重登由 jsonl replay 復原，這裡也不動 jsonl）。
+    // 且僅在「此名此刻已無任何在線連線在用」時才清，避免踢掉同名的另一條連線（含重連競態）。
+    // 鎖紀律：players 讀鎖短取即釋 → 之後三把 store 寫鎖各自短取即釋，循序不巢狀、不 await。
+    cleanup_guest_by_name(my_id, &name, account_email.is_none());
     broadcast_players();
+}
+
+/// M5 訪客斷線清理：把不再有在線連線在用、且屬訪客的以名為鍵記憶體 entry 移除。
+/// **登入玩家（`is_guest==false`）一律略過**——不動任何持久資料。空名（未 Join 過）也略過。
+/// **鎖紀律**：先短讀鎖 players 判「此名是否還有別條在線連線」，釋放後再各自短寫鎖清三個 map，
+/// 循序取放、不巢狀、不 await（守死鎖鐵律）。
+fn cleanup_guest_by_name(my_id: Uuid, name: &str, is_guest: bool) {
+    if !is_guest || name.is_empty() {
+        return;
+    }
+    // 此名是否仍被別的在線連線使用（同名多開／重連競態）→ 是則不清，留給對方用。
+    let still_online = {
+        let players = hub().players.read().unwrap();
+        players.iter().any(|(id, p)| *id != my_id && p.name == name)
+    }; // players 讀鎖釋放
+    if still_online {
+        return;
+    }
+    // 三把 store 各自短寫鎖，循序取放、不巢狀。只動記憶體，不碰 jsonl。
+    { hub().player_stats.write().unwrap().remove(name); }
+    { hub().inventory.write().unwrap().remove_player(name); }
+    { hub().last_seen.write().unwrap().remove(name); }
 }
 
 /// 連線名額守衛（治安三件套②）：`handle_socket` 任一離開路徑（早退／正常收攤／panic 展開）
@@ -11500,10 +11637,75 @@ pub async fn voxel_feed_handler() -> axum::response::Response {
         .unwrap()
 }
 
+/// 身分守衛判定結果（M1 隱私 IDOR 修）——純函式核心，方便測試。
+///
+/// 這些 `?player=<顯示名>` GET 端點以「顯示名」當 store 鍵。名字由 client 自報 →
+/// 任何人給一個**已註冊玩家**的名字即可撈他的私人資料（路標自訂標籤＋座標、地標座標）。
+/// 修法：**若請求的名字屬於某個註冊帳號，只在呼叫者的 session cookie 對得上該帳號時才放行**
+/// （徹底堵住對註冊玩家的枚舉）；名字非註冊帳號（訪客／臨時名）則照舊放行（訪客自報名本就
+/// client 端可控、無跨帳號隱私可洩）；空名一律拒。前端一律送「自己的名字＋same-origin cookie」，
+/// 故對登入玩家與訪客的既有取用皆零破壞。
+#[derive(Debug, PartialEq, Eq)]
+enum IdentityGuard {
+    /// 放行，並以此名字當 store 鍵。
+    Allow(String),
+    /// 拒絕（名字屬註冊帳號但 cookie 對不上，或名字為空）。
+    Deny,
+}
+
+/// 純判定：給定「請求名字」「該名字是否為註冊帳號」「呼叫者 cookie 解出的帳號名（若有）」，
+/// 決定放行或拒絕。抽成純函式以便測試（不碰 IO / 鎖）。
+fn identity_guard_decision(
+    requested: &str,
+    name_is_registered_account: bool,
+    cookie_account_name: Option<&str>,
+) -> IdentityGuard {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return IdentityGuard::Deny;
+    }
+    if name_is_registered_account {
+        // 已註冊玩家的名字：只有本人（cookie 對得上）能讀。
+        match cookie_account_name {
+            Some(acct) if acct == requested => IdentityGuard::Allow(requested.to_string()),
+            _ => IdentityGuard::Deny,
+        }
+    } else {
+        // 訪客／臨時名：無跨帳號隱私可洩，照舊放行。
+        IdentityGuard::Allow(requested.to_string())
+    }
+}
+
+/// 解出這次 `?player=` 請求該用哪個 store 鍵，或拒絕（M1）。
+/// - 從 cookie 解出呼叫者的帳號顯示名（若已登入）。
+/// - 從 UserStore 判定 `?player=` 的名字是否屬某個註冊帳號。
+/// - 交給 `identity_guard_decision` 做純判定。
+/// **鎖紀律**：只讀 UserStore 自己的內部鎖（短取即釋），不碰 hub() 任何鎖，無巢狀。
+fn resolve_player_identity(app: &AppState, headers: &HeaderMap, requested: &str) -> IdentityGuard {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return IdentityGuard::Deny;
+    }
+    // 呼叫者 cookie → 帳號顯示名（未設 OAuth / 未登入 → None）。
+    let cookie_account_name: Option<String> = app
+        .auth
+        .as_ref()
+        .and_then(|cfg| crate::auth::user_id_from_cookies(headers, &cfg.session_secret))
+        .and_then(|uid| app.users.get(uid))
+        .map(|u| u.name);
+    // 請求名字是否對應某個註冊帳號。
+    let name_is_registered = app.users.find_by_name(requested).is_some();
+    identity_guard_decision(requested, name_is_registered, cookie_account_name.as_deref())
+}
+
 /// `GET /voxel/affinity?player=<顯示名>` — 回傳此玩家與各居民的好感度計數。
 ///
 /// JSON 格式：`{ "vox_res_0": 2, "vox_res_1": 0, ... }`
 /// 純讀 memory store、無 LLM、無 migration、向後相容（新路由 additive）。
+///
+/// **M1 隱私**：好感度只是「與某居民的互動筆數」計數（非座標、非自由文字），敏感度低；
+/// 且面板本就是攤開「小社會關係」的公開性質，綁身分反而破壞既有公開用途 → 維持公開查詢，
+/// 不綁 cookie（與路標/探索紀事的處理刻意不同）。
 pub async fn voxel_affinity_handler(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
@@ -11649,6 +11851,9 @@ pub async fn voxel_skills_handler() -> axum::response::Response {
 /// （採集→合成→蓋造→種田→贈禮→交易→熟識→安眠）至今卻沒有任何一處能讓玩家
 /// 自己回頭看看「我走了多遠」。本端點純讀取、零副作用，`?player=` 缺省時
 /// 全部里程碑一律回「未達成」（前端知道要先問玩家名再開面板）。
+///
+/// **M1 隱私**：里程碑只是「成就徽章是否達成」的布林（非座標、非自由文字），敏感度低、
+/// 本質接近公開成就展示；綁身分無隱私收益、反破壞既有公開用途 → 維持公開查詢，不綁 cookie。
 pub async fn voxel_milestones_handler(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
@@ -11683,6 +11888,8 @@ pub async fn voxel_milestones_handler(
 ///
 /// 比照 708 交情網／719 技能簿／724 里程碑同一手法：純讀取、零副作用，`?player=`
 /// 缺省時全部一律回「未學會」；前端合成台用這份清單決定哪些獨門配方要顯示可合成。
+///
+/// **M1 隱私**：只是「某道配方是否學會」布林（非座標、非自由文字），敏感度低 → 維持公開查詢。
 pub async fn voxel_known_recipes_handler(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
@@ -11713,18 +11920,27 @@ pub async fn voxel_known_recipes_handler(
 /// 乙太方界·個人路標 v1（自主提案切片，ROADMAP 869）：回傳這位玩家目前所有路標
 /// （名字＋座標，依插旗先後）。跟里程碑/探索紀事端點同一手法：`?player=` 缺省時回空
 /// 清單，供開面板時先拉一份現況；之後的即時更新走 WS `waypoint_sync`。純讀取、零副作用。
+///
+/// **M1 隱私（IDOR）**：路標含玩家自訂自由文字標籤＋私人座標，是最敏感的一項。
+/// 若 `?player=` 指的是**已註冊玩家**，只有 cookie 對得上本人才放行（見 `resolve_player_identity`）；
+/// 對不上一律回空清單，堵住「給別人的名字撈他私人路標」。訪客自己的名字照舊放行。
 pub async fn voxel_waypoints_handler(
+    State(app): State<AppState>,
+    headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
     use axum::http::header;
-    let player_name = params.get("player").map(|s| s.as_str()).unwrap_or("").trim().to_string();
-    let items: Vec<serde_json::Value> = if player_name.is_empty() {
-        Vec::new()
-    } else {
-        hub().waypoints.read().unwrap().list(&player_name)
+    let requested = params.get("player").map(|s| s.as_str()).unwrap_or("");
+    let items: Vec<serde_json::Value> = match resolve_player_identity(&app, &headers, requested) {
+        IdentityGuard::Allow(name) => hub()
+            .waypoints
+            .read()
+            .unwrap()
+            .list(&name)
             .iter()
             .map(|w| serde_json::json!({ "label": w.label, "x": w.x, "y": w.y, "z": w.z }))
-            .collect()
+            .collect(),
+        IdentityGuard::Deny => Vec::new(),
     };
     let body = serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
     axum::response::Response::builder()
@@ -11785,11 +12001,20 @@ pub async fn voxel_envoy_marks_handler() -> axum::response::Response {
 /// 乙太方界·探索紀事 v1（自主提案切片，接續 838/839）：回傳這位玩家找到過的地標
 /// （種類＋座標，依發現順序）＋分類小計。跟里程碑端點同一手法：`?player=` 缺省時
 /// 回空清單，前端知道要先問玩家名再開面板。純讀取、零副作用。
+///
+/// **M1 隱私（IDOR）**：探索紀事含玩家找到的地標**座標**。若 `?player=` 指的是已註冊玩家，
+/// 只有 cookie 對得上本人才放行（見 `resolve_player_identity`）；對不上回空紀事。訪客自己的名字照舊放行。
 pub async fn voxel_discoveries_handler(
+    State(app): State<AppState>,
+    headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
     use axum::http::header;
-    let player_name = params.get("player").map(|s| s.as_str()).unwrap_or("").trim().to_string();
+    let requested = params.get("player").map(|s| s.as_str()).unwrap_or("");
+    let player_name = match resolve_player_identity(&app, &headers, requested) {
+        IdentityGuard::Allow(name) => name,
+        IdentityGuard::Deny => String::new(),
+    };
     let (items, ruins, springs, outposts, colonies) = if player_name.is_empty() {
         (Vec::new(), 0usize, 0usize, 0usize, 0usize)
     } else {
@@ -11823,6 +12048,8 @@ pub async fn voxel_discoveries_handler(
 
 /// 乙太方界·玩家熟練度 v1（自主提案切片，ROADMAP 842）：回傳這位玩家三條熟練度目前的
 /// 經驗值／等級／稱號／是否已解鎖產出加成，供前端 📈 熟練度面板顯示。
+///
+/// **M1 隱私**：熟練度只是經驗/等級/稱號數字（非座標、非自由文字），敏感度低 → 維持公開查詢。
 pub async fn voxel_mastery_handler(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
@@ -24804,6 +25031,100 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── M1 身分守衛（跨玩家資料枚舉 IDOR 修）─────────────────────────────
+    // identity_guard_decision 是純判定核心：註冊玩家的名字只有本人 cookie 對得上才放行，
+    // 訪客/臨時名照舊放行，空名一律拒。
+
+    #[test]
+    fn identity_guard_registered_requires_matching_cookie() {
+        // 給別人（註冊玩家）的名字、cookie 對不上（或沒 cookie）→ 拒，堵住枚舉。
+        assert_eq!(
+            identity_guard_decision("露娜", true, None),
+            IdentityGuard::Deny,
+            "無 cookie 撈註冊玩家私料應拒"
+        );
+        assert_eq!(
+            identity_guard_decision("露娜", true, Some("諾娃")),
+            IdentityGuard::Deny,
+            "cookie 是別人、對不上該註冊名應拒"
+        );
+        // 本人 cookie 對得上 → 放行，用該名當 key。
+        assert_eq!(
+            identity_guard_decision("露娜", true, Some("露娜")),
+            IdentityGuard::Allow("露娜".to_string()),
+            "本人 cookie 對得上應放行"
+        );
+    }
+
+    #[test]
+    fn identity_guard_guest_name_allowed() {
+        // 名字非註冊帳號（訪客/臨時名）→ 照舊放行（無跨帳號隱私可洩），不論有無 cookie。
+        assert_eq!(
+            identity_guard_decision("路過旅人", false, None),
+            IdentityGuard::Allow("路過旅人".to_string())
+        );
+        assert_eq!(
+            identity_guard_decision("路過旅人", false, Some("露娜")),
+            IdentityGuard::Allow("路過旅人".to_string())
+        );
+    }
+
+    #[test]
+    fn identity_guard_empty_name_denied() {
+        assert_eq!(identity_guard_decision("", false, None), IdentityGuard::Deny);
+        assert_eq!(identity_guard_decision("   ", true, Some("   ")), IdentityGuard::Deny);
+    }
+
+    #[test]
+    fn identity_guard_trims_whitespace() {
+        // 前後空白會被 trim；trim 後對得上就放行、回 trim 後的 key。
+        assert_eq!(
+            identity_guard_decision("  露娜 ", true, Some("露娜")),
+            IdentityGuard::Allow("露娜".to_string())
+        );
+    }
+
+    // ── M3+L1 Move 座標守衛（反瞬移 + 有限性）────────────────────────────
+
+    #[test]
+    fn move_rejects_non_finite() {
+        let prev = (0.0, 64.0, 0.0);
+        assert!(!move_is_acceptable(prev, (f32::NAN, 64.0, 0.0)), "NaN 應丟棄");
+        assert!(!move_is_acceptable(prev, (0.0, f32::INFINITY, 0.0)), "Inf 應丟棄");
+        assert!(!move_is_acceptable(prev, (0.0, 64.0, f32::NEG_INFINITY)), "-Inf 應丟棄");
+    }
+
+    #[test]
+    fn move_accepts_normal_step() {
+        let prev = (10.0, 64.0, 10.0);
+        // 正常一步（走/跑/跳/下墜一小段）遠在上限內。
+        assert!(move_is_acceptable(prev, (10.5, 64.2, 10.3)));
+        assert!(move_is_acceptable(prev, (13.0, 60.0, 12.0)));
+    }
+
+    #[test]
+    fn move_rejects_teleport() {
+        let prev = (0.0, 64.0, 0.0);
+        // 一步跳超過 MAX_MOVE_STEP 格（明顯瞬移）→ 丟棄。
+        let far = MAX_MOVE_STEP + 10.0;
+        assert!(!move_is_acceptable(prev, (far, 64.0, 0.0)), "水平瞬移應丟棄");
+        assert!(!move_is_acceptable(prev, (far, 64.0, far)), "斜向瞬移應丟棄");
+    }
+
+    #[test]
+    fn move_at_boundary_is_accepted() {
+        let prev = (0.0, 0.0, 0.0);
+        // 剛好等於上限（含容差）→ 放行（<=）。
+        assert!(move_is_acceptable(prev, (MAX_MOVE_STEP, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn move_tolerates_bad_prev() {
+        // 舊座標異常（理論上不會發生）時，放行本則以自我修正，不永久卡死。
+        let prev = (f32::NAN, 0.0, 0.0);
+        assert!(move_is_acceptable(prev, (5.0, 64.0, 5.0)));
+    }
 
     // ── 情誼帳本鍵值一致性（ROADMAP 713 修復）────────────────────────────
     // 情誼帳本以居民「顯示名」記帳（record_visit 呼叫慣例皆傳 r.name），過去多處
