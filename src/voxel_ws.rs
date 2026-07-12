@@ -15441,15 +15441,18 @@ fn tick_residents(dt: f32) {
                             >= vfond::FOND_AFFINITY; // 記憶讀鎖即釋
                     if is_fond {
                         let now = vfarm::now_secs();
-                        // 短讀鎖 clone delta 快照判水耕（只在通過好感閘後才做，罕見路徑），即釋。
-                        let deltas_snap = hub().deltas.read().unwrap().clone();
+                        // 水耕判定直接複用外層已持有的 `world` delta 讀鎖（同一份資料）——
+                        // 再入 `hub().deltas.read()` 純屬冗餘，且會踩「同執行緒二次上鎖 std
+                        // RwLock →寫者優先死鎖」鐵律：若 Break/Place 的 deltas.write() 在兩次
+                        // 讀之間排隊，內層讀排在寫者後、寫者等外層讀釋放、外層等本 tick 完成 →
+                        // 本執行緒自鎖、整個居民 tick 卡死。刪內層 read 與整份 WorldDelta clone。
                         let raining = *hub().weather.read().unwrap(); // 短讀鎖即釋
                         let candidate = hub().farm.read().unwrap().nearest_immature_plot_near(
                             r.body.x,
                             r.body.z,
                             vtend::CARE_DIST,
                             now,
-                            |fx, fy, fz| raining || is_irrigated_in_delta(&deltas_snap, fx, fy, fz),
+                            |fx, fy, fz| raining || is_irrigated_in_delta(&world, fx, fy, fz),
                         ); // farm 讀鎖即釋
                         if let Some(((cx, cy, cz), kind, remaining)) = candidate {
                             let nudge = vtend::nudge_amount(remaining);
@@ -15506,8 +15509,10 @@ fn tick_residents(dt: f32) {
                         let plots =
                             hub().giftgarden.read().unwrap().plots_for(&r.id, nearest_name);
                         if !plots.is_empty() {
-                            // 短讀鎖 clone delta 快照判每畦作物方塊現況（即釋）。
-                            let snap = hub().deltas.read().unwrap().clone();
+                            // 每畦作物方塊現況直接複用外層已持有的 `world` delta 讀鎖（同一份
+                            // 資料）——再入 `hub().deltas.read()` 冗餘且會踩同執行緒二次上鎖 std
+                            // RwLock →寫者優先死鎖鐵律（詳見上方照料菜園處說明）。刪內層 read
+                            // 與整份 WorldDelta clone。
                             let mut ready: Option<(String, i32, i32, i32, u8)> = None;
                             for (pos, crop) in plots {
                                 let Some((gx, gy, gz)) = vgg::parse_key(&pos) else { continue };
@@ -15523,7 +15528,7 @@ fn tick_residents(dt: f32) {
                                     }
                                     _ => continue,
                                 };
-                                let b = voxel::effective_block_at(&snap, gx, gy, gz);
+                                let b = voxel::effective_block_at(&world, gx, gy, gz);
                                 if b == mature {
                                     // 挑第一畦熟的收（每 tick 只收一畦，不洗版）。
                                     if ready.is_none() {
