@@ -22296,8 +22296,10 @@ fn tick_residents(dt: f32) {
                 let (rec, anchor_rec) = {
                     let mut goals = hub().goals.write().unwrap();
                     let r = goals.mark_done(&rid, kind, plan_anchor);
+                    // 這種早已完成（r=None）→ 補一筆純錨點記錄；但錨點若已登記過，
+                    // anchor_only_record 回 None（冪等去重，不重寫、不膨脹 goals.jsonl）。
                     let ar = if r.is_none() {
-                        Some(goals.anchor_only_record(&rid, kind, plan_anchor))
+                        goals.anchor_only_record(&rid, kind, plan_anchor)
                     } else {
                         None
                     };
@@ -22306,9 +22308,9 @@ fn tick_residents(dt: f32) {
                 if let Some(rec) = rec {
                     vskill::append_goal(&rec);
                 } else if let Some(ar) = anchor_rec {
-                    // 蓋家鬼打牆補漏：這種早已在 done（不落新完成記錄），但這一座真的完工了——
+                    // 蓋家鬼打牆補漏：這種早已在 done（不落新完成記錄），但這一座真的**首次**完工了——
                     // 持久化它的錨點，否則同格會被一蓋再蓋、永遠逃過 anchor_built 封鎖
-                    // （這正是 res_1 水井連續「完工」數十次的洞）。
+                    // （這正是 res_1 水井連續「完工」數十次的洞）。同錨點重覆完工不再重寫（上方冪等）。
                     vskill::append_goal(&ar);
                 }
                 // 小屋座標補漏（殖民地補蓋／遠古資料）：House 完工、卻查無她的小屋座標

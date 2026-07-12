@@ -305,21 +305,36 @@ impl BuildStore {
         }
     }
 
-    /// 從 jsonl 記錄還原（重啟後繼續未完成的建造）。同居民多筆取 seq 最大（最新）。
+    /// 從 jsonl 記錄還原（重啟後繼續未完成的建造）。**last-wins 語意**：一張計畫在 jsonl 裡
+    /// 是「同 seq、`remaining` 逐塊遞減」的一長串 append，同居民最新的那一行才是真狀態。
+    ///
+    /// **churn 根治（prod 真 bug）**：舊版用 `e.seq > existing.seq`（嚴格大於）當去重閘——
+    /// 對同一張計畫的多行（seq 相等）永遠留住**最先**掃到的那行（`remaining` 滿），
+    /// 後面把它放到 `remaining=0`（done）的行因 `seq 不 > seq` 而**永遠蓋不掉它**。結果重啟後
+    /// 一張早已蓋完的計畫被還原成「全新未蓋」→ 重蓋 → 完工落一筆 `anchor_only` 目標 → 再重啟
+    /// 再重蓋……`voxel_goals.jsonl` 無界膨脹，且這張幽靈計畫讓 `has_plan` 恆真、卡死殖民者補蓋
+    /// （露娜的家兩小時零進展的真兇）。改成 last-wins：同 seq 的後行覆蓋前行，且 done 的最新行
+    /// **移除**先前留住的計畫——還原的永遠是「這位居民最後留下的真實狀態」：沒蓋完就續蓋、
+    /// 蓋完了就沒計畫。對「同居民多張不同 seq 計畫」仍取最新（seq 較大者）。
     pub fn from_entries(entries: Vec<BuildPlan>) -> Self {
         let mut s = Self::default();
+        // 記住每位居民目前依據的計畫序號（含 done 移除後的序號），確保 last-wins 不倒退。
+        let mut kept_seq: HashMap<String, u64> = HashMap::new();
         for e in entries {
             if e.seq >= s.next_seq {
                 s.next_seq = e.seq.wrapping_add(1);
             }
-            if e.is_done() {
-                continue; // 已完成不需載回
+            // last-wins：seq ≥ 已記錄序號即以它為準（同 seq 後行覆蓋前行、新 seq 計畫覆蓋舊計畫）；
+            // 比目前記錄還舊的行（seq 較小）忽略，避免亂序 jsonl 讓舊計畫復活。
+            let is_newer = kept_seq.get(&e.resident).map_or(true, |&k| e.seq >= k);
+            if !is_newer {
+                continue;
             }
-            let keep = s
-                .plans
-                .get(&e.resident)
-                .map_or(true, |existing| e.seq > existing.seq);
-            if keep {
+            kept_seq.insert(e.resident.clone(), e.seq);
+            if e.is_done() {
+                // 這位居民最新狀態是「蓋完了」→ 沒有進行中計畫（移除先前留下的那張）。
+                s.plans.remove(&e.resident);
+            } else {
                 s.plans.insert(e.resident.clone(), e);
             }
         }
@@ -1615,6 +1630,64 @@ mod tests {
         };
         let s = BuildStore::from_entries(vec![old, new]);
         assert_eq!(s.plans["vox_res_0"].kind, "tower", "應保留 seq 較大的計畫");
+    }
+
+    #[test]
+    fn from_entries_last_wins_within_same_seq_drops_completed_plan() {
+        // churn 根治回歸（prod 真 bug）：一張計畫的 jsonl 是「同 seq、remaining 逐塊遞減」
+        // 的一長串 append。舊版嚴格 `>` 去重永遠留住**最先**那行（remaining 滿），把它放到
+        // remaining=0（done）的後續行永遠蓋不掉它 → 重啟把早已蓋完的計畫還原成全新未蓋，
+        // 重蓋→落 anchor_only→再重啟再重蓋，goals.jsonl 無界膨脹、has_plan 恆真卡死補蓋。
+        let mk = |rem: usize| BuildPlan {
+            resident: "vox_res_0".into(),
+            kind: "pavilion".into(),
+            kind_name: "涼亭".into(),
+            cx: -6,
+            cy: 7,
+            cz: 22,
+            remaining: (0..rem)
+                .map(|i| BuildBlock { x: -6 + i as i32, y: 7, z: 22, b: Block::Wood as u8 })
+                .collect::<VecDeque<_>>(),
+            total: 31,
+            seq: 1973, // 同一張計畫全程同 seq
+            expansion: false,
+            inspired_by: None,
+            helpers: Vec::new(),
+        };
+        // 檔序：滿 → 遞減 → 0（done）。最新（最後）一行才是真狀態＝蓋完了。
+        let entries = vec![mk(31), mk(20), mk(10), mk(1), mk(0)];
+        let s = BuildStore::from_entries(entries);
+        assert!(
+            !s.has_plan("vox_res_0"),
+            "同 seq 最後一行是 done → 不該還原成進行中的幽靈計畫（churn 根因）"
+        );
+        // next_seq 仍接在最大 seq 之後（新計畫不撞號）。
+        let mut s = s;
+        assert_eq!(s.new_plan("vox_res_0", BuildKind::Well, 0, 5, 0, false, None).seq, 1974);
+    }
+
+    #[test]
+    fn from_entries_same_seq_resumes_partial_when_last_line_incomplete() {
+        // 對稱：若最新一行還沒蓋完（例如放到一半時當機），仍以最新進度續蓋、不倒退回滿。
+        let mk = |rem: usize| BuildPlan {
+            resident: "vox_res_1".into(),
+            kind: "house".into(),
+            kind_name: "小木屋".into(),
+            cx: 0,
+            cy: 5,
+            cz: 0,
+            remaining: (0..rem)
+                .map(|i| BuildBlock { x: i as i32, y: 5, z: 0, b: Block::Wood as u8 })
+                .collect::<VecDeque<_>>(),
+            total: 30,
+            seq: 42,
+            expansion: false,
+            inspired_by: None,
+            helpers: Vec::new(),
+        };
+        let s = BuildStore::from_entries(vec![mk(30), mk(15), mk(7)]);
+        assert!(s.has_plan("vox_res_1"), "最新一行未蓋完 → 該續蓋");
+        assert_eq!(s.plans["vox_res_1"].remaining.len(), 7, "以最新進度續蓋、不倒退回滿");
     }
 
     // ── build_say_line 純函式 ─────────────────────────────────────────────────
