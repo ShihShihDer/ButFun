@@ -725,6 +725,9 @@ async fn main() {
         // 其餘路徑（game.js、assets、wasm…）交給靜態前端（web/）。game.js 維持可
         // 快取——它的 URL 帶內容雜湊，內容一變 URL 就變，CF/瀏覽器自然抓新版。
         .fallback_service(ServeDir::new("web"))
+        // L6：對 /voxel/* HTTP 請求套 per-IP 輕量限流（中介層自守 /voxel/ 前綴、排除 WS 升級；
+        // 白名單豁免、閾值寬鬆）。與既有 WS 側限流疊加、堵住 GET 端點 DoS。
+        .layer(axum::middleware::from_fn(voxel_ws::voxel_http_ratelimit))
         .layer(TraceLayer::new_for_http())
         .with_state(app_state.clone());
 

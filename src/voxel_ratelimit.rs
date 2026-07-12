@@ -38,16 +38,39 @@ struct Bucket {
     last_ms: u64,
 }
 
-/// per-IP 對話速率限制器：每個 IP 一只 token bucket。
-#[derive(Default)]
+/// L6 `/voxel/*` HTTP GET 的 per-IP 限流參數（放寬鬆，正常玩家輪詢/開面板遠在其下）。
+/// 突發上限 60、每秒回補 20（＝長期 ~1200/分/IP 的硬頂）——正常前端連線只在開面板/連線時
+/// 各拉一兩趟，遠低於此；只攔「腳本狂刷 /voxel/feed 等 GET 疊加 DoS」。
+pub const HTTP_GET_BUCKET_CAP: f64 = 60.0;
+pub const HTTP_GET_REFILL_PER_SEC: f64 = 20.0;
+
+/// per-IP 速率限制器：每個 IP 一只 token bucket。突發上限與回補速率可調
+/// （對話用預設 [`TALK_BUCKET_CAP`]/[`TALK_REFILL_PER_SEC`]；HTTP GET 用寬鬆的
+/// [`HTTP_GET_BUCKET_CAP`]/[`HTTP_GET_REFILL_PER_SEC`]）。
 pub struct IpTalkLimiter {
     buckets: HashMap<String, Bucket>,
+    cap: f64,
+    refill_per_sec: f64,
+}
+
+impl Default for IpTalkLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl IpTalkLimiter {
+    /// 對話用（預設突發/回補參數）。
     pub fn new() -> Self {
+        Self::with_params(TALK_BUCKET_CAP, TALK_REFILL_PER_SEC)
+    }
+
+    /// 自訂突發上限與回補速率（L6 HTTP GET 限流用寬鬆參數）。
+    pub fn with_params(cap: f64, refill_per_sec: f64) -> Self {
         Self {
             buckets: HashMap::new(),
+            cap,
+            refill_per_sec,
         }
     }
 
@@ -63,14 +86,15 @@ impl IpTalkLimiter {
                 self.buckets.clear();
             }
         }
+        let cap = self.cap;
+        let refill = self.refill_per_sec;
         let bucket = self.buckets.entry(ip.to_string()).or_insert(Bucket {
-            tokens: TALK_BUCKET_CAP,
+            tokens: cap,
             last_ms: now_ms,
         });
         // 依經過時間回補 token（clamp 到上限）；時鐘回退（now < last）→ 零回補、不倒扣。
         let elapsed_ms = now_ms.saturating_sub(bucket.last_ms);
-        bucket.tokens =
-            (bucket.tokens + elapsed_ms as f64 / 1000.0 * TALK_REFILL_PER_SEC).min(TALK_BUCKET_CAP);
+        bucket.tokens = (bucket.tokens + elapsed_ms as f64 / 1000.0 * refill).min(cap);
         bucket.last_ms = now_ms;
         if bucket.tokens >= 1.0 {
             bucket.tokens -= 1.0;
@@ -82,11 +106,12 @@ impl IpTalkLimiter {
 
     /// 清掉 token 已回滿（久未活動、無限流必要）的桶，回收記憶體。
     fn prune_full(&mut self, now_ms: u64) {
+        let cap = self.cap;
+        let refill = self.refill_per_sec;
         self.buckets.retain(|_, b| {
             let elapsed_ms = now_ms.saturating_sub(b.last_ms);
-            let tokens =
-                (b.tokens + elapsed_ms as f64 / 1000.0 * TALK_REFILL_PER_SEC).min(TALK_BUCKET_CAP);
-            tokens < TALK_BUCKET_CAP
+            let tokens = (b.tokens + elapsed_ms as f64 / 1000.0 * refill).min(cap);
+            tokens < cap
         });
     }
 
@@ -232,6 +257,29 @@ mod tests {
         }
         // 觸頂後應已清過一輪，桶數落在上限之內。
         assert!(rl.tracked() <= MAX_TRACKED_IPS, "追蹤桶數應受硬上限約束");
+    }
+
+    /// L6：HTTP GET 限流用寬鬆參數——突發到 cap 全放、超過即擋，回補後又放。
+    #[test]
+    fn http_get_params_burst_and_refill() {
+        let mut rl = IpTalkLimiter::with_params(HTTP_GET_BUCKET_CAP, HTTP_GET_REFILL_PER_SEC);
+        let cap = HTTP_GET_BUCKET_CAP as usize;
+        for i in 0..cap {
+            assert!(rl.allow("1.2.3.4", 1000), "第 {i} 則 GET 應放行（寬鬆突發）");
+        }
+        assert!(!rl.allow("1.2.3.4", 1000), "超過突發上限應被擋");
+        // 過 1 秒回補 HTTP_GET_REFILL_PER_SEC 個 token → 又能放行。
+        assert!(rl.allow("1.2.3.4", 2000), "回補後應放行");
+    }
+
+    /// with_params 的桶數同樣受硬上限約束（有界，不因大量 IP 無限長大）。
+    #[test]
+    fn http_get_params_bounded() {
+        let mut rl = IpTalkLimiter::with_params(HTTP_GET_BUCKET_CAP, HTTP_GET_REFILL_PER_SEC);
+        for i in 0..(MAX_TRACKED_IPS + 50) {
+            rl.allow(&format!("ip-{i}"), 0);
+        }
+        assert!(rl.tracked() <= MAX_TRACKED_IPS);
     }
 
     // ── IpConnLimiter（連線數上限）────────────────────────────────────────────

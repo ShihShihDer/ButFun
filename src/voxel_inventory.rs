@@ -108,6 +108,18 @@ impl InvStore {
         self.map.get(player).map_or(0, |inv| inv.count(block_id))
     }
 
+    /// 移除某玩家的記憶體背包 entry（M5 訪客斷線清理用）。回傳是否真的移走了一筆。
+    /// **只動記憶體**——jsonl 是 append-only、不在此刪（登入玩家重登會由 jsonl replay 復原，
+    /// 故只該對「無持久化價值的訪客」呼叫；呼叫端負責這個判斷）。
+    pub fn remove_player(&mut self, player: &str) -> bool {
+        self.map.remove(player).is_some()
+    }
+
+    /// 目前記憶體中追蹤的玩家背包數（有界性檢查／測試用）。
+    pub fn tracked_players(&self) -> usize {
+        self.map.len()
+    }
+
     /// 取某玩家的全部非零材料（UI / 背包同步用）。
     pub fn pairs(&self, player: &str) -> Vec<(u8, u32)> {
         self.map
@@ -274,6 +286,25 @@ fn atomic_write(path: &str, content: &str, log_prefix: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── InvStore::remove_player（M5 訪客斷線清理）────────────────
+
+    #[test]
+    fn remove_player_drops_in_memory_entry() {
+        let mut store = InvStore::default();
+        store.give("訪客A", 5, 3);
+        store.give("訪客B", 5, 1);
+        assert_eq!(store.tracked_players(), 2);
+        assert_eq!(store.count("訪客A", 5), 3);
+        // 移除訪客 A → 回 true、其背包歸零、只剩 B。
+        assert!(store.remove_player("訪客A"));
+        assert_eq!(store.count("訪客A", 5), 0);
+        assert_eq!(store.tracked_players(), 1);
+        assert_eq!(store.count("訪客B", 5), 1, "不影響其他玩家");
+        // 再移除已不在的名字 → 回 false、no-op。
+        assert!(!store.remove_player("訪客A"));
+        assert_eq!(store.tracked_players(), 1);
+    }
 
     // ── VoxelInventory ────────────────────────────────────────
 
