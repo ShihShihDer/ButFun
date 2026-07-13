@@ -39,8 +39,9 @@ pub fn should_resident_trade(
 }
 
 /// 依居民 id 取得其交易特長物品（沿用 670 `resident_trade_slot` 的 slot 分類，
-/// 與 `voxel_trade::make_offer` 的物品對表一致）。
-fn specialty_item(resident_id: &str) -> u8 {
+/// 與 `voxel_trade::make_offer` 的物品對表一致）。`pub(crate)`：跨村商隊（950，
+/// `voxel_caravan`）沿用同一套分類決定商隊帶去的貨，避免第三份重複硬編。
+pub(crate) fn specialty_item(resident_id: &str) -> u8 {
     match resident_trade_slot(resident_id) {
         0 => 14, // 種子
         1 => 3,  // 石頭
