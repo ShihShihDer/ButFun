@@ -6011,7 +6011,13 @@ async fn handle_socket(
                     // 皆可能接著發生），只在「這次對話」這個天然節點檢查一次——攢夠私藏、
                     // 跟你也聊得來時，偶爾順手塞給你這份收藏當驚喜。與整地/鋪面判斷平行、
                     // 不互斥（送完驚喜後對話照常往下走）。
-                    {
+                    //
+                    // `gift_say` 同時記下這句台詞：整地/鋪面/跟隨/跑腿這類指令句會在下個 tick
+                    // 由 agent_bus 把自己的回覆套進 r.say（見 tick_residents 的 decisions 迴圈），
+                    // 直接蓋掉這裡剛設的驚喜泡泡（同步指令幾乎緊接著下個 tick 就套用，玩家看不到
+                    // 這句話；只有無 await 延遲的 LLM 閒聊路徑才躲得過）。下方各指令分支會把
+                    // `gift_say` 前綴進自己的回覆，讓驚喜不會被自己的任務回覆吃掉。
+                    let gift_say: Option<String> = {
                         let (stash, hobby, gift_ready): (u32, vhobby::Hobby, bool) = {
                             let res = hub().residents.read().unwrap();
                             match res.iter().find(|r| r.id == addr_id) {
@@ -6045,16 +6051,13 @@ async fn handle_socket(
                                         .to_string(),
                                     ))
                                     .await;
+                                let line = vhobby::surprise_gift_say_line(hobby, &player_key, pick);
                                 {
                                     let mut res = hub().residents.write().unwrap();
                                     if let Some(r) = res.iter_mut().find(|r| r.id == addr_id) {
                                         r.hobby_stash = r.hobby_stash.saturating_sub(give_count);
                                         r.hobby_gift_timer = vhobby::GIFT_COOLDOWN_SECS;
-                                        r.say = vhobby::surprise_gift_say_line(
-                                            hobby,
-                                            &player_key,
-                                            pick,
-                                        );
+                                        r.say = line.clone();
                                         r.say_timer = SAY_SECS;
                                         r.mood_boost_secs =
                                             r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
@@ -6071,9 +6074,14 @@ async fn handle_socket(
                                     rname,
                                     &vhobby::surprise_gift_feed_line(rname, hobby, &player_key),
                                 );
+                                Some(line)
+                            } else {
+                                None
                             }
+                        } else {
+                            None
                         }
-                    }
+                    };
                     // 鋪面（C 階段）先於整地判斷：鋪面句必帶材料名、整地句不帶，兩者互斥；
                     // 「整平然後鋪成石磚」這類複合句走鋪面（鋪面本就內含整平）。
                     let pave_mat = vdt::detect_pave_command(&clean);
@@ -6135,6 +6143,10 @@ async fn handle_socket(
                             let mname = vdt::pave_material_name(mat);
                             let pick = (px.to_bits() ^ pz.to_bits()) as usize;
                             let reply = vdt::pave_accept_line(mname, pick, cx, cz);
+                            let reply = match &gift_say {
+                                Some(g) => format!("{g} {reply}"),
+                                None => reply,
+                            };
                             let msg = serde_json::json!({
                                 "t": "talk",
                                 "resident_id": &addr_id,
@@ -6224,6 +6236,10 @@ async fn handle_socket(
                             let mname = vdt::pave_material_name(mat);
                             let pick = (px.to_bits() ^ pz.to_bits()) as usize;
                             let reply = vdt::pave_rally_line(mname, pick, cx, cz);
+                            let reply = match &gift_say {
+                                Some(g) => format!("{g} {reply}"),
+                                None => reply,
+                            };
                             let msg = serde_json::json!({
                                 "t": "talk",
                                 "resident_id": &addr_id,
@@ -6285,6 +6301,10 @@ async fn handle_socket(
                             // 誠實而願意的回覆（單播給玩家 + 世界冒泡 + 記憶 + Feed）。
                             let pick = (px.to_bits() ^ pz.to_bits()) as usize;
                             let reply = vdt::accept_line(rname, pick, cx, cz);
+                            let reply = match &gift_say {
+                                Some(g) => format!("{g} {reply}"),
+                                None => reply,
+                            };
                             let msg = serde_json::json!({
                                 "t": "talk",
                                 "resident_id": &addr_id,
@@ -6375,6 +6395,10 @@ async fn handle_socket(
                             // 領隊的號召回覆（單播 + 冒泡 + 記憶 + Feed）。
                             let pick = (px.to_bits() ^ pz.to_bits()) as usize;
                             let reply = vdt::rally_line(rname, pick, cx, cz);
+                            let reply = match &gift_say {
+                                Some(g) => format!("{g} {reply}"),
+                                None => reply,
+                            };
                             let msg = serde_json::json!({
                                 "t": "talk",
                                 "resident_id": &addr_id,
@@ -6427,6 +6451,10 @@ async fn handle_socket(
                         } // residents 寫鎖釋放
                         let pick = clean.len();
                         let reply = vdt::follow_accept_line(pick);
+                        let reply = match &gift_say {
+                            Some(g) => format!("{g} {reply}"),
+                            None => reply,
+                        };
                         let msg = serde_json::json!({
                             "t": "talk",
                             "resident_id": &addr_id,
@@ -6457,6 +6485,10 @@ async fn handle_socket(
                         } // residents 寫鎖釋放
                         let pick = clean.len();
                         let reply = vdt::follow_stop_line(pick);
+                        let reply = match &gift_say {
+                            Some(g) => format!("{g} {reply}"),
+                            None => reply,
+                        };
                         let msg = serde_json::json!({
                             "t": "talk",
                             "resident_id": &addr_id,
@@ -6516,6 +6548,10 @@ async fn handle_socket(
                             "我正在試一個自己想出來的點子，等我試完再幫你採，好嗎？".to_string()
                         } else {
                             vfetch::accept_line(resource.display_name(), count, pick)
+                        };
+                        let reply = match &gift_say {
+                            Some(g) => format!("{g} {reply}"),
+                            None => reply,
                         };
                         let msg = serde_json::json!({
                             "t": "talk",
