@@ -26,6 +26,18 @@
 //! 礦清出入袋——井挖到礦、礦入背包、走得回地面，發明引擎其餘一切照舊。漁獲/作物
 //! 生料仍不可自採，誠實留在閉包外。
 //!
+//! **第六刀（漁獲入自採閉包，接續第五刀鑿井尋礦）**：把第四刀留在閉包外的**漁獲**
+//! 接進來——新原語 `fish`（釣魚，前提：附近要有水；**跟冶煉一樣需要等待**，浮標靜候
+//! 上鉤才收竿，`InventRun::fish_wait` 讓她「拋竿→等待→收竿入袋」，比照 [`voxel_fishing`]
+//! 給真人玩家的垂釣手感，只是刻意簡化成固定等候時間、恆定收穫小魚，不模擬雨天/深水/
+//! 稀有魚——那些是玩家垂釣才有的講究，發明引擎只要「魚生料可自採」這件事成立）。
+//! 小魚（`voxel_fishing::FISH_ID`）進種子集 → **烤魚**（`smelt_fish`，唯一途徑）第一次
+//! 自動落進可發明閉包——「想要烤魚」的心願第一次真能被自己實現：拋竿釣起生魚、放進
+//! 熔爐烤熟。與礦石不同，水是**地表**資源、不必挖井——`water_nearby` 只在附近**找不找得
+//! 到水**這一件事上把關（比照 `station_nearby` 的鄰近半徑檢查），找不到水就誠實失敗，
+//! 不會替她跑去遠方找水（那是「移動去資源」的下一刀，本刀刻意只做「附近有水才釣得成」）。
+//! 作物生料仍不可自採，誠實留在閉包外。
+//!
 //! 北極星（維護者原話）：「我們沒說可以挖可以放，他就自己組合出來了」——
 //! 居民自己從基礎動作組合發明、存成自己的技能。這是 Voyager（MineDojo）式 skill library
 //! 的精神（吸收概念、原創實作，不抄任何外部碼），長在既有 agency 架構上。
@@ -54,6 +66,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::voxel::{self, Block, WorldDelta};
 use crate::voxel_craft as vcraft;
+use crate::voxel_fishing::FISH_ID;
 use crate::voxel_skills::{column_top, GatherResource};
 
 // ── 參數（刻意保守：小而完整）─────────────────────────────────────────────────
@@ -74,6 +87,11 @@ pub const INVENT_COOLDOWN_SECS: f32 = 300.0;
 /// 值得走遠一點；仍有界，找不到就誠實失敗（記教訓），不會無限漫遊。
 /// 56 格：群系更新後樹可能被劃到較遠處，給她走得到的空間。
 pub const INVENT_GATHER_RADIUS: i32 = 56;
+
+/// 釣魚原語一次拋竿的等候時間（秒，第六刀）：拋竿→等待→收竿的固定節奏，簡化自
+/// [`voxel_fishing::BITE_MIN_SECS`]／`BITE_MAX_SECS` 的隨機區間——發明引擎不模擬雨天
+/// /深水/稀有魚，只要「等一下、收穫一條小魚」這個節奏成立即可。
+pub const INVENT_FISH_WAIT_SECS: f32 = 5.0;
 
 /// 一次發明採集最多開幾口階梯井（有界防呆）：需要地下資源（石／泥）而地表無天然源時，
 /// 就地往下挖一口階梯井採料（見 [`resource_is_underground`]）。一口井 depth 12、清出的實心
@@ -116,6 +134,10 @@ pub enum PrimStep {
     /// [`expand_step`] 展開（查她自己的技能庫換成具體原語序列），[`check_step`] 對它
     /// 一律回 `None`（單獨出現視為無效——必須先展開才是合法的執行單位）。
     UseSkill { name: String },
+    /// 釣魚（第六刀）：釣起至少 `count` 條小魚到背包裡（後置條件語意，同 `Gather`）。
+    /// **世界前提**：附近（[`WATER_NEAR_RADIUS`] 格內）要有水面可拋竿。**時間前提**：
+    /// 跟冶煉一樣要等（見 [`InventRun::fish_wait`]），不是拋竿就立刻有魚。
+    Fish { count: u32 },
 }
 
 /// 通過白名單驗證後的一步（執行引擎吃這個；配方指標指回 `voxel_craft` 靜態表）。
@@ -129,6 +151,8 @@ pub enum CheckedStep {
     Place { block_id: u8 },
     /// 熔爐冶煉（第四刀，需附近有已放置的熔爐；需等煨煮時間，見 [`InventRun::smelt_wait`]）。
     Smelt { recipe_id: &'static str },
+    /// 釣魚（第六刀，需附近有水；需等上鉤時間，見 [`InventRun::fish_wait`]）。
+    Fish { count: u32 },
 }
 
 /// 工作台方塊 id（`Block::Workbench as u8`；放置＋3×3 前提檢查的單一常數源）。
@@ -183,6 +207,10 @@ pub fn obtainable_ids() -> &'static HashSet<u8> {
         // 第五刀（鑿井尋礦）：煤礦/鐵礦進了種子集 → 火把、鐵錠（smelt_iron）、鐵磚、
         // 紅陶磚、花盆…整條鐵系鏈第一次自動落進「她自己弄得到」的閉包。
         let mut set: HashSet<u8> = GatherResource::ALL.iter().map(|r| r.block_id()).collect();
+        // 第六刀（漁獲入自採閉包）：小魚不是 GatherResource（釣法與挖方塊不同軸，見 `Fish`
+        // 原語），故不進 `GatherResource::ALL`、改在此直接補進種子集——烤魚（smelt_fish）
+        // 隨之自動落進下面的不動點迴圈，單一事實源仍在配方表。
+        set.insert(FISH_ID);
         loop {
             let mut grew = false;
             // 第四刀：熔爐冶煉配方也納入閉包——只有「配料全可自採/鏈上加工品」的冶煉
@@ -283,6 +311,12 @@ pub fn check_step(s: &PrimStep) -> Option<CheckedStep> {
         // 不是可執行的原子步（也保證存檔技能永遠不會殘留一顆沒展開的 `UseSkill`：
         // 一旦不慎混進 raw_steps，`check_stored_steps` 會在這裡誠實判它失效）。
         PrimStep::UseSkill { .. } => None,
+        PrimStep::Fish { count } => {
+            if *count == 0 || *count > MAX_GATHER_COUNT {
+                return None;
+            }
+            Some(CheckedStep::Fish { count: *count })
+        }
     }
 }
 
@@ -631,6 +665,9 @@ fn explain_bad_step(s: &PrimStep) -> String {
         PrimStep::UseSkill { name } => {
             format!("「{name}」需要展開成技能庫裡的具體步驟，不能單獨當一步")
         }
+        PrimStep::Fish { count } => {
+            format!("釣魚數量 {count} 不在 1~{MAX_GATHER_COUNT} 範圍內")
+        }
     }
 }
 
@@ -769,6 +806,10 @@ pub struct InventRun {
     /// `Some(w)`＝已開爐，`w` 秒後熟成（tick 遞減，比照 `deadline` 同一節拍）。
     /// 熟成（`w <= 0.0`）後 [`next_action`] 才會判定該收成、推進到下一步。
     pub smelt_wait: Option<f32>,
+    /// 釣魚上鉤倒數（第六刀）：`None`＝目前這步還沒拋竿（或這步根本不是釣魚）；
+    /// `Some(w)`＝已拋竿，`w` 秒後上鉤（tick 遞減，比照 `smelt_wait` 同一節拍）。
+    /// 上鉤（`w <= 0.0`）後 [`next_action`] 才會判定該收竿、入袋一條、再看是否還要再拋。
+    pub fish_wait: Option<f32>,
 }
 
 impl InventRun {
@@ -784,6 +825,7 @@ impl InventRun {
             reuse,
             deadline: RUN_TIMEOUT_SECS,
             smelt_wait: None,
+            fish_wait: None,
         }
     }
 
@@ -810,6 +852,10 @@ pub enum StepAction {
     Waiting,
     /// 這一步的熔爐冶煉已熟成 → 呼叫端把成品交付背包、推進到下一步。
     CollectSmelt { recipe_id: &'static str },
+    /// 這一步的採集還沒滿足、還沒拋竿 → 呼叫端驗附近有水、開始上鉤倒數。
+    StartFish,
+    /// 這一步的釣魚已上鉤 → 呼叫端交付一條小魚入背包，再看是否還要再拋竿湊足數量。
+    CollectFish,
     /// 這一步的後置條件已滿足 → step_idx+1 再看下一步。
     Advance,
     /// 全部步驟跑完 → 呼叫端做最終後置條件驗證（[`goal_met`]）。
@@ -853,6 +899,21 @@ pub fn next_action(
             // 熟成（<=0.0）→ 交呼叫端交付成品、推進到下一步。
             Some(_) => StepAction::CollectSmelt { recipe_id },
         },
+        // 後置條件語意（同 Gather）：背包已有 count 條就跳過；不夠 → 依 fish_wait 狀態
+        // 決定拋竿／等待／收竿——收竿後不直接 Advance，讓呼叫端下一輪回頭再檢查數量是否已夠
+        // （一次拋竿只收一條，湊不足數量會自然再拋一輪，同 Gather 多趟採集的節奏）。
+        Some(CheckedStep::Fish { count }) => {
+            let have = bag.get(&FISH_ID).copied().unwrap_or(0);
+            if have >= *count {
+                StepAction::Advance
+            } else {
+                match run.fish_wait {
+                    None => StepAction::StartFish,
+                    Some(w) if w > 0.0 => StepAction::Waiting,
+                    Some(_) => StepAction::CollectFish,
+                }
+            }
+        }
     }
 }
 
@@ -1026,6 +1087,14 @@ pub fn simulate_plan(
                     return Err(craft_shortage_err(r));
                 }
             }
+            CheckedStep::Fish { count } => {
+                // 後置條件語意（同 Gather）：這一步結束時背包至少有 count 條小魚。
+                // 水源可得性不在模擬階段判定（同礦石——執行期才真的去找，找不到才誠實失敗）。
+                let e = bag.entry(FISH_ID).or_insert(0);
+                if *e < *count {
+                    *e = *count;
+                }
+            }
         }
     }
     if !goal_met(&bag, goal_block) {
@@ -1135,6 +1204,13 @@ pub fn canonicalize_steps(steps: &[CheckedStep]) -> Vec<PrimStep> {
                 }
                 out.push(PrimStep::Smelt { recipe: recipe_id.to_string() });
             }
+            CheckedStep::Fish { count } => {
+                out.push(PrimStep::Fish { count: *count });
+                let e = bag.entry(FISH_ID).or_insert(0);
+                if *e < *count {
+                    *e = *count;
+                }
+            }
         }
     }
     out
@@ -1207,6 +1283,16 @@ fn ensure_have(bid: u8, need: u32, bag: &mut HashMap<u8, u32>, out: &mut Vec<Pri
     if bag.get(&bid).copied().unwrap_or(0) >= need {
         return; // 模擬背包已夠（前段步驟備過）→ 不重複插入
     }
+    // 小魚（第六刀）：不是 GatherResource（釣法不同軸），補「確保背包至少 need 條」的釣魚步。
+    if bid == FISH_ID {
+        let want = need.min(MAX_GATHER_COUNT);
+        out.push(PrimStep::Fish { count: want });
+        let e = bag.entry(bid).or_insert(0);
+        if *e < want {
+            *e = want;
+        }
+        return;
+    }
     // 可採原料：補「確保背包至少 need 個」的採集步（有料時零成本 no-op）。
     if let Some(res) = Block::from_u8(bid).and_then(GatherResource::from_block) {
         // 防禦性截頂：現有配方單一原料最大需求 = 8（熔爐的石頭），不會真的截斷。
@@ -1271,6 +1357,29 @@ pub fn station_nearby(world: &WorldDelta, fx: i32, fy: i32, fz: i32, block_id: u
         for dz in -STATION_NEAR_RADIUS..=STATION_NEAR_RADIUS {
             for dy in -STATION_NEAR_YSPAN..=STATION_NEAR_YSPAN {
                 if voxel::effective_block_at(world, fx + dx, fy + dy, fz + dz) == want {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// 水面視為「在附近、可拋竿」的水平搜尋半徑（格，第六刀）：比站點（4 格）寬得多——
+/// 水是**天然地形**、不是她自己放的，河湖散佈各處，給更寬的鄰近範圍才貼近「附近有水
+/// 就釣得成」的直覺。仍是**鄰近檢查**、不是移動去資源——找不到就誠實失敗（見模組頭註）。
+pub const WATER_NEAR_RADIUS: i32 = 12;
+/// 水面搜尋的垂直範圍（±格）：水面通常在地表附近，不必掃到天上或深地底。
+pub const WATER_NEAR_YSPAN: i32 = 4;
+
+/// 附近是否有水面可拋竿（第六刀）。掃居民腳邊一個小立方範圍的有效方塊（含 delta
+/// overlay——填平/引水都算數），任一格是水（來源／流動／溫泉皆算，同垂釣既有判定精神）
+/// 即回 `true`。純函式、可測。
+pub fn water_nearby(world: &WorldDelta, fx: i32, fy: i32, fz: i32) -> bool {
+    for dx in -WATER_NEAR_RADIUS..=WATER_NEAR_RADIUS {
+        for dz in -WATER_NEAR_RADIUS..=WATER_NEAR_RADIUS {
+            for dy in -WATER_NEAR_YSPAN..=WATER_NEAR_YSPAN {
+                if voxel::effective_block_at(world, fx + dx, fy + dy, fz + dz).is_any_water() {
                     return true;
                 }
             }
@@ -1614,7 +1723,7 @@ pub fn invention_prompt(
         String::new()
     } else {
         format!(
-            "6. 使用已學會的技能：{{\"op\":\"use_skill\",\"name\":\"<你已經會的技能名>\"}}——\
+            "7. 使用已學會的技能：{{\"op\":\"use_skill\",\"name\":\"<你已經會的技能名>\"}}——\
             把你之前發明過、已經會的技能整段當一步用，不必重新拆解成原語。\n\
             你已經學會的技能（事實，只能引用這些名字，不可捏造）：{}\n",
             known_skill_names.join("、"),
@@ -1669,6 +1778,8 @@ pub fn invention_prompt(
         5. 熔爐冶煉：{{\"op\":\"smelt\",\"recipe\":\"<配方id>\"}}——\
         **必須先有熔爐放在你旁邊**才能執行；冶煉需要時間慢慢煨煮，不是立刻拿到成品，\
         放心，煨好了自然會收到。\n\
+        6. 釣魚：{{\"op\":\"fish\",\"count\":<數量1~{max_c}>}}——**必須附近有水**才能執行；\
+        釣魚跟冶煉一樣要等上鉤，不是拋竿立刻有魚，放心，上鉤了自然會收到，釣起的是生小魚。\n\
         {use_skill_line}\
         你知道的隨身合成配方（事實，不可捏造別的）：\n{recipes}\n\
         你知道的工作台配方（要先有工作台在旁邊，才能用 craft_wb 做這些）：\n{wb_recipes}\n\
@@ -1731,6 +1842,7 @@ pub fn steps_summary(steps: &[CheckedStep]) -> String {
                     .unwrap_or("？");
                 format!("熔爐冶煉{name}")
             }
+            CheckedStep::Fish { count } => format!("釣魚×{count}"),
         })
         .collect::<Vec<_>>()
         .join("→")
@@ -1749,6 +1861,21 @@ pub fn smelting_started_line(recipe_name: &str) -> String {
 /// 冶煉熟成、收成那一刻的冒泡（第四刀）。
 pub fn smelting_done_line(recipe_name: &str) -> String {
     format!("熔爐煨好{recipe_name}了！")
+}
+
+/// 拋竿那一刻的冒泡（第六刀——她找到附近的水面，靜候上鉤）。
+pub fn fishing_started_line() -> String {
+    "這附近有水，我拋竿釣魚看看～".to_string()
+}
+
+/// 收竿、釣起一條那一刻的冒泡（第六刀）。
+pub fn fishing_done_line() -> String {
+    "上鉤了！釣到一條小魚～".to_string()
+}
+
+/// 附近找不到水，釣魚步誠實失敗的 Feed 詳情（第六刀，比照 `backoff_no_resource_feed`）。
+pub fn no_water_feed(goal_name: &str) -> String {
+    format!("為了做出{goal_name}想找水釣魚，但附近找不到水，這次沒能成功")
 }
 
 /// 學會技能的冒泡（發明成功那一刻——維護者要看得到「進化」）。
@@ -3084,11 +3211,12 @@ mod tests {
         // 熔爐冶煉配方（第四刀）：配料全可自採的才可發明；生料她弄不到的誠實排除。
         let ids: Vec<&str> = inventable_furnace_recipes().map(|r| r.id).collect();
         // 第五刀（鑿井尋礦）後礦石可採 → smelt_iron 也第一次可發明。
-        for want in ["smelt_stone", "smelt_glass", "smelt_brick", "smelt_iron"] {
+        // 第六刀（漁獲入自採閉包）後小魚可釣 → smelt_fish（烤魚）也第一次可發明。
+        for want in ["smelt_stone", "smelt_glass", "smelt_brick", "smelt_iron", "smelt_fish"] {
             assert!(ids.contains(&want), "{want} 配料可自採，應可發明");
         }
-        for no in ["smelt_fish", "smelt_potato", "smelt_jam"] {
-            assert!(!ids.contains(&no), "{no} 生料弄不到（漁獲/作物），不應可發明");
+        for no in ["smelt_potato", "smelt_jam"] {
+            assert!(!ids.contains(&no), "{no} 生料弄不到（作物），不應可發明");
         }
     }
 
@@ -3244,8 +3372,12 @@ mod tests {
                     run.step_idx += 1;
                 }
                 StepAction::Done => break,
-                StepAction::DoSmelt { .. } | StepAction::Waiting | StepAction::CollectSmelt { .. } => {
-                    unreachable!("此計畫（合出熔爐本身）不含冶煉步驟")
+                StepAction::DoSmelt { .. }
+                | StepAction::Waiting
+                | StepAction::CollectSmelt { .. }
+                | StepAction::StartFish
+                | StepAction::CollectFish => {
+                    unreachable!("此計畫（合出熔爐本身）不含冶煉／釣魚步驟")
                 }
             }
         }
@@ -3327,14 +3459,18 @@ mod tests {
 
     #[test]
     fn check_step_rejects_non_inventable_furnace_recipe() {
-        // 烤魚冶煉配方存在，但生料（漁獲）她弄不到 → 誠實拒絕。
-        // （smelt_iron 在第五刀鑿井尋礦後礦石可採，已改為可發明，不再當反例。）
-        let s = PrimStep::Smelt { recipe: "smelt_fish".into() };
+        // 熬煮薯泥冶煉配方存在，但生料（作物）她弄不到 → 誠實拒絕。
+        // （smelt_iron 在第五刀鑿井尋礦後礦石可採、smelt_fish 在第六刀漁獲入自採閉包後
+        //   小魚可釣，皆已改為可發明，不再當反例。）
+        let s = PrimStep::Smelt { recipe: "smelt_potato".into() };
         assert_eq!(check_step(&s), None);
         assert!(explain_bad_step(&s).contains("弄不到"), "{}", explain_bad_step(&s));
         // 第五刀正例：鐵錠冶煉（礦石生料如今可自採）通過檢查。
         let ok = PrimStep::Smelt { recipe: "smelt_iron".into() };
         assert_eq!(check_step(&ok), Some(CheckedStep::Smelt { recipe_id: "smelt_iron" }));
+        // 第六刀正例：烤魚冶煉（小魚生料如今可自釣）通過檢查。
+        let ok_fish = PrimStep::Smelt { recipe: "smelt_fish".into() };
+        assert_eq!(check_step(&ok_fish), Some(CheckedStep::Smelt { recipe_id: "smelt_fish" }));
     }
 
     #[test]
@@ -3451,6 +3587,211 @@ mod tests {
     fn smelting_lines_mention_recipe_name() {
         assert!(smelting_started_line("拋光石").contains("拋光石"));
         assert!(smelting_done_line("拋光石").contains("拋光石"));
+    }
+
+    // ── 第六刀：釣魚（世界前提＋上鉤等候時間）───────────────────────────────────
+
+    #[test]
+    fn check_step_validates_fish_count_bounds() {
+        assert_eq!(check_step(&PrimStep::Fish { count: 1 }), Some(CheckedStep::Fish { count: 1 }));
+        assert_eq!(
+            check_step(&PrimStep::Fish { count: MAX_GATHER_COUNT }),
+            Some(CheckedStep::Fish { count: MAX_GATHER_COUNT })
+        );
+        assert_eq!(check_step(&PrimStep::Fish { count: 0 }), None, "0 條不合理");
+        assert_eq!(check_step(&PrimStep::Fish { count: MAX_GATHER_COUNT + 1 }), None, "超上限");
+        let bad = PrimStep::Fish { count: 0 };
+        assert!(explain_bad_step(&bad).contains(&MAX_GATHER_COUNT.to_string()));
+    }
+
+    #[test]
+    fn obtainable_ids_include_fish_and_cooked_fish() {
+        // 第六刀：小魚（釣魚原語的產物）與烤魚（smelt_fish，唯一途徑）都應落進閉包。
+        assert!(obtainable_ids().contains(&FISH_ID), "小魚應在種子集裡");
+        assert!(
+            obtainable_ids().contains(&crate::voxel_fishing::COOKED_FISH_ID),
+            "烤魚（生魚可自釣→smelt_fish）應在閉包裡"
+        );
+        // 作物生料仍不可自採，誠實留在閉包外（未變動的既有邊界）。
+        assert!(!obtainable_ids().contains(&crate::voxel_farm::POTATO_ID));
+    }
+
+    #[test]
+    fn next_action_fish_state_machine() {
+        let raw = r#"{"name":"釣魚烤魚","steps":[
+            {"op":"fish","count":1},
+            {"op":"smelt","recipe":"smelt_fish"}]}"#;
+        let plan = parse_plan(raw).unwrap();
+        let mut run = InventRun::from_plan(crate::voxel_fishing::COOKED_FISH_ID, "烤魚", &plan, false);
+        let mut bag = HashMap::new();
+        // 還沒拋竿 → StartFish。
+        assert_eq!(next_action(&run, &bag, no_station), StepAction::StartFish);
+        // 拋了竿、還在等 → Waiting。
+        run.fish_wait = Some(3.0);
+        assert_eq!(next_action(&run, &bag, no_station), StepAction::Waiting);
+        // 上鉤（<=0.0）→ CollectFish。
+        run.fish_wait = Some(0.0);
+        assert_eq!(next_action(&run, &bag, no_station), StepAction::CollectFish);
+        // 收竿入袋一條、需求恰好 1 條 → 下一輪滿足後置條件、直接 Advance。
+        bag.insert(FISH_ID, 1);
+        run.fish_wait = None;
+        assert_eq!(next_action(&run, &bag, no_station), StepAction::Advance);
+    }
+
+    #[test]
+    fn next_action_fish_reloops_until_count_satisfied() {
+        // count=2：收到第 1 條後仍不足 → 應再拋一輪（StartFish），不會提早 Advance。
+        let mut run = InventRun {
+            goal_block: FISH_ID,
+            goal_name: "小魚".into(),
+            skill_name: "釣魚".into(),
+            raw_steps: vec![PrimStep::Fish { count: 2 }],
+            steps: vec![CheckedStep::Fish { count: 2 }],
+            step_idx: 0,
+            reuse: false,
+            deadline: RUN_TIMEOUT_SECS,
+            smelt_wait: None,
+            fish_wait: None,
+        };
+        let mut bag = HashMap::from([(FISH_ID, 1u32)]); // 已釣到 1 條，還差 1 條
+        assert_eq!(next_action(&run, &bag, no_station), StepAction::StartFish, "還差 1 條，應再拋竿");
+        run.fish_wait = Some(0.0);
+        assert_eq!(next_action(&run, &bag, no_station), StepAction::CollectFish);
+        bag.insert(FISH_ID, 2);
+        run.fish_wait = None;
+        assert_eq!(next_action(&run, &bag, no_station), StepAction::Advance, "湊滿 2 條才推進");
+    }
+
+    #[test]
+    fn simulate_plan_idealizes_fish_like_gather() {
+        // 模擬階段不判水源可得性（同 Gather——執行期才真的去找，找不到才誠實失敗）。
+        let steps = [CheckedStep::Fish { count: 2 }];
+        let bag = HashMap::new();
+        assert!(simulate_plan(&steps, &bag, FISH_ID, false, false).is_ok());
+    }
+
+    #[test]
+    fn simulate_plan_fish_then_smelt_reaches_cooked_fish() {
+        let steps = [CheckedStep::Fish { count: 1 }, CheckedStep::Smelt { recipe_id: "smelt_fish" }];
+        let bag = HashMap::new();
+        assert!(
+            simulate_plan(&steps, &bag, crate::voxel_fishing::COOKED_FISH_ID, false, true).is_ok(),
+            "有水釣得到魚、旁邊有熔爐 → 烤魚計畫應可行"
+        );
+        // 附近沒熔爐 → 冶煉步依賴順序擋下（同既有熔爐鏈守則）。
+        let err = simulate_plan(&steps, &bag, crate::voxel_fishing::COOKED_FISH_ID, false, false)
+            .expect_err("沒熔爐應失敗");
+        assert!(err.contains("熔爐"), "{err}");
+    }
+
+    #[test]
+    fn canonicalize_steps_inserts_fish_step_for_smelt_fish() {
+        // 只給冶煉步（模擬便宜腦省略備料，如同既有木頭/石頭案例）→ 正規化應自動補釣魚步。
+        let steps = [CheckedStep::Smelt { recipe_id: "smelt_fish" }];
+        let canon = canonicalize_steps(&steps);
+        assert!(
+            canon.iter().any(|s| matches!(s, PrimStep::Fish { count } if *count >= 1)),
+            "應自動補上釣魚備料步：{canon:?}"
+        );
+        let checked = check_stored_steps(&canon).expect("應過存檔白名單");
+        assert!(
+            simulate_plan(&checked, &HashMap::new(), crate::voxel_fishing::COOKED_FISH_ID, false, false).is_ok(),
+            "正規化後應從空背包也能做出烤魚（放置了熔爐）"
+        );
+    }
+
+    #[test]
+    fn steps_summary_includes_fish_line() {
+        let summary = steps_summary(&[CheckedStep::Fish { count: 2 }]);
+        assert_eq!(summary, "釣魚×2");
+    }
+
+    #[test]
+    fn fishing_lines_and_no_water_feed_are_sane() {
+        assert!(fishing_started_line().contains("釣"));
+        assert!(fishing_done_line().contains("小魚"));
+        assert!(no_water_feed("烤魚").contains("烤魚"));
+        assert!(no_water_feed("烤魚").contains("水"));
+    }
+
+    #[test]
+    fn invention_prompt_mentions_fish_op() {
+        let goal = MaterialGoal { block_id: crate::voxel_fishing::COOKED_FISH_ID, name_zh: "烤魚" };
+        let (sys, _) = invention_prompt("露娜", &goal, "想要烤魚", "", false, false, &[]);
+        assert!(sys.contains("\"op\":\"fish\""), "system prompt 應教 fish op: {sys}");
+        assert!(sys.contains("必須附近有水"), "應點明水源前提: {sys}");
+    }
+
+    #[test]
+    fn water_nearby_detects_within_radius_not_beyond() {
+        let (fx, fy, fz) = (60, 5, 60);
+        let mut world: WorldDelta = WorldDelta::new();
+        assert!(!water_nearby(&world, fx, fy, fz), "還沒有水 → 查無");
+        voxel::set_block(&mut world, fx + 3, fy, fz, Block::Water);
+        assert!(water_nearby(&world, fx, fy, fz), "半徑內的水應查得到");
+        // 半徑外放水 → 查無（獨立世界，避免上面那格水干擾）。
+        let far = WATER_NEAR_RADIUS + 5;
+        let mut world2: WorldDelta = WorldDelta::new();
+        voxel::set_block(&mut world2, fx + far, fy, fz, Block::Water);
+        assert!(!water_nearby(&world2, fx, fy, fz), "太遠不算附近");
+    }
+
+    /// 第六刀全鏈模擬（純邏輯側證據，比照第二刀 `full_workbench_chain_simulated_execution_reaches_goal`）：
+    /// 空背包 → 釣魚（拋竿→等待→收竿）→ 熔爐冶煉（開爐→煨煮→收成）→ 後置條件成立
+    /// （背包真的有烤魚）。驗證釣魚與冶煉兩種「需要等待」的原語可以串在同一條鏈裡。
+    #[test]
+    fn full_fish_then_smelt_chain_simulated_execution_reaches_goal() {
+        let raw = r#"{"name":"釣魚烤魚","steps":[
+            {"op":"fish","count":1},
+            {"op":"smelt","recipe":"smelt_fish"}]}"#;
+        let plan = parse_plan(raw).unwrap();
+        let mut run =
+            InventRun::from_plan(crate::voxel_fishing::COOKED_FISH_ID, "烤魚", &plan, false);
+        let mut bag: HashMap<u8, u32> = HashMap::new();
+        let has_furnace = true; // 這條鏈只驗釣魚/冶煉本身，熔爐已在旁（同既有 smelt 測試慣例）。
+        let mut guard = 0;
+        loop {
+            guard += 1;
+            assert!(guard < 60, "執行應在有限步內收斂");
+            match next_action(&run, &bag, move |bid| has_furnace && bid == FURNACE_BLOCK_ID) {
+                StepAction::StartFish => {
+                    run.fish_wait = Some(INVENT_FISH_WAIT_SECS);
+                }
+                StepAction::CollectFish => {
+                    *bag.entry(FISH_ID).or_insert(0) += 1;
+                    run.fish_wait = None;
+                }
+                StepAction::Waiting => {
+                    if let Some(w) = &mut run.fish_wait {
+                        *w = 0.0; // 模擬時間流逝到熟成/上鉤
+                    }
+                    if let Some(w) = &mut run.smelt_wait {
+                        *w = 0.0;
+                    }
+                }
+                StepAction::Advance => run.step_idx += 1,
+                StepAction::DoSmelt { recipe_id } => {
+                    let r = vcraft::find_furnace_recipe(recipe_id).unwrap();
+                    assert!(smelt_start_apply(&mut bag, r), "照計畫備好料，開爐應成功");
+                    run.smelt_wait = Some(1.0);
+                }
+                StepAction::CollectSmelt { recipe_id } => {
+                    let r = vcraft::find_furnace_recipe(recipe_id).unwrap();
+                    *bag.entry(r.output_block).or_insert(0) += r.output_count;
+                    run.smelt_wait = None;
+                    run.step_idx += 1;
+                }
+                StepAction::Done => break,
+                StepAction::StartGather { .. } | StepAction::DoCraft { .. }
+                | StepAction::DoCraftWb { .. } | StepAction::DoPlace { .. } => {
+                    unreachable!("此計畫（釣魚→冶煉）不含採集/合成/放置步")
+                }
+            }
+        }
+        assert!(
+            goal_met(&bag, crate::voxel_fishing::COOKED_FISH_ID),
+            "後置條件：背包真的有烤魚"
+        );
     }
 
     // ── 第二刀：處境偵測新目標 ───────────────────────────────────────────────
