@@ -802,9 +802,11 @@ fn cerebras_next_key() -> Option<String> {
 }
 
 /// Cerebras 對話模型（可用 `BUTFUN_CEREBRAS_MODEL` 覆寫）。
-/// 預設挑 Cerebras 免費層現有、夠聰明、中文也行的模型；不確定時用此預設並可 env 覆寫。
+/// 預設 `gpt-oss-120b`：實測這把免費 key 上 `llama-3.3-70b`／`llama3.1-8b`／`qwen-3-32b`
+/// 皆已 `model_not_found`（Cerebras 免費層目前僅存這個模型可用），沒設環境變數時若仍指向
+/// 已下架的舊模型，整條便宜腦會在沒有明顯錯誤日誌下靜默死透（見 PR #1230）。
 fn cerebras_model() -> String {
-    std::env::var("BUTFUN_CEREBRAS_MODEL").unwrap_or_else(|_| "llama-3.3-70b".to_string())
+    std::env::var("BUTFUN_CEREBRAS_MODEL").unwrap_or_else(|_| "gpt-oss-120b".to_string())
 }
 
 /// 每把 key 的 per-min / per-day 上限（可 env 覆寫）。輪替時把這基準乘上 key 數＝有效上限。
@@ -1249,11 +1251,11 @@ mod tests {
 
     #[test]
     fn cerebras_model_has_sane_default() {
-        // 沒設 BUTFUN_CEREBRAS_MODEL 時要有可用的免費層預設，不能空。
+        // 沒設 BUTFUN_CEREBRAS_MODEL 時要指向這把 key 上實測仍存在的模型，不能空、不能是已下架的舊模型。
         std::env::remove_var("BUTFUN_CEREBRAS_MODEL");
         let m = cerebras_model();
         assert!(!m.is_empty());
-        assert!(m.contains("llama") || m.contains("qwen"));
+        assert_eq!(m, "gpt-oss-120b");
     }
 
     // 註：解析與輪替兩組斷言都動同一把 env（`BUTFUN_CEREBRAS_API_KEY`），合成單一測試，
