@@ -22,6 +22,14 @@
 //! **純函式層**：本模組只有確定性純函式（觸發時機三閘、參與者挑選、閒聊台詞、Feed／記憶句），
 //! 零 LLM、零鎖、零 async、零 IO，可單元測試。走路／等待／say／持久化觸發全留在 `voxel_ws.rs`
 //! （沿用既有小圈子聚會的閒晃中心偏移與鎖外事件佇列慣例，守 prod 死鎖鐵律）。
+//!
+//! **殖民地暮聚 v1（自主提案切片，接續「殖民地真居住」943 v1 明確不動清單「暮聚…主村限定」）**：
+//! 暮聚原本只認主村廣場中心——像風禾屯這樣遷居而成的殖民地離主村太遠，從沒被暮聚吸引過，第二村
+//! 至今沒有自己的黃昏聚會。呼叫端把「聚落中心」一般化成每座已奠基聚落各自獨立的暮聚候選地
+//! （主村＋每座殖民地，各自的「今天聚過沒」互不影響），本檔的純函式維持聚落無關（`should_hold`／
+//! `select_participants` 本就只吃座標與人數，不需改動）；只有 `chatter_bubble`／`gather_feed_line`
+//! 兩處面向玩家的字串需要「這是不是主村」的旗標，換一組不提「村碑」（殖民地無紀念柱）的台詞、
+//! 點名是哪座聚落聚起來了。
 
 /// 觸發暮聚所需的最少在場閒人數：至少這麼多位居民同時有空，才值得聚（一個人不算聚會）。
 pub const MIN_PARTICIPANTS: usize = 2;
@@ -83,7 +91,10 @@ pub fn select_participants(candidates: &[(usize, f32, bool)], radius: f32, max: 
 
 /// 廣場邊閒話家常的泡泡台詞（通用、不點名、六句輪替，字數短不破泡泡框）。
 /// `pick` 由呼叫端用座標 bits 合成，讓每次挑到的句子自然分散。
-pub fn chatter_bubble(pick: usize) -> &'static str {
+///
+/// `has_monument`：這場暮聚是不是圍在主村真的立起來的中央紀念柱（村碑）腳下——殖民地暮聚 v1
+/// 只有奠基小廣場、沒有紀念柱，故換一句不提「村碑」的台詞，避免殖民地居民講出不存在的地標。
+pub fn chatter_bubble(pick: usize, has_monument: bool) -> &'static str {
     const LINES: [&str; 6] = [
         "黃昏了，來廣場邊坐坐、說說話。",
         "今天過得怎麼樣？我來聽聽。",
@@ -92,13 +103,24 @@ pub fn chatter_bubble(pick: usize) -> &'static str {
         "大家都在，這一天就算圓滿了。",
         "在村碑邊閒聊幾句，真好。",
     ];
-    LINES[pick % LINES.len()]
+    const LINES_NO_MONUMENT: [&str; 6] = [
+        "黃昏了，來廣場邊坐坐、說說話。",
+        "今天過得怎麼樣？我來聽聽。",
+        "每到這時候聚一聚，心裡就踏實。",
+        "你看這夕陽，把這裡都染暖了。",
+        "大家都在，這一天就算圓滿了。",
+        "能在這片新落腳的地方聚聚，真好。",
+    ];
+    let pool = if has_monument { &LINES } else { &LINES_NO_MONUMENT };
+    pool[pick % pool.len()]
 }
 
-/// 全村動態牆播報句（帶季節與人數，有「來歷感」——道出這是村子入夜前的固定習俗）。
-/// `season_zh` 為當前季節顯示名（如「深秋」），`count` 為這場暮聚的參與人數。
-pub fn gather_feed_line(season_zh: &str, count: usize) -> String {
-    format!("🌆 {season_zh}的黃昏，{count} 位居民又不約而同地聚到村莊廣場的村碑邊閒話家常——這已成了村子入夜前的老習慣。")
+/// 動態牆播報句（帶季節與人數，有「來歷感」——道出這是這座聚落入夜前的固定習俗）。
+/// `season_zh` 為當前季節顯示名（如「深秋」）、`count` 為這場暮聚的參與人數、`place` 為聚集地點
+/// 描述（主村＝「村莊廣場的村碑邊」、殖民地＝「『風禾屯』的村心廣場」）、`label` 為收尾指稱這座
+/// 聚落的詞（主村＝「村子」、殖民地＝聚落名本身，如「風禾屯」）。
+pub fn gather_feed_line(season_zh: &str, count: usize, place: &str, label: &str) -> String {
+    format!("🌆 {season_zh}的黃昏，{count} 位居民又不約而同地聚到{place}閒話家常——這已成了{label}入夜前的老習慣。")
 }
 
 /// 參與暮聚的居民寫進記憶的一句（episodic、第一人稱內心，累積「村子有了自己的習俗、我屬於這裡」
@@ -171,21 +193,57 @@ mod tests {
 
     #[test]
     fn chatter_rotates_and_fits_frame() {
-        for p in 0..12 {
-            let b = chatter_bubble(p);
-            assert!(!b.is_empty());
-            assert!(b.chars().count() <= CHATTER_CHARS, "閒聊泡泡應在上限內：{b}");
+        for has_monument in [true, false] {
+            for p in 0..12 {
+                let b = chatter_bubble(p, has_monument);
+                assert!(!b.is_empty());
+                assert!(b.chars().count() <= CHATTER_CHARS, "閒聊泡泡應在上限內：{b}");
+            }
+            assert_ne!(
+                chatter_bubble(0, has_monument),
+                chatter_bubble(1, has_monument),
+                "台詞應輪替"
+            );
         }
-        assert_ne!(chatter_bubble(0), chatter_bubble(1), "台詞應輪替");
     }
 
     #[test]
-    fn feed_line_embeds_season_and_count_no_newline() {
-        let f = gather_feed_line("深秋", 3);
+    fn chatter_no_monument_pool_never_mentions_pillar() {
+        // 殖民地暮聚沒有紀念柱：整組替代台詞不得提「村碑」，避免居民講出不存在的地標。
+        for p in 0..12 {
+            assert!(!chatter_bubble(p, false).contains('碑'), "殖民地台詞不應提及村碑");
+        }
+        // 主村台詞池至少有一句仍照舊提及村碑（零回歸：原有台詞氣氛不變）。
+        assert!((0..6).any(|p| chatter_bubble(p, true).contains('碑')));
+    }
+
+    #[test]
+    fn feed_line_embeds_season_count_place_label_no_newline() {
+        let f = gather_feed_line("深秋", 3, "村莊廣場的村碑邊", "村子");
         assert!(f.contains("深秋"));
         assert!(f.contains('3'));
+        assert!(f.contains("村莊廣場的村碑邊"));
+        assert!(f.contains("村子"));
         assert!(!f.contains('\n'), "Feed 不得含換行");
         assert!(!f.is_empty());
+    }
+
+    #[test]
+    fn feed_line_colony_variant_names_colony_not_village() {
+        let f = gather_feed_line("盛夏", 2, "「風禾屯」的村心廣場", "風禾屯");
+        assert!(f.contains("風禾屯"));
+        assert!(!f.contains("村子"), "殖民地播報不該說成『村子』入夜前的習慣");
+        assert!(!f.contains('\n'));
+    }
+
+    #[test]
+    fn feed_line_main_village_wording_unchanged() {
+        // 零回歸鎖點：呼叫端傳入主村原本寫死的 place/label 時，字面必須與這一刀之前逐字相同。
+        let f = gather_feed_line("深秋", 3, "村莊廣場的村碑邊", "村子");
+        assert_eq!(
+            f,
+            "🌆 深秋的黃昏，3 位居民又不約而同地聚到村莊廣場的村碑邊閒話家常——這已成了村子入夜前的老習慣。"
+        );
     }
 
     #[test]
