@@ -12240,12 +12240,22 @@ pub async fn voxel_discoveries_handler(
     let (items, ruins, springs, outposts, colonies) = if player_name.is_empty() {
         (Vec::new(), 0usize, 0usize, 0usize, 0usize)
     } else {
+        // 殖民地羅盤 v1（自主提案切片，ROADMAP 943 遺留缺口「村莊地圖端點」）：探索紀事
+        // 只記地標「種類」（如「野外村落」），發現多座殖民地時前端無從分辨是哪一座——
+        // 先短讀鎖快照殖民地名冊（座標→村名），與探索紀事鎖循序不巢狀，供下面比對補名。
+        let colony_names: Vec<(i32, i32, String)> = {
+            let reg = hub().colonies.read().unwrap();
+            reg.all().iter().map(|c| (c.cx, c.cz, c.name.clone())).collect()
+        }; // colonies 讀鎖釋放
         // 短讀鎖一次性快照這位玩家的探索紀事 → 立即釋放，不與其他鎖巢狀。
         let store = hub().discovery.read().unwrap();
         let list: Vec<serde_json::Value> = store
             .list_for(&player_name)
             .iter()
             .map(|e| {
+                // 殖民地地標才查名（發現座標＝奠基時記錄的村中心座標，精準相等，見發現當下
+                // `d.record(..., (c.cx, c.cz), c.cx, ..., c.cz)`），其餘地標種類維持 name=null。
+                let name = vdisc::colony_name_for(e.kind, e.x, e.z, &colony_names);
                 serde_json::json!({
                     "kind": e.kind.wire_id(),
                     "label": e.kind.label(),
@@ -12253,6 +12263,7 @@ pub async fn voxel_discoveries_handler(
                     "x": e.x,
                     "y": e.y,
                     "z": e.z,
+                    "name": name,
                 })
             })
             .collect();

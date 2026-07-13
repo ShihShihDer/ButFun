@@ -201,6 +201,19 @@ impl DiscoveryStore {
     }
 }
 
+/// 殖民地羅盤 v1（自主提案切片，接續 943「殖民地真居住」遺留缺口「村莊地圖端點」）：
+/// 探索紀事只記地標「種類」（如「野外村落」），玩家發現多座殖民地時前端無從分辨是哪一座。
+/// 純函式比對這筆紀事的座標與殖民地名冊（座標→村名）——只有 `Colony` 種類才查、
+/// 其餘一律回 `None`（就算座標剛好重疊也不誤配，殖民地座標與其餘地標種類的去重座標
+/// 本就落在不同來源，這裡是雙重保險）；找不到對應殖民地（例如殖民地已被移除，理論
+/// 上不會發生但防呆）也回 `None`，前端會自然 fallback 成用種類標籤顯示。
+pub fn colony_name_for(kind: LandmarkKind, x: i32, z: i32, colonies: &[(i32, i32, String)]) -> Option<String> {
+    if kind != LandmarkKind::Colony {
+        return None;
+    }
+    colonies.iter().find(|(cx, cz, _)| *cx == x && *cz == z).map(|(_, _, name)| name.clone())
+}
+
 /// 載回所有探索紀事（伺服器啟動時呼叫一次）。檔不存在 / 壞行皆容忍（比照其餘 append-only
 /// store 慣例：寧可少一筆歷史紀事，也不讓啟動因為單一壞行而失敗）。
 pub fn load_discoveries() -> Vec<DiscoveryEntry> {
@@ -350,5 +363,50 @@ mod tests {
             "同一座奇觀重複抵達不該累加"
         );
         assert_eq!(s.list_for("阿光").len(), 1);
+    }
+
+    // ── colony_name_for（殖民地羅盤 v1，自主提案切片）───────────────────────────────
+    #[test]
+    fn colony_name_for_matches_exact_coord() {
+        let colonies = vec![(484, 173, "風禾屯".to_string())];
+        assert_eq!(
+            colony_name_for(LandmarkKind::Colony, 484, 173, &colonies),
+            Some("風禾屯".to_string())
+        );
+    }
+
+    #[test]
+    fn colony_name_for_picks_correct_one_among_many() {
+        // 玩家發現不只一座殖民地時，座標比對要挑到「那一座」，不能誤配到第一筆。
+        let colonies = vec![
+            (484, 173, "風禾屯".to_string()),
+            (-320, 900, "霜語屯".to_string()),
+        ];
+        assert_eq!(
+            colony_name_for(LandmarkKind::Colony, -320, 900, &colonies),
+            Some("霜語屯".to_string())
+        );
+    }
+
+    #[test]
+    fn colony_name_for_no_match_returns_none() {
+        // 座標對不上任何殖民地（理論上不會發生，防呆）——回 None，前端自然 fallback 成種類標籤。
+        let colonies = vec![(484, 173, "風禾屯".to_string())];
+        assert_eq!(colony_name_for(LandmarkKind::Colony, 1, 1, &colonies), None);
+    }
+
+    #[test]
+    fn colony_name_for_ignores_non_colony_kind_even_if_coord_matches() {
+        // 非殖民地地標種類一律回 None，即使座標剛好與某座殖民地重疊也不誤配。
+        let colonies = vec![(484, 173, "風禾屯".to_string())];
+        assert_eq!(colony_name_for(LandmarkKind::Ruin, 484, 173, &colonies), None);
+        assert_eq!(colony_name_for(LandmarkKind::HotSpring, 484, 173, &colonies), None);
+        assert_eq!(colony_name_for(LandmarkKind::Outpost, 484, 173, &colonies), None);
+        assert_eq!(colony_name_for(LandmarkKind::Wonder, 484, 173, &colonies), None);
+    }
+
+    #[test]
+    fn colony_name_for_empty_registry_returns_none() {
+        assert_eq!(colony_name_for(LandmarkKind::Colony, 0, 0, &[]), None);
     }
 }
