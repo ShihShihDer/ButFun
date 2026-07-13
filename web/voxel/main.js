@@ -4923,6 +4923,7 @@ function renderCompassPanel() {
     }
   }
   renderWaypointList();
+  renderLandmarkList();
 }
 
 /** 渲染「我的路標」清單：跟居民列表同款方位箭頭＋距離，多一顆刪除鈕。 */
@@ -4949,7 +4950,6 @@ function renderWaypointList() {
   for (const btn of waypointBodyEl.querySelectorAll(".waypoint-del")) {
     btn.addEventListener("click", () => removeWaypoint(btn.dataset.label));
   }
-  renderLandmarkList();
 }
 
 /** 渲染「已發現的村落」清單（自主提案切片，接續 943 遺留缺口）：跟居民/路標同款方位箭頭

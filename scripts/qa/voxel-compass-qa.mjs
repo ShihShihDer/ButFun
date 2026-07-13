@@ -170,6 +170,28 @@ function near(a, b, eps) { return Math.abs(a - b) <= eps; }
   check("清空居民後，已發現村落清單仍照常渲染（未被早退邏輯連坐清空）",
     emptyResidentsInfo.landmarkRows.includes("風禾屯"), JSON.stringify(emptyResidentsInfo));
 
+  // ── 5b) 居民「和」路標都為空時，村落清單仍要照常渲染＋隨玩家移動更新
+  // （PR #1245 review 點名的第二層連坐：renderLandmarkList 曾寄生在 renderWaypointList
+  //   尾巴，waypoints 一旦也是空陣列就會被 early return 吃掉，此腳本先前三條斷言都餵了
+  //   路標、鎖不住這條回歸路徑）──
+  const distBeforeMove = await page.evaluate(() => {
+    window.__voxel.setWaypoints([]); // 路標也清空——這是多數玩家的真實狀態
+    const row = document.querySelector("#landmarkBody .landmark-row");
+    return row?.querySelector(".compass-dist")?.textContent || "";
+  });
+  check("居民與路標皆為空時，村落清單仍照常渲染（非被 early return 連坐清空）",
+    distBeforeMove !== "", `distBeforeMove=${JSON.stringify(distBeforeMove)}`);
+
+  await page.evaluate(() => window.__voxel.setPlayerPos(0, 30, 500)); // 遠離村落
+  await sleep(700);
+  const distAfterMove = await page.evaluate(() => {
+    const row = document.querySelector("#landmarkBody .landmark-row");
+    return row?.querySelector(".compass-dist")?.textContent || "";
+  });
+  const grew = parseInt(distAfterMove || "0", 10) > parseInt(distBeforeMove || "0", 10);
+  check("居民與路標皆為空時，村落清單距離仍隨玩家移動自動刷新",
+    grew, `before=${distBeforeMove} after=${distAfterMove}`);
+
   // ── 6) 關閉面板 ──
   const closedOk = await page.evaluate(() => { window.__voxel.closeCompass(); return !window.__voxel.compassVisible; });
   check("關閉羅盤面板", closedOk);
