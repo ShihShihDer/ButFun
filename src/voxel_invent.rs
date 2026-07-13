@@ -203,14 +203,9 @@ pub fn resource_from_token(s: &str) -> Option<GatherResource> {
 pub fn obtainable_ids() -> &'static HashSet<u8> {
     static SET: OnceLock<HashSet<u8>> = OnceLock::new();
     SET.get_or_init(|| {
-        // 用 GatherResource::ALL 動態組種子集（不重複硬編 id，單一事實源在 voxel_skills）。
-        // 第五刀（鑿井尋礦）：煤礦/鐵礦進了種子集 → 火把、鐵錠（smelt_iron）、鐵磚、
-        // 紅陶磚、花盆…整條鐵系鏈第一次自動落進「她自己弄得到」的閉包。
-        let mut set: HashSet<u8> = GatherResource::ALL.iter().map(|r| r.block_id()).collect();
-        // 第六刀（漁獲入自採閉包）：小魚不是 GatherResource（釣法與挖方塊不同軸，見 `Fish`
-        // 原語），故不進 `GatherResource::ALL`、改在此直接補進種子集——烤魚（smelt_fish）
-        // 隨之自動落進下面的不動點迴圈，單一事實源仍在配方表。
-        set.insert(FISH_ID);
+        // 種子集：一步可得的葉節點（單一事實源見 `one_step_resource_ids`，與階梯好奇心的
+        // `base_resource_ids` 共用，別讓「她弄得到」與「她搆得著」兩套事實分岔）。
+        let mut set: HashSet<u8> = one_step_resource_ids().clone();
         loop {
             let mut grew = false;
             // 第四刀：熔爐冶煉配方也納入閉包——只有「配料全可自採/鏈上加工品」的冶煉
@@ -2000,7 +1995,10 @@ pub fn curiosity_idle(
 pub fn possibility_catalog(excluded: &HashSet<u8>) -> Vec<MaterialGoal> {
     let mut seen: HashSet<u8> = HashSet::new();
     let mut out = Vec::new();
-    for r in inventable_recipes().chain(inventable_wb_recipes()) {
+    // 熔爐產物（拋光石/鐵錠/烤魚…）也要進目錄——第四刀起就可發明卻漏了 chain，
+    // 第六刀（漁獲入自採閉包）唯一玩家可見產出正是熔爐產物，這個既有缺口第一次讓
+    // 「居民自己想釣魚」完全不會發生（好奇心目錄裡根本沒有烤魚可挑）。
+    for r in inventable_recipes().chain(inventable_wb_recipes()).chain(inventable_furnace_recipes()) {
         if excluded.contains(&r.output_block) || !seen.insert(r.output_block) {
             continue;
         }
@@ -2041,11 +2039,24 @@ pub fn curiosity_pick(catalog: &[MaterialGoal], seed: u64) -> Option<MaterialGoa
 // 前置後自然變得搆得著。下面用一支純函式估「這個目標她現在搆不搆得著」，讓好奇心優先挑
 // 「當前踏得到的一階」——玩家因此看得到居民能力**像階梯一樣往上長**。
 
-/// 可自採的基礎資源 block id 集合（草/沙/土/石/木＋煤礦/鐵礦）——「一個 gather op
-/// 就到手」的葉節點（單一事實源：`GatherResource::ALL`，新資源自動進來）。
-fn base_resource_ids() -> &'static HashSet<u8> {
+/// 「一個原語 op 就到手」的葉節點資源 id 集合（單一事實源：`obtainable_ids()` 的閉包
+/// 種子與階梯好奇心的 [`base_resource_ids`] 都從此出發，別讓兩邊分岔——第六刀（漁獲入
+/// 自採閉包）曾只補了前者、漏了後者，導致烤魚被階梯過濾器誤判「弄不到」）。
+/// 可自採資源（草/沙/土/石/木＋煤礦/鐵礦，`GatherResource::ALL`）＋小魚（`Fish` 原語，
+/// 釣法與挖方塊不同軸，故不進 `GatherResource::ALL`，改在此直接補一步到手的葉節點）。
+fn one_step_resource_ids() -> &'static HashSet<u8> {
     static SET: OnceLock<HashSet<u8>> = OnceLock::new();
-    SET.get_or_init(|| GatherResource::ALL.iter().map(|r| r.block_id()).collect())
+    SET.get_or_init(|| {
+        let mut set: HashSet<u8> = GatherResource::ALL.iter().map(|r| r.block_id()).collect();
+        set.insert(FISH_ID);
+        set
+    })
+}
+
+/// 可自採的基礎資源 block id 集合——階梯好奇心估算成本用的「一步到手」葉節點。
+/// 與 `obtainable_ids()` 共用同一份種子集（見 [`one_step_resource_ids`]）。
+fn base_resource_ids() -> &'static HashSet<u8> {
+    one_step_resource_ids()
 }
 
 /// 某產物需要的站台層級（None＝隨身 2×2／工作台／熔爐）。
@@ -4018,6 +4029,12 @@ mod tests {
         for want in [31u8, vcraft::PICKAXE_IRON_ID] {
             assert!(ids.contains(&want), "id {want} 第五刀後在鏈上，應進目錄：{ids:?}");
         }
+        // 第六刀（漁獲入自採閉包）後小魚可釣：烤魚（熔爐產物）也該進目錄——
+        // 上一版漏了 chain `inventable_furnace_recipes()`，熔爐產物從沒進過目錄。
+        assert!(
+            ids.contains(&crate::voxel_fishing::COOKED_FISH_ID),
+            "烤魚（熔爐產物）第六刀後應進目錄：{ids:?}"
+        );
         // 不可發明的誠實不列：床(45 要葉片)、冰晶燈(57)、麵包(19 要小麥)。
         for bad in [45u8, 57, 19] {
             assert!(!ids.contains(&bad), "id {bad} 她備不了料，不該進目錄");
@@ -4164,6 +4181,41 @@ mod tests {
             curiosity_pick_laddered(&cat, &none, 11),
             curiosity_pick_laddered(&cat, &none, 11)
         );
+    }
+
+    #[test]
+    fn laddered_pick_can_reach_cooked_fish() {
+        // 回歸鎖：第六刀（漁獲入自採閉包）曾讓 base_resource_ids 與 obtainable_ids 的種子集
+        // 分岔（小魚只補進後者）→ material_op_cost(小魚) 恆為 None → goal_reach_cost(烤魚)
+        // 恆為 None，無論 known_goals 是什麼，階梯好奇心永遠挑不到烤魚——「居民自己想
+        // 釣魚」在自走路徑上根本不會發生。
+        let none = HashSet::new();
+        assert!(
+            goal_reach_cost(crate::voxel_fishing::COOKED_FISH_ID, &none).is_some(),
+            "小魚應與其他一步可得資源同屬 base_resource_ids，烤魚成本不該恆為 None"
+        );
+        // 烤魚要冶煉（需熔爐），零技能時跟拋光石/鐵錠同一類——從零連熔爐一起蓋超出步數
+        // 上限，誠實不算「當前踏得到」（見 reach_cost_deep_furnace_chain_exceeds_budget_from_scratch）。
+        assert!(
+            goal_reach_cost(crate::voxel_fishing::COOKED_FISH_ID, &none)
+                .map_or(false, |c| c > MAX_STEPS),
+            "零技能時烤魚（連熔爐一起蓋）應超出步數上限，與拋光石/鐵錠同一階梯"
+        );
+        // 階梯核心：一旦她已會做熔爐（收成 1 步 use_skill），烤魚的估算成本大幅下降到
+        // 步數上限內——這時真實目錄＋階梯好奇心應該真的挑得到烤魚。
+        let mut known = HashSet::new();
+        known.insert(FURNACE_BLOCK_ID);
+        let cost = goal_reach_cost(crate::voxel_fishing::COOKED_FISH_ID, &known);
+        assert!(
+            cost.map_or(false, |c| c <= MAX_STEPS),
+            "會做熔爐後烤魚應落在步數上限內，實得 {cost:?}"
+        );
+        let cat = possibility_catalog(&HashSet::new());
+        let picked_fish = (0..cat.len() as u64).any(|seed| {
+            curiosity_pick_laddered(&cat, &known, seed).map(|g| g.block_id)
+                == Some(crate::voxel_fishing::COOKED_FISH_ID)
+        });
+        assert!(picked_fish, "會做熔爐後，階梯好奇心掃過真實目錄的 seed 應能挑到烤魚");
     }
 
     #[test]
