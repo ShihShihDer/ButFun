@@ -3907,6 +3907,21 @@ fn player_pos(id: Uuid) -> Option<(f32, f32, f32)> {
     players.get(&id).map(|p| (p.x, p.y, p.z))
 }
 
+/// 玩家個人領地保護 v1（ROADMAP 963，review 修正）：目標格 (x, z) 該不該被別人的領地擋下
+/// ——`Break`/`Place`/`SignSet` 共用同一顆判定，掃過半徑內**所有**「家」牌（不只最近一塊，
+/// 修相鄰立牌切走別人領地一角的漏洞），歸屬比對一律走穩定帳號鍵 `owner_key`（email，改名
+/// 不變、無法偽造），不再信可被改寫的顯示名。擋下時回傳領地主人的顯示名供組提示句；
+/// 無主／範圍內無家牌／我自己的領地一律放行（`None`）。sign 讀鎖短取即釋，不巢狀。
+fn claim_blocking_owner(x: i32, z: i32, requester_key: Option<&str>) -> Option<String> {
+    let hits = hub().sign.read().unwrap()
+        .all_within_xz(x as f32 + 0.5, z as f32 + 0.5, vlandclaim::CLAIM_RADIUS);
+    let home_claims = hits
+        .iter()
+        .filter(|h| vlandclaim::is_home_sign(&h.text))
+        .map(|h| (h.owner.as_deref().unwrap_or(""), h.owner_key.as_deref()));
+    vlandclaim::resolve_claim_block(home_claims, requester_key).map(str::to_string)
+}
+
 /// 玩家生存指標 v1（溫和版）：把 PlayerStats 組成單播給玩家自己的 `player_stats` 訊息。
 /// 只送血/飢/上限/是否餓瘋（前端據此顯示條＋餓瘋提示＋移動懲罰視覺）。
 /// **後端權威**：這串永遠從伺服器狀態組出，客戶端無法自報。
@@ -5013,26 +5028,19 @@ async fn handle_socket(
                     ));
                     continue;
                 }
-                // 玩家個人領地保護 v1（自主提案切片，ROADMAP 963）：目標格若落在別人「家」牌
-                // 方圓內，只有立牌本人能動——別人的鎬子在這裡溫柔地伸不進來（sign 讀鎖即釋，
-                // 不與後續 delta 鎖巢狀）。
-                if let Some(owner) = {
-                    hub().sign.read().unwrap()
-                        .nearest_within_xz(x as f32 + 0.5, z as f32 + 0.5, vlandclaim::CLAIM_RADIUS)
-                        .filter(|(_, _, text, _, _)| vlandclaim::is_home_sign(text))
-                        .and_then(|(_, _, _, _, owner)| owner)
-                } {
-                    let requester = if is_account { Some(name.as_str()) } else { None };
-                    if vlandclaim::dig_denied(Some(owner.as_str()), requester) {
-                        let _ = out_tx.try_send(Message::Text(
-                            serde_json::json!({
-                                "t": "claim_protected",
-                                "line": vlandclaim::claim_deny_line(&owner, (x.wrapping_add(z)) as usize),
-                            })
-                            .to_string(),
-                        ));
-                        continue;
-                    }
+                // 玩家個人領地保護 v1（ROADMAP 963，review 修正：歸屬走穩定帳號鍵、掃全部
+                // 家牌不只最近一塊）：目標格若落在別人的領地內，只有立牌本人能動——別人的
+                // 鎬子在這裡溫柔地伸不進來（sign 讀鎖即釋，不與後續 delta 鎖巢狀）。
+                let requester_key = if is_account { account_email.as_deref() } else { None };
+                if let Some(owner) = claim_blocking_owner(x, z, requester_key) {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({
+                            "t": "claim_protected",
+                            "line": vlandclaim::claim_deny_line(&owner, (x.wrapping_add(z)) as usize),
+                        })
+                        .to_string(),
+                    ));
+                    continue;
                 }
                 // delta 寫鎖：驗證 + 設為空氣（循序取放，不嵌套）。
                 let broken = {
@@ -5486,26 +5494,20 @@ async fn handle_socket(
                 let Some((px, py, pz)) = player_pos(my_id) else {
                     continue;
                 };
-                // 玩家個人領地保護 v1（自主提案切片，ROADMAP 963）：目標格若落在別人「家」牌
-                // 方圓內，只有立牌本人能放——在消耗任何材料之前先擋，別人白挨一句提示、不掉材料
-                // （sign 讀鎖即釋，不與後續 inventory/delta 鎖巢狀）。
-                if let Some(owner) = {
-                    hub().sign.read().unwrap()
-                        .nearest_within_xz(x as f32 + 0.5, z as f32 + 0.5, vlandclaim::CLAIM_RADIUS)
-                        .filter(|(_, _, text, _, _)| vlandclaim::is_home_sign(text))
-                        .and_then(|(_, _, _, _, owner)| owner)
-                } {
-                    let requester = if is_account { Some(name.as_str()) } else { None };
-                    if vlandclaim::dig_denied(Some(owner.as_str()), requester) {
-                        let _ = out_tx.try_send(Message::Text(
-                            serde_json::json!({
-                                "t": "claim_protected",
-                                "line": vlandclaim::claim_deny_line(&owner, (x.wrapping_add(z)) as usize),
-                            })
-                            .to_string(),
-                        ));
-                        continue;
-                    }
+                // 玩家個人領地保護 v1（ROADMAP 963，review 修正：歸屬走穩定帳號鍵、掃全部
+                // 家牌不只最近一塊）：目標格若落在別人的領地內，只有立牌本人能放——在消耗任何
+                // 材料之前先擋，別人白挨一句提示、不掉材料（sign 讀鎖即釋，不與後續
+                // inventory/delta 鎖巢狀）。
+                let requester_key = if is_account { account_email.as_deref() } else { None };
+                if let Some(owner) = claim_blocking_owner(x, z, requester_key) {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({
+                            "t": "claim_protected",
+                            "line": vlandclaim::claim_deny_line(&owner, (x.wrapping_add(z)) as usize),
+                        })
+                        .to_string(),
+                    ));
+                    continue;
                 }
                 // 植樹造林 v1（ROADMAP 738）：樹苗只能種在「土地」上（草/土/沙/雪/農田土），
                 // 不能種在石頭/木頭/空中——樹要從地面長。先驗證腳下那格，不合格就早退退提示，
@@ -8974,6 +8976,21 @@ async fn handle_socket(
                 let target = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
                 if !matches!(target, Block::Sign) { continue; }
                 if !voxel::can_break(&hub().deltas.read().unwrap(), px, py, pz, x, y, z) { continue; }
+                // 玩家個人領地保護 v1（ROADMAP 963，review 修正 阻擋項①）：這塊牌若落在別人的
+                // 領地內，只有領地主人能改寫／清空它——堵住「走到別人家牌前送一則 SignSet 就把
+                // 整塊領地搶走」的漏洞（歸屬走穩定帳號鍵、掃全部家牌不只最近一塊，見
+                // `claim_blocking_owner`；sign 讀鎖即釋，不與後續寫鎖巢狀）。
+                let requester_key = if is_account { account_email.as_deref() } else { None };
+                if let Some(owner) = claim_blocking_owner(x, z, requester_key) {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({
+                            "t": "claim_protected",
+                            "line": vlandclaim::claim_deny_line(&owner, (x.wrapping_add(z)) as usize),
+                        })
+                        .to_string(),
+                    ));
+                    continue;
+                }
                 // 清洗玩家輸入（去控制字元、截長度）；空字串＝清空牌面。
                 let clean = vsign::sanitize_text(&text);
                 // L3 內容審查：告示牌是唯一未過內容審查的公開文字廣播入口——立牌文字會廣播給
@@ -8992,9 +9009,13 @@ async fn handle_socket(
                 }
                 // 居民認得你的家 v1（自主提案切片，ROADMAP 830）：伺服器權威記下這塊牌是哪位
                 // 玩家立的——只有已登入帳號才記名（比照瓶中信的登入護欄），訪客的牌 owner 永遠
-                // None，行為與今日完全一致；清空牌面（clean 為空）也不必記歸屬。
+                // None，行為與今日完全一致；清空牌面（clean 為空）也不必記歸屬。`owner` 只是
+                // 顯示名（居民辨識/提示句用）；領地權限判定另走 `owner_key`（穩定帳號 email，
+                // review 修正 阻擋項③——顯示名可被改名功能改動，不可當權限歸屬）。
                 let owner = if is_account && !clean.is_empty() { Some(name.clone()) } else { None };
-                let ev = hub().sign.write().unwrap().set(&vsign::pos_key(x, y, z), clean.clone(), owner);
+                let owner_key = if is_account && !clean.is_empty() { account_email.clone() } else { None };
+                let ev = hub().sign.write().unwrap()
+                    .set(&vsign::pos_key(x, y, z), clean.clone(), owner, owner_key);
                 vsign::append_sign(&ev);
                 // 廣播給所有人（含自己），前端據此更新／移除該座標的浮字。
                 broadcast_sign(x, y, z, &clean);
@@ -11573,7 +11594,7 @@ fn maybe_build_lovenest() {
             .sign
             .write()
             .unwrap()
-            .set(&vsign::pos_key(snx, sny, snz), name.clone(), None);
+            .set(&vsign::pos_key(snx, sny, snz), name.clone(), None, None);
         vsign::append_sign(&ev);
         broadcast_sign(snx, sny, snz, &name);
 
@@ -22181,7 +22202,7 @@ fn tick_residents(dt: f32) {
                             .sign
                             .write()
                             .unwrap()
-                            .set(&vsign::pos_key(sx, sy, sz), text.clone(), None);
+                            .set(&vsign::pos_key(sx, sy, sz), text.clone(), None, None);
                         vsign::append_sign(&ev);
                         broadcast_sign(sx, sy, sz, &text);
                         vfeed::append_feed("立牌命名", rname, &vexp::outpost_nameplate_feed(rname, &text));
@@ -22552,7 +22573,7 @@ fn tick_residents(dt: f32) {
         vbuild::append_world_block(sx, sy, sz, Block::Sign as u8);
         // ④ 設牌面文字（sign 寫鎖短取即釋）→ 持久化 → 廣播浮字。居民自己刻的名號牌
         // owner 恆 None（不是玩家立的，居民認得你的家 v1 只認玩家親手署名的牌）。
-        let ev = hub().sign.write().unwrap().set(&vsign::pos_key(sx, sy, sz), text.clone(), None);
+        let ev = hub().sign.write().unwrap().set(&vsign::pos_key(sx, sy, sz), text.clone(), None, None);
         vsign::append_sign(&ev);
         broadcast_sign(sx, sy, sz, &text);
         // ⑤ 城鎮動態牆：讓玩家（與離線回來者）讀到「某居民把我刻成了這一帶的名號」。
@@ -23684,7 +23705,7 @@ fn tick_residents(dt: f32) {
                                 .sign
                                 .write()
                                 .unwrap()
-                                .set(&vsign::pos_key(sx, sy, sz), text.clone(), None);
+                                .set(&vsign::pos_key(sx, sy, sz), text.clone(), None, None);
                             vsign::append_sign(&ev);
                             broadcast_sign(sx, sy, sz, &text);
                             // ③ 動態牆 + 立牌泡泡（讓玩家一眼看到居民署了名）。

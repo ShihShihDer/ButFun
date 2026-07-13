@@ -66,19 +66,46 @@ pub struct SignEntry {
     /// 單調遞增序號（replay 時取每座標最大 seq 者為現況）。
     pub seq: u64,
     /// 這塊牌是哪位玩家立的（居民認得你的家 v1，自主提案切片，ROADMAP 830）：伺服器在你
-    /// 送出 `SignSet` 那刻權威記下你已登入的帳號顯示名；訪客／舊資料一律 `None`（不影響既有
-    /// 讀牌／認鄰居行為，只是不會被認成「某位玩家的家」）。additive、`#[serde(default)]`
-    /// 向後相容——舊 JSONL 沒有這個欄位，載回時自動補 `None`。
+    /// 送出 `SignSet` 那刻權威記下你已登入的帳號**顯示名**；訪客／舊資料一律 `None`（不影響
+    /// 既有讀牌／認鄰居行為，只是不會被認成「某位玩家的家」）。只給居民辨識／組提示句用，
+    /// **不可**當權限判定的歸屬鍵——顯示名可被改名功能改動（見 `owner_key`）。additive、
+    /// `#[serde(default)]` 向後相容——舊 JSONL 沒有這個欄位，載回時自動補 `None`。
     #[serde(default)]
     pub owner: Option<String>,
+    /// 這塊牌的**穩定**歸屬鍵（玩家個人領地保護 v1，review 修正，ROADMAP 963）：伺服器權威
+    /// 記下你已登入帳號的 email——改名不變、無法偽造，專供領地權限判定用（`owner` 顯示名
+    /// 只是給居民/提示句看的招牌，不是真正的身分）。訪客／舊資料一律 `None`（該牌無主，
+    /// 領地判定行為與今日一致，不保護）。additive、`#[serde(default)]` 向後相容。
+    #[serde(default)]
+    pub owner_key: Option<String>,
 }
 
-/// 全局告示牌 store：pos_key → 文字（只存非空）；`owners` 只存「有主」的牌（居民認得你的家 v1）。
+/// 全局告示牌 store：pos_key → 文字（只存非空）；`owners`（顯示名，居民辨識用）與
+/// `owners_key`（穩定歸屬鍵，領地權限判定用，review 修正 ROADMAP 963）都只存「有主」的牌。
 #[derive(Default)]
 pub struct SignStore {
     signs: HashMap<String, String>,
     owners: HashMap<String, String>,
+    owners_key: HashMap<String, String>,
     next_seq: u64,
+}
+
+/// 掃描半徑內命中的一塊告示牌（供領地保護 review 修正用：`nearest_within_xz` 只取最近一塊
+/// 會漏掉「範圍內另一塊其實是我自己的領地」，需要全部掃過才能判斷，見
+/// [`crate::voxel_landclaim::resolve_claim_block`]）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignHit {
+    /// 牌子中心世界座標。
+    pub cx: f32,
+    pub cz: f32,
+    /// 牌面文字。
+    pub text: String,
+    /// 立牌玩家顯示名（提示句用）。
+    pub owner: Option<String>,
+    /// 立牌玩家穩定歸屬鍵（權限判定用）。
+    pub owner_key: Option<String>,
+    /// 與查詢點的水平平方距離（供呼叫端按近到遠排序）。
+    pub dist2: f32,
 }
 
 impl SignStore {
@@ -101,15 +128,19 @@ impl SignStore {
         }
         let mut signs = HashMap::new();
         let mut owners = HashMap::new();
+        let mut owners_key = HashMap::new();
         for (pos, e) in latest {
             if !e.text.is_empty() {
                 signs.insert(pos.clone(), e.text.clone());
                 if let Some(o) = &e.owner {
-                    owners.insert(pos, o.clone());
+                    owners.insert(pos.clone(), o.clone());
+                }
+                if let Some(k) = &e.owner_key {
+                    owners_key.insert(pos, k.clone());
                 }
             }
         }
-        Self { signs, owners, next_seq: max_seq.saturating_add(1) }
+        Self { signs, owners, owners_key, next_seq: max_seq.saturating_add(1) }
     }
 
     /// 查詢某座標的告示牌文字（無牌子回 None）。
@@ -117,23 +148,35 @@ impl SignStore {
         self.signs.get(pos).map(|s| s.as_str())
     }
 
-    /// 寫入／改寫告示牌文字（傳入已清洗文字）＋這塊牌是哪位玩家立的（`owner`，居民認得你的家
-    /// v1；`None`＝訪客或非玩家親手寫的牌，行為與既有一致）。空字串＝清除。回傳持久化事件供
-    /// 呼叫方 append。
-    pub fn set(&mut self, pos: &str, text: String, owner: Option<String>) -> SignEntry {
+    /// 寫入／改寫告示牌文字（傳入已清洗文字）＋這塊牌是哪位玩家立的：`owner` 顯示名（居民
+    /// 認得你的家 v1，辨識/提示句用）＋ `owner_key` 穩定歸屬鍵（領地權限判定用，review 修正
+    /// ROADMAP 963）。皆 `None`＝訪客或非玩家親手寫的牌，行為與既有一致。空字串＝清除。
+    /// 回傳持久化事件供呼叫方 append。
+    pub fn set(
+        &mut self,
+        pos: &str,
+        text: String,
+        owner: Option<String>,
+        owner_key: Option<String>,
+    ) -> SignEntry {
         if text.is_empty() {
             self.signs.remove(pos);
             self.owners.remove(pos);
+            self.owners_key.remove(pos);
         } else {
             self.signs.insert(pos.to_string(), text.clone());
             match &owner {
                 Some(o) => { self.owners.insert(pos.to_string(), o.clone()); }
                 None => { self.owners.remove(pos); }
             }
+            match &owner_key {
+                Some(k) => { self.owners_key.insert(pos.to_string(), k.clone()); }
+                None => { self.owners_key.remove(pos); }
+            }
         }
         let seq = self.next_seq;
         self.next_seq += 1;
-        SignEntry { pos: pos.to_string(), text, seq, owner }
+        SignEntry { pos: pos.to_string(), text, seq, owner, owner_key }
     }
 
     /// 清除指定座標的牌子（破壞方塊時呼叫）。有牌子才回傳清除事件（供 append）。
@@ -142,9 +185,10 @@ impl SignStore {
             return None;
         }
         self.owners.remove(pos);
+        self.owners_key.remove(pos);
         let seq = self.next_seq;
         self.next_seq += 1;
-        Some(SignEntry { pos: pos.to_string(), text: String::new(), seq, owner: None })
+        Some(SignEntry { pos: pos.to_string(), text: String::new(), seq, owner: None, owner_key: None })
     }
 
     /// 找 XZ 平面上距 (x, z) 最近、且水平距離在 `range`（方塊）內的告示牌文字
@@ -174,6 +218,37 @@ impl SignStore {
             }
         }
         best
+    }
+
+    /// 找 XZ 平面上距 (x, z) 在 `range`（方塊）內的**所有**告示牌（領地保護 review 修正
+    /// 用：`nearest_within_xz` 只取最近一塊會漏掉「範圍內另一塊其實是我自己的領地」，
+    /// 需要掃過全部才能正確判斷歸屬，見 [`crate::voxel_landclaim::resolve_claim_block`]）。
+    /// 按距離由近到遠排序（呼叫端據此取「離我最近的別人領地」組提示句）。純查詢、無副作用；
+    /// 牌子稀疏，全掃成本可忽略。
+    pub fn all_within_xz(&self, x: f32, z: f32, range: f32) -> Vec<SignHit> {
+        let r2 = range * range;
+        let mut hits: Vec<SignHit> = self
+            .signs
+            .iter()
+            .filter_map(|(k, text)| {
+                let (sx, _sy, sz) = parse_key(k)?;
+                let cx = sx as f32 + 0.5;
+                let cz = sz as f32 + 0.5;
+                let dx = cx - x;
+                let dz = cz - z;
+                let dist2 = dx * dx + dz * dz;
+                (dist2 <= r2).then(|| SignHit {
+                    cx,
+                    cz,
+                    text: text.clone(),
+                    owner: self.owners.get(k).cloned(),
+                    owner_key: self.owners_key.get(k).cloned(),
+                    dist2,
+                })
+            })
+            .collect();
+        hits.sort_by(|a, b| a.dist2.partial_cmp(&b.dist2).unwrap_or(std::cmp::Ordering::Equal));
+        hits
     }
 
     /// 目前所有告示牌（供新玩家連線時一次送出），已按座標鍵排序求穩定。
@@ -232,7 +307,7 @@ mod tests {
     #[test]
     fn set_and_get() {
         let mut store = SignStore::new();
-        store.set("1,2,3", "家".to_string(), None);
+        store.set("1,2,3", "家".to_string(), None, None);
         assert_eq!(store.get("1,2,3"), Some("家"));
         assert_eq!(store.get("9,9,9"), None);
     }
@@ -240,15 +315,15 @@ mod tests {
     #[test]
     fn set_empty_clears() {
         let mut store = SignStore::new();
-        store.set("0,0,0", "臨時".to_string(), None);
-        store.set("0,0,0", String::new(), None);
+        store.set("0,0,0", "臨時".to_string(), None, None);
+        store.set("0,0,0", String::new(), None, None);
         assert_eq!(store.get("0,0,0"), None);
     }
 
     #[test]
     fn clear_removes_and_returns_event() {
         let mut store = SignStore::new();
-        store.set("5,5,5", "礦坑".to_string(), None);
+        store.set("5,5,5", "礦坑".to_string(), None, None);
         let ev = store.clear("5,5,5").expect("有牌子應回清除事件");
         assert_eq!(ev.text, "");
         assert_eq!(store.get("5,5,5"), None);
@@ -259,9 +334,9 @@ mod tests {
     #[test]
     fn from_entries_takes_latest_seq() {
         let entries = vec![
-            SignEntry { pos: "0,0,0".into(), text: "舊".into(), seq: 0, owner: None },
-            SignEntry { pos: "0,0,0".into(), text: "新".into(), seq: 2, owner: None },
-            SignEntry { pos: "0,0,0".into(), text: "中".into(), seq: 1, owner: None },
+            SignEntry { pos: "0,0,0".into(), text: "舊".into(), seq: 0, owner: None, owner_key: None },
+            SignEntry { pos: "0,0,0".into(), text: "新".into(), seq: 2, owner: None, owner_key: None },
+            SignEntry { pos: "0,0,0".into(), text: "中".into(), seq: 1, owner: None, owner_key: None },
         ];
         let store = SignStore::from_entries(entries);
         assert_eq!(store.get("0,0,0"), Some("新"), "應取 seq 最大者");
@@ -271,8 +346,8 @@ mod tests {
     #[test]
     fn from_entries_empty_text_removes() {
         let entries = vec![
-            SignEntry { pos: "0,0,0".into(), text: "立牌".into(), seq: 0, owner: None },
-            SignEntry { pos: "0,0,0".into(), text: "".into(), seq: 1, owner: None }, // 破壞
+            SignEntry { pos: "0,0,0".into(), text: "立牌".into(), seq: 0, owner: None, owner_key: None },
+            SignEntry { pos: "0,0,0".into(), text: "".into(), seq: 1, owner: None, owner_key: None }, // 破壞
         ];
         let store = SignStore::from_entries(entries);
         assert_eq!(store.get("0,0,0"), None, "最新是空＝已清除");
@@ -281,9 +356,9 @@ mod tests {
     #[test]
     fn all_sorted_and_excludes_empty() {
         let mut store = SignStore::new();
-        store.set("2,0,0", "乙".to_string(), None);
-        store.set("1,0,0", "甲".to_string(), None);
-        store.set("3,0,0", "".to_string(), None); // 空的不列
+        store.set("2,0,0", "乙".to_string(), None, None);
+        store.set("1,0,0", "甲".to_string(), None, None);
+        store.set("3,0,0", "".to_string(), None, None); // 空的不列
         let all = store.all();
         assert_eq!(all, vec![("1,0,0".into(), "甲".into()), ("2,0,0".into(), "乙".into())]);
     }
@@ -293,7 +368,7 @@ mod tests {
     #[test]
     fn set_records_owner_and_nearest_within_xz_returns_it() {
         let mut store = SignStore::new();
-        store.set("2,4,2", "阿宅的家".to_string(), Some("阿宅".to_string()));
+        store.set("2,4,2", "阿宅的家".to_string(), Some("阿宅".to_string()), None);
         let hit = store.nearest_within_xz(2.5, 2.5, 3.0).expect("範圍內應有牌");
         assert_eq!(hit.4, Some("阿宅".to_string()), "應帶回立牌玩家");
     }
@@ -301,7 +376,7 @@ mod tests {
     #[test]
     fn set_without_owner_returns_none() {
         let mut store = SignStore::new();
-        store.set("2,4,2", "往礦坑↓".to_string(), None);
+        store.set("2,4,2", "往礦坑↓".to_string(), None, None);
         let hit = store.nearest_within_xz(2.5, 2.5, 3.0).expect("範圍內應有牌");
         assert_eq!(hit.4, None, "無主的牌（訪客／指路牌）應回 None");
     }
@@ -309,10 +384,10 @@ mod tests {
     #[test]
     fn rewriting_sign_without_owner_clears_previous_owner() {
         let mut store = SignStore::new();
-        store.set("0,0,0", "阿宅的家".to_string(), Some("阿宅".to_string()));
+        store.set("0,0,0", "阿宅的家".to_string(), Some("阿宅".to_string()), None);
         // 改寫成別的內容、這次沒帶 owner（比照訪客改寫或程式內部改寫）——舊 owner 應被清掉，
         // 不留孤兒歸屬（誤導居民認錯家）。
-        store.set("0,0,0", "往礦坑↓".to_string(), None);
+        store.set("0,0,0", "往礦坑↓".to_string(), None, None);
         let hit = store.nearest_within_xz(0.5, 0.5, 3.0).expect("範圍內應有牌");
         assert_eq!(hit.4, None);
     }
@@ -320,9 +395,9 @@ mod tests {
     #[test]
     fn clear_removes_owner_too() {
         let mut store = SignStore::new();
-        store.set("5,5,5", "阿宅的家".to_string(), Some("阿宅".to_string()));
+        store.set("5,5,5", "阿宅的家".to_string(), Some("阿宅".to_string()), None);
         store.clear("5,5,5");
-        store.set("5,5,5", "新的牌".to_string(), None);
+        store.set("5,5,5", "新的牌".to_string(), None, None);
         let hit = store.nearest_within_xz(5.5, 5.5, 3.0).expect("範圍內應有牌");
         assert_eq!(hit.4, None, "破壞後重立不應殘留舊 owner");
     }
@@ -330,8 +405,8 @@ mod tests {
     #[test]
     fn from_entries_restores_owner_from_latest_seq() {
         let entries = vec![
-            SignEntry { pos: "0,0,0".into(), text: "阿宅的家".into(), seq: 0, owner: Some("阿宅".into()) },
-            SignEntry { pos: "1,0,0".into(), text: "舊資料無主".into(), seq: 0, owner: None },
+            SignEntry { pos: "0,0,0".into(), text: "阿宅的家".into(), seq: 0, owner: Some("阿宅".into()), owner_key: None },
+            SignEntry { pos: "1,0,0".into(), text: "舊資料無主".into(), seq: 0, owner: None, owner_key: None },
         ];
         let store = SignStore::from_entries(entries);
         assert_eq!(
@@ -358,8 +433,8 @@ mod tests {
     #[test]
     fn nearest_within_finds_closest_in_range() {
         let mut store = SignStore::new();
-        store.set("10,4,10", "遠牌".to_string(), None);
-        store.set("2,4,2", "近牌".to_string(), None);
+        store.set("10,4,10", "遠牌".to_string(), None, None);
+        store.set("2,4,2", "近牌".to_string(), None, None);
         // 站在 (2.5, 2.5)：近牌在腳下、遠牌 ~11 格外。範圍 3 只找得到近牌。
         let hit = store.nearest_within_xz(2.5, 2.5, 3.0);
         assert_eq!(hit.as_ref().map(|(_, _, t, _, _)| t.clone()), Some("近牌".to_string()));
@@ -373,12 +448,64 @@ mod tests {
     #[test]
     fn nearest_within_picks_the_closer_of_two() {
         let mut store = SignStore::new();
-        store.set("0,4,0", "A".to_string(), None);
-        store.set("4,4,0", "B".to_string(), None);
+        store.set("0,4,0", "A".to_string(), None, None);
+        store.set("4,4,0", "B".to_string(), None, None);
         // 站在 (3.6, 0.5)：離 B(4.5,0.5) 比離 A(0.5,0.5) 近。
         assert_eq!(
             store.nearest_within_xz(3.6, 0.5, 8.0).map(|(_, _, t, _, _)| t),
             Some("B".to_string())
         );
+    }
+
+    // ── all_within_xz（領地保護 review 修正：掃全部牌，不只取最近一塊）─────────────────────
+
+    #[test]
+    fn all_within_xz_returns_every_hit_sorted_by_distance() {
+        let mut store = SignStore::new();
+        store.set(
+            "4,4,0",
+            "遠牌".to_string(),
+            Some("陌生人".to_string()),
+            Some("stranger@example.com".to_string()),
+        );
+        store.set(
+            "0,4,0",
+            "近牌".to_string(),
+            Some("阿星".to_string()),
+            Some("astar@example.com".to_string()),
+        );
+        // 站在 (0.6, 0.5)：兩塊牌都在範圍 8 內，近牌（0.5,0.5）比遠牌（4.5,0.5）近。
+        let hits = store.all_within_xz(0.6, 0.5, 8.0);
+        assert_eq!(hits.len(), 2, "範圍內兩塊牌都該回傳，不只最近一塊");
+        assert_eq!(hits[0].text, "近牌");
+        assert_eq!(hits[0].owner_key.as_deref(), Some("astar@example.com"));
+        assert_eq!(hits[1].text, "遠牌");
+        assert_eq!(hits[1].owner_key.as_deref(), Some("stranger@example.com"));
+        assert!(hits[0].dist2 < hits[1].dist2);
+    }
+
+    #[test]
+    fn all_within_xz_excludes_out_of_range() {
+        let mut store = SignStore::new();
+        store.set("0,4,0", "近牌".to_string(), None, None);
+        store.set("50,4,50", "遠牌".to_string(), None, None);
+        let hits = store.all_within_xz(0.5, 0.5, 3.0);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].text, "近牌");
+    }
+
+    #[test]
+    fn all_within_xz_carries_owner_key_independent_of_display_name() {
+        // owner（顯示名）與 owner_key（穩定歸屬鍵）各自攜帶，互不影響。
+        let mut store = SignStore::new();
+        store.set(
+            "0,0,0",
+            "阿宅的家".to_string(),
+            Some("阿宅".to_string()),
+            Some("azhai@example.com".to_string()),
+        );
+        let hit = store.all_within_xz(0.5, 0.5, 1.0).into_iter().next().expect("應命中");
+        assert_eq!(hit.owner.as_deref(), Some("阿宅"));
+        assert_eq!(hit.owner_key.as_deref(), Some("azhai@example.com"));
     }
 }
