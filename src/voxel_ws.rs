@@ -122,6 +122,7 @@ use crate::voxel_player_recipe as vprecipe;
 use crate::voxel_diary_peek as vdiarypeek;
 use crate::voxel_pet_admire as vpetadmire;
 use crate::voxel_craft_admire as vcraftadmire;
+use crate::voxel_hobby as vhobby;
 use crate::voxel_pet_fright as vpetfright;
 use crate::voxel_proximity_teach as vptteach;
 use crate::voxel_envoy_mark as venvoy;
@@ -411,6 +412,14 @@ struct VoxelResident {
     /// 見賢思齊冷卻倒數（秒，居民見賢思齊 v1）：> 0 表示最近才因為路過一座已命名地標
     /// 心生嚮往過，暫不再觸發，讓「親眼所見萌生新心願」稀有有份量、天然防洗版。
     envy_timer: f32,
+    /// 私人嗜好種類（居民私人嗜好與意外驚喜 v1）：由 index 決定性指派，一生不變。
+    hobby: vhobby::Hobby,
+    /// 目前私藏了幾份嗜好收藏（純記憶體、重啟歸零，比照 `open_request` 同款慣例）。
+    hobby_stash: u32,
+    /// 沉浸嗜好冷卻倒數（秒）：> 0 表示最近才沉浸過一次，暫不再累加，天然防洗版。
+    hobby_collect_timer: f32,
+    /// 驚喜餽贈冷卻倒數（秒）：> 0 表示最近才對某位玩家送過驚喜，暫不再送。
+    hobby_gift_timer: f32,
     /// 目前尚未了結的請求：`Some(item_id)` 表示居民正等著有人送這樣材料來（同時只掛一個）。
     /// 玩家把這樣材料當禮物送到即算幫上忙（走 `Gift` 送禮管線），送到後清成 `None`。
     /// 純記憶體、重啟歸零（與渴望 / 心事同款：未了的請求重啟後淡去，不落持久化）。
@@ -1899,6 +1908,12 @@ fn build_resident(
             // 主動討東西冷卻（居民拜託你幫個小忙 v1）：錯開初始冷卻，避免啟動後同時開口；
             // 也讓一上線不會立刻伸手要東西，先熟起來、玩家有材料在手時再說。
             request_timer: vrequest::REQUEST_COOLDOWN_SECS + i as f32 * 75.0,
+            // 私人嗜好（居民私人嗜好與意外驚喜 v1）：依 index 決定性指派，一生不變；
+            // 一上線私藏歸零，兩個冷卻各自錯開，避免啟動後全員同時沉浸/送禮。
+            hobby: vhobby::hobby_for(i),
+            hobby_stash: 0,
+            hobby_collect_timer: 20.0 + i as f32 * 15.0,
+            hobby_gift_timer: 30.0 + i as f32 * 40.0,
             // 一上線手邊沒有未了的請求。
             open_request: None,
             // 讀牌冷卻（居民讀牌 v1）：錯開初始冷卻，避免啟動後短時間全員同時讀同一塊牌。
@@ -5991,6 +6006,73 @@ async fn handle_socket(
                     //（不管接下來走整地／鋪面／LLM 哪條回話路徑，開口本身就算數）。
                     for m in onboard_step(&mut onboard, vonboard::STEP_TALK, &name) {
                         let _ = out_tx.send(Message::Text(m)).await;
+                    }
+                    // 私人嗜好·意外驚喜 v1（自主提案切片）：獨立於話題本身（整地/鋪面/LLM
+                    // 皆可能接著發生），只在「這次對話」這個天然節點檢查一次——攢夠私藏、
+                    // 跟你也聊得來時，偶爾順手塞給你這份收藏當驚喜。與整地/鋪面判斷平行、
+                    // 不互斥（送完驚喜後對話照常往下走）。
+                    {
+                        let (stash, hobby, gift_ready): (u32, vhobby::Hobby, bool) = {
+                            let res = hub().residents.read().unwrap();
+                            match res.iter().find(|r| r.id == addr_id) {
+                                Some(r) => (r.hobby_stash, r.hobby, r.hobby_gift_timer <= 0.0),
+                                None => (0, vhobby::Hobby::Flowers, false),
+                            }
+                        }; // residents 讀鎖釋放
+                        if gift_ready {
+                            let affinity =
+                                hub().memory.read().unwrap().affinity_count(&player_key, &addr_id);
+                            // 記憶讀鎖即釋
+                            if vhobby::should_surprise_gift(stash, affinity, rand::random::<f32>()) {
+                                let pick = (stash as usize) ^ (affinity << 4);
+                                let item_id = hobby.item_block_id(pick);
+                                let give_count = vhobby::GIFT_ITEM_COUNT.min(stash);
+                                let entry = hub()
+                                    .inventory
+                                    .write()
+                                    .unwrap()
+                                    .give(&player_key, item_id, give_count);
+                                vinv::append_inv(&entry);
+                                let new_count =
+                                    hub().inventory.read().unwrap().count(&player_key, item_id);
+                                let _ = out_tx
+                                    .send(Message::Text(
+                                        serde_json::json!({
+                                            "t": "inv_update",
+                                            "block_id": item_id,
+                                            "count": new_count,
+                                        })
+                                        .to_string(),
+                                    ))
+                                    .await;
+                                {
+                                    let mut res = hub().residents.write().unwrap();
+                                    if let Some(r) = res.iter_mut().find(|r| r.id == addr_id) {
+                                        r.hobby_stash = r.hobby_stash.saturating_sub(give_count);
+                                        r.hobby_gift_timer = vhobby::GIFT_COOLDOWN_SECS;
+                                        r.say = vhobby::surprise_gift_say_line(
+                                            hobby,
+                                            &player_key,
+                                            pick,
+                                        );
+                                        r.say_timer = SAY_SECS;
+                                        r.mood_boost_secs =
+                                            r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                    }
+                                } // residents 寫鎖釋放
+                                let mem_entry = hub().memory.write().unwrap().add_memory(
+                                    &addr_id,
+                                    &player_key,
+                                    &vhobby::surprise_gift_memory_line(hobby),
+                                );
+                                vmem::append_memory(&mem_entry);
+                                vfeed::append_feed(
+                                    vhobby::FEED_KIND,
+                                    rname,
+                                    &vhobby::surprise_gift_feed_line(rname, hobby, &player_key),
+                                );
+                            }
+                        }
                     }
                     // 鋪面（C 階段）先於整地判斷：鋪面句必帶材料名、整地句不帶，兩者互斥；
                     // 「整平然後鋪成石磚」這類複合句走鋪面（鋪面本就內含整平）。
@@ -15656,6 +15738,30 @@ fn tick_residents(dt: f32) {
                         }
                     }
                 }
+            }
+
+            // 私人嗜好·沉浸收藏 v1（自主提案切片）：閒暇時偶爾沉浸在自己的私人小嗜好裡，
+            // 私藏 +1（有界，見 `STASH_CAP`）。純自己的事，不需要玩家在場——與招呼/掏心/教學
+            // 刻意區隔：那幾拍都圍著「跟你互動」轉，這一拍是她自己的品味，你在不在都會發生。
+            if r.hobby_collect_timer > 0.0 {
+                r.hobby_collect_timer -= dt;
+            } else if r.say.is_empty() && !r.seeking_comfort && r.approaching_esteem.is_none() {
+                let roll = rand::random::<f32>();
+                if vhobby::should_collect(true, r.hobby_stash, roll) {
+                    r.hobby_stash += 1;
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    r.say = vhobby::collect_say_line(r.hobby, pick)
+                        .chars()
+                        .take(40)
+                        .collect();
+                    r.say_timer = SAY_SECS;
+                    r.hobby_collect_timer = vhobby::COLLECT_COOLDOWN_SECS;
+                }
+            }
+            // 驚喜餽贈冷卻只在此倒數（實際觸發掛在對話 handler，是「這次聊天」的天然節點；
+            // 冷卻仍照真實時間流逝，不因對話頻率而異）。
+            if r.hobby_gift_timer > 0.0 {
+                r.hobby_gift_timer -= dt;
             }
 
             // 居民教你一道獨門配方 v1（自主提案，ROADMAP 849）：招呼／掏心之外的另一拍——
