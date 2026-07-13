@@ -40,6 +40,9 @@ pub const RELEVANT_RECALL_LIMIT: usize = 2;
 pub const RELEVANCE_MIN_SCORE: f32 = 0.15;
 /// 一筆 episodic 摘要的字元上限：規則擷取後截斷。
 pub const SUMMARY_MAX_CHARS: usize = 80;
+/// 淡忘印象最多保留幾個主題標籤（記憶 v2「整併/壓縮」最小可行版）。
+/// 別過度工程：只留最近淘汰前出現的幾個主題，夠日記造一句「常聊到…」就好。
+pub const IMPRESSION_TOPIC_CAP: usize = 3;
 /// 餵進對話 system prompt 的「脈絡區塊（episodic + 對話）」總字元上限。
 /// semantic 精華層不受此 cap 限制，總是帶上。
 pub const MAX_CONTEXT_CHARS: usize = 700;
@@ -124,6 +127,10 @@ pub struct VoxelMemory {
     semantic: HashMap<(String, String), Vec<SemanticFact>>,
     /// 淡忘計數：key = 居民 id → 被 episodic cap 淘汰的總筆數。
     faded_counts: HashMap<String, usize>,
+    /// 淡忘印象：key = 居民 id → 淘汰前留下的主題標籤（記憶 v2「整併/壓縮」最小可行版，
+    /// 見 [`impression_topic`]）。front 舊、back 新，capped 在 [`IMPRESSION_TOPIC_CAP`]。
+    /// 固定標籤集合、絕不含玩家原話——守 `voxel_diary` 「輸出永不含玩家原話」的隱私鐵律。
+    impression_topics: HashMap<String, VecDeque<&'static str>>,
     /// 全域單調序號（下一筆記憶用）。
     next_seq: u64,
 }
@@ -145,6 +152,7 @@ impl VoxelMemory {
         let mut long: HashMap<String, VecDeque<MemoryEntry>> = HashMap::new();
         let mut semantic: HashMap<(String, String), Vec<SemanticFact>> = HashMap::new();
         let mut faded_counts: HashMap<String, usize> = HashMap::new();
+        let mut impression_topics: HashMap<String, VecDeque<&'static str>> = HashMap::new();
         let mut max_seq = 0u64;
 
         for e in entries {
@@ -160,10 +168,11 @@ impl VoxelMemory {
 
             let q = long.entry(resident.clone()).or_default();
             q.push_back(e);
-            // 載入即守 episodic cap，精確重建淡忘計數。
+            // 載入即守 episodic cap，精確重建淡忘計數 + 淡忘印象（與 add_memory 同一套邏輯，
+            // 確保重啟重建跟線上運行產生一致結果）。
             while q.len() > EPISODIC_CAP {
-                if q.pop_front().is_some() {
-                    *faded_counts.entry(resident.clone()).or_insert(0) += 1;
+                if let Some(evicted) = q.pop_front() {
+                    record_fade(&mut faded_counts, &mut impression_topics, &resident, &evicted.summary);
                 }
             }
         }
@@ -173,6 +182,7 @@ impl VoxelMemory {
             long,
             semantic,
             faded_counts,
+            impression_topics,
             next_seq: max_seq.wrapping_add(1),
         }
     }
@@ -213,8 +223,8 @@ impl VoxelMemory {
         let q = self.long.entry(resident.to_string()).or_default();
         q.push_back(entry.clone());
         while q.len() > EPISODIC_CAP {
-            if q.pop_front().is_some() {
-                *self.faded_counts.entry(resident.to_string()).or_insert(0) += 1;
+            if let Some(evicted) = q.pop_front() {
+                record_fade(&mut self.faded_counts, &mut self.impression_topics, resident, &evicted.summary);
             }
         }
 
@@ -325,6 +335,67 @@ impl VoxelMemory {
     pub fn faded_count(&self, resident: &str) -> usize {
         self.faded_counts.get(resident).copied().unwrap_or(0)
     }
+
+    /// 某居民淘汰前留下的「淡忘印象」主題標籤（記憶 v2「整併/壓縮」最小可行版，
+    /// 見 [`impression_topic`]）。最舊在前、最新在後，最多 [`IMPRESSION_TOPIC_CAP`] 個；
+    /// 從未淘汰過或淘汰的內容都認不出主題 → 空。純讀、確定性，固定標籤集合、
+    /// 絕不含玩家原話——供 `voxel_diary` 造「淡忘印象」句使用。
+    pub fn impression_topics(&self, resident: &str) -> Vec<&'static str> {
+        self.impression_topics
+            .get(resident)
+            .map(|q| q.iter().copied().collect())
+            .unwrap_or_default()
+    }
+}
+
+/// 記一筆 episodic 記憶被 cap 淘汰：累計淡忘計數 + 嘗試從內容留下一個去識別化的主題印象
+/// （記憶 v2「整併/壓縮」最小可行版）。供 [`VoxelMemory::add_memory`]（線上運行）與
+/// [`VoxelMemory::from_entries`]（重啟重建）的淘汰迴圈共用，確保兩條路徑產生一致結果——
+/// 寫成自由函式（非 `&mut self` 方法）是刻意的：呼叫端在 episodic 佇列（`self.long` 的某個
+/// entry）仍被可變借用時呼叫，若寫成 `&mut self` 方法會撞上借用檢查（field-level 借用拆分
+/// 只在直接存取欄位時成立，經方法呼叫就不成立）。
+fn record_fade(
+    faded_counts: &mut HashMap<String, usize>,
+    impression_topics: &mut HashMap<String, VecDeque<&'static str>>,
+    resident: &str,
+    evicted_summary: &str,
+) {
+    *faded_counts.entry(resident.to_string()).or_insert(0) += 1;
+    if let Some(topic) = impression_topic(evicted_summary) {
+        let bag = impression_topics.entry(resident.to_string()).or_default();
+        // 連續同主題不重複記（「常聊到星空」比「星空、星空、星空」更像一句人話）。
+        if bag.back() != Some(&topic) {
+            bag.push_back(topic);
+            while bag.len() > IMPRESSION_TOPIC_CAP {
+                bag.pop_front();
+            }
+        }
+    }
+}
+
+/// 淡忘印象的主題詞庫——供 [`impression_topic`] 用。只列出固定的一組去識別化標籤，
+/// 絕不是玩家原話（見 `voxel_diary` 「輸出永不含玩家原話」的隱私鐵律）。
+const IMPRESSION_TOPIC_KEYWORDS: &[(&str, &[&str])] = &[
+    ("星空", &["星星", "星空", "流星", "夜空"]),
+    ("蓋造", &["蓋", "建造", "房子", "小屋", "高塔", "橋"]),
+    ("種植", &["種", "花", "田", "作物"]),
+    ("挖礦", &["礦", "挖", "洞穴", "石頭"]),
+    ("釣魚", &["釣魚", "魚", "河邊", "水邊"]),
+    ("情誼", &["朋友", "想念", "老朋友", "熟識", "陪伴"]),
+];
+
+/// 從一筆**即將被 episodic cap 淘汰**的記憶摘要，粗略辨識出一個去識別化的「主題標籤」——
+/// 淘汰前留下一個主題印記，而非讓整句原話船過水無痕（記憶 v2「整併/壓縮」最小可行版）。
+///
+/// 只回傳 [`IMPRESSION_TOPIC_KEYWORDS`] 裡固定的標籤字串，**絕不**回傳/拼接玩家原話——
+/// 守 `voxel_diary` 「輸出永不含玩家原話」的隱私鐵律；日後若要升級成向量語意分群，
+/// 替換本函式即可，呼叫端（[`record_fade`]）與上下游不動。零 LLM、確定性、可測。
+fn impression_topic(summary: &str) -> Option<&'static str> {
+    let body = extract_inner_quote(summary).unwrap_or(summary);
+    IMPRESSION_TOPIC_KEYWORDS
+        .iter()
+        .find(|(_, kws)| kws.iter().any(|kw| body.contains(kw)))
+        .map(|(label, _)| *label)
 }
 
 // ── 測試身份過濾（遷移用純函式）─────────────────────────────────────────────
@@ -748,6 +819,75 @@ mod tests {
         let replayed = VoxelMemory::from_entries(entries);
         assert_eq!(runtime.faded_count("vox_res_0"), replayed.faded_count("vox_res_0"));
         assert_eq!(runtime.faded_count("vox_res_0"), 8);
+    }
+
+    // ── 淡忘印象（記憶 v2「整併/壓縮」最小可行版）────────────────────────────
+
+    #[test]
+    fn impression_topic_matches_known_categories_and_none_for_unrecognized() {
+        assert_eq!(impression_topic("和旅人聊過，對方提到「我最喜歡看星星」"), Some("星空"));
+        assert_eq!(impression_topic("和旅人聊過，對方提到「我想蓋一座高塔」"), Some("蓋造"));
+        assert_eq!(impression_topic("和旅人聊過，對方提到「田裡的花開了」"), Some("種植"));
+        assert_eq!(impression_topic("和旅人聊過，對方提到「洞穴裡的礦挖不完」"), Some("挖礦"));
+        assert_eq!(impression_topic("和旅人聊過，對方提到「河邊釣魚真悠閒」"), Some("釣魚"));
+        assert_eq!(impression_topic("和旅人聊過，對方提到「好想念老朋友」"), Some("情誼"));
+        assert_eq!(impression_topic("和旅人聊過，對方提到「今天天氣真好」"), None, "無法辨識主題應回 None");
+        assert_eq!(impression_topic(""), None);
+    }
+
+    #[test]
+    fn impression_topic_never_echoes_raw_quote() {
+        // 隱私鐵律：即使原話命中關鍵字，回傳值也必須是固定標籤集合裡的字，絕不是玩家原話本身。
+        let raw = "和旅人聊過，對方提到「這句超級獨特絕不會被當成標籤star星星ZzyXk9」";
+        let topic = impression_topic(raw).expect("含「星星」關鍵字應命中主題");
+        assert_ne!(topic, raw, "回傳值不該是原話");
+        assert_eq!(topic, "星空");
+        assert!(IMPRESSION_TOPIC_KEYWORDS.iter().any(|(label, _)| *label == topic));
+    }
+
+    #[test]
+    fn impression_topics_empty_when_never_evicted() {
+        let mut m = VoxelMemory::new();
+        m.add_memory("vox_res_0", "旅人", "和旅人聊過，對方提到「我最喜歡看星星」");
+        assert!(m.impression_topics("vox_res_0").is_empty(), "沒淘汰過就沒有淡忘印象");
+    }
+
+    #[test]
+    fn eviction_populates_impression_topics_capped_and_deduped() {
+        let mut m = VoxelMemory::new();
+        // 先塞會被淘汰的「星空」×2（應去重）與「蓋造」×1，**排在佇列最前面**；
+        // 接著塞滿 EPISODIC_CAP 筆瑣事墊底，把上面三筆真的擠出佇列（FIFO 淘汰最舊）。
+        m.add_memory("vox_res_0", "旅人", "和旅人聊過，對方提到「我最喜歡看星星」");
+        m.add_memory("vox_res_0", "旅人", "和旅人聊過，對方提到「昨晚的星空好美」");
+        m.add_memory("vox_res_0", "旅人", "和旅人聊過，對方提到「我想蓋一座高塔」");
+        for i in 0..EPISODIC_CAP {
+            m.add_memory("vox_res_0", "旅人", &format!("和旅人聊過，對方提到「瑣事{i}」"));
+        }
+        assert_eq!(m.faded_count("vox_res_0"), 3, "三筆前置記憶應已被擠出佇列");
+        let topics = m.impression_topics("vox_res_0");
+        assert!(topics.len() <= IMPRESSION_TOPIC_CAP, "應守 IMPRESSION_TOPIC_CAP：{topics:?}");
+        assert!(topics.contains(&"星空"), "應留下星空主題：{topics:?}");
+        assert!(topics.contains(&"蓋造"), "應留下蓋造主題：{topics:?}");
+        // 兩筆連續「星空」只留一個（去重），不是「星空、星空」。
+        assert_eq!(topics.iter().filter(|t| **t == "星空").count(), 1, "連續同主題不重複記");
+    }
+
+    #[test]
+    fn from_entries_replay_matches_runtime_impression_topics() {
+        let mut runtime = VoxelMemory::new();
+        let mut entries = Vec::new();
+        entries.push(runtime.add_memory("vox_res_0", "旅人", "和旅人聊過，對方提到「我最喜歡看星星」"));
+        entries.push(runtime.add_memory("vox_res_0", "旅人", "和旅人聊過，對方提到「田裡的花開了」"));
+        for i in 0..EPISODIC_CAP {
+            entries.push(runtime.add_memory("vox_res_0", "旅人", &format!("和旅人聊過，對方提到「瑣事{i}」")));
+        }
+        let replayed = VoxelMemory::from_entries(entries);
+        assert_eq!(
+            runtime.impression_topics("vox_res_0"),
+            replayed.impression_topics("vox_res_0"),
+            "重啟重建應與線上運行產生一致的淡忘印象"
+        );
+        assert!(!replayed.impression_topics("vox_res_0").is_empty());
     }
 
     #[test]

@@ -12287,12 +12287,12 @@ pub async fn voxel_diary_handler(
         }
     } // residents 寫鎖釋放
 
-    // 2) 短鎖快照全部長期記憶 + 淡忘計數（每位）→ drop。
-    let all_memories: Vec<(String, Vec<crate::voxel_memory::MemoryEntry>, usize)> = {
+    // 2) 短鎖快照全部長期記憶 + 淡忘計數 + 淡忘印象主題（每位）→ drop。
+    let all_memories: Vec<(String, Vec<crate::voxel_memory::MemoryEntry>, usize, Vec<&'static str>)> = {
         let mem = hub().memory.read().unwrap();
         resident_ids
             .iter()
-            .map(|(id, _)| (id.clone(), mem.all_memories_for(id), mem.faded_count(id)))
+            .map(|(id, _)| (id.clone(), mem.all_memories_for(id), mem.faded_count(id), mem.impression_topics(id)))
             .collect()
     };
 
@@ -12307,8 +12307,8 @@ pub async fn voxel_diary_handler(
         .iter()
         .zip(all_memories.iter())
         .zip(desires.iter())
-        .map(|(((id, name), (_, mems, faded)), desire)| {
-            voxel_diary::format_diary_page(id, name, desire.as_deref(), mems, *faded)
+        .map(|(((id, name), (_, mems, faded, topics)), desire)| {
+            voxel_diary::format_diary_page(id, name, desire.as_deref(), mems, *faded, topics)
         })
         .collect();
 

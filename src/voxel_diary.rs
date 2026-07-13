@@ -78,9 +78,10 @@ pub struct DiaryPage {
     pub desire: Option<String>,
     /// 內心反思列表，**最新在前**（seq 大→小）。空列表 = 還沒有可昇華的記憶。
     pub entries: Vec<DiaryEntry>,
-    /// 更早以前、已被記憶 cap 淘汰的舊記憶留下的模糊一句（記憶 v2「整併/壓縮/封存」
-    /// 最小可行版）。`None` = 記憶從未滿載過，沒有任何東西被淡忘。**不含原話**——
-    /// 只是一句去識別化的通用反思，守日記「輸出永不含玩家原話」的隱私鐵律。
+    /// 更早以前、已被記憶 cap 淘汰的舊記憶留下的模糊一句（記憶 v2「整併/壓縮/封存」）。
+    /// `None` = 記憶從未滿載過，沒有任何東西被淡忘。**不含原話**——淘汰前只留下固定的
+    /// 去識別化主題標籤（如「星空」「蓋造」，見 `voxel_memory::impression_topic`），
+    /// 守日記「輸出永不含玩家原話」的隱私鐵律。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub faint_impression: Option<String>,
     /// 居民對自己的「自我印象」（自我印象 v1，ROADMAP 770）：從累積記憶昇華出的一句
@@ -119,28 +120,37 @@ pub fn format_diary_page(
     desire: Option<&str>,
     memories: &[MemoryEntry],
     faded_count: usize,
+    impression_topics: &[&str],
 ) -> DiaryPage {
     DiaryPage {
         resident_id: resident_id.to_string(),
         resident_name: resident_name.to_string(),
         desire: desire.map(|s| s.to_string()),
         entries: curate_reflections(memories, MAX_DIARY_ENTRIES),
-        faint_impression: faint_impression_line(faded_count),
+        faint_impression: faint_impression_line(faded_count, impression_topics),
         // 自我印象 v1（ROADMAP 770）：從同一份記憶昇華出高階自我概念，顯示在日記頁最頂端。
         self_image: crate::voxel_self_image::self_impression(memories),
     }
 }
 
-/// 淡忘計數 → 一句去識別化的「模糊印象」反思（記憶 v2 最小可行版）。
-/// 0 筆淡忘 → `None`（沒東西可淡忘）；純函式、確定性、可測。
-/// 刻意**不含**任何原話/主題細節——只承認「有些更早的事已經想不真切了」，
+/// 淡忘計數 + 淡忘印象主題標籤 → 一句「模糊印象」反思（記憶 v2「整併/壓縮」最小可行版）。
+/// 0 筆淡忘 → `None`（沒東西可淡忘）；`topics` 空（如剛好淘汰的都認不出主題）→ 退回原本
+/// 只報筆數的通用句。純函式、確定性、可測。**`topics` 只能是固定標籤集合**（見
+/// `voxel_memory::IMPRESSION_TOPIC_KEYWORDS`）——不管有沒有主題，輸出都不含任何原話，
 /// 守日記「輸出永不含玩家原話」的隱私鐵律（見本檔檔頭）。
-fn faint_impression_line(faded_count: usize) -> Option<String> {
+fn faint_impression_line(faded_count: usize, topics: &[&str]) -> Option<String> {
     if faded_count == 0 {
         return None;
     }
+    if topics.is_empty() {
+        return Some(format!(
+            "🌫️ 心底還留著 {faded_count} 段更早以前的印象，模糊得已經想不真切是誰、說過什麼了……"
+        ));
+    }
+    let joined = topics.join("、");
     Some(format!(
-        "🌫️ 心底還留著 {faded_count} 段更早以前的印象，模糊得已經想不真切是誰、說過什麼了……"
+        "🌫️ 心底還留著 {faded_count} 段更早以前的印象——依稀記得那些日子常聊到{joined}，\
+但已經想不真切是誰、說過什麼了……"
     ))
 }
 
@@ -439,7 +449,7 @@ mod tests {
             make_entry(2, "阿明", "我討厭隔壁老王這個人"),
             make_entry(1, "小美", "我想在這裡蓋一座觀星塔"),
         ];
-        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0, &[]);
         for e in &page.entries {
             // 玩家原話的可識別片段絕不出現。
             assert!(!e.text.contains("1234"), "不可洩漏玩家原話：{}", e.text);
@@ -458,7 +468,7 @@ mod tests {
     #[test]
     fn entries_are_first_person_reflections() {
         let memories = vec![make_entry(1, "旅人", "我想看滿天星斗")];
-        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0, &[]);
         assert_eq!(page.entries.len(), 1);
         // 第一人稱、有「我」、是內心獨白。
         assert!(page.entries[0].text.contains("我"), "應是第一人稱反思");
@@ -610,7 +620,7 @@ mod tests {
             make_entry(2, "阿星", "我想看星星"),
             make_entry(1, "小美", "好美的世界"),
         ];
-        let page = format_diary_page("vox_res_0", "露娜", Some("我想蓋一座觀星塔"), &memories, 0);
+        let page = format_diary_page("vox_res_0", "露娜", Some("我想蓋一座觀星塔"), &memories, 0, &[]);
         assert_eq!(page.resident_id, "vox_res_0");
         assert_eq!(page.resident_name, "露娜");
         assert_eq!(page.desire.as_deref(), Some("我想蓋一座觀星塔"));
@@ -623,21 +633,21 @@ mod tests {
     #[test]
     fn format_diary_page_no_desire() {
         let memories = vec![make_entry(0, "路人", "我想去看看那片花田")];
-        let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0);
+        let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0, &[]);
         assert!(page.desire.is_none(), "沒心願時 desire 應為 None");
         assert_eq!(page.entries.len(), 1);
     }
 
     #[test]
     fn format_diary_page_empty_memories() {
-        let page = format_diary_page("vox_res_2", "賽勒", Some("我想釣魚"), &[], 0);
+        let page = format_diary_page("vox_res_2", "賽勒", Some("我想釣魚"), &[], 0, &[]);
         assert_eq!(page.entries.len(), 0, "沒記憶時 entries 應為空");
         assert!(page.desire.is_some(), "但仍有心願");
     }
 
     #[test]
     fn format_diary_page_all_empty() {
-        let page = format_diary_page("vox_res_3", "奧瑞", None, &[], 0);
+        let page = format_diary_page("vox_res_3", "奧瑞", None, &[], 0, &[]);
         assert!(page.desire.is_none());
         assert!(page.entries.is_empty());
     }
@@ -646,23 +656,35 @@ mod tests {
 
     #[test]
     fn faint_impression_line_none_when_zero() {
-        assert_eq!(faint_impression_line(0), None);
+        assert_eq!(faint_impression_line(0, &[]), None);
+        assert_eq!(faint_impression_line(0, &["星空"]), None, "淡忘計數 0 時即使帶主題也不該有印象句");
     }
 
     #[test]
     fn faint_impression_line_present_and_privacy_safe_when_nonzero() {
-        let line = faint_impression_line(5).expect("非零淡忘計數應有印象句");
+        let line = faint_impression_line(5, &[]).expect("非零淡忘計數應有印象句");
         assert!(line.contains('5'), "應含淡忘筆數：{line}");
-        // 隱私鐵律：不含玩家原話 / 玩家名 / 主題細節——只是通用反思。
+        // 隱私鐵律：不含玩家原話 / 玩家名——只是通用反思。
+        assert!(!line.contains('「'), "不該內嵌引號原話：{line}");
+    }
+
+    #[test]
+    fn faint_impression_line_includes_topics_when_present() {
+        let line = faint_impression_line(5, &["星空", "蓋造"]).expect("非零淡忘計數應有印象句");
+        assert!(line.contains('5'), "應含淡忘筆數：{line}");
+        assert!(line.contains("星空"), "應帶出主題：{line}");
+        assert!(line.contains("蓋造"), "應帶出主題：{line}");
+        // 隱私鐵律：主題是固定標籤，句子本身仍不含引號原話。
         assert!(!line.contains('「'), "不該內嵌引號原話：{line}");
     }
 
     #[test]
     fn format_diary_page_surfaces_faint_impression_when_faded() {
         let memories = vec![make_entry(1, "旅人", "我想看星星")];
-        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 12);
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 12, &["星空"]);
         let imp = page.faint_impression.expect("faded_count > 0 應帶出模糊印象");
         assert!(imp.contains("12"));
+        assert!(imp.contains("星空"), "應帶出淡忘印象主題：{imp}");
     }
 
     #[test]
@@ -690,7 +712,7 @@ mod tests {
     fn sign_memory_becomes_sign_reflection() {
         // 讀牌記憶應昇華成「讀牌」主題的內心反思（非「對話」反思）。
         let memories = vec![make_sign_entry(1, "露娜的家")];
-        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0, &[]);
         assert_eq!(page.entries.len(), 1, "一筆讀牌記憶應有一條反思");
         let text = &page.entries[0].text;
         assert!(text.contains("牌子"), "讀牌反思應提到牌子：{text}");
@@ -700,7 +722,7 @@ mod tests {
     fn sign_reflection_does_not_leak_sign_text_verbatim() {
         // 內心反思是「瞥見內心」而非謄本：不逐字倒出牌面原文。
         let memories = vec![make_sign_entry(1, "露娜的家")];
-        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0, &[]);
         assert!(
             !page.entries[0].text.contains("露娜的家"),
             "不該逐字倒出牌面：{}",
@@ -716,7 +738,7 @@ mod tests {
             make_sign_entry(2, "諾娃的小屋"),
             make_sign_entry(1, "歡迎光臨"),
         ];
-        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0, &[]);
         let sign_entries: Vec<_> = page
             .entries
             .iter()
@@ -737,7 +759,7 @@ mod tests {
             make_sign_entry(2, "露娜的家"),
             make_entry(1, "旅人", "我想看星星"),
         ];
-        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0, &[]);
         assert!(page.entries.iter().any(|e| e.text.contains("牌子")), "應有讀牌反思");
         assert!(page.entries.iter().any(|e| e.text.contains("夜空")), "應有星空對話反思");
     }
@@ -766,7 +788,7 @@ mod tests {
     fn neighborly_memory_becomes_neighborly_reflection() {
         // 標記過的鄰里生活記憶應歸類成 Neighborly，而非落入 Other 或被關鍵字誤判。
         let memories = vec![make_neighborly_entry(1, "露娜", "去陪伴了露娜，感覺做了一件溫暖的事。")];
-        let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0);
+        let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0, &[]);
         assert_eq!(page.entries.len(), 1);
         assert!(page.entries[0].text.contains("鄰居"), "應是鄰里生活反思：{}", page.entries[0].text);
     }
@@ -778,7 +800,7 @@ mod tests {
         let text = "去陪伴了露娜，感覺做了一件溫暖的事。";
         assert_eq!(classify_theme(text), Some(Theme::Friendship), "未標記時關鍵字判題會誤中 Friendship（佐證問題存在）");
         let memories = vec![make_neighborly_entry(1, "露娜", text)];
-        let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0);
+        let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0, &[]);
         assert!(!page.entries[0].text.contains("回來找我說話"), "標記後不該再落入 Friendship 反思");
     }
 
@@ -797,7 +819,7 @@ mod tests {
                 "未標記時「陪」會誤中 Friendship（佐證問題存在）：{raw}"
             );
             let memories = vec![make_neighborly_entry(1, "露娜", &raw)];
-            let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0);
+            let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0, &[]);
             assert!(
                 !page.entries[0].text.contains("回來找我說話"),
                 "標記後不該再落入 Friendship 反思：{}",
@@ -814,7 +836,7 @@ mod tests {
     #[test]
     fn neighborly_reflection_does_not_leak_template_text_or_resident_name() {
         let memories = vec![make_neighborly_entry(1, "奧瑞", "奧瑞特地來陪我說話，心裡暖了不少。")];
-        let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0);
+        let page = format_diary_page("vox_res_1", "諾娃", None, &memories, 0, &[]);
         assert!(!page.entries[0].text.contains("奧瑞"), "不該點名是哪位鄰居：{}", page.entries[0].text);
     }
 
@@ -837,7 +859,7 @@ mod tests {
             make_neighborly_entry(2, "露娜", "分你一口，別餓著肚子"),
             make_entry(1, "旅人", "我想看星星"),
         ];
-        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0, &[]);
         assert!(page.entries.iter().any(|e| e.text.contains("鄰居")), "應有鄰里生活反思");
         assert!(page.entries.iter().any(|e| e.text.contains("夜空")), "應有星空對話反思");
     }
@@ -920,7 +942,7 @@ mod tests {
             make_selfmemory_entry(2, "諾娃", crate::voxel_wedding::wed_memory_line("諾娃")),
             make_entry(1, "旅人", "我想看星星"),
         ];
-        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0);
+        let page = format_diary_page("vox_res_0", "露娜", None, &memories, 0, &[]);
         assert!(page.entries.iter().any(|e| e.text.contains("終身")), "應有婚禮反思");
         assert!(page.entries.iter().any(|e| e.text.contains("孩子")), "應有家庭反思");
         assert!(page.entries.iter().any(|e| e.text.contains("夜空")), "應有星空對話反思");
