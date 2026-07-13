@@ -6515,6 +6515,16 @@ function promptSignEdit(x, y, z, isNew) {
   ws.send(JSON.stringify({ t: "sign_set", x, y, z, text: input }));
 }
 
+// 領地信任名單 v2（自主提案切片，ROADMAP 966）：跳出輸入框讓玩家打出附近朋友的名字，送
+// claim_trust 給伺服器（伺服器驗身分+距離，找到人才生效；同一個名字再送一次＝解除信任）。
+function promptClaimTrust() {
+  const input = window.prompt("站在朋友身邊，輸入他的名字把他加進你的領地信任名單（再輸入一次同名字可解除）：", "");
+  if (input === null) return;
+  const trimmed = input.trim();
+  if (!trimmed) return;
+  ws.send(JSON.stringify({ t: "claim_trust", name: trimmed }));
+}
+
 // ── 輸入 ───────────────────────────────────────────────────────────────────
 const keys = {};
 addEventListener("keydown", (e) => {
@@ -6529,6 +6539,9 @@ addEventListener("keydown", (e) => {
   // 掉落物 v1（自主提案切片 828）：Q 對準地面丟下一份目前手上選取的材料。
   if (e.code === "KeyQ") { e.preventDefault(); dropSelectedItem(); }
   if (e.code === "KeyM") { e.preventDefault(); openStallAtTarget(); }
+  // 領地信任名單 v2（自主提案切片，ROADMAP 966）：站到朋友身邊按 T，輸入他的名字把他加進
+  // 你這帳號的信任名單（再按一次同名字即解除）——之後他也能開你家箱子、動你家的地。
+  if (e.code === "KeyT") { e.preventDefault(); promptClaimTrust(); }
   // Esc：關操作設定面板（也讓瀏覽器解除滑鼠鎖定，兩者不衝突）。
   if (e.code === "Escape" && settingsPanelVisible()) closeSettingsPanel();
   // Esc：也收起 ☰ 主選單抽屜（若正開著）。
@@ -7239,6 +7252,10 @@ function connect() {
       // 玩家個人領地保護 v1（自主提案切片，ROADMAP 963）：試圖動別人「家」牌方圓內的方塊——
       // 被後端擋下，浮出一句溫柔說明，告訴你這裡是誰的地盤。
       showMsg(m.line || "這裡已經有主人了，別人的鎬子伸不進來。");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3000);
+    } else if (m.t === "claim_trust_ok") {
+      // 領地信任名單 v2（自主提案切片，ROADMAP 966）：伺服器已切換信任狀態，給自己一句確認。
+      showMsg(m.trusted ? ("已把 " + m.name + " 加進你的領地信任名單 🤝") : ("已把 " + m.name + " 移出你的領地信任名單。"));
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3000);
     } else if (m.t === "colony_founded") {
       // 分村殖民 v1：世界某處剛奠下一座新村（人人可見的世界大事，稀有）——浮出立村捷報。
