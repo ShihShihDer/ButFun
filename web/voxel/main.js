@@ -4721,6 +4721,7 @@ const compassEl = document.getElementById("compassPanel");
 const compassBodyEl = document.getElementById("compassBody");
 const compassBtnEl = document.getElementById("compassBtn");
 const waypointBodyEl = document.getElementById("waypointBody");
+const landmarkBodyEl = document.getElementById("landmarkBody");
 const waypointAddBtnEl = document.getElementById("waypointAddBtn");
 
 /** 世界座標下，從 (px,pz) 望向 (rx,rz) 的方位角（弧度）。
@@ -4776,6 +4777,28 @@ function promptAddWaypoint() {
 /** 刪除指定名字的路標（伺服器確認後才會從 `waypoints` 快取移除，見 `waypoint_sync`）。 */
 function removeWaypoint(label) {
   ws.send(JSON.stringify({ t: "remove_waypoint", label }));
+}
+
+// ── 殖民地羅盤（自主提案切片，接續 943「殖民地真居住」遺留的缺口「村莊地圖端點」）───────
+// 943 讓拓荒者真的搬去遠方的第二村生活，玩家撞見時能讀到立村故事＋現居人口——但走遠了
+// 之後，那座村落就只存在於玩家的記憶裡：探索紀事（840）雖記著座標，卻只是一份靜態清單，
+// 沒有方向、沒有距離，想再訪只能憑印象亂走。本段複用既有 `/voxel/discoveries`（零新端點），
+// 把已發現的野外村落跟居民（705）／路標（869）一樣接進同一個羅盤——差別是唯讀（世界
+// 地標，不是玩家自訂的筆記，不能刪）。
+/** 這位玩家已發現的殖民地快取：`[{kind,label,icon,name,x,y,z}]`，開羅盤面板時抓一次。 */
+let discoveredColonies = [];
+
+/** 向後端抓這位玩家已發現的殖民地（複用探索紀事既有端點，過濾 kind==="colony"）。 */
+async function refreshDiscoveredColonies() {
+  if (!myName || myName === "旅人") { discoveredColonies = []; return; }
+  try {
+    const resp = await fetch(`/voxel/discoveries?player=${encodeURIComponent(myName)}`);
+    if (!resp.ok) throw new Error("discoveries fetch failed: " + resp.status);
+    const data = await resp.json();
+    discoveredColonies = ((data && data.items) || []).filter((it) => it.kind === "colony");
+  } catch (err) {
+    // 拉取失敗保留舊快取，不阻斷遊戲——下次開面板/重連再試。
+  }
 }
 
 // ── 雷達小地圖（ROADMAP 820）───────────────────────────────────────────────
@@ -4849,6 +4872,20 @@ function renderCompassRadar() {
     ctx.restore();
     ctx.globalAlpha = 1;
   }
+  // 殖民地羅盤（自主提案切片，接續 943 遺留缺口）：teal 色點，與居民（各自穩定色）／
+  // 路標（金色菱形）一眼區隔。
+  for (const c of discoveredColonies) {
+    const dx = c.x - player.x, dz = c.z - player.z;
+    const dist = Math.hypot(dx, dz);
+    const relDeg = compassRelativeDeg(player.x, player.z, c.x, c.z, player.yaw);
+    const pt = radarPoint(dist, relDeg, RADAR_RANGE_UNITS, dotR);
+    ctx.globalAlpha = pt.clamped ? 0.55 : 1;
+    ctx.beginPath();
+    ctx.arc(cx + pt.x, cy + pt.y, pt.clamped ? 4 : 5, 0, Math.PI * 2);
+    ctx.fillStyle = "#7fd8c8";
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
   ctx.beginPath();
   ctx.moveTo(cx, cy - 7);
   ctx.lineTo(cx - 5, cy + 5);
@@ -4912,6 +4949,30 @@ function renderWaypointList() {
   for (const btn of waypointBodyEl.querySelectorAll(".waypoint-del")) {
     btn.addEventListener("click", () => removeWaypoint(btn.dataset.label));
   }
+  renderLandmarkList();
+}
+
+/** 渲染「已發現的村落」清單（自主提案切片，接續 943 遺留缺口）：跟居民/路標同款方位箭頭
+ * ＋距離，唯讀不可刪除——世界地標，不是玩家自訂筆記。 */
+function renderLandmarkList() {
+  if (!landmarkBodyEl) return;
+  if (discoveredColonies.length === 0) {
+    landmarkBodyEl.innerHTML = '<div class="compass-empty">還沒發現任何野外村落，走遠去探索吧。</div>';
+    return;
+  }
+  landmarkBodyEl.innerHTML = "";
+  for (const c of discoveredColonies) {
+    const dx = c.x - player.x, dz = c.z - player.z;
+    const dist = Math.hypot(dx, dz);
+    const deg = compassRelativeDeg(player.x, player.z, c.x, c.z, player.yaw);
+    const div = document.createElement("div");
+    div.className = "compass-row landmark-row";
+    div.innerHTML =
+      '<span class="compass-arrow" style="transform: rotate(' + deg.toFixed(0) + 'deg)">' + escHtml(c.icon || "🏘️") + '</span>' +
+      '<span class="compass-name">' + escHtml(c.name || c.label || "野外村落") + '</span>' +
+      '<span class="compass-dist">' + Math.round(dist) + ' 格</span>';
+    landmarkBodyEl.appendChild(div);
+  }
 }
 
 /** 開啟居民羅盤面板，開始每 0.3 秒刷新一次方位（面板關閉時停止，不空耗）。 */
@@ -4921,6 +4982,7 @@ function openCompass() {
   compassEl.style.display = "flex";
   renderCompassPanel();
   refreshWaypoints().then(() => { if (compassVisible) renderCompassPanel(); });
+  refreshDiscoveredColonies().then(() => { if (compassVisible) renderCompassPanel(); });
   if (compassTimer) clearInterval(compassTimer);
   compassTimer = setInterval(() => { if (compassVisible) renderCompassPanel(); }, 300);
 }
@@ -9241,6 +9303,11 @@ window.__voxel = {
   renderWaypointList() { renderWaypointList(); return waypointBodyEl && waypointBodyEl.innerHTML; },
   promptAddWaypoint() { return promptAddWaypoint(); },
   removeWaypoint(label) { removeWaypoint(label); },
+  // ── 殖民地羅盤 QA 用（自主提案切片，接續 943 遺留缺口）──
+  get discoveredColonies() { return [...discoveredColonies]; },
+  setDiscoveredColonies(items) { discoveredColonies = items; renderLandmarkList(); },
+  refreshDiscoveredColonies() { return refreshDiscoveredColonies(); },
+  renderLandmarkList() { renderLandmarkList(); return landmarkBodyEl && landmarkBodyEl.innerHTML; },
   // ── 居民表情/肢體 v1 QA 用（純視覺、無權威影響）──
   // 讀某位居民當前的肢體姿態（身體位移/縮放/搖擺、頭傾、手臂角度），驗程序動畫真的動了。
   residentPose(rid) {

@@ -115,17 +115,47 @@ function near(a, b, eps) { return Math.abs(a - b) <= eps; }
   check("玩家移到遠處後，面板距離自動刷新變大（非靜態快照）", distsGrew,
     `before=${JSON.stringify(rowInfo.map((r) => r.dist))} after=${JSON.stringify(rowInfoAfterMove)}`);
 
-  // ── 4) 關閉面板 ──
+  // ── 4) 殖民地羅盤（自主提案切片，接續 943 遺留缺口「村莊地圖端點」）──
+  // 真的走遠發現一座殖民地在這支快速載入的腳本裡不切實際，改用既有 QA 注入鉤
+  // （比照居民/路標同款做法）灌入兩筆合成殖民地資料，驗證清單＋雷達真的接住並正確渲染。
+  await page.evaluate(() => window.__voxel.setPlayerPos(0, 30, 0)); // 歸位，方便算方位
+  const landmarkInfo = await page.evaluate(() => {
+    window.__voxel.setDiscoveredColonies([
+      { kind: "colony", label: "野外村落", icon: "🏘️", name: "風禾屯", x: 0, y: 65, z: -50 },
+      { kind: "colony", label: "野外村落", icon: "🏘️", name: "霜語屯", x: 80, y: 65, z: 0 },
+    ]);
+    const rows = [...document.querySelectorAll("#landmarkBody .landmark-row")];
+    return rows.map((r) => ({
+      name: r.querySelector(".compass-name")?.textContent || "",
+      dist: r.querySelector(".compass-dist")?.textContent || "",
+      icon: r.querySelector(".compass-arrow")?.textContent || "",
+    }));
+  });
+  check("殖民地羅盤列出 2 座已發現村落", landmarkInfo.length === 2, JSON.stringify(landmarkInfo));
+  check("兩座村落各自顯示正確村名（非泛用種類標籤）",
+    landmarkInfo.some((r) => r.name === "風禾屯") && landmarkInfo.some((r) => r.name === "霜語屯"),
+    JSON.stringify(landmarkInfo));
+  check("每一列距離都是正數格數", landmarkInfo.every((r) => /^\d+\s*格$/.test(r.dist)), JSON.stringify(landmarkInfo));
+  check("每一列都顯示村落圖示", landmarkInfo.every((r) => r.icon === "🏘️"), JSON.stringify(landmarkInfo));
+
+  // 清空後應回退成空狀態提示，而非殘留舊資料。
+  const emptyText = await page.evaluate(() => {
+    window.__voxel.setDiscoveredColonies([]);
+    return document.getElementById("landmarkBody")?.textContent || "";
+  });
+  check("清空殖民地資料後顯示空狀態提示", emptyText.includes("還沒發現"), emptyText);
+
+  // ── 5) 關閉面板 ──
   const closedOk = await page.evaluate(() => { window.__voxel.closeCompass(); return !window.__voxel.compassVisible; });
   check("關閉羅盤面板", closedOk);
 
   const pass = fails.length === 0;
   console.log("\n──────── 居民羅盤 v1 QA 報告 ────────");
-  console.log(pass ? "判定: PASS ✅（方位數學正確、真點擊開面板列出 4 位居民、移動後自動刷新）"
+  console.log(pass ? "判定: PASS ✅（方位數學正確、真點擊開面板列出 4 位居民、移動後自動刷新、殖民地羅盤列表正確）"
     : `判定: CHECK ⚠️ 失敗項目: ${fails.join("、")}`);
   if (logs.length) console.log("頁面訊息(節錄):\n" + logs.slice(0, 20).join("\n"));
   writeFileSync(join(OUT_DIR, "voxel-compass-qa.json"),
-    JSON.stringify({ fails, bearings, afterTurn, rowInfo, rowInfoAfterMove, pass }, null, 2));
+    JSON.stringify({ fails, bearings, afterTurn, rowInfo, rowInfoAfterMove, landmarkInfo, pass }, null, 2));
 
   await browser.close();
   process.exit(pass ? 0 : 1);

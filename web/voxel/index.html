@@ -812,6 +812,16 @@
     }
     .waypoint-del:hover { color: #f66; }
 
+    /* ── 殖民地羅盤（自主提案切片，接續 943 遺留缺口）─────────────────────── */
+    #landmarkHead {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 13px 4px; font-size: 13px; font-weight: bold; color: #7fd8c8;
+      border-top: 1px solid rgba(127,216,200,0.18);
+    }
+    #landmarkBody {
+      padding: 4px 13px 10px; display: flex; flex-direction: column; gap: 8px; font-size: 13px;
+    }
+
     /* ── 居民交情網（ROADMAP 708）────────────────────────────────────────── */
     #relationsBtn {
       position: fixed; right: 10px; top: 256px; z-index: 6;
@@ -1880,6 +1890,12 @@
       <span id="waypointAddBtn">+ 插旗</span>
     </div>
     <div id="waypointBody"></div>
+    <!-- 殖民地羅盤（自主提案切片，接續 943 遺留缺口「村莊地圖端點」）：已發現的野外村落，
+         第一次能跟居民/路標一樣被導航回去，唯讀不可刪除（世界地標，非玩家自訂） -->
+    <div id="landmarkHead">
+      <span>🏘️ 已發現的村落</span>
+    </div>
+    <div id="landmarkBody"></div>
   </div>
   <!-- 居民交情網（ROADMAP 708）：情誼（672）早已驅動問候/八卦/互助蓋家，此面板讓玩家第一次看見 -->
   <div id="relationsPanel">
