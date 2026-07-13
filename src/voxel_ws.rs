@@ -526,6 +526,10 @@ struct VoxelResident {
     invent_quarry: Option<vdt::QuarryDig>,
     /// 本次發明已開的礦井數（守 [`vinvent::INVENT_MAX_WELLS`] 上限、並用來錯開每口井位置）。
     invent_quarry_wells: u32,
+    /// 發明·移動去資源（第八刀）：`Some` = 鄰近檢查沒找到水/熟作物，但更遠處找到了，
+    /// 正走過去；`None` = 沒有進行中的走路任務。到位或逾時後清空，交回發明狀態機下輪重試
+    /// （見 [`vinvent::InventWalk`] 模組頭註）。與 `invent_quarry` 一樣每個 run 收尾即清。
+    invent_walk: Option<vinvent::InventWalk>,
     /// 是否正在睡覺（日夜作息·睡覺 v1，ROADMAP 739）：深夜回到自家附近會躺下睡著，
     /// 睡著時停下一切閒晃／社交／採集／建造、名牌旁顯示 💤，天亮（離開夜間時段）才醒。
     /// 記憶體前置、不持久化、零 migration（重啟後大不了當晚重睡一次，無資料風險）。
@@ -1967,6 +1971,8 @@ fn build_resident(
             // 發明採集·階梯礦井：入場無進行中的井、井數歸零（隨每次 run 收尾重置）。
             invent_quarry: None,
             invent_quarry_wells: 0,
+            // 移動去資源（第八刀）：入場無進行中的走路任務。
+            invent_walk: None,
             // 出生時醒著；入睡由夜間作息迴圈決定（ROADMAP 739）。
             asleep: false,
             // 做夢 v1（ROADMAP 805）：入場沒在冷卻、還沒做過夢。
@@ -18545,6 +18551,30 @@ fn tick_residents(dt: f32) {
                         r.yaw = yaw;
                     }
                 }
+            } else if r.invent_walk.is_some() {
+                // 發明·移動去資源（第八刀）：鄰近檢查沒找到、但遠處確實有水/熟作物 → 走過去；
+                // 不挖、不種，純走路。到位或走不到都清空狀態交回發明狀態機下輪重新判定
+                // （到位＝下輪鄰近檢查會過；走不到＝比照既有「找不到就放棄」精神，誠實失敗）。
+                let (tx, tz, reached, timed_out) = {
+                    let w = r.invent_walk.as_mut().unwrap();
+                    w.timeout -= dt;
+                    let reached = vskill::within_gather_reach(r.body.x, r.body.z, w.tx, w.tz);
+                    (w.tx, w.tz, reached, w.timeout <= 0.0)
+                };
+                if reached || timed_out {
+                    r.invent_walk = None;
+                    vr::gravity_step(&world, &mut r.body, dt);
+                } else {
+                    let (bx, bz) = (r.body.x, r.body.z);
+                    vr::step_toward(
+                        &world, &mut r.body,
+                        tx as f32 + 0.5, tz as f32 + 0.5,
+                        dt, vr::RES_SPEED * speed_mult,
+                    );
+                    if let Some(yaw) = vr::yaw_from_move(r.body.x - bx, r.body.z - bz) {
+                        r.yaw = yaw;
+                    }
+                }
             } else if let Some(sm) = r.summon.clone() {
                 // 集會鐘 v1·應召：循著鐘聲朝鐘走去；抵達鐘邊就聚攏反應。優先於平常閒晃／小歇，
                 // 但讓位給上方跟隨／整地／交付等玩家明確指派或已committed的任務（那些分支在前）。
@@ -18850,6 +18880,7 @@ fn tick_residents(dt: f32) {
             if r.build_tick <= 0.0
                 && r.build_cooldown <= 0.0
                 && r.gather.is_none()
+                && r.invent_walk.is_none()
                 && !directed_snaps.contains_key(&r.id)
                 && r.follow.is_none()
                 && r.fetch.is_none()
@@ -23830,13 +23861,29 @@ fn advance_invent_run(
                 run.step_idx += 1;
             }
             vinvent::StepAction::StartFish => {
-                // 拋竿釣魚（第六刀）：世界前提——附近真的有水面
-                // （鄰近檢查，不是移動去資源；找不到水就誠實失敗，不隔空釣魚）。
+                // 拋竿釣魚（第六刀）：世界前提——附近真的有水面。
+                // 第八刀·移動去資源：鄰近檢查沒有 → 螺旋遠找一次，找到就走過去再重試，
+                // 真的四下無水才誠實失敗（不隔空釣魚、不無止盡漫遊）。
                 let has_water = {
                     let world = hub().deltas.read().unwrap();
                     vinvent::water_nearby(&world, rx, ry, rz)
                 }; // deltas 讀鎖釋放
                 if !has_water {
+                    let far = {
+                        let world = hub().deltas.read().unwrap();
+                        vinvent::find_water(&world, rx, ry, rz, vinvent::INVENT_GATHER_RADIUS)
+                    }; // deltas 讀鎖釋放
+                    if let Some((tx, ty, tz)) = far {
+                        let mut residents = hub().residents.write().unwrap();
+                        if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                            r.invent_walk = Some(vinvent::InventWalk {
+                                tx, ty, tz,
+                                timeout: vskill::GATHER_TIMEOUT_SECS,
+                            });
+                            r.invent_run = Some(run);
+                        }
+                        return; // 這輪走過去；到位後下個 agency tick 鄰近檢查再驗一次。
+                    }
                     vfeed::append_feed(
                         "釣魚受阻",
                         rname,
@@ -23864,12 +23911,32 @@ fn advance_invent_run(
                 // 不 Advance——下一輪 next_action 重新檢查數量是否已夠，不夠會自然再拋一竿。
             }
             vinvent::StepAction::DoHarvest { crop } => {
-                // 收成（第七刀）：世界前提——附近真的有一畦這種作物熟了
-                // （鄰近檢查，不是移動去資源；找不到就誠實失敗，不隔空收成、也不替她播種）。
+                // 收成（第七刀）：世界前提——附近真的有一畦這種作物熟了。
+                // 第八刀·移動去資源：鄰近檢查沒有 → 螺旋遠找同一種熟作物，找到就走過去再重試，
+                // 真的四下無熟田才誠實失敗（不隔空收成、也不替她播種、不無止盡漫遊）。
                 let found = {
                     let world = hub().deltas.read().unwrap();
                     vinvent::ripe_crop_nearby(&world, rx, ry, rz, crop.mature_block())
                 }; // deltas 讀鎖釋放
+                if found.is_none() {
+                    let far = {
+                        let world = hub().deltas.read().unwrap();
+                        vinvent::find_ripe_crop_far(
+                            &world, rx, ry, rz, vinvent::INVENT_GATHER_RADIUS, crop.mature_block(),
+                        )
+                    }; // deltas 讀鎖釋放
+                    if let Some((tx, ty, tz)) = far {
+                        let mut residents = hub().residents.write().unwrap();
+                        if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                            r.invent_walk = Some(vinvent::InventWalk {
+                                tx, ty, tz,
+                                timeout: vskill::GATHER_TIMEOUT_SECS,
+                            });
+                            r.invent_run = Some(run);
+                        }
+                        return; // 這輪走過去；到位後下個 agency tick 鄰近檢查再驗一次。
+                    }
+                }
                 let Some((gx, gy, gz)) = found else {
                     vfeed::append_feed(
                         "收成受阻",
@@ -23949,6 +24016,8 @@ fn finish_invent_run(
             // 清掉發明採集的階梯礦井狀態：下一次發明從乾淨狀態起（井數歸零、無殘留半挖井）。
             r.invent_quarry = None;
             r.invent_quarry_wells = 0;
+            // 清掉移動去資源狀態（第八刀）：下一次發明從乾淨狀態起，不殘留上一次的走路目標。
+            r.invent_walk = None;
         }
     } // residents 寫鎖釋放
     if success {
