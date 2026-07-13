@@ -5142,6 +5142,91 @@ if (skillsEl) {
   if (closeBtn) closeBtn.addEventListener("click", closeSkills);
 }
 
+// ── 村莊技藝總覽（自主提案切片）─────────────────────────────────────────────
+// 技能發明（716）+ 傳授（717/878/883）+ 名匠聲望（888/889）早就讓技能沉澱成
+// 居民自己的資產、在村裡擴散開來，但玩家只能一位一位點開技能簿（719）拼湊、
+// 或恰好瞥見稍縱即逝的教學/加冕 Feed。本面板第一次以「手藝」為單位攤開全村：
+// 這門手藝誰會、是師承還是承自誰、誰是村裡公認的名匠——沉澱與擴散第一次
+// 被玩家一眼看見。
+const craftDirEl = document.getElementById("craftDirPanel");
+const craftDirBodyEl = document.getElementById("craftDirBody");
+const craftDirBtnEl = document.getElementById("craftDirBtn");
+
+/** 重新渲染村莊技藝總覽列表。
+ * @param {Array<{craft:string, master:string|null, knowers:Array<{resident:string,origin:string,is_master:boolean}>}>} rows
+ */
+function renderCraftDirPanel(rows) {
+  if (!craftDirBodyEl) return;
+  if (!rows || rows.length === 0) {
+    craftDirBodyEl.innerHTML = '<div class="craftdir-empty">村裡還沒有人發明出任何手藝。</div>';
+    return;
+  }
+  craftDirBodyEl.innerHTML = "";
+  for (const row of rows) {
+    const div = document.createElement("div");
+    div.className = "craftdir-row";
+    const knowers = row.knowers || [];
+    const masterBadge = row.master
+      ? '<span class="craftdir-master">👑 ' + escHtml(row.master) + ' 為公認名匠</span>'
+      : "";
+    const chips = knowers.length > 0
+      ? '<div class="craftdir-chips">' +
+        knowers.map((k) => {
+          const isMaster = !!k.is_master;
+          const origin = k.origin && k.origin !== "自己發明"
+            ? '<span class="craftdir-origin">·' + escHtml(k.origin) + '</span>'
+            : "";
+          const cls = "craftdir-chip" + (isMaster ? " craftdir-chip-master" : "");
+          return '<span class="' + cls + '">' + (isMaster ? "👑 " : "") + escHtml(k.resident) + origin + '</span>';
+        }).join("") +
+        '</div>'
+      : "";
+    div.innerHTML = '<span class="craftdir-name">' + escHtml(row.craft) + '</span>' + masterBadge + chips;
+    craftDirBodyEl.appendChild(div);
+  }
+}
+
+/** 向後端抓最新村莊技藝目錄並重新渲染。 */
+async function refreshCraftDir() {
+  if (!craftDirBodyEl) return;
+  try {
+    const resp = await fetch("/voxel/village-crafts");
+    if (!resp.ok) throw new Error("village-crafts fetch failed: " + resp.status);
+    const rows = await resp.json();
+    renderCraftDirPanel(rows);
+  } catch (err) {
+    craftDirBodyEl.innerHTML = '<div class="craftdir-empty">無法讀取技藝資料。</div>';
+  }
+}
+
+let craftDirVisible = false;
+let craftDirRefreshTimer = null;
+
+/** 開啟村莊技藝總覽面板（技能發明/擴散頻率低，30 秒刷新一次足夠，面板關閉時停止刷新）。 */
+function openCraftDir() {
+  if (!craftDirEl) return;
+  craftDirVisible = true;
+  craftDirEl.style.display = "flex";
+  refreshCraftDir();
+  if (craftDirRefreshTimer) clearInterval(craftDirRefreshTimer);
+  craftDirRefreshTimer = setInterval(() => { if (craftDirVisible) refreshCraftDir(); }, 30_000);
+}
+
+/** 關閉村莊技藝總覽面板。 */
+function closeCraftDir() {
+  craftDirVisible = false;
+  if (craftDirEl) craftDirEl.style.display = "none";
+  if (craftDirRefreshTimer) { clearInterval(craftDirRefreshTimer); craftDirRefreshTimer = null; }
+}
+
+if (craftDirBtnEl) craftDirBtnEl.addEventListener("click", () => {
+  craftDirVisible ? closeCraftDir() : openCraftDir();
+});
+if (craftDirEl) {
+  const closeBtn = document.getElementById("craftDirClose");
+  if (closeBtn) closeBtn.addEventListener("click", closeCraftDir);
+}
+
 // ── 玩家里程碑（ROADMAP 724）──────────────────────────────────────────────────
 // 居民有技能簿（719）、交情網（708）可回頭翻閱自己的成長，玩家的療癒循環
 // （採集→合成→蓋造→種田→贈禮→交易→熟識→安眠）至今卻沒有任何一處能回頭看看
@@ -6605,7 +6690,7 @@ if (menuDrawerEl) {
   // 點抽屜內任一功能鈕後收起抽屜——它開的面板（z-index 20）就不會被抽屜（z-index 21）擋住。
   // 各鈕自身的開面板/切人稱監聽器照樣先觸發，這裡只負責關抽屜。
   menuDrawerEl.addEventListener("click", (e) => {
-    const item = e.target.closest("#feedBtn, #diaryWallBtn, #compassBtn, #relationsBtn, #skillsBtn, #milestonesBtn, #mapBtn, #discBtn, #masteryBtn, #viewBtn, #gearBtn");
+    const item = e.target.closest("#feedBtn, #diaryWallBtn, #compassBtn, #relationsBtn, #skillsBtn, #milestonesBtn, #mapBtn, #discBtn, #masteryBtn, #craftDirBtn, #viewBtn, #gearBtn");
     if (item) closeMenuDrawer();
   });
 }

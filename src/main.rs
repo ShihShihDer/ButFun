@@ -707,6 +707,9 @@ async fn main() {
         .route("/voxel/cliques", get(voxel_ws::voxel_cliques_handler))
         // 乙太方界·居民技能簿（ROADMAP 719）：每位居民已發明/學會的技能名清單 JSON。
         .route("/voxel/skills", get(voxel_ws::voxel_skills_handler))
+        // 乙太方界·村莊技藝總覽（自主提案切片）：全村技能第一次以「手藝」為單位攤開——
+        // 這門手藝誰會、誰是公認名匠、村裡的知識系譜一眼看見 JSON。
+        .route("/voxel/village-crafts", get(voxel_ws::voxel_village_crafts_handler))
         // 乙太方界·玩家里程碑（ROADMAP 724）：玩家自己的成就徽章清單 JSON。
         .route("/voxel/milestones", get(voxel_ws::voxel_milestones_handler))
         // 乙太方界·村莊地圖（自主提案切片，ROADMAP 837）：中心/廣場/主路尺寸＋沿路地塊認領 JSON。

@@ -1113,6 +1113,59 @@
       #masteryPanel { top: auto; bottom: 512px; right: 10px; max-height: 45vh; }
     }
 
+    /* ── 村莊技藝總覽（自主提案切片）───────────────────────────────────── */
+    /* 技能發明（716）+ 傳授（717/878/883）+ 名匠聲望（888/889）早就沉澱擴散，
+       玩家卻只能一位一位點開技能簿（719）拼湊——本面板第一次以「手藝」為單位
+       攤開全村：這門手藝誰會、誰是公認名匠、是師承還是承自誰。 */
+    #craftDirBtn {
+      position: fixed; right: 10px; top: 508px; z-index: 6;
+      background: rgba(20,28,40,0.65); color: #e8c95a; border: 1px solid rgba(232,201,90,0.3);
+      padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      user-select: none; pointer-events: auto;
+    }
+    #craftDirBtn:hover { background: rgba(60,50,20,0.75); }
+    #craftDirPanel {
+      position: fixed; right: 10px; top: 508px; z-index: 20;
+      width: min(280px, 94vw); max-height: 60vh;
+      display: none; flex-direction: column;
+      background: rgba(16,22,34,0.95); color: #eaf2ff; border-radius: 14px;
+      border: 1px solid rgba(232,201,90,0.22); box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      overflow: hidden;
+    }
+    #craftDirHead {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 9px 13px; background: rgba(232,201,90,0.07); font-size: 14px; font-weight: bold;
+    }
+    #craftDirTitle { color: #e8c95a; }
+    #craftDirClose {
+      cursor: pointer; user-select: none; font-size: 18px; line-height: 1;
+      padding: 2px 8px; border-radius: 8px; background: rgba(255,255,255,0.10);
+    }
+    #craftDirBody {
+      flex: 1; overflow-y: auto; padding: 10px 13px;
+      display: flex; flex-direction: column; gap: 10px; font-size: 13px;
+    }
+    .craftdir-row {
+      display: flex; flex-direction: column; gap: 5px;
+      padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,0.05);
+    }
+    .craftdir-name { font-weight: bold; color: #e8c95a; }
+    .craftdir-master { font-size: 11px; opacity: 0.85; margin-left: 4px; }
+    .craftdir-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+    .craftdir-chip {
+      background: rgba(232,201,90,0.14); color: #f5e8c0; border: 1px solid rgba(232,201,90,0.28);
+      border-radius: 8px; padding: 2px 8px; font-size: 12px;
+    }
+    .craftdir-chip.craftdir-chip-master {
+      background: rgba(232,201,90,0.30); border-color: rgba(232,201,90,0.55); font-weight: bold;
+    }
+    .craftdir-origin { opacity: 0.62; font-size: 11px; }
+    .craftdir-empty { color: #506070; font-size: 12px; font-style: italic; text-align: center; padding: 8px 0; }
+    @media (orientation: portrait) {
+      #craftDirBtn { top: auto; bottom: 510px; right: 10px; }
+      #craftDirPanel { top: auto; bottom: 554px; right: 10px; max-height: 45vh; }
+    }
+
     /* ── 成功提示（綠色小吐司）──────────────────────────────────────────── */
     #msg {
       position: fixed; left: 50%; top: 58px; transform: translateX(-50%);
@@ -1712,6 +1765,8 @@
     <div id="discBtn">📜 紀事</div>
     <!-- 玩家熟練度（自主提案切片，ROADMAP 842）開關 -->
     <div id="masteryBtn">📈 熟練度</div>
+    <!-- 村莊技藝總覽（自主提案切片）開關 -->
+    <div id="craftDirBtn">🏛️ 技藝譜</div>
     <!-- 視角切換鈕（第一/三人稱；桌機也可按 F5）。文字由 main.js 依模式更新 -->
     <button id="viewBtn">👁 第一人稱</button>
     <!-- 操作設定齒輪鈕（開操作設定面板：模式/靈敏度/按鈕/慣用手/自動跳/人稱/鍵盤/手把）-->
@@ -1882,6 +1937,15 @@
       <span id="masteryClose">✕</span>
     </div>
     <div id="masteryBody"></div>
+  </div>
+  <!-- 村莊技藝總覽（自主提案切片）：技能發明/傳授/名匠聲望早就沉澱擴散，本面板第一次
+       以「手藝」為單位攤開全村——這門手藝誰會、誰是公認名匠、是師承還是承自誰 -->
+  <div id="craftDirPanel">
+    <div id="craftDirHead">
+      <span id="craftDirTitle">🏛️ 村莊技藝譜</span>
+      <span id="craftDirClose">✕</span>
+    </div>
+    <div id="craftDirBody"></div>
   </div>
   <!-- 背包 + 合成格面板（ROADMAP 664）-->
   <div id="bagPanel">
