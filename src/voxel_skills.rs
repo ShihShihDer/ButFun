@@ -440,7 +440,7 @@ pub fn trunk_base(world: &WorldDelta, x: i32, z: i32) -> Option<i32> {
 /// `min_radius`：日常採集傳 [`GATHER_MIN_RADIUS`]（讓居民走幾步、動作看得見）；
 /// 指定型別採集（技能發明）傳 0——目標導向，**站在樹旁就該砍得到眼前那棵**
 /// （實測踩過：重用技能採第二刀料時人已在樹旁，min=4 的盲區讓她「看不見」腳邊的樹）。
-fn spiral_find<T>(
+pub(crate) fn spiral_find<T>(
     ox: i32,
     oz: i32,
     min_radius: i32,

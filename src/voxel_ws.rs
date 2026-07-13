@@ -526,6 +526,10 @@ struct VoxelResident {
     invent_quarry: Option<vdt::QuarryDig>,
     /// 本次發明已開的礦井數（守 [`vinvent::INVENT_MAX_WELLS`] 上限、並用來錯開每口井位置）。
     invent_quarry_wells: u32,
+    /// 發明·移動去資源（第八刀）：`Some` = 鄰近檢查沒找到水/熟作物，但更遠處找到了，
+    /// 正走過去；`None` = 沒有進行中的走路任務。到位或逾時後清空，交回發明狀態機下輪重試
+    /// （見 [`vinvent::InventWalk`] 模組頭註）。與 `invent_quarry` 一樣每個 run 收尾即清。
+    invent_walk: Option<vinvent::InventWalk>,
     /// 是否正在睡覺（日夜作息·睡覺 v1，ROADMAP 739）：深夜回到自家附近會躺下睡著，
     /// 睡著時停下一切閒晃／社交／採集／建造、名牌旁顯示 💤，天亮（離開夜間時段）才醒。
     /// 記憶體前置、不持久化、零 migration（重啟後大不了當晚重睡一次，無資料風險）。
@@ -1967,6 +1971,8 @@ fn build_resident(
             // 發明採集·階梯礦井：入場無進行中的井、井數歸零（隨每次 run 收尾重置）。
             invent_quarry: None,
             invent_quarry_wells: 0,
+            // 移動去資源（第八刀）：入場無進行中的走路任務。
+            invent_walk: None,
             // 出生時醒著；入睡由夜間作息迴圈決定（ROADMAP 739）。
             asleep: false,
             // 做夢 v1（ROADMAP 805）：入場沒在冷卻、還沒做過夢。
@@ -12595,6 +12601,7 @@ fn maybe_wedding() {
             && r.far_visit.is_none()
             && r.caravan.is_none()
             && r.cheer_target.is_none()
+            && r.invent_walk.is_none()
     };
     // chosen = (id_a, name_a, id_b, name_b, mid_x, mid_z)
     let chosen: Option<(String, &'static str, String, &'static str, f32, f32)> = {
@@ -16053,10 +16060,11 @@ fn tick_residents(dt: f32) {
                 && r.expedition.is_none()
                 && r.daybreak_seek.is_none()
                 && r.reunion_seek.is_none()
-                // 也讓位給更高優先的移動意圖（跟隨/採集/取物），否則 flag 會空懸走不到玩家。
+                // 也讓位給更高優先的移動意圖（跟隨/採集/取物/發明走路），否則 flag 會空懸走不到玩家。
                 && r.follow.is_none()
                 && r.gather.is_none()
                 && r.fetch.is_none()
+                && r.invent_walk.is_none()
             {
                 // 觸發判定：最近的在線玩家若是「這位居民已為他昇華出名號」的人，就低機率起身致意。
                 if let Some((d2, px, pz, nm)) =
@@ -18545,6 +18553,30 @@ fn tick_residents(dt: f32) {
                         r.yaw = yaw;
                     }
                 }
+            } else if r.invent_walk.is_some() {
+                // 發明·移動去資源（第八刀）：鄰近檢查沒找到、但遠處確實有水/熟作物 → 走過去；
+                // 不挖、不種，純走路。到位或走不到都清空狀態交回發明狀態機下輪重新判定
+                // （到位＝下輪鄰近檢查會過；走不到＝比照既有「找不到就放棄」精神，誠實失敗）。
+                let (tx, tz, reached, timed_out) = {
+                    let w = r.invent_walk.as_mut().unwrap();
+                    w.timeout -= dt;
+                    let reached = vskill::within_gather_reach(r.body.x, r.body.z, w.tx, w.tz);
+                    (w.tx, w.tz, reached, w.timeout <= 0.0)
+                };
+                if reached || timed_out {
+                    r.invent_walk = None;
+                    vr::gravity_step(&world, &mut r.body, dt);
+                } else {
+                    let (bx, bz) = (r.body.x, r.body.z);
+                    vr::step_toward(
+                        &world, &mut r.body,
+                        tx as f32 + 0.5, tz as f32 + 0.5,
+                        dt, vr::RES_SPEED * speed_mult,
+                    );
+                    if let Some(yaw) = vr::yaw_from_move(r.body.x - bx, r.body.z - bz) {
+                        r.yaw = yaw;
+                    }
+                }
             } else if let Some(sm) = r.summon.clone() {
                 // 集會鐘 v1·應召：循著鐘聲朝鐘走去；抵達鐘邊就聚攏反應。優先於平常閒晃／小歇，
                 // 但讓位給上方跟隨／整地／交付等玩家明確指派或已committed的任務（那些分支在前）。
@@ -18798,11 +18830,13 @@ fn tick_residents(dt: f32) {
             // 整地任務中不算「純導航」（與採集同理：她在做事，別被脫困偵測誤救打斷任務）。
             // 跟隨中也不算：跟著玩家走本就目標常變，別被脫困偵測誤判。
             // 跑腿採集中（指令→任務第三刀）同理：等待被指派下個目標／走去交付都不是「純導航」。
+            // 發明引擎走去遠方資源中（invent_walk）同理：她有自己的 25 秒逾時放棄機制，不該被脫困偵測搶先誤救。
             let navigating = r.gather.is_none()
                 && r.wait_timer <= 0.0
                 && !directed_snaps.contains_key(&r.id)
                 && r.follow.is_none()
-                && r.fetch.is_none();
+                && r.fetch.is_none()
+                && r.invent_walk.is_none();
             // 幾何困住判定（埋在實心裡或四面爬不出）；只在導航時才需要算。
             let confined = navigating && vr::is_confined(&world, &r.body);
             r.stuck_timer = vr::update_stuck_timer(r.stuck_timer, moved, navigating, confined, dt);
@@ -18813,6 +18847,7 @@ fn tick_residents(dt: f32) {
                 // 脫困後重置：清採集任務、目標設在腳邊、歇一下、清卡住計時。
                 r.stuck_timer = 0.0;
                 r.gather = None;
+                r.invent_walk = None;
                 r.target_x = r.body.x;
                 r.target_z = r.body.z;
                 r.wait_timer = 1.0;
@@ -18850,6 +18885,7 @@ fn tick_residents(dt: f32) {
             if r.build_tick <= 0.0
                 && r.build_cooldown <= 0.0
                 && r.gather.is_none()
+                && r.invent_walk.is_none()
                 && !directed_snaps.contains_key(&r.id)
                 && r.follow.is_none()
                 && r.fetch.is_none()
@@ -19615,6 +19651,7 @@ fn tick_residents(dt: f32) {
                     && r.fetch.is_none()
                     && r.pilgrimage.is_none()
                     && r.lover_seek.is_none()
+                    && r.invent_walk.is_none()
                     && !directed_snaps.contains_key(&r.id)
             };
             let mut chosen: Option<(usize, usize)> = None;
@@ -20437,9 +20474,22 @@ fn tick_residents(dt: f32) {
             vbuild::append_world_block(gx, gy, gz, refill as u8);
         }
         // 入居民小背包（純記憶體）——採集產出的材料數量不變（回填不影響入袋）。
+        // 播種自給（第九刀）：草皮／泥土額外附贈一顆胡蘿蔔／馬鈴薯種子，比照玩家破壞同型
+        // 地表的既有掉落分潤（見 ClientMsg::Break 的 drops 表）——她第一次能自己攢下種子，
+        // 之後收成無門時就有本錢就地翻土播種（DoHarvest 分支）。
         {
             let mut inv = hub().res_inv.write().unwrap();
-            *inv.entry(rid.clone()).or_default().entry(res.block_id()).or_insert(0) += 1;
+            let bag = inv.entry(rid.clone()).or_default();
+            *bag.entry(res.block_id()).or_insert(0) += 1;
+            match res {
+                vskill::GatherResource::Grass => {
+                    *bag.entry(vfarm::CARROT_SEEDS_ID).or_insert(0) += 1;
+                }
+                vskill::GatherResource::Dirt => {
+                    *bag.entry(vfarm::POTATO_SEEDS_ID).or_insert(0) += 1;
+                }
+                _ => {}
+            }
         } // res_inv 寫鎖釋放
         // 里程碑 Feed（真實事件、低頻、不洗版）。
         vfeed::append_feed("採集", rname, &format!("採集了{}", res.display_name()));
@@ -23830,13 +23880,29 @@ fn advance_invent_run(
                 run.step_idx += 1;
             }
             vinvent::StepAction::StartFish => {
-                // 拋竿釣魚（第六刀）：世界前提——附近真的有水面
-                // （鄰近檢查，不是移動去資源；找不到水就誠實失敗，不隔空釣魚）。
+                // 拋竿釣魚（第六刀）：世界前提——附近真的有水面。
+                // 第八刀·移動去資源：鄰近檢查沒有 → 螺旋遠找一次，找到就走過去再重試，
+                // 真的四下無水才誠實失敗（不隔空釣魚、不無止盡漫遊）。
                 let has_water = {
                     let world = hub().deltas.read().unwrap();
                     vinvent::water_nearby(&world, rx, ry, rz)
                 }; // deltas 讀鎖釋放
                 if !has_water {
+                    let far = {
+                        let world = hub().deltas.read().unwrap();
+                        vinvent::find_water(&world, rx, ry, rz, vinvent::INVENT_GATHER_RADIUS)
+                    }; // deltas 讀鎖釋放
+                    if let Some((tx, ty, tz)) = far {
+                        let mut residents = hub().residents.write().unwrap();
+                        if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                            r.invent_walk = Some(vinvent::InventWalk {
+                                tx, ty, tz,
+                                timeout: vskill::GATHER_TIMEOUT_SECS,
+                            });
+                            r.invent_run = Some(run);
+                        }
+                        return; // 這輪走過去；到位後下個 agency tick 鄰近檢查再驗一次。
+                    }
                     vfeed::append_feed(
                         "釣魚受阻",
                         rname,
@@ -23864,13 +23930,88 @@ fn advance_invent_run(
                 // 不 Advance——下一輪 next_action 重新檢查數量是否已夠，不夠會自然再拋一竿。
             }
             vinvent::StepAction::DoHarvest { crop } => {
-                // 收成（第七刀）：世界前提——附近真的有一畦這種作物熟了
-                // （鄰近檢查，不是移動去資源；找不到就誠實失敗，不隔空收成、也不替她播種）。
+                // 收成（第七刀）：世界前提——附近真的有一畦這種作物熟了。
+                // 第八刀·移動去資源：鄰近檢查沒有 → 螺旋遠找同一種熟作物，找到就走過去再重試，
+                // 真的四下無熟田才誠實失敗（不隔空收成、也不替她播種、不無止盡漫遊）。
                 let found = {
                     let world = hub().deltas.read().unwrap();
                     vinvent::ripe_crop_nearby(&world, rx, ry, rz, crop.mature_block())
                 }; // deltas 讀鎖釋放
+                if found.is_none() {
+                    let far = {
+                        let world = hub().deltas.read().unwrap();
+                        vinvent::find_ripe_crop_far(
+                            &world, rx, ry, rz, vinvent::INVENT_GATHER_RADIUS, crop.mature_block(),
+                        )
+                    }; // deltas 讀鎖釋放
+                    if let Some((tx, ty, tz)) = far {
+                        let mut residents = hub().residents.write().unwrap();
+                        if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                            r.invent_walk = Some(vinvent::InventWalk {
+                                tx, ty, tz,
+                                timeout: vskill::GATHER_TIMEOUT_SECS,
+                            });
+                            r.invent_run = Some(run);
+                        }
+                        return; // 這輪走過去；到位後下個 agency tick 鄰近檢查再驗一次。
+                    }
+                }
                 let Some((gx, gy, gz)) = found else {
+                    // 播種自給（第九刀）：附近／遠方都撞不到熟作物，若她手邊已攢有對應種子
+                    // （見採集分潤，只有胡蘿蔔／馬鈴薯支援）、附近又找得到可翻土的地表，就地
+                    // 翻土播種——這次嘗試仍誠實算失敗（種子還沒長熟，這輪領不到材料），但
+                    // 世界因此多了一畦她自己種下的田，下次冷卻後再試也許就已經熟了。
+                    if let (Some(seed_id), Some(till_block)) =
+                        (crop.seed_id(), crop.tillable_block())
+                    {
+                        let has_seed = {
+                            let inv = hub().res_inv.read().unwrap();
+                            inv.get(rid).and_then(|b| b.get(&seed_id)).copied().unwrap_or(0) > 0
+                        }; // res_inv 讀鎖釋放
+                        if has_seed {
+                            let spot = {
+                                let world = hub().deltas.read().unwrap();
+                                vinvent::tillable_ground_nearby(&world, rx, ry, rz, till_block)
+                            }; // deltas 讀鎖釋放
+                            if let Some((tx, ty, tz)) = spot {
+                                let consumed = {
+                                    let mut inv = hub().res_inv.write().unwrap();
+                                    vinvent::consume_seed(inv.entry(rid.to_string()).or_default(), seed_id)
+                                }; // res_inv 寫鎖釋放
+                                if consumed {
+                                    let seeded = crop.seeded_block();
+                                    {
+                                        let mut world = hub().deltas.write().unwrap();
+                                        voxel::set_block(&mut world, tx, ty, tz, seeded);
+                                    } // deltas 寫鎖釋放
+                                    broadcast_block(tx, ty, tz, seeded);
+                                    vbuild::append_world_block(tx, ty, tz, seeded as u8);
+                                    let farm_e = {
+                                        hub().farm.write().unwrap().plant(
+                                            tx, ty, tz, vfarm::now_secs(), crop.crop_kind(),
+                                        )
+                                    }; // farm 寫鎖釋放
+                                    vfarm::append_farm(&farm_e);
+                                    say_updates.push((
+                                        rid.to_string(),
+                                        vinvent::planted_seed_line(crop.display_name()),
+                                    ));
+                                    vfeed::append_feed(
+                                        "播種自給",
+                                        rname,
+                                        &vinvent::planted_seed_feed(&run.goal_name, crop.display_name()),
+                                    );
+                                    // 審查點名（PR#1236）：同一 run 只准播一畦——播完直接收尾這次嘗試
+                                    // （誠實算失敗，種子還沒長熟），不把 run 放回去讓下一 tick 繼續掃、
+                                    // 靠「種子用光」當停止條件——分潤採集隨手就能攢到幾十顆種子，
+                                    // 會在一個 run 內（最長 480 秒、每 8 秒一輪）連續鋪出幾十畦田、
+                                    // 洗版幾十則 Feed（同 demolish churn 那次「缺收斂守衛」的老雷）。
+                                    finish_invent_run(rid, rname, run, false, say_updates);
+                                    return; // 種下去了；下次心願冷卻後重新起 run 再試。
+                                }
+                            }
+                        }
+                    }
                     vfeed::append_feed(
                         "收成受阻",
                         rname,
@@ -23949,6 +24090,8 @@ fn finish_invent_run(
             // 清掉發明採集的階梯礦井狀態：下一次發明從乾淨狀態起（井數歸零、無殘留半挖井）。
             r.invent_quarry = None;
             r.invent_quarry_wells = 0;
+            // 清掉移動去資源狀態（第八刀）：下一次發明從乾淨狀態起，不殘留上一次的走路目標。
+            r.invent_walk = None;
         }
     } // residents 寫鎖釋放
     if success {
