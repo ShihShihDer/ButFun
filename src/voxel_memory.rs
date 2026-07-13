@@ -363,8 +363,9 @@ fn record_fade(
     *faded_counts.entry(resident.to_string()).or_insert(0) += 1;
     if let Some(topic) = impression_topic(evicted_summary) {
         let bag = impression_topics.entry(resident.to_string()).or_default();
-        // 連續同主題不重複記（「常聊到星空」比「星空、星空、星空」更像一句人話）。
-        if bag.back() != Some(&topic) {
+        // 同主題不重複記，即使交錯出現也一樣（「常聊到星空、蓋造」比「星空、蓋造、星空」
+        // 更像一句人話；只比 back() 會漏非相鄰重複，見 review PR #1254 退回意見）。
+        if !bag.contains(&topic) {
             bag.push_back(topic);
             while bag.len() > IMPRESSION_TOPIC_CAP {
                 bag.pop_front();
@@ -870,6 +871,27 @@ mod tests {
         assert!(topics.contains(&"蓋造"), "應留下蓋造主題：{topics:?}");
         // 兩筆連續「星空」只留一個（去重），不是「星空、星空」。
         assert_eq!(topics.iter().filter(|t| **t == "星空").count(), 1, "連續同主題不重複記");
+    }
+
+    #[test]
+    fn eviction_dedupes_non_adjacent_repeat_topic() {
+        // 交錯淘汰順序「星空 → 蓋造 → 星空」（玩家聊天的常態：話題會繞回來）——
+        // 只比對 bag.back() 會漏掉非相鄰重複，讓「星空、蓋造、星空」跑進日記句。
+        let mut m = VoxelMemory::new();
+        m.add_memory("vox_res_0", "旅人", "和旅人聊過，對方提到「我最喜歡看星星」"); // 星空
+        m.add_memory("vox_res_0", "旅人", "和旅人聊過，對方提到「我想蓋一座高塔」"); // 蓋造
+        m.add_memory("vox_res_0", "旅人", "和旅人聊過，對方提到「昨晚的星空好美」"); // 星空（非相鄰重複）
+        for i in 0..EPISODIC_CAP {
+            m.add_memory("vox_res_0", "旅人", &format!("和旅人聊過，對方提到「瑣事{i}」"));
+        }
+        assert_eq!(m.faded_count("vox_res_0"), 3, "三筆前置記憶應已被擠出佇列");
+        let topics = m.impression_topics("vox_res_0");
+        assert_eq!(
+            topics.iter().filter(|t| **t == "星空").count(),
+            1,
+            "非相鄰重複的「星空」也只留一個，不是「星空、蓋造、星空」：{topics:?}"
+        );
+        assert_eq!(topics, vec!["星空", "蓋造"], "順序應保留首次出現的位置");
     }
 
     #[test]
