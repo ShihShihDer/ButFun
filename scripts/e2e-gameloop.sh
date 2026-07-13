@@ -60,7 +60,7 @@ fi
 
 echo "[e2e-gameloop] 伺服器就緒，跑 WS 冒煙測試…"
 set +e
-node "$REPO/scripts/e2e/gameloop-smoke.mjs" "ws://localhost:${PORT}/ws"
+node "$REPO/scripts/e2e/gameloop-smoke.mjs" "ws://localhost:${PORT}/voxel/ws"
 RESULT=$?
 set -e
 
