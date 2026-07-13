@@ -6515,13 +6515,21 @@ function promptSignEdit(x, y, z, isNew) {
   ws.send(JSON.stringify({ t: "sign_set", x, y, z, text: input }));
 }
 
-// 領地信任名單 v2（自主提案切片，ROADMAP 966）：跳出輸入框讓玩家打出附近朋友的名字，送
-// claim_trust 給伺服器（伺服器驗身分+距離，找到人才生效；同一個名字再送一次＝解除信任）。
+// 領地信任名單 v2/v3（自主提案切片，ROADMAP 966；v3 review PR #1252）：跳出輸入框讓玩家打
+// 出朋友的名字，送 claim_trust 給伺服器。伺服器決定該加入還是撤銷：名單裡已有這個名字＝
+// 撤銷（不必對方在線／在附近，撤銷本來就該隨時做得到）；名單裡沒有＝加入（仍要求站在附近、
+// 對方在線）。留空送出＝查詢目前信任了誰（claim_trust_list），確認有沒有信錯人。
 function promptClaimTrust() {
-  const input = window.prompt("站在朋友身邊，輸入他的名字把他加進你的領地信任名單（再輸入一次同名字可解除）：", "");
+  const input = window.prompt(
+    "輸入朋友的名字加進領地信任名單（名字若已在名單裡則改為撤銷信任；留空按確定＝查詢目前信任名單）：",
+    ""
+  );
   if (input === null) return;
   const trimmed = input.trim();
-  if (!trimmed) return;
+  if (!trimmed) {
+    ws.send(JSON.stringify({ t: "claim_trust_list" }));
+    return;
+  }
   ws.send(JSON.stringify({ t: "claim_trust", name: trimmed }));
 }
 
