@@ -36,7 +36,16 @@
 //! 熔爐烤熟。與礦石不同，水是**地表**資源、不必挖井——`water_nearby` 只在附近**找不找得
 //! 到水**這一件事上把關（比照 `station_nearby` 的鄰近半徑檢查），找不到水就誠實失敗，
 //! 不會替她跑去遠方找水（那是「移動去資源」的下一刀，本刀刻意只做「附近有水才釣得成」）。
-//! 作物生料仍不可自採，誠實留在閉包外。
+//!
+//! **第七刀（作物入自採閉包，接續第六刀漁獲）**：把第四刀留在閉包外的**作物生料**
+//! 接進來——新原語 `harvest`（收成，前提：附近要有一畦這種作物已經熟了）。與挖礦/釣魚
+//! 不同，她**種不出**新的一畦（種子至今沒有任何自採途徑，誠實留給更後面一刀）——本刀只讓
+//! 她能撞見**已經存在**（多半是玩家種的）的熟作物、順手收一點，比照 `water_nearby` 的
+//! 鄰近檢查精神：找不到就誠實失敗，不會替她跑去遠方找、更不會替她播種。小麥/胡蘿蔔/馬鈴薯
+//! 生料進種子集 → **麵包**（3 小麥）、**烤地薯**（smelt_potato，唯一途徑）、**野菜暖湯**
+//! （2 胡蘿蔔+2 馬鈴薯+1 小麥，三種作物齊聚的複雜料理）第一次自動落進可發明閉包。
+//! **南瓜刻意不含**：南瓜是季限作物（933），收成閉包要不要跟著季節走是另一個設計決定，
+//! 留給下一刀，本刀先打通常態三作物。
 //!
 //! 北極星（維護者原話）：「我們沒說可以挖可以放，他就自己組合出來了」——
 //! 居民自己從基礎動作組合發明、存成自己的技能。這是 Voyager（MineDojo）式 skill library
@@ -66,6 +75,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::voxel::{self, Block, WorldDelta};
 use crate::voxel_craft as vcraft;
+use crate::voxel_farm as vfarm;
 use crate::voxel_fishing::FISH_ID;
 use crate::voxel_skills::{column_top, GatherResource};
 
@@ -138,6 +148,10 @@ pub enum PrimStep {
     /// **世界前提**：附近（[`WATER_NEAR_RADIUS`] 格內）要有水面可拋竿。**時間前提**：
     /// 跟冶煉一樣要等（見 [`InventRun::fish_wait`]），不是拋竿就立刻有魚。
     Fish { count: u32 },
+    /// 收成（第七刀）：收成至少 `count` 份指定作物的生料到背包裡（後置條件語意，同 `Gather`）。
+    /// **世界前提**：附近（[`CROP_NEAR_RADIUS`] 格內）要有一畦這種作物已經熟了——她不會播種，
+    /// 只能撞見已經存在的熟作物。無時間前提：作物已經熟了，找到就能立刻收成。
+    Harvest { crop: String, count: u32 },
 }
 
 /// 通過白名單驗證後的一步（執行引擎吃這個；配方指標指回 `voxel_craft` 靜態表）。
@@ -153,6 +167,8 @@ pub enum CheckedStep {
     Smelt { recipe_id: &'static str },
     /// 釣魚（第六刀，需附近有水；需等上鉤時間，見 [`InventRun::fish_wait`]）。
     Fish { count: u32 },
+    /// 收成（第七刀，需附近有一畦這種作物已經熟了；無等待，找到即收）。
+    Harvest { crop: CropResource, count: u32 },
 }
 
 /// 工作台方塊 id（`Block::Workbench as u8`；放置＋3×3 前提檢查的單一常數源）。
@@ -191,6 +207,74 @@ pub fn resource_from_token(s: &str) -> Option<GatherResource> {
         // 與「鐵錠/鐵磚」歧義，逼便宜腦寫明確的 iron_ore／鐵礦。
         "coal_ore" | "coal" | "煤" | "煤礦" => Some(GatherResource::CoalOre),
         "iron_ore" | "iron" | "鐵礦" => Some(GatherResource::IronOre),
+        _ => None,
+    }
+}
+
+/// 作物種類（第七刀·作物入自採閉包）：對應成熟作物方塊與收成產出，讓她能鎖定
+/// 收成「特定一種」而非隨便撿到什麼就收——麵包要小麥顆粒、烤地薯要生馬鈴薯、
+/// 野菜暖湯三種都要。南瓜刻意不含（見模組頭註）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CropResource {
+    Wheat,
+    Carrot,
+    Potato,
+}
+
+impl CropResource {
+    /// 收成產出的生料物品 id（`voxel_farm` 常數，單一事實源）。
+    pub fn raw_id(self) -> u8 {
+        match self {
+            CropResource::Wheat => vfarm::WHEAT_ID,
+            CropResource::Carrot => vfarm::CARROT_ID,
+            CropResource::Potato => vfarm::POTATO_ID,
+        }
+    }
+
+    /// 這種作物「熟了」的方塊型別（`ripe_crop_nearby` 找的目標、`harvest_food_of` 收成的對象）。
+    pub fn mature_block(self) -> Block {
+        match self {
+            CropResource::Wheat => Block::WheatMature,
+            CropResource::Carrot => Block::CarrotMature,
+            CropResource::Potato => Block::PotatoMature,
+        }
+    }
+
+    /// 繁中名（台詞／Feed 用）。
+    pub fn display_name(self) -> &'static str {
+        match self {
+            CropResource::Wheat => "小麥",
+            CropResource::Carrot => "胡蘿蔔",
+            CropResource::Potato => "馬鈴薯",
+        }
+    }
+
+    /// 英文 token（存檔/白名單正規形，比照 `token_of`）。
+    pub fn token(self) -> &'static str {
+        match self {
+            CropResource::Wheat => "wheat",
+            CropResource::Carrot => "carrot",
+            CropResource::Potato => "potato",
+        }
+    }
+}
+
+/// 作物 token → 型別（白名單，同 `resource_from_token` 收英文/繁中兩種寫法）。
+pub fn crop_from_token(s: &str) -> Option<CropResource> {
+    match s.trim() {
+        "wheat" | "小麥" | "麥" => Some(CropResource::Wheat),
+        "carrot" | "胡蘿蔔" | "蘿蔔" => Some(CropResource::Carrot),
+        "potato" | "馬鈴薯" | "地瓜" | "薯" => Some(CropResource::Potato),
+        _ => None,
+    }
+}
+
+/// 生料 block id → 作物型別（`ensure_have` 遞迴補料時反查用；查無 → `None`）。
+fn crop_of_raw_id(bid: u8) -> Option<CropResource> {
+    match bid {
+        x if x == vfarm::WHEAT_ID => Some(CropResource::Wheat),
+        x if x == vfarm::CARROT_ID => Some(CropResource::Carrot),
+        x if x == vfarm::POTATO_ID => Some(CropResource::Potato),
         _ => None,
     }
 }
@@ -311,6 +395,13 @@ pub fn check_step(s: &PrimStep) -> Option<CheckedStep> {
                 return None;
             }
             Some(CheckedStep::Fish { count: *count })
+        }
+        PrimStep::Harvest { crop, count } => {
+            let c = crop_from_token(crop)?;
+            if *count == 0 || *count > MAX_GATHER_COUNT {
+                return None;
+            }
+            Some(CheckedStep::Harvest { crop: c, count: *count })
         }
     }
 }
@@ -663,6 +754,13 @@ fn explain_bad_step(s: &PrimStep) -> String {
         PrimStep::Fish { count } => {
             format!("釣魚數量 {count} 不在 1~{MAX_GATHER_COUNT} 範圍內")
         }
+        PrimStep::Harvest { crop, count } => {
+            if crop_from_token(crop).is_none() {
+                format!("收成作物「{crop}」不在白名單——只能是 wheat / carrot / potato")
+            } else {
+                format!("收成數量 {count} 不在 1~{MAX_GATHER_COUNT} 範圍內")
+            }
+        }
     }
 }
 
@@ -851,6 +949,9 @@ pub enum StepAction {
     StartFish,
     /// 這一步的釣魚已上鉤 → 呼叫端交付一條小魚入背包，再看是否還要再拋竿湊足數量。
     CollectFish,
+    /// 這一步的收成還沒滿足 → 呼叫端驗附近有一畦這種作物熟了、就地收成入背包
+    /// （無等待，找到即收；再看是否還要再收下一畦湊足數量，比照 `CollectFish` 節奏）。
+    DoHarvest { crop: CropResource },
     /// 這一步的後置條件已滿足 → step_idx+1 再看下一步。
     Advance,
     /// 全部步驟跑完 → 呼叫端做最終後置條件驗證（[`goal_met`]）。
@@ -907,6 +1008,17 @@ pub fn next_action(
                     Some(w) if w > 0.0 => StepAction::Waiting,
                     Some(_) => StepAction::CollectFish,
                 }
+            }
+        }
+        // 後置條件語意（同 Gather）：背包已有 count 份就跳過；不夠 → 交呼叫端找一畦附近
+        // 熟了的這種作物就地收成。無等待（作物已經熟了，找到即收）——收成後不直接 Advance，
+        // 讓呼叫端下一輪回頭再檢查數量是否已夠（一次只收一畦，湊不足會自然再找下一畦）。
+        Some(CheckedStep::Harvest { crop, count }) => {
+            let have = bag.get(&crop.raw_id()).copied().unwrap_or(0);
+            if have >= *count {
+                StepAction::Advance
+            } else {
+                StepAction::DoHarvest { crop: *crop }
             }
         }
     }
@@ -1090,6 +1202,14 @@ pub fn simulate_plan(
                     *e = *count;
                 }
             }
+            CheckedStep::Harvest { crop, count } => {
+                // 後置條件語意（同 Fish）：這一步結束時背包至少有 count 份該作物生料。
+                // 熟作物可得性不在模擬階段判定（執行期才真的去找，找不到才誠實失敗）。
+                let e = bag.entry(crop.raw_id()).or_insert(0);
+                if *e < *count {
+                    *e = *count;
+                }
+            }
         }
     }
     if !goal_met(&bag, goal_block) {
@@ -1206,6 +1326,13 @@ pub fn canonicalize_steps(steps: &[CheckedStep]) -> Vec<PrimStep> {
                     *e = *count;
                 }
             }
+            CheckedStep::Harvest { crop, count } => {
+                out.push(PrimStep::Harvest { crop: crop.token().to_string(), count: *count });
+                let e = bag.entry(crop.raw_id()).or_insert(0);
+                if *e < *count {
+                    *e = *count;
+                }
+            }
         }
     }
     out
@@ -1282,6 +1409,16 @@ fn ensure_have(bid: u8, need: u32, bag: &mut HashMap<u8, u32>, out: &mut Vec<Pri
     if bid == FISH_ID {
         let want = need.min(MAX_GATHER_COUNT);
         out.push(PrimStep::Fish { count: want });
+        let e = bag.entry(bid).or_insert(0);
+        if *e < want {
+            *e = want;
+        }
+        return;
+    }
+    // 作物生料（第七刀）：不是 GatherResource（收成法不同軸），補「確保背包至少 need 份」的收成步。
+    if let Some(crop) = crop_of_raw_id(bid) {
+        let want = need.min(MAX_GATHER_COUNT);
+        out.push(PrimStep::Harvest { crop: crop.token().to_string(), count: want });
         let e = bag.entry(bid).or_insert(0);
         if *e < want {
             *e = want;
@@ -1381,6 +1518,36 @@ pub fn water_nearby(world: &WorldDelta, fx: i32, fy: i32, fz: i32) -> bool {
         }
     }
     false
+}
+
+/// 熟作物視為「在附近、可以直接收成」的水平搜尋半徑（格，第七刀）：同水面鄰近檢查
+/// （12 格）同一個尺度——這些都是她**弄不出來、只能撞見**的資源（水是天然地形、
+/// 熟作物多半是玩家種的），仍是鄰近檢查、不是移動去資源（見模組頭註）。
+pub const CROP_NEAR_RADIUS: i32 = 12;
+/// 熟作物搜尋的垂直範圍（±格）：田地在地表附近，不必掃到天上或深地底。
+pub const CROP_NEAR_YSPAN: i32 = 4;
+
+/// 附近是否有一畦指定作物已經熟了，熟在哪一格（第七刀）。掃居民腳邊一個小立方範圍的
+/// 有效方塊（含 delta overlay），找到即回該格座標；沒有回 `None`（呼叫端誠實失敗，
+/// 同水面鄰近檢查精神——不會替她跑去遠方找，更不會替她播種）。純函式、可測。
+pub fn ripe_crop_nearby(
+    world: &WorldDelta,
+    fx: i32,
+    fy: i32,
+    fz: i32,
+    want: Block,
+) -> Option<(i32, i32, i32)> {
+    for dx in -CROP_NEAR_RADIUS..=CROP_NEAR_RADIUS {
+        for dz in -CROP_NEAR_RADIUS..=CROP_NEAR_RADIUS {
+            for dy in -CROP_NEAR_YSPAN..=CROP_NEAR_YSPAN {
+                let (x, y, z) = (fx + dx, fy + dy, fz + dz);
+                if voxel::effective_block_at(world, x, y, z) == want {
+                    return Some((x, y, z));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// 找「把方塊放到自己旁邊」的合理位置（放置原語的安全核心，比照居民建造的放置語意：
@@ -1718,7 +1885,7 @@ pub fn invention_prompt(
         String::new()
     } else {
         format!(
-            "7. 使用已學會的技能：{{\"op\":\"use_skill\",\"name\":\"<你已經會的技能名>\"}}——\
+            "8. 使用已學會的技能：{{\"op\":\"use_skill\",\"name\":\"<你已經會的技能名>\"}}——\
             把你之前發明過、已經會的技能整段當一步用，不必重新拆解成原語。\n\
             你已經學會的技能（事實，只能引用這些名字，不可捏造）：{}\n",
             known_skill_names.join("、"),
@@ -1775,6 +1942,10 @@ pub fn invention_prompt(
         放心，煨好了自然會收到。\n\
         6. 釣魚：{{\"op\":\"fish\",\"count\":<數量1~{max_c}>}}——**必須附近有水**才能執行；\
         釣魚跟冶煉一樣要等上鉤，不是拋竿立刻有魚，放心，上鉤了自然會收到，釣起的是生小魚。\n\
+        7. 收成：{{\"op\":\"harvest\",\"crop\":\"<作物>\",\"count\":<數量1~{max_c}>}}，\
+        crop 只能是 wheat / carrot / potato（小麥/胡蘿蔔/馬鈴薯）——**必須附近有一畦這種\
+        作物已經熟了**才能執行；你不會種田播種，只能收成已經熟在那裡的作物，收成的是\
+        生料（不是麵包/烤地薯——那些還要再合成/冶煉）。\n\
         {use_skill_line}\
         你知道的隨身合成配方（事實，不可捏造別的）：\n{recipes}\n\
         你知道的工作台配方（要先有工作台在旁邊，才能用 craft_wb 做這些）：\n{wb_recipes}\n\
@@ -1838,6 +2009,7 @@ pub fn steps_summary(steps: &[CheckedStep]) -> String {
                 format!("熔爐冶煉{name}")
             }
             CheckedStep::Fish { count } => format!("釣魚×{count}"),
+            CheckedStep::Harvest { crop, count } => format!("收成{}×{count}", crop.display_name()),
         })
         .collect::<Vec<_>>()
         .join("→")
@@ -1871,6 +2043,16 @@ pub fn fishing_done_line() -> String {
 /// 附近找不到水，釣魚步誠實失敗的 Feed 詳情（第六刀，比照 `backoff_no_resource_feed`）。
 pub fn no_water_feed(goal_name: &str) -> String {
     format!("為了做出{goal_name}想找水釣魚，但附近找不到水，這次沒能成功")
+}
+
+/// 收成一畦附近熟作物那一刻的冒泡（第七刀——她撞見一畦別人種熟的作物，順手收進背包）。
+pub fn harvest_line(crop_name: &str) -> String {
+    format!("這附近有熟了的{crop_name}，我收一點～")
+}
+
+/// 附近找不到熟作物，收成步誠實失敗的 Feed 詳情（第七刀，比照 `no_water_feed`）。
+pub fn no_crop_feed(goal_name: &str, crop_name: &str) -> String {
+    format!("為了做出{goal_name}想收一點{crop_name}，但附近找不到熟了的{crop_name}，這次沒能成功")
 }
 
 /// 學會技能的冒泡（發明成功那一刻——維護者要看得到「進化」）。
@@ -2043,12 +2225,17 @@ pub fn curiosity_pick(catalog: &[MaterialGoal], seed: u64) -> Option<MaterialGoa
 /// 種子與階梯好奇心的 [`base_resource_ids`] 都從此出發，別讓兩邊分岔——第六刀（漁獲入
 /// 自採閉包）曾只補了前者、漏了後者，導致烤魚被階梯過濾器誤判「弄不到」）。
 /// 可自採資源（草/沙/土/石/木＋煤礦/鐵礦，`GatherResource::ALL`）＋小魚（`Fish` 原語，
-/// 釣法與挖方塊不同軸，故不進 `GatherResource::ALL`，改在此直接補一步到手的葉節點）。
+/// 釣法與挖方塊不同軸，故不進 `GatherResource::ALL`，改在此直接補一步到手的葉節點）＋
+/// 小麥/胡蘿蔔/馬鈴薯生料（第七刀 `Harvest` 原語，收成法也不同軸，同理直接補葉節點；
+/// 南瓜刻意不含，見模組頭註）。
 fn one_step_resource_ids() -> &'static HashSet<u8> {
     static SET: OnceLock<HashSet<u8>> = OnceLock::new();
     SET.get_or_init(|| {
         let mut set: HashSet<u8> = GatherResource::ALL.iter().map(|r| r.block_id()).collect();
         set.insert(FISH_ID);
+        set.insert(vfarm::WHEAT_ID);
+        set.insert(vfarm::CARROT_ID);
+        set.insert(vfarm::POTATO_ID);
         set
     })
 }
@@ -2310,11 +2497,10 @@ mod tests {
 
     #[test]
     fn parse_rejects_non_inventable_recipe() {
-        // 床要葉片、麵包要小麥（居民採不到）→ 不可發明，拒絕。
-        // （火把/鐵鎬在第五刀鑿井尋礦後礦石可採，已改為可發明，不再當反例。）
+        // 床要葉片（居民採不到）→ 不可發明，拒絕。
+        // （火把/鐵鎬在第五刀鑿井尋礦後礦石可採、麵包在第七刀作物入自採閉包後小麥可收成，
+        // 皆已改為可發明，不再當反例。）
         let raw = r#"{"name":"做床","steps":[{"op":"craft","recipe":"bed"}]}"#;
-        assert!(parse_plan(raw).is_none());
-        let raw = r#"{"name":"烤麵包","steps":[{"op":"craft","recipe":"bread"}]}"#;
         assert!(parse_plan(raw).is_none());
         // 兩張表都查無此 id → 拒絕。
         let raw = r#"{"name":"亂","steps":[{"op":"craft","recipe":"no_such_recipe"}]}"#;
@@ -3196,8 +3382,10 @@ mod tests {
         }
         // 第五刀（鑿井尋礦）：煤礦可採 → 火把也可發明了。
         assert!(ids.contains(&"torch"), "第五刀後火把（木＋煤礦）應可發明");
-        // 床要葉片、麵包要小麥 → 她弄不到料，仍不可發明（誠實邊界）。
-        for no in ["bed", "bread"] {
+        // 第七刀（作物入自採閉包）後小麥可收成 → 麵包（3 小麥）也第一次可發明了。
+        assert!(ids.contains(&"bread"), "第七刀後麵包（小麥可收成）應可發明");
+        // 床要葉片 → 她弄不到料，仍不可發明（誠實邊界，葉片留給更後面一刀）。
+        for no in ["bed"] {
             assert!(!ids.contains(&no), "{no} 不應可發明");
         }
         // 3×3 工作台配方：熔爐（8 石）/箱子（8 木板）/大量玻璃…在鏈上 → 可發明；
@@ -3223,11 +3411,13 @@ mod tests {
         let ids: Vec<&str> = inventable_furnace_recipes().map(|r| r.id).collect();
         // 第五刀（鑿井尋礦）後礦石可採 → smelt_iron 也第一次可發明。
         // 第六刀（漁獲入自採閉包）後小魚可釣 → smelt_fish（烤魚）也第一次可發明。
-        for want in ["smelt_stone", "smelt_glass", "smelt_brick", "smelt_iron", "smelt_fish"] {
+        // 第七刀（作物入自採閉包）後馬鈴薯可收成 → smelt_potato（烤地薯）也第一次可發明。
+        for want in ["smelt_stone", "smelt_glass", "smelt_brick", "smelt_iron", "smelt_fish", "smelt_potato"] {
             assert!(ids.contains(&want), "{want} 配料可自採，應可發明");
         }
-        for no in ["smelt_potato", "smelt_jam"] {
-            assert!(!ids.contains(&no), "{no} 生料弄不到（作物），不應可發明");
+        // 莓果醬要莓果 → 她弄不到料，仍不可發明（誠實邊界，莓園採集留給更後面一刀）。
+        for no in ["smelt_jam"] {
+            assert!(!ids.contains(&no), "{no} 生料弄不到（莓果），不應可發明");
         }
     }
 
@@ -3387,8 +3577,9 @@ mod tests {
                 | StepAction::Waiting
                 | StepAction::CollectSmelt { .. }
                 | StepAction::StartFish
-                | StepAction::CollectFish => {
-                    unreachable!("此計畫（合出熔爐本身）不含冶煉／釣魚步驟")
+                | StepAction::CollectFish
+                | StepAction::DoHarvest { .. } => {
+                    unreachable!("此計畫（合出熔爐本身）不含冶煉／釣魚／收成步驟")
                 }
             }
         }
@@ -3470,10 +3661,11 @@ mod tests {
 
     #[test]
     fn check_step_rejects_non_inventable_furnace_recipe() {
-        // 熬煮薯泥冶煉配方存在，但生料（作物）她弄不到 → 誠實拒絕。
+        // 熬煮果醬冶煉配方存在，但生料（莓果）她弄不到 → 誠實拒絕。
         // （smelt_iron 在第五刀鑿井尋礦後礦石可採、smelt_fish 在第六刀漁獲入自採閉包後
-        //   小魚可釣，皆已改為可發明，不再當反例。）
-        let s = PrimStep::Smelt { recipe: "smelt_potato".into() };
+        //   小魚可釣、smelt_potato 在第七刀作物入自採閉包後馬鈴薯可收成，皆已改為可發明，
+        //   不再當反例；莓果採集留給更後面一刀，暫仍是反例。）
+        let s = PrimStep::Smelt { recipe: "smelt_jam".into() };
         assert_eq!(check_step(&s), None);
         assert!(explain_bad_step(&s).contains("弄不到"), "{}", explain_bad_step(&s));
         // 第五刀正例：鐵錠冶煉（礦石生料如今可自採）通過檢查。
@@ -3482,6 +3674,12 @@ mod tests {
         // 第六刀正例：烤魚冶煉（小魚生料如今可自釣）通過檢查。
         let ok_fish = PrimStep::Smelt { recipe: "smelt_fish".into() };
         assert_eq!(check_step(&ok_fish), Some(CheckedStep::Smelt { recipe_id: "smelt_fish" }));
+        // 第七刀正例：烤地薯冶煉（馬鈴薯生料如今可自採）通過檢查。
+        let ok_potato = PrimStep::Smelt { recipe: "smelt_potato".into() };
+        assert_eq!(
+            check_step(&ok_potato),
+            Some(CheckedStep::Smelt { recipe_id: "smelt_potato" })
+        );
     }
 
     #[test]
@@ -3623,8 +3821,9 @@ mod tests {
             obtainable_ids().contains(&crate::voxel_fishing::COOKED_FISH_ID),
             "烤魚（生魚可自釣→smelt_fish）應在閉包裡"
         );
-        // 作物生料仍不可自採，誠實留在閉包外（未變動的既有邊界）。
-        assert!(!obtainable_ids().contains(&crate::voxel_farm::POTATO_ID));
+        // 第七刀（作物入自採閉包）後馬鈴薯生料也進了閉包（見 obtainable_ids_include_crops_and_their_recipes）；
+        // 莓果（BERRY_ID）仍不可自採，誠實留在閉包外（莓園採集留給更後面一刀）。
+        assert!(!obtainable_ids().contains(&crate::voxel_berry::BERRY_ID));
     }
 
     #[test]
@@ -3794,8 +3993,9 @@ mod tests {
                 }
                 StepAction::Done => break,
                 StepAction::StartGather { .. } | StepAction::DoCraft { .. }
-                | StepAction::DoCraftWb { .. } | StepAction::DoPlace { .. } => {
-                    unreachable!("此計畫（釣魚→冶煉）不含採集/合成/放置步")
+                | StepAction::DoCraftWb { .. } | StepAction::DoPlace { .. }
+                | StepAction::DoHarvest { .. } => {
+                    unreachable!("此計畫（釣魚→冶煉）不含採集/合成/放置/收成步")
                 }
             }
         }
@@ -3803,6 +4003,252 @@ mod tests {
             goal_met(&bag, crate::voxel_fishing::COOKED_FISH_ID),
             "後置條件：背包真的有烤魚"
         );
+    }
+
+    // ── 第七刀：作物入自採閉包（世界前提，無等待）───────────────────────────────
+
+    #[test]
+    fn crop_token_round_trips() {
+        for c in [CropResource::Wheat, CropResource::Carrot, CropResource::Potato] {
+            assert_eq!(crop_from_token(c.token()), Some(c));
+        }
+        assert_eq!(crop_from_token("wheat"), Some(CropResource::Wheat));
+        assert_eq!(crop_from_token("胡蘿蔔"), Some(CropResource::Carrot));
+        assert_eq!(crop_from_token("薯"), Some(CropResource::Potato));
+        assert_eq!(crop_from_token("pumpkin"), None, "南瓜不在白名單");
+    }
+
+    #[test]
+    fn check_step_validates_harvest_crop_and_count_bounds() {
+        assert_eq!(
+            check_step(&PrimStep::Harvest { crop: "wheat".into(), count: 1 }),
+            Some(CheckedStep::Harvest { crop: CropResource::Wheat, count: 1 })
+        );
+        assert_eq!(
+            check_step(&PrimStep::Harvest { crop: "carrot".into(), count: 0 }),
+            None,
+            "0 份不合理"
+        );
+        assert_eq!(
+            check_step(&PrimStep::Harvest { crop: "potato".into(), count: MAX_GATHER_COUNT + 1 }),
+            None,
+            "超上限"
+        );
+        assert_eq!(
+            check_step(&PrimStep::Harvest { crop: "pumpkin".into(), count: 1 }),
+            None,
+            "南瓜不在白名單"
+        );
+        let bad_crop = PrimStep::Harvest { crop: "pumpkin".into(), count: 1 };
+        assert!(explain_bad_step(&bad_crop).contains("wheat"));
+        let bad_count = PrimStep::Harvest { crop: "wheat".into(), count: 0 };
+        assert!(explain_bad_step(&bad_count).contains(&MAX_GATHER_COUNT.to_string()));
+    }
+
+    #[test]
+    fn obtainable_ids_include_crops_and_their_recipes() {
+        // 第七刀：小麥/胡蘿蔔/馬鈴薯生料（收成原語的產物）都應落進閉包。
+        assert!(obtainable_ids().contains(&vfarm::WHEAT_ID), "小麥應在種子集裡");
+        assert!(obtainable_ids().contains(&vfarm::CARROT_ID), "胡蘿蔔應在種子集裡");
+        assert!(obtainable_ids().contains(&vfarm::POTATO_ID), "馬鈴薯應在種子集裡");
+        // 三個下游配方（唯一途徑）第一次自動落進閉包。
+        assert!(obtainable_ids().contains(&vfarm::BREAD_ID), "麵包（3 小麥→麵包）應在閉包裡");
+        assert!(
+            obtainable_ids().contains(&vfarm::BAKED_POTATO_ID),
+            "烤地薯（smelt_potato，唯一途徑）應在閉包裡"
+        );
+        assert!(
+            obtainable_ids().contains(&vcraft::STEW_ID),
+            "野菜暖湯（三種作物齊聚）應在閉包裡"
+        );
+        // 南瓜刻意仍不可自採（季限作物，留給下一刀），閉包邊界保持誠實。
+        assert!(!obtainable_ids().contains(&vfarm::PUMPKIN_ID));
+    }
+
+    #[test]
+    fn next_action_harvest_state_machine() {
+        let raw = r#"{"name":"種麵包","steps":[{"op":"harvest","crop":"wheat","count":3},{"op":"craft","recipe":"bread"}]}"#;
+        let plan = parse_plan(raw).unwrap();
+        let mut run = InventRun::from_plan(vfarm::BREAD_ID, "麵包", &plan, false);
+        let mut bag = HashMap::new();
+        // 還沒收成 → DoHarvest。
+        assert_eq!(
+            next_action(&run, &bag, no_station),
+            StepAction::DoHarvest { crop: CropResource::Wheat }
+        );
+        // 收成滿足需求量（一次到位，無等待）→ Advance。
+        bag.insert(vfarm::WHEAT_ID, 3);
+        assert_eq!(next_action(&run, &bag, no_station), StepAction::Advance);
+        run.step_idx += 1;
+        assert_eq!(next_action(&run, &bag, no_station), StepAction::DoCraft { recipe_id: "bread" });
+    }
+
+    #[test]
+    fn next_action_harvest_reloops_until_count_satisfied() {
+        // count=3：一畦只夠收 1 份時，應反覆 DoHarvest 直到湊滿，不會提早 Advance。
+        let run = InventRun {
+            goal_block: vfarm::WHEAT_ID,
+            goal_name: "小麥".into(),
+            skill_name: "收成".into(),
+            raw_steps: vec![PrimStep::Harvest { crop: "wheat".into(), count: 3 }],
+            steps: vec![CheckedStep::Harvest { crop: CropResource::Wheat, count: 3 }],
+            step_idx: 0,
+            reuse: false,
+            deadline: RUN_TIMEOUT_SECS,
+            smelt_wait: None,
+            fish_wait: None,
+        };
+        let mut bag = HashMap::from([(vfarm::WHEAT_ID, 1u32)]);
+        assert_eq!(
+            next_action(&run, &bag, no_station),
+            StepAction::DoHarvest { crop: CropResource::Wheat },
+            "還差 2 份，應再收成"
+        );
+        bag.insert(vfarm::WHEAT_ID, 2);
+        assert_eq!(
+            next_action(&run, &bag, no_station),
+            StepAction::DoHarvest { crop: CropResource::Wheat },
+            "還差 1 份，應再收成"
+        );
+        bag.insert(vfarm::WHEAT_ID, 3);
+        assert_eq!(next_action(&run, &bag, no_station), StepAction::Advance, "湊滿 3 份才推進");
+    }
+
+    #[test]
+    fn simulate_plan_idealizes_harvest_like_fish() {
+        // 模擬階段不判熟作物可得性（同 Fish——執行期才真的去找，找不到才誠實失敗）。
+        let steps = [CheckedStep::Harvest { crop: CropResource::Wheat, count: 3 }];
+        let bag = HashMap::new();
+        assert!(simulate_plan(&steps, &bag, vfarm::WHEAT_ID, false, false).is_ok());
+    }
+
+    #[test]
+    fn simulate_plan_harvest_then_craft_reaches_bread() {
+        let steps = [
+            CheckedStep::Harvest { crop: CropResource::Wheat, count: 3 },
+            CheckedStep::Craft { recipe_id: "bread" },
+        ];
+        let bag = HashMap::new();
+        assert!(
+            simulate_plan(&steps, &bag, vfarm::BREAD_ID, false, false).is_ok(),
+            "附近收得到熟小麥 → 麵包計畫應可行"
+        );
+    }
+
+    #[test]
+    fn canonicalize_steps_inserts_harvest_step_for_bread() {
+        // 只給合成步（模擬便宜腦省略備料，如同既有木頭/石頭案例）→ 正規化應自動補收成步。
+        let steps = [CheckedStep::Craft { recipe_id: "bread" }];
+        let canon = canonicalize_steps(&steps);
+        assert!(
+            canon.iter().any(
+                |s| matches!(s, PrimStep::Harvest { crop, count } if crop == "wheat" && *count >= 3)
+            ),
+            "應自動補上收成備料步（3 小麥）：{canon:?}"
+        );
+        let checked = check_stored_steps(&canon).expect("應過存檔白名單");
+        assert!(
+            simulate_plan(&checked, &HashMap::new(), vfarm::BREAD_ID, false, false).is_ok(),
+            "正規化後應從空背包也能做出麵包"
+        );
+    }
+
+    #[test]
+    fn steps_summary_includes_harvest_line() {
+        let summary = steps_summary(&[CheckedStep::Harvest { crop: CropResource::Potato, count: 2 }]);
+        assert_eq!(summary, "收成馬鈴薯×2");
+    }
+
+    #[test]
+    fn harvest_lines_and_no_crop_feed_are_sane() {
+        assert!(harvest_line("小麥").contains("小麥"));
+        assert!(no_crop_feed("麵包", "小麥").contains("麵包"));
+        assert!(no_crop_feed("麵包", "小麥").contains("小麥"));
+    }
+
+    #[test]
+    fn invention_prompt_mentions_harvest_op() {
+        let goal = MaterialGoal { block_id: vfarm::BREAD_ID, name_zh: "麵包" };
+        let (sys, _) = invention_prompt("露娜", &goal, "想要麵包", "", false, false, &[]);
+        assert!(sys.contains("\"op\":\"harvest\""), "system prompt 應教 harvest op: {sys}");
+        assert!(sys.contains("已經熟了"), "應點明作物已熟的前提: {sys}");
+    }
+
+    #[test]
+    fn ripe_crop_nearby_detects_within_radius_not_beyond() {
+        let (fx, fy, fz) = (60, 5, 60);
+        let mut world: WorldDelta = WorldDelta::new();
+        assert_eq!(ripe_crop_nearby(&world, fx, fy, fz, Block::WheatMature), None, "還沒有熟作物 → 查無");
+        voxel::set_block(&mut world, fx + 3, fy, fz, Block::WheatMature);
+        assert_eq!(
+            ripe_crop_nearby(&world, fx, fy, fz, Block::WheatMature),
+            Some((fx + 3, fy, fz)),
+            "半徑內的熟作物應查得到"
+        );
+        // 半徑外種熟作物 → 查無（獨立世界，避免上面那格干擾）。
+        let far = CROP_NEAR_RADIUS + 5;
+        let mut world2: WorldDelta = WorldDelta::new();
+        voxel::set_block(&mut world2, fx + far, fy, fz, Block::WheatMature);
+        assert_eq!(ripe_crop_nearby(&world2, fx, fy, fz, Block::WheatMature), None, "太遠不算附近");
+        // 作物型別不符 → 查無（找小麥時不誤撿旁邊熟了的胡蘿蔔）。
+        let mut world3: WorldDelta = WorldDelta::new();
+        voxel::set_block(&mut world3, fx + 3, fy, fz, Block::CarrotMature);
+        assert_eq!(
+            ripe_crop_nearby(&world3, fx, fy, fz, Block::WheatMature),
+            None,
+            "型別不符不該誤撿"
+        );
+    }
+
+    /// 第七刀全鏈模擬（純邏輯側證據，比照第六刀 `full_fish_then_smelt_chain_simulated_execution_reaches_goal`）：
+    /// 空背包 → 收成×3（無等待，找到即收）→ 合成 → 後置條件成立（背包真的有麵包）。
+    #[test]
+    fn full_harvest_then_craft_chain_simulated_execution_reaches_bread() {
+        let raw = r#"{"name":"種麵包","steps":[{"op":"harvest","crop":"wheat","count":3},{"op":"craft","recipe":"bread"}]}"#;
+        let plan = parse_plan(raw).unwrap();
+        let mut run = InventRun::from_plan(vfarm::BREAD_ID, "麵包", &plan, false);
+        let mut bag: HashMap<u8, u32> = HashMap::new();
+        let mut guard = 0;
+        loop {
+            guard += 1;
+            assert!(guard < 60, "執行應在有限步內收斂");
+            match next_action(&run, &bag, no_station) {
+                StepAction::DoHarvest { crop } => {
+                    *bag.entry(crop.raw_id()).or_insert(0) += 1;
+                }
+                StepAction::Advance => run.step_idx += 1,
+                StepAction::DoCraft { recipe_id } => {
+                    let r = vcraft::find_recipe(recipe_id).unwrap();
+                    assert!(craft_apply(&mut bag, r), "照計畫備好料，合成應成功");
+                    run.step_idx += 1;
+                }
+                StepAction::Done => break,
+                other => unreachable!("此計畫（收成→合成）不該走到 {other:?}"),
+            }
+        }
+        assert!(goal_met(&bag, vfarm::BREAD_ID), "後置條件：背包真的有麵包");
+    }
+
+    #[test]
+    fn laddered_pick_can_reach_bread() {
+        // 回歸鎖：比照第六刀（漁獲）曾讓 base_resource_ids 與 obtainable_ids 分岔的教訓——
+        // 本刀從一開始就共用 one_step_resource_ids，這裡釘住小麥與麵包不會重蹈覆轍。
+        let none = HashSet::new();
+        assert!(
+            goal_reach_cost(vfarm::BREAD_ID, &none).is_some(),
+            "小麥應與其他一步可得資源同屬 base_resource_ids，麵包成本不該恆為 None"
+        );
+        // 麵包不需站台（2×2 隨身配方），零技能時就該落在步數上限內——不像烤魚/拋光石
+        // 得先蓋熔爐才搆得著。
+        let cost = goal_reach_cost(vfarm::BREAD_ID, &none);
+        assert!(
+            cost.map_or(false, |c| c <= MAX_STEPS),
+            "零技能時麵包應已落在步數上限內，實得 {cost:?}"
+        );
+        let cat = possibility_catalog(&HashSet::new());
+        let picked_bread = (0..cat.len() as u64)
+            .any(|seed| curiosity_pick_laddered(&cat, &none, seed).map(|g| g.block_id) == Some(vfarm::BREAD_ID));
+        assert!(picked_bread, "零技能時，階梯好奇心掃過真實目錄的 seed 應能挑到麵包");
     }
 
     // ── 第二刀：處境偵測新目標 ───────────────────────────────────────────────
@@ -4035,8 +4481,13 @@ mod tests {
             ids.contains(&crate::voxel_fishing::COOKED_FISH_ID),
             "烤魚（熔爐產物）第六刀後應進目錄：{ids:?}"
         );
-        // 不可發明的誠實不列：床(45 要葉片)、冰晶燈(57)、麵包(19 要小麥)。
-        for bad in [45u8, 57, 19] {
+        // 第七刀（作物入自採閉包）後小麥可收成：麵包(19)也自動長進目錄。
+        assert!(
+            ids.contains(&crate::voxel_farm::BREAD_ID),
+            "麵包（3 小麥）第七刀後應進目錄：{ids:?}"
+        );
+        // 不可發明的誠實不列：床(45 要葉片)、冰晶燈(57)、果醬(要莓果，莓果採集留給更後面一刀)。
+        for bad in [45u8, 57, crate::voxel_berry::JAM_ID] {
             assert!(!ids.contains(&bad), "id {bad} 她備不了料，不該進目錄");
         }
         // 去重：同產物（木板 8 同時是 2×2 與 3×3 產物）只列一次。

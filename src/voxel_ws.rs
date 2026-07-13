@@ -23863,6 +23863,55 @@ fn advance_invent_run(
                 run.fish_wait = None;
                 // 不 Advance——下一輪 next_action 重新檢查數量是否已夠，不夠會自然再拋一竿。
             }
+            vinvent::StepAction::DoHarvest { crop } => {
+                // 收成（第七刀）：世界前提——附近真的有一畦這種作物熟了
+                // （鄰近檢查，不是移動去資源；找不到就誠實失敗，不隔空收成、也不替她播種）。
+                let found = {
+                    let world = hub().deltas.read().unwrap();
+                    vinvent::ripe_crop_nearby(&world, rx, ry, rz, crop.mature_block())
+                }; // deltas 讀鎖釋放
+                let Some((gx, gy, gz)) = found else {
+                    vfeed::append_feed(
+                        "收成受阻",
+                        rname,
+                        &vinvent::no_crop_feed(&run.goal_name, crop.display_name()),
+                    );
+                    finish_invent_run(rid, rname, run, false, say_updates);
+                    return;
+                };
+                let Some((food_id, qty, regrow)) = vhunger::harvest_food_of(crop.mature_block()) else {
+                    finish_invent_run(rid, rname, run, false, say_updates);
+                    return;
+                };
+                // 收成：熟作物換成收成後的退回態（Mature→Seeded 能再長），廣播 + 持久化
+                // （比照 forage_harvest_events 的收成規則，`vhunger::harvest_food_of` 單一事實源）。
+                {
+                    let mut world = hub().deltas.write().unwrap();
+                    voxel::set_block(&mut world, gx, gy, gz, regrow);
+                } // deltas 寫鎖釋放
+                broadcast_block(gx, gy, gz, regrow);
+                vbuild::append_world_block(gx, gy, gz, regrow as u8);
+                if matches!(
+                    regrow,
+                    Block::FarmSoilSeeded | Block::CarrotSeeded | Block::PotatoSeeded
+                ) {
+                    let kind = match regrow {
+                        Block::CarrotSeeded => vfarm::CropKind::Carrot,
+                        Block::PotatoSeeded => vfarm::CropKind::Potato,
+                        _ => vfarm::CropKind::Wheat,
+                    };
+                    let farm_e =
+                        { hub().farm.write().unwrap().plant(gx, gy, gz, vfarm::now_secs(), kind) };
+                    vfarm::append_farm(&farm_e);
+                }
+                {
+                    let mut inv = hub().res_inv.write().unwrap();
+                    *inv.entry(rid.to_string()).or_default().entry(food_id).or_insert(0) += qty;
+                } // res_inv 寫鎖釋放
+                say_updates.push((rid.to_string(), vinvent::harvest_line(crop.display_name())));
+                // 不 Advance——下一輪 next_action 重新檢查數量是否已夠，不夠會自然再找下一畦
+                //（比照 Fish 多趟拋竿的節奏）。
+            }
             vinvent::StepAction::Done => {
                 // 最終後置條件驗證：背包**真的**有目標材料，才算「她做出來了」。
                 let met = {
