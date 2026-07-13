@@ -251,6 +251,30 @@ impl SignStore {
         hits
     }
 
+    /// 每帳號僅一塊有效領地（玩家個人領地保護 review 修正 第三輪，堵住「無限插旗」濫用面，
+    /// ROADMAP 963）：立新家牌時，若該帳號在別的座標已經有一塊有主的家牌，舊的自動失效——
+    /// 只保留最新這塊當領地／居民辨識用，牌面文字仍留著（不刪牌，只是不再算誰的），把單一
+    /// 帳號的破壞面上界壓到「一個半徑 [`crate::voxel_landclaim::CLAIM_RADIUS`] 的圈」。
+    /// 回傳失效事件（供呼叫端 append 持久化；牌面文字沒變，不必廣播浮字）。
+    pub fn demote_other_claims(&mut self, owner_key_val: &str, except_pos: &str) -> Vec<SignEntry> {
+        let stale: Vec<String> = self
+            .owners_key
+            .iter()
+            .filter(|(pos, k)| pos.as_str() != except_pos && k.as_str() == owner_key_val)
+            .map(|(pos, _)| pos.clone())
+            .collect();
+        let mut events = Vec::new();
+        for pos in stale {
+            let Some(text) = self.signs.get(&pos).cloned() else { continue };
+            self.owners.remove(&pos);
+            self.owners_key.remove(&pos);
+            let seq = self.next_seq;
+            self.next_seq += 1;
+            events.push(SignEntry { pos, text, seq, owner: None, owner_key: None });
+        }
+        events
+    }
+
     /// 目前所有告示牌（供新玩家連線時一次送出），已按座標鍵排序求穩定。
     pub fn all(&self) -> Vec<(String, String)> {
         let mut v: Vec<(String, String)> =
@@ -507,5 +531,51 @@ mod tests {
         let hit = store.all_within_xz(0.5, 0.5, 1.0).into_iter().next().expect("應命中");
         assert_eq!(hit.owner.as_deref(), Some("阿宅"));
         assert_eq!(hit.owner_key.as_deref(), Some("azhai@example.com"));
+    }
+
+    // ── demote_other_claims（領地保護 review 修正 第三輪：每帳號僅一塊有效領地）────────────
+
+    #[test]
+    fn demote_other_claims_strips_owner_of_stale_sign_only() {
+        let mut store = SignStore::new();
+        store.set("0,0,0", "舊家".to_string(), Some("阿星".to_string()), Some("astar@example.com".to_string()));
+        store.set("10,0,10", "新家".to_string(), Some("阿星".to_string()), Some("astar@example.com".to_string()));
+        let events = store.demote_other_claims("astar@example.com", "10,0,10");
+        assert_eq!(events.len(), 1, "只有舊的那塊該失效");
+        assert_eq!(events[0].pos, "0,0,0");
+        assert_eq!(events[0].owner, None);
+        assert_eq!(events[0].owner_key, None);
+        assert_eq!(events[0].text, "舊家", "牌面文字不變，只是不再算誰的");
+        // store 內狀態也同步：舊牌文字還在，但查歸屬應已清空。
+        assert_eq!(store.get("0,0,0"), Some("舊家"));
+        let hits = store.all_within_xz(0.5, 0.5, 1.0);
+        assert_eq!(hits[0].owner_key, None);
+        // 新牌不受影響。
+        let new_hits = store.all_within_xz(10.5, 10.5, 1.0);
+        assert_eq!(new_hits[0].owner_key.as_deref(), Some("astar@example.com"));
+    }
+
+    #[test]
+    fn demote_other_claims_ignores_other_accounts_and_no_stale() {
+        let mut store = SignStore::new();
+        store.set("0,0,0", "小夜的家".to_string(), Some("小夜".to_string()), Some("yoru@example.com".to_string()));
+        // 阿星立第一塊家牌：不該動到小夜的牌，也沒有自己的舊牌可失效。
+        let events = store.demote_other_claims("astar@example.com", "5,0,5");
+        assert!(events.is_empty());
+        let hits = store.all_within_xz(0.5, 0.5, 1.0);
+        assert_eq!(hits[0].owner_key.as_deref(), Some("yoru@example.com"), "別人的領地不受影響");
+    }
+
+    #[test]
+    fn demote_other_claims_handles_multiple_stale_signs() {
+        let mut store = SignStore::new();
+        store.set("0,0,0", "家一".to_string(), Some("阿星".to_string()), Some("astar@example.com".to_string()));
+        store.set("20,0,20", "家二".to_string(), Some("阿星".to_string()), Some("astar@example.com".to_string()));
+        store.set("40,0,40", "家三".to_string(), Some("阿星".to_string()), Some("astar@example.com".to_string()));
+        let events = store.demote_other_claims("astar@example.com", "40,0,40");
+        assert_eq!(events.len(), 2, "兩塊舊牌都該失效，只留最新那塊");
+        let positions: Vec<&str> = events.iter().map(|e| e.pos.as_str()).collect();
+        assert!(positions.contains(&"0,0,0"));
+        assert!(positions.contains(&"20,0,20"));
     }
 }

@@ -9014,9 +9014,34 @@ async fn handle_socket(
                 // review 修正 阻擋項③——顯示名可被改名功能改動，不可當權限歸屬）。
                 let owner = if is_account && !clean.is_empty() { Some(name.clone()) } else { None };
                 let owner_key = if is_account && !clean.is_empty() { account_email.clone() } else { None };
-                let ev = hub().sign.write().unwrap()
-                    .set(&vsign::pos_key(x, y, z), clean.clone(), owner, owner_key);
+                let pos_key = vsign::pos_key(x, y, z);
+                // 每帳號僅一塊有效領地（review 修正 第三輪，堵住「無限插旗」濫用面，ROADMAP
+                // 963）：立新家牌時，若這帳號在別的座標已有一塊有主的家牌，舊的自動失效——
+                // 把單一帳號的破壞面上界壓到「一個半徑 CLAIM_RADIUS 的圈」，同一顆寫鎖內完成
+                // 不留競態窗口。
+                let (ev, demoted) = {
+                    let mut store = hub().sign.write().unwrap();
+                    let ev = store.set(&pos_key, clean.clone(), owner, owner_key.clone());
+                    let demoted = if vlandclaim::is_home_sign(&clean) {
+                        owner_key.as_deref()
+                            .map(|k| store.demote_other_claims(k, &pos_key))
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    (ev, demoted)
+                };
                 vsign::append_sign(&ev);
+                if !demoted.is_empty() {
+                    for d in &demoted {
+                        vsign::append_sign(d);
+                    }
+                    let mut players = hub().players.write().unwrap();
+                    if let Some(p) = players.get_mut(&my_id) {
+                        p.say = "每人限一塊領地，你舊的家牌已不再受保護喔。".to_string();
+                        p.say_timer = PLAYER_SAY_SECS;
+                    }
+                }
                 // 廣播給所有人（含自己），前端據此更新／移除該座標的浮字。
                 broadcast_sign(x, y, z, &clean);
             }
