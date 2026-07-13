@@ -1672,9 +1672,12 @@ pub const TILL_NEAR_RADIUS: i32 = 12;
 pub const TILL_NEAR_YSPAN: i32 = 4;
 
 /// 附近是否有可翻土播種的地表（草皮／泥土，依作物種類而定），在哪一格（第九刀·播種
-/// 自給）。掃居民腳邊一個小立方範圍的有效方塊（含 delta overlay），找到即回該格座標；
-/// 沒有回 `None`（呼叫端誠實放棄這次播種，不會替她跑去遠方找地——那不像找水找熟作物，
-/// 到處都是草皮泥土，附近沒有多半代表地形異常）。純函式、可測。
+/// 自給）。由近而遠螺旋掃（比照 [`find_water`]／[`find_ripe_crop_far`] 共用 [`spiral_find`]），
+/// 且只認**真地表**——該格上方須為 `Air`（可直接種下、種下去玩家看得見），排除被草皮／
+/// 岩層蓋住的深層泥土（審查點名：舊版三層迴圈固定順序掃到最遠角落 + 最深層先中，會把
+/// 馬鈴薯種到地底）。找到即回該格座標；沒有回 `None`（呼叫端誠實放棄這次播種，不會替她
+/// 跑去遠方找地——那不像找水找熟作物，到處都是草皮泥土，附近沒有多半代表地形異常，
+/// 或單純還沒有裸露的泥土可種）。純函式、可測。
 pub fn tillable_ground_nearby(
     world: &WorldDelta,
     fx: i32,
@@ -1682,17 +1685,14 @@ pub fn tillable_ground_nearby(
     fz: i32,
     want: Block,
 ) -> Option<(i32, i32, i32)> {
-    for dx in -TILL_NEAR_RADIUS..=TILL_NEAR_RADIUS {
-        for dz in -TILL_NEAR_RADIUS..=TILL_NEAR_RADIUS {
-            for dy in -TILL_NEAR_YSPAN..=TILL_NEAR_YSPAN {
-                let (x, y, z) = (fx + dx, fy + dy, fz + dz);
-                if voxel::effective_block_at(world, x, y, z) == want {
-                    return Some((x, y, z));
-                }
-            }
-        }
-    }
-    None
+    spiral_find(fx, fz, 0, TILL_NEAR_RADIUS, |x, z| {
+        (-TILL_NEAR_YSPAN..=TILL_NEAR_YSPAN).find_map(|dy| {
+            let y = fy + dy;
+            let is_surface = voxel::effective_block_at(world, x, y, z) == want
+                && voxel::effective_block_at(world, x, y + 1, z) == Block::Air;
+            is_surface.then_some((x, y, z))
+        })
+    })
 }
 
 /// 扣一顆種子（播種消耗；第九刀）。先驗證真的有 ≥1 顆才扣，比照 [`smelt_start_apply`]
@@ -4491,6 +4491,44 @@ mod tests {
         let mut world: WorldDelta = WorldDelta::new();
         voxel::set_block(&mut world, fx + TILL_NEAR_RADIUS + 5, fy, fz, Block::Grass);
         assert_eq!(tillable_ground_nearby(&world, fx, fy, fz, Block::Grass), None);
+    }
+
+    /// 審查點名（PR#1236）：舊版三層迴圈固定順序（最遠角落先掃、命中即回），面對真實
+    /// 地形（滿地天然草皮/泥土）會把種子種到地底。改用真實地形（非高空）跑一次，斷言
+    /// 選到的是腳邊裸露地表，不是遠處/深層。
+    #[test]
+    fn tillable_ground_nearby_real_terrain_picks_surface_not_buried() {
+        // 找一個乾淨陸地欄位（高於海平面、上方無樹遮擋），比照 voxel.rs 同名測試手法。
+        let z = 500;
+        let mut fx = 0;
+        for cand in 0..20000 {
+            let h = voxel::height_at(cand, z);
+            if h > 64 && (1..=4).all(|d| voxel::block_at(cand, h + d, z) == Block::Air) {
+                fx = cand;
+                break;
+            }
+        }
+        let world: WorldDelta = WorldDelta::new(); // 純程序生成地形，無任何 overlay
+        let h = voxel::height_at(fx, z);
+        let fy = h + 1; // 站在地表上
+
+        // 草皮（胡蘿蔔用）：地表本身就是裸露草皮，該就地找到腳邊，不是遠處角落。
+        let spot = tillable_ground_nearby(&world, fx, fy, z, Block::Grass)
+            .expect("腳邊地表就是草皮，該找到");
+        assert_eq!(spot, (fx, h, z), "該選到腳邊真地表，不是遠處/深層的巧合命中");
+        assert_eq!(
+            voxel::effective_block_at(&world, spot.0, spot.1 + 1, spot.2),
+            Block::Air,
+            "選到的必須是暴露地表（上方是空氣），不是被草皮蓋住的深層方塊"
+        );
+
+        // 泥土（馬鈴薯用）：純天然地形的泥土永遠被草皮蓋住、沒有裸露泥土，該誠實查無，
+        // 不能像舊版那樣把種子種到看不見的地底。
+        assert_eq!(
+            tillable_ground_nearby(&world, fx, fy, z, Block::Dirt),
+            None,
+            "天然地形沒有裸露泥土，翻土播種該誠實失敗"
+        );
     }
 
     // ── consume_seed：播種消耗（第九刀）───────────────────────────────────────────

@@ -24001,11 +24001,13 @@ fn advance_invent_run(
                                         rname,
                                         &vinvent::planted_seed_feed(&run.goal_name, crop.display_name()),
                                     );
-                                    let mut residents = hub().residents.write().unwrap();
-                                    if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
-                                        r.invent_run = Some(run);
-                                    }
-                                    return; // 這次先種下去；下輪 next_action 重新判定（種子已用光，屆時誠實失敗)。
+                                    // 審查點名（PR#1236）：同一 run 只准播一畦——播完直接收尾這次嘗試
+                                    // （誠實算失敗，種子還沒長熟），不把 run 放回去讓下一 tick 繼續掃、
+                                    // 靠「種子用光」當停止條件——分潤採集隨手就能攢到幾十顆種子，
+                                    // 會在一個 run 內（最長 480 秒、每 8 秒一輪）連續鋪出幾十畦田、
+                                    // 洗版幾十則 Feed（同 demolish churn 那次「缺收斂守衛」的老雷）。
+                                    finish_invent_run(rid, rname, run, false, say_updates);
+                                    return; // 種下去了；下次心願冷卻後重新起 run 再試。
                                 }
                             }
                         }
