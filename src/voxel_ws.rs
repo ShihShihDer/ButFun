@@ -3922,6 +3922,32 @@ fn claim_blocking_owner(x: i32, z: i32, requester_key: Option<&str>) -> Option<S
     vlandclaim::resolve_claim_block(home_claims, requester_key).map(str::to_string)
 }
 
+/// 玩家個人領地保護 v1（review 第四輪修正，ROADMAP 963）：`Break`/`Place`/`SignSet` 之外，
+/// 凡是「直接改寫世界方塊」的入口（鋤地、倒水、種植、施肥……）都要走同一顆判定，否則保護
+/// 形同虛設——別人拿鋤頭/水桶就能繞過整套保護改你領地內的方塊。擋下時已送出 `claim_protected`
+/// 提示，呼叫端只需 `continue`；一律插在消耗任何材料之前，被擋不白扣料。
+fn deny_if_claimed(
+    x: i32,
+    z: i32,
+    is_account: bool,
+    account_email: Option<&str>,
+    out_tx: &mpsc::Sender<Message>,
+) -> bool {
+    let requester_key = if is_account { account_email } else { None };
+    if let Some(owner) = claim_blocking_owner(x, z, requester_key) {
+        let _ = out_tx.try_send(Message::Text(
+            serde_json::json!({
+                "t": "claim_protected",
+                "line": vlandclaim::claim_deny_line(&owner, (x.wrapping_add(z)) as usize),
+            })
+            .to_string(),
+        ));
+        true
+    } else {
+        false
+    }
+}
+
 /// 玩家生存指標 v1（溫和版）：把 PlayerStats 組成單播給玩家自己的 `player_stats` 訊息。
 /// 只送血/飢/上限/是否餓瘋（前端據此顯示條＋餓瘋提示＋移動懲罰視覺）。
 /// **後端權威**：這串永遠從伺服器狀態組出，客戶端無法自報。
@@ -5031,15 +5057,7 @@ async fn handle_socket(
                 // 玩家個人領地保護 v1（ROADMAP 963，review 修正：歸屬走穩定帳號鍵、掃全部
                 // 家牌不只最近一塊）：目標格若落在別人的領地內，只有立牌本人能動——別人的
                 // 鎬子在這裡溫柔地伸不進來（sign 讀鎖即釋，不與後續 delta 鎖巢狀）。
-                let requester_key = if is_account { account_email.as_deref() } else { None };
-                if let Some(owner) = claim_blocking_owner(x, z, requester_key) {
-                    let _ = out_tx.try_send(Message::Text(
-                        serde_json::json!({
-                            "t": "claim_protected",
-                            "line": vlandclaim::claim_deny_line(&owner, (x.wrapping_add(z)) as usize),
-                        })
-                        .to_string(),
-                    ));
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
                     continue;
                 }
                 // delta 寫鎖：驗證 + 設為空氣（循序取放，不嵌套）。
@@ -5498,15 +5516,7 @@ async fn handle_socket(
                 // 家牌不只最近一塊）：目標格若落在別人的領地內，只有立牌本人能放——在消耗任何
                 // 材料之前先擋，別人白挨一句提示、不掉材料（sign 讀鎖即釋，不與後續
                 // inventory/delta 鎖巢狀）。
-                let requester_key = if is_account { account_email.as_deref() } else { None };
-                if let Some(owner) = claim_blocking_owner(x, z, requester_key) {
-                    let _ = out_tx.try_send(Message::Text(
-                        serde_json::json!({
-                            "t": "claim_protected",
-                            "line": vlandclaim::claim_deny_line(&owner, (x.wrapping_add(z)) as usize),
-                        })
-                        .to_string(),
-                    ));
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
                     continue;
                 }
                 // 植樹造林 v1（ROADMAP 738）：樹苗只能種在「土地」上（草/土/沙/雪/農田土），
@@ -7114,6 +7124,11 @@ async fn handle_socket(
                     ));
                     continue;
                 }
+                // 玩家個人領地保護 v1（review 第四輪修正，ROADMAP 963）：別人領地內的農田土
+                // 不准種——堵住「拿種子繞過 Place/Break 保護，直接在別人領地裡種東西」的漏洞。
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
+                    continue;
+                }
                 // 確認目標方塊是農田土(11)。
                 let target = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
                 if target != Block::FarmSoil {
@@ -7243,6 +7258,11 @@ async fn handle_socket(
                     ));
                     continue;
                 }
+                // 玩家個人領地保護 v1（review 第四輪修正，ROADMAP 963）：別人領地內的幼苗
+                // 不准施肥——堵住繞過 Place/Break 保護、直接動別人領地內方塊的漏洞。
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
+                    continue;
+                }
                 // 目標方塊必須是「還在長的幼苗」——後端權威判定（前端不自報合法性·濫用防護）。
                 let target = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
                 if !vcompost::is_growing_crop(target) {
@@ -7318,6 +7338,11 @@ async fn handle_socket(
                     ));
                     continue;
                 }
+                // 玩家個人領地保護 v1（review 第四輪修正順手補上，ROADMAP 963）：舀水也是
+                // 把方塊變空氣——跟 Break 同一類改寫，別人領地內的水源不准舀走。
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
+                    continue;
+                }
                 // 目標必須是來源水——後端權威判定（前端不自報合法性·濫用防護）。
                 let target = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
                 if !vbucket::is_fillable_source(target as u8) {
@@ -7386,6 +7411,11 @@ async fn handle_socket(
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({ "t": "bucket_fail", "reason": "太遠了" }).to_string(),
                     ));
+                    continue;
+                }
+                // 玩家個人領地保護 v1（review 第四輪修正，ROADMAP 963）：別人領地內不准倒水
+                // ——堵住陌生人拿水桶繞過 Place/Break 保護、在你家客廳倒水的漏洞。
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
                     continue;
                 }
                 // 目標必須可倒（空氣或流動水；實心擋水、既有源不必重放·後端權威判定）。
@@ -7457,6 +7487,11 @@ async fn handle_socket(
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({ "t": "hoe_fail", "reason": "太遠了" }).to_string(),
                     ));
+                    continue;
+                }
+                // 玩家個人領地保護 v1（review 第四輪修正，ROADMAP 963）：別人領地內不准鋤地
+                // ——堵住陌生人拿鋤頭繞過 Place/Break 保護、把你家客廳地板鋤成農田土的漏洞。
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
                     continue;
                 }
                 // 目標必須是草地或泥土——後端權威判定（前端不自報合法性·濫用防護）。
@@ -8980,15 +9015,7 @@ async fn handle_socket(
                 // 領地內，只有領地主人能改寫／清空它——堵住「走到別人家牌前送一則 SignSet 就把
                 // 整塊領地搶走」的漏洞（歸屬走穩定帳號鍵、掃全部家牌不只最近一塊，見
                 // `claim_blocking_owner`；sign 讀鎖即釋，不與後續寫鎖巢狀）。
-                let requester_key = if is_account { account_email.as_deref() } else { None };
-                if let Some(owner) = claim_blocking_owner(x, z, requester_key) {
-                    let _ = out_tx.try_send(Message::Text(
-                        serde_json::json!({
-                            "t": "claim_protected",
-                            "line": vlandclaim::claim_deny_line(&owner, (x.wrapping_add(z)) as usize),
-                        })
-                        .to_string(),
-                    ));
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
                     continue;
                 }
                 // 清洗玩家輸入（去控制字元、截長度）；空字串＝清空牌面。
@@ -26317,6 +26344,36 @@ mod tests {
             summary: format!("摘要{seq}"),
             seq,
         }
+    }
+
+    // ── 玩家個人領地保護（review 第四輪：驗證共用選點函式本身，不只驗證單一 handler）──
+    // `claim_blocking_owner` 是 Break/Place/SignSet/Plant/Fertilize/BucketFill/BucketPour
+    // 七個 handler 共用的唯一判定入口（deny_if_claimed 包一層送訊息）；直接測這顆函式即
+    // 涵蓋所有呼叫端的「該不該擋」決策，不必為每個 handler 各自搭一套 WS 整合測試。
+    // 座標挑遠離世界原點與其他任何測試會用到的角落，避免 hub() 全域單例跨測試撞座標。
+    #[test]
+    fn claim_blocking_owner_denies_stranger_and_allows_true_owner() {
+        let x = -987_654;
+        let z = -123_456;
+        {
+            let mut store = hub().sign.write().unwrap();
+            store.set(
+                &vsign::pos_key(x, 64, z),
+                "小夜的家".to_string(),
+                Some("小夜".to_string()),
+                Some("yoru@example.com".to_string()),
+            );
+        } // sign 寫鎖釋放
+
+        // 陌生人（不同帳號鍵）被擋下，回傳領地主人顯示名。
+        assert_eq!(
+            claim_blocking_owner(x, z, Some("stranger@example.com")),
+            Some("小夜".to_string())
+        );
+        // 訪客（無帳號鍵）一樣被擋下。
+        assert_eq!(claim_blocking_owner(x, z, None), Some("小夜".to_string()));
+        // 立牌本人放行。
+        assert_eq!(claim_blocking_owner(x, z, Some("yoru@example.com")), None);
     }
 
     #[test]
