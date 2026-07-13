@@ -49,6 +49,7 @@ use crate::voxel_village as vvillage;
 use crate::voxel_discovery as vdisc;
 use crate::voxel_landmark_note as vlmark;
 use crate::voxel_colony as vcolony;
+use crate::voxel_lighthouse as vlighthouse;
 use crate::voxel_settle as vsettle;
 use crate::voxel_lovenest as vnest;
 use crate::voxel_craft as vcraft;
@@ -2389,6 +2390,9 @@ struct VoxelHub {
     /// 分村殖民 v1（自主提案切片，承 PLAN_ETHERVOX §7）：全世界已奠基的野外殖民地名冊。
     /// 持久化到 data/voxel_colonies.jsonl（append-only，重啟後村落與立村故事仍在）。
     colonies: RwLock<vcolony::ColonyRegistry>,
+    /// 眾力共築·乙太燈塔 v1（自主提案切片）：玩家（非居民）跨人累積捐獻的建材進度＋
+    /// 貢獻榜。持久化到 data/voxel_lighthouse.jsonl（append-only，重啟後募集進度仍在）。
+    lighthouse: RwLock<vlighthouse::LighthouseProgress>,
     /// 殖民地真居住 v1（架構級大弧，承 PLAN_ETHERVOX §7）：居民 → 聚落歸屬
     /// （0＝主村、殖民地 seq=s → s+1）。沒有記錄＝主村（向後相容）。
     /// 持久化到 data/voxel_settlements.jsonl（append-only，重啟後仍記得誰住哪個聚落）。
@@ -3212,6 +3216,8 @@ fn hub() -> &'static VoxelHub {
             mastery: RwLock::new(MasteryStore::from_entries(vmastery::load_mastery())),
             // 啟動時從 data/voxel_colonies.jsonl 載回已奠基的野外殖民地（重啟後村落仍在）。
             colonies: RwLock::new(vcolony::ColonyRegistry::from_entries(vcolony::load_colonies())),
+            // 啟動時從 data/voxel_lighthouse.jsonl 載回燈塔募集進度（重啟後累計進度仍在）。
+            lighthouse: RwLock::new(vlighthouse::LighthouseProgress::from_entries(vlighthouse::load_events())),
             // 啟動時從 data/voxel_settlements.jsonl 載回聚落歸屬（重啟後仍記得誰住哪個聚落）。
             settlements: RwLock::new(vsettle::SettlementStore::from_entries(vsettle::load_settlements())),
             lovenests: RwLock::new(vnest::NestRegistry::from_entries(vnest::load_nests())),
@@ -3697,6 +3703,11 @@ enum ClientMsg {
     /// 個人路標 v1：刪除指定名字的路標。找不到回 `waypoint_fail`；成功回傳更新後的清單。
     #[serde(rename = "remove_waypoint")]
     RemoveWaypoint { label: String },
+    /// 眾力共築·乙太燈塔 v1（自主提案切片）：走近燈塔工地，把背包裡的建材獻出來。
+    /// 伺服器驗證觸及範圍 + 背包實際存量後，扣掉實際採用的數量（依剩餘需求與持有量夾住，
+    /// 客戶端自報的 `qty` 只是上限、不會被信任超額扣除）、更新全服募集進度並回 `lighthouse_ok`。
+    #[serde(rename = "lighthouse_contribute")]
+    LighthouseContribute { item_id: u8, qty: u32 },
 }
 
 /// 出生點：從原點向外螺旋找第一塊「高於海平面的陸地」，站到地表上方，確保不卡水/土裡。
@@ -7938,6 +7949,129 @@ async fn handle_socket(
                             "t": "waypoint_fail", "reason": "找不到這支路標。"
                         }).to_string())).await;
                     }
+                }
+            }
+            // ── 眾力共築·乙太燈塔 v1（自主提案切片）────────────────────────────────
+            Ok(ClientMsg::LighthouseContribute { item_id, qty }) => {
+                // 1) 短鎖取玩家位置（players 讀鎖即釋）。
+                let player_pos: Option<(f32, f32)> = {
+                    let players = hub().players.read().unwrap();
+                    players.get(&my_id).map(|p| (p.x, p.z))
+                };
+                let Some((px, pz)) = player_pos else { continue };
+                // 2) 工地座標：村莊中心固定偏移（鎖外純函式算，比照村莊地圖端點的 fallback）。
+                let (vcx, vcz) = vvillage::load_village_center().unwrap_or_else(|| {
+                    let home_bases: Vec<(i32, i32)> = {
+                        let residents = hub().residents.read().unwrap();
+                        residents
+                            .iter()
+                            .map(|r| (r.home_x.floor() as i32, r.home_z.floor() as i32))
+                            .collect()
+                    }; // residents 讀鎖釋放
+                    vvillage::village_center(&home_bases)
+                });
+                let (sx, sz) = vlighthouse::site_coords(vcx, vcz);
+                let dx = px - sx as f32;
+                let dz = pz - sz as f32;
+                if dx * dx + dz * dz > vlighthouse::CONTRIBUTE_REACH * vlighthouse::CONTRIBUTE_REACH {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "lighthouse_fail",
+                        "reason": "走近乙太燈塔工地再獻材料"
+                    }).to_string())).await;
+                    continue;
+                }
+                if !vlighthouse::is_material(item_id) {
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "lighthouse_fail",
+                        "reason": "燈塔用不到這種材料"
+                    }).to_string())).await;
+                    continue;
+                }
+                // 3) 依「剩餘需求」與「玩家實際持有量」雙重夾住，玩家自報的 qty 只是上限。
+                let have = { hub().inventory.read().unwrap().count(&name, item_id) };
+                let remaining_before = { hub().lighthouse.read().unwrap().remaining(item_id) };
+                let want = qty.min(have).min(remaining_before);
+                if want == 0 {
+                    let iname = vgift::item_name_zh(item_id);
+                    let reason = if remaining_before == 0 {
+                        "這項材料已經湊齊了，換一種材料吧！".to_string()
+                    } else {
+                        format!("背包裡沒有{iname}")
+                    };
+                    let _ = out_tx.send(Message::Text(serde_json::json!({
+                        "t": "lighthouse_fail", "reason": reason
+                    }).to_string())).await;
+                    continue;
+                }
+                // 4) 扣背包（inventory 寫鎖短取即釋，不與 lighthouse 鎖巢狀）。
+                let taken = { hub().inventory.write().unwrap().take(&name, item_id, want) };
+                let Some(inv_entry) = taken else { continue }; // have 已驗證足量，理論上不會落此
+                vinv::append_inv(&inv_entry);
+                let remain = hub().inventory.read().unwrap().count(&name, item_id);
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "inv_update", "block_id": item_id, "count": remain,
+                }).to_string())).await;
+                // 5) 套用進捐獻進度（lighthouse 寫鎖短取即釋，同一把鎖內判斷是否本次剛好募滿，
+                //    避免多人同時獻上最後一份材料時重複觸發落成）。
+                let (applied, just_completed) = {
+                    let mut lh = hub().lighthouse.write().unwrap();
+                    let applied = lh.apply_contribution(&name, item_id, want);
+                    let completed_now =
+                        applied > 0 && lh.all_materials_ready() && lh.mark_completed(vfarm::now_secs());
+                    (applied, completed_now)
+                }; // lighthouse 寫鎖釋放
+                if applied == 0 {
+                    continue; // want 已依 remaining 夾住，理論上不會落此
+                }
+                vlighthouse::append_event(&vlighthouse::LighthouseEvent::Contribution {
+                    player: name.clone(),
+                    item_id,
+                    qty: applied,
+                    unix: vfarm::now_secs(),
+                });
+                try_unlock_milestone(&name, "first_lighthouse_gift", &out_tx);
+                let iname = vgift::item_name_zh(item_id);
+                let remaining_after = { hub().lighthouse.read().unwrap().remaining(item_id) };
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "lighthouse_ok",
+                    "message": vlighthouse::contribute_ack_line(iname, applied, remaining_after),
+                }).to_string())).await;
+                if remaining_after == 0 {
+                    vfeed::append_feed("眾力共築", &name, &vlighthouse::material_ready_feed_line(iname));
+                } else {
+                    vfeed::append_feed(
+                        "眾力共築",
+                        &name,
+                        &format!("為{}獻上了 {applied} 份{iname}。", vlighthouse::LIGHTHOUSE_NAME),
+                    );
+                }
+                // 6) 落成：全部材料首次湊滿 → 放方塊（golden safe pattern，比照村碑 885：
+                //    surface_y 鎖外算 → deltas 寫鎖批次只在 air 落子 → 鎖外廣播＋append-only 落地）。
+                if just_completed {
+                    let sy = vbuild::surface_y(sx, sz);
+                    let cells = vlighthouse::lighthouse_cells(sx, sz, sy);
+                    let mut placed: Vec<(i32, i32, i32, Block)> = Vec::new();
+                    {
+                        let mut world = hub().deltas.write().unwrap();
+                        for &(x, y, z, blk) in &cells {
+                            if voxel::effective_block_at(&world, x, y, z) == Block::Air {
+                                voxel::set_block(&mut world, x, y, z, blk);
+                                placed.push((x, y, z, blk));
+                            }
+                        }
+                    } // deltas 寫鎖釋放
+                    for &(x, y, z, blk) in &placed {
+                        broadcast_block(x, y, z, blk);
+                        vbuild::append_world_block(x, y, z, blk as u8);
+                    }
+                    vlighthouse::append_event(&vlighthouse::LighthouseEvent::Completed { unix: vfarm::now_secs() });
+                    let top = { hub().lighthouse.read().unwrap().top_contributors(3) };
+                    let feed_line = vlighthouse::completion_feed_line(&top);
+                    vfeed::append_feed("眾力共築", "全世界", &feed_line);
+                    let _ = hub().tx.send(std::sync::Arc::new(
+                        serde_json::json!({ "t": "lighthouse_complete", "text": feed_line }).to_string(),
+                    ));
+                    tracing::info!("眾力共築：{} 正式落成於 ({sx},{sz})", vlighthouse::LIGHTHOUSE_NAME);
                 }
             }
             // ── 居民贈禮 v1（ROADMAP 660）────────────────────────────────────────
@@ -12418,6 +12552,59 @@ pub async fn voxel_colonies_handler() -> axum::response::Response {
             .collect()
     }; // settlements 讀鎖釋放
     let body = serde_json::json!({ "colonies": items }).to_string();
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
+/// 乙太方界·眾力共築·乙太燈塔（自主提案切片）：全服募材進度＋貢獻榜 JSON（唯讀）。
+/// 玩家背包裡「還缺什麼、缺多少」與工地座標由前端自行比對顯示；`complete` 讓前端知道
+/// 是否已落成（落成後材料列仍保留，方便玩家回頭看看自己貢獻了多少）。
+pub async fn voxel_lighthouse_handler() -> axum::response::Response {
+    use axum::http::header;
+    let (vcx, vcz) = vvillage::load_village_center().unwrap_or_else(|| {
+        let home_bases: Vec<(i32, i32)> = {
+            let residents = hub().residents.read().unwrap();
+            residents
+                .iter()
+                .map(|r| (r.home_x.floor() as i32, r.home_z.floor() as i32))
+                .collect()
+        }; // residents 讀鎖釋放
+        vvillage::village_center(&home_bases)
+    });
+    let (sx, sz) = vlighthouse::site_coords(vcx, vcz);
+    let (materials, pct, complete, contributors) = {
+        let lh = hub().lighthouse.read().unwrap();
+        let materials: Vec<serde_json::Value> = vlighthouse::MATERIALS
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "item_id": m.item_id,
+                    "name": m.name,
+                    "given": lh.given(m.item_id),
+                    "needed": m.needed,
+                })
+            })
+            .collect();
+        let contributors: Vec<serde_json::Value> = lh
+            .top_contributors(10)
+            .into_iter()
+            .map(|(name, qty)| serde_json::json!({ "name": name, "qty": qty }))
+            .collect();
+        (materials, lh.pct_complete(), lh.completed(), contributors)
+    }; // lighthouse 讀鎖釋放
+    let body = serde_json::json!({
+        "name": vlighthouse::LIGHTHOUSE_NAME,
+        "cx": sx,
+        "cz": sz,
+        "materials": materials,
+        "pct": pct,
+        "complete": complete,
+        "contributors": contributors,
+    })
+    .to_string();
     axum::response::Response::builder()
         .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-cache")

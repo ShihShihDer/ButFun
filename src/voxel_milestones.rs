@@ -83,6 +83,8 @@ pub const MILESTONES: &[MilestoneDef] = &[
     MilestoneDef { id: "first_treat", name_zh: "初次寵愛", desc_zh: "遞一份零食給已馴服的小夥伴，換來牠一次撒嬌", icon: "💕" },
     // 世界奇觀·乙太世界樹 v1（ROADMAP 940）：跋涉到世界邊陲，撞見全世界唯一一座天然大奇觀。
     MilestoneDef { id: "first_wonder", name_zh: "初見奇觀", desc_zh: "跋涉到世界盡頭，撞見獨一無二的乙太世界樹，仰望那團泛著幽光的巨大花冠", icon: "🌳" },
+    // 眾力共築·乙太燈塔 v1（自主提案切片）：玩家之間第一件共同蓋起來的公共工程。
+    MilestoneDef { id: "first_lighthouse_gift", name_zh: "初獻磚石", desc_zh: "為全世界共築的乙太燈塔獻上第一份材料", icon: "🗼" },
 ];
 
 /// 查表確認是否為已知里程碑 id（守 store 資料乾淨，未知 id 不寫入）。
