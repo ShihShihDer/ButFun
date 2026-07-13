@@ -49,6 +49,10 @@ pub const STAY_SECS: f32 = 40.0;
 /// 去程逾時秒數（比照跨村探親同量級：兩村相距至少數百格，居民步速約 2.6 格/秒）。
 pub const TIMEOUT_SECS: f32 = 480.0;
 
+/// 抵達逗留中的閒晃半徑（比照跨村探親 [`crate::voxel_farvisit::WANDER_RADIUS`] 同量級）：
+/// 做生意的居民在目的地聚落廣場一小片範圍走動，不散開到整座村。
+pub const WANDER_RADIUS: f32 = 8.0;
+
 /// 交易物品調色盤（沿用 670/723 既有的四類特產：種子/石頭/木頭/玻璃，單一事實源見
 /// `voxel_trade::resident_trade_slot`／`voxel_resident_trade::specialty_item`）。
 const ITEMS: [u8; 4] = [14, 3, 5, 10];

@@ -12593,6 +12593,7 @@ fn maybe_wedding() {
             && r.fetch.is_none()
             && r.frontier_visit.is_none()
             && r.far_visit.is_none()
+            && r.caravan.is_none()
             && r.cheer_target.is_none()
     };
     // chosen = (id_a, name_a, id_b, name_b, mid_x, mid_z)
@@ -18621,6 +18622,7 @@ fn tick_residents(dt: f32) {
                         && r.clique_meet.is_none()
                         && r.frontier_visit.is_none()
                         && r.far_visit.is_none()
+                        && r.caravan.is_none()
                         && vr::should_shelter(is_night, raining, house_locations.contains_key(&r.id));
                     // 探訪中：以目的地為閒晃中心（讓居民在鄰居家附近自然走動）；
                     // 遠行逗留中（ROADMAP 756）：以邊陲落點為中心，讓牠在遠方一小片範圍自然走動、不被拉回家；
@@ -18649,6 +18651,10 @@ fn tick_residents(dt: f32) {
                         // 相思成行·跨村探親（ROADMAP 947）：去程以目的地（摯友的村）為閒晃中心一路走去；
                         // 重逢小聚時就在摯友身邊一小片範圍走動——不被夜間／下雨拉回幾百格外自己的家。
                         (*fx, *fz)
+                    } else if let Some((tx, tz, _, _, _, _)) = &r.caravan {
+                        // 跨村商隊（ROADMAP 950）：去程與逗留交易皆以目的地聚落中心為閒晃中心，
+                        // 不被夜間／下雨拉回幾百格外自己的家——她是真的在那座村子裡做生意。
+                        (*tx, *tz)
                     } else if let Some((lead_name, _)) = &r.stroll_partner {
                         // 摯友結伴同行（ROADMAP 925）：follower 以 leader「此刻的位置」為閒晃中心，
                         // 貼著他並肩漫步（leader 在動就步步跟上）；查不到就退回自己家域（容錯不 panic）。
@@ -18690,6 +18696,9 @@ fn tick_residents(dt: f32) {
                     } else if r.far_visit.is_some() {
                         // 跨村探親：與邊陲探友同量級的小半徑，重逢時兩人聚在村口一小片範圍。
                         vfarv::WANDER_RADIUS
+                    } else if r.caravan.is_some() {
+                        // 跨村商隊：與跨村探親同量級的小半徑，做生意的居民貼著目的地聚落廣場走動。
+                        vcaravan::WANDER_RADIUS
                     } else if r.stroll_partner.is_some() {
                         // 結伴同行：小半徑，貼著 leader 並肩、不散開（ROADMAP 925）。
                         vstroll::STROLL_WANDER_RADIUS
@@ -19595,6 +19604,7 @@ fn tick_residents(dt: f32) {
                     && r.expedition.is_none()
                     && r.frontier_visit.is_none()
                     && r.far_visit.is_none()
+                    && r.caravan.is_none()
                     && r.follow.is_none()
                     && r.summon.is_none()
                     && r.gather.is_none()
@@ -19794,6 +19804,7 @@ fn tick_residents(dt: f32) {
                             && r.expedition.is_none()
                             && r.frontier_visit.is_none()
                             && r.far_visit.is_none()
+                            && r.caravan.is_none()
                             && r.follow.is_none()
                             && r.summon.is_none()
                             && r.gather.is_none()
