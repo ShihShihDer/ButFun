@@ -6515,6 +6515,24 @@ function promptSignEdit(x, y, z, isNew) {
   ws.send(JSON.stringify({ t: "sign_set", x, y, z, text: input }));
 }
 
+// 領地信任名單 v2/v3（自主提案切片，ROADMAP 966；v3 review PR #1252）：跳出輸入框讓玩家打
+// 出朋友的名字，送 claim_trust 給伺服器。伺服器決定該加入還是撤銷：名單裡已有這個名字＝
+// 撤銷（不必對方在線／在附近，撤銷本來就該隨時做得到）；名單裡沒有＝加入（仍要求站在附近、
+// 對方在線）。留空送出＝查詢目前信任了誰（claim_trust_list），確認有沒有信錯人。
+function promptClaimTrust() {
+  const input = window.prompt(
+    "輸入朋友的名字加進領地信任名單（名字若已在名單裡則改為撤銷信任；留空按確定＝查詢目前信任名單）：",
+    ""
+  );
+  if (input === null) return;
+  const trimmed = input.trim();
+  if (!trimmed) {
+    ws.send(JSON.stringify({ t: "claim_trust_list" }));
+    return;
+  }
+  ws.send(JSON.stringify({ t: "claim_trust", name: trimmed }));
+}
+
 // ── 輸入 ───────────────────────────────────────────────────────────────────
 const keys = {};
 addEventListener("keydown", (e) => {
@@ -6529,6 +6547,9 @@ addEventListener("keydown", (e) => {
   // 掉落物 v1（自主提案切片 828）：Q 對準地面丟下一份目前手上選取的材料。
   if (e.code === "KeyQ") { e.preventDefault(); dropSelectedItem(); }
   if (e.code === "KeyM") { e.preventDefault(); openStallAtTarget(); }
+  // 領地信任名單 v2（自主提案切片，ROADMAP 966）：站到朋友身邊按 T，輸入他的名字把他加進
+  // 你這帳號的信任名單（再按一次同名字即解除）——之後他也能開你家箱子、動你家的地。
+  if (e.code === "KeyT") { e.preventDefault(); promptClaimTrust(); }
   // Esc：關操作設定面板（也讓瀏覽器解除滑鼠鎖定，兩者不衝突）。
   if (e.code === "Escape" && settingsPanelVisible()) closeSettingsPanel();
   // Esc：也收起 ☰ 主選單抽屜（若正開著）。
@@ -7239,6 +7260,10 @@ function connect() {
       // 玩家個人領地保護 v1（自主提案切片，ROADMAP 963）：試圖動別人「家」牌方圓內的方塊——
       // 被後端擋下，浮出一句溫柔說明，告訴你這裡是誰的地盤。
       showMsg(m.line || "這裡已經有主人了，別人的鎬子伸不進來。");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3000);
+    } else if (m.t === "claim_trust_ok") {
+      // 領地信任名單 v2（自主提案切片，ROADMAP 966）：伺服器已切換信任狀態，給自己一句確認。
+      showMsg(m.trusted ? ("已把 " + m.name + " 加進你的領地信任名單 🤝") : ("已把 " + m.name + " 移出你的領地信任名單。"));
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3000);
     } else if (m.t === "colony_founded") {
       // 分村殖民 v1：世界某處剛奠下一座新村（人人可見的世界大事，稀有）——浮出立村捷報。

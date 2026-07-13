@@ -2241,6 +2241,10 @@ struct VoxelHub {
     /// 告示牌文字 store（ROADMAP 740）：世界座標 → 一行短字。
     /// 持久化到 data/voxel_signs.jsonl；文字浮在牌上、所有人看得見（序列化 RwLock 解決競爭）。
     sign: RwLock<vsign::SignStore>,
+    /// 領地信任名單 store（玩家個人領地保護 v2，自主提案切片，ROADMAP 966）：帳號 email →
+    /// 他信任的一群帳號 email。持久化到 data/voxel_landclaim_trust.jsonl；`claim_blocking_owner`
+    /// 判定時查詢（序列化 RwLock 解決競爭，與 `sign` 各自獨立短取即釋，不巢狀）。
+    landclaim_trust: RwLock<vlandclaim::TrustStore>,
     /// 漂流瓶 store（漂流瓶 v1，自主提案切片 825）：世界座標 → 一封尚未被撿走的瓶中信。
     /// 持久化到 data/voxel_bottles.jsonl；內文絕不外流（連線同步只送座標），撿走即從世界移除
     /// （一次性拾起，非常駐可讀——序列化 RwLock 解決競爭）。
@@ -3135,6 +3139,8 @@ fn hub() -> &'static VoxelHub {
             chest: RwLock::new(vchest::ChestStore::from_entries(vchest::load_chests())),
             // 啟動時從 data/voxel_signs.jsonl 載回告示牌文字（重啟後牌面仍在）。
             sign: RwLock::new(vsign::SignStore::from_entries(vsign::load_signs())),
+            // 啟動時從 data/voxel_landclaim_trust.jsonl 載回領地信任名單（重啟後信任關係仍在）。
+            landclaim_trust: RwLock::new(vlandclaim::TrustStore::from_entries(vlandclaim::load_trust())),
             // 啟動時從 data/voxel_bottles.jsonl 載回尚未被撿走的瓶中信（重啟後瓶子還在水裡）。
             bottle: RwLock::new(BottleStore::from_entries(vbottle::load_bottles())),
             // 掉落物 v1：純記憶體，重啟歸零（暫留地上等人撿的短命狀態，非玩家永久資產）。
@@ -3600,6 +3606,16 @@ enum ClientMsg {
     /// Sign(66) 後清洗文字、存檔並廣播 `sign` 給所有人。空字串＝清空牌面。
     #[serde(rename = "sign_set")]
     SignSet { x: i32, y: i32, z: i32, text: String },
+    /// 領地信任名單 v2（自主提案切片，ROADMAP 966）：站到 `name` 這位玩家身邊（觸及範圍
+    /// `vlandclaim::TRUST_REACH` 內、對方須為已登入帳號）→ 把他加進「我」這帳號的信任名單，
+    /// 之後他就跟我自己一樣不被我的領地擋下；再對同一人送一次即解除信任。伺服器只信自己
+    /// 位置與登入帳號解出的歸屬鍵，`name` 只是拿來找「附近哪位」，不是權限本身。
+    #[serde(rename = "claim_trust")]
+    ClaimTrust { name: String },
+    /// 領地信任名單查詢（v3 review PR #1252）：不動任何狀態，回傳目前信任名單給自己看——
+    /// 撤銷信任不再要求對方在線／在附近後，玩家需要一種方式確認自己到底信任了誰。
+    #[serde(rename = "claim_trust_list")]
+    ClaimTrustList,
     /// 漂流瓶 v1：對準水面丟一只瓶中信（自主提案切片 825）。伺服器驗 reach + 目標為水面 +
     /// 登入身分 + 手持空玻璃瓶(83) 後清洗文字、內容審查，扣一只瓶子並存檔，僅廣播座標
     /// （內文絕不外流，只有撿到的人才讀得到）。
@@ -3911,18 +3927,27 @@ fn player_pos(id: Uuid) -> Option<(f32, f32, f32)> {
     players.get(&id).map(|p| (p.x, p.y, p.z))
 }
 
-/// 玩家個人領地保護 v1（ROADMAP 963，review 修正）：目標格 (x, z) 該不該被別人的領地擋下
-/// ——`Break`/`Place`/`SignSet` 共用同一顆判定，掃過半徑內**所有**「家」牌（不只最近一塊，
-/// 修相鄰立牌切走別人領地一角的漏洞），歸屬比對一律走穩定帳號鍵 `owner_key`（email，改名
-/// 不變、無法偽造），不再信可被改寫的顯示名。擋下時回傳領地主人的顯示名供組提示句；
-/// 無主／範圍內無家牌／我自己的領地一律放行（`None`）。sign 讀鎖短取即釋，不巢狀。
+/// 玩家個人領地保護 v1（ROADMAP 963，review 修正）＋信任名單 v2（ROADMAP 966）：目標格
+/// (x, z) 該不該被別人的領地擋下——`Break`/`Place`/`SignSet`/`ChestPut`/…… 共用同一顆判定，
+/// 掃過半徑內**所有**「家」牌（不只最近一塊，修相鄰立牌切走別人領地一角的漏洞），歸屬比對
+/// 一律走穩定帳號鍵 `owner_key`（email，改名不變、無法偽造），不再信可被改寫的顯示名。
+/// 擋下時回傳領地主人的顯示名供組提示句；無主／範圍內無家牌／我自己的領地／我被領地主人
+/// 加進信任名單（見 `landclaim_trust`）一律放行（`None`）。sign／landclaim_trust 讀鎖各自
+/// 短取即釋，不巢狀。
 fn claim_blocking_owner(x: i32, z: i32, requester_key: Option<&str>) -> Option<String> {
     let hits = hub().sign.read().unwrap()
         .all_within_xz(x as f32 + 0.5, z as f32 + 0.5, vlandclaim::CLAIM_RADIUS);
+    let trust = hub().landclaim_trust.read().unwrap();
     let home_claims = hits
         .iter()
         .filter(|h| vlandclaim::is_home_sign(&h.text))
-        .map(|h| (h.owner.as_deref().unwrap_or(""), h.owner_key.as_deref()));
+        .map(|h| {
+            let trusted = match (h.owner_key.as_deref(), requester_key) {
+                (Some(owner_key), Some(rk)) => trust.is_trusted(owner_key, rk),
+                _ => false,
+            };
+            (h.owner.as_deref().unwrap_or(""), h.owner_key.as_deref(), trusted)
+        });
     vlandclaim::resolve_claim_block(home_claims, requester_key).map(str::to_string)
 }
 
@@ -9088,6 +9113,134 @@ async fn handle_socket(
                 }
                 // 廣播給所有人（含自己），前端據此更新／移除該座標的浮字。
                 broadcast_sign(x, y, z, &clean);
+            }
+
+            // ── 領地信任名單 v2（自主提案切片，ROADMAP 966；v3 review PR #1252 修正）───────
+            // 963/964 review 點名的活口②：領地保護至今全有全無，連你邀來同住的朋友都被自己
+            // 的地盤擋在箱子外、鋤頭外。站到朋友身邊按 T，把他加進信任名單——之後他就跟你
+            // 自己一樣不被領地擋下；再對同一人打一次名字即解除信任。信任以帳號 email 為鍵、
+            // 不必先立好家牌才能設定（見 `deny_if_claimed`/`claim_blocking_owner`）。
+            //
+            // review PR #1252 阻擋項 1、2 修正：加入信任仍要求對方在線＋在附近＋唯一同名
+            // （邀請語意不變）；**撤銷信任改查自己現有的信任名單、不再要求對方在線／在附近**
+            // （不然信任錯人後對方一走遠就永遠撤不掉）；`resolve_trust_target` 統一判斷該加入
+            // 還是撤銷，同名有超過一位一律拒絕（別讓 `find` 隨機選到冒充者）。
+            Ok(ClientMsg::ClaimTrust { name: friend_name }) => {
+                let my_email = if is_account { account_email.clone() } else { None };
+                let Some(my_email) = my_email else {
+                    let mut players = hub().players.write().unwrap();
+                    if let Some(p) = players.get_mut(&my_id) {
+                        p.say = "先登入帳號才能設定領地信任名單喔。".to_string();
+                        p.say_timer = PLAYER_SAY_SECS;
+                    }
+                    continue;
+                };
+                let Some((px, _py, pz)) = player_pos(my_id) else { continue; };
+                let clean_name = friend_name.trim();
+                if clean_name.is_empty() { continue; }
+
+                let trusted_matches = {
+                    let store = hub().landclaim_trust.read().unwrap();
+                    store.find_by_name(&my_email, clean_name)
+                };
+                // 附近同名、在線、非自己、帳號 ≠ 自己的玩家（`name` 只用來鎖定「附近哪位」，
+                // 真正記下的是伺服器解出的歸屬鍵 email，無法被客戶端偽造）。
+                let nearby: Vec<(Uuid, String)> = {
+                    let players = hub().players.read().unwrap();
+                    players.values().filter_map(|p| {
+                        let email = p.account.clone()?;
+                        if p.id == my_id || p.name != clean_name || email == my_email {
+                            return None;
+                        }
+                        let dx = p.x - px;
+                        let dz = p.z - pz;
+                        if dx * dx + dz * dz > vlandclaim::TRUST_REACH * vlandclaim::TRUST_REACH {
+                            return None;
+                        }
+                        Some((p.id, email))
+                    }).collect()
+                };
+                let nearby_keys: Vec<String> = nearby.iter().map(|(_, e)| e.clone()).collect();
+
+                match vlandclaim::resolve_trust_target(&trusted_matches, &nearby_keys) {
+                    vlandclaim::TrustLookup::Ambiguous => {
+                        let mut players = hub().players.write().unwrap();
+                        if let Some(p) = players.get_mut(&my_id) {
+                            p.say = format!(
+                                "叫「{clean_name}」的人不只一位，沒辦法確定是誰，先確認只有一位在附近／名單裡再試一次。"
+                            );
+                            p.say_timer = PLAYER_SAY_SECS;
+                        }
+                    }
+                    vlandclaim::TrustLookup::NotFound => {
+                        let mut players = hub().players.write().unwrap();
+                        if let Some(p) = players.get_mut(&my_id) {
+                            p.say = "附近沒看到這位已登入的玩家，你的信任名單裡也沒有這個名字，站近一點再試試？".to_string();
+                            p.say_timer = PLAYER_SAY_SECS;
+                        }
+                    }
+                    vlandclaim::TrustLookup::Add { trusted_key } => {
+                        let Some(ev) = ({
+                            let mut store = hub().landclaim_trust.write().unwrap();
+                            store.add(&my_email, &trusted_key, clean_name)
+                        }) else { continue; };
+                        vlandclaim::append_trust(&ev);
+                        let _ = out_tx.send(Message::Text(
+                            serde_json::json!({ "t": "claim_trust_ok", "trusted": true, "name": clean_name })
+                                .to_string(),
+                        )).await;
+                        // 加入時對方必然在線在附近（剛才才掃到），直接用掃到的 id 冒泡通知。
+                        if let Some((target_id, _)) = nearby.into_iter().find(|(_, e)| e == &trusted_key) {
+                            let mut players = hub().players.write().unwrap();
+                            if let Some(p) = players.get_mut(&target_id) {
+                                p.say = format!("{name} 把你加進了自家的信任名單，你也能開他家箱子、動他家的地了！");
+                                p.say_timer = PLAYER_SAY_SECS;
+                            }
+                        }
+                    }
+                    vlandclaim::TrustLookup::Revoke { trusted_key } => {
+                        let Some(ev) = ({
+                            let mut store = hub().landclaim_trust.write().unwrap();
+                            store.remove(&my_email, &trusted_key)
+                        }) else { continue; };
+                        vlandclaim::append_trust(&ev);
+                        let _ = out_tx.send(Message::Text(
+                            serde_json::json!({ "t": "claim_trust_ok", "trusted": false, "name": clean_name })
+                                .to_string(),
+                        )).await;
+                        // 撤銷不要求對方在線——只有他剛好在線時才找得到人冒泡通知，找不到就算了。
+                        let target_id = {
+                            let players = hub().players.read().unwrap();
+                            players.values().find(|p| p.account.as_deref() == Some(trusted_key.as_str())).map(|p| p.id)
+                        };
+                        if let Some(target_id) = target_id {
+                            let mut players = hub().players.write().unwrap();
+                            if let Some(p) = players.get_mut(&target_id) {
+                                p.say = format!("{name} 把你移出了自家的信任名單。");
+                                p.say_timer = PLAYER_SAY_SECS;
+                            }
+                        }
+                    }
+                }
+            }
+            // 領地信任名單查詢（v3 review PR #1252 要求的「給一則信任名單查詢」）：不動任何
+            // 狀態，只把目前信任的人顯示名唸給自己聽——錯信了誰、忘了誰，靠這個確認。
+            Ok(ClientMsg::ClaimTrustList) => {
+                let my_email = if is_account { account_email.clone() } else { None };
+                let Some(my_email) = my_email else { continue; };
+                let names = {
+                    let store = hub().landclaim_trust.read().unwrap();
+                    store.list(&my_email)
+                };
+                let mut players = hub().players.write().unwrap();
+                if let Some(p) = players.get_mut(&my_id) {
+                    p.say = if names.is_empty() {
+                        "你目前的領地信任名單是空的。".to_string()
+                    } else {
+                        format!("你目前信任：{}", names.join("、"))
+                    };
+                    p.say_timer = PLAYER_SAY_SECS;
+                }
             }
 
             // ── 漂流瓶 v1：丟瓶（自主提案切片 825）───────────────────────────────────
