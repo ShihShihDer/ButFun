@@ -11870,6 +11870,64 @@ pub async fn voxel_skills_handler() -> axum::response::Response {
         .unwrap()
 }
 
+/// 乙太方界·村莊技藝總覽（自主提案切片）：回傳全村技能以「手藝」為單位攤開的目錄。
+///
+/// **真缺口**：技能發明（716）一路疊了持久化（`InventedSkillStore`）、出生繼承、在世
+/// 師承（717/878/883）、名匠聲望（888/889）——技能早就「沉澱成資產、在村裡擴散」，
+/// 但玩家只能一位一位點開居民技能簿（719）拼湊，從沒有一處能一眼看見「這門手藝村裡
+/// 現在有誰會、誰是公認名匠」。本端點純把既有技能庫＋聲望重算的結果攤開成一張全村
+/// 技藝目錄；跟 719 同一手法：純讀取、零副作用、零新資料表。
+pub async fn voxel_village_crafts_handler() -> axum::response::Response {
+    use axum::http::header;
+    let directory = {
+        // 1) 居民 id→顯示名 快照（發明紀錄以 id 記，攤平前先換算成顯示名，見 719/888 同款手法）。
+        let id_to_name: std::collections::HashMap<String, &'static str> = {
+            let residents = hub().residents.read().unwrap();
+            residents.iter().map(|r| (r.id.clone(), r.name)).collect()
+        }; // residents 讀鎖釋放
+        // 2) 從全村技能庫換算成聲望輸入（比照 maybe_crown_masters 同一套換算）。
+        let evidence: Vec<vfame::SkillEvidence> = {
+            let store = hub().invented.read().unwrap();
+            store
+                .all()
+                .iter()
+                .filter_map(|rec| {
+                    let holder = id_to_name.get(&rec.resident)?;
+                    Some(vfame::SkillEvidence {
+                        holder: holder.to_string(),
+                        craft: rec.name.clone(),
+                        goal_block: rec.goal_block,
+                        source: rec.source.clone(),
+                        taught: rec.taught,
+                    })
+                })
+                .collect()
+        }; // invented 讀鎖釋放
+        // 3) 純計算（無鎖）：以手藝為單位分組、標出名匠。
+        vfame::craft_directory(&evidence)
+    };
+    let rows: Vec<serde_json::Value> = directory
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "craft": d.craft,
+                "master": d.master,
+                "knowers": d.knowers.iter().map(|k| serde_json::json!({
+                    "resident": k.resident,
+                    "origin": k.origin,
+                    "is_master": k.is_master,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let body = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into());
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
 /// 乙太方界·玩家里程碑（ROADMAP 724）：回傳全部里程碑定義 + 這位玩家各自是否已達成。
 ///
 /// 居民有技能簿（719）、交情網（708）可回頭翻閱自己的成長，玩家的療癒循環

@@ -182,6 +182,89 @@ pub fn crown_memory_line(craft: &str) -> String {
     format!("村裡開始叫我{craft}名匠了，我會把這門手藝好好傳下去。")
 }
 
+// ── 村莊技藝總覽（自主提案切片）─────────────────────────────────────────────
+//
+// **真缺口**：`InventedSkillStore` 早就把「誰會什麼、承自誰、師承誰」全記著，
+// `masters` 也早就算得出「誰是這門手藝的公認名匠」——但這兩份資料從沒有**以
+// 「手藝」為單位攤開成一張全村總覽**過。玩家只能一位一位點開居民技能簿
+// （719）拼湊，或恰好瞥見稍縱即逝的教學/加冕 Feed，從沒有一處能一眼看見
+// 「這門手藝村裡現在有誰會、是跟誰學的、誰是公認的名匠」。這正是北極星
+// 「居民自己發明、存成自己的技能」最後一段缺口——不是「有沒有沉澱擴散」
+// （早就有了），是「玩家看不看得見這份沉澱與擴散」。
+//
+// 跟 719 技能簿同一手法：純把既有資料重新攤開，不新增任何資料表／欄位。
+
+/// 一位居民在某門手藝上的知識來歷，供村莊技藝總覽攤開列出。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CraftKnower {
+    /// 居民顯示名。
+    pub resident: String,
+    /// 來歷標籤：「自己發明」／「承自X」（親子）／「師承X」（在世教學）。
+    pub origin: String,
+    /// 是否為這門手藝村裡目前公認的名匠。
+    pub is_master: bool,
+}
+
+/// 一門手藝在全村的知識分佈：這門手藝叫什麼、誰是名匠、村裡目前有誰會。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CraftDirectoryEntry {
+    /// 目標材料 id（手藝的穩定鍵）。
+    pub goal_block: u8,
+    /// 手藝顯示名——有名匠時採名匠所取的名字（村裡公認的說法），
+    /// 沒有名匠時採知識最早的持有者（顯示名字典序最小者）所取的名字，確定性排序。
+    pub craft: String,
+    /// 這門手藝村裡目前公認的名匠（沒有則無人達門檻）。
+    pub master: Option<String>,
+    /// 目前村裡會這門手藝的所有居民，依顯示名字典序排列（確定性）。
+    pub knowers: Vec<CraftKnower>,
+}
+
+/// 這筆技能證據的來歷標籤。與 `voxel_invent::lineage_label` 語意完全一致，
+/// 本模組刻意不依賴 `voxel_invent`（見檔頭「與 voxel_invent 解耦」），故就地重算。
+fn origin_label(source: &Option<String>, taught: bool) -> String {
+    match (source, taught) {
+        (None, _) => "自己發明".to_string(),
+        (Some(n), true) => format!("師承{n}"),
+        (Some(n), false) => format!("承自{n}"),
+    }
+}
+
+/// 把全村技能證據，第一次以「手藝」為單位攤開——沉澱成資產、在村裡擴散的
+/// 證據，玩家終於一眼看得到（自主提案切片）。純函式、確定性、窮舉可測；
+/// 呼叫端（`voxel_ws.rs`）只需把 `InventedSkillStore::all()` 換算成證據餵入。
+pub fn craft_directory(evidence: &[SkillEvidence]) -> Vec<CraftDirectoryEntry> {
+    use std::collections::BTreeMap;
+
+    let masters_by_goal: std::collections::HashMap<u8, CraftFame> =
+        masters(evidence).into_iter().map(|m| (m.goal_block, m)).collect();
+
+    let mut groups: BTreeMap<u8, Vec<&SkillEvidence>> = BTreeMap::new();
+    for e in evidence {
+        groups.entry(e.goal_block).or_default().push(e);
+    }
+
+    groups
+        .into_iter()
+        .map(|(goal_block, mut members)| {
+            members.sort_by(|a, b| a.holder.cmp(&b.holder));
+            let master = masters_by_goal.get(&goal_block);
+            let craft = master
+                .map(|m| m.craft.clone())
+                .unwrap_or_else(|| members[0].craft.clone());
+            let master_name = master.map(|m| m.resident.clone());
+            let knowers = members
+                .iter()
+                .map(|e| CraftKnower {
+                    resident: e.holder.clone(),
+                    origin: origin_label(&e.source, e.taught),
+                    is_master: master_name.as_deref() == Some(e.holder.as_str()),
+                })
+                .collect();
+            CraftDirectoryEntry { goal_block, craft, master: master_name, knowers }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,5 +402,81 @@ mod tests {
         }
         assert!(master_teach_say_line("燒玻璃", 0).contains("名匠"));
         assert!(crown_memory_line("燒玻璃").contains("名匠"));
+    }
+
+    // ── 村莊技藝總覽 ──────────────────────────────────────────────────────
+
+    #[test]
+    fn 技藝目錄_按手藝分組_每人一筆() {
+        let e = vec![
+            ev("露娜", "燒玻璃", 40, None, false),
+            ev("米拉", "燒玻璃", 40, Some("露娜"), true),
+            ev("諾娃", "煉鐵", 12, None, false),
+        ];
+        let dir = craft_directory(&e);
+        assert_eq!(dir.len(), 2); // 兩門手藝 → 兩組
+        let glass = dir.iter().find(|d| d.goal_block == 40).unwrap();
+        assert_eq!(glass.knowers.len(), 2);
+        let iron = dir.iter().find(|d| d.goal_block == 12).unwrap();
+        assert_eq!(iron.knowers.len(), 1);
+    }
+
+    #[test]
+    fn 技藝目錄_有名匠時採名匠所取的名字並標記() {
+        // 露娜自創(3) + 教會米拉、諾娃(各+1) = 5 = 門檻 → 露娜是名匠。
+        let e = vec![
+            ev("露娜", "燒玻璃", 40, None, false),
+            ev("米拉", "玻璃精煉", 40, Some("露娜"), true), // 各自取的名字可能不同
+            ev("諾娃", "玻璃精煉", 40, Some("露娜"), true),
+        ];
+        let dir = craft_directory(&e);
+        let glass = dir.iter().find(|d| d.goal_block == 40).unwrap();
+        assert_eq!(glass.master.as_deref(), Some("露娜"));
+        assert_eq!(glass.craft, "燒玻璃"); // 名匠自己取的名字勝出
+        let luna = glass.knowers.iter().find(|k| k.resident == "露娜").unwrap();
+        assert!(luna.is_master);
+        assert_eq!(luna.origin, "自己發明");
+        let mira = glass.knowers.iter().find(|k| k.resident == "米拉").unwrap();
+        assert!(!mira.is_master);
+        assert_eq!(mira.origin, "師承露娜");
+    }
+
+    #[test]
+    fn 技藝目錄_無名匠時採顯示名字典序最小者的名字_確定性() {
+        // 兩人各自發明同一材料，皆未達名匠門檻(各只有 3 分 < 5)。
+        let e1 = vec![
+            ev("諾娃", "煉鐵術", 12, None, false),
+            ev("阿彬", "打鐵", 12, None, false),
+        ];
+        let mut e2 = e1.clone();
+        e2.reverse();
+        let dir1 = craft_directory(&e1);
+        let dir2 = craft_directory(&e2);
+        assert_eq!(dir1, dir2); // 順序不影響結果，確定性
+        let iron = dir1.iter().find(|d| d.goal_block == 12).unwrap();
+        assert!(iron.master.is_none());
+        assert_eq!(iron.craft, "煉鐵術"); // "諾娃" < "阿彬"（Rust 字串比較走 Unicode code point 序，非拼音序）
+        // knowers 亦按同一套排序排列（確定性，不隨傳入順序改變）。
+        assert_eq!(
+            iron.knowers.iter().map(|k| k.resident.as_str()).collect::<Vec<_>>(),
+            vec!["諾娃", "阿彬"]
+        );
+    }
+
+    #[test]
+    fn 技藝目錄_出生繼承標記承自而非師承() {
+        let e = vec![
+            ev("露娜", "燒玻璃", 40, None, false),
+            ev("小新", "燒玻璃", 40, Some("露娜"), false), // 出生繼承：taught=false
+        ];
+        let dir = craft_directory(&e);
+        let glass = dir.iter().find(|d| d.goal_block == 40).unwrap();
+        let child = glass.knowers.iter().find(|k| k.resident == "小新").unwrap();
+        assert_eq!(child.origin, "承自露娜");
+    }
+
+    #[test]
+    fn 技藝目錄_空證據回空清單() {
+        assert!(craft_directory(&[]).is_empty());
     }
 }
