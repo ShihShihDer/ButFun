@@ -422,6 +422,11 @@ fn extract_chat_content(v: &serde_json::Value) -> Option<String> {
 /// 對「OpenAI 相容 `/chat/completions` 端點」發一次請求（**單一 key**）。逾時 15 秒。
 /// 回 `LlmOutcome`：429 → `RateLimited`（呼叫端換下一把 key）；其它錯 → `Failed`；成功非空 → `Ok`。
 /// 機敏 key 只用於 bearer auth、**絕不寫進 log**。無鎖 async，遵守 prod 死鎖鐵律。
+/// `reasoning_effort`：給**推理模型**（如 Cerebras 的 gpt-oss）壓低內部思考量的旋鈕——
+/// 實測 gpt-oss-120b 在真實長度的 prompt 下，`max_tokens` 常常整包被隱藏的 reasoning
+/// 吃光、`content` 永遠空字串（`finish_reason:"length"` 但沒有一個字真正輸出），
+/// 便宜腦等於 100% 啞火；帶上 `Some("low")` 能把 reasoning 壓到零頭，讓輸出 token 有空間
+/// 真的落地。非推理模型（如 Gemini）傳 `None`，欄位不出現在請求體裡。
 async fn openai_compat_call(
     endpoint: &str,
     model: &str,
@@ -429,9 +434,10 @@ async fn openai_compat_call(
     system: &str,
     user: &str,
     max_tokens: u32,
+    reasoning_effort: Option<&str>,
 ) -> LlmOutcome {
     let client = shared_client();
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model,
         "messages": [
             {"role": "system", "content": system},
@@ -440,6 +446,9 @@ async fn openai_compat_call(
         "temperature": 0.8,
         "max_tokens": max_tokens,
     });
+    if let Some(effort) = reasoning_effort {
+        body["reasoning_effort"] = serde_json::Value::String(effort.to_string());
+    }
     let resp = match client.post(endpoint).bearer_auth(key).json(&body).send().await {
         Ok(r) => r,
         Err(_) => return LlmOutcome::Failed,
@@ -470,9 +479,10 @@ async fn try_keys(
     system: &str,
     user: &str,
     max_tokens: u32,
+    reasoning_effort: Option<&str>,
 ) -> Option<String> {
     for key in keys {
-        match openai_compat_call(endpoint, model, key, system, user, max_tokens).await {
+        match openai_compat_call(endpoint, model, key, system, user, max_tokens, reasoning_effort).await {
             LlmOutcome::Ok(t) => return Some(t),
             LlmOutcome::RateLimited | LlmOutcome::Failed => continue,
         }
@@ -856,7 +866,9 @@ async fn cerebras_chat(system: &str, user: &str) -> Option<String> {
         return None;
     }
     // 依序試每一把：撞 429 就換下一把，直到成功或全爆。
-    try_keys(CEREBRAS_ENDPOINT, &cerebras_model(), &keys, system, user, 400).await
+    // gpt-oss 是推理模型，reasoning_effort 壓低 → 把 400 token 預算留給真正的輸出
+    // （見 openai_compat_call 文件：不壓的話 reasoning 常吃光整包、content 永遠空）。
+    try_keys(CEREBRAS_ENDPOINT, &cerebras_model(), &keys, system, user, 400, Some("low")).await
 }
 
 /// Google Gemini API key 清單（雲端推論，OpenAI 相容端點、免費 tier）。
@@ -963,7 +975,8 @@ async fn gemini_chat(system: &str, user: &str) -> Option<String> {
         return None;
     }
     // 依序試每一把：撞 429（Gemini 免費 tier 每分鐘上限緊，常單把 429）就換下一把，直到成功或全爆。
-    try_keys(GEMINI_ENDPOINT, &gemini_model(), &keys, system, user, 400).await
+    // gemini-2.5-flash 非 gpt-oss 那種把 reasoning 攤在 content 外的格式，不需要壓 reasoning_effort。
+    try_keys(GEMINI_ENDPOINT, &gemini_model(), &keys, system, user, 400, None).await
 }
 
 /// LLM 對話路由 + 降級鏈：**Cerebras（雲端，免費/超快/主力）→ Gemini（雲端，免費）→
