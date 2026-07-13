@@ -7987,7 +7987,9 @@ async fn handle_socket(
                     }).to_string())).await;
                     continue;
                 }
-                // 3) 依「剩餘需求」與「玩家實際持有量」雙重夾住，玩家自報的 qty 只是上限。
+                // 3) 依「剩餘需求」與「玩家實際持有量」雙重夾住，玩家自報的 qty 只是上限
+                //    （這裡的 remaining_before 只是快照，僅用來決定要不要早退＋友善文案，
+                //    真正夠不夠捐、捐了多少一律以下面 apply_contribution 的權威回傳值為準）。
                 let have = { hub().inventory.read().unwrap().count(&name, item_id) };
                 let remaining_before = { hub().lighthouse.read().unwrap().remaining(item_id) };
                 let want = qty.min(have).min(remaining_before);
@@ -8003,26 +8005,27 @@ async fn handle_socket(
                     }).to_string())).await;
                     continue;
                 }
-                // 4) 扣背包（inventory 寫鎖短取即釋，不與 lighthouse 鎖巢狀）。
-                let taken = { hub().inventory.write().unwrap().take(&name, item_id, want) };
-                let Some(inv_entry) = taken else { continue }; // have 已驗證足量，理論上不會落此
+                // 4) 先套用進捐獻進度（lighthouse 寫鎖短取即釋，同一把鎖內判斷是否本次剛好募滿，
+                //    避免多人同時獻上最後一份材料時重複觸發落成）。順序刻意先套進度、後扣背包：
+                //    apply_contribution 內部會用「當下」的 remaining 再夾一次，回傳的 applied 才是
+                //    這一刻真正吃下的權威量；若先扣背包再套進度，兩把鎖之間隔著磁碟寫入與 .await，
+                //    別的玩家的 WS task 插得進來，會讓已扣掉背包的材料在套用時被夾成 0、憑空蒸發。
+                let vlighthouse::ContributionOutcome { applied, just_completed } = {
+                    let mut lh = hub().lighthouse.write().unwrap();
+                    vlighthouse::resolve_contribution(&mut lh, &name, item_id, want, vfarm::now_secs())
+                }; // lighthouse 寫鎖釋放
+                if applied == 0 {
+                    continue; // 材料剛好被別人搶先補滿（race），這局背包完全沒被動到
+                }
+                // 5) 依「權威 applied」（不是玩家自報的 want）扣背包，applied<=have 恆成立：
+                //    同一玩家的訊息在自己的 WS task 內序列處理，have 不會被別的玩家的動作改變。
+                let taken = { hub().inventory.write().unwrap().take(&name, item_id, applied) };
+                let Some(inv_entry) = taken else { continue }; // applied<=have，理論上不會落此
                 vinv::append_inv(&inv_entry);
                 let remain = hub().inventory.read().unwrap().count(&name, item_id);
                 let _ = out_tx.send(Message::Text(serde_json::json!({
                     "t": "inv_update", "block_id": item_id, "count": remain,
                 }).to_string())).await;
-                // 5) 套用進捐獻進度（lighthouse 寫鎖短取即釋，同一把鎖內判斷是否本次剛好募滿，
-                //    避免多人同時獻上最後一份材料時重複觸發落成）。
-                let (applied, just_completed) = {
-                    let mut lh = hub().lighthouse.write().unwrap();
-                    let applied = lh.apply_contribution(&name, item_id, want);
-                    let completed_now =
-                        applied > 0 && lh.all_materials_ready() && lh.mark_completed(vfarm::now_secs());
-                    (applied, completed_now)
-                }; // lighthouse 寫鎖釋放
-                if applied == 0 {
-                    continue; // want 已依 remaining 夾住，理論上不會落此
-                }
                 vlighthouse::append_event(&vlighthouse::LighthouseEvent::Contribution {
                     player: name.clone(),
                     item_id,

@@ -196,6 +196,35 @@ impl LighthouseProgress {
     }
 }
 
+/// 一筆捐獻的處理結果。呼叫端**只**依 `applied` 去扣玩家背包（絕不是呼叫前算好的 want）——
+/// `applied` 才是「這一刻真正吃下多少」的權威值，`applied==0` 時背包完全不用碰。
+pub struct ContributionOutcome {
+    pub applied: u32,
+    pub just_completed: bool,
+}
+
+/// 套用一筆捐獻的核心決策：在呼叫端持有的 `lighthouse` 寫鎖窗口內，依「當下」的 remaining
+/// 權威地夾住 `want`、必要時一併觸發落成。刻意不含任何鎖獲取或 IO——鎖由呼叫端在外面拿好，
+/// 這裡只管邏輯，讓「兩人幾乎同時捐獻、其中一人的 want 其實已經超額」這種交錯情境能在單元
+/// 測試裡用真正的 `LighthouseProgress` 狀態驅動，而不必為接線層搭一套假的 mock。
+///
+/// 修的是這個 bug：舊接線層「先扣背包、再套進度」，兩把鎖之間隔著磁碟寫入與 `.await`，
+/// 別的玩家的訊息插得進來，導致已扣掉背包的材料在套用時被夾成 0、憑空蒸發。現在接線層
+/// （`voxel_ws.rs`）改成先呼叫這裡拿到權威 `applied`，才依 `applied` 扣背包，中間不再有
+/// 可被插隊的縫。
+pub fn resolve_contribution(
+    lighthouse: &mut LighthouseProgress,
+    player: &str,
+    item_id: u8,
+    want: u32,
+    unix: u64,
+) -> ContributionOutcome {
+    let applied = lighthouse.apply_contribution(player, item_id, want);
+    let just_completed =
+        applied > 0 && lighthouse.all_materials_ready() && lighthouse.mark_completed(unix);
+    ContributionOutcome { applied, just_completed }
+}
+
 // ── 選址（純函式）────────────────────────────────────────────────────────────────────
 /// 燈塔工地座標：村莊中心固定偏移（見 [`SITE_DX`]/[`SITE_DZ`]）。純函式、確定性。
 pub fn site_coords(vcx: i32, vcz: i32) -> (i32, i32) {
@@ -341,6 +370,41 @@ mod tests {
         assert!(p.mark_completed(500));
         assert!(p.completed());
         assert!(!p.mark_completed(600), "已完工不該再被標記第二次");
+    }
+
+    /// 接線層修過的 race（PR #1248 review）：A、B 幾乎同時捐獻，兩人都是依同一個
+    /// 「remaining_before」快照各自算出 want，此測試模擬接線層依序（同一把寫鎖序列化）
+    /// 呼叫 apply_contribution 的結果——驗證「權威量」只能來自這個函式的回傳值，
+    /// 不能信賴呼叫端自己先算好的 want。若接線層誤把 want 拿去扣背包（而非這裡的
+    /// applied），B 的材料就會在「已扣背包、卻沒進度可拿」的窗口裡憑空消失。
+    #[test]
+    fn interleaved_contributions_second_caller_gets_authoritative_zero_not_stale_want() {
+        let mut p = LighthouseProgress::new();
+        let item = MATERIALS[0].item_id; // 石頭
+        let needed = MATERIALS[0].needed;
+        // 先墊到只剩 10 顆的缺口。
+        p.apply_contribution("墊底", item, needed - 10);
+        assert_eq!(p.remaining(item), 10);
+
+        // A、B 同時讀到 remaining_before = 10，背包各有 10 顆，各自算出的 want 都是 10——
+        // 兩人 want 加總（20）已經超過真正剩下的缺口（10），這正是舊接線層會出事的縫。
+        let remaining_before = p.remaining(item);
+        let want_a = remaining_before.min(10);
+        let want_b = remaining_before.min(10);
+
+        // 接線層現在改叫 resolve_contribution（voxel_ws.rs 實際呼叫的那個函式），
+        // applied 才是唯一該拿去扣背包的量。
+        let outcome_a = resolve_contribution(&mut p, "A", item, want_a, 1000);
+        let outcome_b = resolve_contribution(&mut p, "B", item, want_b, 1000);
+
+        assert_eq!(outcome_a.applied, 10);
+        assert_eq!(
+            outcome_b.applied, 0,
+            "材料已被 A 補滿，B 的 want 不該被套用任何進度——接線層依此得知 B 的背包完全不用扣"
+        );
+        assert_eq!(p.remaining(item), 0, "募得總量不能超過需求（不能被兩人的 want 加總洗超）");
+        // 貢獻榜上 B 完全沒有紀錄，因為 applied_b == 0（apply_contribution 對 0 是 no-op）。
+        assert!(p.top_contributors(10).iter().all(|(who, _)| who != "B"));
     }
 
     #[test]
