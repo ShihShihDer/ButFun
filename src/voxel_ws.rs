@@ -14279,7 +14279,7 @@ fn tick_residents(dt: f32) {
             .collect()
     }; // goals 讀鎖釋放
     // 村莊自發習俗·暮聚（村莊自發習俗 v1）：在**取任何鎖之前**快照村莊廣場中心
-    //（`load_village_center` 是同步小檔讀，鐵律：只在不持鎖時呼叫）＋今日世界累計日數，供下方
+    //（`load_village_center` 是短鎖快取讀，鐵律：只在不持其他鎖時呼叫）＋今日世界累計日數，供下方
     // residents 寫鎖段判斷「此刻是不是該開一場暮聚」。習俗只在村子已豎起中央村碑（有廣場中心）
     // 之後才生根；每日黃昏至多一場（以日數比對）。
     let village_center_opt: Option<(f32, f32)> =
@@ -23127,7 +23127,7 @@ fn tick_life_projects(dt: f32, say_updates: &mut Vec<(String, String)>) {
         return;
     }
 
-    // 2) 村莊中心（鎖外同步小檔讀，鐵律：只在不持鎖時呼叫）——供「點燈連路」算朝村方向。
+    // 2) 村莊中心（鎖外短鎖快取讀，鐵律：只在不持其他鎖時呼叫）——供「點燈連路」算朝村方向。
     let village_center = vvillage::load_village_center();
 
     // 事件先蒐集，記憶／Feed／持久化全在所有鎖釋放後統一做（不持鎖 IO）。
