@@ -265,7 +265,12 @@ impl VoxelMemory {
         let mut scored: Vec<(f32, MemoryEntry)> = q
             .iter()
             .filter(|e| e.player == player && !exclude_seqs.contains(&e.seq))
-            .map(|e| (bigram_jaccard(&query_grams, &char_bigrams(&e.summary)), e.clone()))
+            .map(|e| {
+                // 比對前先剝殼：只比玩家原話，別讓「和X聊過，對方提到」的固定前綴稀釋分數。
+                // 非對話類 summary（採集/建造事件等，無引號）沒有引號 → fallback 回整串。
+                let body = extract_inner_quote(&e.summary).unwrap_or(&e.summary);
+                (bigram_jaccard(&query_grams, &char_bigrams(body)), e.clone())
+            })
             .filter(|(score, _)| *score >= RELEVANCE_MIN_SCORE)
             .collect();
         scored.sort_by(|a, b| {
@@ -790,6 +795,24 @@ mod tests {
         );
         assert_eq!(hits.len(), 1, "應撈回那筆被勾起的舊記憶");
         assert!(hits[0].summary.contains("乙太鑰匙"));
+    }
+
+    #[test]
+    fn relevant_memories_finds_match_through_real_summarize_exchange_format() {
+        // 真實寫入路徑：summary 不是測試餵的乾淨句子，而是 summarize_exchange 產出的
+        // 「和X聊過，對方提到「…」」固定殼——比對前沒剝殼會被殼裡的噪音 bigram 稀釋掉分數。
+        let summary = summarize_exchange("阿星", "我最喜歡看流星了").unwrap();
+        let mut m = VoxelMemory::new();
+        m.add_memory("vox_res_0", "阿星", &summary);
+        let hits = m.relevant_memories(
+            "vox_res_0",
+            "阿星",
+            "你之前是不是說過很喜歡看流星",
+            &[],
+            RELEVANT_RECALL_LIMIT,
+        );
+        assert_eq!(hits.len(), 1, "剝殼後應撈回這筆帶固定前綴格式的真實記憶");
+        assert!(hits[0].summary.contains("流星"));
     }
 
     #[test]
