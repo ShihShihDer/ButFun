@@ -2321,10 +2321,12 @@ struct VoxelHub {
     /// 飄雪／季節等世界暫態，重啟歸零）。每輪 tick_residents 依「當前是否秋季」推進；秋天內
     /// 第一次真的有人囤糧那刻播一則季節動態，離開秋天即重置、下一個秋天再播一次。
     autumn_stock: RwLock<vharveststock::AutumnStockTracker>,
-    /// 上一場「暮聚」發生的世界日（村莊自發習俗 v1，村莊自發習俗）：每到黃昏、村子已有廣場中心、
-    /// 在場閒人達門檻時，居民自發聚到廣場村碑邊——用「當日累計日數」比對確保**每日黃昏至多一場**
-    /// （同一天已聚過就不再重複觸發）。純記憶體、重啟歸零（最壞重啟後當日再聚一次，無資料風險）。
-    last_custom_day: RwLock<Option<u64>>,
+    /// 上一場「暮聚」發生的世界日（村莊自發習俗 v1＋殖民地暮聚 v1）：每到黃昏、聚落已有廣場中心、
+    /// 在場閒人達門檻時，居民自發聚到廣場邊——key＝聚落 id（主村＝`vsettle::MAIN_SETTLEMENT`、
+    /// 殖民地＝`vsettle::colony_settlement_id`），value＝「當日累計日數」，確保**每座聚落每日
+    /// 黃昏各自至多一場**（同一天已聚過就不再重複觸發，主村與殖民地互不影響）。純記憶體、重啟歸零
+    /// （最壞重啟後當日再聚一次，無資料風險）。
+    last_custom_day: RwLock<HashMap<u64, u64>>,
     /// 玩家協助建造感激記憶冷卻（互動有後果 v2）：`(居民 id, 玩家 key)` → 上次為這對記下
     /// 一筆「幫忙蓋家」感激記憶的時刻。因好感＝episodic 記憶筆數，一次幫忙常放很多塊方塊，
     /// 若每塊都記一筆會瞬間灌爆好感＋淹沒 episodic（cap 24）——故用此冷卻把一段連續幫忙
@@ -3175,8 +3177,8 @@ fn hub() -> &'static VoxelHub {
             mist_tracker: RwLock::new(vmist::MistDayTracker::new()),
             // 秋收囤糧過冬 v1（自主提案）：啟動時本秋尚未播過初囤時刻；之後靠 tick_residents 逐 tick 推進。
             autumn_stock: RwLock::new(vharveststock::AutumnStockTracker::new()),
-            // 村莊自發習俗 v1（暮聚）：啟動時尚無任何一場暮聚發生過。
-            last_custom_day: RwLock::new(None),
+            // 村莊自發習俗 v1（暮聚）＋殖民地暮聚 v1：啟動時任何聚落都尚無一場暮聚發生過。
+            last_custom_day: RwLock::new(HashMap::new()),
             // 協助建造感激記憶冷卻：啟動空（純記憶體、無需持久化）。
             help_memory_cd: RwLock::new(HashMap::new()),
             // 整地任務 v1：啟動空（純記憶體、無需持久化）。
@@ -14667,11 +14669,9 @@ fn tick_residents(dt: f32) {
     if morning_mist_started {
         vfeed::append_feed("晨霧", "乙太方界", vmist::morning_mist_feed_detail());
     }
-    // 這一 tick 是否「有資格」開暮聚（黃昏＋有廣場中心＋今天還沒聚過）——最終還要在鎖內看在場閒人數。
+    // 這一 tick 是不是黃昏——是不是「有資格」開暮聚還要看每座聚落各自的「今天聚過沒」與在場
+    // 閒人數，留到下方（`gather_sites`／`last_custom_day` 讀鎖）才逐聚落判斷。
     let custom_dusk_now = matches!(phase, TimePhase::Dusk);
-    let custom_already_today = { *hub().last_custom_day.read().unwrap() == Some(current_day) };
-    let custom_window_open =
-        custom_dusk_now && !custom_already_today && village_center_opt.is_some();
     // 整地/鋪面任務：批次快照各居民的任務中心/半徑/是否鋪面（directed_tasks 讀鎖即釋），
     // 供 residents 寫鎖那段判斷「該去工地施工、還是照常閒晃」——不與 residents 鎖巢狀。
     // 鋪面任務（is_pave=true）備料中（r.gather 有值）會讓位給採集分支：她先去採原料，
@@ -14827,6 +14827,35 @@ fn tick_residents(dt: f32) {
     // 世界站穩腳跟後自然恢復——零 panic、零硬編座標）。
     let main_village_center: Option<(f32, f32)> =
         vvillage::load_village_center().map(|(x, z)| (x as f32, z as f32));
+
+    // 殖民地暮聚 v1（接續 943「殖民地真居住」v1 明確不動清單「暮聚…主村限定」的缺口）：暮聚
+    // （村莊自發習俗 v1）至今只認主村廣場中心——風禾屯這樣的殖民地離主村太遠，從沒被暮聚吸引過，
+    // 第二村至今沒有自己的黃昏聚會。把「聚落中心」一般化：每座「有中心」的聚落（主村＋每座已奠基
+    // 殖民地，殖民地中心即其奠基小廣場）各自是一個獨立的暮聚候選地，各自的「今天聚過沒」互不
+    // 影響。格式：(settlement_id, 中心x, 中心z, 聚落顯示名／None=主村)。
+    let mut gather_sites: Vec<(u64, f32, f32, Option<String>)> = Vec::new();
+    if let Some((ccx, ccz)) = village_center_opt {
+        gather_sites.push((vsettle::MAIN_SETTLEMENT, ccx, ccz, None));
+    }
+    for (seq, name, cx, cz) in &colonies_snap {
+        gather_sites.push((
+            vsettle::colony_settlement_id(*seq),
+            *cx as f32 + 0.5,
+            *cz as f32 + 0.5,
+            Some(name.clone()),
+        ));
+    }
+    // 各聚落「今天聚過沒」快照（短讀鎖即釋，下方只讀這份快照、不重入鎖，守死鎖鐵律）。非黃昏
+    // 時刻不必查，省一趟鎖。
+    let custom_already_today_snap: HashMap<u64, bool> = if custom_dusk_now {
+        let last = hub().last_custom_day.read().unwrap();
+        gather_sites
+            .iter()
+            .map(|(sid, ..)| (*sid, last.get(sid).copied() == Some(current_day)))
+            .collect()
+    } else {
+        HashMap::new()
+    }; // last_custom_day 讀鎖釋放
 
     // 社交事件（鎖內收集，鎖外落地記憶）。
     // 格式：(initiator_id, initiator_name, target_id, target_name, line, is_response)
@@ -15151,9 +15180,10 @@ fn tick_residents(dt: f32) {
     // 小圈子聚會 v1（ROADMAP 711）全員抵達事件（鎖內偵測，鎖外寫記憶+Feed）。
     // 格式：members = 這場聚會的 (居民 id, 居民名字) 列表。
     let mut clique_fire_events: Vec<Vec<(String, &'static str)>> = Vec::new();
-    // 村莊自發習俗·暮聚（村莊自發習俗 v1）本 tick 觸發的參與者名單（鎖內收集，鎖外寫記憶＋全村 Feed
-    // ＋更新 last_custom_day）。非空＝這一 tick 開了一場暮聚。格式：(居民 id, 居民名字)。
-    let mut custom_gather_members: Vec<(String, &'static str)> = Vec::new();
+    // 村莊自發習俗·暮聚（村莊自發習俗 v1＋殖民地暮聚 v1）本 tick 各聚落各自觸發的參與者名單
+    // （鎖內收集，鎖外寫記憶＋各聚落 Feed＋更新 last_custom_day）。每筆＝一座聚落這一 tick 開了
+    // 一場暮聚。格式：(settlement_id, 聚落顯示名／None=主村, [(居民 id, 居民名字)])。
+    let mut custom_gather_events: Vec<(u64, Option<String>, Vec<(String, &'static str)>)> = Vec::new();
 
     // 居民情誼 v1（ROADMAP 672）：到達/離開事件（鎖內偵測，鎖外更新情誼+生成問候語）。
     // 抵達格式：(visitor_id, visitor_name, host_name)
@@ -16913,7 +16943,11 @@ fn tick_residents(dt: f32) {
                         && rand::random::<f32>() < vcustom::CHATTER_CHANCE
                     {
                         let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                        r.say = vcustom::chatter_bubble(pick).to_string();
+                        // 殖民地暮聚 v1：主村暮聚圍在真的立起來的村碑腳下、殖民地暮聚只圍在奠基
+                        // 小廣場（沒有紀念柱）——比對這位居民的聚集點是不是主村中心，換一組不提
+                        // 「村碑」的台詞，避免殖民地居民講出根本不存在的地標。
+                        let at_main = village_center_opt == Some((cx, cz));
+                        r.say = vcustom::chatter_bubble(pick, at_main).to_string();
                         r.say_timer = SAY_SECS;
                         r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                     }
@@ -20213,25 +20247,34 @@ fn tick_residents(dt: f32) {
             }
         }
 
-        // 2h) 村莊自發習俗·暮聚觸發（村莊自發習俗 v1）：黃昏＋村子已豎起中央村碑（有廣場中心）＋
-        // 今天還沒聚過時，挑出住在廣場附近、此刻正閒著的居民，讓他們自發晃到村碑廣場邊聚著閒話家常。
-        // 這是村莊第一個會週期觸發、玩家路過看得見的自發習俗（有文化的小社會第一塊拼圖）。
-        // 挑選／門檻走純函式 `vcustom`（可測）；記憶＋全村 Feed＋更新 last_custom_day 全在鎖釋放後
-        // 統一落地（不持鎖做 IO，守 prod 死鎖鐵律）。每日黃昏至多一場（`custom_already_today` 把關）。
-        if custom_window_open {
-            if let Some((ccx, ccz)) = village_center_opt {
-                // 候選：每位居民一筆 (索引, 到廣場中心距離平方, 是否有空)。有空＝醒著、手邊沒任何
-                // 既定意圖（不打斷玩家指派或已 committed 的任務／社交／採集／建造／發明／搬家），
-                // 且此刻沒在說話——習俗是「閒著的人自發湊過來」，絕不搶正事。
+        // 2h) 村莊自發習俗·暮聚觸發（村莊自發習俗 v1＋殖民地暮聚 v1）：黃昏＋這座聚落已有廣場
+        // 中心＋今天這座聚落還沒聚過時，挑出住在廣場附近、屬於這座聚落、此刻正閒著的居民，讓他們
+        // 自發晃到廣場邊聚著閒話家常。逐座聚落各自判斷（`gather_sites`），主村與每座已奠基殖民地
+        // 互不影響——風禾屯這樣的殖民地終於也有了自己的黃昏聚會，不再只是主村暮聚吸不到的化外之地。
+        // 挑選／門檻走純函式 `vcustom`（可測）；記憶＋Feed＋更新 last_custom_day 全在鎖釋放後
+        // 統一落地（不持鎖做 IO，守 prod 死鎖鐵律）。
+        if custom_dusk_now {
+            for (sid, ccx, ccz, place_name) in &gather_sites {
+                let already_today = custom_already_today_snap.get(sid).copied().unwrap_or(false);
+                if already_today {
+                    continue;
+                }
+                let (ccx, ccz) = (*ccx, *ccz);
+                // 候選：只看歸屬這座聚落的居民，每位一筆 (索引, 到廣場中心距離平方, 是否有空)。
+                // 有空＝醒著、手邊沒任何既定意圖（不打斷玩家指派或已 committed 的任務／社交／
+                // 採集／建造／發明／搬家），且此刻沒在說話——習俗是「閒著的人自發湊過來」，絕不搶正事。
                 let cands: Vec<(usize, f32, bool)> = residents
                     .iter()
                     .enumerate()
                     .map(|(i, r)| {
+                        let in_settlement =
+                            settlement_snap.get(&r.id).copied().unwrap_or(vsettle::MAIN_SETTLEMENT) == *sid;
                         let dx = r.body.x - ccx;
                         let dz = r.body.z - ccz;
                         let being_relocated =
                             reloc_snap.as_ref().is_some_and(|(id, ..)| *id == r.id);
-                        let free = !r.asleep
+                        let free = in_settlement
+                            && !r.asleep
                             && r.custom_meet.is_none()
                             && r.clique_meet.is_none()
                             && r.cheer_target.is_none()
@@ -20259,20 +20302,22 @@ fn tick_residents(dt: f32) {
                 );
                 if vcustom::should_hold(
                     custom_dusk_now,
-                    custom_already_today,
-                    true, // village_center_opt 已是 Some
+                    already_today,
+                    true, // 這座聚落的中心座標本就存在（gather_sites 只收有中心的聚落）
                     chosen.len(),
                     vcustom::MIN_PARTICIPANTS,
                 ) {
+                    let mut members: Vec<(String, &'static str)> = Vec::new();
                     for &i in &chosen {
                         let r = &mut residents[i];
                         r.custom_meet = Some((ccx, ccz));
                         r.custom_wait = vcustom::LINGER_SECS;
-                        // 動身：把閒晃目標設向廣場，這就往村碑邊走。
+                        // 動身：把閒晃目標設向廣場，這就往聚落廣場走。
                         r.target_x = ccx;
                         r.target_z = ccz;
-                        custom_gather_members.push((r.id.clone(), r.name));
+                        members.push((r.id.clone(), r.name));
                     }
+                    custom_gather_events.push((*sid, place_name.clone(), members));
                 }
             }
         }
@@ -20681,15 +20726,19 @@ fn tick_residents(dt: f32) {
         vfeed::append_feed(vwalkw::FEED_KIND, rname, &vwalkw::walk_feed_line(rname, pname));
     }
 
-    // 4a-2h) 村莊自發習俗·暮聚落地（村莊自發習俗 v1）：鎖已全釋放。這一 tick 若開了一場暮聚
-    //（`custom_gather_members` 非空），就①更新 last_custom_day（今天已聚過，不再重複觸發）、
-    // ②每位參與者寫一筆 episodic 記憶（「暮聚成了我們村子的習慣、這裡是我的家」，累積歸屬感），
-    // ③上一則帶季節與人數、有來歷感的全村動態牆播報。鎖序：last_custom_day 寫（即釋）→ memory
-    // 寫（逐筆即釋、不巢狀）→ Feed append（鎖外 IO）；append-only 不破壞既有資料，守死鎖鐵律。
-    if !custom_gather_members.is_empty() {
-        *hub().last_custom_day.write().unwrap() = Some(current_day);
+    // 4a-2h) 村莊自發習俗·暮聚落地（村莊自發習俗 v1＋殖民地暮聚 v1）：鎖已全釋放。這一 tick 每座
+    // 聚落若各自開了一場暮聚（`custom_gather_events` 逐筆），就①更新該聚落的 last_custom_day
+    //（今天已聚過，不再重複觸發，主村與殖民地各自獨立）、②每位參與者寫一筆 episodic 記憶（「暮聚
+    // 成了我們的習慣、這裡是我的家」，累積歸屬感）、③上一則帶季節與人數、有來歷感的動態牆播報
+    //（殖民地版本點名聚落，讓玩家分得清是哪座村子聚起來了）。鎖序：last_custom_day 寫（即釋）→
+    // memory 寫（逐筆即釋、不巢狀）→ Feed append（鎖外 IO）；append-only 不破壞既有資料，守死鎖鐵律。
+    for (sid, place_name, members) in &custom_gather_events {
+        if members.is_empty() {
+            continue;
+        }
+        hub().last_custom_day.write().unwrap().insert(*sid, current_day);
         let mem_line = vcustom::gather_memory_line();
-        for (id, name) in &custom_gather_members {
+        for (id, name) in members {
             let e = {
                 let mut mem = hub().memory.write().unwrap();
                 mem.add_memory(id, name, &mem_line)
@@ -20697,10 +20746,14 @@ fn tick_residents(dt: f32) {
             vmem::append_memory(&e);
         }
         let season_zh = current_season.display_name();
+        let (place, label): (String, &str) = match place_name {
+            Some(name) => (format!("「{name}」的村心廣場"), name.as_str()),
+            None => ("村莊廣場的村碑邊".to_string(), "村子"),
+        };
         vfeed::append_feed(
             vcustom::FEED_KIND,
-            "村子",
-            &vcustom::gather_feed_line(season_zh, custom_gather_members.len()),
+            label,
+            &vcustom::gather_feed_line(season_zh, members.len(), &place, label),
         );
     }
 
