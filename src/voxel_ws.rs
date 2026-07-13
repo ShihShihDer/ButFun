@@ -24744,8 +24744,13 @@ fn relocation_demolish_step(
             let world = hub().deltas.read().unwrap();
             voxel::effective_block_at(&world, bb.x, bb.y, bb.z)
         }; // deltas 讀鎖釋放
-        if !vbuild::demolish_allowed(bb.b, current) {
-            continue; // 不是她當年放的那塊（早拆過/被改動/玩家物）→ 一律不動
+        // 拆了會回復成什麼（地板層回復自然基底、其餘回空氣）——先算好，用來判「拆了會不會
+        // 真的改變世界」（`demolish_should_remove`）：花圃草地放在自然草地上、拆完現況仍是草，
+        // 若只看 `demolish_allowed` 會被判定為「還可拆」而永遠churn、拆除永不收斂（餓死全村
+        // 補蓋掃描的第二層真因，見 `vbuild::demolish_should_remove`）。
+        let restore = vbuild::demolition_restore(bb.x, bb.y, bb.z);
+        if !vbuild::demolish_should_remove(bb.b, current, restore) {
+            continue; // 不是她當年放的那塊、或拆了世界不變（已到位）→ 一律不動、視為此格已了
         }
         if removed >= reloc_demolish_per_step() {
             removable_left = true; // 本步額度用完，還有得拆 → 下一步繼續
@@ -24756,8 +24761,7 @@ fn relocation_demolish_step(
             skipped_body += 1;
             continue;
         }
-        // 拆！地板層回復自然基底（地表不留坑）、其餘回空氣；廣播 + 水流喚醒 + 持久化。
-        let restore = vbuild::demolition_restore(bb.x, bb.y, bb.z);
+        // 拆！廣播 + 水流喚醒 + 持久化。
         {
             let mut world = hub().deltas.write().unwrap();
             voxel::set_block(&mut world, bb.x, bb.y, bb.z, restore);

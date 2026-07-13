@@ -790,6 +790,24 @@ pub fn demolition_restore(x: i32, y: i32, z: i32) -> Block {
     }
 }
 
+/// **拆除是否真有東西可拆**（純函式、可測）：`demolish_allowed` 之上再加一道「拆了會不會
+/// 真的改變世界」的收斂閘。
+///
+/// **prod 真 bug（露娜等四位補蓋十幾小時零進展的第二層真因）**：`demolition_restore` 把拆掉的
+/// 格回復成「該座標的自然地表方塊」。若居民當年放下的那塊「恰好等於自然地表方塊」——最典型是
+/// **花圃裝飾（Flowerbed）在草原把 `Grass` 放在地表層**（`demolition_restore` 回復的也正是
+/// `Grass`）——拆完之後現況方塊 == 她放的那塊，下一步 `demolish_allowed(Grass, Grass)` 仍為
+/// true → 這一格**永遠被判定為「可拆」**，拆除迴圈每步都 `removed ≥ 1`、**永不收斂到收尾**、
+/// active 名額永久不釋放，餓死全村的殖民補蓋掃描（米拉跨聚落 demolish 卡在 (-27,8,10) 一格
+/// 花圃草地、被 append 一萬多次的真兇）。
+///
+/// 修法：一格只有在「拆了會真的改變世界」時才拆——`current != restore`。一旦拆到 `current`
+/// 已等於自然回復值，就視為「這格已到位、無事可做」跳過，讓拆除確定性收斂到收尾。
+/// 冪等且向後相容：門/牆/屋頂等回復成空氣或別種基底的格行為完全不變（`restore != current`）。
+pub fn demolish_should_remove(expected: u8, current: Block, restore: Block) -> bool {
+    demolish_allowed(expected, current) && current != restore
+}
+
 /// 拆下一格入包該記哪種材料（純函式、可測）：一律記「她當年放的那塊」——
 /// 開著的門收回的是門（`DoorClosed`），不是「開著」這個狀態。
 pub fn demolition_yield(expected: u8) -> u8 {
@@ -1968,6 +1986,161 @@ mod tests {
     }
 
     // ── 居民搬新家：舊家方塊集合重算 + 拆除安全過濾 ─────────────────────────────
+
+    #[test]
+    fn mira_flowerbed_grass_is_the_churn_cell() {
+        // prod 真 bug 定位（第四修根因）：米拉（vox_res_4）舊家 (-27,9,8) 是草原（Grassland）
+        // 樣式，帶花圃裝飾（Decor::Flowerbed）——花圃在地表層 (cy-1=8, cz+z_max+1=10) 放一塊
+        // `Grass`。該座標的自然地表本就是 `Grass`，於是 `demolition_restore` 回復的也是 `Grass`：
+        // 拆完現況 == 她放的那塊，`demolish_allowed(Grass, Grass)` 恆 true → 這一格永遠churn。
+        let biome = biome_at_voxel(-27, 8);
+        assert_eq!(biome, VoxelBiome::Grassland, "prod 米拉舊家在草原");
+        let expected = house_blocks_at("vox_res_4", -27, 9, 8);
+        // 舊行為（只看 demolish_allowed）：恰好有一格會無限churn。
+        let churn_old: Vec<_> = expected
+            .iter()
+            .filter(|bb| {
+                let restore = demolition_restore(bb.x, bb.y, bb.z);
+                demolish_allowed(bb.b, restore) // 拆完回復值仍被判定為「可拆」
+            })
+            .collect();
+        assert_eq!(churn_old.len(), 1, "prod 恰好一格會churn（花圃草地）");
+        let c = churn_old[0];
+        assert_eq!((c.x, c.y, c.z), (-27, 8, 10), "churn 格正是花圃草地");
+        assert_eq!(c.b, Block::Grass as u8, "放的是草");
+        // 新行為（demolish_should_remove）：這格拆了世界不變 → 不再被判定為「還可拆」。
+        let restore = demolition_restore(c.x, c.y, c.z);
+        assert!(
+            !demolish_should_remove(c.b, restore, restore),
+            "拆完現況已等於自然回復值 → 不該再拆（收斂閘）"
+        );
+    }
+
+    #[test]
+    fn e2e_mira_cross_colony_demolish_converges_not_churns() {
+        // ── 端到端拆除迴圈重放（prod 米拉實況 fixture）──────────────────────────────
+        // 把 `relocation_demolish_step` 的**逐步決策**照搬到隔離的模擬世界：世界先鋪上米拉真的
+        // 舊家（house_blocks_at 的每一塊），再逐 tick 跑「算現況 → demolish_should_remove →
+        // 拆一塊 → set 成 demolition_restore」的同一套邏輯，驗證迴圈**確定性收斂**（有限步內
+        // 再也沒有可拆的格 → 收尾），而非像 prod 那樣卡在花圃草地一格永不收尾。
+        //
+        // 這正是前三修「只綠純函式卻 prod 不生效」的補課：#1223 只驗了 walk_back gate，沒重放
+        // 拆除迴圈本身，於是漏掉了 restore==placed 的churn。此測直接重放迴圈到收斂。
+        use std::collections::HashMap;
+        let rid = "vox_res_4";
+        let (ox, oy, oz) = (-27, 9, 8); // prod 米拉跨聚落 demolish 的舊家錨點
+        let expected = house_blocks_at(rid, ox, oy, oz);
+        assert!(!expected.is_empty(), "米拉舊家應有方塊");
+
+        // 模擬世界：座標 → 現況方塊。先鋪上她當年蓋的家（現況 == 她放的那塊）。
+        // 未在 map 裡的座標＝自然地表（用 demolition_restore 代表「若拆此格會落到的自然值」）。
+        let mut world: HashMap<(i32, i32, i32), u8> = HashMap::new();
+        for bb in &expected {
+            world.insert((bb.x, bb.y, bb.z), bb.b);
+        }
+        let current_at = |world: &HashMap<(i32, i32, i32), u8>, x, y, z| -> Block {
+            match world.get(&(x, y, z)) {
+                Some(&b) => Block::from_u8(b).unwrap_or(Block::Air),
+                None => demolition_restore(x, y, z), // 家以外＝自然地表
+            }
+        };
+
+        // 逐步重放拆除迴圈（每步最多拆 per_step 塊，與 reloc_demolish_per_step 同量級）。
+        let per_step = 6usize;
+        let mut total_removed = 0usize;
+        let mut converged_step: Option<usize> = None;
+        // 上限遠大於方塊數；若沒收斂會撞到上限 → 測試失敗（正是舊churn的病徵）。
+        let max_steps = expected.len() * 4 + 50;
+        for step in 0..max_steps {
+            let mut removed_this = 0usize;
+            for bb in &expected {
+                if removed_this >= per_step {
+                    break;
+                }
+                let current = current_at(&world, bb.x, bb.y, bb.z);
+                let restore = demolition_restore(bb.x, bb.y, bb.z);
+                if !demolish_should_remove(bb.b, current, restore) {
+                    continue; // 不是她放的、或拆了不變 → 跳過（收斂關鍵）
+                }
+                // 拆：世界改成自然回復值（與 relocation_demolish_step 一致）。
+                world.insert((bb.x, bb.y, bb.z), restore as u8);
+                removed_this += 1;
+                total_removed += 1;
+            }
+            if removed_this == 0 {
+                converged_step = Some(step); // 本步再也沒得拆 → 收尾（active 名額釋放）
+                break;
+            }
+        }
+
+        let converged = converged_step.expect("拆除迴圈必須在有限步內收斂（否則就是 prod 的churn）");
+        assert!(
+            converged < max_steps,
+            "收斂步數 {converged} 應遠小於上限 {max_steps}"
+        );
+        // 拆掉的塊數＝她真放下、且拆了會改變世界的那些（花圃草地那格因拆了不變、被正確跳過，
+        // 所以拆的塊數 < 全部塊數；這正是修好後該有的結果）。
+        assert!(total_removed > 0, "應真的拆掉了牆/門/屋頂等塊");
+        assert!(
+            total_removed < expected.len(),
+            "花圃草地那格拆了世界不變，該被跳過不重複拆——舊churn正是死在這格"
+        );
+
+        // 收斂後世界的最終狀態：門(43)/床(45)/牆等都回復成自然（不再是她放的那塊）。
+        let door_gone = expected
+            .iter()
+            .filter(|bb| bb.b == Block::DoorClosed as u8)
+            .all(|bb| current_at(&world, bb.x, bb.y, bb.z) != Block::DoorClosed);
+        assert!(door_gone, "舊家的門應已全部拆除回復");
+        let bed_gone = expected
+            .iter()
+            .filter(|bb| bb.b == Block::Bed as u8)
+            .all(|bb| current_at(&world, bb.x, bb.y, bb.z) != Block::Bed);
+        assert!(bed_gone, "舊家的床應已拆除回復");
+    }
+
+    #[test]
+    fn demolish_should_remove_converges_on_placed_equals_natural() {
+        // 收斂閘純函式驗證：拆了會改變世界才拆；拆完（current==restore）即視為已了。
+        // 情境一：牆磚放在自然草地上——拆完回復成草（restore=Grass≠StoneBrick）。
+        assert!(
+            demolish_should_remove(Block::StoneBrick as u8, Block::StoneBrick, Block::Grass),
+            "牆磚現況正是她放的、拆了會變草 → 拆"
+        );
+        // 拆完現況已是草（==restore）→ 不再拆（收斂）。
+        assert!(
+            !demolish_should_remove(Block::StoneBrick as u8, Block::Grass, Block::Grass),
+            "已回復成草 → 不再拆"
+        );
+        // 情境二（churn 病灶）：她放的就是草、restore 也是草——第一次就不拆（拆了世界不變）。
+        assert!(
+            !demolish_should_remove(Block::Grass as u8, Block::Grass, Block::Grass),
+            "花圃草地放在自然草地上：拆了不變 → 一開始就不該拆（根治churn）"
+        );
+        // 空氣 / 別人的東西照舊不拆（沿用 demolish_allowed 的既有保護）。
+        assert!(!demolish_should_remove(Block::Plank as u8, Block::Air, Block::Grass));
+        assert!(!demolish_should_remove(Block::Plank as u8, Block::Chest, Block::Grass));
+    }
+
+    #[test]
+    fn e2e_luna_repair_house_plan_lands_door_and_bed() {
+        // ── 補蓋端到端閉環（承接米拉 demolish 收斂→active 釋放→輪到露娜）──────────────
+        // prod：露娜（vox_res_0）已歸屬殖民地、家卻不在地塊上（house_missing_near）→ 一旦米拉的
+        // demolish 收斂、active 名額釋放，`colonist_house_repair` 就會為她在殖民地地塊上開一張
+        // House BuildPlan。本測驗證那張 plan 走**既有建造引擎唯一路徑**（new_plan→generate_blocks）
+        // 落下的方塊集合，真的含門(43)+床(45)——即「露娜家終於有門有床」的可觀察閘。
+        let mut s = BuildStore::new();
+        // 露娜的殖民地小地塊上一處補蓋錨點（座標取自風禾屯地塊帶；new_plan 依錨點確定性生成）。
+        let plan = s.new_plan("vox_res_0", BuildKind::House, 469, 8, 173, false, None);
+        let has_door = plan.remaining.iter().any(|b| b.b == Block::DoorClosed as u8);
+        let has_bed = plan.remaining.iter().any(|b| b.b == Block::Bed as u8);
+        assert!(has_door, "補蓋的家必須含門(43)——露娜的家能被走進去");
+        assert!(has_bed, "補蓋的家必須含床(45)——露娜真的有得住");
+        // 且 House 型態的門/床座標可由 house_blocks_at 確定性重算（完工後拆/搬皆冪等）。
+        let recomputed = house_blocks_at("vox_res_0", 469, 8, 173);
+        assert!(recomputed.iter().any(|b| b.b == Block::DoorClosed as u8));
+        assert!(recomputed.iter().any(|b| b.b == Block::Bed as u8));
+    }
 
     #[test]
     fn house_blocks_at_matches_what_new_plan_built() {
