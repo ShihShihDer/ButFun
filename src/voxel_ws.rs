@@ -8020,7 +8020,17 @@ async fn handle_socket(
                 // 5) 依「權威 applied」（不是玩家自報的 want）扣背包，applied<=have 恆成立：
                 //    同一玩家的訊息在自己的 WS task 內序列處理，have 不會被別的玩家的動作改變。
                 let taken = { hub().inventory.write().unwrap().take(&name, item_id, applied) };
-                let Some(inv_entry) = taken else { continue }; // applied<=have，理論上不會落此
+                let Some(inv_entry) = taken else {
+                    // applied<=have 恆成立於「同一次訊息處理」窗口內，理論上不會落此；
+                    // 唯一已知落此的路徑是同帳號開兩個分頁，在讀 have 與這裡的 take 之間
+                    // 另一分頁把材料花掉——此時進度已經記上（見上方 resolve_contribution）
+                    // 但背包沒扣到，等同白送一點進度（有上限夾住，危害有限）。留一筆
+                    // warn，別讓這條路徑靜默過去（PR #1248 複審點名的鏡像 bug）。
+                    tracing::warn!(
+                        "眾力共築：{name} 的燈塔進度已套用 applied={applied} 但背包扣款失敗（可能同帳號多分頁搶動），進度不回滾"
+                    );
+                    continue;
+                };
                 vinv::append_inv(&inv_entry);
                 let remain = hub().inventory.read().unwrap().count(&name, item_id);
                 let _ = out_tx.send(Message::Text(serde_json::json!({
@@ -8039,16 +8049,37 @@ async fn handle_socket(
                     "t": "lighthouse_ok",
                     "message": vlighthouse::contribute_ack_line(iname, applied, remaining_after),
                 }).to_string())).await;
+                // 全服動態牆只在「某項材料湊齊」與「落成」播報，一般每一筆捐獻留給上面
+                // 單播的 lighthouse_ok 就夠——否則自製 client 用 qty:1 連發即可洗版全服
+                // 動態牆（伺服器端沒擋這種高頻小額捐獻，PR #1248 複審點名的濫用面）。
                 if remaining_after == 0 {
                     vfeed::append_feed("眾力共築", &name, &vlighthouse::material_ready_feed_line(iname));
-                } else {
-                    vfeed::append_feed(
-                        "眾力共築",
-                        &name,
-                        &format!("為{}獻上了 {applied} 份{iname}。", vlighthouse::LIGHTHOUSE_NAME),
-                    );
                 }
-                // 6) 落成：全部材料首次湊滿 → 放方塊（golden safe pattern，比照村碑 885：
+                // 6) 工地隨進度長高（PR #1248 複審核心要求：工地在落成前完全不可見，玩家
+                //    找不到路）——無論這次捐獻是不是剛好落成，都先把目前 pct 對應的方塊
+                //    擺出來；air-only + 冪等（同一階段材料重複捐不會重複觸發，cur != Air
+                //    就跳過）。落成時下面 lighthouse_cells 會把剩下的頂燈補上，兩邊算出的
+                //    格子重疊處天然去重。
+                if !just_completed {
+                    let sy = vbuild::surface_y(sx, sz);
+                    let pct_now = { hub().lighthouse.read().unwrap().pct_complete() };
+                    let cells = vlighthouse::progress_cells(sx, sz, sy, pct_now);
+                    let mut placed: Vec<(i32, i32, i32, Block)> = Vec::new();
+                    {
+                        let mut world = hub().deltas.write().unwrap();
+                        for &(x, y, z, blk) in &cells {
+                            if voxel::effective_block_at(&world, x, y, z) == Block::Air {
+                                voxel::set_block(&mut world, x, y, z, blk);
+                                placed.push((x, y, z, blk));
+                            }
+                        }
+                    } // deltas 寫鎖釋放
+                    for &(x, y, z, blk) in &placed {
+                        broadcast_block(x, y, z, blk);
+                        vbuild::append_world_block(x, y, z, blk as u8);
+                    }
+                }
+                // 7) 落成：全部材料首次湊滿 → 放方塊（golden safe pattern，比照村碑 885：
                 //    surface_y 鎖外算 → deltas 寫鎖批次只在 air 落子 → 鎖外廣播＋append-only 落地）。
                 if just_completed {
                     let sy = vbuild::surface_y(sx, sz);
@@ -10845,6 +10876,43 @@ fn tick_nightwatch(dt: f32) {
 pub fn spawn_farm_tick() {
     tokio::spawn(async move {
         let _ = hub(); // 觸發 hub 初始化
+        // 眾力共築·乙太燈塔（PR #1248 複審）：伺服器一啟動就把工地地基先擺出來，不等
+        // 第一份材料捐入——玩家在募集 0% 時就該看得到「這裡有工地」，不然沒人知道要往哪
+        // 走去捐材料。air-only + 冪等（重啟後地基已存在直接跳過），只需執行一次，借用
+        // 這顆既有 tick 任務的啟動時機（守「別碰 main.rs 加新 spawn」的慣例）。
+        {
+            let (vcx, vcz) = vvillage::load_village_center().unwrap_or_else(|| {
+                let home_bases: Vec<(i32, i32)> = {
+                    let residents = hub().residents.read().unwrap();
+                    residents
+                        .iter()
+                        .map(|r| (r.home_x.floor() as i32, r.home_z.floor() as i32))
+                        .collect()
+                }; // residents 讀鎖釋放
+                vvillage::village_center(&home_bases)
+            });
+            let (sx, sz) = vlighthouse::site_coords(vcx, vcz);
+            let sy = vbuild::surface_y(sx, sz);
+            let pct_now = { hub().lighthouse.read().unwrap().pct_complete() };
+            let cells = vlighthouse::progress_cells(sx, sz, sy, pct_now);
+            let mut placed: Vec<(i32, i32, i32, Block)> = Vec::new();
+            {
+                let mut world = hub().deltas.write().unwrap();
+                for &(x, y, z, blk) in &cells {
+                    if voxel::effective_block_at(&world, x, y, z) == Block::Air {
+                        voxel::set_block(&mut world, x, y, z, blk);
+                        placed.push((x, y, z, blk));
+                    }
+                }
+            } // deltas 寫鎖釋放
+            for &(x, y, z, blk) in &placed {
+                broadcast_block(x, y, z, blk);
+                vbuild::append_world_block(x, y, z, blk as u8);
+            }
+            if !placed.is_empty() {
+                tracing::info!("眾力共築：乙太燈塔工地地基已就位於 ({sx},{sz})");
+            }
+        }
         let mut ticker = tokio::time::interval(Duration::from_secs(15));
         let mut coin_demand_ticks: u32 = 0; // 供需驅動漲價 v1（ROADMAP 958）：decay_all 別跟著這條 15 秒節拍等頻退燒，見 DEMAND_DECAY_EVERY_N_TICKS。
         loop {

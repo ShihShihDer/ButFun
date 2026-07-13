@@ -5298,7 +5298,7 @@ const lighthouseBodyEl = document.getElementById("lighthouseBody");
 const lighthouseBtnEl = document.getElementById("lighthouseBtn");
 
 /** 重新渲染燈塔募集進度面板。
- * @param {{name:string, pct:number, complete:boolean,
+ * @param {{name:string, pct:number, complete:boolean, cx:number, cz:number,
  *   materials:Array<{item_id:number,name:string,given:number,needed:number}>,
  *   contributors:Array<{name:string,qty:number}>}} data
  */
@@ -5309,6 +5309,20 @@ function renderLighthousePanel(data) {
     return;
   }
   lighthouseBodyEl.innerHTML = "";
+  // 工地座標本來就在 API 回應裡，但面板從沒顯示過方向／距離——玩家背包裡有材料、
+  // 按下捐獻鈕卻不知道要往哪走（PR #1248 複審點名「看得見」＋「找得到」缺了後者）。
+  // 沿用羅盤面板同一套 compassRelativeDeg 方位算法，箭頭跟居民/路標同款慣例。
+  if (typeof data.cx === "number" && typeof data.cz === "number") {
+    const deg = compassRelativeDeg(player.x, player.z, data.cx, data.cz, player.yaw);
+    const dist = Math.hypot(data.cx - player.x, data.cz - player.z);
+    const dirLine = document.createElement("div");
+    dirLine.className = "compass-row lh-direction";
+    dirLine.innerHTML =
+      '<span class="compass-arrow" style="transform: rotate(' + deg.toFixed(0) + 'deg)">🗼</span>' +
+      '<span class="compass-name">工地方向</span>' +
+      '<span class="compass-dist">' + Math.round(dist) + ' 格</span>';
+    lighthouseBodyEl.appendChild(dirLine);
+  }
   const pctLine = document.createElement("div");
   if (data.complete) {
     pctLine.className = "lh-complete";

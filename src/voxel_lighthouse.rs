@@ -275,6 +275,53 @@ pub fn total_height() -> i32 {
     1 + 5 + 1 + 1
 }
 
+/// 柱身＋燈籠室的成長階段數（不含地基、不含頂燈——見 [`progress_cells`] 為何要分開）。
+const GROWTH_STAGES: usize = 5 + 1 + 1; // 柱身 5 層 + 燈籠支撐柱 1 層 + 十字窗一組
+
+/// 依目前募集進度百分比（`LighthouseProgress::pct_complete`），回傳「此刻」該可見的
+/// 燈塔方塊——工地隨大家獻材料在世界裡長高，不必等落成那一刻才憑空冒出來（PR #1248
+/// 複審：工地在落成前完全不可見、玩家連要往哪走都不知道）。
+///
+/// - **地基（5×5 石磚）恆定可見、不受 `pct` 影響**：呼叫端在募集開始（甚至 0% 進度、
+///   一份材料都還沒收到）就該落下地基，讓玩家知道「這裡有個工地」、走得到、找得到。
+/// - 柱身／燈籠室依 `pct` 平均分成 [`GROWTH_STAGES`] 個階段依序解鎖，越募越高。
+/// - **頂端乙太燈塔燈刻意不含在這裡**：留給落成那一刻用 [`lighthouse_cells`] 一次點亮，
+///   「最後一塊材料湊齊、全世界最亮的燈亮起」才是那個獨一無二的慶祝瞬間。
+///
+/// 與 [`lighthouse_cells`] 在 `pct=100.0` 時算出的非頂燈格子完全重合，呼叫端落成時
+/// 照舊呼叫 `lighthouse_cells` 補頂燈即可，重疊的格子天然冪等（air-only，已非空氣就跳過）。
+pub fn progress_cells(cx: i32, cz: i32, surface_y: i32, pct: f32) -> Vec<(i32, i32, i32, Block)> {
+    let mut cells = Vec::with_capacity(32);
+    for dx in -2..=2 {
+        for dz in -2..=2 {
+            cells.push((cx + dx, surface_y, cz + dz, Block::StoneBrick));
+        }
+    }
+    let pillar_blocks = [
+        Block::StoneBrick,
+        Block::StoneBrick,
+        Block::IronBlock,
+        Block::StoneBrick,
+        Block::StoneBrick,
+    ];
+    let unlocked = ((pct.max(0.0) * GROWTH_STAGES as f32 / 100.0).floor() as usize).min(GROWTH_STAGES);
+    for (i, blk) in pillar_blocks.iter().enumerate() {
+        if i < unlocked {
+            cells.push((cx, surface_y + 1 + i as i32, cz, *blk));
+        }
+    }
+    let lantern_y = surface_y + 1 + pillar_blocks.len() as i32;
+    if unlocked > pillar_blocks.len() {
+        cells.push((cx, lantern_y, cz, Block::StoneBrick));
+    }
+    if unlocked > pillar_blocks.len() + 1 {
+        for (ddx, ddz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            cells.push((cx + ddx, lantern_y, cz + ddz, Block::Glass));
+        }
+    }
+    cells
+}
+
 // ── 面向玩家的句子（純函式、i18n 集中於此）────────────────────────────────────────────
 /// 單次捐獻成功後回給該玩家的訊息（不廣播，僅本人看到，作為即時反饋）。
 pub fn contribute_ack_line(item_name: &str, applied: u32, remaining_after: u32) -> String {
@@ -473,6 +520,42 @@ mod tests {
         let cells = lighthouse_cells(0, 0, 0);
         let glass_count = cells.iter().filter(|c| c.3 == Block::Glass).count();
         assert_eq!(glass_count, 4);
+    }
+
+    #[test]
+    fn progress_cells_shows_foundation_even_at_zero_percent() {
+        // 一份材料都還沒收到（pct=0）就該看得到地基——玩家找得到工地在哪（PR #1248 複審）。
+        let cells = progress_cells(0, 0, 20, 0.0);
+        let base: Vec<_> = cells.iter().filter(|c| c.1 == 20).collect();
+        assert_eq!(base.len(), 25);
+        assert!(base.iter().all(|c| c.3 == Block::StoneBrick));
+        // 0% 時柱身／燈籠室都還沒解鎖。
+        assert_eq!(cells.len(), 25);
+    }
+
+    #[test]
+    fn progress_cells_grows_monotonically_and_never_includes_the_lamp() {
+        let mut prev_len = 0;
+        for pct10 in 0..=100u32 {
+            let cells = progress_cells(0, 0, 20, pct10 as f32);
+            assert!(cells.len() >= prev_len, "pct={pct10} 時格子數比更低進度還少，不該倒退長高");
+            assert!(!cells.iter().any(|c| c.3 == Block::AetherLamp), "頂燈該留給落成那刻,不該提前出現");
+            prev_len = cells.len();
+        }
+    }
+
+    #[test]
+    fn progress_cells_at_full_pct_matches_lighthouse_cells_minus_the_lamp() {
+        let full = progress_cells(3, -7, 15, 100.0);
+        let finished: Vec<_> = lighthouse_cells(3, -7, 15)
+            .into_iter()
+            .filter(|c| c.3 != Block::AetherLamp)
+            .collect();
+        let mut full_sorted = full.clone();
+        let mut finished_sorted = finished.clone();
+        full_sorted.sort_by_key(|c| (c.0, c.1, c.2));
+        finished_sorted.sort_by_key(|c| (c.0, c.1, c.2));
+        assert_eq!(full_sorted, finished_sorted, "100% 進度該蓋出跟落成藍圖一樣的骨架（只差頂燈）");
     }
 
     #[test]
