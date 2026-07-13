@@ -121,6 +121,7 @@ use crate::voxel_chicken as vchicken;
 use crate::voxel_player_recipe as vprecipe;
 use crate::voxel_diary_peek as vdiarypeek;
 use crate::voxel_pet_admire as vpetadmire;
+use crate::voxel_craft_admire as vcraftadmire;
 use crate::voxel_pet_fright as vpetfright;
 use crate::voxel_proximity_teach as vptteach;
 use crate::voxel_envoy_mark as venvoy;
@@ -10584,6 +10585,7 @@ pub fn spawn_farm_tick() {
             maybe_pet_admire(); // 居民注意到你身邊跟著的馴服動物 v1（自主提案切片 875）：同節拍檢查身邊有無寵物觸發讚賞。
             maybe_envoy_recall(); // 引夢使者印記深化 v1（自主提案切片）：同節拍檢查身邊有無曾受你恩惠的居民、偶爾回想提起你為她做過的具體好事。
             maybe_crown_masters(); // 名匠聲望 v1（ROADMAP 888）：同節拍以既有發明/師承紀錄重算村裡每門手藝的公認名匠、公告新加冕、刷新「卡關優先找名匠」快照（須在就地指導前跑，讓本輪教學偏好讀到最新名匠）。
+            maybe_craft_admire(); // 手藝仰慕 v1（自主提案切片）：同節拍檢查有無還不會某門手藝的居民，路過這門手藝的公認名匠走得夠近，過冷卻就停下來多看兩眼、由衷佩服（須在名匠重算後跑，讀到最新的「手藝→名匠」快照）。
             maybe_proximity_teach(); // 就地指導 v1（自主提案切片）：同節拍檢查有無卡關居民身邊剛好站著會解法的老朋友。
             maybe_encounter_barter(); // 居民以物易物 v1（ROADMAP 888）：同節拍檢查有無餘料互補的老朋友走得夠近、湊成一樁雙向互利的背包對換。
             maybe_found_colony(); // 分村殖民 v1：低頻檢查主村是否夠成熟、該外派拓荒隊奠下第二座村。
@@ -13355,6 +13357,158 @@ fn maybe_pet_admire() {
             );
         }
     }
+}
+
+/// 手藝仰慕 v1（自主提案切片）：全域「仰慕者→冷卻時刻」儲存（不分仰慕的是哪門手藝／
+/// 哪位名匠），比照 `pet_admire_cd` 慣例。純記憶體、重啟歸零。
+fn craft_admire_cd() -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 手藝仰慕 v1（自主提案切片，低頻併入 15 秒節拍檢查）：見 `voxel_craft_admire` 模組說明。
+/// 每次呼叫只促成一組仰慕（保持稀疏、成本可預期），找到第一組符合條件的就執行並提前返回；
+/// 下一輪 tick 再繼續找下一組。
+///
+/// **鎖紀律**：`master_by_goal` 快取／residents（讀→寫兩段）／invented／冷卻 mutex／bonds／
+/// memory 全部各自短取即釋、循序不巢狀（守 prod 死鎖鐵律，比照 `maybe_pet_admire`/
+/// `maybe_proximity_teach` 慣例）。
+fn maybe_craft_admire() {
+    // 1) 手藝→公認名匠快照（短鎖即釋）。沒有任何名匠就整輪早退，成本可忽略。
+    let masters_snap: Vec<(u8, String)> = {
+        let by_goal = master_by_goal().lock().unwrap();
+        by_goal.iter().map(|(g, n)| (*g, n.clone())).collect()
+    }; // 快取鎖釋放
+    if masters_snap.is_empty() {
+        return;
+    }
+
+    // 2) 居民快照：id/name/位置/是否有空（短讀鎖即釋，不與後續鎖巢狀）。
+    let snap: Vec<(String, &'static str, f32, f32, bool)> = {
+        let residents = hub().residents.read().unwrap();
+        residents
+            .iter()
+            .map(|r| {
+                let idle = r.say.is_empty()
+                    && !r.asleep
+                    && r.visiting.is_none()
+                    && r.expedition.is_none()
+                    && r.clique_meet.is_none()
+                    && r.savoring.is_none();
+                (r.id.clone(), r.name, r.body.x, r.body.z, idle)
+            })
+            .collect()
+    }; // residents 讀鎖釋放
+
+    let name_to_id: std::collections::HashMap<&str, &str> =
+        snap.iter().map(|(id, name, ..)| (*name, id.as_str())).collect();
+    let name_to_pos: std::collections::HashMap<&str, (f32, f32)> =
+        snap.iter().map(|(_, name, x, z, _)| (*name, (*x, *z))).collect();
+
+    let now_secs = vfarm::now_secs();
+
+    // 3) 找第一組「還不會這門手藝、離公認名匠夠近、冷卻已過」的仰慕者×名匠（invented
+    // 讀鎖短取即釋，只用於查驗「是否已會」與取回名匠自己那筆技能的顯示名）。
+    let found: Option<(String, &'static str, String, String)> = {
+        let invented = hub().invented.read().unwrap();
+        let mut result = None;
+        'outer: for (rid, rname, rx, rz, idle) in &snap {
+            let (rname, rx, rz, idle) = (*rname, *rx, *rz, *idle);
+            if !idle {
+                continue;
+            }
+            let cooldown_ok = {
+                let cd = craft_admire_cd().lock().unwrap();
+                match cd.get(rid) {
+                    Some(prev) => {
+                        now_secs.saturating_sub(*prev) >= vcraftadmire::CRAFT_ADMIRE_COOLDOWN_SECS
+                    }
+                    None => true,
+                }
+            }; // 冷卻鎖釋放
+            if !cooldown_ok {
+                continue;
+            }
+            for (goal_block, master_name) in &masters_snap {
+                if master_name.as_str() == rname {
+                    continue; // 名匠不會仰慕自己
+                }
+                if invented.find_for(rid, *goal_block).is_some() {
+                    continue; // 這門手藝自己已經會了，不算仰慕
+                }
+                let Some(master_id) = name_to_id.get(master_name.as_str()) else { continue };
+                let Some((mx, mz)) = name_to_pos.get(master_name.as_str()) else { continue };
+                let dx = rx - mx;
+                let dz = rz - mz;
+                let dist_sq = dx * dx + dz * dz;
+                if !vcraftadmire::admire_triggers(dist_sq, true) {
+                    continue;
+                }
+                let craft = match invented.find_for(*master_id, *goal_block) {
+                    Some(rec) if !rec.name.is_empty() => rec.name.clone(),
+                    _ => continue,
+                };
+                result = Some((rid.clone(), rname, master_name.clone(), craft));
+                break 'outer;
+            }
+        }
+        result
+    }; // invented 讀鎖釋放
+
+    let Some((admirer_id, admirer_name, master_name, craft)) = found else { return };
+    {
+        craft_admire_cd().lock().unwrap().insert(admirer_id.clone(), now_secs);
+    } // 冷卻鎖釋放
+
+    let pick = now_secs as usize;
+    let say_line = vcraftadmire::admire_say_line(&craft, pick);
+    let said = {
+        let mut residents = hub().residents.write().unwrap();
+        residents
+            .iter_mut()
+            .find(|r| r.id == admirer_id)
+            .map(|r| {
+                r.say = say_line.chars().take(50).collect();
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            })
+            .is_some()
+    }; // residents 寫鎖釋放
+    if !said {
+        return;
+    }
+    broadcast_players();
+
+    // 情誼因這份仰慕加溫一格（bonds 以顯示名記帳，升級才 save + 播里程碑，比照既有慣例）。
+    let (tier, tier_changed) = {
+        let mut bonds = hub().bonds.write().unwrap();
+        bonds.record_visit(admirer_name, &master_name)
+    }; // bonds 寫鎖釋放
+    if tier_changed {
+        {
+            let bonds = hub().bonds.read().unwrap();
+            vbonds::save_bonds(&bonds);
+        } // bonds 讀鎖釋放
+        let milestone = vbonds::tier_up_line(tier, admirer_name, &master_name);
+        vfeed::append_feed("居民情誼", admirer_name, &milestone);
+    }
+
+    // 雙方各記一筆記憶（掛在對方名下），語氣刻意不同（仰慕 vs 被看見的踏實）。
+    let mem_a = vcraftadmire::admire_memory_for_admirer(&master_name, &craft);
+    let ea = { hub().memory.write().unwrap().add_memory(&admirer_id, &master_name, &mem_a) };
+    vmem::append_memory(&ea);
+    if let Some(master_id) = name_to_id.get(master_name.as_str()) {
+        let mem_m = vcraftadmire::admire_memory_for_master(admirer_name, &craft);
+        let em = { hub().memory.write().unwrap().add_memory(master_id, admirer_name, &mem_m) };
+        vmem::append_memory(&em);
+    }
+
+    vfeed::append_feed(
+        vcraftadmire::FEED_KIND,
+        admirer_name,
+        &vcraftadmire::admire_feed_line(admirer_name, &master_name, &craft),
+    );
 }
 
 /// 引夢使者印記深化 v1（自主提案切片）：居民平常閒晃時，若身邊剛好站著曾為她做過具體好事的
