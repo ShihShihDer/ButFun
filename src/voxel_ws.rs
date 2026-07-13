@@ -10697,6 +10697,7 @@ pub fn spawn_farm_tick() {
     tokio::spawn(async move {
         let _ = hub(); // 觸發 hub 初始化
         let mut ticker = tokio::time::interval(Duration::from_secs(15));
+        let mut coin_demand_ticks: u32 = 0; // 供需驅動漲價 v1（ROADMAP 958）：decay_all 別跟著這條 15 秒節拍等頻退燒，見 DEMAND_DECAY_EVERY_N_TICKS。
         loop {
             ticker.tick().await;
             tick_farm();
@@ -10721,7 +10722,13 @@ pub fn spawn_farm_tick() {
             maybe_build_lovenest(); // 戀人愛巢 v1：低頻檢查有無戀人對還沒築巢、擲中就在村邊合力蓋起共同的家。
             tick_dropitem_expire(); // 掉落物 v1（自主提案切片 828）：同節拍清掉沒人撿的過期掉落物。
             tick_stall_expire(); // 玩家自由市集 v1（自主提案切片 832）：同節拍清掉逾時沒人接手的攤位、退還材料。
-            hub().coin_demand.write().unwrap().decay_all(); // 供需驅動漲價 v1（ROADMAP 958）：同節拍讓搶購熱度慢慢退燒，價格自己回落。
+            // 供需驅動漲價 v1（ROADMAP 958）：每 DEMAND_DECAY_EVERY_N_TICKS 個節拍才退燒一次
+            // （review 撞見的落地雷：每 15 秒就退燒的話熱度攢不起來，見常數上的說明），讓搶購
+            // 熱度撐到分鐘級才慢慢回落，玩家連買幾次真的看得到漲價、下次回來也還感覺得到。
+            coin_demand_ticks += 1;
+            if coin_demand_ticks % vtrade::DEMAND_DECAY_EVERY_N_TICKS == 0 {
+                hub().coin_demand.write().unwrap().decay_all();
+            }
         }
     });
     spawn_water_tick();

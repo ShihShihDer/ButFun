@@ -51,11 +51,17 @@ pub const DEMAND_STEP: u32 = 3;
 /// 漲價階數封頂（避免搶購到荒謬天價；封頂後基礎價最多變成 1+此值 倍）。
 pub const MAX_DEMAND_TIER: u32 = 4;
 
+/// `decay_all` 每隔這麼多個 [`spawn_farm_tick`](crate::voxel_ws::spawn_farm_tick) 的 15 秒節拍
+/// 才真正退燒一次（= 2 分鐘）。ROADMAP 958 review 撞見的落地雷：一開始掛在每個 15 秒 tick 上，
+/// 半衰期只有 15 秒，玩家得在同一個 tick 內狂買 6 次才攢得到 tier 2、45 秒內又蒸發，世界感受
+/// 不會發生——改成分鐘級退燒，讓「連買幾次、漲價撐一陣子」這件事在正常遊玩節奏下真的看得到。
+pub const DEMAND_DECAY_EVERY_N_TICKS: u32 = 8;
+
 /// 全域「最近付幣買走各物品的次數」追蹤（供需 v1，ROADMAP 958）。
 ///
 /// 純記憶體（比照 `pending_trades`/`voxel_stall` 世界暫態慣例，重啟即清空、零 migration）；
-/// 每次成功「付幣」成交 `record_purchase` 一次，伺服器背景每 15 秒 tick `decay_all` 一次
-/// 讓熱度慢慢降溫——搶購退燒後價格自己回落，供需雙向都能感受到。
+/// 每次成功「付幣」成交 `record_purchase` 一次，伺服器背景每 [`DEMAND_DECAY_EVERY_N_TICKS`]
+/// 個 15 秒節拍 tick `decay_all` 一次讓熱度慢慢降溫——搶購退燒後價格自己回落，供需雙向都能感受到。
 #[derive(Debug, Default, Clone)]
 pub struct CoinDemandTracker {
     /// 物品 id → 最近熱度計數。只收付幣成交，不含以物易物（那條路完全不動幣）。
@@ -456,6 +462,36 @@ mod tests {
             "被搶購的物品，同樣的 affinity 下 coin_price 應比沒人搶購時更貴");
         assert_eq!(hot_offer.coin_price, base_offer.coin_price * 3,
             "漲 2 階 = 基礎價的 (1+2) 倍");
+    }
+
+    #[test]
+    fn demand_tier_survives_real_tick_cadence() {
+        // 鎖住 review 撞見的落地雷：純函式窮舉 record_purchase N 次不受真實節拍限制，
+        // 掩蓋了「decay_all 掛在太密的節拍上，熱度根本攢不起來」。這裡模擬真實
+        // spawn_farm_tick 節奏——每個 tick 呼叫 record_purchase 若干次，並只在
+        // 每 DEMAND_DECAY_EVERY_N_TICKS 個 tick 才呼叫一次 decay_all（跟 voxel_ws.rs
+        // 的 coin_demand_ticks 計數器同步），斷言：玩家在一段正常遊玩節奏內連買
+        // 幾次，tier 真的爬得上去、且不會在下一個 tick 就被腰斬回基礎價。
+        let mut d = no_demand();
+        let mut ticks: u32 = 0;
+        // 一位玩家每個 tick 都買 1 次同一項物品，連買 DEMAND_STEP 次（正常遊玩節奏，
+        // 不是「同一 tick 內狂點」）。
+        for _ in 0..DEMAND_STEP {
+            d.record_purchase(10);
+            ticks += 1;
+            if ticks % DEMAND_DECAY_EVERY_N_TICKS == 0 {
+                d.decay_all();
+            }
+        }
+        assert_eq!(d.tier_for(10), 1,
+            "正常節奏連買 DEMAND_STEP 次應攢到 tier 1（不該被同期退燒抵消）");
+
+        // 買完之後過一個 tick（還沒到退燒週期）：漲價應該還在，不會下一拍就蒸發。
+        ticks += 1;
+        if ticks % DEMAND_DECAY_EVERY_N_TICKS == 0 {
+            d.decay_all();
+        }
+        assert_eq!(d.tier_for(10), 1, "剛漲價後一個 tick 內應該還撐得住，不會秒回基礎價");
     }
 
     #[test]
