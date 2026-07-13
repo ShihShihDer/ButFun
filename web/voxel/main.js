@@ -4910,17 +4910,17 @@ function renderCompassPanel() {
   }).sort((a, b) => a.dist - b.dist);
   if (rows.length === 0) {
     compassBodyEl.innerHTML = '<div class="compass-empty">目前沒有居民座標可指引。</div>';
-    return;
-  }
-  compassBodyEl.innerHTML = "";
-  for (const row of rows) {
-    const div = document.createElement("div");
-    div.className = "compass-row";
-    div.innerHTML =
-      '<span class="compass-arrow" style="transform: rotate(' + row.deg.toFixed(0) + 'deg)">↑</span>' +
-      '<span class="compass-name">' + escHtml(row.name) + '</span>' +
-      '<span class="compass-dist">' + Math.round(row.dist) + ' 格</span>';
-    compassBodyEl.appendChild(div);
+  } else {
+    compassBodyEl.innerHTML = "";
+    for (const row of rows) {
+      const div = document.createElement("div");
+      div.className = "compass-row";
+      div.innerHTML =
+        '<span class="compass-arrow" style="transform: rotate(' + row.deg.toFixed(0) + 'deg)">↑</span>' +
+        '<span class="compass-name">' + escHtml(row.name) + '</span>' +
+        '<span class="compass-dist">' + Math.round(row.dist) + ' 格</span>';
+      compassBodyEl.appendChild(div);
+    }
   }
   renderWaypointList();
 }
@@ -8938,6 +8938,9 @@ window.__voxel = {
       visible: e.group.visible,
     }));
   },
+  // 羅盤 QA 用：模擬「附近一位居民都沒有」（玩家走遠時最該有用的情境），驗證清空居民
+  // 後路標／已發現村落仍照常渲染，不會被早退的空狀態邏輯一起吃掉。呼叫後即時重繪面板。
+  qaClearResidentsForCompass() { residents.clear(); if (compassVisible) renderCompassPanel(); return residents.size; },
   // ── 對話 QA 用：列居民 id、直接對某居民送一句、讀最近回覆 ──
   residentIds() { return [...residents.keys()]; },
   talkTo(rid, text) {
