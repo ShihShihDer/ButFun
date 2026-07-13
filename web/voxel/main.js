@@ -7235,6 +7235,11 @@ function connect() {
       // 世界奇觀·乙太世界樹 v1：試圖砍奇觀——被後端擋下，浮出一句溫柔說明（別讓路過的人拆掉它）。
       showMsg(m.line || "乙太世界樹是世界唯一的奇觀，它不會為任何人的鎬子讓步。");
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3000);
+    } else if (m.t === "claim_protected") {
+      // 玩家個人領地保護 v1（自主提案切片，ROADMAP 963）：試圖動別人「家」牌方圓內的方塊——
+      // 被後端擋下，浮出一句溫柔說明，告訴你這裡是誰的地盤。
+      showMsg(m.line || "這裡已經有主人了，別人的鎬子伸不進來。");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3000);
     } else if (m.t === "colony_founded") {
       // 分村殖民 v1：世界某處剛奠下一座新村（人人可見的世界大事，稀有）——浮出立村捷報。
       showMsg("🏘️ 世界長出了新村落「" + (m.name || "野外村落") + "」——" + (m.story || ""));

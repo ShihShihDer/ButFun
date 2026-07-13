@@ -160,6 +160,7 @@ use crate::voxel_epithet_esteem as vesteem;
 use crate::voxel_epithet_sign as vepisign;
 use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_player_home as vplayerhome;
+use crate::voxel_landclaim as vlandclaim;
 use crate::voxel_weather as vweather;
 use crate::voxel_season as vseason;
 use crate::voxel_snow as vsnow;
@@ -5012,6 +5013,27 @@ async fn handle_socket(
                     ));
                     continue;
                 }
+                // 玩家個人領地保護 v1（自主提案切片，ROADMAP 963）：目標格若落在別人「家」牌
+                // 方圓內，只有立牌本人能動——別人的鎬子在這裡溫柔地伸不進來（sign 讀鎖即釋，
+                // 不與後續 delta 鎖巢狀）。
+                if let Some(owner) = {
+                    hub().sign.read().unwrap()
+                        .nearest_within_xz(x as f32 + 0.5, z as f32 + 0.5, vlandclaim::CLAIM_RADIUS)
+                        .filter(|(_, _, text, _, _)| vlandclaim::is_home_sign(text))
+                        .and_then(|(_, _, _, _, owner)| owner)
+                } {
+                    let requester = if is_account { Some(name.as_str()) } else { None };
+                    if vlandclaim::dig_denied(Some(owner.as_str()), requester) {
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({
+                                "t": "claim_protected",
+                                "line": vlandclaim::claim_deny_line(&owner, (x.wrapping_add(z)) as usize),
+                            })
+                            .to_string(),
+                        ));
+                        continue;
+                    }
+                }
                 // delta 寫鎖：驗證 + 設為空氣（循序取放，不嵌套）。
                 let broken = {
                     let mut world = hub().deltas.write().unwrap();
@@ -5464,6 +5486,27 @@ async fn handle_socket(
                 let Some((px, py, pz)) = player_pos(my_id) else {
                     continue;
                 };
+                // 玩家個人領地保護 v1（自主提案切片，ROADMAP 963）：目標格若落在別人「家」牌
+                // 方圓內，只有立牌本人能放——在消耗任何材料之前先擋，別人白挨一句提示、不掉材料
+                // （sign 讀鎖即釋，不與後續 inventory/delta 鎖巢狀）。
+                if let Some(owner) = {
+                    hub().sign.read().unwrap()
+                        .nearest_within_xz(x as f32 + 0.5, z as f32 + 0.5, vlandclaim::CLAIM_RADIUS)
+                        .filter(|(_, _, text, _, _)| vlandclaim::is_home_sign(text))
+                        .and_then(|(_, _, _, _, owner)| owner)
+                } {
+                    let requester = if is_account { Some(name.as_str()) } else { None };
+                    if vlandclaim::dig_denied(Some(owner.as_str()), requester) {
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({
+                                "t": "claim_protected",
+                                "line": vlandclaim::claim_deny_line(&owner, (x.wrapping_add(z)) as usize),
+                            })
+                            .to_string(),
+                        ));
+                        continue;
+                    }
+                }
                 // 植樹造林 v1（ROADMAP 738）：樹苗只能種在「土地」上（草/土/沙/雪/農田土），
                 // 不能種在石頭/木頭/空中——樹要從地面長。先驗證腳下那格，不合格就早退退提示，
                 // 不白白消耗樹苗。（短讀鎖取腳下方塊即釋，不與後續 inventory/delta 鎖巢狀。）
