@@ -74,7 +74,8 @@ function near(a, b, eps) { return Math.abs(a - b) <= eps; }
 
   // ── 2) 真的點擊羅盤按鈕開面板，確認 4 位居民都列出、距離為正數 ──
   const residentCount = await page.evaluate(() => window.__voxel.residentCount);
-  check("居民已載入 4 位", residentCount === 4, `residentCount=${residentCount}`);
+  // 人口會隨世界成長持續增加（見 PR #1244：4→10），別鎖死人數魔術數字，只驗「真的有載入」。
+  check("居民已載入（人口 > 0）", residentCount > 0, `residentCount=${residentCount}`);
 
   const clicked = await page.evaluate(() => {
     const btn = document.getElementById("compassBtn");
@@ -95,7 +96,8 @@ function near(a, b, eps) { return Math.abs(a - b) <= eps; }
       rotate: r.querySelector(".compass-arrow")?.style.transform || "",
     }));
   });
-  check("面板列出 4 位居民", rowInfo.length === 4, JSON.stringify(rowInfo));
+  check("面板列出的居民數與實際人口一致", rowInfo.length === residentCount,
+    `residentCount=${residentCount} rowInfo=${JSON.stringify(rowInfo)}`);
   check("每一列都有非零旋轉樣式（箭頭真的有指向）", rowInfo.every((r) => /rotate\(/.test(r.rotate)),
     JSON.stringify(rowInfo));
   check("每一列距離都是正數格數", rowInfo.every((r) => /^\d+\s*格$/.test(r.dist)), JSON.stringify(rowInfo));
@@ -145,17 +147,62 @@ function near(a, b, eps) { return Math.abs(a - b) <= eps; }
   });
   check("清空殖民地資料後顯示空狀態提示", emptyText.includes("還沒發現"), emptyText);
 
-  // ── 5) 關閉面板 ──
+  // ── 5) 居民清單為空時，路標／已發現村落不該被一起吃掉（PR #1244 review 點名的既有瑕疵）──
+  // 走遠、身邊沒居民，正是羅盤最該有用的時候：先插一支路標＋留著上一步注入的村落資料，
+  // 再清空居民，確認 renderWaypointList/renderLandmarkList 仍照跑，不會被早退邏輯連坐清空。
+  const emptyResidentsInfo = await page.evaluate(() => {
+    window.__voxel.setDiscoveredColonies([
+      { kind: "colony", label: "野外村落", icon: "🏘️", name: "風禾屯", x: 0, y: 65, z: -50 },
+    ]);
+    window.__voxel.setWaypoints([{ label: "營地", x: 20, y: 65, z: 20 }]);
+    const left = window.__voxel.qaClearResidentsForCompass();
+    return {
+      left,
+      residentText: document.getElementById("compassBody")?.textContent || "",
+      waypointNames: [...document.querySelectorAll("#waypointBody .waypoint-row")].map((r) => r.querySelector(".compass-name")?.textContent || ""),
+      landmarkRows: [...document.querySelectorAll("#landmarkBody .landmark-row")].map((r) => r.querySelector(".compass-name")?.textContent || ""),
+    };
+  });
+  check("清空居民後，羅盤列表改顯示空狀態（非殘留舊列）", emptyResidentsInfo.left === 0 && emptyResidentsInfo.residentText.includes("目前沒有居民"),
+    JSON.stringify(emptyResidentsInfo));
+  check("清空居民後，路標區塊仍照常渲染（未被早退邏輯連坐清空）",
+    emptyResidentsInfo.waypointNames.includes("營地"), JSON.stringify(emptyResidentsInfo));
+  check("清空居民後，已發現村落清單仍照常渲染（未被早退邏輯連坐清空）",
+    emptyResidentsInfo.landmarkRows.includes("風禾屯"), JSON.stringify(emptyResidentsInfo));
+
+  // ── 5b) 居民「和」路標都為空時，村落清單仍要照常渲染＋隨玩家移動更新
+  // （PR #1245 review 點名的第二層連坐：renderLandmarkList 曾寄生在 renderWaypointList
+  //   尾巴，waypoints 一旦也是空陣列就會被 early return 吃掉，此腳本先前三條斷言都餵了
+  //   路標、鎖不住這條回歸路徑）──
+  const distBeforeMove = await page.evaluate(() => {
+    window.__voxel.setWaypoints([]); // 路標也清空——這是多數玩家的真實狀態
+    const row = document.querySelector("#landmarkBody .landmark-row");
+    return row?.querySelector(".compass-dist")?.textContent || "";
+  });
+  check("居民與路標皆為空時，村落清單仍照常渲染（非被 early return 連坐清空）",
+    distBeforeMove !== "", `distBeforeMove=${JSON.stringify(distBeforeMove)}`);
+
+  await page.evaluate(() => window.__voxel.setPlayerPos(0, 30, 500)); // 遠離村落
+  await sleep(700);
+  const distAfterMove = await page.evaluate(() => {
+    const row = document.querySelector("#landmarkBody .landmark-row");
+    return row?.querySelector(".compass-dist")?.textContent || "";
+  });
+  const grew = parseInt(distAfterMove || "0", 10) > parseInt(distBeforeMove || "0", 10);
+  check("居民與路標皆為空時，村落清單距離仍隨玩家移動自動刷新",
+    grew, `before=${distBeforeMove} after=${distAfterMove}`);
+
+  // ── 6) 關閉面板 ──
   const closedOk = await page.evaluate(() => { window.__voxel.closeCompass(); return !window.__voxel.compassVisible; });
   check("關閉羅盤面板", closedOk);
 
   const pass = fails.length === 0;
   console.log("\n──────── 居民羅盤 v1 QA 報告 ────────");
-  console.log(pass ? "判定: PASS ✅（方位數學正確、真點擊開面板列出 4 位居民、移動後自動刷新、殖民地羅盤列表正確）"
+  console.log(pass ? "判定: PASS ✅（方位數學正確、真點擊開面板列出全部居民、移動後自動刷新、殖民地羅盤列表正確、空居民不連坐清空路標村落）"
     : `判定: CHECK ⚠️ 失敗項目: ${fails.join("、")}`);
   if (logs.length) console.log("頁面訊息(節錄):\n" + logs.slice(0, 20).join("\n"));
   writeFileSync(join(OUT_DIR, "voxel-compass-qa.json"),
-    JSON.stringify({ fails, bearings, afterTurn, rowInfo, rowInfoAfterMove, landmarkInfo, pass }, null, 2));
+    JSON.stringify({ fails, bearings, afterTurn, rowInfo, rowInfoAfterMove, landmarkInfo, emptyResidentsInfo, pass }, null, 2));
 
   await browser.close();
   process.exit(pass ? 0 : 1);
