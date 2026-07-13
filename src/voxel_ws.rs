@@ -3922,10 +3922,12 @@ fn claim_blocking_owner(x: i32, z: i32, requester_key: Option<&str>) -> Option<S
     vlandclaim::resolve_claim_block(home_claims, requester_key).map(str::to_string)
 }
 
-/// 玩家個人領地保護 v1（review 第四輪修正，ROADMAP 963）：`Break`/`Place`/`SignSet` 之外，
-/// 凡是「直接改寫世界方塊」的入口（鋤地、倒水、種植、施肥……）都要走同一顆判定，否則保護
-/// 形同虛設——別人拿鋤頭/水桶就能繞過整套保護改你領地內的方塊。擋下時已送出 `claim_protected`
-/// 提示，呼叫端只需 `continue`；一律插在消耗任何材料之前，被擋不白扣料。
+/// 玩家個人領地保護 v1/v2（review 第四輪修正 + v2 箱子補洞，ROADMAP 963）：`Break`/`Place`/
+/// `SignSet` 之外，凡是「直接改寫世界方塊」的入口（鋤地、倒水、種植、施肥……）與「動你家
+/// 箱子內容」的入口（`ChestPut`/`ChestTake`）都要走同一顆判定，否則保護形同虛設——別人拿
+/// 鋤頭/水桶能繞過整套保護改你領地內的方塊、或直接搬空你家箱子。擋下時已送出
+/// `claim_protected` 提示，呼叫端只需 `continue`；一律插在消耗任何材料/搬動箱子物品之前，
+/// 被擋不白扣料。
 fn deny_if_claimed(
     x: i32,
     z: i32,
@@ -8938,6 +8940,12 @@ async fn handle_socket(
                 let target = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
                 if !matches!(target, Block::Chest) { continue; }
                 if !voxel::can_break(&hub().deltas.read().unwrap(), px, py, pz, x, y, z) { continue; }
+                // 玩家個人領地保護 v2（ROADMAP 963 缺口①，review 點名）：箱子放入/取出未走
+                // 領地判定——陌生人能直接搬空你家箱子，比拆牆更痛。與 Break/Place 等入口
+                // 共用同一顆 `deny_if_claimed`，插在動任何物品之前，被擋不白扣背包。
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
+                    continue;
+                }
                 let pos = vchest::pos_key(x, y, z);
                 // 1) 扣背包（inventory 寫鎖即釋）。
                 let taken = hub().inventory.write().unwrap().take(&name, item_id, count);
@@ -8975,6 +8983,11 @@ async fn handle_socket(
                 let target = voxel::effective_block_at(&hub().deltas.read().unwrap(), x, y, z);
                 if !matches!(target, Block::Chest) { continue; }
                 if !voxel::can_break(&hub().deltas.read().unwrap(), px, py, pz, x, y, z) { continue; }
+                // 玩家個人領地保護 v2（ROADMAP 963 缺口①，review 點名「比拆牆更痛」）：陌生人
+                // 不能再搬空你家箱子——與其餘「動方塊/箱子」入口共用同一顆判定。
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
+                    continue;
+                }
                 let pos = vchest::pos_key(x, y, z);
                 // 1) 從箱子取（chest 寫鎖即釋）。
                 let (actual, chest_e) = hub().chest.write().unwrap().take(&pos, item_id, count);
@@ -26347,9 +26360,10 @@ mod tests {
     }
 
     // ── 玩家個人領地保護（review 第四輪：驗證共用選點函式本身，不只驗證單一 handler）──
-    // `claim_blocking_owner` 是 Break/Place/SignSet/Plant/Fertilize/BucketFill/BucketPour
-    // 七個 handler 共用的唯一判定入口（deny_if_claimed 包一層送訊息）；直接測這顆函式即
-    // 涵蓋所有呼叫端的「該不該擋」決策，不必為每個 handler 各自搭一套 WS 整合測試。
+    // `claim_blocking_owner` 是 Break/Place/SignSet/Plant/Fertilize/BucketFill/BucketPour/
+    // ChestPut/ChestTake（v2，箱子補洞）九個 handler 共用的唯一判定入口（deny_if_claimed
+    // 包一層送訊息）；直接測這顆函式即涵蓋所有呼叫端的「該不該擋」決策，不必為每個
+    // handler 各自搭一套 WS 整合測試。
     // 座標挑遠離世界原點與其他任何測試會用到的角落，避免 hub() 全域單例跨測試撞座標。
     #[test]
     fn claim_blocking_owner_denies_stranger_and_allows_true_owner() {
