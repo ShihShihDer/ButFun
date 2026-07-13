@@ -20474,9 +20474,22 @@ fn tick_residents(dt: f32) {
             vbuild::append_world_block(gx, gy, gz, refill as u8);
         }
         // 入居民小背包（純記憶體）——採集產出的材料數量不變（回填不影響入袋）。
+        // 播種自給（第九刀）：草皮／泥土額外附贈一顆胡蘿蔔／馬鈴薯種子，比照玩家破壞同型
+        // 地表的既有掉落分潤（見 ClientMsg::Break 的 drops 表）——她第一次能自己攢下種子，
+        // 之後收成無門時就有本錢就地翻土播種（DoHarvest 分支）。
         {
             let mut inv = hub().res_inv.write().unwrap();
-            *inv.entry(rid.clone()).or_default().entry(res.block_id()).or_insert(0) += 1;
+            let bag = inv.entry(rid.clone()).or_default();
+            *bag.entry(res.block_id()).or_insert(0) += 1;
+            match res {
+                vskill::GatherResource::Grass => {
+                    *bag.entry(vfarm::CARROT_SEEDS_ID).or_insert(0) += 1;
+                }
+                vskill::GatherResource::Dirt => {
+                    *bag.entry(vfarm::POTATO_SEEDS_ID).or_insert(0) += 1;
+                }
+                _ => {}
+            }
         } // res_inv 寫鎖釋放
         // 里程碑 Feed（真實事件、低頻、不洗版）。
         vfeed::append_feed("採集", rname, &format!("採集了{}", res.display_name()));
@@ -23944,6 +23957,61 @@ fn advance_invent_run(
                     }
                 }
                 let Some((gx, gy, gz)) = found else {
+                    // 播種自給（第九刀）：附近／遠方都撞不到熟作物，若她手邊已攢有對應種子
+                    // （見採集分潤，只有胡蘿蔔／馬鈴薯支援）、附近又找得到可翻土的地表，就地
+                    // 翻土播種——這次嘗試仍誠實算失敗（種子還沒長熟，這輪領不到材料），但
+                    // 世界因此多了一畦她自己種下的田，下次冷卻後再試也許就已經熟了。
+                    if let (Some(seed_id), Some(till_block)) =
+                        (crop.seed_id(), crop.tillable_block())
+                    {
+                        let has_seed = {
+                            let inv = hub().res_inv.read().unwrap();
+                            inv.get(rid).and_then(|b| b.get(&seed_id)).copied().unwrap_or(0) > 0
+                        }; // res_inv 讀鎖釋放
+                        if has_seed {
+                            let spot = {
+                                let world = hub().deltas.read().unwrap();
+                                vinvent::tillable_ground_nearby(&world, rx, ry, rz, till_block)
+                            }; // deltas 讀鎖釋放
+                            if let Some((tx, ty, tz)) = spot {
+                                let consumed = {
+                                    let mut inv = hub().res_inv.write().unwrap();
+                                    vinvent::consume_seed(inv.entry(rid.to_string()).or_default(), seed_id)
+                                }; // res_inv 寫鎖釋放
+                                if consumed {
+                                    let seeded = crop.seeded_block();
+                                    {
+                                        let mut world = hub().deltas.write().unwrap();
+                                        voxel::set_block(&mut world, tx, ty, tz, seeded);
+                                    } // deltas 寫鎖釋放
+                                    broadcast_block(tx, ty, tz, seeded);
+                                    vbuild::append_world_block(tx, ty, tz, seeded as u8);
+                                    let farm_e = {
+                                        hub().farm.write().unwrap().plant(
+                                            tx, ty, tz, vfarm::now_secs(), crop.crop_kind(),
+                                        )
+                                    }; // farm 寫鎖釋放
+                                    vfarm::append_farm(&farm_e);
+                                    say_updates.push((
+                                        rid.to_string(),
+                                        vinvent::planted_seed_line(crop.display_name()),
+                                    ));
+                                    vfeed::append_feed(
+                                        "播種自給",
+                                        rname,
+                                        &vinvent::planted_seed_feed(&run.goal_name, crop.display_name()),
+                                    );
+                                    // 審查點名（PR#1236）：同一 run 只准播一畦——播完直接收尾這次嘗試
+                                    // （誠實算失敗，種子還沒長熟），不把 run 放回去讓下一 tick 繼續掃、
+                                    // 靠「種子用光」當停止條件——分潤採集隨手就能攢到幾十顆種子，
+                                    // 會在一個 run 內（最長 480 秒、每 8 秒一輪）連續鋪出幾十畦田、
+                                    // 洗版幾十則 Feed（同 demolish churn 那次「缺收斂守衛」的老雷）。
+                                    finish_invent_run(rid, rname, run, false, say_updates);
+                                    return; // 種下去了；下次心願冷卻後重新起 run 再試。
+                                }
+                            }
+                        }
+                    }
                     vfeed::append_feed(
                         "收成受阻",
                         rname,
