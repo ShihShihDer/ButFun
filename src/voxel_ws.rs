@@ -2206,6 +2206,10 @@ struct VoxelHub {
     /// 待確認的交易提案（純記憶體，無需持久化）。
     /// 鍵=居民 id，值=(提案, 到期 unix 秒)；居民同時只對一個提案；30 秒內未接受自動過期。
     pending_trades: RwLock<HashMap<String, (TradeOffer, u64)>>,
+    /// 供需驅動漲價 v1（自主提案切片，ROADMAP 958）：最近付幣買走各物品的次數。
+    /// 純記憶體（比照 `pending_trades` 世界暫態慣例，重啟即清空、零 migration）；
+    /// 每次成功「付幣」成交記一次熱度，背景 15 秒 tick 讓熱度慢慢退燒。
+    coin_demand: RwLock<vtrade::CoinDemandTracker>,
     /// 垂釣 v1（ROADMAP 734）：玩家進行中的拋竿（純記憶體，無需持久化，重啟即散）。
     /// 鍵=玩家 id，值=(上鉤 unix 秒, 水體 x, y, z)；一人同時只掛一竿；收竿或斷線清除。
     pending_fish: RwLock<HashMap<String, (u64, i32, i32, i32)>>,
@@ -3102,6 +3106,7 @@ fn hub() -> &'static VoxelHub {
             last_phase: std::sync::Mutex::new(TimePhase::Day),
             // 居民交易 v1：純記憶體，重啟清空（提案是即時的，無需持久化）。
             pending_trades: RwLock::new(HashMap::new()),
+            coin_demand: RwLock::new(vtrade::CoinDemandTracker::new()),
             // 垂釣 v1（ROADMAP 734）：進行中的拋竿純記憶體，重啟清空。
             pending_fish: RwLock::new(HashMap::new()),
             // 居民情誼 v1（ROADMAP 672）：啟動時從 data/voxel_bonds.jsonl 載回情誼記錄。
@@ -8466,8 +8471,10 @@ async fn handle_socket(
                 let affinity = {
                     hub().memory.read().unwrap().affinity_count(&name, &resident_id)
                 };
-                // 5) 生成交易提案（確定性純函式，無鎖）。
-                let offer = vtrade::make_offer(&resident_id, affinity);
+                // 5) 生成交易提案（確定性純函式，無鎖）：供需 v1（ROADMAP 958）先短鎖
+                // clone 一份 coin_demand 快照（coin_demand 讀鎖即釋），再無鎖呼叫。
+                let demand_snapshot = hub().coin_demand.read().unwrap().clone();
+                let offer = vtrade::make_offer(&resident_id, affinity, &demand_snapshot);
                 let oname = vtrade::item_name_zh(offer.offer_item);
                 let wname = vtrade::item_name_zh(offer.want_item);
                 let say = vtrade::offer_say_line(&offer);
@@ -8574,6 +8581,10 @@ async fn handle_socket(
                     continue;
                 };
                 vinv::append_inv(&taken_entry);
+                // 供需 v1（ROADMAP 958）：真的付幣成交才記一次搶購熱度（以物易物不動幣，不計）。
+                if pay_with_coin {
+                    hub().coin_demand.write().unwrap().record_purchase(offer.offer_item);
+                }
                 // 7) 給玩家 offer_item × offer_count（inventory 寫鎖即釋）。
                 let give_entry = {
                     hub().inventory.write().unwrap()
@@ -10686,6 +10697,7 @@ pub fn spawn_farm_tick() {
     tokio::spawn(async move {
         let _ = hub(); // 觸發 hub 初始化
         let mut ticker = tokio::time::interval(Duration::from_secs(15));
+        let mut coin_demand_ticks: u32 = 0; // 供需驅動漲價 v1（ROADMAP 958）：decay_all 別跟著這條 15 秒節拍等頻退燒，見 DEMAND_DECAY_EVERY_N_TICKS。
         loop {
             ticker.tick().await;
             tick_farm();
@@ -10710,6 +10722,13 @@ pub fn spawn_farm_tick() {
             maybe_build_lovenest(); // 戀人愛巢 v1：低頻檢查有無戀人對還沒築巢、擲中就在村邊合力蓋起共同的家。
             tick_dropitem_expire(); // 掉落物 v1（自主提案切片 828）：同節拍清掉沒人撿的過期掉落物。
             tick_stall_expire(); // 玩家自由市集 v1（自主提案切片 832）：同節拍清掉逾時沒人接手的攤位、退還材料。
+            // 供需驅動漲價 v1（ROADMAP 958）：每 DEMAND_DECAY_EVERY_N_TICKS 個節拍才退燒一次
+            // （review 撞見的落地雷：每 15 秒就退燒的話熱度攢不起來，見常數上的說明），讓搶購
+            // 熱度撐到分鐘級才慢慢回落，玩家連買幾次真的看得到漲價、下次回來也還感覺得到。
+            coin_demand_ticks += 1;
+            if coin_demand_ticks % vtrade::DEMAND_DECAY_EVERY_N_TICKS == 0 {
+                hub().coin_demand.write().unwrap().decay_all();
+            }
         }
     });
     spawn_water_tick();
