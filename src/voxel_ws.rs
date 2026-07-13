@@ -192,6 +192,7 @@ use crate::voxel_pathwear as vpath;
 use crate::voxel_expedition as vexp;
 use crate::voxel_frontier_visit as vfvisit;
 use crate::voxel_farvisit as vfarv;
+use crate::voxel_caravan as vcaravan;
 use crate::voxel_onboard as vonboard;
 use crate::voxel_sendoff as vsend;
 use crate::voxel_illness as villness;
@@ -786,6 +787,18 @@ struct VoxelResident {
     /// 跨村探親冷卻倒數（秒）：一趟探親（重逢／撲空／折返）後設定——成行已由念叨計數天然稀有，
     /// 這裡再兜一層底。
     far_visit_cooldown: f32,
+    /// 跨村商隊 v1（ROADMAP 950，`voxel_caravan`）：Some(目的地 x, z, 目的地聚落名, 目的地聚落 id,
+    /// 帶去的特產物品 id, 換回的特產物品 id) ＝正走在前往另一座聚落做生意的遠路上／已抵達交易；
+    /// None＝沒在跑商隊。觸發不吃好感度門檻——只看「世界有沒有另一座聚落」，是第一個跨聚落但
+    /// 無關交情的互動。兩樣物品在動身那一刻就決定好（確定性），抵達直接兌現，不必再找交易對象。
+    /// 純記憶體、重啟歸零（這趟商隊自然作罷、居民照常回家域）。
+    caravan: Option<(f32, f32, String, u64, u8, u8)>,
+    /// 商隊抵達後的交易/逗留倒數（秒）：> 0＝已抵達、正在交易，到 0 即帶著換來的貨踏上歸途。
+    caravan_stay: f32,
+    /// 商隊去程逾時倒數（秒）：路太遠太難走（地形繞行）就折返，不無限跋涉。
+    caravan_timer: f32,
+    /// 商隊冷卻倒數（秒）：一趟商隊（成交／折返）後設定，讓「跑一趟商隊」稀有而有份量。
+    caravan_cooldown: f32,
     /// 病況（居民也會生病 v1，ROADMAP 自主提案）：0.0=健康、[`villness::ILLNESS_MAX`]=剛病倒。
     /// 隨伺服器 tick 自然消退（[`villness::tick_recover`]）；鄰居陪伴／玩家送湯會加速消退。
     /// 純記憶體、重啟歸零（生病是數分鐘的過場狀態，零資料風險、零 migration）。
@@ -2078,6 +2091,11 @@ fn build_resident(
             far_visit_stay: 0.0,
             far_visit_timer: 0.0,
             far_visit_cooldown: 0.0,
+            // 跨村商隊 v1（950）：入場沒在跑商隊；首次冷卻各自大幅錯開，避免啟動後一群居民同時出發。
+            caravan: None,
+            caravan_stay: 0.0,
+            caravan_timer: 0.0,
+            caravan_cooldown: vcaravan::COOLDOWN_SECS * 0.5 + i as f32 * 300.0,
             // 居民也會生病 v1（自主提案）：入場健康；首次發病冷卻各自大幅錯開，
             // 避免啟動後短時間全員扎堆病倒。
             illness_severity: 0.0,
@@ -9926,7 +9944,8 @@ fn tick_farbond() {
                     && r.frontier_visit.is_none()
                     && r.far_visit.is_none()
                     && r.stroll_partner.is_none()
-                    && r.walk_with.is_none();
+                    && r.walk_with.is_none()
+                    && r.caravan.is_none();
                 if vfarv::should_embark(miss_count, r.far_visit_cooldown, idle_free, r.asleep) {
                     r.far_visit =
                         Some((friend_x, friend_z, place.clone(), friend_name.clone()));
@@ -12574,6 +12593,7 @@ fn maybe_wedding() {
             && r.fetch.is_none()
             && r.frontier_visit.is_none()
             && r.far_visit.is_none()
+            && r.caravan.is_none()
             && r.cheer_target.is_none()
     };
     // chosen = (id_a, name_a, id_b, name_b, mid_x, mid_z)
@@ -14410,6 +14430,27 @@ fn tick_residents(dt: f32) {
             .collect()
     }; // desires 讀鎖在此釋放
 
+    // 跨村商隊 v1（ROADMAP 950，`voxel_caravan`）：下面居民寫鎖迴圈內要用到的殖民地名冊／
+    // 居民聚落歸屬，全部**先在居民寫鎖之外**快照好（守循序不巢狀鐵律，比照上方 desire_snaps）——
+    // colonies/settlements 各自短讀鎖即釋，迴圈內只讀這兩份快照，不重入鎖。
+    let colonies_snap: Vec<(u64, String, i32, i32)> = {
+        hub().colonies.read().unwrap().all().iter().map(|c| (c.seq, c.name.clone(), c.cx, c.cz)).collect()
+    }; // colonies 讀鎖釋放
+    let settlement_snap: HashMap<String, u64> = {
+        let st = hub().settlements.read().unwrap();
+        (0..resident_count())
+            .map(|i| {
+                let id = format!("vox_res_{i}");
+                let sid = st.settlement_of(&id);
+                (id, sid)
+            })
+            .collect()
+    }; // settlements 讀鎖釋放
+    // 主村中心（商隊從殖民地返程時的目的地座標）；缺就退保底 None（該輪殖民地居民暫無法出隊，
+    // 世界站穩腳跟後自然恢復——零 panic、零硬編座標）。
+    let main_village_center: Option<(f32, f32)> =
+        vvillage::load_village_center().map(|(x, z)| (x as f32, z as f32));
+
     // 社交事件（鎖內收集，鎖外落地記憶）。
     // 格式：(initiator_id, initiator_name, target_id, target_name, line, is_response)
     // is_response=false → 發起對話；is_response=true → 回應對話。
@@ -14441,6 +14482,10 @@ fn tick_residents(dt: f32) {
     // 遠行探野 Feed（遠行探野 v1，ROADMAP 756）：鎖內收集「某居民啟程遠行／遠行歸來」事件，
     // 鎖釋放後統一 append_feed（不在持居民鎖時做 IO）。(居民名, 播報詳情)。
     let mut expedition_feed: Vec<(&'static str, String)> = Vec::new();
+    // 跨村商隊 v1（ROADMAP 950，`voxel_caravan`）：鎖內收集「某居民啟程跑商隊／抵達成交／
+    // 帶貨歸途／半路折返」事件，鎖釋放後統一 append_feed（不在持居民鎖時做 IO）。
+    // (居民名, 播報詳情)。
+    let mut caravan_feed: Vec<(&'static str, String)> = Vec::new();
     // 遠行送行 v1（ROADMAP 902）：啟程那刻收集 (送行者 id, 送行者名, 遠行夥伴名, 方位)，
     // residents 寫鎖釋放後鎖外統一落地（memory 寫＋bonds 往來＋Feed，守死鎖鐵律）。
     let mut sendoff_events: Vec<(String, &'static str, &'static str, String)> = Vec::new();
@@ -16674,6 +16719,7 @@ fn tick_residents(dt: f32) {
                     && r.daybreak_seek.is_none()
                     && r.reunion_seek.is_none()
                     && r.expedition.is_none()
+                    && r.caravan.is_none()
                     && !r.asleep;
                 if vreadsign::should_pilgrimage(
                     r.cherished_sign.is_some(),
@@ -17045,6 +17091,7 @@ fn tick_residents(dt: f32) {
                     && r.pilgrimage.is_none()
                     && r.daybreak_seek.is_none()
                     && r.reunion_seek.is_none()
+                    && r.caravan.is_none()
                     && !r.asleep;
                 if vexp::should_embark(
                     motive.is_some(),
@@ -17109,6 +17156,126 @@ fn tick_residents(dt: f32) {
                             sender_name,
                             traveler_name,
                             bearing.to_string(),
+                        ));
+                    }
+                }
+            }
+
+            // ── 跨村商隊 v1（ROADMAP 950·PLAN_ETHERVOX item 7「居民散佈世界各處住」缺席的
+            //    「經濟」那一角）────────────────────────────────────────────────────
+            // 殖民地真居住（943）／兩村相思（945）／跨村探親（947）讓兩座聚落有了人與情感的
+            // 來往，物資卻至今從沒流通過——商隊不吃好感度門檻，只看「世界有沒有另一座聚落」，
+            // 帶著自己的特產長途跋涉去做一趟生意再歸來。鎖序：colonies/settlements 已在居民
+            // 寫鎖外快照（colonies_snap/settlement_snap/main_village_center），此處只讀快照、
+            // 不重入鎖；memory 短寫即釋，Feed 走鎖外 caravan_feed，不巢狀、不持鎖 await（守死鎖鐵律）。
+            if r.caravan_cooldown > 0.0 {
+                r.caravan_cooldown -= dt;
+            }
+            if let Some((tx, tz, dest, _dest_id, gave_item, got_item)) = r.caravan.clone() {
+                if r.caravan_stay > 0.0 {
+                    // 已抵達、正在交易：倒數，歸零即帶著換來的貨踏上歸途——清空狀態交回一般
+                    // wander（此刻遠在家域外，`wander_center` 會把牠一路帶回家，不必顯式返程腿）。
+                    r.caravan_stay -= dt;
+                    if r.caravan_stay <= 0.0 {
+                        r.caravan = None;
+                        r.caravan_cooldown = vcaravan::COOLDOWN_SECS;
+                        let got_name = vtrade::item_name_zh(got_item);
+                        caravan_feed
+                            .push((r.name, vcaravan::depart_home_feed_line(r.name, &dest, got_name)));
+                    }
+                } else {
+                    // 去程：持續朝目的地聚落走。
+                    r.target_x = tx;
+                    r.target_z = tz;
+                    r.wait_timer = 0.0;
+                    let dx = r.body.x - tx;
+                    let dz = r.body.z - tz;
+                    let arrived = dx * dx + dz * dz < vcaravan::ARRIVE_DIST * vcaravan::ARRIVE_DIST;
+                    if arrived {
+                        // 抵達且沒在說別的話：成交——兩樣物品早在動身那一刻就決定好（確定性），
+                        // 這裡直接兌現，不必再找交易對象。
+                        if r.say.is_empty() {
+                            r.caravan_stay = vcaravan::STAY_SECS;
+                            let gave_name = vtrade::item_name_zh(gave_item);
+                            let got_name = vtrade::item_name_zh(got_item);
+                            let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                            r.say = vcaravan::arrive_bubble(got_name, pick);
+                            r.say_timer = SAY_SECS;
+                            let summary = vcaravan::memory_line(&dest, gave_name, got_name);
+                            let entry = hub().memory.write().unwrap().add_memory(
+                                &r.id,
+                                vcaravan::CARAVAN_MEMORY_PLAYER,
+                                &summary,
+                            );
+                            pending_io.push_mem(entry); // IO 延後到鎖外 flush（M10）
+                            caravan_feed.push((
+                                r.name,
+                                vcaravan::arrive_feed_line(r.name, &dest, gave_name, got_name),
+                            ));
+                        }
+                    } else {
+                        // 還在路上：遞減去程逾時；走太久（地形擋路等）沒到就放棄這趟商隊、
+                        // 清空並設冷卻（交回一般 wander 帶牠回家）。
+                        r.caravan_timer -= dt;
+                        if r.caravan_timer <= 0.0 {
+                            r.caravan = None;
+                            r.caravan_cooldown = vcaravan::COOLDOWN_SECS;
+                            caravan_feed.push((r.name, vcaravan::giveup_feed_line(r.name, &dest)));
+                        }
+                    }
+                }
+            } else {
+                // 尚未跑商隊：閒置自由＝沒在採集/跑腿/探訪/打氣/尋伴/聚會/跟隨/發明/朝聖/
+                // 思念/遠行/探友/漫步（不搶正事）+ 醒著 + 冷卻到 + 沒在說話 + 世界確實有另一座
+                // 聚落可去 + 過機率門檻 → 啟程。
+                let idle_free = r.gather.is_none()
+                    && r.fetch.is_none()
+                    && r.visiting.is_none()
+                    && r.cheer_target.is_none()
+                    && !r.seeking_comfort
+                    && r.clique_meet.is_none()
+                    && r.follow.is_none()
+                    && r.invent_run.is_none()
+                    && r.pilgrimage.is_none()
+                    && r.daybreak_seek.is_none()
+                    && r.reunion_seek.is_none()
+                    && r.expedition.is_none()
+                    && r.frontier_visit.is_none()
+                    && r.far_visit.is_none()
+                    && r.stroll_partner.is_none()
+                    && r.walk_with.is_none();
+                let sid = settlement_snap.get(&r.id).copied().unwrap_or(vsettle::MAIN_SETTLEMENT);
+                // 目的地：主村居民挑最早奠基的殖民地；殖民地居民回主村（v1 只走這兩種方向，
+                // 殖民地互跑留給未來一刀）。世界還沒有第二座聚落／查不到主村中心 → 無處可去。
+                let dest = if sid == vsettle::MAIN_SETTLEMENT {
+                    vcaravan::pick_colony_destination(&colonies_snap)
+                } else {
+                    main_village_center
+                        .map(|(mx, mz)| (mx, mz, "主村".to_string(), vsettle::MAIN_SETTLEMENT))
+                };
+                if let Some((dx, dz, dest_name, dest_id)) = dest {
+                    if vcaravan::should_embark(
+                        idle_free,
+                        r.asleep,
+                        r.caravan_cooldown,
+                        r.say.is_empty(),
+                        rand::random::<f32>(),
+                    ) {
+                        let gave_item = vrtrade::specialty_item(&r.id);
+                        let got_item = vcaravan::settlement_specialty_item(&dest_name, gave_item);
+                        r.caravan = Some((dx, dz, dest_name.clone(), dest_id, gave_item, got_item));
+                        r.caravan_stay = 0.0;
+                        r.caravan_timer = vcaravan::TIMEOUT_SECS;
+                        r.target_x = dx;
+                        r.target_z = dz;
+                        r.wait_timer = 0.0;
+                        let gave_name = vtrade::item_name_zh(gave_item);
+                        let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                        r.say = vcaravan::depart_bubble(&dest_name, pick);
+                        r.say_timer = SAY_SECS;
+                        caravan_feed.push((
+                            r.name,
+                            vcaravan::depart_feed_line(r.name, &dest_name, gave_name),
                         ));
                     }
                 }
@@ -17193,6 +17360,7 @@ fn tick_residents(dt: f32) {
                     && r.daybreak_seek.is_none()
                     && r.reunion_seek.is_none()
                     && r.far_visit.is_none()
+                    && r.caravan.is_none()
                     && !r.asleep;
                 if town_bound && idle_free && r.say.is_empty() && r.frontier_visit_cooldown <= 0.0 {
                     // 挑第一位交情達老朋友、此刻確實在邊陲的朋友（本世界僅 4 位居民，遍歷成本可忽略）。
@@ -18454,6 +18622,7 @@ fn tick_residents(dt: f32) {
                         && r.clique_meet.is_none()
                         && r.frontier_visit.is_none()
                         && r.far_visit.is_none()
+                        && r.caravan.is_none()
                         && vr::should_shelter(is_night, raining, house_locations.contains_key(&r.id));
                     // 探訪中：以目的地為閒晃中心（讓居民在鄰居家附近自然走動）；
                     // 遠行逗留中（ROADMAP 756）：以邊陲落點為中心，讓牠在遠方一小片範圍自然走動、不被拉回家；
@@ -18482,6 +18651,10 @@ fn tick_residents(dt: f32) {
                         // 相思成行·跨村探親（ROADMAP 947）：去程以目的地（摯友的村）為閒晃中心一路走去；
                         // 重逢小聚時就在摯友身邊一小片範圍走動——不被夜間／下雨拉回幾百格外自己的家。
                         (*fx, *fz)
+                    } else if let Some((tx, tz, _, _, _, _)) = &r.caravan {
+                        // 跨村商隊（ROADMAP 950）：去程與逗留交易皆以目的地聚落中心為閒晃中心，
+                        // 不被夜間／下雨拉回幾百格外自己的家——她是真的在那座村子裡做生意。
+                        (*tx, *tz)
                     } else if let Some((lead_name, _)) = &r.stroll_partner {
                         // 摯友結伴同行（ROADMAP 925）：follower 以 leader「此刻的位置」為閒晃中心，
                         // 貼著他並肩漫步（leader 在動就步步跟上）；查不到就退回自己家域（容錯不 panic）。
@@ -18523,6 +18696,9 @@ fn tick_residents(dt: f32) {
                     } else if r.far_visit.is_some() {
                         // 跨村探親：與邊陲探友同量級的小半徑，重逢時兩人聚在村口一小片範圍。
                         vfarv::WANDER_RADIUS
+                    } else if r.caravan.is_some() {
+                        // 跨村商隊：與跨村探親同量級的小半徑，做生意的居民貼著目的地聚落廣場走動。
+                        vcaravan::WANDER_RADIUS
                     } else if r.stroll_partner.is_some() {
                         // 結伴同行：小半徑，貼著 leader 並肩、不散開（ROADMAP 925）。
                         vstroll::STROLL_WANDER_RADIUS
@@ -19428,6 +19604,7 @@ fn tick_residents(dt: f32) {
                     && r.expedition.is_none()
                     && r.frontier_visit.is_none()
                     && r.far_visit.is_none()
+                    && r.caravan.is_none()
                     && r.follow.is_none()
                     && r.summon.is_none()
                     && r.gather.is_none()
@@ -19627,6 +19804,7 @@ fn tick_residents(dt: f32) {
                             && r.expedition.is_none()
                             && r.frontier_visit.is_none()
                             && r.far_visit.is_none()
+                            && r.caravan.is_none()
                             && r.follow.is_none()
                             && r.summon.is_none()
                             && r.gather.is_none()
@@ -20698,6 +20876,12 @@ fn tick_residents(dt: f32) {
     // 讓沒在現場的玩家也讀得到「居民的足跡散進了荒野」——世界不再只圍著主城打轉。
     for (rname, detail) in &expedition_feed {
         vfeed::append_feed("遠行", rname, detail);
+    }
+
+    // 跨村商隊 v1（ROADMAP 950）：某居民啟程跑商隊／抵達成交／帶貨歸途／半路折返時記一筆
+    // 動態，讓沒在現場的玩家也讀得到「兩座聚落第一次有貨物流通」。
+    for (rname, detail) in &caravan_feed {
+        vfeed::append_feed("商隊", rname, detail);
     }
 
     // 遠行送行 v1（ROADMAP 902）落地：鎖已全釋；送行者把「今天為夥伴送行」記進心裡（episodic，
