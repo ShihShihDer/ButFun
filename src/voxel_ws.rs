@@ -3961,6 +3961,15 @@ fn claim_blocking_owner(
     vlandclaim::resolve_claim_block(home_claims, requester_key).map(str::to_string)
 }
 
+/// 居民尊重玩家領地 v1（ROADMAP 969，接續 963~967 玩家個人領地保護）：AI 居民（發明引擎的
+/// 自動收成／播種）挑中的世界座標若落在別人已宣告的「家」領地內，這格就不准碰。居民永遠
+/// 不是帳號、也永遠不吃信任通行證（`requester_key=None`、`allow_trust=false`）——與訪客
+/// 玩家踩進別人領地被擋下走的是同一套 `claim_blocking_owner` 判定，不另開一條規則，也不
+/// 讓「AI 幫我做事」變成繞過領地保護的後門。
+fn resident_may_touch(x: i32, z: i32) -> bool {
+    claim_blocking_owner(x, z, None, false).is_none()
+}
+
 /// 玩家個人領地保護 v1/v2（review 第四輪修正 + v2 箱子補洞，ROADMAP 963）：`Break`/`Place`/
 /// `SignSet` 之外，凡是「直接改寫世界方塊」的入口（鋤地、倒水、種植、施肥……）與「動你家
 /// 箱子內容」的入口（`ChestPut`/`ChestTake`）都要走同一顆判定，否則保護形同虛設——別人拿
@@ -24954,17 +24963,21 @@ fn advance_invent_run(
                 // 收成（第七刀）：世界前提——附近真的有一畦這種作物熟了。
                 // 第八刀·移動去資源：鄰近檢查沒有 → 螺旋遠找同一種熟作物，找到就走過去再重試，
                 // 真的四下無熟田才誠實失敗（不隔空收成、也不替她播種、不無止盡漫遊）。
+                // 居民尊重玩家領地 v1（ROADMAP 969）：挑中的座標若落在別人領地內，一律當沒找到
+                // ——她不偷別人辛苦種的作物，也不擅自闖進去翻土播種（見下方 `spot` 同款過濾）。
                 let found = {
                     let world = hub().deltas.read().unwrap();
                     vinvent::ripe_crop_nearby(&world, rx, ry, rz, crop.mature_block())
-                }; // deltas 讀鎖釋放
+                } // deltas 讀鎖釋放
+                .filter(|&(x, _, z)| resident_may_touch(x, z));
                 if found.is_none() {
                     let far = {
                         let world = hub().deltas.read().unwrap();
                         vinvent::find_ripe_crop_far(
                             &world, rx, ry, rz, vinvent::INVENT_GATHER_RADIUS, crop.mature_block(),
                         )
-                    }; // deltas 讀鎖釋放
+                    } // deltas 讀鎖釋放
+                    .filter(|&(x, _, z)| resident_may_touch(x, z));
                     if let Some((tx, ty, tz)) = far {
                         let mut residents = hub().residents.write().unwrap();
                         if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
@@ -24993,7 +25006,8 @@ fn advance_invent_run(
                             let spot = {
                                 let world = hub().deltas.read().unwrap();
                                 vinvent::tillable_ground_nearby(&world, rx, ry, rz, till_block)
-                            }; // deltas 讀鎖釋放
+                            } // deltas 讀鎖釋放
+                            .filter(|&(x, _, z)| resident_may_touch(x, z));
                             if let Some((tx, ty, tz)) = spot {
                                 let consumed = {
                                     let mut inv = hub().res_inv.write().unwrap();
@@ -26613,6 +26627,33 @@ mod tests {
         );
         // 本人任何情況都放行。
         assert_eq!(claim_blocking_owner(x, z, Some("axing@example.com"), false), None);
+    }
+
+    // ── 居民尊重玩家領地（ROADMAP 969，接續 963~967）─────────────────────────────
+    // `resident_may_touch` 是發明引擎收成／播種挑點的唯一過濾入口；直接測這顆函式即涵蓋
+    // `DoHarvest` 三處呼叫端（`found`/`far`/`spot`）的「該不該碰」決策，比照 963 review
+    // 「測共用判定本身、不必為每個呼叫端各搭一套整合測試」的既有精神。
+    #[test]
+    fn resident_may_touch_denies_inside_claim_and_allows_outside() {
+        let x = -765_432;
+        let z = -345_678;
+        {
+            let mut store = hub().sign.write().unwrap();
+            store.set(
+                &vsign::pos_key(x, 64, z),
+                "諾娃的家".to_string(),
+                Some("諾娃".to_string()),
+                Some("nova@example.com".to_string()),
+            );
+        } // sign 寫鎖釋放
+
+        // 領地內：即使被信任名單放行也一樣（resident_may_touch 固定 allow_trust=false）。
+        assert!(!resident_may_touch(x, z), "居民不准碰別人領地內的座標");
+        // 遠離這塊領地：不受影響，正常放行。
+        assert!(
+            resident_may_touch(x + 10_000, z + 10_000),
+            "領地半徑外的座標不該被誤擋"
+        );
     }
 
     #[test]
