@@ -3931,10 +3931,19 @@ fn player_pos(id: Uuid) -> Option<(f32, f32, f32)> {
 /// (x, z) 該不該被別人的領地擋下——`Break`/`Place`/`SignSet`/`ChestPut`/…… 共用同一顆判定，
 /// 掃過半徑內**所有**「家」牌（不只最近一塊，修相鄰立牌切走別人領地一角的漏洞），歸屬比對
 /// 一律走穩定帳號鍵 `owner_key`（email，改名不變、無法偽造），不再信可被改寫的顯示名。
-/// 擋下時回傳領地主人的顯示名供組提示句；無主／範圍內無家牌／我自己的領地／我被領地主人
-/// 加進信任名單（見 `landclaim_trust`）一律放行（`None`）。sign／landclaim_trust 讀鎖各自
+/// 擋下時回傳領地主人的顯示名供組提示句；無主／範圍內無家牌／我自己的領地一律放行（`None`）。
+///
+/// `allow_trust=true` 時，我被領地主人加進信任名單（見 `landclaim_trust`）也放行——一般
+/// 「動地／動箱子」入口都吃信任通行證。`allow_trust=false`（ROADMAP 967）時信任一律不算數、
+/// 只有本人放行——立牌／拆牌這個動作專用：信任讓朋友能開你家箱子、動你家的地，但不該讓他
+/// 動得了你的「家」牌本身（見 `SignSet`／`Break` 呼叫端）。sign／landclaim_trust 讀鎖各自
 /// 短取即釋，不巢狀。
-fn claim_blocking_owner(x: i32, z: i32, requester_key: Option<&str>) -> Option<String> {
+fn claim_blocking_owner(
+    x: i32,
+    z: i32,
+    requester_key: Option<&str>,
+    allow_trust: bool,
+) -> Option<String> {
     let hits = hub().sign.read().unwrap()
         .all_within_xz(x as f32 + 0.5, z as f32 + 0.5, vlandclaim::CLAIM_RADIUS);
     let trust = hub().landclaim_trust.read().unwrap();
@@ -3942,10 +3951,11 @@ fn claim_blocking_owner(x: i32, z: i32, requester_key: Option<&str>) -> Option<S
         .iter()
         .filter(|h| vlandclaim::is_home_sign(&h.text))
         .map(|h| {
-            let trusted = match (h.owner_key.as_deref(), requester_key) {
-                (Some(owner_key), Some(rk)) => trust.is_trusted(owner_key, rk),
-                _ => false,
-            };
+            let trusted = allow_trust
+                && match (h.owner_key.as_deref(), requester_key) {
+                    (Some(owner_key), Some(rk)) => trust.is_trusted(owner_key, rk),
+                    _ => false,
+                };
             (h.owner.as_deref().unwrap_or(""), h.owner_key.as_deref(), trusted)
         });
     vlandclaim::resolve_claim_block(home_claims, requester_key).map(str::to_string)
@@ -3956,16 +3966,18 @@ fn claim_blocking_owner(x: i32, z: i32, requester_key: Option<&str>) -> Option<S
 /// 箱子內容」的入口（`ChestPut`/`ChestTake`）都要走同一顆判定，否則保護形同虛設——別人拿
 /// 鋤頭/水桶能繞過整套保護改你領地內的方塊、或直接搬空你家箱子。擋下時已送出
 /// `claim_protected` 提示，呼叫端只需 `continue`；一律插在消耗任何材料/搬動箱子物品之前，
-/// 被擋不白扣料。
+/// 被擋不白扣料。`allow_trust` 見 [`claim_blocking_owner`]（一般入口傳 `true`；立牌／拆牌
+/// 家牌本身的呼叫端傳 `false`，見 ROADMAP 967）。
 fn deny_if_claimed(
     x: i32,
     z: i32,
     is_account: bool,
     account_email: Option<&str>,
     out_tx: &mpsc::Sender<Message>,
+    allow_trust: bool,
 ) -> bool {
     let requester_key = if is_account { account_email } else { None };
-    if let Some(owner) = claim_blocking_owner(x, z, requester_key) {
+    if let Some(owner) = claim_blocking_owner(x, z, requester_key, allow_trust) {
         let _ = out_tx.try_send(Message::Text(
             serde_json::json!({
                 "t": "claim_protected",
@@ -5088,7 +5100,10 @@ async fn handle_socket(
                 // 玩家個人領地保護 v1（ROADMAP 963，review 修正：歸屬走穩定帳號鍵、掃全部
                 // 家牌不只最近一塊）：目標格若落在別人的領地內，只有立牌本人能動——別人的
                 // 鎬子在這裡溫柔地伸不進來（sign 讀鎖即釋，不與後續 delta 鎖巢狀）。
-                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
+                // 立牌／拆牌不吃信任通行證（ROADMAP 967）：拆的是「家」牌本身時，信任名單
+                // 不算數——被信任者能開你家箱子、動你家的地，但不該一鎬拆掉你的領地牌本身。
+                let allow_trust_here = !matches!(target_block, Block::Sign);
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx, allow_trust_here) {
                     continue;
                 }
                 // delta 寫鎖：驗證 + 設為空氣（循序取放，不嵌套）。
@@ -5547,7 +5562,7 @@ async fn handle_socket(
                 // 家牌不只最近一塊）：目標格若落在別人的領地內，只有立牌本人能放——在消耗任何
                 // 材料之前先擋，別人白挨一句提示、不掉材料（sign 讀鎖即釋，不與後續
                 // inventory/delta 鎖巢狀）。
-                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx, true) {
                     continue;
                 }
                 // 植樹造林 v1（ROADMAP 738）：樹苗只能種在「土地」上（草/土/沙/雪/農田土），
@@ -7157,7 +7172,7 @@ async fn handle_socket(
                 }
                 // 玩家個人領地保護 v1（review 第四輪修正，ROADMAP 963）：別人領地內的農田土
                 // 不准種——堵住「拿種子繞過 Place/Break 保護，直接在別人領地裡種東西」的漏洞。
-                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx, true) {
                     continue;
                 }
                 // 確認目標方塊是農田土(11)。
@@ -7291,7 +7306,7 @@ async fn handle_socket(
                 }
                 // 玩家個人領地保護 v1（review 第四輪修正，ROADMAP 963）：別人領地內的幼苗
                 // 不准施肥——堵住繞過 Place/Break 保護、直接動別人領地內方塊的漏洞。
-                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx, true) {
                     continue;
                 }
                 // 目標方塊必須是「還在長的幼苗」——後端權威判定（前端不自報合法性·濫用防護）。
@@ -7371,7 +7386,7 @@ async fn handle_socket(
                 }
                 // 玩家個人領地保護 v1（review 第四輪修正順手補上，ROADMAP 963）：舀水也是
                 // 把方塊變空氣——跟 Break 同一類改寫，別人領地內的水源不准舀走。
-                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx, true) {
                     continue;
                 }
                 // 目標必須是來源水——後端權威判定（前端不自報合法性·濫用防護）。
@@ -7446,7 +7461,7 @@ async fn handle_socket(
                 }
                 // 玩家個人領地保護 v1（review 第四輪修正，ROADMAP 963）：別人領地內不准倒水
                 // ——堵住陌生人拿水桶繞過 Place/Break 保護、在你家客廳倒水的漏洞。
-                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx, true) {
                     continue;
                 }
                 // 目標必須可倒（空氣或流動水；實心擋水、既有源不必重放·後端權威判定）。
@@ -7522,7 +7537,7 @@ async fn handle_socket(
                 }
                 // 玩家個人領地保護 v1（review 第四輪修正，ROADMAP 963）：別人領地內不准鋤地
                 // ——堵住陌生人拿鋤頭繞過 Place/Break 保護、把你家客廳地板鋤成農田土的漏洞。
-                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx, true) {
                     continue;
                 }
                 // 目標必須是草地或泥土——後端權威判定（前端不自報合法性·濫用防護）。
@@ -8972,7 +8987,7 @@ async fn handle_socket(
                 // 玩家個人領地保護 v2（ROADMAP 963 缺口①，review 點名）：箱子放入/取出未走
                 // 領地判定——陌生人能直接搬空你家箱子，比拆牆更痛。與 Break/Place 等入口
                 // 共用同一顆 `deny_if_claimed`，插在動任何物品之前，被擋不白扣背包。
-                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx, true) {
                     continue;
                 }
                 let pos = vchest::pos_key(x, y, z);
@@ -9014,7 +9029,7 @@ async fn handle_socket(
                 if !voxel::can_break(&hub().deltas.read().unwrap(), px, py, pz, x, y, z) { continue; }
                 // 玩家個人領地保護 v2（ROADMAP 963 缺口①，review 點名「比拆牆更痛」）：陌生人
                 // 不能再搬空你家箱子——與其餘「動方塊/箱子」入口共用同一顆判定。
-                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx, true) {
                     continue;
                 }
                 let pos = vchest::pos_key(x, y, z);
@@ -9057,7 +9072,10 @@ async fn handle_socket(
                 // 領地內，只有領地主人能改寫／清空它——堵住「走到別人家牌前送一則 SignSet 就把
                 // 整塊領地搶走」的漏洞（歸屬走穩定帳號鍵、掃全部家牌不只最近一塊，見
                 // `claim_blocking_owner`；sign 讀鎖即釋，不與後續寫鎖巢狀）。
-                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx) {
+                // 立牌不吃信任通行證（ROADMAP 967）：`allow_trust=false`——被信任者不能在你
+                // 領地內改寫／清空你的家牌，也不能就地立一塊自己的新家牌搶走重疊區的寫入權
+                // （否則就算你事後撤銷信任，他那塊「自己的」家牌仍會讓他保有這塊地的存取權）。
+                if deny_if_claimed(x, z, is_account, account_email.as_deref(), &out_tx, false) {
                     continue;
                 }
                 // 清洗玩家輸入（去控制字元、截長度）；空字串＝清空牌面。
@@ -26550,13 +26568,51 @@ mod tests {
 
         // 陌生人（不同帳號鍵）被擋下，回傳領地主人顯示名。
         assert_eq!(
-            claim_blocking_owner(x, z, Some("stranger@example.com")),
+            claim_blocking_owner(x, z, Some("stranger@example.com"), true),
             Some("小夜".to_string())
         );
         // 訪客（無帳號鍵）一樣被擋下。
-        assert_eq!(claim_blocking_owner(x, z, None), Some("小夜".to_string()));
-        // 立牌本人放行。
-        assert_eq!(claim_blocking_owner(x, z, Some("yoru@example.com")), None);
+        assert_eq!(claim_blocking_owner(x, z, None, true), Some("小夜".to_string()));
+        // 立牌本人放行（不論 allow_trust）。
+        assert_eq!(claim_blocking_owner(x, z, Some("yoru@example.com"), true), None);
+        assert_eq!(claim_blocking_owner(x, z, Some("yoru@example.com"), false), None);
+    }
+
+    // ── 立牌／拆牌不吃信任通行證（ROADMAP 967，收乾淨 966 活口）─────────────────────
+    // 信任名單讓朋友能開你家箱子、動你家的地，但不該讓他動得了你的「家」牌本身——否則
+    // ①他能一鎬拆掉／SignSet 覆寫你的家牌解散你的領地，②他能就地立一塊自己的新家牌，
+    // 撤銷信任後仍靠「自己的」領地保有重疊區寫入權。`allow_trust=false` 是 SignSet／
+    // Break-Sign 呼叫端專用：即使被領地主人信任，也一律當陌生人擋下。
+    #[test]
+    fn claim_blocking_owner_ignores_trust_when_allow_trust_false() {
+        let x = -876_543;
+        let z = -234_567;
+        {
+            let mut store = hub().sign.write().unwrap();
+            store.set(
+                &vsign::pos_key(x, 64, z),
+                "阿星的家".to_string(),
+                Some("阿星".to_string()),
+                Some("axing@example.com".to_string()),
+            );
+        } // sign 寫鎖釋放
+        {
+            let mut trust = hub().landclaim_trust.write().unwrap();
+            trust.add("axing@example.com", "friend@example.com", "小夜");
+        } // trust 寫鎖釋放
+
+        // allow_trust=true（一般入口）：被信任的朋友放行。
+        assert_eq!(
+            claim_blocking_owner(x, z, Some("friend@example.com"), true),
+            None
+        );
+        // allow_trust=false（立牌／拆牌家牌本身）：即使被信任，一樣被擋下。
+        assert_eq!(
+            claim_blocking_owner(x, z, Some("friend@example.com"), false),
+            Some("阿星".to_string())
+        );
+        // 本人任何情況都放行。
+        assert_eq!(claim_blocking_owner(x, z, Some("axing@example.com"), false), None);
     }
 
     #[test]
