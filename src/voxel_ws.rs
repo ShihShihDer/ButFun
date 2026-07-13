@@ -14043,6 +14043,54 @@ fn maybe_encounter_barter() {
     );
 }
 
+/// 一個 tick 內、於居民臨界區（持 `deltas.read()`＋`residents.write()`）蒐集到的待落地檔案 IO。
+///
+/// 安全健檢 M10：臨界區內原本散落著 `append_memory`／`append_farm`／`append_feed` 這類同步磁碟
+/// 寫檔——在持 `residents.write()` 期間做磁碟 IO 會讓所有需要 residents 的廣播／WS handler 排隊
+/// 等磁碟，尾延遲被磁碟拖累。改法：鎖內只把「要寫什麼」擁有化 push 進本結構（三個 `Vec` 保序），
+/// 臨界區 guard drop 後才 `flush()` 統一落地。行為（寫了什麼、相對順序）與原本逐點呼叫完全一致。
+#[derive(Default)]
+struct TickPendingIo {
+    /// 記憶 append（`vmem::MemoryEntry` 已由 `add_memory` 擁有化回傳，直接 move 進來）。
+    mem: Vec<vmem::MemoryEntry>,
+    /// 農地 append（`vfarm::FarmEvent` 由 `nudge_growth` 等擁有化回傳）。
+    farm: Vec<vfarm::FarmEvent>,
+    /// 城鎮動態 Feed append：(kind, resident_name, detail)。kind／name 為 `&'static str`，detail 擁有化。
+    feed: Vec<(&'static str, &'static str, String)>,
+}
+
+impl TickPendingIo {
+    /// 蒐集一筆待落地記憶（鎖內呼叫；`entry` 已擁有化，零額外 clone）。
+    fn push_mem(&mut self, entry: vmem::MemoryEntry) {
+        self.mem.push(entry);
+    }
+    /// 蒐集一筆待落地農地事件（鎖內呼叫）。
+    fn push_farm(&mut self, event: vfarm::FarmEvent) {
+        self.farm.push(event);
+    }
+    /// 蒐集一筆待落地 Feed（鎖內呼叫；detail 擁有化，name／kind 是 `&'static str`）。
+    fn push_feed(&mut self, kind: &'static str, name: &'static str, detail: String) {
+        self.feed.push((kind, name, detail));
+    }
+
+    /// 於臨界區 guard drop **之後**呼叫：按蒐集順序把三類 IO 統一落地。
+    ///
+    /// 落地順序刻意固定為「先所有記憶、再所有農地、最後所有 Feed」，各類內部維持鎖內蒐集的原始
+    /// 相對順序（`Vec` 保序）。此處**不重取** residents／deltas 任何鎖（內容已在鎖內擁有化帶出），
+    /// 三個 append_* 各自只碰自己的 append-only 檔（memory／farm／feed），彼此不巢狀 → 無死鎖風險。
+    fn flush(self) {
+        for entry in &self.mem {
+            vmem::append_memory(entry);
+        }
+        for event in &self.farm {
+            vfarm::append_farm(event);
+        }
+        for (kind, name, detail) in &self.feed {
+            vfeed::append_feed(kind, name, detail);
+        }
+    }
+}
+
 /// 一次居民世界推進：套用上輪思考的決策 → 物理/閒晃 → 社交互動 → 廣播 → 排程新一輪思考。
 fn tick_residents(dt: f32) {
     // 0) 推進世界時鐘（短鎖即釋，不巢狀）。晝夜循環 v1。
@@ -14366,6 +14414,14 @@ fn tick_residents(dt: f32) {
     // 格式：(initiator_id, initiator_name, target_id, target_name, line, is_response)
     // is_response=false → 發起對話；is_response=true → 回應對話。
     let mut social_events: Vec<(String, String, String, String, String, bool)> = Vec::new();
+
+    // 臨界區內散落的同步檔案 IO（append_memory/append_farm/append_feed）一律**只蒐集不落地**：
+    // 鎖內把「要寫什麼」擁有化 push 進下列 pending buffer，臨界區 guard drop 之後才統一 flush 真正
+    // 寫檔（安全健檢 M10）。用 Vec 保序 → 同一 tick 內多筆 IO 的相對順序與原本逐點呼叫時完全一致；
+    // 一放鎖就 flush、不跨 tick。理由：這些 append_* 是同步磁碟 IO，原本在持 `residents.write()` 期間
+    // 做，會讓所有需要 residents 的廣播/WS handler 排隊等磁碟；搬到鎖外後尾延遲不再被磁碟拖累，且
+    // flush 完全不重取 residents/deltas 鎖（內容已在鎖內擁有化），無新增巢狀/再入鎖 → 無新死鎖風險。
+    let mut pending_io = TickPendingIo::default();
 
     // 建造候選（鎖內收集位置快照，鎖外執行放塊 / 啟動計畫 / 決定活動）。
     // 格式：(resident_id, resident_name, wx, wy, wz, resident_idx)
@@ -14924,7 +14980,7 @@ fn tick_residents(dt: f32) {
                             vexp::EXPEDITION_MEMORY_PLAYER,
                             &summary,
                         );
-                        vmem::append_memory(&entry);
+                        pending_io.push_mem(entry); // IO 延後到鎖外 flush（M10）
                         expedition_feed.push((r.name, vexp::outpost_wake_feed_line(&bearing)));
                     } else {
                         r.say = vsleep::wake_line(pick).to_string();
@@ -15596,11 +15652,11 @@ fn tick_residents(dt: f32) {
                                 let mem = vneighsign::neighbor_sign_memory(nb, &quote);
                                 let e = hub().memory.write().unwrap().add_memory(&r.id, nb, &mem);
                                 // 城鎮動態 Feed：某居民認出了某鄰居的住處（鄰里認知第一次浮上檯面）。
-                                vfeed::append_feed(
+                                pending_io.push_feed(
                                     "鄰里認家",
                                     r.name,
-                                    &vneighsign::neighbor_sign_feed(r.name, nb),
-                                );
+                                    vneighsign::neighbor_sign_feed(r.name, nb),
+                                ); // IO 延後到鎖外 flush（M10）
                                 e
                             }
                             None => match &home_owner {
@@ -15613,11 +15669,11 @@ fn tick_residents(dt: f32) {
                                         .write()
                                         .unwrap()
                                         .add_memory(&r.id, player, &mem);
-                                    vfeed::append_feed(
+                                    pending_io.push_feed(
                                         "認得你的家",
                                         r.name,
-                                        &vplayerhome::recognized_feed(r.name, player),
-                                    );
+                                        vplayerhome::recognized_feed(r.name, player),
+                                    ); // IO 延後到鎖外 flush（M10）
                                     e
                                 }
                                 // 既有路徑：玩家寫的字（非家牌／訪客），掛世界級哨兵鍵，不污染真實玩家好感。
@@ -15631,7 +15687,7 @@ fn tick_residents(dt: f32) {
                                 }
                             },
                         };
-                        vmem::append_memory(&entry);
+                        pending_io.push_mem(entry); // IO 延後到鎖外 flush（M10）
                         // 居民讀牌 v3（ROADMAP 743）：把這塊「不同於上次」的牌記成心中的地標，
                         // 日後閒暇時偶爾會特地走回來駐足——讀牌記憶第一次改變居民的去向。
                         // 鄰居的家牌同樣成地標：居民日後可能特地晃回鄰居家門口（複用 743 朝聖）。
@@ -15689,7 +15745,7 @@ fn tick_residents(dt: f32) {
                                 let farm_e =
                                     { hub().farm.write().unwrap().nudge_growth(cx, cy, cz, nudge) };
                                 if let Some(farm_e) = farm_e {
-                                    vfarm::append_farm(&farm_e);
+                                    pending_io.push_farm(farm_e); // IO 延後到鎖外 flush（M10）
                                 }
                                 let crop = vtend::crop_name(kind);
                                 let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
@@ -15704,13 +15760,13 @@ fn tick_residents(dt: f32) {
                                     .write()
                                     .unwrap()
                                     .add_memory(&r.id, nearest_name, &summary);
-                                vmem::append_memory(&entry);
+                                pending_io.push_mem(entry); // IO 延後到鎖外 flush（M10）
                                 // Feed 播報，讓不在場的訪客回來也讀得到這份溫柔。
-                                vfeed::append_feed(
+                                pending_io.push_feed(
                                     vtend::FEED_KIND,
                                     r.name,
-                                    &vtend::tend_feed_line(r.name, nearest_name, crop),
-                                );
+                                    vtend::tend_feed_line(r.name, nearest_name, crop),
+                                ); // IO 延後到鎖外 flush（M10）
                             }
                         }
                     }
@@ -15793,7 +15849,7 @@ fn tick_residents(dt: f32) {
                                     .write()
                                     .unwrap()
                                     .add_memory(&r.id, nearest_name, &summary);
-                                vmem::append_memory(&entry);
+                                pending_io.push_mem(entry); // IO 延後到鎖外 flush（M10）
                                 harvest_return_events.push((
                                     r.id.clone(),
                                     r.name,
@@ -16586,7 +16642,7 @@ fn tick_residents(dt: f32) {
                                 .write()
                                 .unwrap()
                                 .add_memory(&r.id, vreadsign::SIGN_MEMORY_PLAYER, &summary);
-                            vmem::append_memory(&entry);
+                            pending_io.push_mem(entry); // IO 延後到鎖外 flush（M10）
                             pilgrimage_feed.push((r.name, quote.clone()));
                         }
                         r.pilgrimage = None;
@@ -16950,7 +17006,7 @@ fn tick_residents(dt: f32) {
                                 vexp::EXPEDITION_MEMORY_PLAYER,
                                 &summary,
                             );
-                            vmem::append_memory(&entry);
+                            pending_io.push_mem(entry); // IO 延後到鎖外 flush（M10）
                             // 抵達動態牆播報：不在場的玩家回來也能讀到「牠到了什麼地方」。
                             expedition_feed.push((r.name, vexp::arrive_feed_line(&bearing, biome)));
                             // 邊陲營火路標（遠行 v2）：抵達那一刻收集一筆「在落點升起營火」的請求，
@@ -18529,7 +18585,7 @@ fn tick_residents(dt: f32) {
                                         vbedtime::REFLECT_MEMORY_PLAYER,
                                         &vbedtime::reflect_memory_summary(&summary),
                                     );
-                                    vmem::append_memory(&entry);
+                                    pending_io.push_mem(entry); // IO 延後到鎖外 flush（M10）
                                     bedtime_feed.push((r.name, summary));
                                     reflected = true;
                                 }
@@ -19609,6 +19665,12 @@ fn tick_residents(dt: f32) {
         }
 
     } // deltas/residents 鎖在此一併釋放
+
+    // 2z) 落地本 tick 於臨界區蒐集的檔案 IO（安全健檢 M10）：guard 已 drop，此處不持任何 residents/
+    // deltas 鎖、內容已在鎖內擁有化帶出——按蒐集順序統一 append（memory→farm→feed，各類內部保序）。
+    // 一放鎖就 flush、不跨 tick；不重取鎖、彼此不巢狀 → 無新死鎖風險。放在廣播前，維持原本「這些
+    // 落地發生在本 tick 廣播之前」的時序。
+    pending_io.flush();
 
     // 3) 廣播最新快照（含居民位置/名字/說的話）。
     broadcast_players();
@@ -25035,6 +25097,56 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── M10 臨界區內同步檔案 IO 搬到鎖外（尾延遲不再被磁碟拖累）──────────
+    // TickPendingIo 是「鎖內只蒐集、鎖外才落地」的緩衝：驗證各類 IO 依 push 順序保序、
+    // 分類正確、且不同類互不干擾——這是「鎖內蒐集的內容 == 鎖外要 flush 的內容」的核心不變式。
+    fn mem_entry(resident: &str, seq: u64) -> vmem::MemoryEntry {
+        vmem::MemoryEntry {
+            resident: resident.to_string(),
+            player: "玩家".to_string(),
+            summary: format!("摘要{seq}"),
+            seq,
+        }
+    }
+
+    #[test]
+    fn pending_io_default_is_empty() {
+        let p = TickPendingIo::default();
+        assert!(p.mem.is_empty() && p.farm.is_empty() && p.feed.is_empty());
+    }
+
+    #[test]
+    fn pending_io_preserves_push_order_per_category() {
+        let mut p = TickPendingIo::default();
+        // 交錯 push 三類（模擬一個 tick 內不同事件點陸續蒐集），各類內部應維持相對順序。
+        p.push_mem(mem_entry("露娜", 1));
+        p.push_feed("鄰里認家", "露娜", "認出諾娃的家".to_string());
+        p.push_mem(mem_entry("諾娃", 2));
+        p.push_feed("照料菜園", "諾娃", "幫你顧了南瓜".to_string());
+        p.push_mem(mem_entry("露娜", 3));
+
+        // 記憶按 push 先後（seq 1,2,3）——保序，不因交錯 feed 而錯亂。
+        let seqs: Vec<u64> = p.mem.iter().map(|e| e.seq).collect();
+        assert_eq!(seqs, vec![1, 2, 3], "記憶 buffer 應維持 push 順序");
+        // 各記憶掛在正確居民名下（內容擁有化、無借用逸失）。
+        assert_eq!(p.mem[0].resident, "露娜");
+        assert_eq!(p.mem[1].resident, "諾娃");
+        assert_eq!(p.mem[2].resident, "露娜");
+        // Feed 同樣保序、kind/name/detail 三元組完整。
+        assert_eq!(
+            p.feed,
+            vec![
+                ("鄰里認家", "露娜", "認出諾娃的家".to_string()),
+                ("照料菜園", "諾娃", "幫你顧了南瓜".to_string()),
+            ],
+            "Feed buffer 應維持 push 順序與內容"
+        );
+        assert!(p.farm.is_empty(), "本 tick 沒農地事件則 farm buffer 應為空");
+        // 分類互不串流：記憶 3 筆、feed 2 筆，各歸各類。
+        assert_eq!(p.mem.len(), 3);
+        assert_eq!(p.feed.len(), 2);
+    }
 
     // ── M1 身分守衛（跨玩家資料枚舉 IDOR 修）─────────────────────────────
     // identity_guard_decision 是純判定核心：註冊玩家的名字只有本人 cookie 對得上才放行，
