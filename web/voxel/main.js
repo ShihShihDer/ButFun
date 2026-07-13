@@ -5289,6 +5289,127 @@ if (craftDirEl) {
   if (closeBtn) closeBtn.addEventListener("click", closeCraftDir);
 }
 
+// ── 眾力共築·乙太燈塔（自主提案切片）───────────────────────────────────────
+// 世界至今每一座值得一看的建物（村碑885/殖民地884/居民個人夢想917/居民自己蓋的家）
+// 全是居民蓋的，玩家彼此之間卻從沒有一件「大家一起出力才蓋得起來」的公共工程。
+// 本面板讓玩家看到全服募材進度＋貢獻榜，並能一鍵捐出背包裡對應的建材。
+const lighthouseEl = document.getElementById("lighthousePanel");
+const lighthouseBodyEl = document.getElementById("lighthouseBody");
+const lighthouseBtnEl = document.getElementById("lighthouseBtn");
+
+/** 重新渲染燈塔募集進度面板。
+ * @param {{name:string, pct:number, complete:boolean, cx:number, cz:number,
+ *   materials:Array<{item_id:number,name:string,given:number,needed:number}>,
+ *   contributors:Array<{name:string,qty:number}>}} data
+ */
+function renderLighthousePanel(data) {
+  if (!lighthouseBodyEl) return;
+  if (!data) {
+    lighthouseBodyEl.innerHTML = '<div class="craftdir-empty">無法讀取燈塔資料。</div>';
+    return;
+  }
+  lighthouseBodyEl.innerHTML = "";
+  // 工地座標本來就在 API 回應裡，但面板從沒顯示過方向／距離——玩家背包裡有材料、
+  // 按下捐獻鈕卻不知道要往哪走（PR #1248 複審點名「看得見」＋「找得到」缺了後者）。
+  // 沿用羅盤面板同一套 compassRelativeDeg 方位算法，箭頭跟居民/路標同款慣例。
+  if (typeof data.cx === "number" && typeof data.cz === "number") {
+    const deg = compassRelativeDeg(player.x, player.z, data.cx, data.cz, player.yaw);
+    const dist = Math.hypot(data.cx - player.x, data.cz - player.z);
+    const dirLine = document.createElement("div");
+    dirLine.className = "compass-row lh-direction";
+    dirLine.innerHTML =
+      '<span class="compass-arrow" style="transform: rotate(' + deg.toFixed(0) + 'deg)">🗼</span>' +
+      '<span class="compass-name">工地方向</span>' +
+      '<span class="compass-dist">' + Math.round(dist) + ' 格</span>';
+    lighthouseBodyEl.appendChild(dirLine);
+  }
+  const pctLine = document.createElement("div");
+  if (data.complete) {
+    pctLine.className = "lh-complete";
+    pctLine.textContent = "🎉 已經正式落成！";
+  } else {
+    pctLine.className = "lh-pct";
+    pctLine.textContent = "整體進度 " + Math.round(data.pct || 0) + "%";
+  }
+  lighthouseBodyEl.appendChild(pctLine);
+  for (const m of (data.materials || [])) {
+    const have = myInv.get(m.item_id) || 0;
+    const remaining = Math.max(0, m.needed - m.given);
+    const row = document.createElement("div");
+    row.className = "lh-row";
+    const pct = m.needed > 0 ? Math.min(100, (m.given / m.needed) * 100) : 100;
+    const giveQty = Math.min(have, remaining);
+    const giveDisabled = data.complete || giveQty <= 0;
+    row.innerHTML =
+      '<div class="lh-row-head">' +
+        '<span class="lh-row-name">' + escHtml(m.name) + '</span>' +
+        '<span class="lh-row-count">' + m.given + ' / ' + m.needed + '</span>' +
+      '</div>' +
+      '<div class="lh-bar"><div class="lh-bar-fill" style="width:' + pct + '%"></div></div>' +
+      '<button class="lh-give-btn" data-item="' + m.item_id + '" data-qty="' + giveQty + '"' +
+        (giveDisabled ? ' disabled' : '') + '>' +
+        (giveDisabled ? "捐出全部" : ("🎁 捐出全部（有 " + giveQty + "）")) +
+      '</button>';
+    lighthouseBodyEl.appendChild(row);
+  }
+  const contributors = data.contributors || [];
+  if (contributors.length > 0) {
+    const list = document.createElement("div");
+    list.className = "lh-contributors";
+    list.textContent = "🏗️ 貢獻榜：" + contributors.map((c) => c.name + "（" + c.qty + "）").join("、");
+    lighthouseBodyEl.appendChild(list);
+  }
+  lighthouseBodyEl.querySelectorAll(".lh-give-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const itemId = parseInt(btn.dataset.item, 10);
+      const qty = parseInt(btn.dataset.qty, 10);
+      if (!qty || qty <= 0) return;
+      ws.send(JSON.stringify({ t: "lighthouse_contribute", item_id: itemId, qty }));
+    });
+  });
+}
+
+/** 向後端抓最新燈塔募集進度並重新渲染。 */
+async function refreshLighthouse() {
+  if (!lighthouseBodyEl) return;
+  try {
+    const resp = await fetch("/voxel/lighthouse");
+    if (!resp.ok) throw new Error("lighthouse fetch failed: " + resp.status);
+    const data = await resp.json();
+    renderLighthousePanel(data);
+  } catch (err) {
+    lighthouseBodyEl.innerHTML = '<div class="craftdir-empty">無法讀取燈塔資料。</div>';
+  }
+}
+
+let lighthouseVisible = false;
+let lighthouseRefreshTimer = null;
+
+/** 開啟燈塔募集面板（募集頻率視玩家多寡而定，10 秒刷新一次即時反映他人的捐獻）。 */
+function openLighthouse() {
+  if (!lighthouseEl) return;
+  lighthouseVisible = true;
+  lighthouseEl.style.display = "flex";
+  refreshLighthouse();
+  if (lighthouseRefreshTimer) clearInterval(lighthouseRefreshTimer);
+  lighthouseRefreshTimer = setInterval(() => { if (lighthouseVisible) refreshLighthouse(); }, 10_000);
+}
+
+/** 關閉燈塔募集面板。 */
+function closeLighthouse() {
+  lighthouseVisible = false;
+  if (lighthouseEl) lighthouseEl.style.display = "none";
+  if (lighthouseRefreshTimer) { clearInterval(lighthouseRefreshTimer); lighthouseRefreshTimer = null; }
+}
+
+if (lighthouseBtnEl) lighthouseBtnEl.addEventListener("click", () => {
+  lighthouseVisible ? closeLighthouse() : openLighthouse();
+});
+if (lighthouseEl) {
+  const closeBtn = document.getElementById("lighthouseClose");
+  if (closeBtn) closeBtn.addEventListener("click", closeLighthouse);
+}
+
 // ── 玩家里程碑（ROADMAP 724）──────────────────────────────────────────────────
 // 居民有技能簿（719）、交情網（708）可回頭翻閱自己的成長，玩家的療癒循環
 // （採集→合成→蓋造→種田→贈禮→交易→熟識→安眠）至今卻沒有任何一處能回頭看看
@@ -7118,6 +7239,19 @@ function connect() {
       // 分村殖民 v1：世界某處剛奠下一座新村（人人可見的世界大事，稀有）——浮出立村捷報。
       showMsg("🏘️ 世界長出了新村落「" + (m.name || "野外村落") + "」——" + (m.story || ""));
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 5000);
+    } else if (m.t === "lighthouse_ok") {
+      // 眾力共築·乙太燈塔 v1：自己捐獻成功——背包已由 inv_update 同步，重繪面板即時反映進度。
+      showMsg("🗼 " + (m.message || "感謝你的材料！"));
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+      if (lighthouseVisible) refreshLighthouse();
+    } else if (m.t === "lighthouse_fail") {
+      showErr(m.reason || "無法捐獻材料");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2200);
+    } else if (m.t === "lighthouse_complete") {
+      // 眾力共築·乙太燈塔 v1：全服共同工程正式落成（人人可見的世界大事，一生一次）。
+      showMsg(m.text || "🗼 乙太燈塔正式落成！");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 6000);
+      if (lighthouseVisible) refreshLighthouse();
     } else if (m.t === "firework") {
       // 乙太煙火 v1（785）：全場任一玩家施放的煙火——在該座標上方綻放一朵火花（人人可見）。
       spawnFirework(m.x, m.y, m.z, m.palette | 0);
