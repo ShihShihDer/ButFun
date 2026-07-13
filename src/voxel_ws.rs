@@ -12601,6 +12601,7 @@ fn maybe_wedding() {
             && r.far_visit.is_none()
             && r.caravan.is_none()
             && r.cheer_target.is_none()
+            && r.invent_walk.is_none()
     };
     // chosen = (id_a, name_a, id_b, name_b, mid_x, mid_z)
     let chosen: Option<(String, &'static str, String, &'static str, f32, f32)> = {
@@ -16059,10 +16060,11 @@ fn tick_residents(dt: f32) {
                 && r.expedition.is_none()
                 && r.daybreak_seek.is_none()
                 && r.reunion_seek.is_none()
-                // 也讓位給更高優先的移動意圖（跟隨/採集/取物），否則 flag 會空懸走不到玩家。
+                // 也讓位給更高優先的移動意圖（跟隨/採集/取物/發明走路），否則 flag 會空懸走不到玩家。
                 && r.follow.is_none()
                 && r.gather.is_none()
                 && r.fetch.is_none()
+                && r.invent_walk.is_none()
             {
                 // 觸發判定：最近的在線玩家若是「這位居民已為他昇華出名號」的人，就低機率起身致意。
                 if let Some((d2, px, pz, nm)) =
@@ -18828,11 +18830,13 @@ fn tick_residents(dt: f32) {
             // 整地任務中不算「純導航」（與採集同理：她在做事，別被脫困偵測誤救打斷任務）。
             // 跟隨中也不算：跟著玩家走本就目標常變，別被脫困偵測誤判。
             // 跑腿採集中（指令→任務第三刀）同理：等待被指派下個目標／走去交付都不是「純導航」。
+            // 發明引擎走去遠方資源中（invent_walk）同理：她有自己的 25 秒逾時放棄機制，不該被脫困偵測搶先誤救。
             let navigating = r.gather.is_none()
                 && r.wait_timer <= 0.0
                 && !directed_snaps.contains_key(&r.id)
                 && r.follow.is_none()
-                && r.fetch.is_none();
+                && r.fetch.is_none()
+                && r.invent_walk.is_none();
             // 幾何困住判定（埋在實心裡或四面爬不出）；只在導航時才需要算。
             let confined = navigating && vr::is_confined(&world, &r.body);
             r.stuck_timer = vr::update_stuck_timer(r.stuck_timer, moved, navigating, confined, dt);
@@ -18843,6 +18847,7 @@ fn tick_residents(dt: f32) {
                 // 脫困後重置：清採集任務、目標設在腳邊、歇一下、清卡住計時。
                 r.stuck_timer = 0.0;
                 r.gather = None;
+                r.invent_walk = None;
                 r.target_x = r.body.x;
                 r.target_z = r.body.z;
                 r.wait_timer = 1.0;
@@ -19646,6 +19651,7 @@ fn tick_residents(dt: f32) {
                     && r.fetch.is_none()
                     && r.pilgrimage.is_none()
                     && r.lover_seek.is_none()
+                    && r.invent_walk.is_none()
                     && !directed_snaps.contains_key(&r.id)
             };
             let mut chosen: Option<(usize, usize)> = None;
