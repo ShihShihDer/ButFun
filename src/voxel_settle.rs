@@ -19,6 +19,15 @@
 //!    村莊集體里程碑、挖掘離村禁區（殖民地周邊不設禁挖）、村莊地圖端點（只畫主村）——
 //!    那些系統仍以主村中心為基準，等聚落模型站穩再逐一搬。
 //!
+//! **v2·殖民地安全網（真缺口，接續上方第 4 點留後續清單的前兩項）**：v1 上線後風禾屯真的
+//! 有人住了，但「村莊庇護」從沒跟著搬過去——夜間暗影生成的 `far_from_village` 判定、居民
+//! 自主開挖的離村禁區，兩者至今**只認主村中心**，殖民地半徑之外形同不設防：暗影可以貼著
+//! 拓荒者的新家生成，居民自己閒晃備料時也可能就地把剛蓋好的殖民地挖出坑洞。本刀補上
+//! [`nearest_settlement_center`]——把「離某個聚落中心多遠」泛化成「離**最近一個**聚落中心
+//! （主村或任一殖民地）多遠」，讓兩套既有保護在殖民地也生效，不需要為每座殖民地各開一份
+//! 判定。紀念柱／村莊集體里程碑／村莊地圖端點三項留待後續刀（各自要接的資料流不同，一次
+//! 一塊）。
+//!
 //! **純邏輯層鐵律**：本檔零 LLM、零鎖、零 async、零世界 IO——聚落歸屬/遷居名單/殖民地
 //! 小地塊佈局/句式池全是確定性純函式，方便單元測試釘死。真正動世界（認領、鋪路、搬家 tick）
 //! 全在 `voxel_ws.rs`，嚴守短鎖鐵律。
@@ -303,6 +312,28 @@ pub fn colony_population_line(n: usize) -> String {
     format!("如今有 {n} 位居民在此定居生活。")
 }
 
+// ── 聚落中心一般化（v2：夜間庇護／挖掘紀律共用）───────────────────────────────────────
+
+/// 給定一個點，回傳**最近**一個聚落中心（主村或任一殖民地）。純函式、確定性、零 IO——
+/// 呼叫端自行組裝主村中心（`Option`，極舊/乾淨世界可能尚未釘死）與殖民地中心列表。
+/// 兩者皆空 → `None`（不設防，呼叫端自行決定要不要 fallback）。
+/// 用途：把「離村莊多遠」的判定（夜間暗影庇護、居民自主開挖離村禁區）從「只認主村」
+/// 泛化成「離最近聚落多遠」，殖民地不再是保護死角。
+pub fn nearest_settlement_center(
+    x: f32,
+    z: f32,
+    main: Option<(i32, i32)>,
+    colonies: &[(i32, i32)],
+) -> Option<(i32, i32)> {
+    main.into_iter()
+        .chain(colonies.iter().copied())
+        .min_by(|a, b| {
+            let da = (x - a.0 as f32).powi(2) + (z - a.1 as f32).powi(2);
+            let db = (x - b.0 as f32).powi(2) + (z - b.1 as f32).powi(2);
+            da.total_cmp(&db)
+        })
+}
+
 // ── 單元測試 ─────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -510,5 +541,48 @@ mod tests {
         let line = serde_json::to_string(&rec).unwrap();
         let back: SettlementRecord = serde_json::from_str(&line).unwrap();
         assert_eq!(rec, back);
+    }
+
+    #[test]
+    fn nearest_settlement_center_picks_main_when_no_colonies() {
+        let got = nearest_settlement_center(3.0, 4.0, Some((0, 0)), &[]);
+        assert_eq!(got, Some((0, 0)));
+    }
+
+    #[test]
+    fn nearest_settlement_center_picks_closer_colony_over_far_main() {
+        // 玩家/居民站在風禾屯附近，主村遠在天邊——該回風禾屯中心，不是主村。
+        let main = Some((0, 0));
+        let colonies = [(500, 500)];
+        let got = nearest_settlement_center(501.0, 502.0, main, &colonies);
+        assert_eq!(got, Some((500, 500)), "離殖民地近就該保護殖民地，不是死認主村");
+    }
+
+    #[test]
+    fn nearest_settlement_center_picks_nearest_among_multiple_colonies() {
+        let main = Some((0, 0));
+        let colonies = [(500, 500), (-500, -500), (10, 10)];
+        let got = nearest_settlement_center(12.0, 8.0, main, &colonies);
+        assert_eq!(got, Some((10, 10)), "多座殖民地要挑真的最近的一座");
+    }
+
+    #[test]
+    fn nearest_settlement_center_no_main_falls_back_to_colony() {
+        // 極舊/乾淨世界尚未釘死主村中心（None）——仍要能保護已存在的殖民地。
+        let got = nearest_settlement_center(500.0, 500.0, None, &[(500, 500)]);
+        assert_eq!(got, Some((500, 500)));
+    }
+
+    #[test]
+    fn nearest_settlement_center_none_when_nothing_known() {
+        let got = nearest_settlement_center(0.0, 0.0, None, &[]);
+        assert_eq!(got, None, "沒有任何聚落中心時該誠實回 None，不瞎編一個");
+    }
+
+    #[test]
+    fn nearest_settlement_center_ties_break_deterministically() {
+        // 等距時（罕見但非不可能）min_by 取第一個遇到的候選（main 排最前）——確定性、可重現。
+        let got = nearest_settlement_center(0.0, 0.0, Some((10, 0)), &[(-10, 0)]);
+        assert_eq!(got, Some((10, 0)));
     }
 }

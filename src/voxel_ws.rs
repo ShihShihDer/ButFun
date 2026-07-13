@@ -3025,17 +3025,21 @@ fn migrate_restore_village(deltas: &mut WorldDelta, residents: &[VoxelResident])
     wake
 }
 
-/// 挖掘紀律：居民自主開挖的**離村禁區**（快取一次）。
-/// 回 `Some((vcx, vcz, radius))`＝村中心與禁區半徑，供 [`vskill::find_nearest_resource_excl`]
-/// 等選址跳過村內格；`None`＝村莊尚未規劃/釘死中心（極舊/乾淨世界，不設限）。
+/// 挖掘紀律：居民自主開挖的**離村禁區**——泛化成「離該居民最近的聚落」（主村或任一殖民地），
+/// 不再死認主村（殖民地補平 v1）。回 `Some((cx, cz, radius))`＝那個聚落的中心與禁區半徑，
+/// 供 [`vskill::find_nearest_resource_excl`] 等選址跳過該聚落內的格；`None`＝一個聚落中心
+/// 都還沒釘死（極舊/乾淨世界，不設限）。
 /// **只擋居民自主挖資源**（採集/發明/自主備料）；玩家指定的工地（整地/鋪面）不查此、傳 None。
-/// 快取：村莊中心一旦釘死就不變（見 voxel_village 旗標檔），啟動載一次即可，熱路徑零 IO。
-fn village_dig_exclusion() -> Option<(i32, i32, i32)> {
-    static CACHE: OnceLock<Option<(i32, i32, i32)>> = OnceLock::new();
-    *CACHE.get_or_init(|| {
-        vvillage::load_village_center()
-            .map(|(vcx, vcz)| (vcx, vcz, vvillage::VILLAGE_DIG_EXCLUSION_RADIUS))
-    })
+/// 主村中心一旦釘死就不變，快取一次；殖民地列表會隨奠基成長，每次呼叫讀 `hub().colonies`
+/// 短鎖即釋（純記憶體、零 IO，成本可忽略）。
+fn village_dig_exclusion_near(rx: i32, rz: i32) -> Option<(i32, i32, i32)> {
+    static MAIN_CENTER: OnceLock<Option<(i32, i32)>> = OnceLock::new();
+    let main = *MAIN_CENTER.get_or_init(vvillage::load_village_center);
+    let colonies: Vec<(i32, i32)> = {
+        hub().colonies.read().unwrap().all().iter().map(|c| (c.cx, c.cz)).collect()
+    }; // colonies 讀鎖釋放
+    vsettle::nearest_settlement_center(rx as f32, rz as f32, main, &colonies)
+        .map(|(cx, cz)| (cx, cz, vvillage::VILLAGE_DIG_EXCLUSION_RADIUS))
 }
 
 fn hub() -> &'static VoxelHub {
@@ -10717,6 +10721,18 @@ fn tick_shadows(dt: f32) {
             };
             // 挑一位玩家當錨點（平時用），暗潮之夜則繞村莊中心成環。
             let anchor = players[(rand::random::<u32>() as usize) % players.len()];
+            // 夜間庇護（殖民地補平 v1）：平時的庇護中心改成「離錨點最近的聚落」（主村或任一
+            // 殖民地），不再死認主村——玩家/居民站在風禾屯附近時，風禾屯也該有庇護圈，不能
+            // 讓暗影貼著拓荒者的新家生成。暗潮之夜仍是主村限定的既有事件，不在此泛化範圍內。
+            let guard_center = if siege {
+                (vcx, vcz)
+            } else {
+                let colony_centers: Vec<(i32, i32)> = {
+                    hub().colonies.read().unwrap().all().iter().map(|c| (c.cx, c.cz)).collect()
+                }; // colonies 讀鎖釋放
+                vsettle::nearest_settlement_center(anchor.0, anchor.2, Some((vcx, vcz)), &colony_centers)
+                    .unwrap_or((vcx, vcz))
+            };
             for _ in 0..6 {
                 let angle = rand::random::<f32>() * std::f32::consts::TAU;
                 // 生成點：暗潮繞村心成環（破庇護圈、逼近中心）；平時在玩家視野邊緣的暗處。
@@ -10728,8 +10744,8 @@ fn tick_shadows(dt: f32) {
                         + rand::random::<f32>() * (vshadow::SPAWN_MAX_DIST - vshadow::SPAWN_MIN_DIST);
                     vshadow::spawn_candidate(anchor.0, anchor.2, angle, dist)
                 };
-                // 平時：村莊庇護半徑內絕不生成。暗潮之夜：刻意生在庇護圈內（破圈逼近），跳過此檢查。
-                if !siege && !vshadow::far_from_village(sx, sz, vcx as f32, vcz as f32) {
+                // 平時：庇護半徑內（最近聚落）絕不生成。暗潮之夜：刻意生在庇護圈內（破圈逼近），跳過此檢查。
+                if !siege && !vshadow::far_from_village(sx, sz, guard_center.0 as f32, guard_center.1 as f32) {
                     continue;
                 }
                 let sy = {
@@ -24326,8 +24342,8 @@ fn pave_worker_tick(
 /// 開始一次採集任務：以 (rx,rz) 為原點找最近資源 → 設居民的 gather 技能狀態。
 /// 找不到資源（罕見）→ 視為已備料（gathered=配額），下個 agency tick 直接蓋，避免卡死。
 fn start_gather(rid: &str, rx: i32, rz: i32) {
-    // 挖掘紀律：這是居民**自主**備料採集（蓋家前的自發採集）→ 帶離村禁區，選址跳過村內、往村外找。
-    let excl = village_dig_exclusion();
+    // 挖掘紀律：這是居民**自主**備料採集（蓋家前的自發採集）→ 帶離村禁區（泛化到最近聚落），選址跳過村內、往村外找。
+    let excl = village_dig_exclusion_near(rx, rz);
     let found = {
         let world = hub().deltas.read().unwrap();
         vskill::find_nearest_resource_excl(&world, rx, rz, vskill::GATHER_MAX_RADIUS, excl)
@@ -24470,8 +24486,8 @@ fn advance_invent_run(
                 }
 
                 // ② 地表天然源優先：找得到 → 設 GatherSkill（走既有安全機制，挖到入背包）。
-                //    挖掘紀律：發明採集是居民**自主**行為 → 帶離村禁區，選址跳過村內、往村外找。
-                let excl = village_dig_exclusion();
+                //    挖掘紀律：發明採集是居民**自主**行為 → 帶離村禁區（泛化到最近聚落），選址跳過村內、往村外找。
+                let excl = village_dig_exclusion_near(rx, rz);
                 let found = {
                     let world = hub().deltas.read().unwrap();
                     vskill::find_nearest_resource_of_excl(
