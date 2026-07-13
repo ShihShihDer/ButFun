@@ -14938,6 +14938,10 @@ fn tick_residents(dt: f32) {
                 if let Some(w) = &mut run.smelt_wait {
                     *w -= dt;
                 }
+                // 釣魚上鉤倒數（第六刀）：只在真的拋了竿（Some）時才倒數。
+                if let Some(w) = &mut run.fish_wait {
+                    *w -= dt;
+                }
             }
             // 好奇心計時倒數（北極星第三刀）：觸發與種心願在 agency 段（build 候選迴圈），
             // 這裡只負責時間流逝。
@@ -22531,6 +22535,7 @@ fn tick_residents(dt: f32) {
                                         reuse: true,
                                         deadline: vinvent::RUN_TIMEOUT_SECS,
                                         smelt_wait: None,
+                                        fish_wait: None,
                                     });
                                 }
                             } // residents 寫鎖釋放
@@ -23823,6 +23828,40 @@ fn advance_invent_run(
                 say_updates.push((rid.to_string(), vinvent::smelting_done_line(recipe.name_zh)));
                 run.smelt_wait = None;
                 run.step_idx += 1;
+            }
+            vinvent::StepAction::StartFish => {
+                // 拋竿釣魚（第六刀）：世界前提——附近真的有水面
+                // （鄰近檢查，不是移動去資源；找不到水就誠實失敗，不隔空釣魚）。
+                let has_water = {
+                    let world = hub().deltas.read().unwrap();
+                    vinvent::water_nearby(&world, rx, ry, rz)
+                }; // deltas 讀鎖釋放
+                if !has_water {
+                    vfeed::append_feed(
+                        "釣魚受阻",
+                        rname,
+                        &vinvent::no_water_feed(&run.goal_name),
+                    );
+                    finish_invent_run(rid, rname, run, false, say_updates);
+                    return;
+                }
+                run.fish_wait = Some(vinvent::INVENT_FISH_WAIT_SECS);
+                say_updates.push((rid.to_string(), vinvent::fishing_started_line()));
+                let mut residents = hub().residents.write().unwrap();
+                if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                    r.invent_run = Some(run);
+                }
+                return; // 這輪拋竿靜候；之後每 tick 倒數，上鉤後下輪收竿。
+            }
+            vinvent::StepAction::CollectFish => {
+                // 上鉤已到：收竿入袋一條小魚（不需站點/材料檢查——拋竿時已驗過水在附近）。
+                {
+                    let mut inv = hub().res_inv.write().unwrap();
+                    *inv.entry(rid.to_string()).or_default().entry(vfish::FISH_ID).or_insert(0) += 1;
+                } // res_inv 寫鎖釋放
+                say_updates.push((rid.to_string(), vinvent::fishing_done_line()));
+                run.fish_wait = None;
+                // 不 Advance——下一輪 next_action 重新檢查數量是否已夠，不夠會自然再拋一竿。
             }
             vinvent::StepAction::Done => {
                 // 最終後置條件驗證：背包**真的**有目標材料，才算「她做出來了」。
