@@ -6593,8 +6593,18 @@ async fn handle_socket(
                         let mem = hub().memory.read().unwrap();
                         let history = mem.recent_dialogue(&player_key, &addr_id);
                         let episodic = mem.recall(&addr_id, &player_key, vmem::RECALL_LIMIT);
+                        // 第三種回想管道——「相關」：這句話讓她想起 RECALL_LIMIT 近期窗外、但
+                        // 字面夠像的舊記憶（純 bigram 相似度，零向量/零外部服務，見記憶模組說明）。
+                        let exclude_seqs: Vec<u64> = episodic.iter().map(|e| e.seq).collect();
+                        let relevant = mem.relevant_memories(
+                            &addr_id,
+                            &player_key,
+                            &clean,
+                            &exclude_seqs,
+                            vmem::RELEVANT_RECALL_LIMIT,
+                        );
                         let semantic = mem.semantic_facts_for(&addr_id, &player_key);
-                        vmem::build_context_block(&history, &episodic, &semantic, &player_key)
+                        vmem::build_context_block(&history, &episodic, &relevant, &semantic, &player_key)
                     }; // 記憶讀鎖在此釋放（不在持鎖中 await，符合死鎖鐵律）
                     // 6b) 短鎖讀居民當前心願 → drop（帶進 prompt 讓居民「帶著夢想說話」）。
                     let current_desire: Option<String> = {

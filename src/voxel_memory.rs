@@ -18,7 +18,7 @@
 //!
 //! 全部抽成可測純函式；不抄外部碼、繁中註解；機敏值不涉入；**append-only、絕不刪既有玩家資料**。
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +32,12 @@ pub const MAX_MEMORIES_PER_RESIDENT: usize = EPISODIC_CAP;
 pub const SEMANTIC_CAP: usize = 12;
 /// 回想 episodic 時最多撈幾筆（近期上下文，別過度工程）。
 pub const RECALL_LIMIT: usize = 4;
+/// 「這句話讓你想起了什麼」——每輪對話最多帶回幾筆被勾起的舊記憶（RECALL_LIMIT 窗外的）。
+/// 別過度工程：不是找回所有相關記憶，只是最像的一兩筆，避免洗版 prompt、蓋過真正的近期脈絡。
+pub const RELEVANT_RECALL_LIMIT: usize = 2;
+/// 「被勾起」的字元 bigram Jaccard 相似度門檻——低於這個分數視為雜訊、不觸發
+/// （寧可少想起、也別答非所問地硬掰「這讓我想起…」）。
+pub const RELEVANCE_MIN_SCORE: f32 = 0.15;
 /// 一筆 episodic 摘要的字元上限：規則擷取後截斷。
 pub const SUMMARY_MAX_CHARS: usize = 80;
 /// 餵進對話 system prompt 的「脈絡區塊（episodic + 對話）」總字元上限。
@@ -234,6 +240,48 @@ impl VoxelMemory {
         hits
     }
 
+    /// 回想第三種管道——「相關」：[`recall`] 只看**近期**（最近 RECALL_LIMIT 筆），
+    /// [`semantic_facts_for`] 只看**規則判定為重要**的事實；但玩家隨口提起的舊話題，若既不
+    /// 是最近幾句、也沒被 `classify_importance` 判成身份/目標/偏好/承諾，就會永遠沉在
+    /// episodic 佇列深處、再也不會浮上對話——即使那件事跟這句話明明很像。
+    ///
+    /// 本函式用字元 bigram Jaccard 相似度（中文無空白斷詞的粗略近似，零外部依賴/零向量服務）
+    /// 從**不在 `exclude_seqs`（通常＝已經被 `recall` 撈出的近期窗）內**的舊記憶裡，挑出跟
+    /// `query`（玩家這句話）夠像的幾筆。分數過低（< [`RELEVANCE_MIN_SCORE`]）一律不算，
+    /// 寧可少想起也別答非所問。
+    pub fn relevant_memories(
+        &self,
+        resident: &str,
+        player: &str,
+        query: &str,
+        exclude_seqs: &[u64],
+        limit: usize,
+    ) -> Vec<MemoryEntry> {
+        let query_grams = char_bigrams(query);
+        if query_grams.is_empty() {
+            return Vec::new();
+        }
+        let Some(q) = self.long.get(resident) else { return Vec::new(); };
+        let mut scored: Vec<(f32, MemoryEntry)> = q
+            .iter()
+            .filter(|e| e.player == player && !exclude_seqs.contains(&e.seq))
+            .map(|e| {
+                // 比對前先剝殼：只比玩家原話，別讓「和X聊過，對方提到」的固定前綴稀釋分數。
+                // 非對話類 summary（採集/建造事件等，無引號）沒有引號 → fallback 回整串。
+                let body = extract_inner_quote(&e.summary).unwrap_or(&e.summary);
+                (bigram_jaccard(&query_grams, &char_bigrams(body)), e.clone())
+            })
+            .filter(|(score, _)| *score >= RELEVANCE_MIN_SCORE)
+            .collect();
+        scored.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.1.seq.cmp(&a.1.seq))
+        });
+        scored.truncate(limit);
+        scored.into_iter().map(|(_, e)| e).collect()
+    }
+
     /// 取某居民**關於某位玩家**的所有 episodic 記憶（不設上限、最新在前）。
     /// [`recall`] 會截斷成最近 N 筆供對話上下文；本函式不截斷，供「昇華聚合印象」（如
     /// `voxel_playerepithet` 把一位玩家的全部作為統計成主導角色）用。純讀、確定性。
@@ -308,6 +356,28 @@ pub fn is_test_identity(player: &str) -> bool {
         }
     }
     false
+}
+
+// ── 相關性回想（純函式、零外部依賴/零向量服務、可測）───────────────────────
+
+/// 字元 bigram 集合——中文沒有空白斷詞，用「相鄰兩字」當最小語意單位的粗略近似
+/// （不追求精準語意相似度，只求便宜、確定性、抓得住「講同一件事」的重疊）。
+fn char_bigrams(s: &str) -> HashSet<String> {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() < 2 {
+        return chars.iter().map(|c| c.to_string()).collect();
+    }
+    chars.windows(2).map(|w| w.iter().collect()).collect()
+}
+
+/// 兩個 bigram 集合的 Jaccard 相似度（交集大小 / 聯集大小），範圍 0.0~1.0。
+fn bigram_jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f32 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let inter = a.intersection(b).count();
+    let union = a.union(b).count();
+    inter as f32 / union as f32
 }
 
 // ── 重要性判定 + 精華提煉（純函式、零 LLM、可測）──────────────────────────
@@ -467,12 +537,14 @@ pub fn summarize_exchange(player: &str, user_text: &str) -> Option<String> {
 ///
 /// 輸出結構（優先順序）：
 /// 1. **B 層精華事實**（總是帶上，不受 cap 截斷）
-/// 2. A 層 episodic 近期記憶 + 本輪對話（合計受 [`MAX_CONTEXT_CHARS`] cap，保留尾端/近期）
+/// 2. A 層 episodic 近期記憶 + **被這句話勾起的相關舊記憶**（`relevant`，見 [`Memory::relevant_memories`]）
+///    + 本輪對話（合計受 [`MAX_CONTEXT_CHARS`] cap，保留尾端/近期）
 ///
 /// 三層皆空 → 回空字串。
 pub fn build_context_block(
     history: &[DialogueTurn],
     episodic: &[MemoryEntry],
+    relevant: &[MemoryEntry],
     semantic: &[SemanticFact],
     player_name: &str,
 ) -> String {
@@ -487,13 +559,20 @@ pub fn build_context_block(
         }
     }
 
-    // ── A 層 episodic + 本輪對話（可被 cap 截斷）──────────────────────────
+    // ── A 層 episodic + 相關舊記憶 + 本輪對話（可被 cap 截斷）───────────────
     let mut body = String::new();
     if !episodic.is_empty() {
         body.push_str(&format!(
             "【你對「{player_name}」的近期記憶（越上面越近期）】\n"
         ));
         for m in episodic {
+            body.push_str(&format!("- {}\n", m.summary));
+        }
+    }
+    if !relevant.is_empty() {
+        if !body.is_empty() { body.push('\n'); }
+        body.push_str("【這句話讓你想起一件很久以前的事】\n");
+        for m in relevant {
             body.push_str(&format!("- {}\n", m.summary));
         }
     }
@@ -694,6 +773,77 @@ mod tests {
     }
 
     #[test]
+    fn relevant_memories_finds_similar_old_memory_outside_recall_window() {
+        let mut m = VoxelMemory::new();
+        m.add_memory("vox_res_0", "阿星", "阿星說他最想要的東西是一把乙太鑰匙");
+        // 塞滿 RECALL_LIMIT 筆新記憶，把上面那筆擠出近期回想窗。
+        for i in 0..RECALL_LIMIT {
+            m.add_memory("vox_res_0", "阿星", &format!("閒聊瑣事{i}"));
+        }
+        let episodic = m.recall("vox_res_0", "阿星", RECALL_LIMIT);
+        assert!(
+            episodic.iter().all(|e| !e.summary.contains("乙太鑰匙")),
+            "舊記憶應已滑出近期窗，才是這條測試要驗的情境"
+        );
+        let exclude: Vec<u64> = episodic.iter().map(|e| e.seq).collect();
+        let hits = m.relevant_memories(
+            "vox_res_0",
+            "阿星",
+            "你之前是不是說想要一把乙太鑰匙",
+            &exclude,
+            RELEVANT_RECALL_LIMIT,
+        );
+        assert_eq!(hits.len(), 1, "應撈回那筆被勾起的舊記憶");
+        assert!(hits[0].summary.contains("乙太鑰匙"));
+    }
+
+    #[test]
+    fn relevant_memories_finds_match_through_real_summarize_exchange_format() {
+        // 真實寫入路徑：summary 不是測試餵的乾淨句子，而是 summarize_exchange 產出的
+        // 「和X聊過，對方提到「…」」固定殼——比對前沒剝殼會被殼裡的噪音 bigram 稀釋掉分數。
+        let summary = summarize_exchange("阿星", "我最喜歡看流星了").unwrap();
+        let mut m = VoxelMemory::new();
+        m.add_memory("vox_res_0", "阿星", &summary);
+        let hits = m.relevant_memories(
+            "vox_res_0",
+            "阿星",
+            "你之前是不是說過很喜歡看流星",
+            &[],
+            RELEVANT_RECALL_LIMIT,
+        );
+        assert_eq!(hits.len(), 1, "剝殼後應撈回這筆帶固定前綴格式的真實記憶");
+        assert!(hits[0].summary.contains("流星"));
+    }
+
+    #[test]
+    fn relevant_memories_ignores_unrelated_query() {
+        let mut m = VoxelMemory::new();
+        m.add_memory("vox_res_0", "阿星", "阿星說他最想要的東西是一把乙太鑰匙");
+        let hits = m.relevant_memories(
+            "vox_res_0",
+            "阿星",
+            "今天天氣真好呢",
+            &[],
+            RELEVANT_RECALL_LIMIT,
+        );
+        assert!(hits.is_empty(), "字面不像的話不該硬掰出一段舊記憶");
+    }
+
+    #[test]
+    fn relevant_memories_excludes_given_seqs_and_respects_limit_and_player() {
+        let mut m = VoxelMemory::new();
+        m.add_memory("vox_res_0", "阿星", "阿星說想要乙太鑰匙一號");
+        m.add_memory("vox_res_0", "阿星", "阿星說想要乙太鑰匙二號");
+        m.add_memory("vox_res_0", "阿星", "阿星說想要乙太鑰匙三號");
+        m.add_memory("vox_res_0", "小美", "小美說想要乙太鑰匙四號");
+        let exclude = vec![0u64]; // 排除「一號」那筆（模擬已被 recall 撈走）
+        let hits = m.relevant_memories("vox_res_0", "阿星", "乙太鑰匙", &exclude, 1);
+        assert_eq!(hits.len(), 1, "limit 應限制回傳筆數");
+        assert!(!hits[0].summary.contains("一號"), "exclude_seqs 應排除掉");
+        assert!(hits.iter().all(|e| !e.summary.contains("小美")), "不應撈到別的玩家的記憶");
+    }
+
+    #[test]
     fn summarize_extracts_snippet_and_truncates() {
         let s = summarize_exchange("阿星", "  我想在河上蓋一座橋  ").unwrap();
         assert!(s.contains("阿星"));
@@ -721,12 +871,27 @@ mod tests {
             category: FactCategory::Goal,
             content: "阿星說要蓋橋".to_string(),
         }];
-        let block = build_context_block(&history, &episodic, &semantic, "阿星");
+        let block = build_context_block(&history, &episodic, &[], &semantic, "阿星");
         assert!(block.contains("阿星想蓋橋"), "應含 episodic 記憶");
         assert!(block.contains("你還記得我嗎"), "應含近期對話");
         assert!(block.contains("阿星說要蓋橋"), "應含 semantic 精華");
-        // 三層皆空 → 空字串
-        assert!(build_context_block(&[], &[], &[], "阿星").is_empty());
+        // 四層皆空 → 空字串
+        assert!(build_context_block(&[], &[], &[], &[], "阿星").is_empty());
+    }
+
+    #[test]
+    fn context_block_renders_relevant_section_distinctly() {
+        let relevant = vec![MemoryEntry {
+            resident: "vox_res_0".to_string(),
+            player: "阿星".to_string(),
+            summary: "阿星很久以前提過想要一把乙太鑰匙".to_string(),
+            seq: 0,
+        }];
+        let block = build_context_block(&[], &[], &relevant, &[], "阿星");
+        assert!(block.contains("這句話讓你想起一件很久以前的事"), "應有專屬標籤區隔近期記憶");
+        assert!(block.contains("乙太鑰匙"));
+        // 空 relevant → 不出現該標籤
+        assert!(!build_context_block(&[], &[], &[], &[], "阿星").contains("這句話讓你想起"));
     }
 
     #[test]
@@ -743,7 +908,7 @@ mod tests {
             user: "我剛剛說的最新一句話".to_string(),
             reply: "這是居民最新的回覆".to_string(),
         }];
-        let block = build_context_block(&history, &episodic, &[], "阿星");
+        let block = build_context_block(&history, &episodic, &[], &[], "阿星");
         // cap 只截 episodic + 對話，不截 semantic（這裡 semantic 為空）
         assert!(
             block.chars().count() <= MAX_CONTEXT_CHARS + 40,
@@ -916,6 +1081,29 @@ mod tests {
         assert!(!is_test_identity("旅人"),   "旅人不能被過濾");
         assert!(!is_test_identity("阿星"));
         assert!(!is_test_identity(""));
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // 字元 bigram Jaccard（相關性回想的底層純函式）
+    // ════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn char_bigrams_handles_short_and_normal_strings() {
+        assert_eq!(char_bigrams(""), HashSet::new());
+        assert_eq!(char_bigrams("a"), HashSet::from(["a".to_string()]));
+        assert_eq!(
+            char_bigrams("abc"),
+            HashSet::from(["ab".to_string(), "bc".to_string()])
+        );
+    }
+
+    #[test]
+    fn bigram_jaccard_identical_is_one_disjoint_is_zero() {
+        let a = char_bigrams("乙太鑰匙");
+        assert_eq!(bigram_jaccard(&a, &a), 1.0, "自己跟自己相似度應為 1");
+        let b = char_bigrams("完全不同的字句");
+        assert_eq!(bigram_jaccard(&a, &b), 0.0, "無重疊應為 0");
+        assert_eq!(bigram_jaccard(&HashSet::new(), &a), 0.0, "空集合視為 0（非除以零 panic）");
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1163,7 +1351,7 @@ mod tests {
             SemanticFact { category: FactCategory::Identity, content: "我叫阿偉".to_string() },
             SemanticFact { category: FactCategory::Goal,     content: "我想蓋城堡".to_string() },
         ];
-        let block = build_context_block(&[], &episodic, &semantic, "旅人");
+        let block = build_context_block(&[], &episodic, &[], &semantic, "旅人");
 
         assert!(block.contains("我叫阿偉"),   "B 層身份應出現在脈絡中");
         assert!(block.contains("我想蓋城堡"), "B 層目標應出現在脈絡中");
@@ -1188,7 +1376,7 @@ mod tests {
             category: FactCategory::Identity,
             content: "我叫濕濕的".to_string(),
         }];
-        let block = build_context_block(&[], &big_episodic, &semantic, "旅人");
+        let block = build_context_block(&[], &big_episodic, &[], &semantic, "旅人");
         assert!(block.contains("我叫濕濕的"), "semantic 精華層不應被 episodic cap 截掉");
     }
 
