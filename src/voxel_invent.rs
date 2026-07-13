@@ -47,6 +47,16 @@
 //! **南瓜刻意不含**：南瓜是季限作物（933），收成閉包要不要跟著季節走是另一個設計決定，
 //! 留給下一刀，本刀先打通常態三作物。
 //!
+//! **第八刀（移動去資源，接續第六/七刀）**：換軸——不是再接一種材料，是把已有的兩個原語
+//! （`fish`／`harvest`）從「附近沒有就放棄」升級成「附近沒有、走遠一點找得到就走過去」。
+//! 第六刀模組頭註早預告了這一刀：`water_nearby`／`ripe_crop_nearby` 只做鄰近檢查
+//! （半徑 12），找不到就誠實失敗，即便走個二三十格外其實就有水有田。本刀在鄰近檢查失手時，
+//! 改用 [`find_water`]／[`find_ripe_crop_far`] 在 `INVENT_GATHER_RADIUS`（56 格）內螺旋
+//! 再找一次——找到就設 [`InventWalk`] 走過去（比照 [`crate::voxel_skills::GatherSkill`]
+//! 既有的走路安全機制：沿牆滑行、逾時放棄、走不到不硬闖），到位後鄰近檢查自然通過、原語照舊
+//! 執行；找不到（真的四下無水無田）才是誠實失敗，不無止盡漫遊、不隔空施法。這是發明引擎從
+//! 「附近剛好有」升到「她會自己想辦法」的一步——她第一次會為了心裡的計畫主動走去更遠的地方。
+//!
 //! 北極星（維護者原話）：「我們沒說可以挖可以放，他就自己組合出來了」——
 //! 居民自己從基礎動作組合發明、存成自己的技能。這是 Voyager（MineDojo）式 skill library
 //! 的精神（吸收概念、原創實作，不抄任何外部碼），長在既有 agency 架構上。
@@ -77,7 +87,7 @@ use crate::voxel::{self, Block, WorldDelta};
 use crate::voxel_craft as vcraft;
 use crate::voxel_farm as vfarm;
 use crate::voxel_fishing::FISH_ID;
-use crate::voxel_skills::{column_top, GatherResource};
+use crate::voxel_skills::{column_top, spiral_find, GatherResource};
 
 // ── 參數（刻意保守：小而完整）─────────────────────────────────────────────────
 
@@ -1548,6 +1558,62 @@ pub fn ripe_crop_nearby(
         }
     }
     None
+}
+
+/// 發明「移動去資源」的行走狀態（第八刀，接續第六/七刀）：`water_nearby`／`ripe_crop_nearby`
+/// 只做**鄰近檢查**——附近沒有就誠實失敗，即便走遠一點其實找得到，她也不會去。第六刀模組頭註
+/// 早就預告「那是移動去資源的下一刀」。本刀補上：鄰近檢查沒找到時，改用 [`find_water`]／
+/// [`find_ripe_crop_far`] 在 [`INVENT_GATHER_RADIUS`] 範圍內再找一次——找到就設此狀態走過去，
+/// 到位後回頭讓鄰近檢查再驗一次（這次會過）；仍找不到才是真的誠實失敗。純資料、無邏輯，
+/// 走路本身由 `voxel_ws.rs` 比照 [`crate::voxel_skills::GatherSkill`] 的既有安全機制推進
+/// （不挖、不種，純走路，逾時／走不到就放棄）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct InventWalk {
+    pub tx: i32,
+    pub ty: i32,
+    pub tz: i32,
+    /// 走路逾時倒數（秒）：比照 [`crate::voxel_skills::GATHER_TIMEOUT_SECS`] 同一把尺——
+    /// 找到的目標雖然可能遠達 `INVENT_GATHER_RADIUS`，但「最近一個」實務上多半近得多，
+    /// 沿用既有日常採集走路的逾時預算即可，不必另開一個更寬鬆的常數。
+    pub timeout: f32,
+}
+
+/// 螺旋向外找最近一格水面（第八刀·移動去資源），比 [`water_nearby`] 的鄰近檢查搜得遠——
+/// 附近沒有水才值得呼叫這個，找到就走過去、找不到仍誠實失敗（不會無止盡漫遊）。純函式、可測。
+pub fn find_water(
+    world: &WorldDelta,
+    ox: i32,
+    oy: i32,
+    oz: i32,
+    max_radius: i32,
+) -> Option<(i32, i32, i32)> {
+    spiral_find(ox, oz, 0, max_radius, |x, z| {
+        (-WATER_NEAR_YSPAN..=WATER_NEAR_YSPAN).find_map(|dy| {
+            let y = oy + dy;
+            voxel::effective_block_at(world, x, y, z)
+                .is_any_water()
+                .then_some((x, y, z))
+        })
+    })
+}
+
+/// 螺旋向外找最近一畦**指定種類**的熟作物（第八刀·移動去資源），比 [`ripe_crop_nearby`]
+/// 的鄰近檢查搜得遠——鎖定「這一種」熟作物（她要湊的是特定作物的份數，不是隨便撿到什麼），
+/// 找到就走過去、找不到仍誠實失敗（不替她播種，也不無止盡漫遊）。純函式、可測。
+pub fn find_ripe_crop_far(
+    world: &WorldDelta,
+    ox: i32,
+    oy: i32,
+    oz: i32,
+    max_radius: i32,
+    want: Block,
+) -> Option<(i32, i32, i32)> {
+    spiral_find(ox, oz, 0, max_radius, |x, z| {
+        (-CROP_NEAR_YSPAN..=CROP_NEAR_YSPAN).find_map(|dy| {
+            let y = oy + dy;
+            (voxel::effective_block_at(world, x, y, z) == want).then_some((x, y, z))
+        })
+    })
 }
 
 /// 找「把方塊放到自己旁邊」的合理位置（放置原語的安全核心，比照居民建造的放置語意：
@@ -3946,6 +4012,33 @@ mod tests {
         assert!(!water_nearby(&world2, fx, fy, fz), "太遠不算附近");
     }
 
+    // ── find_water：移動去資源（第八刀）遠距螺旋搜尋 ──────────────────────────────
+
+    #[test]
+    fn find_water_locates_source_beyond_near_radius() {
+        let (fx, fy, fz) = (60, 5, 60);
+        let mut world: WorldDelta = WorldDelta::new();
+        // 放在鄰近檢查搆不到、但仍在遠距搜尋半徑內的位置——「移動去資源」該補的正是這段。
+        let beyond_near = WATER_NEAR_RADIUS + 8;
+        assert!(beyond_near <= INVENT_GATHER_RADIUS, "測試前提：夾在鄰近與遠距半徑之間");
+        voxel::set_block(&mut world, fx + beyond_near, fy, fz, Block::Water);
+        assert!(!water_nearby(&world, fx, fy, fz), "鄰近檢查本該查無（才輪得到遠距搜尋出場）");
+        assert_eq!(
+            find_water(&world, fx, fy, fz, INVENT_GATHER_RADIUS),
+            Some((fx + beyond_near, fy, fz)),
+            "遠距螺旋搜尋該找到這格水"
+        );
+    }
+
+    #[test]
+    fn find_water_none_beyond_search_radius() {
+        let (fx, fy, fz) = (60, 5, 60);
+        let mut world: WorldDelta = WorldDelta::new();
+        voxel::set_block(&mut world, fx + 20, fy, fz, Block::Water);
+        // 搜尋半徑故意設得比水還近 → 仍誠實查無（不是漫無邊際亂找）。
+        assert_eq!(find_water(&world, fx, fy, fz, 10), None, "半徑外的水不該被找到");
+    }
+
     /// 第六刀全鏈模擬（純邏輯側證據，比照第二刀 `full_workbench_chain_simulated_execution_reaches_goal`）：
     /// 空背包 → 釣魚（拋竿→等待→收竿）→ 熔爐冶煉（開爐→煨煮→收成）→ 後置條件成立
     /// （背包真的有烤魚）。驗證釣魚與冶煉兩種「需要等待」的原語可以串在同一條鏈裡。
@@ -4195,6 +4288,41 @@ mod tests {
         voxel::set_block(&mut world3, fx + 3, fy, fz, Block::CarrotMature);
         assert_eq!(
             ripe_crop_nearby(&world3, fx, fy, fz, Block::WheatMature),
+            None,
+            "型別不符不該誤撿"
+        );
+    }
+
+    // ── find_ripe_crop_far：移動去資源（第八刀）遠距螺旋搜尋 ──────────────────────
+
+    #[test]
+    fn find_ripe_crop_far_locates_specific_crop_beyond_near_radius() {
+        let (fx, fy, fz) = (60, 5, 60);
+        let mut world: WorldDelta = WorldDelta::new();
+        let beyond_near = CROP_NEAR_RADIUS + 8;
+        assert!(beyond_near <= INVENT_GATHER_RADIUS, "測試前提：夾在鄰近與遠距半徑之間");
+        voxel::set_block(&mut world, fx + beyond_near, fy, fz, Block::WheatMature);
+        assert_eq!(
+            ripe_crop_nearby(&world, fx, fy, fz, Block::WheatMature),
+            None,
+            "鄰近檢查本該查無（才輪得到遠距搜尋出場）"
+        );
+        assert_eq!(
+            find_ripe_crop_far(&world, fx, fy, fz, INVENT_GATHER_RADIUS, Block::WheatMature),
+            Some((fx + beyond_near, fy, fz)),
+            "遠距螺旋搜尋該找到這畦小麥"
+        );
+    }
+
+    #[test]
+    fn find_ripe_crop_far_type_mismatch_still_none() {
+        let (fx, fy, fz) = (60, 5, 60);
+        let mut world: WorldDelta = WorldDelta::new();
+        let beyond_near = CROP_NEAR_RADIUS + 8;
+        voxel::set_block(&mut world, fx + beyond_near, fy, fz, Block::CarrotMature);
+        // 遠處確實有熟作物，但型別不對（找小麥卻只有胡蘿蔔）→ 誠實查無，不誤撿。
+        assert_eq!(
+            find_ripe_crop_far(&world, fx, fy, fz, INVENT_GATHER_RADIUS, Block::WheatMature),
             None,
             "型別不符不該誤撿"
         );
