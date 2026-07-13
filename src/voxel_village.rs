@@ -17,7 +17,11 @@
 //! 吃座標吐座標清單，方便單元測試釘死（生成確定性 / 地塊不重疊 / 認領 / 路徑不毀建築 / migration 冪等）。
 //! 真正把方塊放進世界（讀 delta、set_block、落地 jsonl、廣播）全在 `voxel_ws.rs`，嚴守短鎖鐵律。
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{LazyLock, RwLock},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -442,6 +446,49 @@ const VILLAGE_PLOTS_PATH: &str = "data/voxel_village_plots.jsonl";
 /// 內容為村莊中心座標 "cx,cz"，供除錯/驗證；存在即代表「這座村莊已規劃/整理過」。
 const VILLAGE_DONE_PATH: &str = "data/voxel_village_done";
 
+/// `None`＝尚未讀過；`Some(None)`＝已讀過但檔案缺少或內容無效。
+///
+/// 鎖只保護這個可複製的小值，檔案 IO 一律在鎖外，避免把同步讀寫時間帶進臨界區。
+struct VillageCenterCache {
+    value: RwLock<Option<Option<(i32, i32)>>>,
+}
+
+impl VillageCenterCache {
+    fn new() -> Self {
+        Self { value: RwLock::new(None) }
+    }
+
+    fn load(&self, path: &Path) -> Option<(i32, i32)> {
+        // 快路徑只複製值便釋鎖，不在快取鎖內做 IO，也不把 guard 帶回呼叫端。
+        if let Some(value) = *self.value.read().unwrap() {
+            return value;
+        }
+
+        let loaded = std::fs::read_to_string(path).ok().and_then(|content| {
+            let mut it = content.trim().split(',');
+            let cx = it.next()?.trim().parse::<i32>().ok()?;
+            let cz = it.next()?.trim().parse::<i32>().ok()?;
+            Some((cx, cz))
+        });
+
+        // 讀檔期間若寫入端已更新快取，以較新的寫入結果為準。
+        let mut cached = self.value.write().unwrap();
+        if let Some(value) = *cached {
+            return value;
+        }
+        *cached = Some(loaded);
+        loaded
+    }
+
+    fn update(&self, value: Option<(i32, i32)>) {
+        // 只寫一個 Copy 值；呼叫端必須已完成檔案 IO 才進來。
+        *self.value.write().unwrap() = Some(value);
+    }
+}
+
+static VILLAGE_CENTER_CACHE: LazyLock<VillageCenterCache> =
+    LazyLock::new(VillageCenterCache::new);
+
 /// Append 一筆地塊認領記錄。**鐵律**：只在不持任何鎖時呼叫（同步小檔寫、不 await）。
 pub fn append_plot_claim(rec: &PlotClaim) {
     if let Ok(line) = serde_json::to_string(rec) {
@@ -471,21 +518,25 @@ pub fn village_done() -> bool {
 
 /// 標記村莊規劃/整理已完成（寫入中心座標）。**鐵律**：只在不持任何鎖時呼叫。
 pub fn mark_village_done(cx: i32, cz: i32) {
-    if let Some(parent) = std::path::Path::new(VILLAGE_DONE_PATH).parent() {
+    mark_village_done_at(Path::new(VILLAGE_DONE_PATH), &VILLAGE_CENTER_CACHE, cx, cz);
+}
+
+fn mark_village_done_at(path: &Path, cache: &VillageCenterCache, cx: i32, cz: i32) {
+    if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(VILLAGE_DONE_PATH, format!("{cx},{cz}\n"));
+    // 只有落地成功才更新快取；寫失敗時維持舊值，與原本下一次讀檔會看見的內容一致。
+    if std::fs::write(path, format!("{cx},{cz}\n")).is_ok() {
+        cache.update(Some((cx, cz)));
+    }
 }
 
 /// 讀回一次性整理時**釘死的村莊中心**（旗標檔內容 "cx,cz"）。存在即回 `Some((cx,cz))`。
 /// 供地塊認領沿用同一個中心：確保居民認領的地塊與鋪好的道路網對齊，不隨新生兒改變質心而漂移。
-/// 檔缺 / 壞行 → `None`（呼叫端退回即時質心）。**鐵律**：只在不持任何鎖時呼叫（同步小檔讀）。
+/// 首次呼叫後快取結果；檔缺 / 壞行也快取為 `None`（呼叫端退回即時質心）。
+/// **鐵律**：只在不持任何其他鎖時呼叫；快取鎖只短暫複製值，檔案 IO 在鎖外。
 pub fn load_village_center() -> Option<(i32, i32)> {
-    let content = std::fs::read_to_string(VILLAGE_DONE_PATH).ok()?;
-    let mut it = content.trim().split(',');
-    let cx = it.next()?.trim().parse::<i32>().ok()?;
-    let cz = it.next()?.trim().parse::<i32>().ok()?;
-    Some((cx, cz))
+    VILLAGE_CENTER_CACHE.load(Path::new(VILLAGE_DONE_PATH))
 }
 
 fn write_line(path: &str, line: &str) {
@@ -1276,8 +1327,46 @@ mod tests {
         assert_eq!(compass_dir(0, -30), "北邊");
     }
 
-    // ── 村莊中心旗標解析（load_village_center 的內核字串解析）─────────────────────
-    // 不碰真實 data/：只驗「'cx,cz' ↔ (i32,i32)」解析，與 mark/load 的內核一致。
+    // ── 村莊中心旗標快取 ───────────────────────────────────────────────────────
+
+    fn village_center_test_path(label: &str) -> std::path::PathBuf {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "butfun-village-center-{label}-{}-{seq}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn village_center_cache_reads_file_only_once() {
+        let path = village_center_test_path("read-once");
+        std::fs::write(&path, "12,-34\n").unwrap();
+        let cache = VillageCenterCache::new();
+
+        assert_eq!(cache.load(&path), Some((12, -34)));
+        // 首讀後即使檔案被外部改動，熱路徑仍只回記憶體快照、不再同步讀檔。
+        std::fs::write(&path, "90,91\n").unwrap();
+        assert_eq!(cache.load(&path), Some((12, -34)));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn village_center_write_updates_cached_missing_value() {
+        let path = village_center_test_path("update");
+        let cache = VillageCenterCache::new();
+
+        // 檔案不存在的 `None` 也要快取，避免居民 tick 持續撞磁碟。
+        assert_eq!(cache.load(&path), None);
+        mark_village_done_at(&path, &cache, -7, 42);
+        assert_eq!(cache.load(&path), Some((-7, 42)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "-7,42\n");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    // ── 村莊中心旗標解析 ───────────────────────────────────────────────────────
 
     #[test]
     fn village_center_flag_parse_roundtrip() {
