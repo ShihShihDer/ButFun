@@ -302,6 +302,11 @@ pub enum Block {
     /// 保護，讓這座獨一無二的奇觀不會被路過的人一斧拆掉、破壞所有人的探索）。
     /// id 113：0~110 皆已用，111/112＝稀有魚（夜光魚/深海乙太魚，純物品）已佔，113 是首個空號。
     AetherBloom = 113,
+    /// 遺跡核心（地底遺跡神殿 v1，ROADMAP 975）——藏在深層地底遺跡神殿藏寶室正中央的
+    /// 發光方塊，是走到這座人工鑿建密室核心的座標指標。**發光方塊**（前端比照發光結晶/
+    /// 乙太花冠投出柔和幽光），可採、可放（如發光結晶，挖下後能拿回家當一盞獨特的光源）。
+    /// id 114：0~113 皆已用（113=乙太世界樹花冠），114 是首個空號。
+    RelicGlow = 114,
 }
 
 impl Block {
@@ -403,6 +408,7 @@ impl Block {
             107 => Some(Block::PumpkinSeeded),
             108 => Some(Block::PumpkinMature),
             113 => Some(Block::AetherBloom),
+            114 => Some(Block::RelicGlow),
             _ => None,
         }
     }
@@ -425,7 +431,10 @@ impl Block {
             // 玩家裝飾傢俱 v1（ROADMAP 931）：四樣純裝飾傢俱皆為玩家可放置的實心方塊，
             // 破壞回收自身、走通用建材路徑（不需特殊索引/tick，見 voxel_furniture.rs）。
             Block::Carpet | Block::FlowerPot | Block::Table | Block::Banner |
-            Block::GlowCrystal
+            Block::GlowCrystal |
+            // 地底遺跡神殿 v1（ROADMAP 975）：遺跡核心挖下後可帶回家當光源重新擺放，
+            // 同發光結晶的「可採可放」慣例。
+            Block::RelicGlow
             // BerryBushRipe / CoopReady 皆是伺服器維護的狀態方塊（由 tick_berry / tick_coop 長成），
             // 玩家不能手動放置。HotSpringWater 是世界生成的溫泉水，同來源水不可手動放置。
         )
@@ -1352,6 +1361,150 @@ fn hot_spring_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
     }
 }
 
+// ── 地底遺跡神殿 v1（ROADMAP 975，自主提案切片）───────────────────────────────
+// **真缺口**：地底至今只有「天然」的東西——深層礦石（682）挖了進背包，天然洞穴腔室（934）
+// 是雕空的岩壁綴發光結晶。世界從沒有一處**人工鑿建**的地底空間：不是天然裂隙，是先民
+// 砌起磚牆、留了通道、藏了寶物的**遺跡神殿**。與既有地標 razor-sharp 區隔：地表遺跡（838）
+// 是四根裸露殘柱，一眼望穿；本刀是**藏在深層岩壁裡**的密室，得先挖穿石牆才看得見裡頭；
+// 天然洞穴（934）雕的是隨機腔室，本刀雕的是**規則的房間＋通道**，一望即知「這是有人蓋的」。
+// 全世界只有這一座，座標由世界種子確定性決定、遠離主村，找到它本身就是一趟深挖的意外驚喜。
+// 純函式、確定性、零狀態、零 IO；同座標永遠同結果。無破壞保護——如天然洞穴，挖穿即探索。
+
+/// 遺跡神殿噪聲種子（與世界樹/遺跡/溫泉/地形皆獨立）。
+const DUNGEON_SEED: u32 = SEED ^ 0x_D0EC_D0EC;
+/// 遺跡神殿離主村的距離（世界方塊）——比世界樹（640）近，但仍遠遠超出日常活動範圍，
+/// 值得一趟專程深挖遠征。
+const DUNGEON_DIST: f32 = 260.0;
+/// 候選方位數：同世界樹手法，繞一圈取這麼多候選、依序挑第一個地表夠高（保證整座神殿
+/// 埋得下）的方位——確保神殿一定生成得出來。
+const DUNGEON_CANDIDATES: i32 = 16;
+/// 神殿兩端（入口室／藏寶室）地表高度下限：地表以下要留給「泥土層(3) + 神殿深層(4)」的
+/// 空間，高於此下限才確定神殿整段埋在深層石頭裡、不貼近地表或海平面（留至少 3 格石頭緩衝，
+/// 抵擋兩端之間地形起伏；經地形噪聲實測分佈校準，太高的門檻在候選方位裡幾乎找不到）。
+const DUNGEON_MIN_SURFACE_H: i32 = CAVE_CEILING + 6;
+/// 房間外圍半寬（世界方塊）：房間為 (2*R+1)×(2*R+1) 的方形磚室，R=3 → 7×7。
+const DUNGEON_ROOM_HALF: i32 = 3;
+/// 藏寶室中心相對入口室中心的 x 偏移——兩室之間隔著這麼長的一段窄通道。
+const DUNGEON_ROOM_B_DX: i32 = 20;
+
+/// 神殿基準座標（入口室中心 (ox,oz)）的快取——只由固定常數決定，算一次即定，避免
+/// `block_at` 熱路徑每次都重跑候選方位掃描。
+static DUNGEON_BASE: std::sync::OnceLock<(i32, i32)> = std::sync::OnceLock::new();
+
+/// 遺跡神殿的基準座標（入口室中心）。確定性純函式（結果快取）：用固定種子挑一個起始
+/// 方位角，繞一圈取 [`DUNGEON_CANDIDATES`] 個候選、依序挑第一個入口室／藏寶室兩端地表
+/// 皆夠高（保證整座神殿埋得下）的方位；離原點 [`DUNGEON_DIST`] 遠。全世界只有這一座。
+pub fn dungeon_base() -> (i32, i32) {
+    *DUNGEON_BASE.get_or_init(dungeon_base_uncached)
+}
+
+fn dungeon_base_uncached() -> (i32, i32) {
+    let base_ang = hash2(3, 7, DUNGEON_SEED) * std::f32::consts::TAU;
+    let step = std::f32::consts::TAU / DUNGEON_CANDIDATES as f32;
+    let mut first = None;
+    for i in 0..DUNGEON_CANDIDATES {
+        let ang = base_ang + step * i as f32;
+        let ox = (ang.cos() * DUNGEON_DIST).round() as i32;
+        let oz = (ang.sin() * DUNGEON_DIST).round() as i32;
+        if first.is_none() {
+            first = Some((ox, oz)); // 保底：極端情況全落選時仍回一個確定座標。
+        }
+        if height_at(ox, oz) >= DUNGEON_MIN_SURFACE_H
+            && height_at(ox + DUNGEON_ROOM_B_DX, oz) >= DUNGEON_MIN_SURFACE_H
+        {
+            return (ox, oz);
+        }
+    }
+    first.unwrap_or((0, 0))
+}
+
+/// 遺跡神殿是否真的生成了（候選方位可能巧巧兩端都不夠高，那樣整座神殿不生成）。
+/// 純函式、確定性。
+pub fn dungeon_exists() -> bool {
+    let (ox, oz) = dungeon_base();
+    height_at(ox, oz) >= DUNGEON_MIN_SURFACE_H
+        && height_at(ox + DUNGEON_ROOM_B_DX, oz) >= DUNGEON_MIN_SURFACE_H
+}
+
+/// 藏寶室核心座標（遺跡核心方塊所在，唯一）。純函式、確定性。
+pub fn dungeon_relic_pos() -> (i32, i32, i32) {
+    let (ox, oz) = dungeon_base();
+    (ox + DUNGEON_ROOM_B_DX, CAVE_FLOOR + 1, oz)
+}
+
+/// 遺跡神殿的方塊：入口室（(ox,oz) 為中心的 7×7 磚室）—— 一段一格寬的窄通道 ——
+/// 藏寶室（(ox+DUNGEON_ROOM_B_DX,oz) 為中心的另一座 7×7 磚室，正中央擺遺跡核心）。
+/// 整座神殿固定落在深層 [`CAVE_FLOOR`]..=[`CAVE_CEILING`]（與天然洞穴同一深度帶）：
+/// 樓板／天花板封頂，中間兩層淨空成室內。房間外圍是磚牆，僅面向通道那一側留門洞，
+/// 神殿本身**無獨立地表入口**——得從深層任一面牆挖穿才進得去，如天然洞穴、無特殊保護。
+/// 純函式、確定性、零狀態、零 IO；同座標永遠同結果。
+fn dungeon_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
+    if wy < CAVE_FLOOR || wy > CAVE_CEILING {
+        return None;
+    }
+    let (ox, oz) = dungeon_base();
+    let lx = wx - ox;
+    let lz = wz - oz;
+    // 早退：連外圍磚牆都摸不到，一定不是神殿的方塊——省掉候選/高度重算。
+    if lx < -DUNGEON_ROOM_HALF - 1
+        || lx > DUNGEON_ROOM_B_DX + DUNGEON_ROOM_HALF + 1
+        || lz.abs() > DUNGEON_ROOM_HALF + 1
+    {
+        return None;
+    }
+    if !dungeon_exists() {
+        return None;
+    }
+    let bx = lx - DUNGEON_ROOM_B_DX; // 相對藏寶室中心的偏移
+    let in_room_a = lx.abs() <= DUNGEON_ROOM_HALF && lz.abs() <= DUNGEON_ROOM_HALF;
+    let in_room_b = bx.abs() <= DUNGEON_ROOM_HALF && lz.abs() <= DUNGEON_ROOM_HALF;
+    let in_corridor = lx > DUNGEON_ROOM_HALF && lx < DUNGEON_ROOM_B_DX - DUNGEON_ROOM_HALF && lz == 0;
+    if !in_room_a && !in_room_b && !in_corridor {
+        return None;
+    }
+    // 樓板／天花板：整座神殿（房間＋通道）最底／最頂層一律磚封住，只留中間兩層當室內。
+    if wy == CAVE_FLOOR || wy == CAVE_CEILING {
+        return Some(Block::StoneBrick);
+    }
+    if in_corridor {
+        return Some(Block::Air); // 通道本身只有 lz==0 這一格寬，全程淨空。
+    }
+    // 房間牆：外圍周界皆磚牆，僅面向通道那一側留一格門洞（對齊通道 lz==0）。
+    let is_wall = if in_room_a {
+        (lx.abs() == DUNGEON_ROOM_HALF && !(lx == DUNGEON_ROOM_HALF && lz == 0))
+            || lz.abs() == DUNGEON_ROOM_HALF
+    } else {
+        (bx.abs() == DUNGEON_ROOM_HALF && !(bx == -DUNGEON_ROOM_HALF && lz == 0))
+            || lz.abs() == DUNGEON_ROOM_HALF
+    };
+    if is_wall {
+        return Some(Block::StoneBrick);
+    }
+    // 藏寶室核心：藏寶室正中央、室內下層那一格，擺遺跡核心（發光，供玩家探索抵達判定用）。
+    if in_room_b && bx == 0 && lz == 0 && wy == CAVE_FLOOR + 1 {
+        return Some(Block::RelicGlow);
+    }
+    Some(Block::Air)
+}
+
+/// 遺跡神殿探索半徑（世界方塊）：玩家走到藏寶室核心這麼近，視為「抵達遺跡核心」→
+/// 記一筆探索紀事＋給獎勵。藏寶室本身不大，走進室內就算到。純函式、確定性、零狀態；
+/// 神殿未生成時一律回 false，避免在深層石頭裡誤判抵達。
+pub const DUNGEON_DISCOVER_RADIUS: f32 = 3.0;
+pub fn near_dungeon_relic(px: f32, py: f32, pz: f32) -> bool {
+    if !px.is_finite() || !py.is_finite() || !pz.is_finite() {
+        return false;
+    }
+    if !dungeon_exists() {
+        return false;
+    }
+    let (tx, ty, tz) = dungeon_relic_pos();
+    let dx = px - tx as f32;
+    let dy = py - ty as f32;
+    let dz = pz - tz as f32;
+    dx * dx + dy * dy + dz * dz <= DUNGEON_DISCOVER_RADIUS * DUNGEON_DISCOVER_RADIUS
+}
+
 /// 探索紀事 v1（自主提案切片，接續 838/839）：這個確切座標是否正是某處遺跡柱頂裸露的乙太礦。
 ///
 /// 遺跡的乙太礦每處恰有一塊、位置固定——挖掉即成空氣、不會再生——所以「破壞方塊時這裡曾是
@@ -1448,6 +1601,11 @@ pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
             return Block::Sand;
         }
         return Block::Dirt;
+    }
+    // 地底遺跡神殿 v1（ROADMAP 975）：人工鑿建的房間＋通道，優先於天然洞穴腔室與礦脈——
+    // 巧合命中同一深層格時，神殿的磚牆/室內空間理應蓋過天然生成。
+    if let Some(db) = dungeon_block_at(wx, wy, wz) {
+        return db;
     }
     // 地下洞穴探索 v1（ROADMAP 934）：深層石頭層有機率被雕空成天然腔室（挖到會豁然開朗）。
     // 先判空腔——空腔內是空氣，比礦石/結晶優先（腔室不含礦，反而是「發現空間」本身）。
@@ -3197,5 +3355,130 @@ mod tests {
         assert!(!Block::AetherBloom.is_placeable());
         // 花冠是實心可站立的樹材（面剔除/碰撞正常）。
         assert!(Block::AetherBloom.is_solid());
+    }
+
+    // ── 地底遺跡神殿 v1（ROADMAP 975）──────────────────────────────────────────
+    #[test]
+    fn dungeon_base_is_deterministic() {
+        assert_eq!(dungeon_base(), dungeon_base());
+    }
+
+    #[test]
+    fn dungeon_is_far_from_all_spawn_anchors() {
+        let (ox, oz) = dungeon_base();
+        for (ax, az) in SPAWN_ANCHORS {
+            let (ddx, ddz) = ((ox - ax) as f32, (oz - az) as f32);
+            let dist = (ddx * ddx + ddz * ddz).sqrt();
+            assert!(dist > 150.0, "遺跡神殿離出生錨點 ({ax},{az}) 太近（{dist}格）");
+        }
+    }
+
+    #[test]
+    fn dungeon_actually_exists() {
+        // dungeon_base 會繞候選方位挑第一個兩端地表皆夠高的方位——神殿應真的生成得出來。
+        assert!(dungeon_exists(), "地底遺跡神殿應能生成");
+    }
+
+    #[test]
+    fn dungeon_floor_and_ceiling_seal_both_rooms_and_corridor() {
+        let (ox, oz) = dungeon_base();
+        // 入口室中心、藏寶室中心、通道中段：樓板(CAVE_FLOOR)/天花板(CAVE_CEILING)皆磚封住。
+        for lx in [0, DUNGEON_ROOM_B_DX, DUNGEON_ROOM_B_DX / 2] {
+            assert_eq!(block_at(ox + lx, CAVE_FLOOR, oz), Block::StoneBrick, "lx={lx} 樓板應為磚");
+            assert_eq!(block_at(ox + lx, CAVE_CEILING, oz), Block::StoneBrick, "lx={lx} 天花板應為磚");
+        }
+    }
+
+    #[test]
+    fn dungeon_interior_is_hollow_with_relic_at_treasure_room_center() {
+        let (ox, oz) = dungeon_base();
+        // 入口室室內（中心偏一格，避開牆）應淨空。
+        assert_eq!(block_at(ox + 1, CAVE_FLOOR + 1, oz), Block::Air, "入口室室內應淨空");
+        // 藏寶室正中央、室內下層：遺跡核心。
+        assert_eq!(
+            block_at(ox + DUNGEON_ROOM_B_DX, CAVE_FLOOR + 1, oz), Block::RelicGlow,
+            "藏寶室中心應為遺跡核心"
+        );
+        // 遺跡核心正上方（室內上層）仍是淨空可站立的空間。
+        assert_eq!(block_at(ox + DUNGEON_ROOM_B_DX, CAVE_CEILING - 1, oz), Block::Air);
+    }
+
+    #[test]
+    fn dungeon_walls_seal_perimeter_except_corridor_doorway() {
+        let (ox, oz) = dungeon_base();
+        // 入口室北側外牆（lz == -HALF，不對齊通道）應是實心磚，兩層室內高度皆然。
+        for wy in (CAVE_FLOOR + 1)..CAVE_CEILING {
+            assert_eq!(
+                block_at(ox, wy, oz - DUNGEON_ROOM_HALF), Block::StoneBrick,
+                "入口室北牆 wy={wy} 應為磚"
+            );
+        }
+        // 入口室面向通道那側（lx == +HALF, lz == 0）應留門洞，是淨空。
+        for wy in (CAVE_FLOOR + 1)..CAVE_CEILING {
+            assert_eq!(
+                block_at(ox + DUNGEON_ROOM_HALF, wy, oz), Block::Air,
+                "入口室通道門洞 wy={wy} 應淨空"
+            );
+        }
+    }
+
+    #[test]
+    fn dungeon_corridor_connects_the_two_rooms() {
+        let (ox, oz) = dungeon_base();
+        // 通道全程（兩室門洞之間）在室內層應淨空，真的連通兩座房間。
+        for lx in (DUNGEON_ROOM_HALF + 1)..(DUNGEON_ROOM_B_DX - DUNGEON_ROOM_HALF) {
+            assert_eq!(
+                block_at(ox + lx, CAVE_FLOOR + 1, oz), Block::Air,
+                "通道 lx={lx} 應淨空"
+            );
+        }
+    }
+
+    #[test]
+    fn dungeon_relic_is_unique_within_footprint() {
+        let (ox, oz) = dungeon_base();
+        let mut count = 0;
+        for lx in -(DUNGEON_ROOM_HALF + 1)..=(DUNGEON_ROOM_B_DX + DUNGEON_ROOM_HALF + 1) {
+            for lz in -(DUNGEON_ROOM_HALF + 1)..=(DUNGEON_ROOM_HALF + 1) {
+                for wy in CAVE_FLOOR..=CAVE_CEILING {
+                    if block_at(ox + lx, wy, oz + lz) == Block::RelicGlow {
+                        count += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(count, 1, "整座神殿範圍內應恰有一顆遺跡核心");
+    }
+
+    #[test]
+    fn near_dungeon_relic_true_at_relic_false_far() {
+        let (tx, ty, tz) = dungeon_relic_pos();
+        assert!(near_dungeon_relic(tx as f32, ty as f32, tz as f32), "站在核心應判定抵達");
+        assert!(
+            !near_dungeon_relic(tx as f32 + DUNGEON_DISCOVER_RADIUS + 5.0, ty as f32, tz as f32),
+            "超出探索半徑不該判定抵達"
+        );
+        // 出生原點離神殿夠遠，不該誤判抵達。
+        assert!(!near_dungeon_relic(0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn near_dungeon_relic_rejects_nonfinite() {
+        assert!(!near_dungeon_relic(f32::NAN, 0.0, 0.0));
+        assert!(!near_dungeon_relic(0.0, f32::INFINITY, 0.0));
+    }
+
+    #[test]
+    fn dungeon_block_at_none_far_outside_footprint() {
+        let (ox, oz) = dungeon_base();
+        assert_eq!(dungeon_block_at(ox + 500, CAVE_FLOOR + 1, oz), None);
+        assert_eq!(dungeon_block_at(ox, 0, oz), None, "垂直帶外不該命中");
+    }
+
+    #[test]
+    fn relic_glow_roundtrips_u8_and_placeable() {
+        assert_eq!(Block::from_u8(Block::RelicGlow as u8), Some(Block::RelicGlow));
+        assert!(Block::RelicGlow.is_placeable(), "遺跡核心挖下後應可重新擺放當光源");
+        assert!(Block::RelicGlow.is_solid());
     }
 }

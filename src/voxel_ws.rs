@@ -129,6 +129,7 @@ use crate::voxel_pet_fright as vpetfright;
 use crate::voxel_proximity_teach as vptteach;
 use crate::voxel_envoy_mark as venvoy;
 use crate::voxel_treasure as vtreasure;
+use crate::voxel_dungeon as vdungeon;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
@@ -4890,6 +4891,9 @@ async fn handle_socket(
     // 世界奇觀·乙太世界樹 v1（ROADMAP 940）：這條連線上一 tick 是否正站在世界樹腳下，用來偵測
     // 「剛走到」那一刻只嘗試記一次探索紀事（同上，逗留原地時省一趟寫鎖）。
     let mut was_near_worldtree = false;
+    // 地底遺跡神殿 v1（ROADMAP 975）：這條連線上一 tick 是否正站在藏寶室核心旁，用來偵測
+    // 「剛挖穿石牆走進來」那一刻只嘗試記一次探索紀事＋領一次獎勵（同上，逗留原地省一趟寫鎖）。
+    let mut was_near_dungeon = false;
 
     // 玩家生存指標 tick（溫和版）：per-connection 每秒推進一次飢餓衰減／溺水／飽食回血，
     // 並在指標變動時單播 player_stats（只給玩家自己，減噪）。放這條連線的 select loop 裡跑，
@@ -5068,6 +5072,43 @@ async fn handle_socket(
                     }
                 }
                 was_near_worldtree = near_worldtree;
+                // 地底遺跡神殿 v1（ROADMAP 975）：玩家一路往深處挖，挖穿石牆走進藏寶室核心旁的
+                // 那一刻 → 記一筆探索紀事、解鎖里程碑、給一份一次性豐厚獎勵、順手看看先前旅人的
+                // 留言。全世界只有這一座，用核心座標（唯一、確定性）當去重鍵，同一玩家只領一次。
+                let near_dungeon = voxel::near_dungeon_relic(px, py, pz);
+                if near_dungeon && !was_near_dungeon {
+                    let (dtx, dty, dtz) = voxel::dungeon_relic_pos();
+                    let found = {
+                        let mut d = hub().discovery.write().unwrap();
+                        d.record(&name, vdisc::LandmarkKind::Dungeon, (dtx, dtz), dtx, dty, dtz)
+                    }; // discovery 寫鎖釋放
+                    if let Some(entry) = found {
+                        vdisc::append_discovery(&entry);
+                        try_unlock_milestone(&name, vdungeon::MILESTONE_ID, &out_tx);
+                        let (rid, rcount) = vdungeon::relic_reward();
+                        let inv_entry = hub().inventory.write().unwrap().give(&name, rid, rcount);
+                        vinv::append_inv(&inv_entry);
+                        let new_count = hub().inventory.read().unwrap().count(&name, rid);
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({
+                                "t": "inv_update",
+                                "block_id": rid,
+                                "count": new_count
+                            })
+                            .to_string(),
+                        ));
+                        send_landmark_notes(vdisc::LandmarkKind::Dungeon, (dtx, dtz), dtx, dty, dtz, &out_tx).await;
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({
+                                "t": "dungeon_discovered",
+                                "line": vdungeon::relic_discovered_line(),
+                            })
+                            .to_string(),
+                        ));
+                        vfeed::append_feed("探索", &name, &vdungeon::relic_feed_detail());
+                    }
+                }
+                was_near_dungeon = near_dungeon;
                 // 溺水扣血走統一傷害路徑（含死亡→重生判定、廣播、持久化）。
                 if drown_dmg > 0 {
                     apply_player_damage(&name, drown_dmg, &out_tx).await;
