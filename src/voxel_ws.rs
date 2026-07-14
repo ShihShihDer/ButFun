@@ -20928,21 +20928,27 @@ fn tick_residents(dt: f32) {
             *tier_matrix.get(&(a.to_string(), b.to_string())).unwrap_or(&vbonds::BondTier::Stranger)
         });
         if !cliques.is_empty() {
-            // 只挑第一個（最大）圈子；圈子成員皆閒（無其他任務、冷卻已到期）才考慮觸發。
-            let group = &cliques[0];
-            let ready = group.iter().all(|gid| {
-                residents.iter().find(|r| &r.id == gid).is_some_and(|r| {
-                    r.clique_meet.is_none()
-                        && r.cheer_target.is_none()
-                        && r.visiting.is_none()
-                        && r.expedition.is_none()
-                        && r.follow.is_none()
-                        && r.say.is_empty()
-                        && r.clique_cooldown <= 0.0
-                        && !directed_snaps.contains_key(gid)
+            // 人口成長後村莊常同時存在兩組以上互不相干的死黨小圈子；過去只挑 cliques[0]
+            // （排序穩定，永遠選中同一組）——改用 disjoint_ready_cliques 讓每組彼此不重疊
+            // 的小圈子都各自有機會被考慮，不再有一組永遠聚不成的死結（voxel_clique v2）。
+            let ready_groups = vclique::disjoint_ready_cliques(&cliques, |group| {
+                group.iter().all(|gid| {
+                    residents.iter().find(|r| &r.id == gid).is_some_and(|r| {
+                        r.clique_meet.is_none()
+                            && r.cheer_target.is_none()
+                            && r.visiting.is_none()
+                            && r.expedition.is_none()
+                            && r.follow.is_none()
+                            && r.say.is_empty()
+                            && r.clique_cooldown <= 0.0
+                            && !directed_snaps.contains_key(gid)
+                    })
                 })
             });
-            if ready && rand::random::<f32>() < vclique::GATHER_CHANCE {
+            for group in ready_groups {
+                if rand::random::<f32>() >= vclique::GATHER_CHANCE {
+                    continue;
+                }
                 // 聚會點固定用圈子裡 id 最小那位的家域（純函式排序過的 group[0]）。
                 let host_id = group[0].clone();
                 let (gx, gz) = residents
