@@ -18,10 +18,21 @@
 //! - 送對禮物（722，`classify_item_desire`）是「猜中她心願」的驚喜；本刀是她**明講**要什麼、你照
 //!   單去採——一個靠猜、一個靠她開口。
 //!
+//! **v2（自主提案，補上 v1 文件說了但沒真的做到的另一半）**：v1 的道理寫著「沒送＝過段時間她自己
+//! 作罷」，但實作從沒讓 `open_request` 逾期清掉——她開口一次，你沒送到，`open_request` 就永遠卡
+//! 在 `Some`，往後這位居民**這輩子都問不出下一次**（`open_request.is_none()` 這道閘永遠不過，
+//! 沒有任何報錯或提示，純粹靜默壞掉）。本刀補上真正的到期：等了 [`REQUEST_GIVEUP_SECS`] 材料還沒
+//! 到，她就自己放下這份期待、清掉請求，之後還能再開口。同時第一次讓「你沒兌現」留下痕跡——不是
+//! 扣好感的懲罰，而是**連續兩次**都落空在**同一個人**身上時，她輕聲說一句放下、記一筆淡淡的心情
+//! （[`record_miss`] / [`should_note_unfulfilled`] / [`unfulfilled_say_line`] / [`unfulfilled_memory_line`]）。
+//! 單次錯過（可能你剛好不在）給足夠的信任、不留痕跡；換了對象或中途被別人送到過都會重新起算。
+//! 這是 PLAN_ETHERVOX「記憶→行為·你的互動有後果」第一次真的落在「你選擇不回應」這一側，而不只是
+//! 「你回應了會怎樣」。
+//!
 //! **純邏輯層**：是否開口（[`should_post_request`]）、討什麼（[`pick_request`]）、把請求包成一句話
-//! （[`request_line`]）、送到後的道謝（[`fulfil_thanks_line`]）與記進記憶的摘要（[`fulfil_memory_line`]）
-//! 全是確定性純函式，零 LLM、零鎖、零 IO。冷卻計時 / 好感讀取 / 記憶寫入 / 送禮判定全在 `voxel_ws.rs`，
-//! 沿用既有招呼那條已驗證的短鎖循序。
+//! （[`request_line`]）、送到後的道謝（[`fulfil_thanks_line`]）與記進記憶的摘要（[`fulfil_memory_line`]）、
+//! 逾期未兌現的追蹤與台詞（v2，見上）全是確定性純函式，零 LLM、零鎖、零 IO。冷卻計時 / 好感讀取 /
+//! 記憶寫入 / 送禮判定全在 `voxel_ws.rs`，沿用既有招呼那條已驗證的短鎖循序。
 //!
 //! **成本 / 濫用防護**：討的材料只從一份**固定白名單**（[`REQUESTABLE`]，都是好採的基礎資源）裡選，
 //! 句子全走固定模板，**永不夾帶玩家原話**（無注入 / NSFW 風險）；只對好感達 [`REQUEST_MIN_AFFINITY`]
@@ -118,6 +129,60 @@ pub fn fulfil_memory_line(player: &str, item_name: &str) -> String {
     format!("我開口向{player}討{item_name}，對方真的替我採來了——這份幫忙我記在心裡。")
 }
 
+/// 依 `item_id` 從白名單反查材料名。找不到（理論上不會發生，材料一律出自 [`pick_request`]）就
+/// 回退成通用字「材料」，永不 panic、永不回空。
+pub fn item_name_by_id(item_id: u8) -> &'static str {
+    REQUESTABLE
+        .iter()
+        .find(|w| w.item_id == item_id)
+        .map(|w| w.name)
+        .unwrap_or("材料")
+}
+
+/// 開口討東西後，等這麼久（秒）材料還沒送到，就自己放下這份期待、清掉請求——不然 `open_request`
+/// 卡在 `Some` 永遠不清，這位居民往後再也開不了口。刻意比 [`REQUEST_COOLDOWN_SECS`] 短：給到期後
+/// 剩餘的冷卻補完，讓「從開口到下次能再開口」的總時距貼齊原本設計的稀有節奏，同時不再永久卡死。
+pub const REQUEST_GIVEUP_SECS: f32 = 120.0;
+
+/// 連續幾次都落空在同一個人身上，才算「值得留下痕跡」——單次錯過（可能對方剛好不在）給足夠的
+/// 信任，不記在心上；連續兩次才代表這不是巧合。
+pub const REQUEST_UNFULFILLED_TRACE_THRESHOLD: u8 = 2;
+
+/// 給上一輪的追蹤狀態（`(上次落空對象, 連續次數)`，若有）與這次落空的玩家名，算出新的追蹤狀態。
+/// 同一人再次落空 → 次數 +1；換了對象、或這是第一次追蹤 → 從 1 重新起算（不遷怒別人）。
+/// 純函式、飽和加法（`u8` 不會溢位 panic）。
+pub fn record_miss(prev: Option<(&str, u8)>, player: &str) -> (String, u8) {
+    match prev {
+        Some((p, misses)) if p == player => (player.to_string(), misses.saturating_add(1)),
+        _ => (player.to_string(), 1),
+    }
+}
+
+/// 這次落空的連續次數是否已達 [`REQUEST_UNFULFILLED_TRACE_THRESHOLD`]，值得留下一句話與一筆記憶。
+pub fn should_note_unfulfilled(misses: u8) -> bool {
+    misses >= REQUEST_UNFULFILLED_TRACE_THRESHOLD
+}
+
+/// 連續落空達門檻時，居民輕聲放下這份期待的一句話——不指責、不扣好感，純粹不再等了。
+/// 依 `pick` 確定性輪替；截到泡泡框內、永不回空。
+pub fn unfulfilled_say_line(pick: usize) -> String {
+    const TEMPLATES: [&str; 3] = [
+        "算了，你大概是忙，我不勉強你。",
+        "嗯……看來這陣子不方便，那就算了吧。",
+        "沒關係，我不等了，下次有緣再說。",
+    ];
+    TEMPLATES[pick % TEMPLATES.len()]
+        .chars()
+        .take(REQUEST_SAY_MAX_CHARS)
+        .collect()
+}
+
+/// 連續落空達門檻時，記進「關於這位玩家」的一筆淡淡記憶（第一人稱、不指責，純粹記下這份期待
+/// 沒被接住）。供日後回想 / 日記昇華引用。
+pub fn unfulfilled_memory_line(player: &str, item_name: &str) -> String {
+    format!("我跟{player}討過{item_name}，接連兩次都沒等到，這次我打算不再開口了。")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +272,56 @@ mod tests {
     fn feed_line_names_resident_and_item() {
         let f = request_feed_line("露娜", "沙");
         assert!(f.contains("露娜") && f.contains("沙"), "動態牆應點名居民與材料");
+    }
+
+    #[test]
+    fn item_name_by_id_finds_whitelist_and_falls_back() {
+        for w in &REQUESTABLE {
+            assert_eq!(item_name_by_id(w.item_id), w.name);
+        }
+        // 不在白名單的 id → 回退固定字串，不 panic。
+        assert_eq!(item_name_by_id(255), "材料");
+    }
+
+    #[test]
+    fn record_miss_same_player_increments_else_resets() {
+        // 首次追蹤 → 1。
+        assert_eq!(record_miss(None, "諾瓦"), ("諾瓦".to_string(), 1));
+        // 同一人連續落空 → 累加。
+        assert_eq!(record_miss(Some(("諾瓦", 1)), "諾瓦"), ("諾瓦".to_string(), 2));
+        assert_eq!(record_miss(Some(("諾瓦", 2)), "諾瓦"), ("諾瓦".to_string(), 3));
+        // 換了對象 → 從 1 重新起算，不遷怒別人。
+        assert_eq!(record_miss(Some(("諾瓦", 5)), "露娜"), ("露娜".to_string(), 1));
+        // u8 飽和加法不 panic。
+        assert_eq!(record_miss(Some(("諾瓦", u8::MAX)), "諾瓦").1, u8::MAX);
+    }
+
+    #[test]
+    fn should_note_unfulfilled_respects_threshold_boundary() {
+        assert!(!should_note_unfulfilled(REQUEST_UNFULFILLED_TRACE_THRESHOLD - 1), "未達門檻不留痕跡");
+        assert!(should_note_unfulfilled(REQUEST_UNFULFILLED_TRACE_THRESHOLD), "達門檻即留痕跡");
+        assert!(should_note_unfulfilled(REQUEST_UNFULFILLED_TRACE_THRESHOLD + 3), "超過門檻仍留痕跡");
+    }
+
+    #[test]
+    fn unfulfilled_say_line_fits_frame_and_never_empty() {
+        for pick in 0..10 {
+            let line = unfulfilled_say_line(pick);
+            assert!(!line.is_empty(), "放下的話不該為空");
+            assert!(
+                line.chars().count() <= REQUEST_SAY_MAX_CHARS,
+                "放下的話不該破泡泡框：{line}"
+            );
+        }
+        // 同 pick → 同一句（確定性）。
+        assert_eq!(unfulfilled_say_line(2), unfulfilled_say_line(2));
+    }
+
+    #[test]
+    fn unfulfilled_memory_names_player_and_item() {
+        let m = unfulfilled_memory_line("諾瓦", "木頭");
+        assert!(m.contains("諾瓦"), "記憶應含玩家名");
+        assert!(m.contains("木頭"), "記憶應含材料名");
+        assert!(!m.is_empty());
     }
 }

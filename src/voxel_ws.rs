@@ -423,9 +423,18 @@ struct VoxelResident {
     /// 驚喜餽贈冷卻倒數（秒）：> 0 表示最近才對某位玩家送過驚喜，暫不再送。
     hobby_gift_timer: f32,
     /// 目前尚未了結的請求：`Some(item_id)` 表示居民正等著有人送這樣材料來（同時只掛一個）。
-    /// 玩家把這樣材料當禮物送到即算幫上忙（走 `Gift` 送禮管線），送到後清成 `None`。
+    /// 玩家把這樣材料當禮物送到即算幫上忙（走 `Gift` 送禮管線），送到後清成 `None`；逾期
+    /// （[`vrequest::REQUEST_GIVEUP_SECS`]）沒等到也清成 `None`（v2，見下）。
     /// 純記憶體、重啟歸零（與渴望 / 心事同款：未了的請求重啟後淡去，不落持久化）。
     open_request: Option<u8>,
+    /// 這份未了請求是向誰開口的（居民拜託你幫個小忙 v2，逾期未兌現）：開口時記下最靠近的玩家顯示
+    /// 名，逾期給不到才用得上——歸還時 `take()` 清空，避免下一份請求誤沿用舊對象。純記憶體、重啟歸零。
+    request_target: Option<String>,
+    /// 上一次「逾期沒等到」是落在哪位玩家身上、連續幾次（居民拜託你幫個小忙 v2）：換了對象會重新
+    /// 起算（見 [`vrequest::record_miss`]），不遷怒別人；純記憶體、重啟歸零。
+    request_trace_player: Option<String>,
+    /// 對應上一欄的連續落空次數，達 [`vrequest::REQUEST_UNFULFILLED_TRACE_THRESHOLD`] 才留下痕跡。
+    request_trace_misses: u8,
     /// 讀牌冷卻倒數（秒，居民讀牌 v1）：> 0 表示最近念過附近的告示牌，暫不再讀，稀少才有感。
     read_sign_timer: f32,
     /// 上一塊「寫進記憶」的牌面文字（居民讀牌 v2）：讀到同一塊牌重複念沒關係，但只有
@@ -1916,8 +1925,11 @@ fn build_resident(
             hobby_stash: 0,
             hobby_collect_timer: 20.0 + i as f32 * 15.0,
             hobby_gift_timer: 30.0 + i as f32 * 40.0,
-            // 一上線手邊沒有未了的請求。
+            // 一上線手邊沒有未了的請求，也沒有任何逾期未兌現的追蹤（v2）。
             open_request: None,
+            request_target: None,
+            request_trace_player: None,
+            request_trace_misses: 0,
             // 讀牌冷卻（居民讀牌 v1）：錯開初始冷卻，避免啟動後短時間全員同時讀同一塊牌。
             read_sign_timer: 30.0 + i as f32 * 20.0,
             // 尚未讀過任何牌（居民讀牌 v2）。
@@ -8461,9 +8473,13 @@ async fn handle_socket(
                             r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_GIFT);
                         // 拜託你幫個小忙 v1：這份禮正中她開口討的材料 → 請求了結、清掉並重置冷卻
                         //（避免剛幫完又立刻再討，讓「反過來拜託你」保持稀有有份量）。
+                        // v2：這份禮送到了 → 她原諒了先前的落空，追蹤歸零（你這次真的兌現了，
+                        // 不因你曾經錯過就一直記著）；`request_target` 一併清空，避免下次逾期誤沿用。
                         if request_fulfilled {
                             r.open_request = None;
                             r.request_timer = vrequest::REQUEST_COOLDOWN_SECS;
+                            r.request_target = None;
+                            r.request_trace_misses = 0;
                         }
                         // 你送的食物她會細細享用 v1（ROADMAP 765）：若送的是食物，居民不立刻吃掉，
                         // 而是捧在手中，稍後在閒下來的安靜片刻真的享用（見 tick_residents 的享用分支）。
@@ -15722,6 +15738,10 @@ fn tick_residents(dt: f32) {
     // (居民顯示名, 材料名)；residents 寫鎖釋放後鎖外統一補一則城鎮動態牆（讓不在場 / 回來的玩家
     // 也讀到「某居民正想要某材料」）。純模板、只嵌居民名＋材料名、無記憶原文。
     let mut request_feeds: Vec<(&'static str, &'static str)> = Vec::new();
+    // 居民拜託你幫個小忙 v2（自主提案，逾期未兌現）：連續兩次都落空在同一位玩家身上時，鎖內設好
+    // 泡泡話、收集 (居民 id, 玩家顯示名, 材料名) → residents 寫鎖釋放後鎖外補一筆淡淡記憶（不指責、
+    // 不扣好感），守死鎖鐵律。
+    let mut request_giveups: Vec<(String, String, String)> = Vec::new();
     // 名號立牌 v1（自主提案）：鎖內偵測「居民**第一次**為某玩家安下名號」→ 鎖外在牠自家門旁刻一塊
     // 名號榮譽牌（走既有 Sign 管線），把口說的名號實體化成世界裡的永久印記。收集
     // (居民 id, 居民顯示名, 家 x, 家 z, 玩家顯示名, 名號角色)；鎖外去重（掃 SignStore，重啟安全）後立牌。
@@ -16656,14 +16676,38 @@ fn tick_residents(dt: f32) {
             // 主動向你討一樣好採集的基礎材料（木/石/煤/沙）。至今「幫忙採集」永遠是玩家對居民下令
             // （`voxel_fetch`）；這裡第一次讓居民對你開口，把「採集」這條人類樂趣接上「居民的需要」。
             // 與招呼 / 掏心刻意錯開：只在這一 tick 前面都沒觸發（`r.say` 仍空）時才可能發生，
-            // 兩拍不同幀、不互相蓋泡泡。冷卻長（300s）＋好感門檻＋同時只掛一個未了請求＝稀有防洗版。
+            // 兩拍不同幀、不互相蓋泡泡。冷卻長＋好感門檻＋同時只掛一個未了請求＝稀有防洗版。
             if r.request_timer > 0.0 {
                 r.request_timer -= dt;
-            } else if r.say.is_empty()
-                && !r.seeking_comfort
-                && r.approaching_esteem.is_none()
-                && r.open_request.is_none()
-            {
+            } else if let Some(item_id) = r.open_request {
+                // 拜託你幫個小忙 v2（自主提案，逾期未兌現）：等了 `REQUEST_GIVEUP_SECS` 材料還沒到，
+                // 她自己放下這份期待——不然 `open_request` 會卡在 `Some` 直到重啟，這位居民往後
+                // 再也開不了口（`else if let Some(item_id) = r.open_request` 這條分支本身就是舊版
+                // 「什麼都不做」的靜默死路，現在改成真的把它清掉）。連續兩次都落空在同一人身上，
+                // 才留一句放下的話＋一筆淡淡記憶（單次錯過信任對方，不遷怒）。
+                let item_name = vrequest::item_name_by_id(item_id);
+                if let Some(player) = r.request_target.take() {
+                    let prev = r
+                        .request_trace_player
+                        .as_deref()
+                        .map(|p| (p, r.request_trace_misses));
+                    let (trace_player, misses) = vrequest::record_miss(prev, &player);
+                    if vrequest::should_note_unfulfilled(misses) {
+                        let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                        r.say = vrequest::unfulfilled_say_line(pick);
+                        r.say_timer = SAY_SECS;
+                        request_giveups.push((r.id.clone(), player, item_name.to_string()));
+                        r.request_trace_misses = 0; // 留過痕跡即歸零，不逐次念叨。
+                    } else {
+                        r.request_trace_misses = misses;
+                    }
+                    r.request_trace_player = Some(trace_player);
+                }
+                r.open_request = None;
+                // 補完剩餘冷卻，讓「從開口到下次能再開口」貼齊原本設計的稀有節奏。
+                r.request_timer =
+                    (vrequest::REQUEST_COOLDOWN_SECS - vrequest::REQUEST_GIVEUP_SECS).max(0.0);
+            } else if r.say.is_empty() && !r.seeking_comfort && r.approaching_esteem.is_none() {
                 if let Some((d2, nearest_name)) =
                     nearest_player_info(r.body.x, r.body.z, &player_pts)
                 {
@@ -16675,8 +16719,9 @@ fn tick_residents(dt: f32) {
                         // 好感讀鎖即釋（與招呼 / 掏心同款短讀鎖，不巢狀、不持鎖 await）。
                         let affinity =
                             hub().memory.read().unwrap().affinity_count(nearest_name, &r.id);
-                        // has_open_request 由外層 `r.open_request.is_none()` 分支保證為 false；
-                        // roll 已在上面過門檻，這裡把「熟不熟該不該討」的判定集中在純函式裡。
+                        // has_open_request 由外層 `else if let Some(item_id) = r.open_request`
+                        // 分支保證此刻為 `None`；roll 已在上面過門檻，這裡把「熟不熟該不該討」的
+                        // 判定集中在純函式裡。
                         if vrequest::should_post_request(affinity, true, false, 0.0, 1.0) {
                             let pick =
                                 (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
@@ -16686,8 +16731,9 @@ fn tick_residents(dt: f32) {
                                 .take(vrequest::REQUEST_SAY_MAX_CHARS)
                                 .collect();
                             r.say_timer = SAY_SECS;
-                            r.request_timer = vrequest::REQUEST_COOLDOWN_SECS;
+                            r.request_timer = vrequest::REQUEST_GIVEUP_SECS;
                             r.open_request = Some(req.item_id);
+                            r.request_target = Some(nearest_name.to_string());
                             // 城鎮動態牆（鎖外 flush，守死鎖鐵律）。
                             request_feeds.push((r.name, req.name));
                         }
@@ -22817,6 +22863,16 @@ fn tick_residents(dt: f32) {
     // 有機會去採來幫忙。純 IO、不巢狀、守死鎖鐵律；文字為純模板、只嵌居民名＋材料名、無記憶原文。
     for (rname, item_name) in &request_feeds {
         vfeed::append_feed("求助", rname, &vrequest::request_feed_line(rname, item_name));
+    }
+
+    // 5c-2g-1d) 拜託你幫個小忙 v2（自主提案，逾期未兌現）：連續兩次都落空在同一位玩家身上（泡泡
+    // 已於鎖內設好），鎖外把「這份期待沒被接住」記進她對這位玩家的 episodic 記憶——不指責、不扣
+    // 好感，純粹留下一筆淡淡的痕跡，供日後回想 / 日記昇華引用。記憶寫鎖即釋、append IO 在鎖外
+    // （守死鎖鐵律）；不公開上城鎮動態牆（這是她與這位玩家之間私下的事，不必攤在全村面前）。
+    for (rid, player, item_name) in &request_giveups {
+        let summary = vrequest::unfulfilled_memory_line(player, item_name);
+        let entry = hub().memory.write().unwrap().add_memory(rid, player, &summary);
+        vmem::append_memory(&entry);
     }
 
     // 5c-2g-2) 名號 Feed（居民為你取一個名號 v1）：居民打招呼時第一次為某玩家昇華出一個名號、或
