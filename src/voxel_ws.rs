@@ -15059,7 +15059,11 @@ fn maybe_grow_prosperity() {
         let (entry, leveled_up, new_level) = {
             hub().prosperity.write().unwrap().grow(&claim.owner_key, xp_delta)
         }; // prosperity 寫鎖釋放
-        vprosperity::append_prosperity(&entry);
+        // 滿級＋庫存滿的離線領地：這一拍不改變任何可觀察狀態，別寫進 append-only 帳本
+        // （否則檔案永遠線性長大、開機重播時間跟著單調變長，見 review #1267）。
+        if entry.xp_delta > 0 || entry.produced_delta > 0 {
+            vprosperity::append_prosperity(&entry);
+        }
         if leveled_up {
             vfeed::append_feed(
                 "領地繁榮",

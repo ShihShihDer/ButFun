@@ -228,7 +228,13 @@ impl ProsperityStore {
     /// 回傳 `(供 append 的事件, 這次是否剛好升級, 新等級)`。
     pub fn grow(&mut self, owner_key: &str, xp_delta: u32) -> (ProsperityEntry, bool, u32) {
         let before_level = self.level_for(owner_key);
-        let after_xp = self.xp_for(owner_key).saturating_add(xp_delta);
+        let before_xp = self.xp_for(owner_key);
+        // 等級已封頂（xp 達 MAX_LEVEL 門檻）時，再加經驗不會改變 level_for_xp 的結果——
+        // 記了也沒用，白白讓 append-only 帳本永遠長大。這裡把它當 0，讓呼叫端能判斷
+        // 「這一拍是否真的改變了狀態」而略過寫入（見 maybe_grow_prosperity）。
+        let capped_xp_delta =
+            if before_xp >= LEVEL_XP_STEP * MAX_LEVEL { 0 } else { xp_delta };
+        let after_xp = before_xp.saturating_add(capped_xp_delta);
         self.xp.insert(owner_key.to_string(), after_xp);
         let after_level = level_for_xp(after_xp);
 
@@ -241,7 +247,7 @@ impl ProsperityStore {
 
         let entry = ProsperityEntry {
             owner_key: owner_key.to_string(),
-            xp_delta,
+            xp_delta: capped_xp_delta,
             produced_delta,
             collected_delta: 0,
         };
@@ -430,6 +436,30 @@ mod tests {
             store.grow("a@example.com", 0);
         }
         assert_eq!(store.stockpile_for("a@example.com"), MAX_STOCKPILE);
+    }
+
+    #[test]
+    fn grow_is_noop_once_level_and_stockpile_are_capped() {
+        let mut store = ProsperityStore::new();
+        // 練到滿級。
+        for _ in 0..(LEVEL_XP_STEP * MAX_LEVEL) {
+            store.grow("a@example.com", 1);
+        }
+        assert_eq!(store.level_for("a@example.com"), MAX_LEVEL);
+        // 刷爆庫存到封頂。
+        for _ in 0..(MAX_STOCKPILE + 5) {
+            store.grow("a@example.com", growth_this_tick(false));
+        }
+        assert_eq!(store.stockpile_for("a@example.com"), MAX_STOCKPILE);
+
+        // 滿級＋庫存滿之後，再跑 N 拍該是純 no-op：不改變任何可觀察狀態，
+        // 呼叫端才能靠這個判斷「這一拍不用寫進 append-only 帳本」。
+        for _ in 0..20 {
+            let (entry, leveled_up, _) = store.grow("a@example.com", growth_this_tick(true));
+            assert_eq!(entry.xp_delta, 0, "已封頂不該再記經驗");
+            assert_eq!(entry.produced_delta, 0, "庫存已滿不該再產出");
+            assert!(!leveled_up);
+        }
     }
 
     #[test]
