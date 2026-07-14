@@ -198,6 +198,7 @@ use crate::voxel_daybreak as vdaybreak;
 use crate::voxel_reunion as vreunion;
 use crate::voxel_longing as vlonging;
 use crate::voxel_farbond as vfar;
+use crate::voxel_famine as vfamine;
 use crate::voxel_pathwear as vpath;
 use crate::voxel_expedition as vexp;
 use crate::voxel_frontier_visit as vfvisit;
@@ -2406,6 +2407,22 @@ struct VoxelHub {
     /// 本場遷徙的走向（候鳥遷徙 v1，ROADMAP 944）：入春＝`Arrival`（歸來）、入秋＝`Departure`（離去）；
     /// 隨快照廣播 `migration_kind` 供前端決定鳥群飛行方向。純記憶體、與 `migration_ticks` 同壽命。
     migration_kind: RwLock<Option<vmigration::MigrationKind>>,
+    /// 荒年狀態機（荒年 v1，ROADMAP 986）：`remaining > 0` = 此刻荒年進行中（居民餓意加速累積），
+    /// `cooldown > 0` = 尚在觸發後的強制冷卻。純記憶體、重啟後從平靜（雙為 0）重新起算——只有
+    /// 「熬過幾次荒年」的累計次數（見 `famine_survived_count`）才持久化，狀態機本身可接受歸零。
+    /// 每次 `tick_farm`（15 秒）由純函式 `vfamine::next_famine` 推進。
+    famine_tick: RwLock<vfamine::FamineTick>,
+    /// 荒年剛開始的一次性旗標（ROADMAP 986）：`tick_farm` 觸發新荒年時設 true，`tick_residents`
+    /// 讀到後立即清回 false（consume-once），觸發附近醒著居民抬頭感到日子緊了一點的心聲。
+    famine_started_flag: RwLock<bool>,
+    /// 荒年剛結束的一次性旗標（ROADMAP 986），consume-once，觸發居民鬆一口氣的心聲。
+    famine_ended_flag: RwLock<bool>,
+    /// 本輪荒年進行中，被玩家餵飽正餓著居民化解的次數（ROADMAP 986）：荒年開始時歸零，
+    /// 每次化解 +1，荒年結束那一刻連同次數落地為一筆持久記錄、然後歸零等待下一輪。
+    famine_helped_this_round: RwLock<u32>,
+    /// 村莊累計「熬過幾次荒年」的次數（ROADMAP 986）：啟動時從 `voxel_famines.jsonl` 行數回復，
+    /// append-only、向後相容，是荒年這條線唯一持久化的部分——不隨伺服器重啟歸零。
+    famine_survived_count: RwLock<u32>,
     /// 上一輪是否處於「滿月＋夜」狀態（月有圓缺 v1，ROADMAP 946）：`tick_residents` 每輪由世界時鐘
     /// 現算月相受光比例、合成「滿月夜」旗標與此比對——`false→true` 的上升緣才上一則「今夜月圓」城鎮
     /// 動態（每個滿月夜只播一次、不逐 tick 洗版）。純記憶體、重啟歸零（比照流星 `meteor_ticks` 慣例）。
@@ -3469,6 +3486,13 @@ fn hub() -> &'static VoxelHub {
             // 候鳥遷徙 v1（ROADMAP 944）：啟動時天上無候鳥（入春／入秋換季那一刻才觸發一場遷徙）。
             migration_ticks: RwLock::new(0),
             migration_kind: RwLock::new(None),
+            // 荒年 v1（ROADMAP 986）：啟動時平靜、無冷卻（狀態機純記憶體歸零可接受）；
+            // 累計次數從 append-only 記錄回復，重啟不歸零。
+            famine_tick: RwLock::new(vfamine::FamineTick::default()),
+            famine_started_flag: RwLock::new(false),
+            famine_ended_flag: RwLock::new(false),
+            famine_helped_this_round: RwLock::new(0),
+            famine_survived_count: RwLock::new(vfamine::load_famine_survived_count()),
             // 月有圓缺 v1（ROADMAP 946）：啟動時尚未進入任何滿月夜（等世界時鐘走到滿月相位＋入夜才觸發）。
             was_full_moon_night: RwLock::new(false),
             // 季節輪替 v1（ROADMAP 798）：啟動時世界日數為 0 ＝初春；之後靠 tick_residents 逐日推進換季。
@@ -13261,6 +13285,40 @@ fn tick_farm() {
             *hub().migration_kind.write().unwrap() = None;
         }
     }
+    // 荒年 v1（ROADMAP 986）：獨立短鎖推進荒年狀態機（低機率觸發、固定時長、觸發後強制冷卻）；
+    // 偵測開始/結束轉換，設一次性旗標供 tick_residents 觸發居民反應，Feed／持久化在偵測到轉換
+    // 的當下直接處理（前一把鎖已釋放、各鎖短取即釋、不巢狀，守死鎖鐵律）。
+    {
+        let famine_event = {
+            let mut ft = hub().famine_tick.write().unwrap();
+            let (next, ev) = vfamine::next_famine(*ft, rand::random::<f32>());
+            *ft = next;
+            ev
+        }; // famine_tick 寫鎖釋放
+        match famine_event {
+            vfamine::FamineEvent::Started => {
+                *hub().famine_started_flag.write().unwrap() = true;
+                vfeed::append_feed(vfamine::FEED_KIND, "乙太方界", vfamine::famine_start_feed_detail());
+            }
+            vfamine::FamineEvent::Ended => {
+                *hub().famine_ended_flag.write().unwrap() = true;
+                let helped =
+                    std::mem::take(&mut *hub().famine_helped_this_round.write().unwrap());
+                let total = {
+                    let mut cnt = hub().famine_survived_count.write().unwrap();
+                    *cnt += 1;
+                    *cnt
+                };
+                vfamine::append_famine_ended(&vfamine::FamineEndedEntry { helped_count: helped });
+                vfeed::append_feed(
+                    vfamine::FEED_KIND,
+                    "乙太方界",
+                    &vfamine::famine_end_feed_detail(helped, total),
+                );
+            }
+            vfamine::FamineEvent::None => {}
+        }
+    }
     let now = vfarm::now_secs();
     // 短讀鎖取 delta 快照用於水耕判斷（每 15s 一次，clone 代價小），馬上釋放。
     let deltas_snap: voxel::WorldDelta = hub().deltas.read().unwrap().clone();
@@ -16696,6 +16754,21 @@ fn tick_residents(dt: f32) {
         *f = false;
         v
     };
+    // 荒年 v1（ROADMAP 986）：consume-once 消費開始/結束旗標，觸發居民應景心聲；`famine_active`
+    // 供下方餓意 tick／餵食分岔判斷此刻是否處於荒年窗口內（短讀即釋、非巢狀）。
+    let famine_just_started = {
+        let mut f = hub().famine_started_flag.write().unwrap();
+        let v = *f;
+        *f = false;
+        v
+    };
+    let famine_just_ended = {
+        let mut f = hub().famine_ended_flag.write().unwrap();
+        let v = *f;
+        *f = false;
+        v
+    };
+    let famine_active = hub().famine_tick.read().unwrap().is_active();
     // 流星劃過時，在此（未持下方 residents 寫鎖）先把各居民的「當前心願」快照成清洗後的許願片段，
     // 供下方 residents 迴圈只查這份本地 map（渴望驅動許願＝北極星）。**刻意循序取兩把讀鎖、不巢狀**：
     // 先短讀 residents 蒐集 id 即釋，再短讀 desires 逐 id 查心願即釋——避免與下方大迴圈的
@@ -17167,6 +17240,10 @@ fn tick_residents(dt: f32) {
     // 居民也會肚子餓 v1（ROADMAP 799）：鎖內偵測「居民在餓著的時候被玩家餵了食物」（餓意已於鎖內
     // 歸零），鎖外統一補一則掛玩家名下的深記憶＋城鎮動態。格式：(居民 id, 送食物的玩家名, 居民顯示名)。
     let mut hunger_fed: Vec<(String, String, &'static str)> = Vec::new();
+    // 荒年 v1（ROADMAP 986）：荒年窗口內「餓著被玩家餵了食物」走這條專屬記憶（比平時的
+    // `hunger_fed` 措辭更重一分，見 `vfamine::famine_fed_memory_line`），與平時的餓時被餵互斥
+    // （同一次事件只記一種，不重複疊加記憶／Feed）。格式同 `hunger_fed`。
+    let mut famine_rescue_events: Vec<(String, String, &'static str)> = Vec::new();
     // 飢餓接農田／倉庫 v2（ROADMAP 799）：鎖內偵測「餓著沒存糧的居民走到一畦熟作物旁、要為了吃而收成」，
     // 鎖外統一執行（作物方塊 Mature→Seeded 退回可再長＋廣播＋持久化、食物入她小背包、清收成狀態、冒收成泡泡）。
     // 走鎖外是為守 prod 死鎖鐵律——收成要寫 deltas，而本迴圈全程持著 deltas 讀 guard（line 7441）。
@@ -17549,7 +17626,10 @@ fn tick_residents(dt: f32) {
             // 餓意累積（居民也會肚子餓 v1，ROADMAP 799）：每 tick 慢慢餓一點；靜默冷卻同步倒數。
             // QA 加速：`BUTFUN_HUNGER_RATE_MULT`（預設 1.0）僅供隔離測試把數分鐘的餓意壓成數秒觀察，
             // 正式線上不設此環境變數→維持原速（15 分鐘餓極），對玩家零影響。
-            r.hunger = vhunger::tick_hunger(r.hunger, dt * hunger_rate_mult());
+            // 荒年 v1（ROADMAP 986）：荒年窗口內餓意額外加速（`vfamine::hunger_mult`，平時回 1.0，
+            // 與 QA 倍率相乘、互不干擾）。
+            r.hunger =
+                vhunger::tick_hunger(r.hunger, dt * hunger_rate_mult() * vfamine::hunger_mult(famine_active));
             if r.hunger_say_cd > 0.0 {
                 r.hunger_say_cd -= dt;
             }
@@ -19524,7 +19604,13 @@ fn tick_residents(dt: f32) {
                         r.hunger = 0.0;
                         r.seeking_food = false;
                         r.hunger_say_cd = vhunger::HUNGER_SAY_COOLDOWN;
-                        hunger_fed.push((r.id.clone(), giver.clone(), r.name));
+                        // 荒年 v1（ROADMAP 986）：這口正好落在荒年窗口內，走專屬的「雪中送炭」記憶，
+                        // 不與平時的餓時被餵重複記帳（互斥分岔）。
+                        if famine_active {
+                            famine_rescue_events.push((r.id.clone(), giver.clone(), r.name));
+                        } else {
+                            hunger_fed.push((r.id.clone(), giver.clone(), r.name));
+                        }
                     }
                     savor_feeds.push((r.name, giver, food));
                 }
@@ -20334,6 +20420,22 @@ fn tick_residents(dt: f32) {
                     Some(frag) => vmeteor::wish_bubble_with_desire(frag, pick),
                     None => vmeteor::wish_bubble_generic(pick).to_string(),
                 };
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            }
+
+            // 荒年 v1（ROADMAP 986）：荒年剛開始那一刻，say 為空、醒著的居民冒一句「日子緊了」的
+            // 心聲（零 LLM、確定性選句，語氣平靜不慌張——療癒世界，只是提醒省著點）。
+            if famine_just_started && !r.asleep && r.say.is_empty() {
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                r.say = vfamine::famine_start_say_line(pick).to_string();
+                r.say_timer = SAY_SECS;
+            }
+            // 荒年 v1（ROADMAP 986）：荒年剛結束那一刻，say 為空、醒著的居民鬆一口氣，心情也跟著
+            // 亮一格（熬過難關的正向後果，比照雨後彩虹／流星許願的 mood_boost 手法）。
+            if famine_just_ended && !r.asleep && r.say.is_empty() {
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                r.say = vfamine::famine_end_say_line(pick).to_string();
                 r.say_timer = SAY_SECS;
                 r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
             }
@@ -24448,6 +24550,17 @@ fn tick_residents(dt: f32) {
         let entry = hub().memory.write().unwrap().add_memory(rid, giver, &summary);
         vmem::append_memory(&entry);
         vfeed::append_feed("餵食", rname, &vhunger::fed_feed_line(rname, giver));
+    }
+
+    // 5c-2f-3) 荒年裡的雪中送炭（荒年 v1，ROADMAP 986）：與上方 799 同源事件，但落在荒年窗口內時
+    // 走專屬措辭——「荒年那陣子」比「餓的時候」更重一分；並累加本輪化解次數，供 `tick_farm` 荒年
+    // 落幕那一刻寫進持久記錄。鎖序同上（記憶寫鎖即釋、append IO 在鎖外，各自獨立不巢狀）。
+    for (rid, giver, rname) in &famine_rescue_events {
+        let summary = vfamine::famine_fed_memory_line(giver);
+        let entry = hub().memory.write().unwrap().add_memory(rid, giver, &summary);
+        vmem::append_memory(&entry);
+        vfeed::append_feed(vfamine::FEED_KIND, rname, &vfamine::famine_rescue_feed_line(rname, giver));
+        *hub().famine_helped_this_round.write().unwrap() += 1;
     }
 
     // 5c-2g) 自我印象 Feed（自我印象 v1，ROADMAP 770）：居民閒下來回望這一路、昇華出「我成了個怎樣
