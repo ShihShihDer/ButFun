@@ -11475,7 +11475,15 @@ fn tick_shadows(dt: f32) {
                 let colony_centers: Vec<(i32, i32)> = {
                     hub().colonies.read().unwrap().all().iter().map(|c| (c.cx, c.cz)).collect()
                 }; // colonies 讀鎖釋放
-                vsettle::nearest_settlement_center(anchor.0, anchor.2, Some((vcx, vcz)), &colony_centers)
+                // 夜間指路光柱 v1：燈塔落成後也算一座「聚落中心」（PR #1248 遺留缺口——
+                // 落成的燈塔至今零遊戲機制效果，本刀補上），庇護圈隨之推遠。
+                let lighthouse_completed = { hub().lighthouse.read().unwrap().completed() }; // lighthouse 讀鎖釋放
+                let shelter_centers = vlighthouse::shelter_centers(
+                    &colony_centers,
+                    vlighthouse::site_coords(vcx, vcz),
+                    lighthouse_completed,
+                );
+                vsettle::nearest_settlement_center(anchor.0, anchor.2, Some((vcx, vcz)), &shelter_centers)
                     .unwrap_or((vcx, vcz))
             };
             for _ in 0..6 {
@@ -13663,6 +13671,11 @@ pub async fn voxel_lighthouse_handler() -> axum::response::Response {
         vvillage::village_center(&home_bases)
     });
     let (sx, sz) = vlighthouse::site_coords(vcx, vcz);
+    // 夜間指路光柱 v1：頂端乙太燈塔燈的世界 y——與 `lighthouse_cells` 落子邏輯同一個不變量
+    // （見 voxel_lighthouse.rs 測試 `lighthouse_cells_top_is_aether_lamp_and_no_duplicate_coords`），
+    // 前端只有落成後才會用它，未落成時算出來的值不會被使用。
+    let sy = vbuild::surface_y(sx, sz);
+    let top_y = sy + vlighthouse::total_height() - 1;
     let (materials, pct, complete, contributors) = {
         let lh = hub().lighthouse.read().unwrap();
         let materials: Vec<serde_json::Value> = vlighthouse::MATERIALS
@@ -13687,6 +13700,7 @@ pub async fn voxel_lighthouse_handler() -> axum::response::Response {
         "name": vlighthouse::LIGHTHOUSE_NAME,
         "cx": sx,
         "cz": sz,
+        "top_y": top_y,
         "materials": materials,
         "pct": pct,
         "complete": complete,

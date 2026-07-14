@@ -231,6 +231,19 @@ pub fn site_coords(vcx: i32, vcz: i32) -> (i32, i32) {
     (vcx + SITE_DX, vcz + SITE_DZ)
 }
 
+// ── 夜間庇護 v1（自主提案切片，接續 PR #1248 遺留缺口「蓋好後的燈塔具備遊戲機制效果」）──
+/// 燈塔落成後，把工地座標併入既有聚落中心清單——供暗影生成時沿用
+/// `voxel_settle::nearest_settlement_center`／`voxel_shadow::far_from_village` 那套
+/// 「離最近聚落多遠」判定，落成的燈塔從此和主村／殖民地一樣具備驅散暗影的庇護圈。
+/// 未落成時原樣回傳（不佔用任何庇護名額）。純函式、確定性、零 IO。
+pub fn shelter_centers(colonies: &[(i32, i32)], site: (i32, i32), completed: bool) -> Vec<(i32, i32)> {
+    let mut centers = colonies.to_vec();
+    if completed {
+        centers.push(site);
+    }
+    centers
+}
+
 // ── 燈塔藍圖（純函式、確定性）────────────────────────────────────────────────────────
 /// 產生燈塔完工瞬間要落下的**全部**方塊清單（絕對世界座標）。
 ///
@@ -492,6 +505,23 @@ mod tests {
     fn site_coords_offsets_from_village_center() {
         assert_eq!(site_coords(0, 0), (SITE_DX, SITE_DZ));
         assert_eq!(site_coords(100, -50), (100 + SITE_DX, -50 + SITE_DZ));
+    }
+
+    #[test]
+    fn shelter_centers_excludes_site_when_not_completed() {
+        let colonies = [(10, 20)];
+        assert_eq!(shelter_centers(&colonies, (70, 0), false), vec![(10, 20)]);
+    }
+
+    #[test]
+    fn shelter_centers_includes_site_when_completed() {
+        let colonies = [(10, 20)];
+        assert_eq!(shelter_centers(&colonies, (70, 0), true), vec![(10, 20), (70, 0)]);
+    }
+
+    #[test]
+    fn shelter_centers_completed_with_no_colonies_still_adds_site() {
+        assert_eq!(shelter_centers(&[], (70, 0), true), vec![(70, 0)]);
     }
 
     #[test]
