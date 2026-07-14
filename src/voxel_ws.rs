@@ -3914,8 +3914,9 @@ fn broadcast_siege(phase: &str, msg: &str) {
     let _ = hub().tx.send(payload);
 }
 
-/// 廣播遠征首領橫幅（遠征首領 v1）：`phase` = "spawn"（現身）／"defeat"（擊倒），
-/// `msg` 是給前端直接 showMsg 的整句（面向玩家字串集中於 `voxel_worldboss`，i18n 友善）。
+/// 廣播遠征首領橫幅（遠征首領 v1）：`phase` = "spawn"（現身）／"defeat"（擊倒）／
+/// "retreat"（逾期未打倒、自行撤退），`msg` 是給前端直接 showMsg 的整句
+/// （面向玩家字串集中於 `voxel_worldboss`，i18n 友善）。
 fn broadcast_worldboss(phase: &str, msg: &str) {
     let payload = Arc::new(
         serde_json::json!({ "t": "worldboss", "phase": phase, "msg": msg }).to_string(),
@@ -10307,6 +10308,19 @@ async fn handle_socket(
                         broadcast_item_dropped(
                             did, b.x, b.y, b.z, vshadow::SHARD_ITEM_ID, vboss::DEFEAT_REWARD_SHARDS, &name,
                         );
+                    } else {
+                        // 掉落物全域已達上限（follow-up，PR #1260 review）：擊倒獎勵不能就此
+                        // 靜默消失（首領已從世界移除、無法重打），改直接發進擊殺者背包保底。
+                        let entry = hub().inventory.write().unwrap().give(
+                            &name, vshadow::SHARD_ITEM_ID, vboss::DEFEAT_REWARD_SHARDS,
+                        );
+                        vinv::append_inv(&entry);
+                        let nc = {
+                            hub().inventory.read().unwrap().count(&name, vshadow::SHARD_ITEM_ID)
+                        };
+                        let _ = out_tx.send(Message::Text(serde_json::json!({
+                            "t": "inv_update", "block_id": vshadow::SHARD_ITEM_ID, "count": nc
+                        }).to_string())).await;
                     }
                 }
             }
@@ -11421,6 +11435,18 @@ static BOSS_ROLLED: AtomicBool = AtomicBool::new(false);
 /// 的生成環上釘一個固定點、廣播現身橫幅＋動態牆。首領本身原地不動、不主動攻擊，v1 刻意
 /// 不做每 tick 物理/AI（省成本，也是與暗影/暗潮「主動追人」的關鍵區隔）。
 fn tick_worldboss() {
+    // 逾期撤退：首領不隨晝夜消長，存續上限的檢查因此獨立於下方的白天擲骰邏輯之外，
+    // 每個 tick（不分晝夜）都要檢查，否則落在難以抵達地點的首領會永久卡死下一次生成
+    // （follow-up，PR #1260 review）。
+    let expired = {
+        let wb = hub().world_boss.read().unwrap();
+        wb.as_ref().map_or(false, |b| vboss::is_expired(b.spawned_at, vfarm::now_secs()))
+    }; // world_boss 讀鎖釋放
+    if expired {
+        { *hub().world_boss.write().unwrap() = None; }
+        broadcast_worldboss("retreat", &vboss::retreat_msg());
+        vfeed::append_feed(vboss::FEED_KIND, vboss::FEED_ACTOR, &vboss::retreat_feed());
+    }
     let phase = { hub().world_time.read().unwrap().phase() };
     if phase != TimePhase::Day {
         BOSS_ROLLED.store(false, Ordering::Relaxed); // 新的一天可重新擲骰
@@ -11449,7 +11475,9 @@ fn tick_worldboss() {
     let dist = vboss::spawn_dist(rand::random::<f32>());
     let (bx, bz) = vboss::spawn_pos(vcx as f32, vcz as f32, angle, dist);
     let by = crate::voxel::height_at(bx.floor() as i32, bz.floor() as i32) as f32 + 1.0;
-    { *hub().world_boss.write().unwrap() = Some(vboss::WorldBoss { x: bx, y: by, z: bz, hp: vboss::BOSS_MAX_HP }); }
+    { *hub().world_boss.write().unwrap() = Some(vboss::WorldBoss {
+        x: bx, y: by, z: bz, hp: vboss::BOSS_MAX_HP, spawned_at: vfarm::now_secs(),
+    }); }
     let dir = vcolony::bearing_label(vcx, vcz, bx.floor() as i32, bz.floor() as i32);
     broadcast_worldboss("spawn", &vboss::spawn_msg(dir));
     vfeed::append_feed(vboss::FEED_KIND, vboss::FEED_ACTOR, &vboss::spawn_feed(dir));
