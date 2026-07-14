@@ -394,6 +394,15 @@
     }
     #chatGift:hover { background: rgba(255,220,80,0.28); }
     #chatGift.gift-empty { opacity: 0.45; cursor: not-allowed; }
+    /* 保養按鈕（工具耐久·保養 v1，自主提案切片，ROADMAP 981）：鏽銅色，與獨輪車物件色系呼應 */
+    #chatRepair {
+      cursor: pointer; user-select: none; font-size: 13px; padding: 3px 9px;
+      border-radius: 8px; background: rgba(200,140,90,0.18);
+      border: 1px solid rgba(200,140,90,0.4); color: #e0a878;
+      transition: background 0.15s;
+    }
+    #chatRepair:hover { background: rgba(200,140,90,0.3); }
+    #chatRepair.repair-empty { opacity: 0.45; cursor: not-allowed; }
     /* 交易按鈕（居民以物易物 v1）*/
     #chatTrade {
       cursor: pointer; user-select: none; font-size: 13px; padding: 3px 9px;
@@ -1797,6 +1806,7 @@
       <div style="display:flex;gap:6px;align-items:center">
         <span id="chatDiary">📖 日記</span>
         <span id="chatGift">🎁 贈禮</span>
+        <span id="chatRepair">🔧 保養</span>
         <span id="chatTrade">⇌ 交易</span>
         <span id="chatInviteHome">🏠 邀居</span>
         <span id="chatClose">✕</span>
