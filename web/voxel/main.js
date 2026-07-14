@@ -182,6 +182,13 @@ const AETHER_BLOOM = 113;
 // 方塊，找到即得一份獎勵。發光方塊（比照發光結晶投出柔和幽光）；可放置、可挖下帶回家當光源。
 // id 114：0~113 皆已用（113=乙太世界樹花冠），114 是首個空號。
 const RELIC_GLOW = 114;
+// 蒸汽獨輪車 v1（ROADMAP 976，自主提案切片）——玩家第一件代步工具：工作台合成後可切換
+// 騎乘，水平移動速度提升（見 RIDING_SPEED_MULT）。純物品、不可放置。115 是 114（遺跡核心）
+// 之後的首個空號。
+const STEAM_UNICYCLE = 115;
+// 騎乘水平移動速度倍率——世界第一件代步工具，值回一趟合成的手感差異（比照水中水阻
+// SWIM_HORIZ_SPEED_MULT 同款寫法，純視覺+移動手感常數，非玩家可調）。
+const RIDING_SPEED_MULT = 1.8;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -332,6 +339,9 @@ const COLOR = {
   // 地底遺跡神殿 v1（ROADMAP 975）——暖金幽光，與發光結晶/乙太花冠的青綠刻意區隔（先民藏寶的
   // 暖色，而非天然礦晶的冷色），一眼認出這是「找到的寶物」而非天然點綴。
   [RELIC_GLOW]: [0.95, 0.78, 0.32],
+  // 蒸汽獨輪車 v1（ROADMAP 976）——鏽銅色鐵鑄輪框，蒸汽龐克代步工具的招牌色，與既有暖金/
+  // 青綠幽光類方塊區隔（不發光、純物品手持色）。
+  [STEAM_UNICYCLE]: [0.72, 0.44, 0.20],
 };
 
 // ── 裝飾植物十字貼片渲染 v2 ─────────────────────────────────────────────
@@ -2901,8 +2911,32 @@ function setHeldItem(av, itemId) {
   av.heldMesh.visible = true;
 }
 
+// ── 蒸汽獨輪車 v1（自主提案切片，ROADMAP 976）：騎乘視覺 ────────────────────────
+// 腳下一顆扁圓輪子（共用幾何＋各自一份材質，比照 HELD_ITEM_GEO 慣例），預設隱藏；
+// 伺服器權威廣播 riding 欄位改變時才切 visible，零每幀成本。
+const RIDE_WHEEL_GEO = new THREE.CylinderGeometry(0.34, 0.34, 0.14, 12);
+function attachRideWheel(av) {
+  const mat = new THREE.MeshLambertMaterial({ color: 0x000000 });
+  const c = COLOR[STEAM_UNICYCLE];
+  if (c) mat.color.setRGB(c[0], c[1], c[2]);
+  const mesh = new THREE.Mesh(RIDE_WHEEL_GEO, mat);
+  mesh.rotation.x = Math.PI / 2; // 輪面朝下平放腳邊
+  mesh.position.y = 0.75 - AV_C; // 貼在腳底（軀幹底＝髖部 feetY）
+  mesh.visible = false;
+  av.group.add(mesh);
+  av.wheelMesh = mesh;
+  av.riding = false;
+  return av;
+}
+/** 切換某具 avatar 腳下的騎乘輪子顯隱（純視覺，riding 狀態一律以伺服器廣播為準）。 */
+function setRiding(av, isRiding) {
+  if (!av || !av.wheelMesh || av.riding === isRiding) return;
+  av.riding = isRiding;
+  av.wheelMesh.visible = isRiding;
+}
+
 // 玩家自己的身體（第三人稱可見）：金色系方塊小人，一眼認得是自己。
-const myAvatar = attachHeldItem(buildAvatar(0xffcf6b, 0xffe0b0, 0xe6b866));
+const myAvatar = attachRideWheel(attachHeldItem(buildAvatar(0xffcf6b, 0xffe0b0, 0xe6b866)));
 const bodyMesh = myAvatar.group; // 沿用 bodyMesh 名：.visible/.position/.rotation.y 都作用在 Group 上
 let myTitleSprite = null; // 僅 QA 用（_qaSetMyTitle）：正式流程玩家自己不掛稱號牌
 scene.add(bodyMesh);
@@ -4513,6 +4547,25 @@ function sendInviteHome(rid) {
   ws.send(JSON.stringify({ t: "invite_home", resident_id: rid }));
 }
 
+// ── 蒸汽獨輪車 v1（ROADMAP 976，自主提案切片）：騎乘／下車 ───────────────────────
+// 本地騎乘旗標只在 riding_ok 回應（伺服器直接對我這次請求的權威回覆）才翻轉，不樂觀
+// 更新——比照全庫既有濫用防護慣例，伺服器說了算，UI 只是反應端。
+let riding = false;
+let lastRideMs = 0; // 本地防連按（伺服器仍是唯一權威，這裡只擋手滑連按 R 洗版）
+
+/** 按 R 切換騎乘／下車：下車永遠可送，上騎先做客戶端持有提示（伺服器仍會再驗一次）。 */
+function toggleRiding() {
+  if (!wsReady) return;
+  const now = Date.now();
+  if (now - lastRideMs < 500) return; // 0.5 秒本地防連按
+  if (!riding) {
+    const cnt = (myInv instanceof Map ? myInv.get(STEAM_UNICYCLE) : 0) || 0;
+    if (cnt <= 0) { showMsg("背包裡沒有蒸汽獨輪車——在工作台用 4 鐵錠＋2 木頭＋1 乙太礦做一輛吧。"); return; }
+  }
+  lastRideMs = now;
+  ws.send(JSON.stringify({ t: "set_riding", riding: !riding }));
+}
+
 /** 接受指定居民的交易提案（發 TradeAccept）。payWithCoin=true 時改直接付乙太幣代替湊材料（ROADMAP 874）。 */
 function sendTradeAccept(rid, payWithCoin) {
   if (!wsReady) return;
@@ -6055,6 +6108,8 @@ const BLOCK_NAME = {
   [AETHER_BLOOM]: "乙太花冠",
   // 地底遺跡神殿 v1（ROADMAP 975）
   [RELIC_GLOW]: "遺跡核心",
+  // 蒸汽獨輪車 v1（ROADMAP 976，自主提案切片）
+  [STEAM_UNICYCLE]: "蒸汽獨輪車",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -6701,6 +6756,9 @@ addEventListener("keydown", (e) => {
   // 領地信任名單 v2（自主提案切片，ROADMAP 966）：站到朋友身邊按 T，輸入他的名字把他加進
   // 你這帳號的信任名單（再按一次同名字即解除）——之後他也能開你家箱子、動你家的地。
   if (e.code === "KeyT") { e.preventDefault(); promptClaimTrust(); }
+  // 蒸汽獨輪車 v1（自主提案切片，ROADMAP 976）：R 切換騎乘／下車；e.repeat 防瀏覽器按鍵
+  // 自動重複觸發把 set_riding 洗版（本檔案唯一需要這道防呆的單鍵切換）。
+  if (e.code === "KeyR" && !e.repeat) { e.preventDefault(); toggleRiding(); }
   // Esc：關操作設定面板（也讓瀏覽器解除滑鼠鎖定，兩者不衝突）。
   if (e.code === "Escape" && settingsPanelVisible()) closeSettingsPanel();
   // Esc：也收起 ☰ 主選單抽屜（若正開著）。
@@ -7140,6 +7198,10 @@ function connect() {
       }
       wsIsReconnect = false;
       wsSavedPos = null;
+      // 蒸汽獨輪車 v1（自主提案切片，ROADMAP 976）：每次連線伺服器都是全新 VoxelPlayer
+      // （riding 預設 false），本地旗標與腳下輪子一併歸零，避免重連後顯示與伺服器不同步。
+      riding = false;
+      setRiding(myAvatar, false);
       // 出生瞬間先脫困一次（若出生 chunk 已到、地表把人埋住，立刻頂出來）。
       unstuckIfNeeded();
       // 好感度 v1：連線後立即拉取與各居民的好感度，讓指示燈盡快亮起。
@@ -7171,7 +7233,7 @@ function connect() {
         let ent = others.get(p.id);
         if (!ent) {
           // 其他玩家也是方塊小人（藍色系）；mesh＝avatar 的 group，沿用既有 position/rotation/add 邏輯。
-          const av = attachHeldItem(buildAvatar(OTHER_PALETTE.body, OTHER_PALETTE.head, OTHER_PALETTE.limb));
+          const av = attachRideWheel(attachHeldItem(buildAvatar(OTHER_PALETTE.body, OTHER_PALETTE.head, OTHER_PALETTE.limb)));
           const mesh = av.group; scene.add(mesh);
           // 頭上對話泡泡（child of mesh，sprite 永遠面向鏡頭、不受 mesh 旋轉影響）。
           const bubble = makeTextSprite("", true);
@@ -7200,6 +7262,8 @@ function connect() {
         }
         // 手持工具可見 v1：伺服器廣播的 held（純視覺 cosmetic，見協定註解）換色/顯隱。
         setHeldItem(ent.av, p.held || null);
+        // 蒸汽獨輪車 v1（自主提案切片，ROADMAP 976）：伺服器廣播的 riding 換腳下輪子顯隱。
+        setRiding(ent.av, !!p.riding);
         // 位置有明顯變化 → 記下時間戳，讓 render 迴圈判定「在走路」而擺手腳（快照間也持續動）。
         const moved = Math.hypot(p.x - ent.mesh.position.x, p.z - ent.mesh.position.z);
         if (moved > 0.002) ent.lastMoveT = performance.now();
@@ -7557,6 +7621,17 @@ function connect() {
         const p = ent.group.position;
         spawnHearts(p.x, p.y, p.z);
       }
+    } else if (m.t === "riding_ok") {
+      // 蒸汽獨輪車 v1（自主提案切片，ROADMAP 976）：伺服器直接對本次請求的權威回覆——
+      // 本地 riding 只在這裡翻轉（不樂觀更新），驅動移動速度倍率＋自己腳下輪子 mesh。
+      riding = !!m.riding;
+      setRiding(myAvatar, riding);
+      showMsg(riding ? "🛞 騎上蒸汽獨輪車，移動快多了～" : "🛞 下車了，慢慢走吧。");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+    } else if (m.t === "riding_fail") {
+      // 蒸汽獨輪車 v1：騎不成（沒有車——本地已先擋過一次，這裡是伺服器再驗一次的保底）。
+      showErr(m.reason || "沒法騎乘");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "pet_command_ok") {
       // 寵物指令「安置／召回」v1（ROADMAP 898）：切換成功——浮出暖句（💤 待命標記由 players 廣播即時掛上/取下）。
       showMsg(m.say || (m.settled ? "🐾 牠乖乖在這兒待命～" : "🐾 牠又跟上你了～"));
@@ -8074,8 +8149,9 @@ function update(dt) {
   dir.addScaledVector(fwd, mz).addScaledVector(right, mx);
   if (dir.lengthSq() > 1e-4) {
     dir.normalize();
-    // 水中水平比陸地慢（水阻），陸地維持原速——手感差異只發生在水裡。
-    const horiz = swimming ? SPEED * SWIM_HORIZ_SPEED_MULT : SPEED;
+    // 水中水平比陸地慢（水阻）；陸地騎乘蒸汽獨輪車（ROADMAP 976）更快；兩者互斥
+    // （下水視為下車手感，riding 旗標本身不因下水而翻轉，僅暫停加成，出水即刻恢復）。
+    const horiz = swimming ? SPEED * SWIM_HORIZ_SPEED_MULT : (riding ? SPEED * RIDING_SPEED_MULT : SPEED);
     moveAxis("x", dir.x * horiz * dt);
     moveAxis("z", dir.z * horiz * dt);
   }
@@ -8658,6 +8734,9 @@ const WORKBENCH_RECIPES_JS = [
   // 驅影之劍 v1（ROADMAP 887，自主提案切片）——精煉武器的頂點，一擊驅散暗影且雙倍乙太礦。
   // 對齊後端 voxel_craft::WORKBENCH_RECIPES：鐵劍 {5:2,22:3}（3 鐵錠鑄刃 + 2 木頭作握柄）。
   { id: "iron_sword",         name: "鐵劍",       inputs: [[IRON_INGOT, 3], [WOOD, 2]], output_block: SWORD_IRON, out_count: 1 },
+  // 蒸汽獨輪車 v1（ROADMAP 976，自主提案切片）——世界第一件代步工具。
+  // 對齊後端 voxel_craft::WORKBENCH_RECIPES：{22:4,5:2,58:1}（4 鐵錠+2 木頭+1 乙太礦）。
+  { id: "steam_unicycle",     name: "蒸汽獨輪車", inputs: [[IRON_INGOT, 4], [WOOD, 2], [AETHER_ORE, 1]], output_block: STEAM_UNICYCLE, out_count: 1 },
 ];
 
 // wbGrid[0..8]：3×3 共 9 格，0 代表空格，非零代表 block_id。
@@ -9219,6 +9298,12 @@ window.__voxel = {
     return ent ? { id: ent.av.heldId, visible: ent.av.heldMesh.visible } : null;
   },
   setHeldItem(itemId) { setHeldItem(myAvatar, itemId); return this.myHeld; },
+  // ── 蒸汽獨輪車 v1 QA 用（自主提案切片，ROADMAP 976）：讀自己/指定其他玩家目前騎乘狀態 ──
+  get myRiding() { return { riding, wheelVisible: myAvatar.wheelMesh.visible }; },
+  otherRiding(id) {
+    const ent = others.get(id);
+    return ent ? { riding: ent.av.riding, wheelVisible: ent.av.wheelMesh.visible } : null;
+  },
   // ── 暗影生物 v1 QA 用：讀暗影實體清單＋把視角轉向某座標（截圖/準心驗證）──
   get shadows() {
     return [...shadowEnts.entries()].map(([id, e]) => ({
