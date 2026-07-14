@@ -708,6 +708,8 @@ async fn main() {
         .route("/voxel/affinity", get(voxel_ws::voxel_affinity_handler))
         // 乙太方界·居民交情網（ROADMAP 708）：居民彼此兩兩情誼層級 JSON，讓小社會被玩家看見。
         .route("/voxel/relations", get(voxel_ws::voxel_relations_handler))
+        // 乙太方界·邀居同住 v1（ROADMAP 972）：目前登入帳號正在同住的居民 id 清單，僅認 cookie。
+        .route("/voxel/cohabit_mine", get(voxel_ws::voxel_cohabit_mine_handler))
         // 乙太方界·小圈子攤開（自主提案切片，接續 708+711）：彼此皆為老朋友的圈子清單 JSON。
         .route("/voxel/cliques", get(voxel_ws::voxel_cliques_handler))
         // 乙太方界·居民技能簿（ROADMAP 719）：每位居民已發明/學會的技能名清單 JSON。

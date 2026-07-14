@@ -2794,6 +2794,11 @@ let myAccountName = null;
 // key = resident_id, value = count (0=陌生人, 1-2=相識, 3+=友人)
 const myAffinity = new Map();
 
+// 邀居同住 v1（ROADMAP 972）：目前登入帳號正在同住的居民 id 集合（連線後從
+// /voxel/cohabit_mine 拉取，只認 cookie），供 openChat 正確顯示邀居鈕初始狀態，
+// 避免重整頁面後把「已同住」誤按成「邀居」（其實送出的是搬走）。
+const myCohabitResidents = new Set();
+
 // ── 方塊小人 avatar（玩家 & 其他玩家共用造型）────────────────────────────────
 // 造型：頭 + 軀幹 + 兩臂 + 兩腿，低多邊形方塊感（原創幾何，非任何外部遊戲資產；
 // 「方塊人」是通用造型概念）。整體高度維持 PH=1.7、寬約 PW*2，只換視覺、碰撞盒不變。
@@ -3472,6 +3477,19 @@ async function refreshAffinity() {
   } catch (_) { /* 網路問題忽略 */ }
 }
 
+/** 從後端拉取「我」目前正同住的居民 id 清單 → 更新 myCohabitResidents（ROADMAP 972）。
+ *  只認 cookie，未登入回空清單；連線後取一次、每次對話後再更新，讓邀居鈕重整頁面後
+ *  也顯示真實狀態，不會把「已同住」誤導成可再邀請一次（實際會觸發搬走）。 */
+async function refreshCohabitMine() {
+  try {
+    const resp = await fetch("/voxel/cohabit_mine");
+    if (!resp.ok) return;
+    const ids = await resp.json();
+    myCohabitResidents.clear();
+    if (Array.isArray(ids)) for (const rid of ids) myCohabitResidents.add(rid);
+  } catch (_) { /* 網路問題忽略 */ }
+}
+
 // 建一位居民的可見實體（簡單 voxel 人形：軀幹 + 頭 + 名牌 + 夢想副標籤 + 泡泡）。
 // group.userData.rid 記居民 id，供點選 raycast 反查「點到的是哪位居民」。
 function buildResident(id, name) {
@@ -4068,6 +4086,14 @@ function openChat(rid, name) {
   setSpeakBarShown(false);
   updateGiftBtn(); // 贈禮 v1：更新按鈕顯示哪件物品
   hideTradeOffer(); // 換居民時清掉舊交易提案（不同居民的提案不共用）
+  // 邀居同住 v1（ROADMAP 972）：按 myCohabitResidents 真相重繪鈕，換居民/重整頁面後
+  // 都不會殘留上一位居民的狀態、也不會把「已同住」誤顯示成可再邀請一次。
+  const inviteBtn = document.getElementById("chatInviteHome");
+  if (inviteBtn) {
+    const active = myCohabitResidents.has(rid);
+    inviteBtn.classList.toggle("cohabit-active", active);
+    inviteBtn.textContent = active ? "🏠 已同住" : "🏠 邀居";
+  }
 }
 function closeChat() {
   if (chatEl) chatEl.style.display = "none";
@@ -7015,6 +7041,8 @@ function connect() {
       unstuckIfNeeded();
       // 好感度 v1：連線後立即拉取與各居民的好感度，讓指示燈盡快亮起。
       refreshAffinity();
+      // 邀居同住 v1（ROADMAP 972）：連線後立即拉取「我」正同住哪些居民，供邀居鈕正確顯示初始狀態。
+      refreshCohabitMine();
       // 居民教你一道獨門配方 v1（自主提案切片 849）：連線後拉一次已學會的獨門配方。
       refreshKnownRecipes();
       // 個人路標 v1（自主提案切片 869）：連線後拉一次現有路標，供羅盤面板隨時顯示。
@@ -7511,6 +7539,8 @@ function connect() {
       // 邀居同住 v1（ROADMAP 972）：入住／搬走成功，對話框顯示提示，鈕上打勾標記目前狀態。
       const rname = m.resident_name || "居民";
       appendMsg("sys", m.active ? ("🏠 " + rname + " 搬來和你同住了！") : ("🚪 " + rname + " 搬回自己原本的家了。"));
+      // 同步真相集合，讓再次開對話框（或別的居民）都讀到最新狀態，不必等下次 refreshCohabitMine。
+      if (m.active) myCohabitResidents.add(m.resident_id); else myCohabitResidents.delete(m.resident_id);
       const btn = document.getElementById("chatInviteHome");
       if (btn && chatRid === m.resident_id) {
         btn.classList.toggle("cohabit-active", !!m.active);

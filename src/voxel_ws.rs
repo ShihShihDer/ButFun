@@ -12654,6 +12654,45 @@ pub async fn voxel_affinity_handler(
         .unwrap()
 }
 
+/// `GET /voxel/cohabit_mine` — 回傳目前登入帳號正在同住的居民 id 清單（ROADMAP 972）。
+///
+/// **修的洞**：邀居鈕過去只在收到 `cohabit_ok` 那一刻本地翻轉文字，換居民開對話框
+/// 不重置、重整頁面更完全沒有真相來源——玩家可能把「已同住」誤按成「邀居」，其實
+/// 送出的是 `Revoke`（真把她搬走）。前端連線後/開對話框時打這支端點取得真相，
+/// `openChat` 據此正確顯示「🏠 已同住」或「🏠 邀居」。
+///
+/// **M1 隱私**：**只認 cookie 解出的帳號 email**（與 `InviteHome` handler 同一套身份
+/// 解法），不接受任何 URL 參數冒充身份——玩家無法藉此查詢別人的同住狀態；未登入
+/// 一律回空陣列（訪客本就無法邀居同住）。
+pub async fn voxel_cohabit_mine_handler(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    use axum::http::header;
+    let my_email: Option<String> = app
+        .auth
+        .as_ref()
+        .and_then(|cfg| crate::auth::user_id_from_cookies(&headers, &cfg.session_secret))
+        .and_then(|uid| app.users.get(uid))
+        .and_then(|u| u.email);
+    let mine: Vec<String> = match my_email {
+        Some(email) => {
+            let cohabit = hub().cohabit.read().unwrap(); // cohabit 讀鎖釋放
+            (0..resident_count())
+                .map(|i| format!("vox_res_{i}"))
+                .filter(|rid| cohabit.host_of(rid) == Some(email.as_str()))
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    let body = serde_json::to_string(&mine).unwrap_or_else(|_| "[]".into());
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
 /// 乙太方界·居民交情網（ROADMAP 708）：回傳 4 位居民兩兩之間的情誼層級與拜訪次數。
 ///
 /// 情誼（672）驅動問候語/八卦轉述/互助蓋家，早就悄悄累積在伺服器內部，
@@ -26114,8 +26153,14 @@ fn migration_kickoff(say_updates: &mut Vec<(String, String)>) -> bool {
         .collect();
     let pending = {
         let st = hub().settlements.read().unwrap();
-        vsettle::pending_migrations(&st, &colony_founders)
-    }; // settlements 讀鎖釋放
+        let raw = vsettle::pending_migrations(&st, &colony_founders);
+        drop(st); // settlements 讀鎖釋放
+        // 邀居同住 v1（972 review 修復）：家域已由玩家邀居覆寫、房子刻意不拆，別讓拓荒隊
+        // 把同住中的居民一併帶去殖民地，造成「家在玩家家、建物錨點卻落在殖民地」的永久
+        // 分裂（見 review PR #1258）。每輪重算，一旦不再同住她自然重新變回候選人。
+        let cohabiting = hub().cohabit.read().unwrap().cohabiting_residents(); // cohabit 讀鎖釋放
+        vsettle::exclude_cohabiting(raw, &cohabiting)
+    };
     for (rid, sid) in pending {
         // 此刻在忙（已有建造計畫/被指派/發明/跑腿/跟隨/睡著）→ 這輪先跳過她（比照主村都更）。
         if hub().builds.read().unwrap().has_plan(&rid) {
@@ -26378,6 +26423,16 @@ fn relocation_kickoff(say_updates: &mut Vec<(String, String)>) {
         // 殖民地真居住 v1：已遷居殖民地的居民，家在殖民地、不在主村地塊上是**正確狀態**——
         // 併進排除名單，絕不被主村都更拉回來（settlements 讀鎖即釋、不巢狀）。
         d.extend(hub().settlements.read().unwrap().nonmain_assigned());
+        // 邀居同住 v1（972）：家域已由玩家邀居覆寫、房子刻意不拆，別讓主村都更把她搬去
+        // 別處，造成「家在玩家家、建物錨點在都更後新址」的永久分裂（見 review PR #1258）。
+        // 每輪重算（非持久 done 集合）：一旦不再同住，下一輪掃描她會自然重新變回候選人。
+        d.extend(
+            hub()
+                .cohabit
+                .read()
+                .unwrap()
+                .cohabiting_residents(), // cohabit 讀鎖釋放
+        );
         d
     };
     let cands = vvillage::relocation_candidates(&houses, &plots, &done);

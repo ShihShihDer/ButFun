@@ -124,6 +124,16 @@ impl CohabitStore {
             .map(|e| (e.home_x, e.home_z))
     }
 
+    /// 目前正同住中（任何玩家）的居民 id 清單（review PR #1258 修復用）：供都更/殖民遷居
+    /// 排除名單，別讓那兩條系統背著同住紀錄把她的家搬走，造成家域與建物錨點永久分裂。
+    pub fn cohabiting_residents(&self) -> Vec<String> {
+        self.by_resident
+            .values()
+            .filter(|e| e.active)
+            .map(|e| e.resident.clone())
+            .collect()
+    }
+
     /// 開始同住（v1 硬閘：已經跟人同住 → `None`，不做橫刀奪愛）。成功回落地事件供 append。
     pub fn invite(
         &mut self,
@@ -349,6 +359,18 @@ mod tests {
             .expect("搬走後應該能被新玩家邀請");
         assert_eq!(ev.player_key, "b@example.com");
         assert_eq!(s.active_home("vox_res_0"), Some((30, 40)));
+    }
+
+    #[test]
+    fn cohabiting_residents_lists_only_active_hosts() {
+        let mut s = CohabitStore::new();
+        s.invite("vox_res_0", "a@example.com", (10, 20), (0, 0));
+        s.invite("vox_res_1", "b@example.com", (30, 40), (1, 1));
+        s.invite("vox_res_2", "c@example.com", (50, 60), (2, 2));
+        s.revoke("vox_res_1", "b@example.com"); // 已搬走 → 不該再列
+        let mut ids = s.cohabiting_residents();
+        ids.sort();
+        assert_eq!(ids, vec!["vox_res_0".to_string(), "vox_res_2".to_string()]);
     }
 
     #[test]
