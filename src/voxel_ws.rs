@@ -165,6 +165,7 @@ use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_player_home as vplayerhome;
 use crate::voxel_landclaim as vlandclaim;
 use crate::voxel_prosperity as vprosperity;
+use crate::voxel_tool_wear as vtoolwear;
 use crate::voxel_cohabit as vcohabit;
 use crate::voxel_weather as vweather;
 use crate::voxel_season as vseason;
@@ -2301,6 +2302,13 @@ struct VoxelHub {
     /// 範式；序列化 RwLock 解決競爭，與 `sign`／`landclaim_trust`／`players` 各自獨立短取即釋，
     /// 不巢狀）。
     prosperity: RwLock<vprosperity::ProsperityStore>,
+    /// 工具耐久帳本（自主提案切片，ROADMAP 981）：`(玩家, 工具id)` → 目前已磨損量。持久化到
+    /// data/voxel_tool_wear.jsonl（append-only delta，比照 `voxel_prosperity` 範式；序列化
+    /// RwLock 解決競爭，與 `prosperity`／`inventory` 各自獨立短取即釋，不巢狀）。
+    tool_wear: RwLock<vtoolwear::WearStore>,
+    /// 工具保養「老主顧」帳本（自主提案切片，ROADMAP 981）：`(玩家, 居民id)` → 累積拜訪次數，
+    /// 決定保養折扣。持久化到 data/voxel_tool_repair.jsonl（append-only delta）。
+    tool_repair: RwLock<vtoolwear::RepairLedger>,
     /// 邀居同住 store（自主提案切片，ROADMAP 972）：居民 id → 目前是否同住某位玩家、住在哪
     /// （玩家登記的家牌座標）。持久化到 data/voxel_cohabit.jsonl（序列化 RwLock 解決競爭，
     /// 與 `sign`／`residents` 各自獨立短取即釋，不巢狀）。
@@ -3250,6 +3258,10 @@ fn hub() -> &'static VoxelHub {
             landclaim_trust: RwLock::new(vlandclaim::TrustStore::from_entries(vlandclaim::load_trust())),
             // 啟動時從 data/voxel_prosperity.jsonl 載回領地繁榮帳本（重啟後累積的繁榮度仍在）。
             prosperity: RwLock::new(vprosperity::ProsperityStore::from_entries(vprosperity::load_prosperity())),
+            // 啟動時從 data/voxel_tool_wear.jsonl 載回工具耐久帳本（重啟後磨損量仍在）。
+            tool_wear: RwLock::new(vtoolwear::WearStore::from_entries(vtoolwear::load_wear())),
+            // 啟動時從 data/voxel_tool_repair.jsonl 載回老主顧拜訪帳本（重啟後折扣仍在）。
+            tool_repair: RwLock::new(vtoolwear::RepairLedger::from_entries(vtoolwear::load_repair_visits())),
             // 啟動時從 data/voxel_cohabit.jsonl 載回邀居同住紀錄（重啟後誰跟誰同住仍記得）。
             cohabit: RwLock::new(vcohabit::CohabitStore::from_entries(vcohabit::load_cohabit())),
             // 啟動時從 data/voxel_bottles.jsonl 載回尚未被撿走的瓶中信（重啟後瓶子還在水裡）。
@@ -3677,6 +3689,11 @@ enum ClientMsg {
     /// 居民贈禮 v1：把背包裡的一件材料送給附近居民（ROADMAP 660）。
     /// 伺服器驗證觸及範圍 + 背包存量後，扣材料、加記憶 ×2、居民冒泡道謝。
     Gift { resident_id: String, item_id: u8 },
+    /// 工具耐久·保養 v1（自主提案切片，ROADMAP 981）：走近居民，請她保養磨鈍的工具。
+    /// 伺服器驗證觸及範圍 + 真持有 `tool_id` + 真的「該修了」（耐久 ≤ 門檻，不信客戶端自報）
+    /// + 背包乙太幣足夠付保養費後，扣幣、耐久歸零、老主顧拜訪次數 +1（下次折扣更高）。
+    #[serde(rename = "repair_tool")]
+    RepairTool { resident_id: String, tool_id: u8 },
     /// 餵野兔馴服 v1（自主提案切片）：手持胡蘿蔔、準心對準一隻野兔 → 就地餵食。
     /// 伺服器驗證（種類必須是野兔＋觸及範圍夠近＋尚未馴服過＋背包真持有胡蘿蔔）後
     /// 消耗 1 根胡蘿蔔，永久馴服這隻兔子（此後不再受驚逃跑）。`id` 是 wildlife 系統 id
@@ -5675,31 +5692,65 @@ async fn handle_socket(
                         if let Some(tid) = tool {
                             let owns_tool = hub().inventory.read().unwrap().count(&name, tid) >= 1;
                             if owns_tool {
-                                if let Some((bonus_id, bonus_cnt)) =
-                                    vtool::tool_bonus_drop(tid, target_block, rand::random::<f32>())
-                                {
-                                    let entry =
-                                        hub().inventory.write().unwrap().give(&name, bonus_id, bonus_cnt);
-                                    vinv::append_inv(&entry);
-                                    let new_count =
-                                        hub().inventory.read().unwrap().count(&name, bonus_id);
-                                    let _ = out_tx.try_send(Message::Text(
-                                        serde_json::json!({
-                                            "t": "inv_update",
-                                            "block_id": bonus_id,
-                                            "count": new_count
-                                        })
-                                        .to_string(),
-                                    ));
-                                    // 告訴前端這是「工具加成」的多收，讓它跳一句小回饋。
-                                    let _ = out_tx.try_send(Message::Text(
-                                        serde_json::json!({
-                                            "t": "tool_bonus",
-                                            "block_id": bonus_id,
-                                            "count": bonus_cnt
-                                        })
-                                        .to_string(),
-                                    ));
+                                // 工具耐久 v1（自主提案切片，ROADMAP 981）：手持對的工具採集對應
+                                // 天然方塊，才算「真的用在刀口上」——與下方加成判定共用同一張
+                                // 適配表（`vtool::tool_tier`／`block_tool_kind`），磨損與是否中獎
+                                // 機率無關，帶錯工具（如鎬挖泥沙）不磨損。
+                                let matches_kind = vtool::tool_tier(tid)
+                                    .zip(vtool::block_tool_kind(target_block))
+                                    .map(|((kind, _), need)| kind == need)
+                                    .unwrap_or(false);
+                                let worn_before = hub().tool_wear.read().unwrap().worn_of(&name, tid);
+                                let already_worn_out = vtoolwear::is_worn_out(worn_before);
+                                if matches_kind {
+                                    let wear_entry =
+                                        { hub().tool_wear.write().unwrap().add_wear(&name, tid) }; // tool_wear 寫鎖釋放
+                                    if let Some(entry) = wear_entry {
+                                        vtoolwear::append_wear(&entry);
+                                        let worn_after = hub().tool_wear.read().unwrap().worn_of(&name, tid);
+                                        // 剛好跨過「該修了」門檻那一刻才提醒一次，不逐次採集洗版。
+                                        if !already_worn_out && vtoolwear::is_worn_out(worn_after) {
+                                            let iname = vgift::item_name_zh(tid);
+                                            let _ = out_tx.try_send(Message::Text(
+                                                serde_json::json!({
+                                                    "t": "tool_worn",
+                                                    "tool_id": tid,
+                                                    "line": vtoolwear::worn_out_line(iname),
+                                                })
+                                                .to_string(),
+                                            ));
+                                        }
+                                    }
+                                }
+                                // 磨鈍的工具（該修了）暫時沒有「多收一份」加成，修好即恢復——
+                                // 給磨損一個玩家能感受到的真實後果（790 加成暫時失靈）。
+                                if !already_worn_out {
+                                    if let Some((bonus_id, bonus_cnt)) =
+                                        vtool::tool_bonus_drop(tid, target_block, rand::random::<f32>())
+                                    {
+                                        let entry =
+                                            hub().inventory.write().unwrap().give(&name, bonus_id, bonus_cnt);
+                                        vinv::append_inv(&entry);
+                                        let new_count =
+                                            hub().inventory.read().unwrap().count(&name, bonus_id);
+                                        let _ = out_tx.try_send(Message::Text(
+                                            serde_json::json!({
+                                                "t": "inv_update",
+                                                "block_id": bonus_id,
+                                                "count": new_count
+                                            })
+                                            .to_string(),
+                                        ));
+                                        // 告訴前端這是「工具加成」的多收，讓它跳一句小回饋。
+                                        let _ = out_tx.try_send(Message::Text(
+                                            serde_json::json!({
+                                                "t": "tool_bonus",
+                                                "block_id": bonus_id,
+                                                "count": bonus_cnt
+                                            })
+                                            .to_string(),
+                                        ));
+                                    }
                                 }
                             }
                         }
@@ -9132,6 +9183,125 @@ async fn handle_socket(
                         }
                     }
                 }
+            }
+
+            // ── 工具耐久·保養 v1（自主提案切片，ROADMAP 981）─────────────────────
+            Ok(ClientMsg::RepairTool { resident_id, tool_id }) => {
+                // 1) 短鎖取玩家位置（players 讀鎖即釋）。
+                let player_pos: Option<(f32, f32)> = {
+                    let players = hub().players.read().unwrap();
+                    players.get(&my_id).map(|p| (p.x, p.z))
+                };
+                let Some((px, pz)) = player_pos else { continue; };
+                // 2) 短鎖取居民快照（residents 讀鎖即釋）。
+                let res_snap: Option<(&'static str, f32, f32)> = {
+                    let residents = hub().residents.read().unwrap();
+                    residents
+                        .iter()
+                        .find(|r| r.id == resident_id)
+                        .map(|r| (r.name, r.body.x, r.body.z))
+                };
+                let Some((rname, rx, rz)) = res_snap else { continue; };
+                // 3) 驗觸及範圍（水平 XZ）。
+                let dx = px - rx;
+                let dz = pz - rz;
+                if dx * dx + dz * dz > vtoolwear::REPAIR_REACH * vtoolwear::REPAIR_REACH {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "repair_fail", "reason": "走近一點再請她保養" })
+                            .to_string(),
+                    ));
+                    continue;
+                }
+                // 4) 驗這真是一件工具、且伺服器權威查真持有（濫用防護：不信客戶端自報持有）。
+                if vtool::tool_tier(tool_id).is_none()
+                    || hub().inventory.read().unwrap().count(&name, tool_id) < 1
+                {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "repair_fail", "reason": "背包裡沒有這件工具" })
+                            .to_string(),
+                    ));
+                    continue;
+                }
+                // 5) 驗真的「該修了」（耐久 ≤ 門檻）——濫用防護：不信客戶端自報「壞了」，
+                // 全新工具無從刷保養來農老主顧折扣。
+                let worn = hub().tool_wear.read().unwrap().worn_of(&name, tool_id);
+                if !vtoolwear::is_worn_out(worn) {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({ "t": "repair_fail", "reason": "這件工具還很堪用，不需要保養" })
+                            .to_string(),
+                    ));
+                    continue;
+                }
+                // 6) 算這次保養費（老主顧折扣，取保養前既有拜訪次數）並驗、扣乙太幣
+                // （inventory 寫鎖即釋）。
+                let visits_before = hub().tool_repair.read().unwrap().visits_of(&name, &resident_id);
+                let cost = vtoolwear::repair_cost(visits_before);
+                let taken = { hub().inventory.write().unwrap().take(&name, vcraft::COIN_ID, cost) };
+                let Some(coin_entry) = taken else {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({
+                            "t": "repair_fail",
+                            "reason": format!("身上的乙太幣不夠（需要{cost}枚）")
+                        })
+                        .to_string(),
+                    ));
+                    continue;
+                };
+                vinv::append_inv(&coin_entry);
+                // 7) 耐久歸零（tool_wear 寫鎖即釋，鎖外 append）。
+                let repair_entry = { hub().tool_wear.write().unwrap().repair(&name, tool_id) };
+                if let Some(entry) = repair_entry {
+                    vtoolwear::append_wear(&entry);
+                }
+                // 8) 老主顧拜訪次數 +1（tool_repair 寫鎖即釋，鎖外 append；已封頂時 delta=0，
+                // 略過 append，避免帳本無限膨脹）。
+                let (_, visit_entry) = {
+                    hub().tool_repair.write().unwrap().record_visit(&name, &resident_id)
+                };
+                if visit_entry.visit_delta > 0 {
+                    vtoolwear::append_repair_visit(&visit_entry);
+                }
+                // 9) 回應玩家 + 更新背包顯示 + 居民冒泡 + 記憶 + Feed（皆鎖外 IO）。
+                let iname = vgift::item_name_zh(tool_id);
+                let new_coin_count = hub().inventory.read().unwrap().count(&name, vcraft::COIN_ID);
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({
+                        "t": "inv_update",
+                        "block_id": vcraft::COIN_ID,
+                        "count": new_coin_count
+                    })
+                    .to_string(),
+                ));
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({
+                        "t": "repair_ok",
+                        "tool_id": tool_id,
+                        "cost": cost,
+                        "line": vtoolwear::repair_done_line(iname, rname),
+                    })
+                    .to_string(),
+                ));
+                let say_line = if visits_before == 0 {
+                    vtoolwear::first_repair_say_line(cost)
+                } else {
+                    vtoolwear::regular_repair_say_line(visits_before, cost)
+                };
+                {
+                    let mut residents_w = hub().residents.write().unwrap();
+                    if let Some(r) = residents_w.iter_mut().find(|r| r.id == resident_id) {
+                        r.say = say_line;
+                        r.say_timer = SAY_SECS;
+                        r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    }
+                } // residents 寫鎖釋放
+                let mem = vtoolwear::repair_memory_line(&name, iname);
+                let mem_entry = { hub().memory.write().unwrap().add_memory(&resident_id, &name, &mem) };
+                vmem::append_memory(&mem_entry);
+                vfeed::append_feed(
+                    "工具保養",
+                    &name,
+                    &vtoolwear::repair_feed_line(rname, &name, iname),
+                );
             }
 
             // ── 居民交易 v1（ROADMAP 670）────────────────────────────────────────
@@ -28472,6 +28642,23 @@ mod tests {
         assert!(matches!(on, ClientMsg::SetRiding { riding: true }));
         let off: ClientMsg = serde_json::from_str(r#"{"t":"set_riding","riding":false}"#).unwrap();
         assert!(matches!(off, ClientMsg::SetRiding { riding: false }));
+    }
+
+    // ── 工具耐久·保養 v1（自主提案切片，ROADMAP 981）────────────────────────────────
+
+    #[test]
+    fn repair_tool_msg_parses() {
+        let m: ClientMsg = serde_json::from_str(
+            r#"{"t":"repair_tool","resident_id":"vox_res_0","tool_id":34}"#,
+        )
+        .unwrap();
+        match m {
+            ClientMsg::RepairTool { resident_id, tool_id } => {
+                assert_eq!(resident_id, "vox_res_0");
+                assert_eq!(tool_id, 34);
+            }
+            _ => panic!("應解析為 RepairTool"),
+        }
     }
 
     #[test]
