@@ -872,6 +872,13 @@ struct VoxelResident {
     /// 馳援挖擊間隔倒數（秒，ROADMAP 983）：`boss_assist=true` 且貼近首領時才使用，歸零才輕輕
     /// 削一下（[`vboss::ASSIST_HIT_INTERVAL_SECS`]，遠慢於玩家），防止每 tick 都算一次觸及判定。
     boss_assist_hit_timer: f32,
+    /// 馳援知難而退 v2.1（ROADMAP 984）：本趟馳援啟程後累計「趕路已耗時」（秒），只在
+    /// `boss_assist=true` 且尚未 `boss_assist_engaged` 時累加；達
+    /// [`vboss::ASSIST_TRAVEL_TIMEOUT_SECS`] 仍未貼近過首領就自行放棄。每次重新啟程歸零。
+    boss_assist_travel_elapsed: f32,
+    /// 馳援知難而退 v2.1（ROADMAP 984）：本趟馳援是否曾經真正貼近過首領（觸發過一次
+    /// [`vboss::hit_in_reach`]）。一旦成立便終身豁免逾時放棄——已經到現場的不該被半路請回。
+    boss_assist_engaged: bool,
 }
 
 /// 環境生物的種類（水中游魚 v1，ROADMAP 848 起 wildlife 系統擴充為可延伸的多種類；
@@ -2201,6 +2208,9 @@ fn build_resident(
             boss_assist_check_timer: vboss::ASSIST_CHECK_INTERVAL_SECS * 0.5 + i as f32 * 5.0,
             boss_assist_cooldown: 0.0,
             boss_assist_hit_timer: 0.0,
+            // 馳援知難而退 v2.1（ROADMAP 984）：入場沒在馳援，兩者皆歸零。
+            boss_assist_travel_elapsed: 0.0,
+            boss_assist_engaged: false,
     }
 }
 
@@ -12059,6 +12069,8 @@ fn credit_boss_assist_on_defeat() {
             if r.boss_assist {
                 r.boss_assist = false;
                 r.boss_assist_cooldown = vboss::ASSIST_COOLDOWN_SECS;
+                r.boss_assist_travel_elapsed = 0.0;
+                r.boss_assist_engaged = false;
             }
         }
         picked
@@ -17335,6 +17347,10 @@ fn tick_residents(dt: f32) {
                     r.boss_assist = true;
                     boss_assist_active += 1;
                     r.boss_assist_hit_timer = vboss::ASSIST_HIT_INTERVAL_SECS;
+                    // 馳援知難而退 v2.1（ROADMAP 984）：每次重新啟程，趕路計時與「曾貼近過」旗標
+                    // 都要歸零，不沿用上一趟馳援的舊狀態。
+                    r.boss_assist_travel_elapsed = 0.0;
+                    r.boss_assist_engaged = false;
                     if r.say.is_empty() {
                         let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                         r.say = vboss::assist_join_bubble(pick).chars().take(40).collect();
@@ -17354,7 +17370,24 @@ fn tick_residents(dt: f32) {
                     if r.boss_assist_hit_timer <= 0.0 {
                         r.boss_assist_hit_timer = vboss::ASSIST_HIT_INTERVAL_SECS;
                         if vboss::hit_in_reach(r.body.x, r.body.y, r.body.z, bx, by, bz) {
+                            r.boss_assist_engaged = true;
                             boss_hits.push(vboss::ASSIST_HIT_POWER);
+                        }
+                    }
+                    // 馳援知難而退 v2.1（ROADMAP 984）：只在「還沒真正貼近過」時累計趕路耗時——
+                    // 一旦 engaged 成立就不再計時，已到現場的不該被半路請回。逾時就安靜放棄，
+                    // 進入正常冷卻，比照 v2「稀少事件才上 Feed」紀律：不寫記憶、不上動態牆。
+                    if !r.boss_assist_engaged {
+                        r.boss_assist_travel_elapsed += dt;
+                        if vboss::should_give_up_travel(r.boss_assist_engaged, r.boss_assist_travel_elapsed) {
+                            r.boss_assist = false;
+                            r.boss_assist_cooldown = vboss::ASSIST_COOLDOWN_SECS;
+                            r.boss_assist_travel_elapsed = 0.0;
+                            if r.say.is_empty() {
+                                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                                r.say = vboss::assist_give_up_bubble(pick).to_string();
+                                r.say_timer = SAY_SECS;
+                            }
                         }
                     }
                 } else {
@@ -17362,6 +17395,8 @@ fn tick_residents(dt: f32) {
                     // 避免卡在馳援狀態回不去平常閒晃（正常收尾另走 BossHit/tick_worldboss 兩處）。
                     r.boss_assist = false;
                     r.boss_assist_cooldown = vboss::ASSIST_COOLDOWN_SECS;
+                    r.boss_assist_travel_elapsed = 0.0;
+                    r.boss_assist_engaged = false;
                 }
             }
             // 餓意累積（居民也會肚子餓 v1，ROADMAP 799）：每 tick 慢慢餓一點；靜默冷卻同步倒數。
