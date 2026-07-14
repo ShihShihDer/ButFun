@@ -69,6 +69,7 @@ use crate::voxel_bench as vbench;
 use crate::voxel_bench_chat as vbenchchat;
 use crate::voxel_bench_tiff as vbtiff;
 use crate::voxel_anglerest as vangler;
+use crate::voxel_vocation as vvoc;
 use crate::voxel_raincover as vrain;
 use crate::voxel_homegaze as vhome;
 use crate::voxel_birthday as vbday;
@@ -661,6 +662,12 @@ struct VoxelResident {
     /// 臨水垂釣冷卻倒數（秒，居民臨水垂釣 v1）：一次坐下垂釣後設 [`vangler::REST_COOLDOWN_SECS`]，
     /// 歸零前不再垂釣——白天路過水邊偶爾坐下釣一竿、不狂刷垂釣泡泡。各居民初始錯開。純記憶體、重啟歸零。
     angler_cooldown: f32,
+    /// 生計身分（居民生計 v1）：依居民索引決定性指派（[`vvoc::vocation_for`]），一生不變，
+    /// 與能力/嗜好無涉——只決定她閒下來時忙活的是哪一件日常營生。
+    vocation: vvoc::Vocation,
+    /// 生計忙活冷卻倒數（秒，居民生計 v1）：一次停下忙活後設 [`vvoc::WORK_COOLDOWN_SECS`]，
+    /// 歸零前不再忙——不看地點、隨時可能觸發，長冷卻天然節流。各居民初始錯開。純記憶體、重啟歸零。
+    vocation_work_cooldown: f32,
     /// 雨天躲雨冷卻倒數（秒，雨天葉傘避雨 v1）：一次停步躲雨後設 [`vrain::SHELTER_COOLDOWN_SECS`]，
     /// 歸零前不再躲——一場雨裡偶爾停步避一會兒、不狂刷避雨泡泡。各居民初始錯開。純記憶體、重啟歸零。
     rain_shelter_cooldown: f32,
@@ -2110,6 +2117,9 @@ fn build_resident(
             pending_bench_reply: None,
             // 居民臨水垂釣 v1：首次垂釣冷卻各自錯開，避免白天同一 tick 一群人一起開釣。
             angler_cooldown: vangler::fish_cd_offset(i),
+            // 居民生計 v1：依索引決定性指派一生不變的生計身分；首次忙活冷卻各自錯開。
+            vocation: vvoc::vocation_for(i),
+            vocation_work_cooldown: vvoc::work_cd_offset(i),
             // 雨天葉傘避雨 v1：首次躲雨冷卻各自錯開，避免一下雨同一 tick 一群人齊聲說避雨話。
             rain_shelter_cooldown: vrain::shelter_cd_offset(i),
             homegaze_cooldown: vhome::gaze_cd_offset(i),
@@ -17125,6 +17135,7 @@ fn tick_residents(dt: f32) {
     // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在水邊才記交情，否則 None 只上 Feed。
     // (居民 id, 居民名, 水邊玩家名 Option, pick)。
     let mut angler_events: Vec<(String, &'static str, Option<String>, usize)> = Vec::new();
+    let mut vocation_events: Vec<(String, &'static str, Option<String>, vvoc::Vocation)> = Vec::new();
     // 雨天避雨事件（雨天葉傘避雨 v1）：某居民下雨時停步躲一會兒時鎖內收集；記憶寫＋Feed 在居民鎖
     // 釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。玩家在近旁才記交情，否則 None 只上 Feed。
     // (居民 id, 居民名, 近旁玩家名 Option, pick)。
@@ -19322,6 +19333,10 @@ fn tick_residents(dt: f32) {
             if r.homegaze_cooldown > 0.0 {
                 r.homegaze_cooldown -= dt;
             }
+            // 居民生計 v1：忙活冷卻遞減（純記憶體、每 tick 一次）。
+            if r.vocation_work_cooldown > 0.0 {
+                r.vocation_work_cooldown -= dt;
+            }
             // 居民關心你挨餓 v1：關心冷卻遞減（純記憶體、每 tick 一次）。
             if r.hunger_care_cooldown > 0.0 {
                 r.hunger_care_cooldown -= dt;
@@ -20792,6 +20807,45 @@ fn tick_residents(dt: f32) {
                         r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                         angler_events.push((r.id.clone(), r.name, None, pick));
                     }
+                }
+            }
+
+            // 居民生計 v1（ROADMAP 988）：不看地點、隨時可能觸發——閒著、醒著、不在朝聖/遠行的居民
+            // 偶爾停下腳步，安靜忙活起自己一生不變的生計（農夫/鐵匠/漁夫/獵人/工匠/商人），心情變好；
+            // 你也在旁邊看她忙（PLAYER_RADIUS 內）時點你名並記進交情。補上「她平常都在忙什麼」這個
+            // 身分軸——與能力(888/889)、私人嗜好(voxel_hobby) 三軸並立、正交（見模組頭註）。鎖序：
+            // 純讀居民自身欄位（已持居民寫鎖），記憶寫＋Feed 走鎖外 `vocation_events`（守 prod 死鎖鐵律）。
+            if r.say.is_empty()
+                && !r.asleep
+                && r.pilgrimage.is_none()
+                && r.expedition.is_none()
+                && vvoc::should_work(r.vocation_work_cooldown, rand::random::<f32>(), vvoc::WORK_CHANCE)
+            {
+                r.vocation_work_cooldown = vvoc::WORK_COOLDOWN_SECS;
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                // 身邊最近的玩家：夠近（PLAYER_RADIUS 內）且是登入玩家（名非空）→ 忙活話點你名、記交情。
+                let near_player = nearest_player_info(r.body.x, r.body.z, &player_pts)
+                    .filter(|(d2, pname)| {
+                        *d2 < vvoc::PLAYER_RADIUS * vvoc::PLAYER_RADIUS && !pname.is_empty()
+                    })
+                    .map(|(_, pname)| pname.to_string());
+                if let Some(pname) = near_player {
+                    r.say = vvoc::work_bubble_with_player(r.vocation, &pname, pick)
+                        .chars()
+                        .take(vvoc::SAY_CHARS)
+                        .collect();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    vocation_events.push((r.id.clone(), r.name, Some(pname), r.vocation));
+                } else {
+                    // 沒有玩家在旁（或只有訪客）：獨自忙活念句通用生計話，上 Feed、不寫玩家交情。
+                    r.say = vvoc::work_bubble(r.vocation, pick)
+                        .chars()
+                        .take(vvoc::SAY_CHARS)
+                        .collect();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    vocation_events.push((r.id.clone(), r.name, None, r.vocation));
                 }
             }
 
@@ -24087,6 +24141,21 @@ fn tick_residents(dt: f32) {
         vfeed::append_feed(vangler::FEED_KIND, rname, &vangler::angler_feed_line(rname));
     }
 
+    // 居民生計 v1（ROADMAP 988）：忙活事件落地——你在旁邊看她忙時把「看過她忙活生計」記進交情
+    //（掛玩家名下、日後浮進日記），無論有無玩家都上動態牆。記憶寫鎖短取即釋、Feed 走 IO，皆在
+    // residents 鎖釋放後（守 prod 死鎖鐵律）。不看地點的日常小拍，記憶只進記憶庫（in-memory、
+    // 重啟歸零），不額外持久化。
+    for (rid, rname, pname_opt, vocation) in &vocation_events {
+        if let Some(pname) = pname_opt {
+            hub()
+                .memory
+                .write()
+                .unwrap()
+                .add_memory(rid, pname, &vvoc::work_memory_line(*vocation, pname)); // 記憶寫鎖即釋
+        }
+        vfeed::append_feed(vvoc::FEED_KIND, rname, &vvoc::work_feed_line(*vocation, rname));
+    }
+
     // 雨天葉傘避雨 v1：雨中停步躲一會兒的事件落地——玩家在近旁時把「和你一起擠在葉傘下避雨」記進交情
     //（掛玩家名下、日後浮進日記），無論有無玩家都上動態牆。記憶寫鎖短取即釋、Feed 走 IO，皆在 residents
     // 鎖釋放後（守死鎖鐵律）。比照長椅歇腳／臨水垂釣：避雨是輕鬆日常小拍，記憶只進記憶庫（in-memory、
@@ -26462,12 +26531,25 @@ fn pave_worker_tick(
 
 /// 開始一次採集任務：以 (rx,rz) 為原點找最近資源 → 設居民的 gather 技能狀態。
 /// 找不到資源（罕見）→ 視為已備料（gathered=配額），下個 agency tick 直接蓋，避免卡死。
+/// 居民生計 v2（ROADMAP 988 修訂，回應 review）：先試這位居民生計偏好的資源種類
+/// （[`vvoc::Vocation::preferred_resource`]）——附近真的找得到才用；找不到（或商人本就不挑）
+/// 才退回原本「不挑、找最近任何資源」的邏輯，永不因偏好而採不到東西。
 fn start_gather(rid: &str, rx: i32, rz: i32) {
     // 挖掘紀律：這是居民**自主**備料採集（蓋家前的自發採集）→ 帶離村禁區（泛化到最近聚落），選址跳過村內、往村外找。
     let excl = village_dig_exclusion_near(rx, rz);
+    let vocation = {
+        let residents = hub().residents.read().unwrap();
+        residents.iter().find(|r| r.id == rid).map(|r| r.vocation)
+    }; // residents 讀鎖釋放
     let found = {
         let world = hub().deltas.read().unwrap();
-        vskill::find_nearest_resource_excl(&world, rx, rz, vskill::GATHER_MAX_RADIUS, excl)
+        vocation
+            .and_then(|v| v.preferred_resource())
+            .and_then(|res| {
+                vskill::find_nearest_resource_of_excl(&world, rx, rz, vskill::GATHER_MAX_RADIUS, res, excl)
+                    .map(|(tx, ty, tz)| (tx, ty, tz, res))
+            })
+            .or_else(|| vskill::find_nearest_resource_excl(&world, rx, rz, vskill::GATHER_MAX_RADIUS, excl))
     }; // deltas 讀鎖釋放
     let mut residents = hub().residents.write().unwrap();
     if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
