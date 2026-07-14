@@ -194,6 +194,11 @@ pub struct BuildPlan {
     /// `#[serde(default)]` 供舊 jsonl 向後相容（舊行沒有這欄，一律視為空、維持原單人完工行為）。
     #[serde(default)]
     pub helpers: Vec<String>,
+    /// 蓋家真的用材料 v1（自主提案切片）：目前是否正因缺原料而暫停（見 `is_raw_material`）。
+    /// 只用來讓缺料/復工的泡泡與動態牆各只冒一次（狀態轉換才觸發），不影響 `remaining`
+    /// 本身。`#[serde(default)]` 供舊 jsonl 向後相容（舊行沒有這欄，一律視為未暫停）。
+    #[serde(default)]
+    pub stalled: bool,
 }
 
 impl BuildPlan {
@@ -220,6 +225,11 @@ impl BuildPlan {
     /// 取出下一個待放方塊（就地修改 remaining）。
     pub fn pop_next(&mut self) -> Option<BuildBlock> {
         self.remaining.pop_front()
+    }
+
+    /// 窺視下一個待放方塊，不取出（蓋家真的用材料 v1：放之前先看看要不要扣料）。
+    pub fn peek_next(&self) -> Option<&BuildBlock> {
+        self.remaining.front()
     }
 }
 
@@ -292,6 +302,7 @@ impl BuildStore {
             expansion,
             inspired_by,
             helpers: Vec::new(),
+            stalled: false,
         };
         self.next_seq += 1;
         self.plans.insert(resident.to_string(), plan.clone());
@@ -827,6 +838,75 @@ pub fn build_say_line(kind_name: &str, progress_pct: u32) -> String {
     } else {
         format!("{}蓋好了！✨", kind_name)
     }
+}
+
+// ── 蓋家真的用材料 v1（自主提案切片）──────────────────────────────────────────
+//
+// **真缺口**：蓋家（652）至今每塊方塊都是憑空生出——居民手邊的採集背包（`res_inv`）
+// 與正在蓋的房子從沒有一絲關聯，就算她剛好一根木頭都沒有，牆照樣一塊塊冒出來。
+// 「你送她的材料」也從沒真的變成她房子的一部分：送禮（gift）至今只換一句道謝與一筆
+// 記憶，material 本身憑空消失，不像 670 交易、748 分享那樣真的進出居民的採集背包。
+//
+// **本刀**：牆與屋頂裡最基礎的四種原料——木頭／石頭／細沙／草皮（皆是居民自己採集
+// 就會存進 `res_inv` 的資源，見 `voxel_skills::GatherResource`）——蓋下去時真的從她
+// 的採集背包扣一份；手邊剛好沒有，這一塊就先不放（誠實暫停，不硬蓋），等她自己採到
+// 或**你送她一份**，下一輪立刻接著蓋。門/床/火把/玻璃/拋光石等經加工或裝飾性方塊
+// 刻意不列管（那些不是她自己隨手採得到的東西，管了只會變成無謂的卡關）。
+//
+// **與既有系統的分界**：不是 699/834 玩家協助蓋家（那是「你自己動手放一塊」）——本刀
+// 是「你給她材料、她自己放」，方向不同、互不重疊，兩者可並存。
+//
+// **純邏輯層**：`is_raw_material` / `material_name_zh` 判斷與命名、缺料/復工的泡泡與
+// 動態牆文案全是確定性純函式，零 LLM、零鎖、零 IO。res_inv 讀寫／`stalled` 旗標切換
+// 全在 `voxel_ws.rs`。
+
+/// 是否為「原料類」方塊——居民自己採集就會進 `res_inv` 的四種基礎資源。
+/// 只有這四種蓋家時才真的扣材料；其餘（板材/拋光石/門/床/火把/玻璃……）維持既有
+/// 免費放置，避免把還沒被發明引擎教會的加工品也卡進蓋家流程。
+pub fn is_raw_material(block: Block) -> bool {
+    matches!(block, Block::Wood | Block::Stone | Block::Sand | Block::Grass)
+}
+
+/// 原料方塊的中文顯示名（供缺料/復工文案使用）。非原料回傳空字串（呼叫端不該對非
+/// 原料呼叫這個函式，回空字串比 panic 安全，且好測）。
+pub fn material_name_zh(block: Block) -> &'static str {
+    match block {
+        Block::Wood => "木頭",
+        Block::Stone => "石頭",
+        Block::Sand => "細沙",
+        Block::Grass => "草皮",
+        _ => "",
+    }
+}
+
+/// 缺料時冒出的泡泡（輪替數句，避免每次都同一句）。
+pub fn material_stall_bubble(material: &str, pick: usize) -> String {
+    const TEMPLATES: [&str; 3] = [
+        "咦，手邊的{}用完了……去張羅張羅。",
+        "還缺一份{}，先去找找看。",
+        "{}不夠了，蓋到這邊得先停一下。",
+    ];
+    TEMPLATES[pick % TEMPLATES.len()].replacen("{}", material, 1)
+}
+
+/// 缺料暫停的動態牆文案。
+pub fn material_stall_feed_line(resident: &str, kind_name: &str, material: &str) -> String {
+    format!("{resident}蓋{kind_name}蓋到一半，手邊的{material}用完了，先停下來想辦法。")
+}
+
+/// 材料補上、接著蓋的泡泡（輪替數句）。
+pub fn material_resume_bubble(material: &str, pick: usize) -> String {
+    const TEMPLATES: [&str; 3] = [
+        "有{}了！接著蓋～",
+        "太好了，湊到{}了，繼續！",
+        "{}來了，可以接著蓋下去了！",
+    ];
+    TEMPLATES[pick % TEMPLATES.len()].replacen("{}", material, 1)
+}
+
+/// 材料補上、接著蓋的動態牆文案。
+pub fn material_resume_feed_line(resident: &str, kind_name: &str) -> String {
+    format!("{resident}湊到了缺的材料，{kind_name}又接著蓋下去了。")
 }
 
 // ── 居民互助蓋家（純函式，零 LLM）──────────────────────────────────────────────
@@ -1667,6 +1747,7 @@ mod tests {
             expansion: false,
             inspired_by: None,
             helpers: Vec::new(),
+            stalled: false,
         };
         let s = BuildStore::from_entries(vec![plan]);
         assert!(s.has_plan("vox_res_0"));
@@ -1687,6 +1768,7 @@ mod tests {
             expansion: false,
             inspired_by: None,
             helpers: Vec::new(),
+            stalled: false,
         };
         let s = BuildStore::from_entries(vec![plan]);
         assert!(!s.has_plan("vox_res_0"), "已完成的計畫不應載回");
@@ -1707,6 +1789,7 @@ mod tests {
             expansion: false,
             inspired_by: None,
             helpers: Vec::new(),
+            stalled: false,
         };
         let new = BuildPlan {
             resident: "vox_res_0".into(),
@@ -1721,6 +1804,7 @@ mod tests {
             expansion: false,
             inspired_by: None,
             helpers: Vec::new(),
+            stalled: false,
         };
         let s = BuildStore::from_entries(vec![old, new]);
         assert_eq!(s.plans["vox_res_0"].kind, "tower", "應保留 seq 較大的計畫");
@@ -1747,6 +1831,7 @@ mod tests {
             expansion: false,
             inspired_by: None,
             helpers: Vec::new(),
+            stalled: false,
         };
         // 檔序：滿 → 遞減 → 0（done）。最新（最後）一行才是真狀態＝蓋完了。
         let entries = vec![mk(31), mk(20), mk(10), mk(1), mk(0)];
@@ -1778,6 +1863,7 @@ mod tests {
             expansion: false,
             inspired_by: None,
             helpers: Vec::new(),
+            stalled: false,
         };
         let s = BuildStore::from_entries(vec![mk(30), mk(15), mk(7)]);
         assert!(s.has_plan("vox_res_1"), "最新一行未蓋完 → 該續蓋");
@@ -1799,6 +1885,97 @@ mod tests {
 
         let line99 = build_say_line("瞭望台", 99);
         assert!(line99.contains("蓋好了"), "進度 99 應包含「蓋好了」：{line99}");
+    }
+
+    // ── 蓋家真的用材料 v1：is_raw_material / 缺料復工文案 純函式 ─────────────────
+
+    #[test]
+    fn only_four_raw_materials_are_gated() {
+        // 只有這四種——居民自己採集就會進 res_inv 的基礎資源——蓋下去才扣料。
+        assert!(is_raw_material(Block::Wood));
+        assert!(is_raw_material(Block::Stone));
+        assert!(is_raw_material(Block::Sand));
+        assert!(is_raw_material(Block::Grass));
+        // 加工/裝飾類方塊維持既有免費放置，避免無謂卡關。
+        assert!(!is_raw_material(Block::Plank));
+        assert!(!is_raw_material(Block::SmoothStone));
+        assert!(!is_raw_material(Block::StoneBrick));
+        assert!(!is_raw_material(Block::Leaves));
+        assert!(!is_raw_material(Block::Glass));
+        assert!(!is_raw_material(Block::DoorClosed));
+        assert!(!is_raw_material(Block::Torch));
+        assert!(!is_raw_material(Block::Water));
+        assert!(!is_raw_material(Block::Air));
+    }
+
+    #[test]
+    fn material_name_zh_covers_all_gated_blocks() {
+        assert_eq!(material_name_zh(Block::Wood), "木頭");
+        assert_eq!(material_name_zh(Block::Stone), "石頭");
+        assert_eq!(material_name_zh(Block::Sand), "細沙");
+        assert_eq!(material_name_zh(Block::Grass), "草皮");
+        // 非原料方塊回傳空字串（呼叫端本就不該對它們求名）。
+        assert_eq!(material_name_zh(Block::Plank), "");
+    }
+
+    #[test]
+    fn material_stall_bubble_mentions_material_and_varies() {
+        let lines: Vec<String> = (0..3).map(|i| material_stall_bubble("木頭", i)).collect();
+        for l in &lines {
+            assert!(l.contains("木頭"), "缺料泡泡應提到材料名：{l}");
+            assert!(!l.contains('\n'), "泡泡不應含換行：{l}");
+        }
+        // 三句彼此不同，避免每次卡關都看到一模一樣的台詞。
+        assert_ne!(lines[0], lines[1]);
+        assert_ne!(lines[1], lines[2]);
+        // 任意大的 pick 取模有界，不 panic。
+        let _ = material_stall_bubble("石頭", 9999);
+    }
+
+    #[test]
+    fn material_resume_bubble_mentions_material_and_varies() {
+        let lines: Vec<String> = (0..3).map(|i| material_resume_bubble("石頭", i)).collect();
+        for l in &lines {
+            assert!(l.contains("石頭"), "復工泡泡應提到材料名：{l}");
+            assert!(!l.contains('\n'), "泡泡不應含換行：{l}");
+        }
+        assert_ne!(lines[0], lines[1]);
+        assert_ne!(lines[1], lines[2]);
+        let _ = material_resume_bubble("細沙", 9999);
+    }
+
+    #[test]
+    fn material_stall_and_resume_feed_lines_mention_resident_and_kind() {
+        let stall = material_stall_feed_line("露娜", "小木屋", "木頭");
+        assert!(stall.contains("露娜") && stall.contains("小木屋") && stall.contains("木頭"));
+        assert!(!stall.contains('\n'));
+
+        let resume = material_resume_feed_line("露娜", "小木屋");
+        assert!(resume.contains("露娜") && resume.contains("小木屋"));
+        assert!(!resume.contains('\n'));
+    }
+
+    #[test]
+    fn peek_next_does_not_remove_block() {
+        let mut plan = BuildPlan {
+            resident: "vox_res_0".into(),
+            kind: "house".into(),
+            kind_name: "小木屋".into(),
+            cx: 0,
+            cy: 0,
+            cz: 0,
+            remaining: vec![BuildBlock { x: 0, y: 0, z: 0, b: Block::Wood as u8 }].into(),
+            total: 1,
+            seq: 0,
+            expansion: false,
+            inspired_by: None,
+            helpers: Vec::new(),
+            stalled: false,
+        };
+        assert_eq!(plan.peek_next().map(|b| b.b), Some(Block::Wood as u8));
+        // peek 兩次結果一致（不像 pop_next 會消耗掉）。
+        assert_eq!(plan.peek_next().map(|b| b.b), Some(Block::Wood as u8));
+        assert_eq!(plan.remaining.len(), 1, "peek 不應改動 remaining");
     }
 
     // ── should_help_build / help_say_line 純函式 ─────────────────────────────
