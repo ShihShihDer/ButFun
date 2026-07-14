@@ -909,6 +909,17 @@ pub fn material_resume_feed_line(resident: &str, kind_name: &str) -> String {
     format!("{resident}湊到了缺的材料，{kind_name}又接著蓋下去了。")
 }
 
+/// 蓋家真的用材料 v2（回應 review #1283 退回）：附近真的採不到缺的那種材料時的保底
+/// 泡泡——誠實跳過材料要求、這塊照放，不讓居民永遠卡在建造狀態拖垮全村 agency。
+pub fn material_waived_bubble(material: &str) -> String {
+    format!("附近找不到{material}了，這塊先將就著放吧……")
+}
+
+/// 保底放置（附近採不到材料）的動態牆文案。
+pub fn material_waived_feed_line(resident: &str, kind_name: &str, material: &str) -> String {
+    format!("{resident}蓋{kind_name}時附近找不到{material}，將就放了這一塊。")
+}
+
 // ── 居民互助蓋家（純函式，零 LLM）──────────────────────────────────────────────
 // ROADMAP 696：老朋友到訪時，若主人正在蓋家，順手幫忙推進一塊——讓情誼（672）不再只停在
 // 問候與八卦（694），第一次外溢成「真的動手互相幫忙」的協力行為，小社會湧現再深一層。
@@ -1953,6 +1964,17 @@ mod tests {
         let resume = material_resume_feed_line("露娜", "小木屋");
         assert!(resume.contains("露娜") && resume.contains("小木屋"));
         assert!(!resume.contains('\n'));
+    }
+
+    #[test]
+    fn material_waived_bubble_and_feed_line_mention_material_resident_and_kind() {
+        let bubble = material_waived_bubble("木頭");
+        assert!(bubble.contains("木頭"));
+        assert!(!bubble.contains('\n'));
+
+        let feed = material_waived_feed_line("露娜", "小木屋", "木頭");
+        assert!(feed.contains("露娜") && feed.contains("小木屋") && feed.contains("木頭"));
+        assert!(!feed.contains('\n'));
     }
 
     #[test]

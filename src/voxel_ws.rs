@@ -389,9 +389,6 @@ const RECALL_CHANCE_PER_TICK: f32 = 0.002;
 const MOOD_SAY_COOLDOWN: f32 = 120.0;
 /// 居民建造頻率：每隔這麼多秒放一塊方塊（慢節奏，讓玩家能目睹過程）。
 const BUILD_INTERVAL_SECS: f32 = 8.0;
-/// 蓋家真的用材料 v1：缺料暫停時的重試間隔（秒）——比正常建造間隔短得多，材料一到手
-/// （自己採到或你送來）就能很快接著蓋，不必乾等一整輪 `BUILD_INTERVAL_SECS`。
-const MATERIAL_STALL_RETRY_SECS: f32 = 3.0;
 /// 建物完工後的建造冷卻（秒）：任一建物蓋好後這麼久內同居民不動工新建物。
 /// 頻率保險：即使持久 flag 因故失效，也不會連發完工洗版 Feed（每座至少隔這麼久）。
 /// 5 分鐘＝比正常建造間隔長得多、又不至於讓「正常一座接一座蓋」感覺卡頓。
@@ -25813,8 +25810,10 @@ fn tick_residents(dt: f32) {
             continue;
         }
 
-        // ── 蓋家真的用材料 v1（自主提案切片）：下一塊若是原料類方塊，先看看她手邊
-        // 的採集背包（res_inv）夠不夠，不夠就先不放（誠實暫停），足夠就真的扣一份材料
+        // ── 蓋家真的用材料 v2（回應 review #1283 退回）：下一塊若是原料類方塊，先看看
+        // 她手邊的採集背包（res_inv）夠不夠。不夠 → 不再乾等，指名去採「這塊要用的那一種」
+        // 材料，採到回來下個 agency tick 就會自動接著蓋；附近真的採不到才誠實跳過材料
+        // 要求、這塊照放（保底，絕不讓居民永遠卡在建造狀態、拖垮全村 agency）。
         // ──────────────────────────────────────────────────────────────────────
         // 短鎖循序（builds 讀 → 釋 → res_inv 讀 → 釋），守 prod 死鎖鐵律，不巢狀。
         let front_material: Option<(u8, Block)> = {
@@ -25829,26 +25828,50 @@ fn tick_residents(dt: f32) {
             }; // res_inv 讀鎖釋放
 
             if have == 0 {
-                // 缺料：標記暫停（只在「剛」轉為暫停時冒泡＋上動態牆一次，避免每 tick 洗版）。
-                let (just_stalled, kind_name) = {
-                    let mut builds = hub().builds.write().unwrap();
-                    builds.get_plan_mut(&rid).map_or((false, String::new()), |p| {
-                        let was = p.stalled;
-                        p.stalled = true;
-                        (!was, p.kind_name.clone())
-                    })
-                }; // builds 寫鎖釋放
-                if just_stalled {
-                    let material = vbuild::material_name_zh(mat_block);
-                    let pick = (vfarm::now_secs() as usize).wrapping_add(mat_id as usize);
-                    say_updates.push((rid.clone(), vbuild::material_stall_bubble(material, pick)));
-                    vfeed::append_feed("蓋家缺料", rname, &vbuild::material_stall_feed_line(rname, &kind_name, material));
-                }
-                // 短間隔重試（材料一到手就能很快接著蓋，不必等完整 build interval）。
-                reset_build_tick(&rid, MATERIAL_STALL_RETRY_SECS);
-                continue;
-            }
+                // 指名去採這一種材料（走既有 GatherSkill 機制：安全採集/逾時放棄/可逃性判定
+                // 全部沿用，本函式只負責鎖定目標）。
+                let sent = vskill::GatherResource::from_block(mat_block)
+                    .is_some_and(|res| start_material_gather(&rid, rx, rz, res));
 
+                if sent {
+                    // 標記暫停（只在「剛」轉為暫停時冒泡＋上動態牆一次，避免每 tick 洗版）。
+                    let (just_stalled, kind_name) = {
+                        let mut builds = hub().builds.write().unwrap();
+                        builds.get_plan_mut(&rid).map_or((false, String::new()), |p| {
+                            let was = p.stalled;
+                            p.stalled = true;
+                            (!was, p.kind_name.clone())
+                        })
+                    }; // builds 寫鎖釋放
+                    if just_stalled {
+                        let material = vbuild::material_name_zh(mat_block);
+                        let pick = (vfarm::now_secs() as usize).wrapping_add(mat_id as usize);
+                        say_updates.push((rid.clone(), vbuild::material_stall_bubble(material, pick)));
+                        vfeed::append_feed("蓋家缺料", rname, &vbuild::material_stall_feed_line(rname, &kind_name, material));
+                    }
+                    // 她已經上路去採了：這個 tick 先不放；`r.gather` 有值期間不會再進候選名單
+                    // （見 build_candidates 的 `r.gather.is_none()` 閘），採到/逾時放棄後自然
+                    // 回頭重算 agency，不需要在這裡額外倒數。
+                    continue;
+                }
+
+                // 附近真的沒有這種材料（v1 review 抓到的致命傷：光靠玩家送禮救不了一整棟
+                // 房子）→ 保底：誠實跳過材料要求，這塊照放（不扣 res_inv，反正也沒有可扣），
+                // 順手清掉暫停旗標，避免長期卡在「暫停中」的顯示狀態。
+                {
+                    let mut builds = hub().builds.write().unwrap();
+                    if let Some(p) = builds.get_plan_mut(&rid) {
+                        p.stalled = false;
+                    }
+                } // builds 寫鎖釋放
+                let material = vbuild::material_name_zh(mat_block);
+                let kind_name = {
+                    hub().builds.read().unwrap().plans.get(&rid).map_or(String::new(), |p| p.kind_name.clone())
+                }; // builds 讀鎖釋放
+                say_updates.push((rid.clone(), vbuild::material_waived_bubble(material)));
+                vfeed::append_feed("蓋家將就", rname, &vbuild::material_waived_feed_line(rname, &kind_name, material));
+                // 不 continue：讓下面的一般放置流程把這塊放下去（have==0 時的扣料是 no-op）。
+            } else {
             // 材料足夠：真的扣一份（res_inv 寫鎖即釋）。
             {
                 let mut inv = hub().res_inv.write().unwrap();
@@ -25879,6 +25902,7 @@ fn tick_residents(dt: f32) {
                 let pick = (vfarm::now_secs() as usize).wrapping_add(mat_id as usize);
                 say_updates.push((rid.clone(), vbuild::material_resume_bubble(material, pick)));
                 vfeed::append_feed("蓋家復工", rname, &vbuild::material_resume_feed_line(rname, &kind_name));
+            }
             }
         }
 
@@ -26648,6 +26672,33 @@ fn start_gather(rid: &str, rx: i32, rz: i32) {
                 r.gathered_since_build = GATHER_QUOTA;
             }
         }
+    }
+}
+
+/// 蓋家真的用材料 v2（回應 review #1283 退回：v1 缺料只會標記暫停、從不主動補料，
+/// 居民永久卡死在建造狀態、全村陸續靜止）：指名去採「這一塊要用的那一種」材料
+/// （不是隨機資源、也不是生計偏好——就是缺的那種），採到回來下個 agency tick
+/// 就會自動接著蓋。找不到（附近真的沒有這種資源）→ 回 `false`，讓呼叫端走保底
+/// （誠實跳過材料要求、這塊照放），絕不讓居民卡在無法脫離的狀態。
+fn start_material_gather(rid: &str, rx: i32, rz: i32, res: vskill::GatherResource) -> bool {
+    let excl = village_dig_exclusion_near(rx, rz);
+    let found = {
+        let world = hub().deltas.read().unwrap();
+        vskill::find_nearest_resource_of_excl(&world, rx, rz, vskill::GATHER_MAX_RADIUS, res, excl)
+    }; // deltas 讀鎖釋放
+    let Some((tx, ty, tz)) = found else { return false };
+    let mut residents = hub().residents.write().unwrap();
+    if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+        r.gather = Some(GatherSkill {
+            resource: res,
+            tx,
+            ty,
+            tz,
+            timeout: vskill::GATHER_TIMEOUT_SECS,
+        });
+        true
+    } else {
+        false
     }
 }
 
