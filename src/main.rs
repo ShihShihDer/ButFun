@@ -770,6 +770,7 @@ async fn main() {
         .expect("伺服器執行失敗");
     tracing::info!("收到關機訊號;退出前最後一次落地玩家狀態…");
     game::flush_all(&flush_state).await;
+    voxel_ws::flush_player_stats();
     tracing::info!("狀態已落地,伺服器關閉");
 }
 

@@ -2811,6 +2811,32 @@ static HUB: OnceLock<VoxelHub> = OnceLock::new();
 /// 玩家血/飢存檔路徑（`data/` 已 gitignore，執行期產生；重啟後登入玩家血/飢還在）。
 const VOXEL_PLAYER_STATS_PATH: &str = "data/voxel_player_stats.jsonl";
 
+/// 玩家統計只用原子旗標聚合變更，不為節流再加鎖，避免與 `player_stats` 形成巢狀鎖。
+struct PlayerStatsPersistGate {
+    dirty: AtomicBool,
+}
+
+impl PlayerStatsPersistGate {
+    const fn new() -> Self {
+        Self { dirty: AtomicBool::new(false) }
+    }
+
+    fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    /// 週期寫只消耗 dirty；斷線／關服的強制寫即使旗標已被別人消耗也仍會執行。
+    fn begin_flush(&self, force: bool) -> bool {
+        self.dirty.swap(false, Ordering::AcqRel) || force
+    }
+
+    fn restore_dirty(&self) {
+        self.dirty.store(true, Ordering::Release);
+    }
+}
+
+static PLAYER_STATS_PERSIST: PlayerStatsPersistGate = PlayerStatsPersistGate::new();
+
 /// 啟動時從磁碟載回玩家血/飢（檔缺＝首次啟動，回空）。純 IO：解析走 vstats 純函式。
 /// 韌性：讀檔失敗／髒行都不 panic（比照其他 voxel store 載入慣例）。
 fn load_player_stats() -> HashMap<String, vstats::PlayerStats> {
@@ -2822,9 +2848,18 @@ fn load_player_stats() -> HashMap<String, vstats::PlayerStats> {
     map
 }
 
+/// 標記玩家血／飢已變更；熱路徑只做一次原子寫，不碰檔案也不新增鎖。
+fn mark_player_stats_dirty() {
+    PLAYER_STATS_PERSIST.mark_dirty();
+}
+
 /// 把目前玩家血/飢快照落地（原子寫：寫暫存檔再 rename，避免半截檔）。
-/// 呼叫端在鎖外呼叫（此函式自己短取讀鎖組快照即釋，不持鎖寫檔）。
-fn persist_player_stats() {
+/// `force` 供斷線／正常關服使用；週期呼叫則只在 dirty 時寫。若 IO 失敗會恢復 dirty，
+/// 讓下一拍重試。先消耗旗標再取快照，寫檔期間若又有變更，新 dirty 不會被這次完成誤清。
+fn persist_player_stats(force: bool) {
+    if !PLAYER_STATS_PERSIST.begin_flush(force) {
+        return;
+    }
     let rows: Vec<vstats::StatsRow> = {
         let map = hub().player_stats.read().unwrap();
         map.iter()
@@ -2833,9 +2868,17 @@ fn persist_player_stats() {
     }; // 讀鎖釋放
     let text = vstats::serialize_rows(&rows);
     let tmp = format!("{VOXEL_PLAYER_STATS_PATH}.tmp");
-    if std::fs::write(&tmp, text.as_bytes()).is_ok() {
-        let _ = std::fs::rename(&tmp, VOXEL_PLAYER_STATS_PATH);
+    let saved = std::fs::write(&tmp, text.as_bytes())
+        .and_then(|_| std::fs::rename(&tmp, VOXEL_PLAYER_STATS_PATH))
+        .is_ok();
+    if !saved {
+        PLAYER_STATS_PERSIST.restore_dirty();
     }
+}
+
+/// 正常關服最後保險：無條件寫一次完整快照，與 WebSocket 斷線 flush 皆為冪等。
+pub fn flush_player_stats() {
+    persist_player_stats(true);
 }
 
 /// 舊坑一次性修復標記（存在即代表已跑過，冪等不再跑；`data/` 已 gitignore）。
@@ -4204,7 +4247,7 @@ async fn apply_player_damage(
         "t": "player_hurt", "damage": dmg
     }).to_string())).await;
     let _ = out_tx.send(Message::Text(player_stats_msg(&new_stats))).await;
-    persist_player_stats(); // 血變動落地（登入玩家重登保留）
+    mark_player_stats_dirty(); // 熱路徑只標髒，交由週期 ticker 批次落地
 }
 
 /// 邊陲營地探索 v1（自主提案切片，接續 881 立牌）：判定玩家此刻是否站在某位居民親手搭起的
@@ -4322,7 +4365,7 @@ async fn do_gentle_respawn(
         "message": vstats::respawn_message(pick),
     }).to_string())).await;
     let _ = out_tx.send(Message::Text(player_stats_msg(&full))).await;
-    persist_player_stats();
+    mark_player_stats_dirty();
     vfeed::append_feed("重生", name, "在溫暖的爐火邊醒來，重新出發。");
 }
 
@@ -4335,7 +4378,7 @@ async fn heal_to_full_on_sleep(name: &str, out_tx: &mpsc::Sender<Message>) {
         *s
     };
     let _ = out_tx.send(Message::Text(player_stats_msg(&full))).await;
-    persist_player_stats();
+    mark_player_stats_dirty();
 }
 
 /// 依玩家頭部（腳底 + EYE_HEIGHT）採樣的方塊，判定頭是否泡在水裡（溺水判定用）。
@@ -4991,6 +5034,9 @@ async fn handle_socket(
                     (*s, ddmg, h, changed)
                 }; // 寫鎖釋放
                 let _ = heal;
+                if changed {
+                    mark_player_stats_dirty();
+                }
                 // 溫泉遺跡 v1：剛踏進去那一刻單播一句暖意提示（只在「上一 tick 沒泡、這一 tick 泡了」時提一次）。
                 if soaking && !was_soaking {
                     let _ = out_tx.try_send(Message::Text(
@@ -10758,7 +10804,7 @@ async fn handle_socket(
                         *s
                     };
                     let _ = out_tx.send(Message::Text(player_stats_msg(&new_stats))).await;
-                    persist_player_stats();
+                    mark_player_stats_dirty();
                 }
                 let dish = vgift::item_name_zh(item_id);
                 let pick = (vfarm::now_secs() as usize).wrapping_add(item_id as usize);
@@ -10967,7 +11013,7 @@ async fn handle_socket(
     // 訪客的 stats 留在記憶體、下次重啟／清空即散（session 內有效即可），此存檔只影響登入玩家。
     // 存檔以玩家名為鍵，訪客名不穩定不會誤蓋登入玩家（比照 inventory 綁名慣例）。
     if account_email.is_some() {
-        persist_player_stats(); // IO 在鎖外（函式內短取讀鎖組快照即釋）
+        persist_player_stats(true); // 斷線強制 flush，IO 在鎖外且不新增巢狀鎖
     }
 
     // 居民惦記離開的你 v1（自主提案切片）：你離開了 → 挑對你記憶最厚（且達門檻）的居民，排一則
@@ -12057,6 +12103,8 @@ pub fn spawn_farm_tick() {
         let mut prosperity_ticks: u32 = 0; // 領地繁榮 v1（ROADMAP 979）：成長別跟著 15 秒節拍等頻累積，見 PROSPERITY_TICK_EVERY_N（5 分鐘一次）。
         loop {
             ticker.tick().await;
+            // 玩家統計熱路徑只標 dirty；併入既有 15 秒節拍，最多一拍就批次全表落地。
+            persist_player_stats(false);
             tick_farm();
             tick_grove(); // 植樹造林 v1（ROADMAP 738）：同節拍檢查樹苗是否長成。
             tick_berry(); // 莓果叢 v1（ROADMAP 806）：同節拍檢查莓果叢是否結果。
@@ -27779,6 +27827,36 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 玩家統計批次持久化閘門 ──────────────────────────────────────────────
+    #[test]
+    fn player_stats_persist_gate_throttles_until_dirty() {
+        let gate = PlayerStatsPersistGate::new();
+        assert!(!gate.begin_flush(false), "乾淨狀態的週期拍不應寫檔");
+
+        gate.mark_dirty();
+        gate.mark_dirty();
+        assert!(gate.begin_flush(false), "多次熱路徑變更應合併成一次寫檔");
+        assert!(!gate.begin_flush(false), "dirty 被消耗後，下拍不應重覆寫檔");
+
+        // 模擬快照寫檔期間又有新變更：新 dirty 必須留給下一拍，不能被舊寫入清掉。
+        gate.mark_dirty();
+        assert!(gate.begin_flush(false));
+        gate.mark_dirty();
+        assert!(gate.begin_flush(false), "寫檔期間的新變更必須再 flush 一次");
+    }
+
+    #[test]
+    fn player_stats_persist_gate_force_flushes_and_retries_failure() {
+        let gate = PlayerStatsPersistGate::new();
+        assert!(gate.begin_flush(true), "斷線／關服即使乾淨也必須強制 flush");
+        assert!(!gate.begin_flush(false));
+
+        gate.mark_dirty();
+        assert!(gate.begin_flush(false));
+        gate.restore_dirty(); // 模擬 write／rename 失敗。
+        assert!(gate.begin_flush(false), "IO 失敗恢復 dirty 後，下拍必須重試");
+    }
 
     // ── M10 臨界區內同步檔案 IO 搬到鎖外（尾延遲不再被磁碟拖累）──────────
     // TickPendingIo 是「鎖內只蒐集、鎖外才落地」的緩衝：驗證各類 IO 依 push 順序保序、
