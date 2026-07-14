@@ -548,6 +548,10 @@ struct VoxelResident {
     /// 跑腿採集任務（指令→任務第三刀）：Some = 正在幫玩家採集/交付指定材料；
     /// None = 沒有跑腿任務。與整地/跟隨互斥（接下新任務時彼此清空）。
     fetch: Option<FetchTask>,
+    /// 蓋家真的用材料 v3（回應 review #1283 v2 退回：一塊採一趟造成動態牆洗版）：
+    /// Some = 正在幫自己蓋的家批次備料，採到一份不會立刻回頭放一塊，而是接著採同一種
+    /// 材料直到湊滿這批（見 `BuildGatherTask`）；None = 沒有進行中的批次備料。
+    build_gather: Option<BuildGatherTask>,
     /// 技能發明/重用執行狀態（真進化第一刀）：Some = 正照原語序列做事
     /// （採料→合成→驗證）；None = 沒有進行中的發明/重用。deadline 每 tick 遞減。
     invent_run: Option<vinvent::InventRun>,
@@ -2059,6 +2063,8 @@ fn build_resident(
             custom_wait: 0.0,
             // 跑腿採集（指令→任務第三刀）：入場沒有任務。
             fetch: None,
+            // 蓋家批次備料（蓋家真的用材料 v3）：入場沒有進行中的批次。
+            build_gather: None,
             // 技能發明 v1：入場無進行中的發明；首次冷卻小幅錯開（避免同 tick 全員一起想）。
             invent_run: None,
             invent_cooldown: 30.0 + i as f32 * 15.0,
@@ -9048,6 +9054,13 @@ async fn handle_socket(
                     continue;
                 };
                 vinv::append_inv(&inv_entry);
+                // 4b) 蓋家真的用材料 v1：這份禮若剛好是四種原料之一（木頭/石頭/細沙/草皮），
+                // 真的送進她的採集背包（res_inv），不是憑空消失——讓「你送她一份」不只是
+                // 一句台詞，缺料暫停的蓋家下一輪真的吃得到這份材料（res_inv 寫鎖即釋）。
+                if Block::from_u8(item_id).is_some_and(vbuild::is_raw_material) {
+                    let mut inv = hub().res_inv.write().unwrap();
+                    *inv.entry(resident_id.clone()).or_default().entry(item_id).or_insert(0) += 1;
+                } // res_inv 寫鎖釋放
                 // 5) 加兩筆記憶（memory 寫鎖各自短取即釋，循序不巢狀）。
                 let iname = vgift::item_name_zh(item_id);
                 let mem1 = vgift::gift_memory_event(&name, iname);
@@ -23456,6 +23469,35 @@ fn tick_residents(dt: f32) {
         vfeed::append_feed("採集", rname, &format!("採集了{}", res.display_name()));
         // 冒一句採集泡泡（不打斷其他話）。
         say_updates.push((rid.clone(), format!("採到{}了～", res.display_name())));
+
+        // 蓋家批次備料（蓋家真的用材料 v3，回應 review #1283 v2「動態牆洗版」退回）：
+        // 這趟採到的若正是這批要湊的材料，扣一份還差的量；還沒湊滿就緊接著再採一趟
+        // 同種材料，不是採一份就回頭放一塊，讓缺料/復工退回偶發、有份量的事件。
+        // 短鎖循序（residents 寫→判定+扣量，即釋；找不到更多資源才再開一次 residents 寫）。
+        let batch_continues = {
+            let mut residents = hub().residents.write().unwrap();
+            residents.iter_mut().find(|r| r.id == rid).is_some_and(|r| {
+                let Some(bt) = r.build_gather.as_mut() else { return false };
+                if bt.resource != res {
+                    return false;
+                }
+                bt.remaining = bt.remaining.saturating_sub(1);
+                if bt.remaining == 0 {
+                    r.build_gather = None;
+                    false
+                } else {
+                    true
+                }
+            })
+        }; // residents 寫鎖釋放
+        if batch_continues && !start_material_gather(&rid, gx, gz, res) {
+            // 附近真的沒有更多同種材料了：批次提前結束，下個 agency tick 依 res_inv
+            // 現有量重新判定（湊到幾份算幾份，絕不卡死，見 build 段落保底邏輯）。
+            let mut residents = hub().residents.write().unwrap();
+            if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                r.build_gather = None;
+            }
+        }
     }
 
     // 5b-2) 為了吃而去收成執行（飢餓接農田／倉庫 v2，ROADMAP 799）：餓著沒存糧的居民走到一畦熟作物旁後，
@@ -25803,48 +25845,180 @@ fn tick_residents(dt: f32) {
             continue;
         }
 
-        // ── 有計畫：彈下一塊放置 + 持久化 + 進度冒泡 ──────────────────────────
-        let (next_block, kind_name, kind_str, progress_pct, plan_done, plan_anchor, plan_expansion, plan_inspired_by, plan_helpers) = {
+        // ── 蓋家真的用材料 v3（回應 review #1283 v2 退回：一塊採一趟＝每塊都缺料/復工兩則
+        // 動態牆事件，30 塊原料的房子就是 60 則、把其他敘事全擠出輪替；`peek_next` 與稍後
+        // 另開一次 `pop_next` 之間，也可能被別位居民互助蓋家插一手，扣錯材料）。
+        // 改成「先真的 `pop_next` 出下一塊 → 判定 → 材料夠/非原料/將就就直接放這一塊 bb，
+        // 材料不夠就整塊 `push_front` 放回去、改批次去採」：判定與放置全咬死同一塊 bb，
+        // 不再是「peek 一塊、稍後另外 pop 一塊」的兩段式，不會扣錯材料；缺料時一次備一批
+        // （對齊這份計畫剩下還要幾塊同種材料，見 `MATERIAL_BATCH_CAP`），讓缺料/復工/將就
+        // 退回「整份計畫各只講一次」的偶發、有份量事件，不再每塊都刷。
+        // ──────────────────────────────────────────────────────────────────────
+        let popped: Option<vbuild::BuildBlock> = {
             let mut builds = hub().builds.write().unwrap();
-            if let Some(plan) = builds.get_plan_mut(&rid) {
-                let bb = plan.pop_next();
-                let kn = plan.kind_name.clone();
-                let ks = plan.kind.clone();
-                let pct = plan.progress_pct();
-                let done = plan.is_done();
-                let anchor = (plan.cx, plan.cy, plan.cz);
-                let exp = plan.expansion;
-                let inspired = plan.inspired_by.clone();
-                let helpers = plan.helpers.clone();
-                (bb, kn, ks, pct, done, anchor, exp, inspired, helpers)
-            } else {
-                (None, String::new(), String::new(), 100, true, (0, 0, 0), false, None, Vec::new())
-            }
+            builds.get_plan_mut(&rid).and_then(|p| p.pop_next())
         }; // builds 寫鎖釋放
+        let Some(bb) = popped else {
+            continue; // 理論上不會（build_candidates 已濾過 has_plan），保險略過
+        };
 
-        if let Some(bb) = next_block {
-            if let Some(block) = Block::from_u8(bb.b) {
-                // 寫入 delta layer
-                {
-                    let mut world = hub().deltas.write().unwrap();
-                    voxel::set_block(&mut world, bb.x, bb.y, bb.z, block);
-                } // deltas 寫鎖釋放
-                broadcast_block(bb.x, bb.y, bb.z, block);
-                // 水流動：居民蓋的方塊可能堵住水路（例如在水邊築牆）→ 喚醒鄰格重算。
-                enqueue_water_around(bb.x, bb.y, bb.z);
-                // 持久化這塊（重啟後蓋的東西還在）。
-                vbuild::append_world_block(bb.x, bb.y, bb.z, bb.b);
+        if let Some(mat_block) = Block::from_u8(bb.b).filter(|b| vbuild::is_raw_material(*b)) {
+            let mat_id = bb.b;
+            let have = {
+                hub().res_inv.read().unwrap().get(&rid).and_then(|m| m.get(&mat_id)).copied().unwrap_or(0)
+            }; // res_inv 讀鎖釋放
 
-                // 持久化更新後的計畫（remaining 已縮短，重啟後接著蓋）
-                if let Some(plan) = hub().builds.read().unwrap().plans.get(&rid) {
-                    vbuild::append_build(plan);
-                } // builds 讀鎖釋放
+            if have == 0 {
+                // 一次備一批：批量對齊「這份計畫剩下（含這塊）還要幾塊同種材料」，設上限
+                // （見 `MATERIAL_BATCH_CAP`），別再一塊採一趟。
+                let batch_target = {
+                    hub().builds.read().unwrap().plans.get(&rid)
+                        .map_or(1, |p| p.count_material(mat_id).min(vbuild::MATERIAL_BATCH_CAP)).max(1)
+                }; // builds 讀鎖釋放
 
-                // 進度冒泡：50% / 95% 各冒一次（完工 Feed 改由 plan_done 統一發、不重複）
-                if progress_pct == 50 || progress_pct >= 95 {
-                    let say = vbuild::build_say_line(&kind_name, progress_pct);
-                    say_updates.push((rid.clone(), say));
+                // 指名去採這一種材料（走既有 GatherSkill 機制：安全採集/逾時放棄/可逃性判定
+                // 全部沿用，本函式只負責鎖定目標）。
+                let sent = vskill::GatherResource::from_block(mat_block)
+                    .is_some_and(|res| start_material_gather(&rid, rx, rz, res));
+
+                if sent {
+                    // 這塊這次不放：撤銷剛才的 pop、放回計畫最前面，下個 tick 還是先處理它。
+                    {
+                        let mut builds = hub().builds.write().unwrap();
+                        if let Some(p) = builds.get_plan_mut(&rid) {
+                            p.push_front(bb.clone());
+                        }
+                    } // builds 寫鎖釋放
+                    // 記下這批還要採幾份（見 5b 節：每採到一份若還沒湊滿就自動接著採下一份，
+                    // 湊滿才回頭觸發一次「復工」，不是採一份就回頭放一塊）。
+                    {
+                        let mut residents = hub().residents.write().unwrap();
+                        if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                            if let Some(res) = vskill::GatherResource::from_block(mat_block) {
+                                r.build_gather = Some(BuildGatherTask { resource: res, remaining: batch_target });
+                            }
+                        }
+                    } // residents 寫鎖釋放
+
+                    // 只在「換了一種材料才卡關」時冒泡＋上動態牆一次，整份計畫對同一種材料
+                    // 只講一次（避免每塊都刷，見 review #1283 v2 退回意見）。
+                    let just_flagged = {
+                        let mut builds = hub().builds.write().unwrap();
+                        builds.get_plan_mut(&rid).map_or(false, |p| {
+                            let already = p.stall_material == Some(mat_id);
+                            p.stall_material = Some(mat_id);
+                            !already
+                        })
+                    }; // builds 寫鎖釋放
+                    if just_flagged {
+                        let kind_name = {
+                            hub().builds.read().unwrap().plans.get(&rid).map_or(String::new(), |p| p.kind_name.clone())
+                        }; // builds 讀鎖釋放
+                        let material = vbuild::material_name_zh(mat_block);
+                        let pick = (vfarm::now_secs() as usize).wrapping_add(mat_id as usize);
+                        say_updates.push((rid.clone(), vbuild::material_stall_bubble(material, pick)));
+                        vfeed::append_feed("蓋家缺料", rname, &vbuild::material_stall_feed_line(rname, &kind_name, material));
+                    }
+                    // 她已經上路去採了：這個 tick 先不放；`r.gather` 有值期間不會再進候選名單
+                    // （見 build_candidates 的 `r.gather.is_none()` 閘），採到/逾時放棄後自然
+                    // 回頭重算 agency，不需要在這裡額外倒數。
+                    continue;
                 }
+
+                // 附近真的沒有這種材料（v1 review 抓到的致命傷：光靠玩家送禮救不了一整棟
+                // 房子）→ 保底：誠實跳過材料要求，這塊（bb 已經 pop 出來，不再放回去）照放。
+                // 同一種材料整份計畫只講一次「將就」（review #1283 v2 抓到：舊版每塊都刷）。
+                let just_flagged = {
+                    let mut builds = hub().builds.write().unwrap();
+                    builds.get_plan_mut(&rid).map_or(false, |p| {
+                        let already = p.stall_material == Some(mat_id);
+                        p.stall_material = Some(mat_id);
+                        !already
+                    })
+                }; // builds 寫鎖釋放
+                if just_flagged {
+                    let kind_name = {
+                        hub().builds.read().unwrap().plans.get(&rid).map_or(String::new(), |p| p.kind_name.clone())
+                    }; // builds 讀鎖釋放
+                    let material = vbuild::material_name_zh(mat_block);
+                    say_updates.push((rid.clone(), vbuild::material_waived_bubble(material)));
+                    vfeed::append_feed("蓋家將就", rname, &vbuild::material_waived_feed_line(rname, &kind_name, material));
+                }
+                // 不 continue：讓下面的放置流程把 bb 放下去（have==0，扣料略過）。
+            } else {
+                // 材料足夠：真的扣一份（res_inv 寫鎖即釋）。
+                {
+                    let mut inv = hub().res_inv.write().unwrap();
+                    if let Some(bag) = inv.get_mut(&rid) {
+                        let cur = bag.get(&mat_id).copied().unwrap_or(0);
+                        if cur <= 1 {
+                            bag.remove(&mat_id);
+                        } else {
+                            bag.insert(mat_id, cur - 1);
+                        }
+                    }
+                } // res_inv 寫鎖釋放
+
+                // 若這一塊是「復工」（剛才還在缺料暫停同一種材料），清旗標＋冒一句「接著蓋」。
+                let resumed_kind = {
+                    let mut builds = hub().builds.write().unwrap();
+                    builds.get_plan_mut(&rid).and_then(|p| {
+                        if p.stall_material == Some(mat_id) {
+                            p.stall_material = None;
+                            Some(p.kind_name.clone())
+                        } else {
+                            None
+                        }
+                    })
+                }; // builds 寫鎖釋放
+                if let Some(kind_name) = resumed_kind {
+                    let material = vbuild::material_name_zh(mat_block);
+                    let pick = (vfarm::now_secs() as usize).wrapping_add(mat_id as usize);
+                    say_updates.push((rid.clone(), vbuild::material_resume_bubble(material, pick)));
+                    vfeed::append_feed("蓋家復工", rname, &vbuild::material_resume_feed_line(rname, &kind_name));
+                }
+            }
+        }
+
+        // ── 放這一塊（bb 已在最前面 pop 出來）+ 持久化 + 進度冒泡 ──────────────
+        let (kind_name, kind_str, progress_pct, plan_done, plan_anchor, plan_expansion, plan_inspired_by, plan_helpers) = {
+            let builds = hub().builds.read().unwrap();
+            match builds.plans.get(&rid) {
+                Some(plan) => (
+                    plan.kind_name.clone(),
+                    plan.kind.clone(),
+                    plan.progress_pct(),
+                    plan.is_done(),
+                    (plan.cx, plan.cy, plan.cz),
+                    plan.expansion,
+                    plan.inspired_by.clone(),
+                    plan.helpers.clone(),
+                ),
+                None => (String::new(), String::new(), 100, true, (0, 0, 0), false, None, Vec::new()),
+            }
+        }; // builds 讀鎖釋放
+
+        if let Some(block) = Block::from_u8(bb.b) {
+            // 寫入 delta layer
+            {
+                let mut world = hub().deltas.write().unwrap();
+                voxel::set_block(&mut world, bb.x, bb.y, bb.z, block);
+            } // deltas 寫鎖釋放
+            broadcast_block(bb.x, bb.y, bb.z, block);
+            // 水流動：居民蓋的方塊可能堵住水路（例如在水邊築牆）→ 喚醒鄰格重算。
+            enqueue_water_around(bb.x, bb.y, bb.z);
+            // 持久化這塊（重啟後蓋的東西還在）。
+            vbuild::append_world_block(bb.x, bb.y, bb.z, bb.b);
+
+            // 持久化更新後的計畫（remaining 已縮短，重啟後接著蓋）
+            if let Some(plan) = hub().builds.read().unwrap().plans.get(&rid) {
+                vbuild::append_build(plan);
+            } // builds 讀鎖釋放
+
+            // 進度冒泡：50% / 95% 各冒一次（完工 Feed 改由 plan_done 統一發、不重複）
+            if progress_pct == 50 || progress_pct >= 95 {
+                let say = vbuild::build_say_line(&kind_name, progress_pct);
+                say_updates.push((rid.clone(), say));
             }
         }
 
@@ -26569,6 +26743,46 @@ fn start_gather(rid: &str, rx: i32, rz: i32) {
                 r.gathered_since_build = GATHER_QUOTA;
             }
         }
+    }
+}
+
+/// 蓋家真的用材料 v3（回應 review #1283 v2 退回：`GATHER_QUOTA=2` 讓她一塊採一趟、
+/// 每塊都缺料/復工，動態牆被洗版）：正在幫自己蓋的家批次備料——採到一份不會立刻
+/// 回頭放一塊，而是接著採同一種材料直到 `remaining` 歸零，整批完成才觸發一次
+/// 「復工」。批量對齊「這份計畫剩下還要幾塊同種材料」（見 `BuildPlan::count_material`
+/// 與 `MATERIAL_BATCH_CAP`），讓缺料/復工退回偶發、有份量的事件。
+#[derive(Clone, Debug)]
+struct BuildGatherTask {
+    /// 要採的資源型別（與這塊卡關的材料一致）。
+    resource: vskill::GatherResource,
+    /// 還差幾份才夠這一批（歸零＝這批備料完成，該回頭連續放這些塊了）。
+    remaining: u32,
+}
+
+/// 蓋家真的用材料 v2（回應 review #1283 退回：v1 缺料只會標記暫停、從不主動補料，
+/// 居民永久卡死在建造狀態、全村陸續靜止）：指名去採「這一塊要用的那一種」材料
+/// （不是隨機資源、也不是生計偏好——就是缺的那種），採到回來下個 agency tick
+/// 就會自動接著蓋。找不到（附近真的沒有這種資源）→ 回 `false`，讓呼叫端走保底
+/// （誠實跳過材料要求、這塊照放），絕不讓居民卡在無法脫離的狀態。
+fn start_material_gather(rid: &str, rx: i32, rz: i32, res: vskill::GatherResource) -> bool {
+    let excl = village_dig_exclusion_near(rx, rz);
+    let found = {
+        let world = hub().deltas.read().unwrap();
+        vskill::find_nearest_resource_of_excl(&world, rx, rz, vskill::GATHER_MAX_RADIUS, res, excl)
+    }; // deltas 讀鎖釋放
+    let Some((tx, ty, tz)) = found else { return false };
+    let mut residents = hub().residents.write().unwrap();
+    if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+        r.gather = Some(GatherSkill {
+            resource: res,
+            tx,
+            ty,
+            tz,
+            timeout: vskill::GATHER_TIMEOUT_SECS,
+        });
+        true
+    } else {
+        false
     }
 }
 
