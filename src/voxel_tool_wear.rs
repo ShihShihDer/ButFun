@@ -17,6 +17,16 @@
 //! 挖／砍／鋤地動作多了一個真實副作用，維修沿用既有「走近居民互動」介面。④**玩家日常常見**——
 //! 觸發頻率等同挖礦本身，不會有「980 觸發條件太窄」的問題。
 //!
+//! **v1.1（本輪，收 reviewer 對 PR #1270 的「下一刀順手收」四點）**：①耐久從單一固定速度
+//! 改成**依工具材質分級**（[`wear_per_use`]）——木階最脆、鐵階最耐用，跟 790 加成機率的
+//! 高低順序相反（機率越高的材質磨損越慢），第一次讓「升級到鐵」除了多收機率，也多一個
+//! 耐用的理由。②耐久**第一次看得見**：`voxel_ws.rs` 每次真實磨損／保養完成都會單播目前
+//! 剩餘耐久百分比，登入時也會還原既有磨損中的工具，前端熱鍵格疊一條綠→紅磨損條
+//! （不再只有跨門檻那一刻的一次性提醒）。③修正 [`WearStore::from_entries`] 文件先前誤稱
+//! 「任意順序重播結果一致」——delta 其實是相對量、須照 append 順序重播，已改寫成正確敘述。
+//! ④文件明講 [`WearStore`] 的鍵是 `(玩家, 工具id)`、同一玩家多把同款工具共用一份磨損量，
+//! 不是 per-instance。
+//!
 //! **與既有系統 razor-sharp 區隔**：
 //! - **工欲善其事（790，`voxel_tool`）**＝手持對的工具，有機率多收一份材料（產出加成）；
 //!   本刀＝那把工具本身會不會隨使用磨損（工具的狀態），兩者互補——磨損到門檻後 790 的加成
@@ -64,10 +74,29 @@ pub const REPAIR_REACH: f32 = 5.0;
 /// 工具的滿耐久值（純計量單位，非顯示用百分比）。
 pub const MAX_DURABILITY: u32 = 100;
 
-/// 每次「手持對的工具、採集對應的天然方塊」磨損多少（見 [`crate::voxel_tool::tool_tier`] /
-/// [`crate::voxel_tool::block_tool_kind`] 判定是否算「真的用對地方」）。100 / 2 = 50 次見底，
-/// 貼近一趟正常挖礦/砍樹的節奏——磨損天生比任何其他自主提案切片都常見。
-pub const WEAR_PER_USE: u32 = 2;
+/// 木階工具磨損最快——材質最脆，跟 [`crate::voxel_tool::TIER_WOOD_CHANCE`]（加成機率最低）
+/// 呼應：便宜但不耐用。
+pub const WEAR_PER_USE_WOOD: u32 = 4;
+
+/// 石階工具磨損中等（v1 上線時唯一的磨損速度，數值沿用不變，體感零回歸）。
+pub const WEAR_PER_USE_STONE: u32 = 2;
+
+/// 鐵階工具磨損最慢——材質最耐用，跟 [`crate::voxel_tool::TIER_IRON_CHANCE`]（加成機率最高）
+/// 呼應：貴但耐用，第一次讓「升級到鐵」除了多收機率外，多一個看得見的理由。
+pub const WEAR_PER_USE_IRON: u32 = 1;
+
+/// 依手持工具的材質決定「這次真實使用」磨損多少（見 [`crate::voxel_tool::tool_tier`] /
+/// [`crate::voxel_tool::block_tool_kind`] 判定是否算「真的用對地方」）。石階以外（未知/非三階
+/// 工具表內的 id）一律回退 [`WEAR_PER_USE_STONE`] 節奏——維持 v1 對陌生 id 的保守假設。
+/// 木階 100 / 4 = 25 次、石階 100 / 2 = 50 次、鐵階 100 / 1 = 100 次見底，貼近一趟正常
+/// 挖礦/砍樹的節奏，材質越好越耐操。
+pub fn wear_per_use(tool_id: u8) -> u32 {
+    match crate::voxel_tool::tool_tier(tool_id) {
+        Some((_, chance)) if chance == crate::voxel_tool::TIER_WOOD_CHANCE => WEAR_PER_USE_WOOD,
+        Some((_, chance)) if chance == crate::voxel_tool::TIER_IRON_CHANCE => WEAR_PER_USE_IRON,
+        _ => WEAR_PER_USE_STONE,
+    }
+}
 
 /// 剩餘耐久 ≤ 這個百分比，就算「該修了」（790 的多收一份加成暫時失靈，需保養才恢復）。
 pub const WORN_THRESHOLD_PCT: u32 = 25;
@@ -172,6 +201,10 @@ pub struct RepairVisitEntry {
 }
 
 /// 全服工具耐久帳本（`(玩家, 工具id)` → 目前已磨損量，封頂 [`MAX_DURABILITY`]）。
+///
+/// **鍵是 `(玩家, 工具 id)`、不是 per-instance**：同一位玩家背包裡就算同時揣著兩把鐵鎬
+/// （同一個 `tool_id`），兩把共用同一份磨損量——v1 刻意的簡化（不追蹤「哪一把」），
+/// 不是每把工具各自獨立的物品實例系統。
 #[derive(Default, Debug)]
 pub struct WearStore {
     worn: HashMap<(String, u8), u32>,
@@ -182,7 +215,12 @@ impl WearStore {
         Self::default()
     }
 
-    /// 由持久化紀錄重建（純加總後夾在 `[0, MAX_DURABILITY]`，任意順序重播結果一致）。
+    /// 由持久化紀錄重建（純加總後夾在 `[0, MAX_DURABILITY]`）。**須照 append 順序重播**：
+    /// 每筆 `wear_delta`/`repair_delta` 是寫入當下「相對前一次已夾限狀態」的實際變化量
+    /// （由 [`Self::add_wear`]/[`Self::repair`] 算出，非絕對值），調換順序會算出不同結果
+    /// （例：磨滿 100 後修好記一筆 `repair_delta=100`；若先重播那筆修理、再重播磨損，
+    /// 中途會先被夾在 0、再往上疊，結果與原始時間線不同）。JSONL 本身是 append-only、
+    /// 讀回時天生照寫入順序，只有手動重排/去重才會踩到這個陷阱。
     pub fn from_entries(entries: impl IntoIterator<Item = WearEntry>) -> Self {
         let mut s = Self::new();
         for e in entries {
@@ -202,15 +240,16 @@ impl WearStore {
         *self.worn.get(&(player_key.to_string(), tool_id)).unwrap_or(&0)
     }
 
-    /// 累加一次使用的磨損。已封頂（見底）時回 `None`（真實 delta 為 0，呼叫端據此略過
-    /// append，避免帳本無限膨脹——比照 `voxel_prosperity::grow` 滿級守衛同款手法）。
+    /// 累加一次使用的磨損（依 [`wear_per_use`] 依工具材質決定磨多少）。已封頂（見底）時回
+    /// `None`（真實 delta 為 0，呼叫端據此略過 append，避免帳本無限膨脹——比照
+    /// `voxel_prosperity::grow` 滿級守衛同款手法）。
     pub fn add_wear(&mut self, player_key: &str, tool_id: u8) -> Option<WearEntry> {
         let key = (player_key.to_string(), tool_id);
         let before = *self.worn.get(&key).unwrap_or(&0);
         if before >= MAX_DURABILITY {
             return None;
         }
-        let after = before.saturating_add(WEAR_PER_USE).min(MAX_DURABILITY);
+        let after = before.saturating_add(wear_per_use(tool_id)).min(MAX_DURABILITY);
         let delta = after - before;
         self.worn.insert(key, after);
         Some(WearEntry {
@@ -410,55 +449,80 @@ mod tests {
 
     // ── WearStore ───────────────────────────────────────────────────────────
 
+    // 測試用的「非工具表內」哨兵 id（不在三階工具表內，`wear_per_use` 回退
+    // `WEAR_PER_USE_STONE` 節奏）——這些泛用測試驗證的是帳本行為本身，不是材質差異，
+    // 材質差異另見 `wear_rate_differs_by_tool_material`。
+    const SENTINEL_TOOL_A: u8 = 200;
+    const SENTINEL_TOOL_B: u8 = 201;
+
     #[test]
     fn add_wear_accumulates_and_caps_at_max() {
         let mut s = WearStore::new();
-        assert_eq!(s.worn_of("p1", 34), 0);
-        let e1 = s.add_wear("p1", 34).expect("首次使用一定有變化");
-        assert_eq!(e1.wear_delta, WEAR_PER_USE);
-        assert_eq!(s.worn_of("p1", 34), WEAR_PER_USE);
+        assert_eq!(s.worn_of("p1", SENTINEL_TOOL_A), 0);
+        let e1 = s.add_wear("p1", SENTINEL_TOOL_A).expect("首次使用一定有變化");
+        assert_eq!(e1.wear_delta, WEAR_PER_USE_STONE);
+        assert_eq!(s.worn_of("p1", SENTINEL_TOOL_A), WEAR_PER_USE_STONE);
         // 用到滿之後，多用不再累積、也回 None（守衛：已改變不了可觀察狀態）。
         for _ in 0..1000 {
-            s.add_wear("p1", 34);
+            s.add_wear("p1", SENTINEL_TOOL_A);
         }
-        assert_eq!(s.worn_of("p1", 34), MAX_DURABILITY);
-        assert!(s.add_wear("p1", 34).is_none(), "已見底，append 應被略過");
+        assert_eq!(s.worn_of("p1", SENTINEL_TOOL_A), MAX_DURABILITY);
+        assert!(s.add_wear("p1", SENTINEL_TOOL_A).is_none(), "已見底，append 應被略過");
     }
 
     #[test]
     fn different_tools_and_players_track_independently() {
         let mut s = WearStore::new();
-        s.add_wear("p1", 34); // 玩家1的鐵鎬
-        s.add_wear("p1", 38); // 玩家1的鐵斧（不同工具，各自累積）
-        s.add_wear("p2", 34); // 玩家2的鐵鎬（不同玩家，互不影響）
-        assert_eq!(s.worn_of("p1", 34), WEAR_PER_USE);
-        assert_eq!(s.worn_of("p1", 38), WEAR_PER_USE);
-        assert_eq!(s.worn_of("p2", 34), WEAR_PER_USE);
-        assert_eq!(s.worn_of("p2", 38), 0);
+        s.add_wear("p1", SENTINEL_TOOL_A);
+        s.add_wear("p1", SENTINEL_TOOL_B); // 不同工具，各自累積
+        s.add_wear("p2", SENTINEL_TOOL_A); // 不同玩家，互不影響
+        assert_eq!(s.worn_of("p1", SENTINEL_TOOL_A), WEAR_PER_USE_STONE);
+        assert_eq!(s.worn_of("p1", SENTINEL_TOOL_B), WEAR_PER_USE_STONE);
+        assert_eq!(s.worn_of("p2", SENTINEL_TOOL_A), WEAR_PER_USE_STONE);
+        assert_eq!(s.worn_of("p2", SENTINEL_TOOL_B), 0);
     }
 
     #[test]
     fn repair_resets_to_zero_and_noop_when_already_new() {
         let mut s = WearStore::new();
-        s.add_wear("p1", 34);
-        s.add_wear("p1", 34);
-        assert!(s.worn_of("p1", 34) > 0);
-        let e = s.repair("p1", 34).expect("有磨損時保養必有變化");
-        assert_eq!(e.repair_delta, 2 * WEAR_PER_USE);
-        assert_eq!(s.worn_of("p1", 34), 0);
+        s.add_wear("p1", SENTINEL_TOOL_A);
+        s.add_wear("p1", SENTINEL_TOOL_A);
+        assert!(s.worn_of("p1", SENTINEL_TOOL_A) > 0);
+        let e = s.repair("p1", SENTINEL_TOOL_A).expect("有磨損時保養必有變化");
+        assert_eq!(e.repair_delta, 2 * WEAR_PER_USE_STONE);
+        assert_eq!(s.worn_of("p1", SENTINEL_TOOL_A), 0);
         // 已經全新時再保養一次 → no-op，回 None（避免空事件灌爆帳本）。
-        assert!(s.repair("p1", 34).is_none());
+        assert!(s.repair("p1", SENTINEL_TOOL_A).is_none());
     }
 
     #[test]
-    fn from_entries_replays_wear_and_repair_regardless_of_order() {
+    fn wear_rate_differs_by_tool_material() {
+        // 材質越好磨損越慢：木 > 石 > 鐵（跟加成機率的高低順序相反）。
+        assert_eq!(wear_per_use(crate::voxel_craft::PICKAXE_WOOD_ID), WEAR_PER_USE_WOOD);
+        assert_eq!(wear_per_use(crate::voxel_craft::PICKAXE_STONE_ID), WEAR_PER_USE_STONE);
+        assert_eq!(wear_per_use(crate::voxel_craft::PICKAXE_IRON_ID), WEAR_PER_USE_IRON);
+        assert!(WEAR_PER_USE_WOOD > WEAR_PER_USE_STONE);
+        assert!(WEAR_PER_USE_STONE > WEAR_PER_USE_IRON);
+        // 非工具表內的 id 回退石階節奏（保守假設）。
+        assert_eq!(wear_per_use(SENTINEL_TOOL_A), WEAR_PER_USE_STONE);
+
+        let mut s = WearStore::new();
+        let e_wood = s.add_wear("p1", crate::voxel_craft::AXE_WOOD_ID).unwrap();
+        let e_iron = s.add_wear("p1", crate::voxel_craft::AXE_IRON_ID).unwrap();
+        assert_eq!(e_wood.wear_delta, WEAR_PER_USE_WOOD);
+        assert_eq!(e_iron.wear_delta, WEAR_PER_USE_IRON);
+        assert!(e_wood.wear_delta > e_iron.wear_delta, "鐵斧該比木斧耐操");
+    }
+
+    #[test]
+    fn from_entries_replays_wear_and_repair_in_append_order() {
         let entries = vec![
-            WearEntry { player_key: "p1".into(), tool_id: 34, wear_delta: 40, repair_delta: 0 },
-            WearEntry { player_key: "p1".into(), tool_id: 34, wear_delta: 40, repair_delta: 0 },
-            WearEntry { player_key: "p1".into(), tool_id: 34, wear_delta: 0, repair_delta: 30 },
+            WearEntry { player_key: "p1".into(), tool_id: SENTINEL_TOOL_A, wear_delta: 40, repair_delta: 0 },
+            WearEntry { player_key: "p1".into(), tool_id: SENTINEL_TOOL_A, wear_delta: 40, repair_delta: 0 },
+            WearEntry { player_key: "p1".into(), tool_id: SENTINEL_TOOL_A, wear_delta: 0, repair_delta: 30 },
         ];
         let s = WearStore::from_entries(entries);
-        assert_eq!(s.worn_of("p1", 34), 50);
+        assert_eq!(s.worn_of("p1", SENTINEL_TOOL_A), 50);
     }
 
     // ── RepairLedger ────────────────────────────────────────────────────────

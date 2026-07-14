@@ -4659,6 +4659,34 @@ async fn handle_socket(
             cleanup(my_id, &writer);
             return;
         }
+
+        // 工具耐久 v1.1（本輪，收 reviewer 對 #1270「耐久看不見」的回饋）：登入時把玩家背包裡
+        // 已在磨損中的工具（真持有 + 耐久 < 滿）一併同步，前端熱鍵格才能一開始就畫出正確的
+        // 磨損條，不必等玩家再揮一次工具才第一次看到。全新工具（worn=0）不送，省頻寬。
+        let wear_items: Vec<serde_json::Value> = {
+            let tw = hub().tool_wear.read().unwrap();
+            pairs
+                .iter()
+                .filter(|(item_id, count)| *count > 0 && vtool::tool_tier(*item_id).is_some())
+                .filter_map(|(item_id, _)| {
+                    let worn = tw.worn_of(&name, *item_id);
+                    (worn > 0).then(|| {
+                        serde_json::json!({
+                            "tool_id": item_id,
+                            "pct": vtoolwear::durability_pct(worn, vtoolwear::MAX_DURABILITY),
+                        })
+                    })
+                })
+                .collect()
+        };
+        if !wear_items.is_empty() {
+            let tool_wear_sync =
+                serde_json::json!({ "t": "tool_wear_sync", "items": wear_items }).to_string();
+            if out_tx.send(Message::Text(tool_wear_sync)).await.is_err() {
+                cleanup(my_id, &writer);
+                return;
+            }
+        }
     }
 
     // 居民迎新 v1（自主提案切片 ROADMAP 948）：背包空空如也（世界對他一無所知）且沒畢業過
@@ -5708,7 +5736,18 @@ async fn handle_socket(
                                     if let Some(entry) = wear_entry {
                                         vtoolwear::append_wear(&entry);
                                         let worn_after = hub().tool_wear.read().unwrap().worn_of(&name, tid);
-                                        // 剛好跨過「該修了」門檻那一刻才提醒一次，不逐次採集洗版。
+                                        // 工具耐久 v1.1（本輪，收 reviewer 對 #1270 的「耐久看不見」
+                                        // 回饋）：每次真實磨損都單播目前剩餘耐久百分比，讓前端熱鍵格
+                                        // 能畫一條即時磨損條——不再只有跨門檻那一刻的一次性提醒。
+                                        let _ = out_tx.try_send(Message::Text(
+                                            serde_json::json!({
+                                                "t": "tool_durability",
+                                                "tool_id": tid,
+                                                "pct": vtoolwear::durability_pct(worn_after, vtoolwear::MAX_DURABILITY),
+                                            })
+                                            .to_string(),
+                                        ));
+                                        // 剛好跨過「該修了」門檻那一刻才額外提醒一次，不逐次採集洗版。
                                         if !already_worn_out && vtoolwear::is_worn_out(worn_after) {
                                             let iname = vgift::item_name_zh(tid);
                                             let _ = out_tx.try_send(Message::Text(
@@ -9277,6 +9316,7 @@ async fn handle_socket(
                         "t": "repair_ok",
                         "tool_id": tool_id,
                         "cost": cost,
+                        "pct": 100, // 保養完成＝耐久歸零＝滿耐久（見 WearStore::repair）
                         "line": vtoolwear::repair_done_line(iname, rname),
                     })
                     .to_string(),

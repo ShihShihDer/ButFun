@@ -6258,6 +6258,33 @@ let fishBiteTimer = null; // 上鉤提示的客戶端計時器（純 UX，伺服
 const hotbarEl = document.getElementById("hotbar");
 // 本地材料存量（block_id → count）；由 inv_sync / inv_update 伺服器訊息維護。
 const myInv = new Map();
+// 工具耐久 v1.1（本輪，接續 981）：工具 id → 目前剩餘耐久百分比（0~100）。只有伺服器主動
+// 送過的工具才有紀錄（全新工具從不送，省頻寬）——沒紀錄視為全新，不畫磨損條。純顯示快取，
+// 真實耐久/是否該修一律由伺服器權威判定（repair_ok/repair_fail），前端不做任何猜測。
+const toolDurability = new Map();
+function setToolDurability(toolId, pct, redraw = true) {
+  toolDurability.set(toolId, Math.max(0, Math.min(100, pct)));
+  if (redraw) updateDurabilityBars();
+}
+/** 依 toolDurability 重繪熱鍵欄每一格的磨損條（綠→黃→紅隨剩餘耐久漸層，滿耐久不顯示）。 */
+function updateDurabilityBars() {
+  if (!hotbarEl) return;
+  HOTBAR.forEach((b, i) => {
+    const slot = hotbarEl.children[i];
+    if (!slot) return;
+    const bar = slot.querySelector(".durability");
+    if (!bar) return;
+    const fill = bar.querySelector(".fill");
+    if (!TOOL_IDS.has(b) || !toolDurability.has(b)) { bar.style.display = "none"; return; }
+    const pct = toolDurability.get(b);
+    bar.style.display = pct < 100 ? "block" : "none";
+    if (fill) {
+      fill.style.width = pct + "%";
+      // 綠(充足)→黃→紅(該修了)，跟 tool_worn 門檻方向一致，一眼看出快不行了。
+      fill.style.background = pct <= 25 ? "#ff5a5a" : pct <= 55 ? "#ffcf5a" : "#6bff8a";
+    }
+  });
+}
 
 /** 更新熱鍵欄的材料數量顯示（只改 .cnt 文字，不重建整個 DOM）。 */
 function updateInvHud() {
@@ -6292,7 +6319,13 @@ function buildHotbar() {
     lbl.textContent = isEmpty ? String(i + 1) : ((i + 1) + " " + (BLOCK_NAME[b] || "?"));
     const cnt = document.createElement("div");
     cnt.className = "cnt";
-    slot.appendChild(sw); slot.appendChild(lbl); slot.appendChild(cnt);
+    // 工具耐久 v1.1：磨損條容器（.fill 依 updateDurabilityBars 動態設寬/色，預設隱藏）。
+    const durability = document.createElement("div");
+    durability.className = "durability";
+    const fill = document.createElement("div");
+    fill.className = "fill";
+    durability.appendChild(fill);
+    slot.appendChild(sw); slot.appendChild(lbl); slot.appendChild(cnt); slot.appendChild(durability);
     slot.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
       // 麥塊互動：背包開著且手上拿著物品（bagPick）→ 指派到這一格；否則單純選格。
@@ -6308,6 +6341,7 @@ function buildHotbar() {
     hotbarEl.appendChild(slot);
   });
   updateInvHud(); // 重建後補上數量/空格樣式
+  updateDurabilityBars(); // 工具耐久 v1.1：重建後補上磨損條
 }
 function selectSlot(i) {
   selectedSlot = ((i % HOTBAR.length) + HOTBAR.length) % HOTBAR.length;
@@ -7588,6 +7622,7 @@ function connect() {
       // 工具耐久·保養 v1（自主提案切片，ROADMAP 981）：保養成功——居民回應顯示在對話框；
       // 乙太幣已由 inv_update 同步扣除，換工具/開對話框後重算保養鈕即知是否還需要修。
       appendMsg("sys", "🔧 " + (m.line || "工具修好了！"));
+      if (typeof m.tool_id === "number" && typeof m.pct === "number") setToolDurability(m.tool_id, m.pct);
     } else if (m.t === "repair_fail") {
       // 工具耐久·保養 v1：保養失敗（太遠／背包沒有這件工具／還很堪用／乙太幣不夠）。
       showErr(m.reason || "現在沒法保養");
@@ -7596,6 +7631,16 @@ function connect() {
       // 工具耐久 v1：手上的工具剛好磨到「該修了」——只在跨過門檻那一刻提醒一次，不逐次採集洗版。
       showMsg(m.line || "🔧 工具用得有點鈍了，去找居民保養一下吧。");
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3200);
+    } else if (m.t === "tool_durability") {
+      // 工具耐久 v1.1（本輪，接續 981，收 reviewer「耐久看不見」的回饋）：每次真實磨損
+      // 伺服器都會單播目前剩餘耐久，前端只是把它畫成熱鍵格上的一條磨損條，不做任何判斷。
+      if (typeof m.tool_id === "number" && typeof m.pct === "number") setToolDurability(m.tool_id, m.pct);
+    } else if (m.t === "tool_wear_sync") {
+      // 工具耐久 v1.1：登入時還原已在磨損中的工具耐久（伺服器只送 worn>0 的，省頻寬）。
+      (m.items || []).forEach((it) => {
+        if (typeof it.tool_id === "number" && typeof it.pct === "number") setToolDurability(it.tool_id, it.pct, false);
+      });
+      updateDurabilityBars();
     } else if (m.t === "eat_ok") {
       // 吃東西回復飢餓 v1：熟食帶暖意回饋句（m.line）；生食沒有那份料理暖意，就給樸實的填飽提示。
       const iname = BLOCK_NAME[m.item_id] || m.item_name || "食物";
