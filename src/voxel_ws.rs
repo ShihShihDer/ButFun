@@ -114,6 +114,7 @@ use crate::voxel_wedding::{self as vwed, ResidentWeddings};
 use crate::voxel_family as vfamily;
 use crate::voxel_sibling as vsibling;
 use crate::voxel_coming_of_age as vcoa;
+use crate::voxel_elder as velder;
 use crate::voxel_first_invention as vfirstinv;
 use crate::voxel_lover_seek as vlover;
 use crate::voxel_wildlife as vwild;
@@ -2501,6 +2502,9 @@ struct VoxelHub {
     /// 長大成人 v1（ROADMAP 942）：已行過成年禮的居民 id 帳本，保證成年禮一生只辦一次、跨重啟
     /// 不重觸發（否則會每次重啟就重寫一筆永久記憶）。持久化到 data/voxel_coming_of_age.jsonl（append-only）。
     coming_of_age: RwLock<vcoa::ComingOfAgeStore>,
+    /// 居民晚年 v1（ROADMAP 987）：已步入晚年的居民 id 帳本，保證晚年感言一生只行一次、跨
+    /// 重啟不重觸發。持久化到 data/voxel_elder.jsonl（append-only）。
+    elder: RwLock<velder::ElderStore>,
     /// 居民長程自主專案 v1（自主提案切片）：每居民一份「跨多天的個人大夢」進度帳本（key=居民 id）。
     /// 與 `desires`（當下心願）／`builds`（單次建造計畫）刻意區隔——這是「一直放在心上、一塊塊慢慢
     /// 做成」的長程夢想。持久化到 data/voxel_lifeprojects.jsonl（append-only，重啟後接著做）。
@@ -3534,6 +3538,8 @@ fn hub() -> &'static VoxelHub {
             onboard_done: RwLock::new(vonboard::load_graduated()),
             // 長大成人 v1（942）：啟動時從 data/voxel_coming_of_age.jsonl 載回已成年的居民（重啟後不重辦成年禮）。
             coming_of_age: RwLock::new(vcoa::ComingOfAgeStore::from_entries(vcoa::load_entries())),
+            // 晚年 v1（987）：啟動時從 data/voxel_elder.jsonl 載回已步入晚年的居民（重啟後不重辦感言）。
+            elder: RwLock::new(velder::ElderStore::from_entries(velder::load_entries())),
             // 啟動時從 data/voxel_lifeprojects.jsonl 載回居民長程專案進度（重啟後接著做，取每人最高進度）。
             life_projects: RwLock::new(vlife::LifeProjectStore::from_entries(vlife::load_entries())),
             // 啟動時從 data/voxel_discoveries.jsonl 載回玩家的探索紀事（重啟後仍記得）。
@@ -13298,6 +13304,9 @@ fn tick_farm() {
         match famine_event {
             vfamine::FamineEvent::Started => {
                 *hub().famine_started_flag.write().unwrap() = true;
+                // 開始時歸零本輪雪中送炭計數（見上一輪 review2dev 指出的窄競態：Ended 才 take
+                // 會讓極少數卡在鎖外迴圈尚未 +1 的餵食被計進下一場荒年）；順手清乾淨。
+                std::mem::take(&mut *hub().famine_helped_this_round.write().unwrap());
                 vfeed::append_feed(vfamine::FEED_KIND, "乙太方界", vfamine::famine_start_feed_detail());
             }
             vfamine::FamineEvent::Ended => {
@@ -17146,6 +17155,8 @@ fn tick_residents(dt: f32) {
     // 冪等落地靠 `coming_of_age` store（restart-safe），此處只收集本 tick 剛跨過門檻的候選。
     // (居民 id, 居民名, 父母名)。
     let mut coming_of_age_events: Vec<(String, &'static str, String)> = Vec::new();
+    // 晚年 v1（987）：本 tick 剛跨過晚年門檻的候選（id, name）；落地靠 `elder` store 冪等。
+    let mut elder_events: Vec<(String, &'static str)> = Vec::new();
     // 集會鐘 v1：某位應召的居民走到鐘邊聚攏時，鎖內收集事件；「你敲鐘召我來」的交情記憶＋Feed
     // 在居民鎖釋放後統一落地（不持居民鎖做 IO，守死鎖鐵律）。(居民 id, 居民名, 敲鐘者名)。
     let mut bell_gather_events: Vec<(String, &'static str, String)> = Vec::new();
@@ -17429,6 +17440,8 @@ fn tick_residents(dt: f32) {
     // 即釋），供下方 tick 判斷是否該觸發成年禮——避免在持 residents 寫鎖的迴圈裡再取 coa 鎖（守不巢狀
     // 鐵律，比照 745/752 的「寫鎖前快照」慣例）。本世界居民極少，clone 成本可忽略。
     let coa_done: std::collections::HashSet<String> = hub().coming_of_age.read().unwrap().snapshot();
+    // 晚年 v1（987）：已步入晚年的居民快照（residents 寫鎖前先取，避免鎖巢狀，守死鎖鐵律）。
+    let elder_done: std::collections::HashSet<String> = hub().elder.read().unwrap().snapshot();
 
     {
         let world = hub().deltas.read().unwrap();
@@ -20965,6 +20978,23 @@ fn tick_residents(dt: f32) {
                 coming_of_age_events.push((r.id.clone(), r.name, r.birth_parent_name.clone()));
             }
 
+            // 居民晚年 v1（ROADMAP 987）：世代傳承誕生的居民活過整整 3 個乙太年，第二次、也是
+            // 這輩子最後一次生命階段轉換——步入晚年。冪等靠本 tick 前快照的 `elder_done`
+            // （restart-safe，見 store）。落地（記憶／持久化／動態牆）由 `elder_events` 於居民
+            // 鎖釋放後統一處理（守死鎖鐵律）。
+            if r.say.is_empty()
+                && !r.asleep
+                && r.pilgrimage.is_none()
+                && r.expedition.is_none()
+                && velder::is_elder_moment(r.birth_unix, now_unix, elder_done.contains(&r.id))
+            {
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                r.say = velder::elder_say_line(r.name, pick).chars().take(vbday::SAY_CHARS).collect();
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                elder_events.push((r.id.clone(), r.name));
+            }
+
             if r.say.is_empty() && !r.asleep && r.pilgrimage.is_none() && r.expedition.is_none() {
                 let age = vbday::age_years(now_unix, r.birth_unix);
                 if vbday::is_birthday_moment(age, r.birthday_last_year) {
@@ -24138,6 +24168,25 @@ fn tick_residents(dt: f32) {
         vfeed::append_feed(vcoa::FEED_KIND, rname, &vcoa::coming_of_age_feed_line(rname, parent_name));
     }
 
+    // 居民晚年 v1（ROADMAP 987）：晚年感言一生一次的落地——`elder` store 的 mark 冪等
+    //（restart 後 store 已載回，不會重觸發）；只在本次才第一次步入晚年（mark 回 true）時才
+    // append 持久化＋寫居民自己含「一定會」的永久精華記憶＋上動態牆。記憶寫鎖短取即釋、
+    // 持久化與 Feed 走鎖外 IO（守死鎖鐵律）。
+    for (rid, rname) in &elder_events {
+        let first = { hub().elder.write().unwrap().mark(rid) }; // elder 寫鎖即釋
+        if !first {
+            continue; // 已步入過晚年（極少數重啟／競態邊界）→ 不重複落地
+        }
+        velder::append_entry(&velder::ElderEntry { resident: rid.clone() }); // 鎖外 IO 持久化
+
+        let m_self = {
+            hub().memory.write().unwrap().add_memory(rid, "步入晚年", &velder::elder_memory_line())
+        }; // memory 寫鎖即釋
+        vmem::append_memory(&m_self);
+
+        vfeed::append_feed(velder::FEED_KIND, rname, &velder::elder_feed_line(rname));
+    }
+
     // 居民誕辰紀念 v1：滿一個乙太年的事件落地——玩家在近旁時把「和你一起過了第 N 個生日」記進交情
     //（掛玩家名下、日後浮進日記），無論有無玩家都上動態牆（含父母名，若有）。記憶寫鎖短取即釋、Feed
     // 走 IO，皆在 residents 鎖釋放後（守死鎖鐵律）。比照顧家駐足／臨水垂釣：記憶只進記憶庫
@@ -25012,24 +25061,37 @@ fn tick_residents(dt: f32) {
         // 只在這次到訪沒有觸發互助蓋家時才可能拌嘴，同一次到訪只演一齣戲。
         let mut quarrel_line: Option<String> = None;
         if vquarrel::should_quarrel(tier, help_line.is_some(), rand::random::<f32>()) {
-            vfeed::append_feed(vquarrel::FEED_KIND, visitor_name, &vquarrel::quarrel_feed_line(visitor_name, &host_name, pick));
+            // 居民晚年 v1（ROADMAP 987）：本該發生的拌嘴，若主人已步入晚年，改由歷經歲月的
+            // 從容接手化解——生命階段第一次反過來改寫既有互動的走向（見模組檔頭）。residents
+            // 讀鎖找 host_id 後即釋放，再另取 elder 讀鎖查詢，兩鎖不巢狀（守死鎖鐵律）。
             let host_id = {
                 let residents = hub().residents.read().unwrap();
                 residents.iter().find(|r| r.name == host_name).map(|r| r.id.clone())
             }; // residents 讀鎖釋放
-            // 打上 NEIGHBORLY_TAG（自主提案切片）：讓日記把拌嘴這類鄰里模板句歸類為
-            // 「鄰里生活」，別落入籠統的 Other、也不被關鍵字誤判。
-            {
-                let entry = hub().memory.write().unwrap()
-                    .add_memory(&visitor_id, &host_name, &voxel_diary::tag_neighborly(&vquarrel::quarrel_memory_line_visitor(&host_name, pick)));
-                vmem::append_memory(&entry);
-            } // memory 寫鎖釋放
-            if let Some(host_id) = host_id {
-                let entry = hub().memory.write().unwrap()
-                    .add_memory(&host_id, visitor_name, &voxel_diary::tag_neighborly(&vquarrel::quarrel_memory_line_host(visitor_name, pick)));
-                vmem::append_memory(&entry);
-            } // memory 寫鎖釋放
-            quarrel_line = Some(vquarrel::quarrel_say_line(&host_name, pick));
+            let host_is_elder = host_id.as_ref().map_or(false, |hid| hub().elder.read().unwrap().has(hid));
+            if host_is_elder {
+                vfeed::append_feed(
+                    velder::FEED_KIND_DEFUSE,
+                    visitor_name,
+                    &velder::elder_defuse_feed_line(visitor_name, &host_name, pick),
+                );
+                quarrel_line = Some(velder::elder_defuse_say_line(&host_name, pick));
+            } else {
+                vfeed::append_feed(vquarrel::FEED_KIND, visitor_name, &vquarrel::quarrel_feed_line(visitor_name, &host_name, pick));
+                // 打上 NEIGHBORLY_TAG（自主提案切片）：讓日記把拌嘴這類鄰里模板句歸類為
+                // 「鄰里生活」，別落入籠統的 Other、也不被關鍵字誤判。
+                {
+                    let entry = hub().memory.write().unwrap()
+                        .add_memory(&visitor_id, &host_name, &voxel_diary::tag_neighborly(&vquarrel::quarrel_memory_line_visitor(&host_name, pick)));
+                    vmem::append_memory(&entry);
+                } // memory 寫鎖釋放
+                if let Some(host_id) = host_id {
+                    let entry = hub().memory.write().unwrap()
+                        .add_memory(&host_id, visitor_name, &voxel_diary::tag_neighborly(&vquarrel::quarrel_memory_line_host(visitor_name, pick)));
+                    vmem::append_memory(&entry);
+                } // memory 寫鎖釋放
+                quarrel_line = Some(vquarrel::quarrel_say_line(&host_name, pick));
+            }
         }
 
         // ROADMAP 717：居民互相傳授技能 v1——技能發明（716／#944）讓居民各自「自己」

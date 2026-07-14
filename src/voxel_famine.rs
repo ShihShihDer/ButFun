@@ -348,12 +348,16 @@ mod tests {
     }
 
     #[test]
-    fn load_count_on_missing_file_is_zero() {
-        // 不存在的路徑（測試環境不會真的寫入 FAMINE_LOG_PATH）應安全回 0，不 panic。
-        let count = std::fs::read_to_string("data/__voxel_famine_never_exists__.jsonl")
-            .ok()
-            .map(|c| c.lines().filter(|l| !l.trim().is_empty()).count())
-            .unwrap_or(0);
-        assert_eq!(count, 0);
+    fn load_count_calls_real_function_and_matches_persisted_entries() {
+        // 上一輪 review2dev 指出：舊版測試繞過 `load_famine_survived_count`、自己手抄一遍
+        // std::fs 邏輯，函式本身改壞也測不出來。本測試直接呼叫真正的上游函式，全程在單一
+        // 測試內完成（避免與其他平行執行的測試共用 FAMINE_LOG_PATH 產生競態），用完清乾淨、
+        // 不留 data/ 產物。
+        let _ = std::fs::remove_file(FAMINE_LOG_PATH);
+        assert_eq!(load_famine_survived_count(), 0); // 檔不存在 → 安全回 0，不 panic
+        append_famine_ended(&FamineEndedEntry { helped_count: 1 });
+        append_famine_ended(&FamineEndedEntry { helped_count: 2 });
+        assert_eq!(load_famine_survived_count(), 2); // 真的讀回兩筆持久化紀錄
+        let _ = std::fs::remove_file(FAMINE_LOG_PATH);
     }
 }
