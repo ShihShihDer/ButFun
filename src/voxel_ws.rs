@@ -164,6 +164,7 @@ use crate::voxel_epithet_sign as vepisign;
 use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_player_home as vplayerhome;
 use crate::voxel_landclaim as vlandclaim;
+use crate::voxel_prosperity as vprosperity;
 use crate::voxel_cohabit as vcohabit;
 use crate::voxel_weather as vweather;
 use crate::voxel_season as vseason;
@@ -2295,6 +2296,11 @@ struct VoxelHub {
     /// 他信任的一群帳號 email。持久化到 data/voxel_landclaim_trust.jsonl；`claim_blocking_owner`
     /// 判定時查詢（序列化 RwLock 解決競爭，與 `sign` 各自獨立短取即釋，不巢狀）。
     landclaim_trust: RwLock<vlandclaim::TrustStore>,
+    /// 領地繁榮帳本（自主提案切片，ROADMAP 979）：帳號 email → 累積繁榮經驗／已產出／已收取
+    /// 乙太幣。持久化到 data/voxel_prosperity.jsonl（append-only delta，比照 `voxel_mastery`
+    /// 範式；序列化 RwLock 解決競爭，與 `sign`／`landclaim_trust`／`players` 各自獨立短取即釋，
+    /// 不巢狀）。
+    prosperity: RwLock<vprosperity::ProsperityStore>,
     /// 邀居同住 store（自主提案切片，ROADMAP 972）：居民 id → 目前是否同住某位玩家、住在哪
     /// （玩家登記的家牌座標）。持久化到 data/voxel_cohabit.jsonl（序列化 RwLock 解決競爭，
     /// 與 `sign`／`residents` 各自獨立短取即釋，不巢狀）。
@@ -3199,6 +3205,8 @@ fn hub() -> &'static VoxelHub {
             sign: RwLock::new(vsign::SignStore::from_entries(vsign::load_signs())),
             // 啟動時從 data/voxel_landclaim_trust.jsonl 載回領地信任名單（重啟後信任關係仍在）。
             landclaim_trust: RwLock::new(vlandclaim::TrustStore::from_entries(vlandclaim::load_trust())),
+            // 啟動時從 data/voxel_prosperity.jsonl 載回領地繁榮帳本（重啟後累積的繁榮度仍在）。
+            prosperity: RwLock::new(vprosperity::ProsperityStore::from_entries(vprosperity::load_prosperity())),
             // 啟動時從 data/voxel_cohabit.jsonl 載回邀居同住紀錄（重啟後誰跟誰同住仍記得）。
             cohabit: RwLock::new(vcohabit::CohabitStore::from_entries(vcohabit::load_cohabit())),
             // 啟動時從 data/voxel_bottles.jsonl 載回尚未被撿走的瓶中信（重啟後瓶子還在水裡）。
@@ -11876,6 +11884,7 @@ pub fn spawn_farm_tick() {
         }
         let mut ticker = tokio::time::interval(Duration::from_secs(15));
         let mut coin_demand_ticks: u32 = 0; // 供需驅動漲價 v1（ROADMAP 958）：decay_all 別跟著這條 15 秒節拍等頻退燒，見 DEMAND_DECAY_EVERY_N_TICKS。
+        let mut prosperity_ticks: u32 = 0; // 領地繁榮 v1（ROADMAP 979）：成長別跟著 15 秒節拍等頻累積，見 PROSPERITY_TICK_EVERY_N（5 分鐘一次）。
         loop {
             ticker.tick().await;
             tick_farm();
@@ -11906,6 +11915,12 @@ pub fn spawn_farm_tick() {
             coin_demand_ticks += 1;
             if coin_demand_ticks % vtrade::DEMAND_DECAY_EVERY_N_TICKS == 0 {
                 hub().coin_demand.write().unwrap().decay_all();
+            }
+            // 領地繁榮 v1（自主提案切片，ROADMAP 979）：每 PROSPERITY_TICK_EVERY_N 拍（5 分鐘）
+            // 才真的算一次成長，讓「累積」有真實時間的份量、也避免每 15 秒就寫一行 JSONL。
+            prosperity_ticks += 1;
+            if prosperity_ticks % vprosperity::PROSPERITY_TICK_EVERY_N == 0 {
+                maybe_grow_prosperity();
             }
         }
     });
@@ -14967,6 +14982,196 @@ fn maybe_craft_admire() {
         admirer_name,
         &vcraftadmire::admire_feed_line(admirer_name, &master_name, &craft),
     );
+}
+
+/// 領地繁榮 v1（自主提案切片，ROADMAP 979，低頻併入 15 秒節拍——見呼叫端
+/// `prosperity_ticks % vprosperity::PROSPERITY_TICK_EVERY_N` 節流，每 5 分鐘才真的算一次成長）：
+/// 見 `voxel_prosperity` 模組說明。每塊有主的家牌領地：①算這次節拍的繁榮成長（信任名單裡的
+/// 朋友站在附近有加成）②達產出門檻就順帶產出乙太幣（封頂庫存）③領主本人在附近就自動收進
+/// 背包④繁榮夠高就讓第一組符合條件的居民駐足讚賞（每次呼叫至多促成一組，保持稀疏）。
+///
+/// **鎖紀律**：sign／players／landclaim_trust 皆各自短取快照即釋；prosperity 每塊領地各自
+/// 短取寫鎖即釋（不跨領地持鎖迭代）；inventory／residents／bonds 全部各自短取即釋、循序
+/// 不巢狀；append/Feed/廣播一律在對應鎖釋放之後（守 prod 死鎖鐵律，比照 `maybe_pet_admire`/
+/// `maybe_craft_admire` 慣例）。
+fn maybe_grow_prosperity() {
+    // 1) 所有有主的「家」牌快照：owner_key → (領地中心座標, 立牌當下的顯示名)。
+    //    每帳號僅一塊有效領地（`demote_other_claims`），但這裡仍去重保底，取第一筆即可。
+    struct Claim {
+        owner_key: String,
+        owner_display: String,
+        cx: f32,
+        cz: f32,
+    }
+    let claims: Vec<Claim> = {
+        let signs = hub().sign.read().unwrap();
+        let mut seen = std::collections::HashSet::new();
+        signs
+            .all_hits()
+            .into_iter()
+            .filter(|h| vlandclaim::is_home_sign(&h.text))
+            .filter_map(|h| {
+                let owner_key = h.owner_key?;
+                if !seen.insert(owner_key.clone()) {
+                    return None;
+                }
+                Some(Claim {
+                    owner_key,
+                    owner_display: h.owner.unwrap_or_else(|| "旅人".to_string()),
+                    cx: h.cx,
+                    cz: h.cz,
+                })
+            })
+            .collect()
+    }; // sign 讀鎖釋放
+    if claims.is_empty() {
+        return;
+    }
+
+    // 2) 玩家快照（帳號 email／顯示名／座標，短鎖即釋）。
+    let players_snap: Vec<(Option<String>, String, f32, f32)> = {
+        let players = hub().players.read().unwrap();
+        players.values().map(|p| (p.account.clone(), p.name.clone(), p.x, p.z)).collect()
+    }; // players 讀鎖釋放
+
+    let r2 = vlandclaim::CLAIM_RADIUS * vlandclaim::CLAIM_RADIUS;
+    let now_secs = vfarm::now_secs();
+    let mut admired_this_tick = false;
+
+    for claim in &claims {
+        // 3) 這塊領地附近，有沒有被領主信任的朋友（多人因果核心：朋友造訪加速成長）。
+        let trusted_nearby = {
+            let trust = hub().landclaim_trust.read().unwrap();
+            players_snap.iter().any(|(acc, _, x, z)| {
+                acc.as_deref().is_some_and(|a| {
+                    a != claim.owner_key
+                        && trust.is_trusted(&claim.owner_key, a)
+                        && {
+                            let dx = x - claim.cx;
+                            let dz = z - claim.cz;
+                            dx * dx + dz * dz <= r2
+                        }
+                })
+            })
+        }; // landclaim_trust 讀鎖釋放
+
+        let xp_delta = vprosperity::growth_this_tick(trusted_nearby);
+        let (entry, leveled_up, new_level) = {
+            hub().prosperity.write().unwrap().grow(&claim.owner_key, xp_delta)
+        }; // prosperity 寫鎖釋放
+        vprosperity::append_prosperity(&entry);
+        if leveled_up {
+            vfeed::append_feed(
+                "領地繁榮",
+                &claim.owner_display,
+                &vprosperity::levelup_feed_detail(&claim.owner_display, new_level),
+            );
+        }
+
+        // 4) 領主本人此刻是否在自己領地附近——在的話自動把庫存收進背包。
+        if let Some((_, name, x, z)) =
+            players_snap.iter().find(|(acc, _, _, _)| acc.as_deref() == Some(claim.owner_key.as_str()))
+        {
+            let dx = x - claim.cx;
+            let dz = z - claim.cz;
+            if dx * dx + dz * dz <= r2 {
+                let collected = { hub().prosperity.write().unwrap().collect(&claim.owner_key) }; // prosperity 寫鎖釋放
+                if let Some((amount, entry)) = collected {
+                    vprosperity::append_prosperity(&entry);
+                    let inv_e = { hub().inventory.write().unwrap().give(name, vcraft::COIN_ID, amount) }; // inventory 寫鎖釋放
+                    vinv::append_inv(&inv_e);
+                    let new_count = hub().inventory.read().unwrap().count(name, vcraft::COIN_ID);
+                    let msg = serde_json::json!({
+                        "t": "prosperity_collect",
+                        "player": name,
+                        "block_id": vcraft::COIN_ID,
+                        "qty": amount,
+                        "count": new_count,
+                        "line": vprosperity::collect_line(amount),
+                    })
+                    .to_string();
+                    let _ = hub().tx.send(std::sync::Arc::new(msg));
+                }
+            }
+        }
+
+        // 5) 繁榮夠高就讓最近一位閒著的居民駐足讚賞（每次呼叫至多促成一組，保持稀疏）。
+        if admired_this_tick || new_level < vprosperity::ADMIRE_UNLOCK_LEVEL {
+            continue;
+        }
+        let cooldown_ok = {
+            let cd = prosperity_admire_cd().lock().unwrap();
+            match cd.get(&claim.owner_key) {
+                Some(prev) => now_secs.saturating_sub(*prev) >= vprosperity::ADMIRE_COOLDOWN_SECS,
+                None => true,
+            }
+        }; // 冷卻鎖釋放
+        if !cooldown_ok {
+            continue;
+        }
+        let cand: Option<(String, &'static str)> = {
+            let residents = hub().residents.read().unwrap();
+            residents
+                .iter()
+                .filter(|r| {
+                    r.say.is_empty()
+                        && !r.asleep
+                        && r.visiting.is_none()
+                        && r.expedition.is_none()
+                        && r.clique_meet.is_none()
+                        && r.savoring.is_none()
+                })
+                .map(|r| {
+                    let dx = claim.cx - r.body.x;
+                    let dz = claim.cz - r.body.z;
+                    (r.id.clone(), r.name, dx * dx + dz * dz)
+                })
+                .filter(|(_, _, d2)| *d2 <= vprosperity::ADMIRE_RADIUS * vprosperity::ADMIRE_RADIUS)
+                .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(id, name, _)| (id, name))
+        }; // residents 讀鎖釋放
+        let Some((rid, rname)) = cand else { continue };
+
+        { prosperity_admire_cd().lock().unwrap().insert(claim.owner_key.clone(), now_secs); } // 冷卻鎖釋放
+
+        let pick = now_secs as usize;
+        let say_line = vprosperity::admire_say_line(pick);
+        let said = {
+            let mut residents = hub().residents.write().unwrap();
+            residents
+                .iter_mut()
+                .find(|r| r.id == rid)
+                .map(|r| {
+                    r.say = say_line.chars().take(50).collect();
+                    r.say_timer = SAY_SECS;
+                    r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                })
+                .is_some()
+        }; // residents 寫鎖釋放
+        if !said {
+            continue;
+        }
+        broadcast_players();
+        admired_this_tick = true;
+
+        let summary = vprosperity::admire_memory_line(&claim.owner_display);
+        let mem_e = { hub().memory.write().unwrap().add_memory(&rid, &claim.owner_display, &summary) };
+        vmem::append_memory(&mem_e);
+        vfeed::append_feed(
+            "居民讚賞",
+            rname,
+            &vprosperity::admire_feed_detail(rname, &claim.owner_display),
+        );
+    }
+}
+
+/// 領地繁榮 v1（自主提案切片，ROADMAP 979）：每塊領地各自的讚賞冷卻表（owner_key → 上次
+/// 反應的 unix 秒），比照 `craft_admire_cd`/`pet_admire_cd` 同款靜態 Mutex<HashMap> 慣例——
+/// 純記憶體、重啟歸零（過場狀態，不影響玩家資料，零 migration）。
+fn prosperity_admire_cd() -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
 /// 引夢使者印記深化 v1（自主提案切片）：居民平常閒晃時，若身邊剛好站著曾為她做過具體好事的
