@@ -251,6 +251,26 @@ impl SignStore {
         hits
     }
 
+    /// 世界上所有告示牌（不限距離；供邀居同住 v1 之類「不管我人在哪，都要找到我登記的家在
+    /// 哪」的查詢使用，見 [`crate::voxel_landclaim::find_owner_home`]）。牌子稀疏（玩家手動
+    /// 立，數量少），全掃成本可忽略。`dist2` 恆為 0（未使用查詢中心，呼叫端不依賴距離排序）。
+    pub fn all_hits(&self) -> Vec<SignHit> {
+        self.signs
+            .iter()
+            .filter_map(|(k, text)| {
+                let (sx, _sy, sz) = parse_key(k)?;
+                Some(SignHit {
+                    cx: sx as f32 + 0.5,
+                    cz: sz as f32 + 0.5,
+                    text: text.clone(),
+                    owner: self.owners.get(k).cloned(),
+                    owner_key: self.owners_key.get(k).cloned(),
+                    dist2: 0.0,
+                })
+            })
+            .collect()
+    }
+
     /// 每帳號僅一塊有效領地（玩家個人領地保護 review 修正 第三輪，堵住「無限插旗」濫用面，
     /// ROADMAP 963）：立新家牌時，若該帳號在別的座標已經有一塊有主的家牌，舊的自動失效——
     /// 只保留最新這塊當領地／居民辨識用，牌面文字仍留著（不刪牌，只是不再算誰的），把單一

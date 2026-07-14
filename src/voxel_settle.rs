@@ -223,6 +223,14 @@ pub fn pending_migrations(
     out
 }
 
+/// 從待遷居名單濾掉正邀居同住中的居民（乙太方界·邀居同住 v1，ROADMAP 972 review 修復）：
+/// 家域已由玩家邀居覆寫、房子刻意不拆，拓荒隊若把她一併帶去殖民地，會造成「家在玩家家、
+/// 建物錨點卻落在殖民地」的永久分裂（見 review PR #1258）。純函式、可測；`cohabiting`＝
+/// 目前正同住中的居民 id 集合（`voxel_cohabit::CohabitStore::cohabiting_residents`）。
+pub fn exclude_cohabiting(pending: Vec<(String, u64)>, cohabiting: &[String]) -> Vec<(String, u64)> {
+    pending.into_iter().filter(|(rid, _)| !cohabiting.iter().any(|c| c == rid)).collect()
+}
+
 // ── 拓荒者候選（純函式、確定性）──────────────────────────────────────────────────────
 
 /// 拓荒者只從主村挑（#1210 震盪 bug 的**源頭端**根治）：從（顯示名, 居民 id）清單裡濾出
@@ -441,6 +449,26 @@ mod tests {
         store.assign("vox_res_1", 2);
         store.assign("vox_res_3", 2);
         assert!(pending_migrations(&store, &founders).is_empty());
+    }
+
+    #[test]
+    fn exclude_cohabiting_filters_out_only_named_residents() {
+        // 回歸（review PR #1258）：同住中的居民不該被拓荒隊一併帶去殖民地，否則家域
+        // （已由玩家邀居覆寫）與建物錨點（拓荒隊蓋在殖民地）永久分裂。
+        let pending = vec![
+            ("vox_res_0".to_string(), 1u64),
+            ("vox_res_1".to_string(), 1u64),
+            ("vox_res_2".to_string(), 2u64),
+        ];
+        let cohabiting = vec!["vox_res_1".to_string()];
+        let filtered = exclude_cohabiting(pending, &cohabiting);
+        assert_eq!(
+            filtered,
+            vec![("vox_res_0".to_string(), 1u64), ("vox_res_2".to_string(), 2u64)]
+        );
+        // 沒有人同住 → 原樣通過。
+        let pending2 = vec![("vox_res_3".to_string(), 1u64)];
+        assert_eq!(exclude_cohabiting(pending2.clone(), &[]), pending2);
     }
 
     #[test]
