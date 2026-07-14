@@ -168,6 +168,7 @@ use crate::voxel_player_home as vplayerhome;
 use crate::voxel_landclaim as vlandclaim;
 use crate::voxel_prosperity as vprosperity;
 use crate::voxel_tool_wear as vtoolwear;
+use crate::voxel_home_decor as vdecor;
 use crate::voxel_cohabit as vcohabit;
 use crate::voxel_weather as vweather;
 use crate::voxel_season as vseason;
@@ -893,6 +894,9 @@ struct VoxelResident {
     /// 馳援知難而退 v2.1（ROADMAP 984）：本趟馳援是否曾經真正貼近過首領（觸發過一次
     /// [`vboss::hit_in_reach`]）。一旦成立便終身豁免逾時放棄——已經到現場的不該被半路請回。
     boss_assist_engaged: bool,
+    /// 家居擺設嚮往冷卻倒數（秒，自主提案切片）：> 0 表示最近才因為走近鄰居家、看到自己
+    /// 家還沒有的擺設而心生嚮往過，暫不再觸發，讓「羨慕鄰居家的擺設」稀有有份量、天然防洗版。
+    decor_envy_cd: f32,
 }
 
 /// 環境生物的種類（水中游魚 v1，ROADMAP 848 起 wildlife 系統擴充為可延伸的多種類；
@@ -2230,6 +2234,9 @@ fn build_resident(
             // 馳援知難而退 v2.1（ROADMAP 984）：入場沒在馳援，兩者皆歸零。
             boss_assist_travel_elapsed: 0.0,
             boss_assist_engaged: false,
+            // 家居擺設 v1（自主提案切片）：入場沒有嚮往；首次冷卻各自錯開，避免啟動後一群
+            // 居民同時路過鄰居家齊聲心生嚮往。
+            decor_envy_cd: vdecor::ENVY_COOLDOWN_SECS * 0.5 + i as f32 * 60.0,
     }
 }
 
@@ -2359,6 +2366,10 @@ struct VoxelHub {
     /// 工具保養「老主顧」帳本（自主提案切片，ROADMAP 981）：`(玩家, 居民id)` → 累積拜訪次數，
     /// 決定保養折扣。持久化到 data/voxel_tool_repair.jsonl（append-only delta）。
     tool_repair: RwLock<vtoolwear::RepairLedger>,
+    /// 家居擺設帳本（自主提案切片）：居民 id → 已展示的裝飾傢俱 id（封頂 3 件）＋目前嚮往
+    /// 哪一款（記憶體、重啟歸零）。持久化到 data/voxel_home_decor.jsonl（append-only delta，
+    /// 序列化 RwLock 解決競爭，與 `goals`／`deltas`／`memory` 各自獨立短取即釋，不巢狀）。
+    home_decor: RwLock<vdecor::DecorStore>,
     /// 邀居同住 store（自主提案切片，ROADMAP 972）：居民 id → 目前是否同住某位玩家、住在哪
     /// （玩家登記的家牌座標）。持久化到 data/voxel_cohabit.jsonl（序列化 RwLock 解決競爭，
     /// 與 `sign`／`residents` 各自獨立短取即釋，不巢狀）。
@@ -3465,6 +3476,8 @@ fn hub() -> &'static VoxelHub {
             tool_wear: RwLock::new(vtoolwear::WearStore::from_entries(vtoolwear::load_wear())),
             // 啟動時從 data/voxel_tool_repair.jsonl 載回老主顧拜訪帳本（重啟後折扣仍在）。
             tool_repair: RwLock::new(vtoolwear::RepairLedger::from_entries(vtoolwear::load_repair_visits())),
+            // 啟動時從 data/voxel_home_decor.jsonl 載回家居擺設帳本（重啟後展示的傢俱仍在）。
+            home_decor: RwLock::new(vdecor::DecorStore::from_entries(vdecor::load_entries())),
             // 啟動時從 data/voxel_cohabit.jsonl 載回邀居同住紀錄（重啟後誰跟誰同住仍記得）。
             cohabit: RwLock::new(vcohabit::CohabitStore::from_entries(vcohabit::load_cohabit())),
             // 啟動時從 data/voxel_bottles.jsonl 載回尚未被撿走的瓶中信（重啟後瓶子還在水裡）。
@@ -9061,6 +9074,58 @@ async fn handle_socket(
                     let mut inv = hub().res_inv.write().unwrap();
                     *inv.entry(resident_id.clone()).or_default().entry(item_id).or_insert(0) += 1;
                 } // res_inv 寫鎖釋放
+                // 4c) 家居擺設 v1（自主提案切片）：這份禮若是裝飾傢俱（地毯/花盆/圓桌/掛旗），
+                // 這位居民有已知的家、家裡還沒展示過這款、展示格未滿 → 真的在她家附近找一格
+                // 空氣位置把它放進世界（絕不覆蓋既有方塊；找不到空位就優雅退回一般送禮，
+                // 不強塞、不報錯、不卡死——鐵律：不得出現無法脫離的狀態）。
+                let mut decor_placed: Option<(u8, bool)> = None; // (item_id, 是否正中先前的嚮往)
+                if vdecor::is_decor_item(item_id) {
+                    let anchor = { hub().goals.read().unwrap().house_of(&resident_id) };
+                    if let Some((ax, _ay, az)) = anchor {
+                        let (already_has, is_full, next_idx) = {
+                            let decor = hub().home_decor.read().unwrap();
+                            (
+                                decor.has_piece(&resident_id, item_id),
+                                decor.is_full(&resident_id),
+                                decor.displayed_for(&resident_id).len(),
+                            )
+                        }; // home_decor 讀鎖釋放
+                        if !already_has && !is_full {
+                            let (dx2, dz2) = vdecor::slot_offset(next_idx);
+                            let (wx, wz) = (ax + dx2, az + dz2);
+                            let wy = vbuild::surface_y(wx, wz);
+                            let mut did_place = false;
+                            {
+                                let mut world = hub().deltas.write().unwrap();
+                                let cur = voxel::effective_block_at(&world, wx, wy, wz);
+                                if cur == Block::Air {
+                                    if let Some(b) = Block::from_u8(item_id) {
+                                        voxel::set_block(&mut world, wx, wy, wz, b);
+                                        did_place = true;
+                                    }
+                                }
+                            } // deltas 寫鎖釋放
+                            if did_place {
+                                if let Some(b) = Block::from_u8(item_id) {
+                                    broadcast_block(wx, wy, wz, b);
+                                }
+                                vbuild::append_world_block(wx, wy, wz, item_id);
+                                let was_wanted = {
+                                    let mut decor = hub().home_decor.write().unwrap();
+                                    let wanted_match = decor.wanted_for(&resident_id) == Some(item_id);
+                                    if let Some(entry) = decor.add_piece(&resident_id, item_id) {
+                                        vdecor::append_entry(&entry);
+                                    }
+                                    if wanted_match {
+                                        decor.clear_wanted(&resident_id);
+                                    }
+                                    wanted_match
+                                }; // home_decor 寫鎖釋放
+                                decor_placed = Some((item_id, was_wanted));
+                            }
+                        }
+                    }
+                }
                 // 5) 加兩筆記憶（memory 寫鎖各自短取即釋，循序不巢狀）。
                 let iname = vgift::item_name_zh(item_id);
                 let mem1 = vgift::gift_memory_event(&name, iname);
@@ -9099,6 +9164,14 @@ async fn handle_socket(
                         hub().memory.write().unwrap().add_memory(&resident_id, &name, &mem4)
                     };
                     vmem::append_memory(&entry4);
+                }
+                // 家居擺設 v1：這份禮真的擺進她家了——記一筆「在家裡擺上了你送的這件」。
+                if let Some((decor_iid, _)) = decor_placed {
+                    let mem5 = vdecor::display_memory_line(vgift::item_name_zh(decor_iid));
+                    let entry5 = {
+                        hub().memory.write().unwrap().add_memory(&resident_id, &name, &mem5)
+                    };
+                    vmem::append_memory(&entry5);
                 }
                 // 5b) 送對禮物 v1（ROADMAP 722）：這位居民是否正懷抱一句「送這個物品就能實現」的
                 // 非建造類心願（desires 讀鎖即釋，不與其他鎖巢狀）？建造類心願交給蓋家系統的
@@ -9146,6 +9219,14 @@ async fn handle_socket(
                 } else if request_fulfilled {
                     // 你採來了她開口討的材料——比一般贈禮更歡欣（「你在我開口時幫了我」）。
                     vrequest::fulfil_thanks_line(&name, iname, pick)
+                } else if let Some((_, was_wanted)) = decor_placed {
+                    // 家居擺設 v1：這份禮真的擺進她家了——若正中先前的嚮往用專屬感謝，否則用
+                    // 一般展示感謝（皆比一般禮物更雀躍，這是「你送的家具」第一次留在她家）。
+                    if was_wanted {
+                        vdecor::wish_fulfilled_thanks_line(iname, pick)
+                    } else {
+                        vdecor::display_thanks_line(iname, pick)
+                    }
                 } else if vgift::is_treasure_gift(item_id) {
                     vgift::treasure_gift_thanks_line(&name, affinity, pick)
                 } else if vgift::is_cave_treasure_gift(item_id) {
@@ -9259,6 +9340,22 @@ async fn handle_socket(
                         rname,
                         &format!("{name}把{rname}想要的{iname}送來了，幫上了她的忙。"),
                     );
+                } else if let Some((decor_iid, was_wanted)) = decor_placed {
+                    // 家居擺設 v1：這份禮真的擺進她家了——讓不在場的玩家回來也讀得到。
+                    let decor_name = vgift::item_name_zh(decor_iid);
+                    if was_wanted {
+                        vfeed::append_feed(
+                            "擺設心願",
+                            rname,
+                            &vdecor::wish_fulfilled_feed_line(rname, decor_name),
+                        );
+                    } else {
+                        vfeed::append_feed(
+                            "家居擺設",
+                            rname,
+                            &vdecor::display_feed_line(rname, decor_name),
+                        );
+                    }
                 } else {
                     vfeed::append_feed(
                         "贈禮",
@@ -26233,6 +26330,9 @@ fn tick_residents(dt: f32) {
     //    走 say_updates（在下方統一套用），故必須在套用之前呼叫。
     tick_life_projects(dt, &mut say_updates);
 
+    // ── 家居擺設 v1：低頻掃描鄰居嚮往（同款節拍）。冒的泡泡同樣走 say_updates。
+    tick_home_decor_envy(dt, &mut say_updates);
+
     // 一次性套用說話更新（單獨一把 residents 寫鎖；say_updates 可能為空）。
     if !say_updates.is_empty() {
         let mut residents = hub().residents.write().unwrap();
@@ -26465,6 +26565,148 @@ fn tick_life_projects(dt: f32, say_updates: &mut Vec<(String, String)>) {
     }
     for (name, detail) in &feed_events {
         vfeed::append_feed("長程心願", name, detail);
+    }
+}
+
+// ── 家居擺設 v1（純邏輯在 voxel_home_decor.rs；此處只做接線：短鎖循序、不巢狀、不 await）──
+
+/// 鄰居嚮往掃描的粗略節拍：每這麼多個 tick（10Hz）才做一次全員掃描，把常態成本壓到近零
+/// （比照 [`LIFE_PROJECT_SCAN_TICKS`] 同款節拍）。
+const HOME_DECOR_SCAN_TICKS: u64 = 50; // 約每 5 秒掃一次
+static HOME_DECOR_SCAN_TICK: AtomicU64 = AtomicU64::new(0);
+
+/// 低頻掃描：走到別人家附近、看見一款自己還沒有的擺設，偶爾心生嚮往（記下想要哪一款）。
+/// 全在此函式裡短鎖循序（residents → goals → home_decor，各自即釋、彼此不巢狀），不 await，
+/// 守死鎖鐵律。純判斷不放方塊、不消耗任何資源，只是「起念」——心願要等玩家送對東西才實現。
+fn tick_home_decor_envy(dt: f32, say_updates: &mut Vec<(String, String)>) {
+    let n = HOME_DECOR_SCAN_TICK.fetch_add(1, Ordering::Relaxed) + 1;
+    if n % HOME_DECOR_SCAN_TICKS != 0 {
+        return;
+    }
+    let scan_dt = dt * HOME_DECOR_SCAN_TICKS as f32;
+
+    struct Cand {
+        id: String,
+        name: &'static str,
+        x: f32,
+        z: f32,
+        ready: bool,
+        say_empty: bool,
+    }
+    // 1) 快照全員位置＋順手推進冷卻（residents 寫鎖即釋）。
+    let cands: Vec<Cand> = {
+        let mut residents = hub().residents.write().unwrap();
+        let mut out = Vec::new();
+        for r in residents.iter_mut() {
+            if r.decor_envy_cd > 0.0 {
+                r.decor_envy_cd = (r.decor_envy_cd - scan_dt).max(0.0);
+            }
+            out.push(Cand {
+                id: r.id.clone(),
+                name: r.name,
+                x: r.body.x,
+                z: r.body.z,
+                ready: r.decor_envy_cd <= 0.0,
+                say_empty: r.say.is_empty(),
+            });
+        }
+        out
+    }; // residents 寫鎖釋放
+    if cands.len() < 2 {
+        return;
+    }
+
+    // 2) 各居民的家錨點（goals 讀鎖即釋）——沒蓋好家的鄰居不參與（沒有家可被看見）。
+    let anchors: Vec<Option<(i32, i32, i32)>> = {
+        let goals = hub().goals.read().unwrap();
+        cands.iter().map(|c| goals.house_of(&c.id)).collect()
+    }; // goals 讀鎖釋放
+
+    // 3) 各居民已展示的擺設快照（home_decor 讀鎖即釋）。
+    let displayed: Vec<Vec<u8>> = {
+        let decor = hub().home_decor.read().unwrap();
+        cands
+            .iter()
+            .map(|c| decor.displayed_for(&c.id).to_vec())
+            .collect()
+    }; // home_decor 讀鎖釋放
+
+    // 4) 純判斷（無鎖）：找每位候選者「最近的、有自己還沒有的擺設」的鄰居家。
+    let mut envy_events: Vec<(String, &'static str, &'static str, u8)> = Vec::new();
+    for (i, c) in cands.iter().enumerate() {
+        if !c.ready || !c.say_empty {
+            continue;
+        }
+        let mine = &displayed[i];
+        let mut best: Option<(f32, usize, u8)> = None; // (dist_sq, neighbor_idx, item_id)
+        for (j, other_anchor) in anchors.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let Some((ax, _ay, az)) = other_anchor else {
+                continue;
+            };
+            let dx = c.x - *ax as f32;
+            let dz = c.z - *az as f32;
+            let dsq = dx * dx + dz * dz;
+            if dsq > vdecor::ENVY_RADIUS * vdecor::ENVY_RADIUS {
+                continue;
+            }
+            let Some(&covet_id) = displayed[j].iter().find(|id| !mine.contains(id)) else {
+                continue;
+            };
+            if best.is_none_or(|(bd, _, _)| dsq < bd) {
+                best = Some((dsq, j, covet_id));
+            }
+        }
+        if let Some((_, j, item_id)) = best {
+            if vdecor::envy_triggers(true, rand::random::<f32>()) {
+                envy_events.push((c.id.clone(), c.name, cands[j].name, item_id));
+            }
+        }
+    }
+    if envy_events.is_empty() {
+        return;
+    }
+
+    // 5) 套用嚮往狀態（home_decor 寫鎖即釋），收集真的變化的（避免重覆觸發同一件事）。
+    let mut fired: Vec<(String, &'static str, &'static str, u8)> = Vec::new();
+    {
+        let mut decor = hub().home_decor.write().unwrap();
+        for (rid, rname, neighbor_name, item_id) in &envy_events {
+            if decor.set_wanted(rid, *item_id) {
+                fired.push((rid.clone(), *rname, *neighbor_name, *item_id));
+            }
+        }
+    } // home_decor 寫鎖釋放
+
+    // 6) 冷卻套用到所有嘗試過的（residents 寫鎖即釋）——不論這次是否真的起念，都別讓她
+    //    下一次掃描立刻重試同一個目標，維持「稀有有份量」。
+    {
+        let mut residents = hub().residents.write().unwrap();
+        for (rid, _, _, _) in &envy_events {
+            if let Some(r) = residents.iter_mut().find(|r| &r.id == rid) {
+                r.decor_envy_cd = vdecor::ENVY_COOLDOWN_SECS;
+            }
+        }
+    } // residents 寫鎖釋放
+
+    // 7) 真的起念的：冒泡（走 say_updates）＋記憶＋Feed（鎖外 IO）。
+    for (rid, rname, neighbor_name, item_id) in &fired {
+        let item_name = vgift::item_name_zh(*item_id);
+        let pick = (rid.as_bytes().first().copied().unwrap_or(0) as usize)
+            .wrapping_add(item_id.to_owned() as usize);
+        say_updates.push((rid.clone(), vdecor::wanted_bubble(neighbor_name, item_name, pick)));
+        let mem = vdecor::wanted_memory_line(neighbor_name, item_name);
+        let entry = {
+            hub().memory.write().unwrap().add_memory(rid, rname, &mem)
+        };
+        vmem::append_memory(&entry);
+        vfeed::append_feed(
+            "擺設嚮往",
+            rname,
+            &vdecor::wanted_feed_line(rname, neighbor_name, item_name),
+        );
     }
 }
 

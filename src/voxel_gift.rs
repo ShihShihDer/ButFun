@@ -98,6 +98,12 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         94 => "紅花",
         95 => "黃花",
         96 => "藍花",
+        // 玩家裝飾傢俱 v1（ROADMAP 931）+ 家居擺設 v1（自主提案切片）：此前漏補這四樣的名字，
+        // 餽贈居民會顯示 fallback「物品」——本刀補上，讓道謝台詞真的點得出名。
+        crate::voxel_furniture::CARPET_ID => "小地毯",
+        crate::voxel_furniture::FLOWERPOT_ID => "花盆",
+        crate::voxel_furniture::TABLE_ID => "小圓桌",
+        crate::voxel_furniture::BANNER_ID => "掛旗",
         // 季限作物·秋南瓜 v1（ROADMAP 933）：對齊 voxel::Block::PumpkinSeeded/PumpkinMature
         // + voxel_farm::PUMPKIN_SEEDS_ID/PUMPKIN_ID。只在秋天種得起來的季限作物。
         107 => "南瓜幼苗",
