@@ -25075,6 +25075,18 @@ fn tick_residents(dt: f32) {
                     visitor_name,
                     &velder::elder_defuse_feed_line(visitor_name, &host_name, pick),
                 );
+                // 這一刻被長者的從容接住，比原本會發生的拌嘴更值得留在兩人心裡（才會浮進
+                // 日記）。打上 NEIGHBORLY_TAG，比照 715 拌嘴的分類慣例。
+                {
+                    let entry = hub().memory.write().unwrap()
+                        .add_memory(&visitor_id, &host_name, &voxel_diary::tag_neighborly(&velder::elder_defuse_memory_line_visitor(&host_name, pick)));
+                    vmem::append_memory(&entry);
+                } // memory 寫鎖釋放
+                if let Some(host_id) = host_id.clone() {
+                    let entry = hub().memory.write().unwrap()
+                        .add_memory(&host_id, visitor_name, &voxel_diary::tag_neighborly(&velder::elder_defuse_memory_line_host(visitor_name, pick)));
+                    vmem::append_memory(&entry);
+                } // memory 寫鎖釋放
                 quarrel_line = Some(velder::elder_defuse_say_line(&host_name, pick));
             } else {
                 vfeed::append_feed(vquarrel::FEED_KIND, visitor_name, &vquarrel::quarrel_feed_line(visitor_name, &host_name, pick));

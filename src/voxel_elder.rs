@@ -134,6 +134,19 @@ pub fn elder_defuse_feed_line(visitor: &str, host: &str, pick: usize) -> String 
     format!("{visitor}本想跟{host}為了{topic}拌幾句嘴，卻被長者的從容一笑帶過了")
 }
 
+/// 化解進訪客記憶的摘要文字（訪客視角）——比起原本會發生的拌嘴，這一刻更值得記住，
+/// 才會浮進日記（見上一輪 review2dev 的取捨建議）。
+pub fn elder_defuse_memory_line_visitor(host: &str, pick: usize) -> String {
+    let topic = pick_defuse_topic(pick);
+    format!("本想跟{host}為了{topic}爭幾句，卻被對方的從容一笑帶過，反倒覺得有點慚愧")
+}
+
+/// 化解進長者記憶的摘要文字（長者視角）。
+pub fn elder_defuse_memory_line_host(visitor: &str, pick: usize) -> String {
+    let topic = pick_defuse_topic(pick);
+    format!("{visitor}想為了{topic}爭幾句，我笑了笑擺擺手——這點小事，值得吵嗎？")
+}
+
 // ── 晚年帳本（一生一次的冪等持久化，比照 voxel_coming_of_age 慣例）───────────────
 
 /// 一筆持久化記錄：某居民已步入晚年。

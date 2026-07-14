@@ -191,14 +191,24 @@ pub struct FamineEndedEntry {
 
 /// Append 一筆荒年落幕記錄。**鐵律**：只在不持任何鎖時呼叫（同步小檔寫，不 await）。
 pub fn append_famine_ended(entry: &FamineEndedEntry) {
+    append_famine_ended_at(FAMINE_LOG_PATH, entry);
+}
+
+/// [`append_famine_ended`] 的可注入路徑版本，供測試走臨時檔、不碰真實玩家資料。
+pub fn append_famine_ended_at(path: &str, entry: &FamineEndedEntry) {
     if let Ok(line) = serde_json::to_string(entry) {
-        write_line(FAMINE_LOG_PATH, &line);
+        write_line(path, &line);
     }
 }
 
 /// 載回所有荒年落幕記錄（啟動時呼叫一次，回傳筆數＝村莊累計熬過次數）。檔不存在／壞行皆容忍。
 pub fn load_famine_survived_count() -> u32 {
-    let content = match std::fs::read_to_string(FAMINE_LOG_PATH) {
+    load_famine_survived_count_at(FAMINE_LOG_PATH)
+}
+
+/// [`load_famine_survived_count`] 的可注入路徑版本，供測試走臨時檔、不碰真實玩家資料。
+pub fn load_famine_survived_count_at(path: &str) -> u32 {
+    let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return 0,
     };
@@ -350,14 +360,17 @@ mod tests {
     #[test]
     fn load_count_calls_real_function_and_matches_persisted_entries() {
         // 上一輪 review2dev 指出：舊版測試繞過 `load_famine_survived_count`、自己手抄一遍
-        // std::fs 邏輯，函式本身改壞也測不出來。本測試直接呼叫真正的上游函式，全程在單一
-        // 測試內完成（避免與其他平行執行的測試共用 FAMINE_LOG_PATH 產生競態），用完清乾淨、
-        // 不留 data/ 產物。
-        let _ = std::fs::remove_file(FAMINE_LOG_PATH);
-        assert_eq!(load_famine_survived_count(), 0); // 檔不存在 → 安全回 0，不 panic
-        append_famine_ended(&FamineEndedEntry { helped_count: 1 });
-        append_famine_ended(&FamineEndedEntry { helped_count: 2 });
-        assert_eq!(load_famine_survived_count(), 2); // 真的讀回兩筆持久化紀錄
-        let _ = std::fs::remove_file(FAMINE_LOG_PATH);
+        // std::fs 邏輯，函式本身改壞也測不出來。本測試直接呼叫真正的上游函式驗證邏輯，
+        // 但走 `_at` 可注入路徑變體 + 臨時檔（絕不碰 `FAMINE_LOG_PATH` 這個真實玩家資料路徑——
+        // 上一輪 review 抓到常數路徑版本會在 prod 部署跑測試時刪掉真實的荒年履歷）。
+        let path = std::env::temp_dir()
+            .join(format!("voxfamine_test_{}.jsonl", std::process::id()));
+        let pstr = path.to_str().unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(load_famine_survived_count_at(pstr), 0); // 檔不存在 → 安全回 0，不 panic
+        append_famine_ended_at(pstr, &FamineEndedEntry { helped_count: 1 });
+        append_famine_ended_at(pstr, &FamineEndedEntry { helped_count: 2 });
+        assert_eq!(load_famine_survived_count_at(pstr), 2); // 真的讀回兩筆持久化紀錄
+        let _ = std::fs::remove_file(&path);
     }
 }
