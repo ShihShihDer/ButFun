@@ -1588,17 +1588,26 @@ pub const CROP_NEAR_YSPAN: i32 = 4;
 /// 附近是否有一畦指定作物已經熟了，熟在哪一格（第七刀）。掃居民腳邊一個小立方範圍的
 /// 有效方塊（含 delta overlay），找到即回該格座標；沒有回 `None`（呼叫端誠實失敗，
 /// 同水面鄰近檢查精神——不會替她跑去遠方找，更不會替她播種）。純函式、可測。
+///
+/// `blocked(x, z)`（review 修正，居民尊重玩家領地 v1 second pass）：某格是否不准挑——例如
+/// 落在別人領地內。**必須推進迴圈裡**、逐格跳過繼續掃，不能讓呼叫端事後對回傳值 `.filter()`：
+/// 那樣「最近一格恰好被擋」就會讓整次搜尋直接判定查無，即使旁邊還有一堆合法候選。
 pub fn ripe_crop_nearby(
     world: &WorldDelta,
     fx: i32,
     fy: i32,
     fz: i32,
     want: Block,
+    blocked: impl Fn(i32, i32) -> bool,
 ) -> Option<(i32, i32, i32)> {
     for dx in -CROP_NEAR_RADIUS..=CROP_NEAR_RADIUS {
         for dz in -CROP_NEAR_RADIUS..=CROP_NEAR_RADIUS {
+            let (x, z) = (fx + dx, fz + dz);
+            if blocked(x, z) {
+                continue;
+            }
             for dy in -CROP_NEAR_YSPAN..=CROP_NEAR_YSPAN {
-                let (x, y, z) = (fx + dx, fy + dy, fz + dz);
+                let y = fy + dy;
                 if voxel::effective_block_at(world, x, y, z) == want {
                     return Some((x, y, z));
                 }
@@ -1648,6 +1657,9 @@ pub fn find_water(
 /// 螺旋向外找最近一畦**指定種類**的熟作物（第八刀·移動去資源），比 [`ripe_crop_nearby`]
 /// 的鄰近檢查搜得遠——鎖定「這一種」熟作物（她要湊的是特定作物的份數，不是隨便撿到什麼），
 /// 找到就走過去、找不到仍誠實失敗（不替她播種，也不無止盡漫遊）。純函式、可測。
+///
+/// `blocked(x, z)`：見 [`ripe_crop_nearby`] 同款說明——擋在 `spiral_find` 的 pick 閉包裡，
+/// 被擋的格子跟「這格沒熟」一視同仁，螺旋會自然繼續掃下一圈，不會讓整次搜尋提早放棄。
 pub fn find_ripe_crop_far(
     world: &WorldDelta,
     ox: i32,
@@ -1655,8 +1667,12 @@ pub fn find_ripe_crop_far(
     oz: i32,
     max_radius: i32,
     want: Block,
+    blocked: impl Fn(i32, i32) -> bool,
 ) -> Option<(i32, i32, i32)> {
     spiral_find(ox, oz, 0, max_radius, |x, z| {
+        if blocked(x, z) {
+            return None;
+        }
         (-CROP_NEAR_YSPAN..=CROP_NEAR_YSPAN).find_map(|dy| {
             let y = oy + dy;
             (voxel::effective_block_at(world, x, y, z) == want).then_some((x, y, z))
@@ -1678,14 +1694,22 @@ pub const TILL_NEAR_YSPAN: i32 = 4;
 /// 馬鈴薯種到地底）。找到即回該格座標；沒有回 `None`（呼叫端誠實放棄這次播種，不會替她
 /// 跑去遠方找地——那不像找水找熟作物，到處都是草皮泥土，附近沒有多半代表地形異常，
 /// 或單純還沒有裸露的泥土可種）。純函式、可測。
+///
+/// `blocked(x, z)`：見 [`ripe_crop_nearby`] 同款說明——這顆函式尤其重要，草皮／泥土到處
+/// 都是，若在回傳值上事後過濾，居民只要站在別人領地邊上，螺旋第一格多半就命中領地內，
+/// 播種自給整支會靜默失效，即使隔壁一格完全合法。
 pub fn tillable_ground_nearby(
     world: &WorldDelta,
     fx: i32,
     fy: i32,
     fz: i32,
     want: Block,
+    blocked: impl Fn(i32, i32) -> bool,
 ) -> Option<(i32, i32, i32)> {
     spiral_find(fx, fz, 0, TILL_NEAR_RADIUS, |x, z| {
+        if blocked(x, z) {
+            return None;
+        }
         (-TILL_NEAR_YSPAN..=TILL_NEAR_YSPAN).find_map(|dy| {
             let y = fy + dy;
             let is_surface = voxel::effective_block_at(world, x, y, z) == want
@@ -4374,10 +4398,10 @@ mod tests {
     fn ripe_crop_nearby_detects_within_radius_not_beyond() {
         let (fx, fy, fz) = (60, 5, 60);
         let mut world: WorldDelta = WorldDelta::new();
-        assert_eq!(ripe_crop_nearby(&world, fx, fy, fz, Block::WheatMature), None, "還沒有熟作物 → 查無");
+        assert_eq!(ripe_crop_nearby(&world, fx, fy, fz, Block::WheatMature, |_, _| false), None, "還沒有熟作物 → 查無");
         voxel::set_block(&mut world, fx + 3, fy, fz, Block::WheatMature);
         assert_eq!(
-            ripe_crop_nearby(&world, fx, fy, fz, Block::WheatMature),
+            ripe_crop_nearby(&world, fx, fy, fz, Block::WheatMature, |_, _| false),
             Some((fx + 3, fy, fz)),
             "半徑內的熟作物應查得到"
         );
@@ -4385,14 +4409,31 @@ mod tests {
         let far = CROP_NEAR_RADIUS + 5;
         let mut world2: WorldDelta = WorldDelta::new();
         voxel::set_block(&mut world2, fx + far, fy, fz, Block::WheatMature);
-        assert_eq!(ripe_crop_nearby(&world2, fx, fy, fz, Block::WheatMature), None, "太遠不算附近");
+        assert_eq!(ripe_crop_nearby(&world2, fx, fy, fz, Block::WheatMature, |_, _| false), None, "太遠不算附近");
         // 作物型別不符 → 查無（找小麥時不誤撿旁邊熟了的胡蘿蔔）。
         let mut world3: WorldDelta = WorldDelta::new();
         voxel::set_block(&mut world3, fx + 3, fy, fz, Block::CarrotMature);
         assert_eq!(
-            ripe_crop_nearby(&world3, fx, fy, fz, Block::WheatMature),
+            ripe_crop_nearby(&world3, fx, fy, fz, Block::WheatMature, |_, _| false),
             None,
             "型別不符不該誤撿"
+        );
+    }
+
+    /// review 修正（PR #1255）：`blocked` 必須推進迴圈裡逐格跳過，不能只擋掉「最近那格」
+    /// 就讓整次搜尋放棄——擺一格更近但被擋、一格較遠但合法，斷言回傳的是合法那格。
+    #[test]
+    fn ripe_crop_nearby_skips_blocked_candidate_keeps_searching() {
+        let (fx, fy, fz) = (60, 5, 60);
+        let mut world: WorldDelta = WorldDelta::new();
+        let blocked_spot = (fx + 2, fy, fz); // 更近，但被擋（模擬落在玩家領地內）
+        let allowed_spot = (fx + 6, fy, fz); // 較遠，合法
+        voxel::set_block(&mut world, blocked_spot.0, blocked_spot.1, blocked_spot.2, Block::WheatMature);
+        voxel::set_block(&mut world, allowed_spot.0, allowed_spot.1, allowed_spot.2, Block::WheatMature);
+        assert_eq!(
+            ripe_crop_nearby(&world, fx, fy, fz, Block::WheatMature, |x, z| (x, z) == (blocked_spot.0, blocked_spot.2)),
+            Some(allowed_spot),
+            "最近那格被擋不該讓整次搜尋放棄，該繼續找到旁邊合法的那格"
         );
     }
 
@@ -4406,12 +4447,12 @@ mod tests {
         assert!(beyond_near <= INVENT_GATHER_RADIUS, "測試前提：夾在鄰近與遠距半徑之間");
         voxel::set_block(&mut world, fx + beyond_near, fy, fz, Block::WheatMature);
         assert_eq!(
-            ripe_crop_nearby(&world, fx, fy, fz, Block::WheatMature),
+            ripe_crop_nearby(&world, fx, fy, fz, Block::WheatMature, |_, _| false),
             None,
             "鄰近檢查本該查無（才輪得到遠距搜尋出場）"
         );
         assert_eq!(
-            find_ripe_crop_far(&world, fx, fy, fz, INVENT_GATHER_RADIUS, Block::WheatMature),
+            find_ripe_crop_far(&world, fx, fy, fz, INVENT_GATHER_RADIUS, Block::WheatMature, |_, _| false),
             Some((fx + beyond_near, fy, fz)),
             "遠距螺旋搜尋該找到這畦小麥"
         );
@@ -4425,9 +4466,30 @@ mod tests {
         voxel::set_block(&mut world, fx + beyond_near, fy, fz, Block::CarrotMature);
         // 遠處確實有熟作物，但型別不對（找小麥卻只有胡蘿蔔）→ 誠實查無，不誤撿。
         assert_eq!(
-            find_ripe_crop_far(&world, fx, fy, fz, INVENT_GATHER_RADIUS, Block::WheatMature),
+            find_ripe_crop_far(&world, fx, fy, fz, INVENT_GATHER_RADIUS, Block::WheatMature, |_, _| false),
             None,
             "型別不符不該誤撿"
+        );
+    }
+
+    /// review 修正（PR #1255）同款：螺旋由近而遠，第一個命中被擋不該讓整次搜尋放棄——這正是
+    /// review 描述的「fallback 到 find_ripe_crop_far，第一個命中還是玩家那畦」場景。
+    #[test]
+    fn find_ripe_crop_far_skips_blocked_candidate_keeps_searching() {
+        let (fx, fy, fz) = (60, 5, 60);
+        let mut world: WorldDelta = WorldDelta::new();
+        let beyond_near = CROP_NEAR_RADIUS + 4;
+        let blocked_spot = (fx + beyond_near, fy, fz); // 螺旋較早掃到，但被擋
+        let allowed_spot = (fx + beyond_near + 6, fy, fz); // 較遠，合法
+        voxel::set_block(&mut world, blocked_spot.0, blocked_spot.1, blocked_spot.2, Block::WheatMature);
+        voxel::set_block(&mut world, allowed_spot.0, allowed_spot.1, allowed_spot.2, Block::WheatMature);
+        assert_eq!(
+            find_ripe_crop_far(
+                &world, fx, fy, fz, INVENT_GATHER_RADIUS, Block::WheatMature,
+                |x, z| (x, z) == (blocked_spot.0, blocked_spot.2),
+            ),
+            Some(allowed_spot),
+            "螺旋掃到的第一格被擋不該讓整次搜尋放棄，該繼續找到較遠但合法的那格"
         );
     }
 
@@ -4468,7 +4530,7 @@ mod tests {
         let mut world: WorldDelta = WorldDelta::new();
         voxel::set_block(&mut world, fx + 3, fy, fz + 2, Block::Grass);
         assert_eq!(
-            tillable_ground_nearby(&world, fx, fy, fz, Block::Grass),
+            tillable_ground_nearby(&world, fx, fy, fz, Block::Grass, |_, _| false),
             Some((fx + 3, fy, fz + 2)),
         );
     }
@@ -4479,9 +4541,29 @@ mod tests {
         let mut world: WorldDelta = WorldDelta::new();
         voxel::set_block(&mut world, fx + 1, fy, fz, Block::Dirt);
         assert_eq!(
-            tillable_ground_nearby(&world, fx, fy, fz, Block::Grass),
+            tillable_ground_nearby(&world, fx, fy, fz, Block::Grass, |_, _| false),
             None,
             "泥土不是草皮，不該誤判"
+        );
+    }
+
+    /// review 修正（PR #1255）同款：草皮到處都是，若在回傳值上事後過濾，居民只要站在玩家
+    /// 領地邊上，螺旋第一格幾乎必中領地內；推進迴圈裡才會正確繞開、找到隔壁合法地表。
+    #[test]
+    fn tillable_ground_nearby_skips_blocked_candidate_keeps_searching() {
+        let (fx, fy, fz) = (10, 300, 10); // 高空，避開天然地表干擾
+        let mut world: WorldDelta = WorldDelta::new();
+        let blocked_spot = (fx + 1, fy, fz); // 螺旋較早掃到，但被擋
+        let allowed_spot = (fx + 4, fy, fz); // 較遠，合法
+        voxel::set_block(&mut world, blocked_spot.0, blocked_spot.1, blocked_spot.2, Block::Grass);
+        voxel::set_block(&mut world, allowed_spot.0, allowed_spot.1, allowed_spot.2, Block::Grass);
+        assert_eq!(
+            tillable_ground_nearby(
+                &world, fx, fy, fz, Block::Grass,
+                |x, z| (x, z) == (blocked_spot.0, blocked_spot.2),
+            ),
+            Some(allowed_spot),
+            "螺旋掃到的第一格被擋不該讓整次搜尋放棄，該繼續找到較遠但合法的那格"
         );
     }
 
@@ -4490,7 +4572,7 @@ mod tests {
         let (fx, fy, fz) = (10, 300, 10); // 高空，同上理由避開天然地表干擾
         let mut world: WorldDelta = WorldDelta::new();
         voxel::set_block(&mut world, fx + TILL_NEAR_RADIUS + 5, fy, fz, Block::Grass);
-        assert_eq!(tillable_ground_nearby(&world, fx, fy, fz, Block::Grass), None);
+        assert_eq!(tillable_ground_nearby(&world, fx, fy, fz, Block::Grass, |_, _| false), None);
     }
 
     /// 審查點名（PR#1236）：舊版三層迴圈固定順序（最遠角落先掃、命中即回），面對真實
@@ -4513,7 +4595,7 @@ mod tests {
         let fy = h + 1; // 站在地表上
 
         // 草皮（胡蘿蔔用）：地表本身就是裸露草皮，該就地找到腳邊，不是遠處角落。
-        let spot = tillable_ground_nearby(&world, fx, fy, z, Block::Grass)
+        let spot = tillable_ground_nearby(&world, fx, fy, z, Block::Grass, |_, _| false)
             .expect("腳邊地表就是草皮，該找到");
         assert_eq!(spot, (fx, h, z), "該選到腳邊真地表，不是遠處/深層的巧合命中");
         assert_eq!(
@@ -4525,7 +4607,7 @@ mod tests {
         // 泥土（馬鈴薯用）：純天然地形的泥土永遠被草皮蓋住、沒有裸露泥土，該誠實查無，
         // 不能像舊版那樣把種子種到看不見的地底。
         assert_eq!(
-            tillable_ground_nearby(&world, fx, fy, z, Block::Dirt),
+            tillable_ground_nearby(&world, fx, fy, z, Block::Dirt, |_, _| false),
             None,
             "天然地形沒有裸露泥土，翻土播種該誠實失敗"
         );

@@ -3961,6 +3961,50 @@ fn claim_blocking_owner(
     vlandclaim::resolve_claim_block(home_claims, requester_key).map(str::to_string)
 }
 
+/// 居民尊重玩家領地 v1（ROADMAP 969，接續 963~967 玩家個人領地保護；second pass 修正
+/// PR #1255 review）：AI 居民（發明引擎的自動收成／播種）挑中的世界座標若落在別人已宣告的
+/// 「家」領地內，這格就不准碰。居民永遠不是帳號、也永遠不吃信任通行證（`requester=None`、
+/// `allow_trust=false`——見下方 `.map` 固定傳 `false`），與訪客玩家踩進別人領地被擋下走的
+/// 是同一套 [`vlandclaim::resolve_claim_block`] 判定，不另開一條規則，也不讓「AI 幫我做事」
+/// 變成繞過領地保護的後門。
+///
+/// 吃**快照**（[`resident_claim_snapshot`]）而非直接拿鎖，是因為呼叫端（`DoHarvest` 三處）
+/// 要把這顆判定推進 `ripe_crop_nearby`／`find_ripe_crop_far`／`tillable_ground_nearby` 的
+/// 搜尋迴圈裡逐格呼叫——一輪搜尋可能問上百次，若每格都各自拿一次 `hub().sign` 讀鎖，在常駐
+/// tick（`advance_invent_run`）裡就是每格一把鎖；改成搜尋前一次性把範圍內牌子讀出來，這裡
+/// 只查記憶體裡的快照，零額外鎖。純函式、可測。
+fn resident_may_touch_in(x: i32, z: i32, snapshot: &[vsign::SignHit]) -> bool {
+    let cx = x as f32 + 0.5;
+    let cz = z as f32 + 0.5;
+    let r2 = vlandclaim::CLAIM_RADIUS * vlandclaim::CLAIM_RADIUS;
+    let home_claims = snapshot
+        .iter()
+        .filter(|h| {
+            let dx = h.cx - cx;
+            let dz = h.cz - cz;
+            dx * dx + dz * dz <= r2
+        })
+        .filter(|h| vlandclaim::is_home_sign(&h.text))
+        .map(|h| (h.owner.as_deref().unwrap_or(""), h.owner_key.as_deref(), false));
+    vlandclaim::resolve_claim_block(home_claims, None).is_none()
+}
+
+/// 一次性讀鎖，取出某段發明搜尋範圍內所有告示牌快照，供 [`resident_may_touch_in`] 逐格查
+/// （見該函式說明為何要這樣拆）。`search_radius` 是搜尋本身的半徑，快照範圍另外加一圈
+/// [`vlandclaim::CLAIM_RADIUS`]緩衝——螺旋邊緣的候選格仍可能被邊緣外一點的領地牌罩到。
+///
+/// **second pass 修正 review PR #1255 第二輪**：`all_within_xz` 是歐氏圓形判定，但
+/// `search_radius` 描述的是**方形**搜尋範圍（`ripe_crop_nearby` 的雙層迴圈／`spiral_find`
+/// 的 chebyshev 方環），方形角落到原點的歐氏距離可達 `search_radius * √2`，比圓形半徑
+/// `search_radius` 遠。若快照只取到 `search_radius + CLAIM_RADIUS`，方形角落那圈候選格
+/// （歐氏距離落在 `search_radius` 到 `search_radius * √2` 之間）罩住它們的領地牌會落在快照
+/// 圈外，`resident_may_touch_in` 查無牌就靜默放行——搜尋範圍越大這圈漏得越多。改用外接角落
+/// 距離 `search_radius * √2 + CLAIM_RADIUS`，多讀幾塊牌只是快照大一點，零額外 tick 成本。
+fn resident_claim_snapshot(ox: i32, oz: i32, search_radius: i32) -> Vec<vsign::SignHit> {
+    let spread = search_radius as f32 * std::f32::consts::SQRT_2 + vlandclaim::CLAIM_RADIUS;
+    hub().sign.read().unwrap().all_within_xz(ox as f32 + 0.5, oz as f32 + 0.5, spread)
+}
+
 /// 玩家個人領地保護 v1/v2（review 第四輪修正 + v2 箱子補洞，ROADMAP 963）：`Break`/`Place`/
 /// `SignSet` 之外，凡是「直接改寫世界方塊」的入口（鋤地、倒水、種植、施肥……）與「動你家
 /// 箱子內容」的入口（`ChestPut`/`ChestTake`）都要走同一顆判定，否則保護形同虛設——別人拿
@@ -24954,15 +24998,30 @@ fn advance_invent_run(
                 // 收成（第七刀）：世界前提——附近真的有一畦這種作物熟了。
                 // 第八刀·移動去資源：鄰近檢查沒有 → 螺旋遠找同一種熟作物，找到就走過去再重試，
                 // 真的四下無熟田才誠實失敗（不隔空收成、也不替她播種、不無止盡漫遊）。
+                // 居民尊重玩家領地 v1（ROADMAP 969，接線修正見 PR #1255 review）：挑中的座標
+                // 若落在別人領地內，一律當沒找到——她不偷別人辛苦種的作物，也不擅自闖進去翻土
+                // 播種（見下方 `spot` 同款過濾）。過濾**推進搜尋迴圈裡**（見
+                // `resident_may_touch_in` 的 `blocked` 參數），被擋的格子只是跳過繼續找下一格
+                // ——不能事後對回傳值 `.filter()`，那樣「最近一格恰好被擋」會讓整次搜尋直接
+                // 判定查無，即使旁邊還有一堆合法候選（例如玩家自家領地內種的作物擋住整條收成
+                // 路徑）。搜尋前先取一次快照（見該函式說明），避免每格各拿一次鎖。
+                // 快照先拿再鎖 deltas（不巢狀鎖序——`resident_claim_snapshot` 內部另取
+                // `hub().sign` 讀鎖，若包在 `deltas.read()` 臨界區內就是同執行緒巢狀上鎖，
+                // 見 `claim_blocking_owner` 上方註解／review PR #1255 第二輪附帶意見）。
+                let snap = resident_claim_snapshot(rx, rz, vinvent::CROP_NEAR_RADIUS);
                 let found = {
                     let world = hub().deltas.read().unwrap();
-                    vinvent::ripe_crop_nearby(&world, rx, ry, rz, crop.mature_block())
+                    vinvent::ripe_crop_nearby(&world, rx, ry, rz, crop.mature_block(), |x, z| {
+                        !resident_may_touch_in(x, z, &snap)
+                    })
                 }; // deltas 讀鎖釋放
                 if found.is_none() {
+                    let far_snap = resident_claim_snapshot(rx, rz, vinvent::INVENT_GATHER_RADIUS);
                     let far = {
                         let world = hub().deltas.read().unwrap();
                         vinvent::find_ripe_crop_far(
                             &world, rx, ry, rz, vinvent::INVENT_GATHER_RADIUS, crop.mature_block(),
+                            |x, z| !resident_may_touch_in(x, z, &far_snap),
                         )
                     }; // deltas 讀鎖釋放
                     if let Some((tx, ty, tz)) = far {
@@ -24990,9 +25049,13 @@ fn advance_invent_run(
                             inv.get(rid).and_then(|b| b.get(&seed_id)).copied().unwrap_or(0) > 0
                         }; // res_inv 讀鎖釋放
                         if has_seed {
+                            // 快照先拿再鎖 deltas，理由同上（不巢狀鎖序）。
+                            let till_snap = resident_claim_snapshot(rx, rz, vinvent::TILL_NEAR_RADIUS);
                             let spot = {
                                 let world = hub().deltas.read().unwrap();
-                                vinvent::tillable_ground_nearby(&world, rx, ry, rz, till_block)
+                                vinvent::tillable_ground_nearby(&world, rx, ry, rz, till_block, |x, z| {
+                                    !resident_may_touch_in(x, z, &till_snap)
+                                })
                             }; // deltas 讀鎖釋放
                             if let Some((tx, ty, tz)) = spot {
                                 let consumed = {
@@ -26613,6 +26676,104 @@ mod tests {
         );
         // 本人任何情況都放行。
         assert_eq!(claim_blocking_owner(x, z, Some("axing@example.com"), false), None);
+    }
+
+    // ── 居民尊重玩家領地（ROADMAP 969，接續 963~967）─────────────────────────────
+    // `resident_may_touch_in` 是發明引擎收成／播種挑點的唯一過濾入口；直接測這顆函式即涵蓋
+    // `DoHarvest` 三處呼叫端（`found`/`far`/`spot`）的「該不該碰」決策，比照 963 review
+    // 「測共用判定本身、不必為每個呼叫端各搭一套整合測試」的既有精神。
+    #[test]
+    fn resident_may_touch_denies_inside_claim_and_allows_outside() {
+        let x = -765_432;
+        let z = -345_678;
+        {
+            let mut store = hub().sign.write().unwrap();
+            store.set(
+                &vsign::pos_key(x, 64, z),
+                "諾娃的家".to_string(),
+                Some("諾娃".to_string()),
+                Some("nova@example.com".to_string()),
+            );
+        } // sign 寫鎖釋放
+
+        // 領地內：即使被信任名單放行也一樣（resident_may_touch_in 固定 allow_trust=false）。
+        let snap = resident_claim_snapshot(x, z, 0);
+        assert!(!resident_may_touch_in(x, z, &snap), "居民不准碰別人領地內的座標");
+        // 遠離這塊領地：不受影響，正常放行。
+        let far_snap = resident_claim_snapshot(x + 10_000, z + 10_000, 0);
+        assert!(
+            resident_may_touch_in(x + 10_000, z + 10_000, &far_snap),
+            "領地半徑外的座標不該被誤擋"
+        );
+    }
+
+    /// review 修正（PR #1255 第二輪）：舊版把 `resident_may_touch` 掛在搜尋**回傳值**的
+    /// `.filter()` 上，撞到領地時整次搜尋直接放棄，不會繞開繼續找。這條測試照 review 的原始
+    /// 場景重現——玩家在自家領地內種了一畦作物（離居民更近），居民自己的田在領地外、更遠——
+    /// 斷言 `find_ripe_crop_far` 配上「推進迴圈」的 `blocked` 閉包，繞過領地內那格、找到領地
+    /// 外合法的那畦，而不是誠實失敗。
+    #[test]
+    fn resident_harvest_search_routes_around_player_claim_to_farther_legal_crop() {
+        let ox = 9_123; // 小量級，避免與 biome_at_voxel 的出生錨點平方運算撞 i32 溢位
+        let oz = -9_456;
+        {
+            let mut store = hub().sign.write().unwrap();
+            store.set(
+                &vsign::pos_key(ox + 3, 64, oz),
+                "阿星的家".to_string(),
+                Some("阿星".to_string()),
+                Some("axing-969@example.com".to_string()),
+            );
+        } // sign 寫鎖釋放
+
+        let mut world: WorldDelta = WorldDelta::new();
+        let inside_claim = (ox + 3, 5, oz); // 玩家領地內，離居民更近
+        let outside_claim = (ox + 30, 5, oz); // 領地外，較遠但合法
+        voxel::set_block(&mut world, inside_claim.0, inside_claim.1, inside_claim.2, Block::WheatMature);
+        voxel::set_block(&mut world, outside_claim.0, outside_claim.1, outside_claim.2, Block::WheatMature);
+
+        let snap = resident_claim_snapshot(ox, oz, vinvent::INVENT_GATHER_RADIUS);
+        let found = vinvent::find_ripe_crop_far(
+            &world, ox, 5, oz, vinvent::INVENT_GATHER_RADIUS, Block::WheatMature,
+            |x, z| !resident_may_touch_in(x, z, &snap),
+        );
+        assert_eq!(
+            found,
+            Some(outside_claim),
+            "領地內那畦更近但不准碰，該繞開繼續找到領地外合法的那畦，不是誠實失敗"
+        );
+    }
+
+    /// review 修正（PR #1255 第二輪）：`all_within_xz` 是歐氏圓形判定，但發明搜尋範圍是
+    /// **方形**（`ripe_crop_nearby` 的雙層迴圈／`spiral_find` 的 chebyshev 方環），方形角落
+    /// 到原點的歐氏距離可達 `search_radius * √2`，比舊版 `spread = search_radius +
+    /// CLAIM_RADIUS` 涵蓋的圓還遠。這條測試在舊公式下應該是紅的——角落候選格旁邊明明立著
+    /// 領地牌，卻因牌子落在快照圈外而被誤放行；新公式（`search_radius * √2 +
+    /// CLAIM_RADIUS`）應該收得到這塊牌、正確擋下。
+    #[test]
+    fn resident_claim_snapshot_covers_square_corner_beyond_old_circular_spread() {
+        let ox = 5_432;
+        let oz = -6_789;
+        let r: i32 = 12; // 對齊 CROP_NEAR_RADIUS/TILL_NEAR_RADIUS 量級
+        let corner = (ox + r, oz + r); // 方形搜尋範圍的角落，chebyshev 距離恰為 r
+        // 領地牌立在「角落再往外一點」：離角落 <CLAIM_RADIUS(6)，但離原點的歐氏距離
+        // ≈21.2——落在舊 spread(=18) 之外、新 spread(≈22.97) 之內。
+        let sign_pos = (ox + 15, oz + 15);
+        {
+            let mut store = hub().sign.write().unwrap();
+            store.set(
+                &vsign::pos_key(sign_pos.0, 64, sign_pos.1),
+                "阿宏的家".to_string(),
+                Some("阿宏".to_string()),
+                Some("ahong-969-corner@example.com".to_string()),
+            );
+        } // sign 寫鎖釋放
+
+        let snap = resident_claim_snapshot(ox, oz, r);
+        assert!(
+            !resident_may_touch_in(corner.0, corner.1, &snap),
+            "方形搜尋角落的候選格應被領地牌擋下（舊版圓形 spread 公式在此漏判，見 review PR #1255 第二輪）"
+        );
     }
 
     #[test]
