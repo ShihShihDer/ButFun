@@ -5647,6 +5647,47 @@ if (lighthouseEl) {
   if (closeBtn) closeBtn.addEventListener("click", closeLighthouse);
 }
 
+// ── 夜間指路光柱 v1（自主提案切片，接續 PR #1248 遺留缺口「落成後零遊戲機制效果」）──
+// 落成前的乙太燈塔純裝飾；落成後，入夜起從塔頂升起一道柔光光柱——遠遠就看得見，
+// 幫玩家夜裡辨認回村方向，「大家一起蓋起來的塔」第一次真的照亮了世界。純視覺、零新協議：
+// 座標/落成狀態由既有 /voxel/lighthouse 讀回一次即可（落成是一生一次事件，不必輪詢），
+// 入夜程度沿用既有 nightFactor(worldTime)。效能鐵律：單一 mesh、零逐幀配置、白天/未落成
+// 整組隱藏即零成本早退。
+let lighthouseBeacon = null; // {cx,cz,topY} 或 null（尚未落成／尚未讀到資料）
+const beaconGeom = new THREE.CylinderGeometry(0.15, 0.7, 46, 10, 1, true);
+beaconGeom.translate(0, 23, 0); // 幾何原點移到柱底，position 直接代表塔頂錨點
+const beaconMat = new THREE.MeshBasicMaterial({
+  color: 0xffdca0, transparent: true, opacity: 0, depthWrite: false, fog: false,
+  side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
+});
+const beaconMesh = new THREE.Mesh(beaconGeom, beaconMat);
+beaconMesh.visible = false;
+beaconMesh.renderOrder = 2;
+scene.add(beaconMesh);
+
+/** 向後端讀一次燈塔座標／落成狀態（一次性；落成事件時重讀一次即可，非輪詢）。 */
+async function refreshLighthouseBeacon() {
+  try {
+    const resp = await fetch("/voxel/lighthouse");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    lighthouseBeacon = (data.complete && typeof data.cx === "number" && typeof data.top_y === "number")
+      ? { cx: data.cx, cz: data.cz, topY: data.top_y }
+      : null;
+  } catch (err) { /* 讀不到就維持現狀，下次落成事件會再重試 */ }
+}
+refreshLighthouseBeacon();
+
+/** 每幀更新光柱：只有燈塔已落成才可能顯示，亮度隨入夜程度淡入淡出（比照繁星/月亮同款）。 */
+function updateLighthouseBeam() {
+  if (!lighthouseBeacon) { beaconMesh.visible = false; return; }
+  const nf = nightFactor(worldTime);
+  if (nf <= 0.02) { beaconMesh.visible = false; return; }
+  beaconMesh.visible = true;
+  beaconMesh.position.set(lighthouseBeacon.cx + 0.5, lighthouseBeacon.topY, lighthouseBeacon.cz + 0.5);
+  beaconMat.opacity = nf * 0.5;
+}
+
 // ── 玩家里程碑（ROADMAP 724）──────────────────────────────────────────────────
 // 居民有技能簿（719）、交情網（708）可回頭翻閱自己的成長，玩家的療癒循環
 // （採集→合成→蓋造→種田→贈禮→交易→熟識→安眠）至今卻沒有任何一處能回頭看看
@@ -7578,6 +7619,7 @@ function connect() {
       showMsg(m.text || "🗼 乙太燈塔正式落成！");
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 6000);
       if (lighthouseVisible) refreshLighthouse();
+      refreshLighthouseBeacon(); // 夜間指路光柱 v1：落成瞬間重讀一次座標，當晚起開始亮
     } else if (m.t === "firework") {
       // 乙太煙火 v1（785）：全場任一玩家施放的煙火——在該座標上方綻放一朵火花（人人可見）。
       spawnFirework(m.x, m.y, m.z, m.palette | 0);
@@ -8362,6 +8404,7 @@ function update(dt) {
   updateMeteor(dt); // 流星許願 v1（904）：上升緣播一道劃過夜空的光痕
   updateMigration(dt); // 候鳥遷徙 v1（944）：上升緣放一群候鳥飛越天際（入春歸來／入秋離去）
   updateNightSky(dt);
+  updateLighthouseBeam(); // 夜間指路光柱 v1：燈塔落成後，入夜淡入一道指路光柱
   updateAurora(dt); // 極光天氣視覺 v1（930）：雪原夜空偶爾浮現一片流動的青綠／紫極光簾
   updateClouds(dt); // 天空雲彩 v1（933）：白天天空掛幾團柔和飄動的雲，隨時段/天氣染色
   updateFireworks(dt); // 乙太煙火 v1（785）：推進進行中的煙火綻放
