@@ -103,6 +103,30 @@ pub fn can_start_performing(has_item: bool) -> bool {
     has_item
 }
 
+// ── 彩色披風物品 ID（純物品，不可放置於世界，染坊·彩色披風 v1，自主提案切片）─────────
+// 世界至今對「其他玩家」的視覺呈現是一套寫死的固定藍色系（`OTHER_PALETTE`）——每個人穿
+// 得一模一樣，除了頭頂稱號牌與手上工具外毫無個人色彩，玩家之間認不出彼此是誰。用野花
+// （紅94/黃95/藍96，早已是撿拾得到的世界物品，只是至今唯一用途是送禮）簡單搓成一件同色
+// 披風，第一次讓玩家自己選一種顏色披在背後、讓自己在人群裡有辨識度。純物品、不可放置。
+// 116（街頭手風琴）是目前最大已用 id，117 起是首個空號。
+pub const CAPE_RED_ID: u8 = 117;
+pub const CAPE_YELLOW_ID: u8 = 118;
+pub const CAPE_BLUE_ID: u8 = 119;
+
+/// 該物品 id 是否為一件披風（純函式、可測）。
+pub fn is_cape(item_id: u8) -> bool {
+    matches!(item_id, CAPE_RED_ID | CAPE_YELLOW_ID | CAPE_BLUE_ID)
+}
+
+/// 是否允許把某個「熱鍵選中的物品」當作要穿上的披風（純判定，voxel_ws 的 SetCape handler 用）。
+/// 兩條件皆真才准：①目前熱鍵選中的確是一件披風（否則玩家沒選、伺服器不知道要穿哪件）；
+/// ②真實背包持有至少 1 件該披風——伺服器必須自己查背包算出 `has_item`，不能信任客戶端自報
+/// 「我有披風」（比照 `can_start_riding`/`can_start_performing` 同款持有驗證手法）。
+/// 脫下披風（wearing=false）不經過這條判定，呼叫端直接放行。純函式、確定性、可測。
+pub fn can_wear_cape(held: Option<u8>, has_item: bool) -> bool {
+    held.is_some_and(is_cape) && has_item
+}
+
 /// 一把武器每次揮擊對暗影造成的「傷害點」（暗影耐久＝[`crate::voxel_shadow::HITS_TO_DISSIPATE`]=3）。
 /// 徒手不是武器→回 0（呼叫端據此退回既有徒手 1 點）。木劍 2、石劍 3（一擊即散）、鐵劍 3。
 /// 純函式、確定性、無副作用、可測。i18n 無涉（純數值）。
@@ -465,6 +489,32 @@ pub const RECIPES: &[Recipe] = &[
         name_zh: "掛旗",
         inputs: &[(5, 1), (6, 2)], // 1 木頭 + 2 葉片 → 1 掛旗
         output_block: crate::voxel_furniture::BANNER_ID, // 105
+        output_count: 1,
+    },
+    // ── 染坊·彩色披風 v1（自主提案切片）：世界第一件玩家自訂外觀的裝扮 ─────────────────
+    // 三色野花（紅94/黃95/藍96）早已是撿拾得到的世界物品，至今唯一用途是送禮（`is_flower_gift`）。
+    // 3 朵同色花簡單搓成一件同色披風——單一材料、只吃 3 格，比照小地毯 {6:3} 的規模，
+    // 名正言順走背包 2×2、不必驚動工作台。多重集 {94:3}/{95:3}/{96:3} 彼此互異，也與既有
+    // 2×2 配方不相撞（沒有任何既有配方是「只吃 3 顆同一種花」）。
+    Recipe {
+        id: "cape_red",
+        name_zh: "紅披風",
+        inputs: &[(94, 3)], // 3 紅花 → 1 紅披風
+        output_block: CAPE_RED_ID,
+        output_count: 1,
+    },
+    Recipe {
+        id: "cape_yellow",
+        name_zh: "黃披風",
+        inputs: &[(95, 3)], // 3 黃花 → 1 黃披風
+        output_block: CAPE_YELLOW_ID,
+        output_count: 1,
+    },
+    Recipe {
+        id: "cape_blue",
+        name_zh: "藍披風",
+        inputs: &[(96, 3)], // 3 藍花 → 1 藍披風
+        output_block: CAPE_BLUE_ID,
         output_count: 1,
     },
 ];
@@ -1111,7 +1161,8 @@ mod tests {
                 || r.output_block == SWORD_WOOD_ID   // 木劍（純物品 id=99，驅影之劍 v1，ROADMAP 887 自主提案切片）
                 || r.output_block == SWORD_STONE_ID  // 石劍（純物品 id=100，驅影之劍 v1）
                 || (r.output_block >= crate::voxel_furniture::CARPET_ID
-                    && r.output_block <= crate::voxel_furniture::BANNER_ID); // 四樣裝飾傢俱（可放置方塊 id=102~105，ROADMAP 931 自主提案切片）
+                    && r.output_block <= crate::voxel_furniture::BANNER_ID) // 四樣裝飾傢俱（可放置方塊 id=102~105，ROADMAP 931 自主提案切片）
+                || is_cape(r.output_block); // 三色披風（純物品 id=117~119，染坊·彩色披風 v1，自主提案切片）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
@@ -1327,6 +1378,9 @@ mod tests {
         store.give("旅人", 31, 10); // Torch（建築藍圖·涼亭配方用）
         store.give("旅人", 55, 10); // Snow（terracotta_white 白陶磚配方用，染色建材 v1）
         store.give("旅人", 89, 10); // TerracottaRed（flowerpot 花盆配方用，裝飾傢俱 v1 ROADMAP 931）
+        store.give("旅人", 94, 10); // WildflowerRed（cape_red 披風配方用，染坊·彩色披風 v1）
+        store.give("旅人", 95, 10); // WildflowerYellow（cape_yellow 披風配方用）
+        store.give("旅人", 96, 10); // WildflowerBlue（cape_blue 披風配方用）
         // 火把配方：1 木頭(5) + 1 煤礦(20) → 4 火把（Wood/CoalOre 已加，數量足夠）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);
@@ -2059,5 +2113,78 @@ mod tests {
         // 伺服器權威判定：持有才准開演，不持有拒絕（不信客戶端自報）。
         assert!(can_start_performing(true), "真持有街頭手風琴應允許開演");
         assert!(!can_start_performing(false), "沒有街頭手風琴不該允許開演");
+    }
+
+    // ── 染坊·彩色披風 v1（自主提案切片）───────────────────────────────────────────
+
+    #[test]
+    fn cape_ids_are_first_free_slots_after_street_accordion() {
+        // 116（街頭手風琴）是目前最大已用 id，117~119 應為首三個空號。
+        assert_eq!(CAPE_RED_ID, 117);
+        assert_eq!(CAPE_YELLOW_ID, 118);
+        assert_eq!(CAPE_BLUE_ID, 119);
+    }
+
+    #[test]
+    fn is_cape_recognizes_only_the_three_cape_ids() {
+        assert!(is_cape(CAPE_RED_ID));
+        assert!(is_cape(CAPE_YELLOW_ID));
+        assert!(is_cape(CAPE_BLUE_ID));
+        assert!(!is_cape(STREET_ACCORDION_ID), "手風琴不是披風");
+        assert!(!is_cape(0));
+        assert!(!is_cape(94), "紅花本身不是披風（是染料原料）");
+    }
+
+    #[test]
+    fn cape_recipes_exist_only_in_bag_table() {
+        for (id, item) in [("cape_red", CAPE_RED_ID), ("cape_yellow", CAPE_YELLOW_ID), ("cape_blue", CAPE_BLUE_ID)] {
+            assert!(find_workbench_recipe(id).is_none(), "披風配方「{id}」只需 3 格，不該進工作台表");
+            let r = find_recipe(id).unwrap();
+            assert_eq!(r.output_block, item);
+            assert_eq!(r.output_count, 1);
+        }
+        assert_eq!(find_recipe("cape_red").unwrap().inputs, &[(94, 3)], "紅披風需 3 紅花");
+        assert_eq!(find_recipe("cape_yellow").unwrap().inputs, &[(95, 3)], "黃披風需 3 黃花");
+        assert_eq!(find_recipe("cape_blue").unwrap().inputs, &[(96, 3)], "藍披風需 3 藍花");
+    }
+
+    #[test]
+    fn cape_recipes_findable_via_find_any_recipe() {
+        // WS Craft handler 統一走 find_any_recipe，確保新配方也能被這條路徑找到。
+        assert_eq!(find_any_recipe("cape_red").unwrap().output_block, CAPE_RED_ID);
+        assert_eq!(find_any_recipe("cape_yellow").unwrap().output_block, CAPE_YELLOW_ID);
+        assert_eq!(find_any_recipe("cape_blue").unwrap().output_block, CAPE_BLUE_ID);
+    }
+
+    #[test]
+    fn cape_recipes_have_unique_input_multisets() {
+        // {94:3}/{95:3}/{96:3} 彼此互異，也不應與任何其他 2×2 配方的多重集相撞。
+        for id in ["cape_red", "cape_yellow", "cape_blue"] {
+            let mine = find_recipe(id).unwrap().inputs;
+            for other in RECIPES.iter().filter(|o| o.id != id) {
+                assert_ne!(mine, other.inputs, "披風配方「{id}」與「{}」多重集相撞", other.id);
+            }
+        }
+    }
+
+    #[test]
+    fn cape_craft_requires_full_material_set() {
+        let r = find_recipe("cape_red").unwrap();
+        let mut short = InvStore::default();
+        short.give("旅人", 94, 2);
+        assert!(!can_craft(r, &short, "旅人"), "只有 2 朵紅花不該能合成披風");
+
+        let mut ok = InvStore::default();
+        ok.give("旅人", 94, 3);
+        assert!(can_craft(r, &ok, "旅人"), "湊齊 3 朵紅花應可合成披風");
+    }
+
+    #[test]
+    fn can_wear_cape_requires_selected_cape_and_real_ownership() {
+        // 伺服器權威判定：①熱鍵選中的確是披風 ②真實背包持有——兩者皆真才准穿上。
+        assert!(can_wear_cape(Some(CAPE_RED_ID), true), "選中紅披風且真持有應允許穿上");
+        assert!(!can_wear_cape(Some(CAPE_RED_ID), false), "選中紅披風但沒真持有不該允許穿上");
+        assert!(!can_wear_cape(Some(STREET_ACCORDION_ID), true), "選中的不是披風不該允許穿上");
+        assert!(!can_wear_cape(None, true), "沒選中任何物品不該允許穿上");
     }
 }

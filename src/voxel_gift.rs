@@ -120,6 +120,10 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         crate::voxel_craft::STEAM_UNICYCLE_ID => "蒸汽獨輪車",
         // 街頭手風琴 v1（ROADMAP 977，自主提案切片）：純物品，可餽贈居民。
         crate::voxel_craft::STREET_ACCORDION_ID => "街頭手風琴",
+        // 染坊·彩色披風 v1（自主提案切片）：純物品，可餽贈居民（居民會喜歡收到一件披風）。
+        crate::voxel_craft::CAPE_RED_ID => "紅披風",
+        crate::voxel_craft::CAPE_YELLOW_ID => "黃披風",
+        crate::voxel_craft::CAPE_BLUE_ID => "藍披風",
         _ => "物品",
     }
 }
@@ -605,6 +609,14 @@ mod tests {
         assert_eq!(item_name_zh(114), "遺跡核心");
         assert_eq!(item_name_zh(crate::voxel_craft::STEAM_UNICYCLE_ID), "蒸汽獨輪車");
         assert_eq!(item_name_zh(crate::voxel_craft::STREET_ACCORDION_ID), "街頭手風琴");
+    }
+
+    #[test]
+    fn item_name_capes_registered() {
+        // 染坊·彩色披風 v1：新物品一律當場補齊名表，別重蹈 114 漏補的覆轍。
+        assert_eq!(item_name_zh(crate::voxel_craft::CAPE_RED_ID), "紅披風");
+        assert_eq!(item_name_zh(crate::voxel_craft::CAPE_YELLOW_ID), "黃披風");
+        assert_eq!(item_name_zh(crate::voxel_craft::CAPE_BLUE_ID), "藍披風");
     }
 
     #[test]

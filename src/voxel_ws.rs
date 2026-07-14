@@ -280,6 +280,15 @@ struct VoxelPlayer {
     /// 誰正在演奏（前端據此飄浮音符特效）。
     #[serde(default)]
     performing: bool,
+    /// 染坊·彩色披風 v1（自主提案切片）：此刻穿著的披風物品 id（None=沒穿）。**additive
+    /// 欄位**——舊前端解析 JSON 時本就會忽略陌生欄位，零協議破壞；預設 `None`。伺服器權威：
+    /// 只有 `SetCape{wearing:true}` 通過「熱鍵選中的確是披風＋真持有背包」雙重驗證（見
+    /// [`ClientMsg::SetCape`]／`voxel_craft::can_wear_cape`）才會翻成 `Some(該披風 id)`；
+    /// 脫下（`wearing:false`）永遠放行。廣播給所有人，讓其他玩家也看得到你穿的披風顏色——
+    /// 世界至今對「其他玩家」只有一套寫死的固定藍色系（`OTHER_PALETTE`），這是玩家第一次
+    /// 能自訂自己的外觀。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cape: Option<u8>,
 }
 
 // ── 乙太方界 AI 居民（切片③）────────────────────────────────────────────────
@@ -3665,6 +3674,14 @@ enum ClientMsg {
     /// 讓其他人也看得到誰正在演奏；開演那一刻同時掃描附近閒著的居民，觸發駐足聆聽反應。
     #[serde(rename = "set_performing")]
     SetPerforming { performing: bool },
+    /// 染坊·彩色披風 v1（自主提案切片）：穿上／脫下披風。`wearing=true` 時伺服器**必查
+    /// 兩件事**——①目前熱鍵選中（`VoxelPlayer::held`）的確是一件披風 id ②真實背包持有
+    /// 該披風 ≥ 1（比照 `SetRiding`/`SetPerforming` 的持有驗證手法，見
+    /// `voxel_craft::can_wear_cape`），不信客戶端自報；`wearing=false`（脫下）永遠放行，
+    /// 不需驗證。成功後把 `VoxelPlayer::cape` 設為該披風 id（脫下則設 `None`）並隨
+    /// `players` 廣播，讓其他人也看得到你穿的披風顏色。
+    #[serde(rename = "set_cape")]
+    SetCape { wearing: bool },
     /// 居民交易 v1：向指定居民請求以物易物（ROADMAP 670）。
     /// 伺服器回 `trade_offer`，玩家再傳 TradeAccept 接受；提案 30 秒後自動過期。
     #[serde(rename = "trade_request")]
@@ -4541,6 +4558,7 @@ async fn handle_socket(
                 held: None,
                 riding: false,
                 performing: false,
+                cape: None,
             },
         );
         old_id
@@ -8238,6 +8256,42 @@ async fn handle_socket(
                         }
                     }
                 }
+            }
+            // ── 染坊·彩色披風 v1（自主提案切片）：穿上／脫下披風 ─────────────────────
+            Ok(ClientMsg::SetCape { wearing }) => {
+                // 濫用防護：wearing=true 必查①目前熱鍵選中的確是一件披風 ②真實背包持有
+                // 該披風 ≥1，比照 SetRiding/SetPerforming 的持有驗證手法（不信客戶端自報）；
+                // wearing=false（脫下）永遠放行，脫下沒有利益可圖，不需要防禦。零自由文字、
+                // 零 LLM、零對外端點。
+                let held = hub().players.read().unwrap().get(&my_id).and_then(|p| p.held);
+                let new_cape = if wearing {
+                    let has_item = held
+                        .map(|id| hub().inventory.read().unwrap().count(&name, id) >= 1)
+                        .unwrap_or(false);
+                    if !vcraft::can_wear_cape(held, has_item) {
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({
+                                "t": "cape_fail",
+                                "reason": "先在熱鍵格選中一件自己有的披風吧"
+                            }).to_string(),
+                        ));
+                        continue;
+                    }
+                    held
+                } else {
+                    None
+                };
+                {
+                    let mut players = hub().players.write().unwrap();
+                    if let Some(p) = players.get_mut(&my_id) {
+                        p.cape = new_cape;
+                    }
+                } // players 寫鎖釋放
+                // 廣播讓所有在場玩家立即看到（含自己），前端據此顯隱背後披風 mesh。
+                broadcast_players();
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "cape_ok", "cape": new_cape }).to_string(),
+                ));
             }
             // ── 集會鐘 v1（自主提案切片）：敲響一座鐘，把附近閒著的居民召到身邊 ─────────
             Ok(ClientMsg::RingBell { x, y, z }) => {
@@ -28129,6 +28183,34 @@ mod tests {
         assert!(json.contains("\"riding\":true"));
     }
 
+    // ── 染坊·彩色披風 v1（自主提案切片）───────────────────────────────────────────
+
+    #[test]
+    fn set_cape_msg_parses_true_and_false() {
+        let on: ClientMsg = serde_json::from_str(r#"{"t":"set_cape","wearing":true}"#).unwrap();
+        assert!(matches!(on, ClientMsg::SetCape { wearing: true }));
+        let off: ClientMsg = serde_json::from_str(r#"{"t":"set_cape","wearing":false}"#).unwrap();
+        assert!(matches!(off, ClientMsg::SetCape { wearing: false }));
+    }
+
+    #[test]
+    fn voxel_player_cape_defaults_to_none_and_omitted_from_json() {
+        // cape 預設 None；additive 欄位用 skip_serializing_if 省頻寬，未穿披風時舊前端
+        // 解析陌生欄位安全忽略，新前端也不會多花頻寬傳一個恆為 null 的欄位。
+        let p = make_player(Uuid::new_v4(), None);
+        assert!(p.cape.is_none(), "新玩家預設應未穿披風");
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("\"cape\""), "未穿披風時不該序列化出 cape 欄位：{json}");
+    }
+
+    #[test]
+    fn voxel_player_snapshot_serializes_cape_id_when_worn() {
+        let mut p = make_player(Uuid::new_v4(), None);
+        p.cape = Some(crate::voxel_craft::CAPE_RED_ID);
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"cape\":117"), "穿上披風應序列化出該披風 id：{json}");
+    }
+
     #[test]
     fn break_and_place_parse() {
         let b: ClientMsg = serde_json::from_str(r#"{"t":"break","x":3,"y":9,"z":-4}"#).unwrap();
@@ -28529,6 +28611,7 @@ mod tests {
             held: None,
             riding: false,
             performing: false,
+            cape: None,
         }
     }
 

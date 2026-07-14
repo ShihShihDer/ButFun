@@ -193,6 +193,11 @@ const RIDING_SPEED_MULT = 1.8;
 // 可切換演奏／收起，附近閒著的居民會停下腳步聆聽。純物品、不可放置。116 是 115
 // （蒸汽獨輪車）之後的首個空號。
 const STREET_ACCORDION = 116;
+// 染坊·彩色披風 v1（自主提案切片）——世界至今對「其他玩家」只有一套寫死的固定藍色系
+// （見 OTHER_PALETTE），玩家彼此認不出誰是誰。背包 2×2 用 3 朵同色野花簡單搓成一件同色
+// 披風，第一次讓玩家自訂自己的外觀。純物品、不可放置。117~119 是 116（街頭手風琴）
+// 之後的首三個空號。
+const CAPE_RED = 117, CAPE_YELLOW = 118, CAPE_BLUE = 119;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -349,6 +354,11 @@ const COLOR = {
   // 街頭手風琴 v1（ROADMAP 977，自主提案切片）——深栗色琴身帶點黃銅感，與獨輪車的鏽銅色
   // 區隔開（同屬蒸汽龐克手持物但色相不同，一眼分得出誰是載具、誰是樂器）。
   [STREET_ACCORDION]: [0.55, 0.32, 0.22],
+  // 染坊·彩色披風 v1（自主提案切片）——直接沿用染料原料（野花，見下方 WILDFLOWER_* 色值）
+  // 本身的顏色，讓「這件披風是用哪色花染的」一眼看得出來，同色系呼應、不另外發明新色相。
+  [CAPE_RED]:    [0.86, 0.20, 0.28], // 同紅花
+  [CAPE_YELLOW]: [0.95, 0.80, 0.18], // 同黃花
+  [CAPE_BLUE]:   [0.30, 0.46, 0.88], // 同藍花
 };
 
 // ── 裝飾植物十字貼片渲染 v2 ─────────────────────────────────────────────
@@ -2966,8 +2976,33 @@ function tickPerformNotes(av, x, y, z, dt) {
   }
 }
 
+// ── 染坊·彩色披風 v1（自主提案切片）：外觀視覺 ─────────────────────────────────
+// 世界至今對「其他玩家」只有一套寫死的固定藍色系（OTHER_PALETTE），彼此看起來一模一樣。
+// 背後一片扁平色板（共用幾何＋各自一份材質，比照 RIDE_WHEEL_GEO 慣例），預設隱藏；
+// 伺服器權威廣播 cape 改變時才切顏色/顯隱，零每幀成本。
+const CAPE_GEO = new THREE.BoxGeometry(0.42, 0.5, 0.06);
+function attachCape(av) {
+  const mat = new THREE.MeshLambertMaterial({ color: 0x000000 });
+  const mesh = new THREE.Mesh(CAPE_GEO, mat);
+  mesh.position.set(0, 1.025 - AV_C, -0.17); // 貼在軀幹背後（軀幹深 0.28，披風薄薄貼在後方）
+  mesh.visible = false;
+  av.group.add(mesh);
+  av.capeMesh = mesh;
+  av.capeId = null;
+  return av;
+}
+/** 切換某具 avatar 背後披風 mesh 的顏色/顯隱（純視覺，cape 狀態一律以伺服器廣播為準）。 */
+function setCape(av, itemId) {
+  if (!av || !av.capeMesh || av.capeId === itemId) return;
+  av.capeId = itemId;
+  const c = itemId ? COLOR[itemId] : null;
+  if (!c) { av.capeMesh.visible = false; return; }
+  av.capeMesh.material.color.setRGB(c[0], c[1], c[2]);
+  av.capeMesh.visible = true;
+}
+
 // 玩家自己的身體（第三人稱可見）：金色系方塊小人，一眼認得是自己。
-const myAvatar = attachRideWheel(attachHeldItem(buildAvatar(0xffcf6b, 0xffe0b0, 0xe6b866)));
+const myAvatar = attachCape(attachRideWheel(attachHeldItem(buildAvatar(0xffcf6b, 0xffe0b0, 0xe6b866))));
 const bodyMesh = myAvatar.group; // 沿用 bodyMesh 名：.visible/.position/.rotation.y 都作用在 Group 上
 let myTitleSprite = null; // 僅 QA 用（_qaSetMyTitle）：正式流程玩家自己不掛稱號牌
 scene.add(bodyMesh);
@@ -4616,6 +4651,31 @@ function togglePerforming() {
   ws.send(JSON.stringify({ t: "set_performing", performing: !performing }));
 }
 
+// ── 染坊·彩色披風 v1（自主提案切片）：穿上／脫下披風 ────────────────────────────
+// 本地 myCape 只在 cape_ok 回應（伺服器直接對我這次請求的權威回覆）才翻轉，不樂觀
+// 更新——比照 riding/performing 同款濫用防護慣例，伺服器說了算，UI 只是反應端。
+let myCape = null; // 目前穿著的披風物品 id（null=沒穿）
+let lastCapeMs = 0; // 本地防連按（伺服器仍是唯一權威，這裡只擋手滑連按 C 洗版）
+
+/** 按 C 穿上／脫下披風：脫下永遠可送；穿上前用「目前熱鍵格選中的物品」當要穿的披風色，
+ *  客戶端先做基本提示（有沒有選中披風／真持不持有），伺服器仍會再驗一次。 */
+function toggleCape() {
+  if (!wsReady) return;
+  const now = Date.now();
+  if (now - lastCapeMs < 500) return; // 0.5 秒本地防連按
+  if (myCape === null) {
+    const sel = (typeof selectedBlock === "function") ? selectedBlock() : AIR;
+    if (sel !== CAPE_RED && sel !== CAPE_YELLOW && sel !== CAPE_BLUE) {
+      showMsg("先在熱鍵格選中一件披風（用 3 朵同色野花在背包合成）吧。");
+      return;
+    }
+    const cnt = (myInv instanceof Map ? myInv.get(sel) : 0) || 0;
+    if (cnt <= 0) { showMsg("背包裡沒有這件披風——用 3 朵同色野花合成一件吧。"); return; }
+  }
+  lastCapeMs = now;
+  ws.send(JSON.stringify({ t: "set_cape", wearing: myCape === null }));
+}
+
 /** 接受指定居民的交易提案（發 TradeAccept）。payWithCoin=true 時改直接付乙太幣代替湊材料（ROADMAP 874）。 */
 function sendTradeAccept(rid, payWithCoin) {
   if (!wsReady) return;
@@ -6162,6 +6222,8 @@ const BLOCK_NAME = {
   [STEAM_UNICYCLE]: "蒸汽獨輪車",
   // 街頭手風琴 v1（ROADMAP 977，自主提案切片）
   [STREET_ACCORDION]: "街頭手風琴",
+  // 染坊·彩色披風 v1（自主提案切片）
+  [CAPE_RED]: "紅披風", [CAPE_YELLOW]: "黃披風", [CAPE_BLUE]: "藍披風",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -6812,6 +6874,9 @@ addEventListener("keydown", (e) => {
   // 自動重複觸發把 set_riding 洗版（本檔案唯一需要這道防呆的單鍵切換）。
   if (e.code === "KeyR" && !e.repeat) { e.preventDefault(); toggleRiding(); }
   if (e.code === "KeyP" && !e.repeat) { e.preventDefault(); togglePerforming(); }
+  // 染坊·彩色披風 v1（自主提案切片）：C 穿上／脫下披風；e.repeat 防瀏覽器按鍵自動重複
+  // 觸發把 set_cape 洗版（比照 R/P 同款單鍵切換防呆）。
+  if (e.code === "KeyC" && !e.repeat) { e.preventDefault(); toggleCape(); }
   // Esc：關操作設定面板（也讓瀏覽器解除滑鼠鎖定，兩者不衝突）。
   if (e.code === "Escape" && settingsPanelVisible()) closeSettingsPanel();
   // Esc：也收起 ☰ 主選單抽屜（若正開著）。
@@ -7259,6 +7324,10 @@ function connect() {
       // 本地旗標一併歸零，避免重連後顯示與伺服器不同步。
       performing = false;
       setPerforming(myAvatar, false);
+      // 染坊·彩色披風 v1（自主提案切片）：同理，每次連線 cape 預設 None，本地旗標一併
+      // 歸零，避免重連後顯示與伺服器不同步。
+      myCape = null;
+      setCape(myAvatar, null);
       // 出生瞬間先脫困一次（若出生 chunk 已到、地表把人埋住，立刻頂出來）。
       unstuckIfNeeded();
       // 好感度 v1：連線後立即拉取與各居民的好感度，讓指示燈盡快亮起。
@@ -7290,7 +7359,7 @@ function connect() {
         let ent = others.get(p.id);
         if (!ent) {
           // 其他玩家也是方塊小人（藍色系）；mesh＝avatar 的 group，沿用既有 position/rotation/add 邏輯。
-          const av = attachRideWheel(attachHeldItem(buildAvatar(OTHER_PALETTE.body, OTHER_PALETTE.head, OTHER_PALETTE.limb)));
+          const av = attachCape(attachRideWheel(attachHeldItem(buildAvatar(OTHER_PALETTE.body, OTHER_PALETTE.head, OTHER_PALETTE.limb))));
           const mesh = av.group; scene.add(mesh);
           // 頭上對話泡泡（child of mesh，sprite 永遠面向鏡頭、不受 mesh 旋轉影響）。
           const bubble = makeTextSprite("", true);
@@ -7323,6 +7392,8 @@ function connect() {
         setRiding(ent.av, !!p.riding);
         // 街頭手風琴 v1（自主提案切片，ROADMAP 977）：伺服器廣播的 performing 換頭頂音符特效。
         setPerforming(ent.av, !!p.performing);
+        // 染坊·彩色披風 v1（自主提案切片）：伺服器廣播的 cape 換背後披風顏色/顯隱。
+        setCape(ent.av, p.cape || null);
         // 位置有明顯變化 → 記下時間戳，讓 render 迴圈判定「在走路」而擺手腳（快照間也持續動）。
         const moved = Math.hypot(p.x - ent.mesh.position.x, p.z - ent.mesh.position.z);
         if (moved > 0.002) ent.lastMoveT = performance.now();
@@ -7701,6 +7772,17 @@ function connect() {
     } else if (m.t === "performing_fail") {
       // 街頭手風琴 v1：開演不成（沒有手風琴——本地已先擋過一次，這裡是伺服器再驗一次的保底）。
       showErr(m.reason || "沒法開演");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "cape_ok") {
+      // 染坊·彩色披風 v1（自主提案切片）：伺服器直接對本次請求的權威回覆——
+      // 本地 myCape 只在這裡翻轉（不樂觀更新），驅動自己背後披風 mesh 顯隱/換色。
+      myCape = (typeof m.cape === "number") ? m.cape : null;
+      setCape(myAvatar, myCape);
+      showMsg(myCape !== null ? "🧣 披上了披風，走到哪都認得出是你～" : "🧣 脫下了披風。");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+    } else if (m.t === "cape_fail") {
+      // 染坊·彩色披風 v1：穿不成（本地已先擋過一次，這裡是伺服器再驗一次的保底）。
+      showErr(m.reason || "沒法穿上披風");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "pet_command_ok") {
       // 寵物指令「安置／召回」v1（ROADMAP 898）：切換成功——浮出暖句（💤 待命標記由 players 廣播即時掛上/取下）。
@@ -8517,6 +8599,10 @@ const RECIPES_JS = [
   { id: "flowerpot", name: "花盆",   inputs: [[TERRACOTTA_RED, 2], [LEAVES, 1]], output_block: FLOWERPOT, out_count: 1 },
   { id: "table",     name: "小圓桌", inputs: [[PLANK, 2], [STONE_BRICK, 1]],   output_block: TABLE,     out_count: 1 },
   { id: "banner",    name: "掛旗",   inputs: [[WOOD, 1], [LEAVES, 2]],         output_block: BANNER,    out_count: 1 },
+  // 染坊·彩色披風 v1（自主提案切片）——對齊後端 voxel_craft::RECIPES：3 朵同色花 → 1 件同色披風。
+  { id: "cape_red",    name: "紅披風", inputs: [[WILDFLOWER_RED, 3]],    output_block: CAPE_RED,    out_count: 1 },
+  { id: "cape_yellow", name: "黃披風", inputs: [[WILDFLOWER_YELLOW, 3]], output_block: CAPE_YELLOW, out_count: 1 },
+  { id: "cape_blue",   name: "藍披風", inputs: [[WILDFLOWER_BLUE, 3]],   output_block: CAPE_BLUE,   out_count: 1 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
