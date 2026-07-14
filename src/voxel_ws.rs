@@ -266,6 +266,12 @@ struct VoxelPlayer {
     /// 錯報頂多讓別人看到你手上的東西不準確，無任何利益可圖。空熱鍵格 = None，不序列化省頻寬。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     held: Option<u8>,
+    /// 蒸汽獨輪車 v1（自主提案切片，ROADMAP 976）：此刻是否正騎乘。**additive 欄位**——
+    /// 舊前端解析 JSON 時本就會忽略陌生欄位，零協議破壞；預設 `false`。伺服器權威：只有
+    /// `SetRiding{riding:true}` 通過真持有背包驗證才會翻成 `true`（見 [`ClientMsg::SetRiding`]），
+    /// 下車永遠放行。廣播給所有人，讓其他玩家也看得到誰正騎著車。
+    #[serde(default)]
+    riding: bool,
 }
 
 // ── 乙太方界 AI 居民（切片③）────────────────────────────────────────────────
@@ -3637,6 +3643,13 @@ enum ClientMsg {
     /// 位置（就地安頓、小範圍徘徊、不再跟隨）；召回則恢復跟隨。`id` 是 wildlife 系統 id。
     #[serde(rename = "pet_command")]
     PetCommand { id: String },
+    /// 蒸汽獨輪車 v1（自主提案切片，ROADMAP 976）：切換騎乘／下車。`riding=true` 時伺服器
+    /// **必查真實背包持有** `voxel_craft::STEAM_UNICYCLE_ID` ≥ 1（比照驅影之劍/BossHit 的
+    /// 持劍驗證手法）才放行，不信客戶端自報；`riding=false`（下車）永遠放行，不需驗證。
+    /// 成功後翻轉 `VoxelPlayer::riding` 並隨 `players` 廣播，讓其他人也看得到誰正騎著車；
+    /// 前端據此把水平移動速度乘上固定倍率（純視覺+移動手感，非玩家可調）。
+    #[serde(rename = "set_riding")]
+    SetRiding { riding: bool },
     /// 居民交易 v1：向指定居民請求以物易物（ROADMAP 670）。
     /// 伺服器回 `trade_offer`，玩家再傳 TradeAccept 接受；提案 30 秒後自動過期。
     #[serde(rename = "trade_request")]
@@ -4511,6 +4524,7 @@ async fn handle_socket(
                 title: conn_title.clone(),
                 account: account_email.clone(), // 後端解出，不廣播，僅去重用
                 held: None,
+                riding: false,
             },
         );
         old_id
@@ -8071,6 +8085,39 @@ async fn handle_socket(
                         "say": vwild::command_ack_line(settled, display),
                     })
                     .to_string(),
+                ));
+            }
+            // ── 蒸汽獨輪車 v1（自主提案切片，ROADMAP 976）：切換騎乘／下車 ──────────────
+            Ok(ClientMsg::SetRiding { riding }) => {
+                // 濫用防護：riding=true 必查真實背包持有蒸汽獨輪車(115) ≥1，比照驅影之劍/
+                // BossHit 的持劍驗證手法（不信客戶端自報）；riding=false（下車）永遠放行，
+                // 不查背包——下車沒有利益可圖，不需要防禦。零自由文字、零 LLM、零對外端點。
+                let allow = if riding {
+                    let has_item =
+                        hub().inventory.read().unwrap().count(&name, vcraft::STEAM_UNICYCLE_ID) >= 1;
+                    vcraft::can_start_riding(has_item)
+                } else {
+                    true
+                };
+                if !allow {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({
+                            "t": "riding_fail",
+                            "reason": "沒有蒸汽獨輪車——先在工作台合成一輛吧"
+                        }).to_string(),
+                    ));
+                    continue;
+                }
+                {
+                    let mut players = hub().players.write().unwrap();
+                    if let Some(p) = players.get_mut(&my_id) {
+                        p.riding = riding;
+                    }
+                } // players 寫鎖釋放
+                // 廣播讓所有在場玩家立即看到（含自己），前端據此顯隱腳下輪子 mesh。
+                broadcast_players();
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "riding_ok", "riding": riding }).to_string(),
                 ));
             }
             // ── 集會鐘 v1（自主提案切片）：敲響一座鐘，把附近閒著的居民召到身邊 ─────────
@@ -27926,6 +27973,34 @@ mod tests {
         assert!(matches!(m2, ClientMsg::Move { held: None, .. }));
     }
 
+    // ── 蒸汽獨輪車 v1（自主提案切片，ROADMAP 976）───────────────────────────────────
+
+    #[test]
+    fn set_riding_msg_parses_true_and_false() {
+        let on: ClientMsg = serde_json::from_str(r#"{"t":"set_riding","riding":true}"#).unwrap();
+        assert!(matches!(on, ClientMsg::SetRiding { riding: true }));
+        let off: ClientMsg = serde_json::from_str(r#"{"t":"set_riding","riding":false}"#).unwrap();
+        assert!(matches!(off, ClientMsg::SetRiding { riding: false }));
+    }
+
+    #[test]
+    fn voxel_player_riding_defaults_to_false() {
+        // make_player 這條既有測試 helper 明確傳 riding:false，這裡再從 JSON round-trip
+        // 確認序列化一定帶出 riding 欄位（additive，舊前端安全忽略陌生欄位）。
+        let p = make_player(Uuid::new_v4(), None);
+        assert!(!p.riding, "新玩家預設應未騎乘");
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"riding\":false"), "序列化應含 riding 欄位：{json}");
+    }
+
+    #[test]
+    fn voxel_player_snapshot_serializes_riding_true_without_panic() {
+        let mut p = make_player(Uuid::new_v4(), None);
+        p.riding = true;
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"riding\":true"));
+    }
+
     #[test]
     fn break_and_place_parse() {
         let b: ClientMsg = serde_json::from_str(r#"{"t":"break","x":3,"y":9,"z":-4}"#).unwrap();
@@ -28324,6 +28399,7 @@ mod tests {
             title: None,
             account: account.map(String::from),
             held: None,
+            riding: false,
         }
     }
 

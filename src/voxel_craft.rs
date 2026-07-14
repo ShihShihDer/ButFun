@@ -72,6 +72,21 @@ pub const SWORD_STONE_ID: u8 = 100;
 /// 乙太礦（雙倍溫柔獎勵）——精煉武器的頂點回報。純物品、不可放置。
 pub const SWORD_IRON_ID: u8 = 101;
 
+// ── 載具物品 ID（純物品，不可放置於世界，蒸汽獨輪車 v1，自主提案切片）───────────────
+/// 蒸汽獨輪車（ROADMAP 976）——物品 ID 115；世界至今玩家唯一的移動方式是走路，遠征首領
+/// （90~160 格外）、地底遺跡神殿（得深挖才到）都讓「遠行」更吃重，卻沒有一件能讓移動變快
+/// 的代步工具。工作台合成後可在移動時切換騎乘，水平移動速度提升（見前端
+/// `RIDING_SPEED_MULT`）。純物品、不可放置。114（遺跡核心）是目前最大已用 id，115 是首個空號。
+pub const STEAM_UNICYCLE_ID: u8 = 115;
+
+/// 是否允許把 `riding` 設為 `true`（純判定，voxel_ws 的 SetRiding handler 用）。
+/// 唯一條件：真實背包持有至少 1 輛蒸汽獨輪車——伺服器必須自己查背包算出 `has_item`，
+/// 不能信任客戶端自報「我有車」（比照 `voxel_worldboss` 的 BossHit 持劍驗證手法）。
+/// 下車（riding=false）不經過這條判定，呼叫端直接放行。純函式、確定性、可測。
+pub fn can_start_riding(has_item: bool) -> bool {
+    has_item
+}
+
 /// 一把武器每次揮擊對暗影造成的「傷害點」（暗影耐久＝[`crate::voxel_shadow::HITS_TO_DISSIPATE`]=3）。
 /// 徒手不是武器→回 0（呼叫端據此退回既有徒手 1 點）。木劍 2、石劍 3（一擊即散）、鐵劍 3。
 /// 純函式、確定性、無副作用、可測。i18n 無涉（純數值）。
@@ -655,6 +670,19 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
         output_block: SWORD_IRON_ID,
         output_count: 1,
     },
+    // ── 蒸汽獨輪車 v1（ROADMAP 976，自主提案切片）：世界第一件代步工具，需工作台大格 ──────
+    // 4 鐵錠(22) + 2 木頭(5) + 1 乙太礦(58) → 1 蒸汽獨輪車。鐵鑄輪框、木製車架、乙太礦驅動
+    // 蒸汽鍋爐——蒸汽龐克風味用既有材料拼出，不發明新素材。多重集 {22:4,5:2,58:1} 獨一無二：
+    // 鐵磚 {22:6}、鐵鎬/斧 {22:3,8:2}、鐵鏟 {22:2,8:3}、鐵劍 {5:2,22:3}、乙太燈 {58:1,10:4}、
+    // 乙太煙火 {58:1,20:2,4:2} 皆不相撞。7 格材料遠超背包 2×2，是一件「載具」而非小道具，
+    // 比照鎬/斧的合成規模，名正言順需工作台。
+    Recipe {
+        id: "steam_unicycle",
+        name_zh: "蒸汽獨輪車",
+        inputs: &[(22, 4), (5, 2), (58, 1)], // 4 鐵錠 + 2 木頭 + 1 乙太礦 → 1 蒸汽獨輪車
+        output_block: STEAM_UNICYCLE_ID,
+        output_count: 1,
+    },
 ];
 
 /// 熔爐冶煉配方（需放置熔爐方塊後右鍵開啟冶煉面板才能使用）。
@@ -1080,7 +1108,8 @@ mod tests {
                 || r.output_block == crate::voxel_blueprint::BLUEPRINT_TOWER // 瞭望台藍圖（純物品 id=86）
                 || r.output_block == crate::voxel_blueprint::BLUEPRINT_GARDEN // 花圃藍圖（純物品 id=87）
                 || r.output_block == crate::voxel_blueprint::BLUEPRINT_PAVILION // 涼亭藍圖（純物品 id=88）
-                || r.output_block == SWORD_IRON_ID; // 鐵劍（純物品 id=101，驅影之劍 v1，ROADMAP 887 自主提案切片）
+                || r.output_block == SWORD_IRON_ID // 鐵劍（純物品 id=101，驅影之劍 v1，ROADMAP 887 自主提案切片）
+                || r.output_block == STEAM_UNICYCLE_ID; // 蒸汽獨輪車（純物品 id=115，ROADMAP 976 自主提案切片）
             assert!(
                 ok,
                 "工作台配方「{}」產出 id={} 超出範圍",
@@ -1877,5 +1906,67 @@ mod tests {
         let mut ok = InvStore::default();
         ok.give("旅人", 5, 4);
         assert!(can_craft(r, &ok, "旅人"), "4 木頭應可鑄 1 乙太幣");
+    }
+
+    // ── 蒸汽獨輪車 v1（ROADMAP 976，自主提案切片）───────────────────────────────────
+
+    #[test]
+    fn steam_unicycle_id_is_first_free_slot_after_relic_glow() {
+        // 114（遺跡核心）是目前最大已用 id，115 應是首個空號。
+        assert_eq!(STEAM_UNICYCLE_ID, 115);
+    }
+
+    #[test]
+    fn steam_unicycle_recipe_exists_only_in_workbench_table() {
+        assert!(find_recipe("steam_unicycle").is_none(), "蒸汽獨輪車應只在工作台配方（7 格超出背包 2×2）");
+        let r = find_workbench_recipe("steam_unicycle").unwrap();
+        assert_eq!(r.output_block, STEAM_UNICYCLE_ID);
+        assert_eq!(r.output_count, 1);
+        assert_eq!(r.inputs, &[(22, 4), (5, 2), (58, 1)], "應為 4 鐵錠 + 2 木頭 + 1 乙太礦");
+    }
+
+    #[test]
+    fn steam_unicycle_recipe_findable_via_find_any_recipe() {
+        // WS Craft handler 統一走 find_any_recipe，確保新配方也能被這條路徑找到。
+        let r = find_any_recipe("steam_unicycle").unwrap();
+        assert_eq!(r.output_block, STEAM_UNICYCLE_ID);
+    }
+
+    #[test]
+    fn steam_unicycle_recipe_has_unique_input_multiset() {
+        // {22:4,5:2,58:1} 不應與任何其他工作台配方的多重集相撞。
+        let mut mine = find_workbench_recipe("steam_unicycle").unwrap().inputs.to_vec();
+        mine.sort();
+        for r in WORKBENCH_RECIPES {
+            if r.id == "steam_unicycle" {
+                continue;
+            }
+            let mut other = r.inputs.to_vec();
+            other.sort();
+            assert_ne!(mine, other, "蒸汽獨輪車與工作台配方「{}」多重集相撞", r.id);
+        }
+    }
+
+    #[test]
+    fn steam_unicycle_craft_requires_full_material_set() {
+        let r = find_workbench_recipe("steam_unicycle").unwrap();
+        let mut short = InvStore::default();
+        short.give("旅人", 22, 4);
+        short.give("旅人", 5, 2);
+        // 缺乙太礦(58) → 不能合成
+        assert!(!can_craft(r, &short, "旅人"), "缺乙太礦不該能合成蒸汽獨輪車");
+
+        let mut ok = InvStore::default();
+        ok.give("旅人", 22, 4);
+        ok.give("旅人", 5, 2);
+        ok.give("旅人", 58, 1);
+        assert!(can_craft(r, &ok, "旅人"), "湊齊 4 鐵錠+2 木頭+1 乙太礦應可合成");
+    }
+
+    #[test]
+    fn can_start_riding_requires_real_item_ownership() {
+        // 伺服器權威判定：持有才准騎，不持有拒絕（不信客戶端自報）。
+        assert!(can_start_riding(true), "真持有蒸汽獨輪車應允許騎乘");
+        assert!(!can_start_riding(false), "沒有蒸汽獨輪車不該允許騎乘");
     }
 }
