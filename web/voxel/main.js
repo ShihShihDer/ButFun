@@ -3065,7 +3065,10 @@ const BOSS_GLOW_MAT = new THREE.MeshBasicMaterial({
 const BOSS_CORE_GEO = new THREE.IcosahedronGeometry(1.3, 1);
 const BOSS_GLOW_GEO = new THREE.IcosahedronGeometry(1.9, 1);
 const BOSS_VISIBLE_DIST = 200; // 巨大體型，遠遠就該看得見（遠征目標，本就要老遠望見它）
-const BOSS_PICK_REACH = 10; // 準心挑選距離（前端提示；真正打不打得到由伺服器 reach 複驗）
+// 準心挑選距離（前端提示；真正打不打得到由伺服器 reach 複驗）。follow-up（PR #1260 review）：
+// 原本設 10，但伺服器 `hit_in_reach` 實際只認 REACH(6.0)+REACH_BONUS(1.6)=7.6——前端比伺服器
+// 寬鬆會讓玩家在 7.6~10 之間連點卻靜默無回饋（看似打不到又沒有任何提示），故對齊伺服器值。
+const BOSS_PICK_REACH = 7.6;
 let bossHitFlash = 0;
 
 function buildBoss() {

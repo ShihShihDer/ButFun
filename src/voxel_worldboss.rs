@@ -55,6 +55,11 @@ pub const REACH_BONUS: f32 = 1.6;
 /// 擊倒獎勵：一次性掉落的乙太礦數量（遠高於一般暗影的 1~2 枚，值回一趟遠征的溫柔獎勵）。
 pub const DEFEAT_REWARD_SHARDS: u32 = 12;
 
+/// 首領存續上限（秒）：生成後這麼久仍未被打倒就自行撤退消散，讓出下一次生成的機會。
+/// 一遊戲日 ≈ 600 秒真實時間，1800 秒 ≈ 3 個日夜——夠玩家組隊遠征，又不會在首領落在
+/// 難以抵達的地點時（如深水/懸崖）永久卡死「僅在無首領在世才擲骰」的下一次生成。
+pub const BOSS_LIFETIME_SECS: u64 = 1800;
+
 // ── 面向玩家字串（集中一處，i18n 友善）─────────────────────────────────────────
 
 pub const FEED_KIND: &str = "遠征首領";
@@ -80,6 +85,23 @@ pub fn defeat_feed() -> String {
     format!("{BOSS_NAME}在遠方倒下，化成一堆乙太礦——這趟遠征，值得。")
 }
 
+/// 首領逾期未被打倒、自行撤退時的橫幅（與擊倒 razor-sharp 區隔：沒有慶祝、沒有獎勵，
+/// 只是溫柔告知「這次沒趕上」，隔天仍有機會再遇到新的一位）。
+pub fn retreat_msg() -> String {
+    format!("🌫️ {BOSS_NAME}悄悄退回了更遠的地方，這次沒能趕上……或許改天還會再遇見。")
+}
+
+/// 首領撤退動態牆句。
+pub fn retreat_feed() -> String {
+    format!("{BOSS_NAME}在遠方徘徊了許久，始終無人趕到，終究悄悄退去了。")
+}
+
+/// 首領是否已逾存續上限（純函式、可測；`now`/`spawned_at` 皆為秒數時間戳，
+/// `saturating_sub` 防時鐘異常/重播亂序下溢 panic）。
+pub fn is_expired(spawned_at: u64, now: u64) -> bool {
+    now.saturating_sub(spawned_at) >= BOSS_LIFETIME_SECS
+}
+
 // ── 首領本體 ─────────────────────────────────────────────────────────────────
 
 /// 遠征首領的權威狀態（伺服器算，客戶端只渲染＋畫 HP 條）。全服至多同時存在一位。
@@ -91,6 +113,9 @@ pub struct WorldBoss {
     pub z: f32,
     /// 目前血量（0 表示已倒下，倒下當下即從世界移除，理論上不會被序列化出 0）。
     pub hp: u32,
+    /// 生成時的秒數時間戳，用於 [`is_expired`] 判定是否該撤退——防止生成在難以抵達的
+    /// 地點時永久卡死「僅在無首領在世才擲骰」的下一次生成（follow-up，PR #1260 review）。
+    pub spawned_at: u64,
 }
 
 // ── 純函式（確定性、可測）────────────────────────────────────────────────────
@@ -194,6 +219,17 @@ mod tests {
         assert!(!defeat_msg().is_empty());
         assert!(defeat_feed().contains(BOSS_NAME));
         assert!(!BOSS_NAME.is_empty());
+        assert!(retreat_msg().contains(BOSS_NAME));
+        assert!(retreat_feed().contains(BOSS_NAME));
+    }
+
+    #[test]
+    fn is_expired_only_after_lifetime_elapsed() {
+        assert!(!is_expired(1000, 1000), "剛生成不算逾期");
+        assert!(!is_expired(1000, 1000 + BOSS_LIFETIME_SECS - 1), "還差一秒未到上限");
+        assert!(is_expired(1000, 1000 + BOSS_LIFETIME_SECS), "剛好到上限即算逾期");
+        assert!(is_expired(1000, 1000 + BOSS_LIFETIME_SECS + 500), "遠遠超過上限");
+        assert!(!is_expired(1000, 500), "時鐘異常倒退（now < spawned_at）不 panic、視為未逾期");
     }
 
     #[test]
