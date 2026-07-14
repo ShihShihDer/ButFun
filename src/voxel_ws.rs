@@ -2211,6 +2211,8 @@ struct VoxelHub {
     /// 方塊改動 delta 層（疊在程序生成地形之上）。切片②先記憶體存，session 內正確套用+廣播。
     /// 之後切片可把它接 DB 持久化；AI 蓋家也會共用這層。
     deltas: RwLock<WorldDelta>,
+    /// column 打包快取獨立成鎖；任何呼叫都只短取即釋，絕不與世界或玩家狀態鎖巢狀。
+    packed_columns: RwLock<PackedColumnCache>,
     /// 野兔 v1（自主提案切片，ROADMAP 847）：世界第一種環境生物。純記憶體、啟動時於
     /// 固定家域點生成（見 `init_wildlife`），重啟即重新生成（比照 `drops`/`stalls` 世界暫態慣例，
     /// 零 migration、零持久化）。tick 節奏與 `residents` 相同（10Hz）但各自獨立鎖，不巢狀。
@@ -2828,6 +2830,57 @@ static HUB: OnceLock<VoxelHub> = OnceLock::new();
 /// 這把鎖只保護小型 HashMap；呼叫端先取出待重算 id 就立即釋放，絕不帶著它讀其他狀態鎖。
 const SNAPSHOT_MOOD_CACHE_TTL: Duration = Duration::from_secs(3);
 
+/// 已打包 column 的常駐上限；到頂時整批清空，避免玩家長途探索讓快取無界成長。
+const PACKED_COLUMN_CACHE_MAX: usize = 512;
+
+#[derive(Serialize)]
+struct PackedChunk {
+    cx: i32,
+    cy: i32,
+    cz: i32,
+    data: String,
+}
+
+type PackedColumn = Vec<PackedChunk>;
+
+#[derive(Default)]
+struct PackedColumnCache {
+    entries: HashMap<(i32, i32), Arc<PackedColumn>>,
+    /// 任一失效都推進世代，防止 miss 打包途中遇到變更後把舊結果回填進來。
+    generation: u64,
+}
+
+impl PackedColumnCache {
+    fn get(&self, column: (i32, i32)) -> Option<Arc<PackedColumn>> {
+        self.entries.get(&column).cloned()
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    fn store_if_current(
+        &mut self,
+        column: (i32, i32),
+        packed: Arc<PackedColumn>,
+        generation: u64,
+    ) -> bool {
+        if self.generation != generation {
+            return false;
+        }
+        if !self.entries.contains_key(&column) && self.entries.len() >= PACKED_COLUMN_CACHE_MAX {
+            self.entries.clear();
+        }
+        self.entries.insert(column, packed);
+        true
+    }
+
+    fn invalidate(&mut self, column: (i32, i32)) {
+        self.entries.remove(&column);
+        self.generation = self.generation.wrapping_add(1);
+    }
+}
+
 #[derive(Default)]
 struct SnapshotMoodCache {
     entries: HashMap<String, (voxel_mood::MoodTier, Duration)>,
@@ -3246,6 +3299,7 @@ fn hub() -> &'static VoxelHub {
         VoxelHub {
             players: RwLock::new(HashMap::new()),
             deltas: RwLock::new(deltas),
+            packed_columns: RwLock::new(PackedColumnCache::default()),
             campfires: RwLock::new(campfires),
             benches: RwLock::new(benches),
             // 野兔 v1：啟動時於固定家域點生成（純記憶體、重啟即重新生成，零持久化）。
@@ -4001,24 +4055,38 @@ fn spawn_pos() -> (f32, f32, f32) {
 /// 收集一批 chunk（指定 column 清單 × cy 範圍），套用 delta overlay、略過全空氣的，打包成
 /// `chunks` 訊息。套 delta → late-join 玩家也看得到別人改過的世界。
 fn pack_chunks_msg(columns: &[(i32, i32)]) -> String {
-    #[derive(Serialize)]
-    struct PackedChunk {
-        cx: i32,
-        cy: i32,
-        cz: i32,
-        data: String,
-    }
-    let mut out: Vec<PackedChunk> = Vec::new();
-    // 鎖只在這段短暫持有（讀 delta）；打包是純計算。
-    let deltas = hub().deltas.read().unwrap();
+    let mut packed_columns = Vec::with_capacity(columns.len());
     for &(cx, cz) in columns {
+        // 快取鎖只拿 Arc clone 與世代快照，離開 scope 後才准讀 deltas。
+        let (cached, generation) = {
+            let cache = hub().packed_columns.read().unwrap();
+            (cache.get((cx, cz)), cache.generation())
+        };
+        if let Some(packed) = cached {
+            packed_columns.push(packed);
+            continue;
+        }
+
+        let mut column = Vec::new();
+        // miss 才讀 delta；整個 column 打完即釋，絕不帶著 deltas 鎖碰快取鎖。
+        let deltas = hub().deltas.read().unwrap();
         for cy in CY_MIN..=CY_MAX {
             let coord = ChunkCoord { cx, cy, cz };
             if let Some(data) = voxel::pack_chunk_with_delta(coord, deltas.get(&coord)) {
-                out.push(PackedChunk { cx, cy, cz, data });
+                column.push(PackedChunk { cx, cy, cz, data });
             }
         }
+        drop(deltas);
+
+        let packed = Arc::new(column);
+        {
+            let mut cache = hub().packed_columns.write().unwrap();
+            cache.store_if_current((cx, cz), Arc::clone(&packed), generation);
+        }
+        packed_columns.push(packed);
     }
+
+    let out: Vec<&PackedChunk> = packed_columns.iter().flat_map(|column| column.iter()).collect();
     serde_json::json!({ "t": "chunks", "chunks": out }).to_string()
 }
 
@@ -4026,6 +4094,12 @@ fn pack_chunks_msg(columns: &[(i32, i32)]) -> String {
 fn broadcast_block(x: i32, y: i32, z: i32, b: Block) {
     // 正式世界寫入皆在 deltas 鎖釋放後廣播；在此同步索引，兩把 RwLock 永不巢狀。
     vshadow::update_light(&mut hub().shadow_lights.write().unwrap(), x, y, z, b);
+    // 打包內容只含該 column 的原始方塊，面剔除在前端；因此不需連帶失效鄰 column。
+    // 呼叫契約保證此處已無 deltas/players/residents 鎖，快取鎖也只短暫 remove。
+    {
+        let mut cache = hub().packed_columns.write().unwrap();
+        cache.invalidate((x.div_euclid(CHUNK), z.div_euclid(CHUNK)));
+    }
     let msg = Arc::new(
         serde_json::json!({ "t": "block", "x": x, "y": y, "z": z, "b": b as u8 }).to_string(),
     );
@@ -28790,6 +28864,48 @@ mod tests {
             v["chunks"].as_array().unwrap().iter().any(|c| c["cy"] == 0),
             "應含地面 chunk"
         );
+    }
+
+    #[test]
+    fn packed_column_cache_hit_clones_same_arc() {
+        let mut cache = PackedColumnCache::default();
+        let packed = Arc::new(Vec::new());
+        assert!(cache.store_if_current((3, -2), Arc::clone(&packed), 0));
+        let hit = cache.get((3, -2)).expect("應命中已打包 column");
+        assert!(Arc::ptr_eq(&packed, &hit), "命中應只 Arc clone，不重打包");
+    }
+
+    #[test]
+    fn packed_column_cache_invalidation_blocks_stale_refill() {
+        let mut cache = PackedColumnCache::default();
+        assert!(cache.store_if_current((-1, 4), Arc::new(Vec::new()), 0));
+        let miss_generation = cache.generation();
+        cache.invalidate((-1, 4));
+        assert!(cache.get((-1, 4)).is_none(), "失效應移除該 column");
+        assert!(!cache.store_if_current(
+            (-1, 4),
+            Arc::new(Vec::new()),
+            miss_generation,
+        ));
+        assert!(
+            cache.get((-1, 4)).is_none(),
+            "失效途中完成的舊打包不可回填"
+        );
+    }
+
+    #[test]
+    fn packed_column_cache_clears_at_capacity() {
+        let mut cache = PackedColumnCache::default();
+        for cx in 0..PACKED_COLUMN_CACHE_MAX as i32 {
+            assert!(cache.store_if_current((cx, 0), Arc::new(Vec::new()), 0));
+        }
+        assert_eq!(cache.entries.len(), PACKED_COLUMN_CACHE_MAX);
+        assert!(cache.store_if_current(
+            (PACKED_COLUMN_CACHE_MAX as i32, 0),
+            Arc::new(Vec::new()),
+            0,
+        ));
+        assert_eq!(cache.entries.len(), 1, "超過上限時應 clear 後只留下新 entry");
     }
 
     #[test]
