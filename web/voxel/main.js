@@ -189,6 +189,10 @@ const STEAM_UNICYCLE = 115;
 // 騎乘水平移動速度倍率——世界第一件代步工具，值回一趟合成的手感差異（比照水中水阻
 // SWIM_HORIZ_SPEED_MULT 同款寫法，純視覺+移動手感常數，非玩家可調）。
 const RIDING_SPEED_MULT = 1.8;
+// 街頭手風琴 v1（ROADMAP 977，自主提案切片）——玩家第一件可操作的樂器：工作台合成後
+// 可切換演奏／收起，附近閒著的居民會停下腳步聆聽。純物品、不可放置。116 是 115
+// （蒸汽獨輪車）之後的首個空號。
+const STREET_ACCORDION = 116;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -342,6 +346,9 @@ const COLOR = {
   // 蒸汽獨輪車 v1（ROADMAP 976）——鏽銅色鐵鑄輪框，蒸汽龐克代步工具的招牌色，與既有暖金/
   // 青綠幽光類方塊區隔（不發光、純物品手持色）。
   [STEAM_UNICYCLE]: [0.72, 0.44, 0.20],
+  // 街頭手風琴 v1（ROADMAP 977，自主提案切片）——深栗色琴身帶點黃銅感，與獨輪車的鏽銅色
+  // 區隔開（同屬蒸汽龐克手持物但色相不同，一眼分得出誰是載具、誰是樂器）。
+  [STREET_ACCORDION]: [0.55, 0.32, 0.22],
 };
 
 // ── 裝飾植物十字貼片渲染 v2 ─────────────────────────────────────────────
@@ -2926,6 +2933,8 @@ function attachRideWheel(av) {
   av.group.add(mesh);
   av.wheelMesh = mesh;
   av.riding = false;
+  av.performing = false; // 街頭手風琴 v1：與 riding 同一初始化點一併歸零
+  av.performNoteTimer = 0;
   return av;
 }
 /** 切換某具 avatar 腳下的騎乘輪子顯隱（純視覺，riding 狀態一律以伺服器廣播為準）。 */
@@ -2933,6 +2942,28 @@ function setRiding(av, isRiding) {
   if (!av || !av.wheelMesh || av.riding === isRiding) return;
   av.riding = isRiding;
   av.wheelMesh.visible = isRiding;
+}
+
+// ── 街頭手風琴 v1（ROADMAP 977，自主提案切片）：演奏視覺 ────────────────────────
+// 沒有新 mesh：手上的手風琴已由既有「手持工具可見」機制（setHeldItem/COLOR）顯示；
+// 演奏中只在頭頂複用居民哼歌的飄浮音符特效（spawnHumNotes），零額外幾何、零每幀常態成本
+// （陣列空時 updateHumNotes 早退，見既有 788 哼歌模組說明）。
+/** 切換某具 avatar 的演奏旗標（純視覺，performing 狀態一律以伺服器廣播為準）。 */
+function setPerforming(av, isPerforming) {
+  if (!av || av.performing === isPerforming) return;
+  av.performing = isPerforming;
+  av.performNoteTimer = 0; // 立刻噴一束，不必等滿一個間隔
+}
+const PERFORM_NOTE_INTERVAL = 1.6; // 演奏中每隔這麼久補一束音符
+/** 每幀為正在演奏的 avatar 補一束頭頂音符（不演奏時零成本，只清計時器）。 */
+function tickPerformNotes(av, x, y, z, dt) {
+  if (!av) return;
+  if (!av.performing) { av.performNoteTimer = 0; return; }
+  av.performNoteTimer = (av.performNoteTimer || 0) - dt;
+  if (av.performNoteTimer <= 0) {
+    spawnHumNotes(x, y, z);
+    av.performNoteTimer = PERFORM_NOTE_INTERVAL;
+  }
 }
 
 // 玩家自己的身體（第三人稱可見）：金色系方塊小人，一眼認得是自己。
@@ -4566,6 +4597,25 @@ function toggleRiding() {
   ws.send(JSON.stringify({ t: "set_riding", riding: !riding }));
 }
 
+// ── 街頭手風琴 v1（ROADMAP 977，自主提案切片）：演奏／收起 ──────────────────────
+// 本地演奏旗標只在 performing_ok 回應（伺服器直接對我這次請求的權威回覆）才翻轉，不樂觀
+// 更新——比照 riding 同款濫用防護慣例，伺服器說了算，UI 只是反應端。
+let performing = false;
+let lastPerformMs = 0; // 本地防連按（伺服器仍是唯一權威，這裡只擋手滑連按 P 洗版）
+
+/** 按 P 切換演奏／收起：收起永遠可送，開演先做客戶端持有提示（伺服器仍會再驗一次）。 */
+function togglePerforming() {
+  if (!wsReady) return;
+  const now = Date.now();
+  if (now - lastPerformMs < 500) return; // 0.5 秒本地防連按
+  if (!performing) {
+    const cnt = (myInv instanceof Map ? myInv.get(STREET_ACCORDION) : 0) || 0;
+    if (cnt <= 0) { showMsg("背包裡沒有街頭手風琴——在工作台用 3 木板＋2 鐵錠＋1 玻璃做一把吧。"); return; }
+  }
+  lastPerformMs = now;
+  ws.send(JSON.stringify({ t: "set_performing", performing: !performing }));
+}
+
 /** 接受指定居民的交易提案（發 TradeAccept）。payWithCoin=true 時改直接付乙太幣代替湊材料（ROADMAP 874）。 */
 function sendTradeAccept(rid, payWithCoin) {
   if (!wsReady) return;
@@ -6110,6 +6160,8 @@ const BLOCK_NAME = {
   [RELIC_GLOW]: "遺跡核心",
   // 蒸汽獨輪車 v1（ROADMAP 976，自主提案切片）
   [STEAM_UNICYCLE]: "蒸汽獨輪車",
+  // 街頭手風琴 v1（ROADMAP 977，自主提案切片）
+  [STREET_ACCORDION]: "街頭手風琴",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -6759,6 +6811,7 @@ addEventListener("keydown", (e) => {
   // 蒸汽獨輪車 v1（自主提案切片，ROADMAP 976）：R 切換騎乘／下車；e.repeat 防瀏覽器按鍵
   // 自動重複觸發把 set_riding 洗版（本檔案唯一需要這道防呆的單鍵切換）。
   if (e.code === "KeyR" && !e.repeat) { e.preventDefault(); toggleRiding(); }
+  if (e.code === "KeyP" && !e.repeat) { e.preventDefault(); togglePerforming(); }
   // Esc：關操作設定面板（也讓瀏覽器解除滑鼠鎖定，兩者不衝突）。
   if (e.code === "Escape" && settingsPanelVisible()) closeSettingsPanel();
   // Esc：也收起 ☰ 主選單抽屜（若正開著）。
@@ -7202,6 +7255,10 @@ function connect() {
       // （riding 預設 false），本地旗標與腳下輪子一併歸零，避免重連後顯示與伺服器不同步。
       riding = false;
       setRiding(myAvatar, false);
+      // 街頭手風琴 v1（自主提案切片，ROADMAP 977）：同理，每次連線 performing 預設 false，
+      // 本地旗標一併歸零，避免重連後顯示與伺服器不同步。
+      performing = false;
+      setPerforming(myAvatar, false);
       // 出生瞬間先脫困一次（若出生 chunk 已到、地表把人埋住，立刻頂出來）。
       unstuckIfNeeded();
       // 好感度 v1：連線後立即拉取與各居民的好感度，讓指示燈盡快亮起。
@@ -7264,6 +7321,8 @@ function connect() {
         setHeldItem(ent.av, p.held || null);
         // 蒸汽獨輪車 v1（自主提案切片，ROADMAP 976）：伺服器廣播的 riding 換腳下輪子顯隱。
         setRiding(ent.av, !!p.riding);
+        // 街頭手風琴 v1（自主提案切片，ROADMAP 977）：伺服器廣播的 performing 換頭頂音符特效。
+        setPerforming(ent.av, !!p.performing);
         // 位置有明顯變化 → 記下時間戳，讓 render 迴圈判定「在走路」而擺手腳（快照間也持續動）。
         const moved = Math.hypot(p.x - ent.mesh.position.x, p.z - ent.mesh.position.z);
         if (moved > 0.002) ent.lastMoveT = performance.now();
@@ -7631,6 +7690,17 @@ function connect() {
     } else if (m.t === "riding_fail") {
       // 蒸汽獨輪車 v1：騎不成（沒有車——本地已先擋過一次，這裡是伺服器再驗一次的保底）。
       showErr(m.reason || "沒法騎乘");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "performing_ok") {
+      // 街頭手風琴 v1（自主提案切片，ROADMAP 977）：伺服器直接對本次請求的權威回覆——
+      // 本地 performing 只在這裡翻轉（不樂觀更新），驅動頭頂音符特效。
+      performing = !!m.performing;
+      setPerforming(myAvatar, performing);
+      showMsg(performing ? "🪗 彈起了手風琴，附近的居民聽見了～" : "🪗 收起了手風琴。");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+    } else if (m.t === "performing_fail") {
+      // 街頭手風琴 v1：開演不成（沒有手風琴——本地已先擋過一次，這裡是伺服器再驗一次的保底）。
+      showErr(m.reason || "沒法開演");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "pet_command_ok") {
       // 寵物指令「安置／召回」v1（ROADMAP 898）：切換成功——浮出暖句（💤 待命標記由 players 廣播即時掛上/取下）。
@@ -8208,9 +8278,14 @@ function update(dt) {
   if (meMoving) bodyMesh.rotation.y = Math.atan2(dir.x, dir.z);
   // 走路動畫：有移動意圖就擺手腳，靜止回正（第一人稱藏起來時算了也不可見、成本可忽略）。
   animateAvatar(myAvatar, meMoving, dt);
+  // 街頭手風琴 v1（自主提案切片，ROADMAP 977）：正在演奏時頭頂每隔一段時間補一束音符。
+  tickPerformNotes(myAvatar, player.x, visualY + PH, player.z, dt);
   // 其他玩家：近 250ms 內位置有變化＝在走路，各自擺手腳（快照間也持續動、不卡頓）。
   const nowT = performance.now();
-  for (const ent of others.values()) animateAvatar(ent.av, nowT - ent.lastMoveT < 250, dt);
+  for (const ent of others.values()) {
+    animateAvatar(ent.av, nowT - ent.lastMoveT < 250, dt);
+    tickPerformNotes(ent.av, ent.mesh.position.x, ent.mesh.position.y, ent.mesh.position.z, dt);
+  }
 
   // embodied 靠近說話 v1：自己頭上的對話泡泡跟隨角色 + 倒數消失（話活在世界裡）。
   if (myBubbleTimer > 0) {
@@ -8737,6 +8812,9 @@ const WORKBENCH_RECIPES_JS = [
   // 蒸汽獨輪車 v1（ROADMAP 976，自主提案切片）——世界第一件代步工具。
   // 對齊後端 voxel_craft::WORKBENCH_RECIPES：{22:4,5:2,58:1}（4 鐵錠+2 木頭+1 乙太礦）。
   { id: "steam_unicycle",     name: "蒸汽獨輪車", inputs: [[IRON_INGOT, 4], [WOOD, 2], [AETHER_ORE, 1]], output_block: STEAM_UNICYCLE, out_count: 1 },
+  // 街頭手風琴 v1（ROADMAP 977，自主提案切片）——世界第一件玩家可操作的樂器。
+  // 對齊後端 voxel_craft::WORKBENCH_RECIPES：{8:3,22:2,10:1}（3 木板+2 鐵錠+1 玻璃）。
+  { id: "street_accordion",  name: "街頭手風琴", inputs: [[PLANK, 3], [IRON_INGOT, 2], [GLASS, 1]], output_block: STREET_ACCORDION, out_count: 1 },
 ];
 
 // wbGrid[0..8]：3×3 共 9 格，0 代表空格，非零代表 block_id。

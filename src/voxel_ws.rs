@@ -130,6 +130,7 @@ use crate::voxel_proximity_teach as vptteach;
 use crate::voxel_envoy_mark as venvoy;
 use crate::voxel_treasure as vtreasure;
 use crate::voxel_dungeon as vdungeon;
+use crate::voxel_busking as vbusk;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
@@ -272,6 +273,13 @@ struct VoxelPlayer {
     /// 下車永遠放行。廣播給所有人，讓其他玩家也看得到誰正騎著車。
     #[serde(default)]
     riding: bool,
+    /// 街頭手風琴 v1（自主提案切片，ROADMAP 977）：此刻是否正演奏。**additive 欄位**——
+    /// 舊前端解析 JSON 時本就會忽略陌生欄位，零協議破壞；預設 `false`。伺服器權威：只有
+    /// `SetPerforming{performing:true}` 通過真持有背包驗證才會翻成 `true`（見
+    /// [`ClientMsg::SetPerforming`]），收起演奏永遠放行。廣播給所有人，讓其他玩家也看得到
+    /// 誰正在演奏（前端據此飄浮音符特效）。
+    #[serde(default)]
+    performing: bool,
 }
 
 // ── 乙太方界 AI 居民（切片③）────────────────────────────────────────────────
@@ -3650,6 +3658,13 @@ enum ClientMsg {
     /// 前端據此把水平移動速度乘上固定倍率（純視覺+移動手感，非玩家可調）。
     #[serde(rename = "set_riding")]
     SetRiding { riding: bool },
+    /// 街頭手風琴 v1（自主提案切片，ROADMAP 977）：切換演奏／收起。`performing=true` 時
+    /// 伺服器**必查真實背包持有** `voxel_craft::STREET_ACCORDION_ID` ≥ 1（比照
+    /// `SetRiding` 的持有驗證手法）才放行，不信客戶端自報；`performing=false`（收起）
+    /// 永遠放行，不需驗證。成功後翻轉 `VoxelPlayer::performing` 並隨 `players` 廣播，
+    /// 讓其他人也看得到誰正在演奏；開演那一刻同時掃描附近閒著的居民，觸發駐足聆聽反應。
+    #[serde(rename = "set_performing")]
+    SetPerforming { performing: bool },
     /// 居民交易 v1：向指定居民請求以物易物（ROADMAP 670）。
     /// 伺服器回 `trade_offer`，玩家再傳 TradeAccept 接受；提案 30 秒後自動過期。
     #[serde(rename = "trade_request")]
@@ -4525,6 +4540,7 @@ async fn handle_socket(
                 account: account_email.clone(), // 後端解出，不廣播，僅去重用
                 held: None,
                 riding: false,
+                performing: false,
             },
         );
         old_id
@@ -8119,6 +8135,109 @@ async fn handle_socket(
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({ "t": "riding_ok", "riding": riding }).to_string(),
                 ));
+            }
+            // ── 街頭手風琴 v1（自主提案切片，ROADMAP 977）：切換演奏／收起 ─────────────
+            Ok(ClientMsg::SetPerforming { performing }) => {
+                // 濫用防護：performing=true 必查真實背包持有街頭手風琴(116) ≥1，比照
+                // SetRiding 的持有驗證手法（不信客戶端自報）；performing=false（收起）
+                // 永遠放行，不需驗證。零自由文字、零 LLM、零對外端點。
+                let allow = if performing {
+                    let has_item = hub()
+                        .inventory
+                        .read()
+                        .unwrap()
+                        .count(&name, vcraft::STREET_ACCORDION_ID)
+                        >= 1;
+                    vcraft::can_start_performing(has_item)
+                } else {
+                    true
+                };
+                if !allow {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({
+                            "t": "performing_fail",
+                            "reason": "沒有街頭手風琴——先在工作台合成一把吧"
+                        }).to_string(),
+                    ));
+                    continue;
+                }
+                {
+                    let mut players = hub().players.write().unwrap();
+                    if let Some(p) = players.get_mut(&my_id) {
+                        p.performing = performing;
+                    }
+                } // players 寫鎖釋放
+                broadcast_players();
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "performing_ok", "performing": performing }).to_string(),
+                ));
+                // 開演那一刻（非收起）掃描附近閒著的居民，觸發駐足聆聽反應——比照
+                // `maybe_craft_admire` 的靜態冷卻表慣例，直接在觸發當下判定，不必等 tick。
+                if performing {
+                    if let Some((px, _py, pz)) = player_pos(my_id) {
+                        let now_secs = vfarm::now_secs();
+                        let performer = name.clone();
+                        let reacted: Vec<(String, &'static str)> = {
+                            let residents = hub().residents.read().unwrap();
+                            let cd = busking_cd().lock().unwrap();
+                            residents
+                                .iter()
+                                .filter_map(|r| {
+                                    let idle = r.say.is_empty()
+                                        && !r.asleep
+                                        && r.expedition.is_none()
+                                        && r.visiting.is_none()
+                                        && r.clique_meet.is_none();
+                                    let cooldown_ok = match cd.get(&r.id) {
+                                        Some(prev) => {
+                                            now_secs.saturating_sub(*prev)
+                                                >= vbusk::PERFORM_REACT_COOLDOWN_SECS
+                                        }
+                                        None => true,
+                                    };
+                                    let dx = px - r.body.x;
+                                    let dz = pz - r.body.z;
+                                    if vbusk::perform_reaction_triggers(dx * dx + dz * dz, idle, cooldown_ok) {
+                                        Some((r.id.clone(), r.name))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect()
+                        }; // residents 讀鎖／冷卻鎖釋放
+                        if !reacted.is_empty() {
+                            {
+                                let mut cd = busking_cd().lock().unwrap();
+                                for (rid, _) in &reacted {
+                                    cd.insert(rid.clone(), now_secs);
+                                }
+                            } // 冷卻鎖釋放
+                            {
+                                let mut residents_w = hub().residents.write().unwrap();
+                                for (idx, (rid, _)) in reacted.iter().enumerate() {
+                                    if let Some(r) = residents_w.iter_mut().find(|r| r.id == *rid) {
+                                        r.say = vbusk::perform_react_line(idx).to_string();
+                                        r.say_timer = SAY_SECS;
+                                        r.mood_boost_secs =
+                                            r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                                    }
+                                }
+                            } // residents 寫鎖釋放
+                            for (rid, _rname) in &reacted {
+                                let mem = vbusk::perform_memory_line(&performer);
+                                let entry = {
+                                    hub().memory.write().unwrap().add_memory(rid, &performer, &mem)
+                                };
+                                vmem::append_memory(&entry);
+                            }
+                            vfeed::append_feed(
+                                "街頭演奏",
+                                &performer,
+                                &vbusk::perform_feed_line(&performer, reacted.len()),
+                            );
+                        }
+                    }
+                }
             }
             // ── 集會鐘 v1（自主提案切片）：敲響一座鐘，把附近閒著的居民召到身邊 ─────────
             Ok(ClientMsg::RingBell { x, y, z }) => {
@@ -14678,6 +14797,15 @@ fn maybe_pet_admire() {
 /// 手藝仰慕 v1（自主提案切片）：全域「仰慕者→冷卻時刻」儲存（不分仰慕的是哪門手藝／
 /// 哪位名匠），比照 `pet_admire_cd` 慣例。純記憶體、重啟歸零。
 fn craft_admire_cd() -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 街頭手風琴 v1（自主提案切片，ROADMAP 977）：每位居民的駐足反應冷卻表（resident id →
+/// 上次反應的 unix 秒），比照 [`craft_admire_cd`] 同款靜態 Mutex<HashMap> 慣例——純記憶體、
+/// 重啟歸零（過場狀態，不影響玩家資料，零 migration）。
+fn busking_cd() -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
     static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
         std::sync::OnceLock::new();
     C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
@@ -28400,6 +28528,7 @@ mod tests {
             account: account.map(String::from),
             held: None,
             riding: false,
+            performing: false,
         }
     }
 
