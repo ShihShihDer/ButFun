@@ -15347,8 +15347,9 @@ fn encounter_teach_radius() -> f32 {
 }
 
 /// 名匠聲望 v1（ROADMAP 888）·已加冕紀錄：`(名匠顯示名, 手藝名)` 的集合，記「這位居民在
-/// 這門手藝上已經公告過名匠了」，避免同一頂桂冠反覆刷 Feed／泡泡。純記憶體、重啟歸零
-/// （重啟後首次重算會重新公告一次，只是文案再現一次，零資料風險）。
+/// 這門手藝上已經公告過名匠了」，避免同一頂桂冠反覆刷 Feed／泡泡。純記憶體、重啟歸零——
+/// 但重啟後第一輪由 [`crown_first_run_done`] 靜默收編現任名匠、不重放公告
+/// （見 `vfame::crown_diff` 文件），故重啟不會造成公告重刷。
 fn crowned_masters() -> &'static std::sync::Mutex<std::collections::HashSet<(String, String)>> {
     static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<(String, String)>>> =
         std::sync::OnceLock::new();
@@ -15362,6 +15363,14 @@ fn master_by_goal() -> &'static std::sync::Mutex<std::collections::HashMap<u8, S
     static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u8, String>>> =
         std::sync::OnceLock::new();
     C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 名匠聲望 v1·首輪重算旗標：`crowned_masters` 只活在記憶體、重啟即清空，但村裡現任
+/// 名匠並不會因重啟就消失——旗標讓 [`maybe_crown_masters`] 知道「這是重啟後的第一輪」，
+/// 靜默收編既有名匠而不重放公告（見 `vfame::crown_diff` 文件，收斂缺陷同 #1267 分類）。
+fn crown_first_run_done() -> &'static std::sync::atomic::AtomicBool {
+    static F: std::sync::OnceLock<std::sync::atomic::AtomicBool> = std::sync::OnceLock::new();
+    F.get_or_init(|| std::sync::atomic::AtomicBool::new(false))
 }
 
 /// 名匠聲望 v1（ROADMAP 888，低頻併入 15 秒節拍）：以既有技能庫（發明＋師承紀錄）為唯一
@@ -15415,13 +15424,14 @@ fn maybe_crown_masters() {
         prev
     }; // 快取鎖釋放
 
-    // 5) 挑出這一輪**新加冕**的名匠（已加冕帳本短鎖即釋）。
+    // 5) 挑出這一輪**新加冕**的名匠（已加冕帳本短鎖即釋）。首輪（程序剛啟動）靜默收編
+    //    既有名匠、不重放公告——見 `crown_first_run_done` 與 `vfame::crown_diff` 文件。
+    let is_first_run = !crown_first_run_done().swap(true, std::sync::atomic::Ordering::SeqCst);
     let newly: Vec<vfame::CraftFame> = {
         let mut crowned = crowned_masters().lock().unwrap();
-        masters
-            .into_iter()
-            .filter(|m| crowned.insert((m.resident.clone(), m.craft.clone())))
-            .collect()
+        let (after, newly) = vfame::crown_diff(&masters, &crowned, is_first_run);
+        *crowned = after;
+        newly
     }; // 帳本鎖釋放
     if newly.is_empty() {
         return;
