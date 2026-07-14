@@ -19333,6 +19333,10 @@ fn tick_residents(dt: f32) {
             if r.homegaze_cooldown > 0.0 {
                 r.homegaze_cooldown -= dt;
             }
+            // 居民生計 v1：忙活冷卻遞減（純記憶體、每 tick 一次）。
+            if r.vocation_work_cooldown > 0.0 {
+                r.vocation_work_cooldown -= dt;
+            }
             // 居民關心你挨餓 v1：關心冷卻遞減（純記憶體、每 tick 一次）。
             if r.hunger_care_cooldown > 0.0 {
                 r.hunger_care_cooldown -= dt;
