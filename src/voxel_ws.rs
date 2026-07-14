@@ -9636,14 +9636,15 @@ async fn handle_socket(
                     players.get(&my_id).map(|p| (p.x, p.z))
                 };
                 let Some((px, pz)) = player_pos else { continue; };
-                // 2) 短鎖取居民快照（residents 讀鎖即釋）。
-                let res_snap: Option<(&'static str, f32, f32)> = {
+                // 2) 短鎖取居民快照（residents 讀鎖即釋）；生計交易 v4（ROADMAP 989）
+                // 一併取 r.vocation，決定她拿什麼出來換。
+                let res_snap: Option<(&'static str, f32, f32, vvoc::Vocation)> = {
                     let residents = hub().residents.read().unwrap();
                     residents.iter()
                         .find(|r| r.id == resident_id)
-                        .map(|r| (r.name, r.body.x, r.body.z))
+                        .map(|r| (r.name, r.body.x, r.body.z, r.vocation))
                 };
-                let Some((rname, rx, rz)) = res_snap else { continue; };
+                let Some((rname, rx, rz, rvocation)) = res_snap else { continue; };
                 // 3) 驗觸及範圍。
                 let dx = px - rx;
                 let dz = pz - rz;
@@ -9662,7 +9663,7 @@ async fn handle_socket(
                 // 5) 生成交易提案（確定性純函式，無鎖）：供需 v1（ROADMAP 958）先短鎖
                 // clone 一份 coin_demand 快照（coin_demand 讀鎖即釋），再無鎖呼叫。
                 let demand_snapshot = hub().coin_demand.read().unwrap().clone();
-                let offer = vtrade::make_offer(&resident_id, affinity, &demand_snapshot);
+                let offer = vtrade::make_offer(&resident_id, rvocation, affinity, &demand_snapshot);
                 let oname = vtrade::item_name_zh(offer.offer_item);
                 let wname = vtrade::item_name_zh(offer.want_item);
                 let say = vtrade::offer_say_line(&offer);
