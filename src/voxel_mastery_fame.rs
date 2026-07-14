@@ -265,6 +265,83 @@ pub fn craft_directory(evidence: &[SkillEvidence]) -> Vec<CraftDirectoryEntry> {
         .collect()
 }
 
+// ── 師徒之間·青出於藍 v1（自主提案切片，ROADMAP 980）────────────────────────
+//
+// **真缺口**：名匠聲望（888）讓「誰教會誰」第一次被記進聲望，也讓桂冠會隨聲望消長**易主**
+// ——但易主這件事，至今對世界而言只是「換了個名字掛在同一個頭銜上」，沒有人在乎**前一任
+// 是誰**。村裡最戲劇性的一種易主——**徒弟親手超越了教過自己這門手藝的老師**——跟任何
+// 一次隨機易主被同等對待，兩位當事人（教過她的人、超越了他的人）都沒有任何反應。師徒制度
+// 走到這裡只差臨門一步：讓「青出於藍」這件事，被師徒**雙方都感覺到**。
+//
+// **不新增任何資料**：與 888/889 一脈相承的「零重複資料」精神——不新建師徒關係表，
+// 「誰是誰的老師」早就寫在既有師承紀錄的 `source` 欄位裡；「前一任名匠是誰」也早就存在
+// `voxel_ws.rs::master_by_goal` 這份既有快取裡（本刀只是在它被覆寫前多留一份給下一輪比對）。
+// 純粹是「這兩份早就存在的資料，第一次被放在一起比對」，重啟後由既有紀錄自然還原，零新風險。
+//
+// **與既有系統的區隔**：`crowned_masters`（888）只負責「別把同一頂桂冠的公告刷第二次」，
+// 從不區分新舊科名匠是不是師徒——本刀專門挑出「新科名匠的授業恩師，正是他推翻的前任」這一種
+// 最有情感張力的易主，讓兩人各自留下一句心聲與一筆記憶，而非默不作聲換過就算了。
+
+/// 世界動態（Feed）分類：青出於藍。
+pub const SURPASS_FEED_KIND: &str = "青出於藍";
+
+/// 找出某位居民在某門手藝上的授業恩師——若是自己發明或出生繼承（皆非在世師承）則無恩師。
+pub fn own_teacher(evidence: &[SkillEvidence], resident: &str, goal_block: u8) -> Option<String> {
+    evidence
+        .iter()
+        .find(|e| e.taught && e.holder == resident && e.goal_block == goal_block)
+        .and_then(|e| e.source.clone())
+}
+
+/// 「青出於藍」判定：新科名匠的授業恩師，恰好正是他推翻的前一任名匠——徒弟親手超越了
+/// 教過自己這門手藝的人。純函式：`prev_master` 為易主前這門手藝快照裡的名匠（若有）。
+pub fn surpasses_own_teacher(
+    evidence: &[SkillEvidence],
+    new_master: &str,
+    goal_block: u8,
+    prev_master: Option<&str>,
+) -> bool {
+    match (own_teacher(evidence, new_master, goal_block), prev_master) {
+        (Some(teacher), Some(prev)) => teacher == prev && teacher != new_master,
+        _ => false,
+    }
+}
+
+/// 徒弟超越恩師當下，自己冒出的心聲泡泡——驕傲裡帶著一絲對老師的感念（句式池、零 LLM）。
+pub fn surpass_student_say_line(teacher: &str, craft: &str, pick: usize) -> String {
+    let pool = [
+        format!("{teacher}當年教我{craft}的樣子，我還記得清清楚楚。"),
+        format!("能走到這一步，都是{teacher}當年肯教我{craft}。"),
+        format!("{craft}這條路，是{teacher}帶我入門的。"),
+    ];
+    pool[pick % pool.len()].clone()
+}
+
+/// 徒弟留給自己的一筆記憶（第一人稱內心，沿用日記調性）。
+pub fn surpass_student_memory_line(teacher: &str, craft: &str) -> String {
+    format!("村裡開始說我{craft}比{teacher}還厲害了，心裡驕傲，卻也有點捨不得——當初教我的人，就是{teacher}呀。")
+}
+
+/// 老師被徒弟超越時，冒出的心聲泡泡——百感交集，驕傲多過失落（句式池、零 LLM）。
+pub fn surpass_teacher_say_line(student: &str, craft: &str, pick: usize) -> String {
+    let pool = [
+        format!("{student}的{craft}，已經青出於藍了，這是好事。"),
+        format!("沒想到{student}這麼快就把{craft}學到超過我了。"),
+        format!("{craft}這門手藝，往後就靠{student}撐著了。"),
+    ];
+    pool[pick % pool.len()].clone()
+}
+
+/// 老師留給自己的一筆記憶（第一人稱內心）。
+pub fn surpass_teacher_memory_line(student: &str, craft: &str) -> String {
+    format!("{student}在{craft}上已經超過我了，說不上是驕傲還是感慨，大概兩種都有一點。")
+}
+
+/// 世界動態文案：「露娜曾教過米拉燒玻璃，如今村裡改口喚米拉一聲『名匠』了。」
+pub fn surpass_feed_line(student: &str, teacher: &str, craft: &str) -> String {
+    format!("{teacher}曾教過{student}{craft}，如今村裡改口喚{student}一聲「名匠」了。")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,5 +555,57 @@ mod tests {
     #[test]
     fn 技藝目錄_空證據回空清單() {
         assert!(craft_directory(&[]).is_empty());
+    }
+
+    // ── 師徒之間·青出於藍 v1 ──────────────────────────────────────────────
+
+    #[test]
+    fn 授業恩師_師承查得到_自創繼承查不到() {
+        let e = vec![
+            ev("露娜", "燒玻璃", 40, None, false),
+            ev("米拉", "燒玻璃", 40, Some("露娜"), true),
+            ev("小新", "燒玻璃", 40, Some("露娜"), false), // 出生繼承，非在世師承
+        ];
+        assert_eq!(own_teacher(&e, "米拉", 40), Some("露娜".to_string()));
+        assert_eq!(own_teacher(&e, "露娜", 40), None); // 自創者無恩師
+        assert_eq!(own_teacher(&e, "小新", 40), None); // 出生繼承非師承
+        assert_eq!(own_teacher(&e, "查無此人", 40), None);
+    }
+
+    #[test]
+    fn 青出於藍_新科名匠的恩師正是前任才成立() {
+        let e = vec![ev("米拉", "燒玻璃", 40, Some("露娜"), true)];
+        // 前任正是自己的恩師 → 成立。
+        assert!(surpasses_own_teacher(&e, "米拉", 40, Some("露娜")));
+        // 前任是別人（不是米拉的恩師）→ 不成立。
+        assert!(!surpasses_own_teacher(&e, "米拉", 40, Some("別人")));
+        // 沒有前任（這門手藝第一次有名匠）→ 不成立。
+        assert!(!surpasses_own_teacher(&e, "米拉", 40, None));
+        // 自創者沒有恩師 → 永遠不成立。
+        let e2 = vec![ev("露娜", "燒玻璃", 40, None, false)];
+        assert!(!surpasses_own_teacher(&e2, "露娜", 40, Some("某人")));
+    }
+
+    #[test]
+    fn 青出於藍_恩師與新科名匠同名時不成立() {
+        // 防呆：不該有人「超越自己」，即使資料異常也不成立。
+        let e = vec![ev("米拉", "燒玻璃", 40, Some("米拉"), true)];
+        assert!(!surpasses_own_teacher(&e, "米拉", 40, Some("米拉")));
+    }
+
+    #[test]
+    fn 青出於藍_面向玩家字串皆含姓名與手藝() {
+        for p in 0..6usize {
+            let s = surpass_student_say_line("露娜", "燒玻璃", p);
+            assert!(s.contains("露娜") && s.contains("燒玻璃"));
+            let t = surpass_teacher_say_line("米拉", "燒玻璃", p);
+            assert!(t.contains("米拉") && t.contains("燒玻璃"));
+        }
+        let sm = surpass_student_memory_line("露娜", "燒玻璃");
+        assert!(sm.contains("露娜") && sm.contains("燒玻璃"));
+        let tm = surpass_teacher_memory_line("米拉", "燒玻璃");
+        assert!(tm.contains("米拉") && tm.contains("燒玻璃"));
+        let feed = surpass_feed_line("米拉", "露娜", "燒玻璃");
+        assert!(feed.contains("米拉") && feed.contains("露娜") && feed.contains("燒玻璃"));
     }
 }
