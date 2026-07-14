@@ -7492,6 +7492,17 @@ function connect() {
         showMsg("🔥 你的 " + iname + " ×" + (m.qty || 1) + " 煨好了！熱騰騰的，已放進背包");
         setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
       }
+    } else if (m.t === "prosperity_collect") {
+      // 領地繁榮 v1（ROADMAP 979）：回到自家附近，累積的乙太幣自動收進背包——
+      // 只有領主本人才顯示提示並更新背包（比照 smelt_done 管線）。
+      if (m.player === myName) {
+        if (m.count > 0) myInv.set(m.block_id, m.count);
+        else myInv.delete(m.block_id);
+        updateInvHud();
+        updateGiftBtn();
+        showMsg(m.line || ("🏡 你的家送你了 " + (m.qty || 1) + " 枚乙太幣！"));
+        setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+      }
     } else if (m.t === "plant_ok") {
       // 種田 v1 / 水耕農業 v1（ROADMAP 686）/ 第二/三種作物 v1：依作物種類 + 是否鄰近水源給不同提示。
       const plantMsg = m.carrot
