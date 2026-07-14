@@ -38,9 +38,11 @@ pub fn should_resident_trade(
         && roll < RESIDENT_TRADE_CHANCE
 }
 
-/// 依居民 id 取得其交易特長物品（沿用 670 `resident_trade_slot` 的 slot 分類，
-/// 與 `voxel_trade::make_offer` 的物品對表一致）。`pub(crate)`：跨村商隊（950，
-/// `voxel_caravan`）沿用同一套分類決定商隊帶去的貨，避免第三份重複硬編。
+/// 依居民 id 取得其交易特長物品（沿用 670 `resident_trade_slot` 的 slot 分類）。
+/// 生計決定交易 v4（ROADMAP 989）起，玩家↔居民交易（`voxel_trade::make_offer`）已改依
+/// `Vocation` 決定物品（商人例外，仍與此表一致）；居民之間互易與跨村商隊本刀範圍外，
+/// 刻意維持原本的 slot 分類不變。`pub(crate)`：跨村商隊（950，`voxel_caravan`）沿用同一套
+/// 分類決定商隊帶去的貨，避免第三份重複硬編。
 pub(crate) fn specialty_item(resident_id: &str) -> u8 {
     match resident_trade_slot(resident_id) {
         0 => 14, // 種子

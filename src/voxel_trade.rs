@@ -10,14 +10,22 @@
 //!    （`coin_price`，見下）——付幣時改扣 `voxel_craft::COIN_ID`，其餘流程不變。
 //!    v3（自主提案切片，ROADMAP 958）起，`coin_price` 會依**最近付幣買走這項物品的次數**
 //!    自動漲價（見 [`CoinDemandTracker`]）——874 當初刻意留白「之後要分級再擴充」，本刀補上。
+//!    v4（自主提案切片，ROADMAP 989）起，居民**拿什麼出來跟你換**改由她的生計
+//!    （`voxel_vocation::Vocation`）決定，見下方「各居民特長」。
 //!
-//! **各居民特長**（依 resident_id 字元和 % 4 決定，永遠確定性）：
-//! - slot 0 → 種子 ↔ 木頭（農業，對應露娜）
-//! - slot 1 → 石頭 ↔ 木頭（建築，對應諾娃）
-//! - slot 2 → 木頭 ↔ 沙子（探索，對應賽勒）
-//! - slot 3 → 玻璃 ↔ 石頭（煉製，對應奧瑞）
+//! **各居民特長**（v4：依居民**生計身分**決定，永遠確定性，見 [`vocation_trade_pair`]）——
+//! 生計（`voxel_vocation`，ROADMAP 988）原本只讓居民「看起來」像鐵匠/漁夫，本刀讓她跟你
+//! 交易時拿出來的東西也真的**是**她的生計產物，物資鏈第一次跟身分對上號：
+//! - 農夫 → 麵包 ↔ 木頭（拿自家收成換你的木材）
+//! - 鐵匠 → 鐵磚 ↔ 石頭（拿爐子打出的鐵件換你的礦料）
+//! - 漁夫 → 烤魚 ↔ 沙子（拿岸邊的漁獲換你的沙）
+//! - 獵人 → 火把 ↔ 木頭（拿自製的照明工具換你的木材）
+//! - 工匠 → 木板 ↔ 木頭（拿打磨好的成品換你的原木，一手交生木一手交熟貨）
+//! - 商人 → 沿用 v1~v3 舊的 4 款雜貨輪替（依 resident_id 決定，見 [`resident_trade_slot`]）
+//!   ——「什麼貨都收」正是商人的生計特徵（見 `voxel_vocation::Vocation::preferred_resource`
+//!   同款留白），本刀刻意不收斂她，維持雜貨鋪的不可預期感。
 //!
-//! **好感度影響比例**：
+//! **好感度影響比例**（生計決定「換什麼」，好感度仍決定「換多少划算」，兩者正交不變）：
 //! - 0（陌生）：玩家給 2 得 1（略不划算，反映居民不信任）
 //! - 1–2（相識）：1:1 公平
 //! - 3+（友人）：玩家給 1 得 2（划算，居民優待朋友）
@@ -110,26 +118,51 @@ pub struct TradeOffer {
     pub coin_price: u32,
 }
 
-/// 依 resident_id 決定交易特長 slot（0..4，永遠確定性）。
+/// 依 resident_id 決定交易特長 slot（0..4，永遠確定性）。**v4 起只剩商人走這條路**
+/// （其餘生計改走 [`vocation_trade_pair`]）——商人「什麼貨都收」本身就是她的生計特徵，
+/// 刻意保留這份與身分無關的雜貨輪替，見 [`vocation_trade_pair`] 的商人分支。
 pub fn resident_trade_slot(resident_id: &str) -> usize {
     let sum: u64 = resident_id.bytes().map(|b| b as u64).sum();
     (sum % 4) as usize
 }
 
-/// 根據居民 ID 與玩家好感度生成交易提案（確定性純函式）。
+/// 依居民**生計身分**決定交易特長（(offer_item, want_item)：居民提供 / 玩家給出）——
+/// v4（ROADMAP 989）起，居民拿出來跟你換的東西真的是她的生計產物，不再是與身分無關的
+/// id 雜湊。商人是唯一例外：不挑生計偏好，沿用 v1~v3 舊的 [`resident_trade_slot`] 雜貨輪替，
+/// 對應 `voxel_vocation::Vocation::preferred_resource` 對商人留白的同一個理由。
+pub fn vocation_trade_pair(
+    resident_id: &str,
+    vocation: crate::voxel_vocation::Vocation,
+) -> (u8, u8) {
+    use crate::voxel_vocation::Vocation;
+    match vocation {
+        Vocation::Farmer => (19, 5),  // 麵包 ↔ 木頭：拿自家收成換木材
+        Vocation::Smith => (23, 3),   // 鐵磚 ↔ 石頭：拿爐子打的鐵件換礦料
+        Vocation::Fisher => (63, 4),  // 烤魚 ↔ 沙子：拿岸邊漁獲換沙
+        Vocation::Hunter => (31, 5),  // 火把 ↔ 木頭：拿自製照明工具換木材
+        Vocation::Artisan => (8, 5),  // 木板 ↔ 木頭：熟貨換生木
+        Vocation::Merchant => match resident_trade_slot(resident_id) {
+            0 => (14, 5),  // 種子 ↔ 木頭
+            1 => (3, 5),   // 石頭 ↔ 木頭
+            2 => (5, 4),   // 木頭 ↔ 沙子
+            _ => (10, 3),  // 玻璃 ↔ 石頭
+        },
+    }
+}
+
+/// 根據居民 ID／生計與玩家好感度生成交易提案（確定性純函式）。
 ///
+/// `vocation`：決定居民拿什麼出來換（見 [`vocation_trade_pair`]，ROADMAP 989）。
 /// `demand`：目前的供需追蹤（見 [`CoinDemandTracker`]）——`offer_item`（玩家掏幣要買的東西）
 /// 最近被搶購越多次，`coin_price` 就疊得越貴；呼叫端只需短鎖 clone 一份快照傳入，
 /// 本函式仍是零鎖、零 IO 的確定性純函式。
-pub fn make_offer(resident_id: &str, affinity: usize, demand: &CoinDemandTracker) -> TradeOffer {
-    let slot = resident_trade_slot(resident_id);
-    // (offer_item, want_item)：居民提供 / 玩家給出
-    let (offer_item, want_item): (u8, u8) = match slot {
-        0 => (14, 5),  // 種子 ↔ 木頭
-        1 => (3, 5),   // 石頭 ↔ 木頭
-        2 => (5, 4),   // 木頭 ↔ 沙子
-        _ => (10, 3),  // 玻璃 ↔ 石頭
-    };
+pub fn make_offer(
+    resident_id: &str,
+    vocation: crate::voxel_vocation::Vocation,
+    affinity: usize,
+    demand: &CoinDemandTracker,
+) -> TradeOffer {
+    let (offer_item, want_item) = vocation_trade_pair(resident_id, vocation);
     let (offer_count, want_count): (u32, u32) = if affinity == 0 {
         (1, 2) // 陌生人：玩家給 2 得 1
     } else if affinity <= 2 {
@@ -161,6 +194,11 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         14 => "種子",
         18 => "小麥",
         19 => "麵包",
+        // 生計交易 v4（ROADMAP 989）起，鐵匠/獵人/漁夫的生計產物也會出現在交易提案，
+        // 補進這份獨立維護的命名表（對齊 voxel_gift::item_name_zh 同 id）。
+        23 => "鐵磚",
+        31 => "火把",
+        63 => "烤魚",
         // 乙太幣（`voxel_craft::COIN_ID`，ROADMAP 873）：付幣代替湊材料 v1 起，交易台詞/
         // 成交回條也可能提到「乙太幣」，補進這份獨立維護的命名表。
         98 => "乙太幣",
@@ -217,11 +255,16 @@ pub fn trade_memory_coin(player_name: &str, coin_count: u32, got_name: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::voxel_vocation::Vocation;
 
     /// 沒有任何搶購紀錄的供需追蹤（測試預設基準，等同 874 舊行為）。
     fn no_demand() -> CoinDemandTracker {
         CoinDemandTracker::new()
     }
+
+    /// 生計窮舉（v4，ROADMAP 989）——好感度/供需相關測試不特別關心生計種類時，
+    /// 用固定一種（工匠）即可；生計本身的行為由專屬測試覆蓋。
+    const ANY_VOCATION: Vocation = Vocation::Artisan;
 
     #[test]
     fn resident_trade_slot_in_range() {
@@ -242,7 +285,7 @@ mod tests {
     fn make_offer_stranger_unfavorable() {
         // 陌生人（affinity=0）：玩家給更多才能得到居民的物品
         for id in ["luna", "nova", "sailer", "auri"] {
-            let offer = make_offer(id, 0, &no_demand());
+            let offer = make_offer(id, ANY_VOCATION, 0, &no_demand());
             assert!(offer.want_count > offer.offer_count,
                 "陌生人交易應不划算 id={id}");
         }
@@ -253,7 +296,7 @@ mod tests {
         // 相識（1–2）：1:1 公平
         for id in ["luna", "nova", "sailer", "auri"] {
             for affinity in [1usize, 2] {
-                let offer = make_offer(id, affinity, &no_demand());
+                let offer = make_offer(id, ANY_VOCATION, affinity, &no_demand());
                 assert_eq!(offer.offer_count, offer.want_count,
                     "相識應 1:1 id={id} affinity={affinity}");
             }
@@ -265,7 +308,7 @@ mod tests {
         // 友人（3+）：玩家給更少、得到更多
         for id in ["luna", "nova", "sailer", "auri"] {
             for affinity in [3usize, 5, 10] {
-                let offer = make_offer(id, affinity, &no_demand());
+                let offer = make_offer(id, ANY_VOCATION, affinity, &no_demand());
                 assert!(offer.offer_count > offer.want_count,
                     "友人交易應划算 id={id} affinity={affinity}");
             }
@@ -274,7 +317,7 @@ mod tests {
 
     #[test]
     fn make_offer_items_nonzero_and_different() {
-        let offer = make_offer("test-resident", 1, &no_demand());
+        let offer = make_offer("test-resident", ANY_VOCATION, 1, &no_demand());
         assert!(offer.offer_item > 0, "offer_item 應非 0（不是 Air）");
         assert!(offer.want_item > 0, "want_item 應非 0（不是 Air）");
         assert_ne!(offer.offer_item, offer.want_item,
@@ -284,7 +327,7 @@ mod tests {
     #[test]
     fn make_offer_counts_positive() {
         for affinity in [0usize, 1, 2, 3, 10] {
-            let offer = make_offer("resident-x", affinity, &no_demand());
+            let offer = make_offer("resident-x", ANY_VOCATION, affinity, &no_demand());
             assert!(offer.offer_count > 0, "affinity={affinity} offer_count 應>0");
             assert!(offer.want_count > 0, "affinity={affinity} want_count 應>0");
         }
@@ -293,7 +336,7 @@ mod tests {
     #[test]
     fn offer_say_line_non_empty_no_braces() {
         for affinity in [0, 1, 2, 3] {
-            let offer = make_offer("resident-y", affinity, &no_demand());
+            let offer = make_offer("resident-y", ANY_VOCATION, affinity, &no_demand());
             let s = offer_say_line(&offer);
             assert!(!s.is_empty(), "affinity={affinity} 台詞不得空");
             assert!(!s.contains('{'), "affinity={affinity} 台詞含未替換佔位");
@@ -357,7 +400,7 @@ mod tests {
     fn coin_price_scales_with_want_count() {
         for id in ["luna", "nova", "sailer", "auri"] {
             for affinity in [0usize, 1, 3] {
-                let offer = make_offer(id, affinity, &no_demand());
+                let offer = make_offer(id, ANY_VOCATION, affinity, &no_demand());
                 assert_eq!(offer.coin_price, offer.want_count * COIN_PRICE_PER_UNIT,
                     "coin_price 應等於 want_count×匯率 id={id} affinity={affinity}");
             }
@@ -367,7 +410,7 @@ mod tests {
     #[test]
     fn coin_price_always_positive() {
         for affinity in [0usize, 1, 2, 3, 10] {
-            let offer = make_offer("resident-z", affinity, &no_demand());
+            let offer = make_offer("resident-z", ANY_VOCATION, affinity, &no_demand());
             assert!(offer.coin_price > 0, "affinity={affinity} coin_price 應>0");
         }
     }
@@ -460,18 +503,19 @@ mod tests {
 
     #[test]
     fn coin_price_rises_with_demand_tier() {
-        // 找一個 offer_item=玻璃(10)（slot 3）的 id，不假設任何特定名字對應哪個 slot。
+        // 找一個 offer_item=玻璃(10)（slot 3）的商人 id，不假設任何特定名字對應哪個 slot。
+        // v4 起 resident_trade_slot 只驅動商人（見 vocation_trade_pair），故固定用 Merchant。
         let id = (0u32..1000)
             .map(|n| format!("resident-{n}"))
             .find(|id| resident_trade_slot(id) == 3)
             .expect("1000 個候選裡應找得到 slot == 3 的 id");
         let mut d = no_demand();
-        let base_offer = make_offer(&id, 1, &d);
+        let base_offer = make_offer(&id, Vocation::Merchant, 1, &d);
         assert_eq!(base_offer.offer_item, 10, "slot 3 的 offer_item 應為玻璃");
         for _ in 0..(DEMAND_STEP * 2) {
             d.record_purchase(10);
         }
-        let hot_offer = make_offer(&id, 1, &d);
+        let hot_offer = make_offer(&id, Vocation::Merchant, 1, &d);
         assert!(hot_offer.coin_price > base_offer.coin_price,
             "被搶購的物品，同樣的 affinity 下 coin_price 應比沒人搶購時更貴");
         assert_eq!(hot_offer.coin_price, base_offer.coin_price * 3,
@@ -510,20 +554,75 @@ mod tests {
 
     #[test]
     fn coin_price_unaffected_when_demand_on_other_item() {
-        // 找一個 offer_item 不是「石頭」(3) 的居民 id（種子/木頭/玻璃皆可）。
+        // 找一個 offer_item 不是「石頭」(3) 的商人 id（種子/木頭/玻璃皆可）。
         let id = (0u32..1000)
             .map(|n| format!("resident-{n}"))
             .find(|id| resident_trade_slot(id) != 1)
             .expect("1000 個候選裡應找得到 slot != 1 的 id");
-        let baseline = make_offer(&id, 1, &no_demand());
+        let baseline = make_offer(&id, Vocation::Merchant, 1, &no_demand());
 
         let mut d = no_demand();
         // 搶購的是「石頭」（slot 1 的 offer_item），不該影響其他 slot 的報價。
         for _ in 0..(DEMAND_STEP * 3) {
             d.record_purchase(3);
         }
-        let unaffected = make_offer(&id, 1, &d);
+        let unaffected = make_offer(&id, Vocation::Merchant, 1, &d);
         assert_eq!(baseline.coin_price, unaffected.coin_price,
             "搶購石頭不應影響其他 offer_item 的報價");
+    }
+
+    // ── 生計決定交易特長 v4（自主提案切片，ROADMAP 989）───────────────────────────
+
+    #[test]
+    fn vocation_trade_pair_distinct_per_vocation() {
+        // 五種有生計偏好的職業，各自的 offer_item 應彼此不同（不同生計換不同東西，
+        // 不是換皮同一套）。
+        let pairs: Vec<(u8, u8)> = [
+            Vocation::Farmer,
+            Vocation::Smith,
+            Vocation::Fisher,
+            Vocation::Hunter,
+            Vocation::Artisan,
+        ]
+        .iter()
+        .map(|v| vocation_trade_pair("resident-any", *v))
+        .collect();
+        let offer_items: std::collections::HashSet<u8> = pairs.iter().map(|(o, _)| *o).collect();
+        assert_eq!(offer_items.len(), pairs.len(), "五種生計的 offer_item 應各不相同");
+    }
+
+    #[test]
+    fn vocation_trade_pair_offer_matches_vocation() {
+        assert_eq!(vocation_trade_pair("r", Vocation::Farmer).0, 19, "農夫應提供麵包");
+        assert_eq!(vocation_trade_pair("r", Vocation::Smith).0, 23, "鐵匠應提供鐵磚");
+        assert_eq!(vocation_trade_pair("r", Vocation::Fisher).0, 63, "漁夫應提供烤魚");
+        assert_eq!(vocation_trade_pair("r", Vocation::Hunter).0, 31, "獵人應提供火把");
+        assert_eq!(vocation_trade_pair("r", Vocation::Artisan).0, 8, "工匠應提供木板");
+    }
+
+    #[test]
+    fn vocation_trade_pair_merchant_still_varies_by_id() {
+        // 商人不挑（preferred_resource 留白同款理由）——沿用舊 slot 雜貨輪替，
+        // 不同 id 應能取得不同 offer_item（不是全村商人賣一樣的東西）。
+        let items: std::collections::HashSet<u8> = (0u32..20)
+            .map(|n| vocation_trade_pair(&format!("merchant-{n}"), Vocation::Merchant).0)
+            .collect();
+        assert!(items.len() > 1, "商人交易應依 id 呈現不只一種商品");
+    }
+
+    #[test]
+    fn make_offer_uses_vocation_offer_item() {
+        for v in [
+            Vocation::Farmer,
+            Vocation::Smith,
+            Vocation::Fisher,
+            Vocation::Hunter,
+            Vocation::Artisan,
+        ] {
+            let offer = make_offer("resident-vocation-test", v, 1, &no_demand());
+            let (expect_offer, expect_want) = vocation_trade_pair("resident-vocation-test", v);
+            assert_eq!(offer.offer_item, expect_offer, "生計={v:?} offer_item 應對應生計產物");
+            assert_eq!(offer.want_item, expect_want, "生計={v:?} want_item 應對應生計偏好");
+        }
     }
 }
