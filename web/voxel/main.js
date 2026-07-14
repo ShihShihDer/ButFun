@@ -51,6 +51,12 @@ const LADDER = 35;
 const AXE_WOOD = 36, AXE_STONE = 37, AXE_IRON = 38;
 // 鏟子 v1（ROADMAP 690）——純物品，不可放置；持鏟挖草地/泥土/沙地/農田大幅加速
 const SHOVEL_WOOD = 39, SHOVEL_STONE = 40, SHOVEL_IRON = 41;
+// 工具耐久·保養 v1（自主提案切片，ROADMAP 981）：鎬/斧/鏟才會磨損、才能請居民保養。
+const TOOL_IDS = new Set([
+  PICKAXE_WOOD, PICKAXE_STONE, PICKAXE_IRON,
+  AXE_WOOD, AXE_STONE, AXE_IRON,
+  SHOVEL_WOOD, SHOVEL_STONE, SHOVEL_IRON,
+]);
 // 箱子 v1（ROADMAP 692）——工作台合成（8 木板 → 1 箱子）；放置後右鍵互動開儲物面板
 const CHEST = 42;
 // 木門 v1（ROADMAP 693）——背包 2×2 合成（4 木板 → 2 門）；右鍵切換開/關，DoorOpen 非實心可穿越
@@ -4245,6 +4251,7 @@ function openChat(rid, name) {
   // 開定向對話 modal 時收起範圍說話列，避免兩者重疊。
   setSpeakBarShown(false);
   updateGiftBtn(); // 贈禮 v1：更新按鈕顯示哪件物品
+  updateRepairBtn(); // 工具耐久 v1（981）：更新保養鈕顯示（依目前手持工具）
   hideTradeOffer(); // 換居民時清掉舊交易提案（不同居民的提案不共用）
   // 邀居同住 v1（ROADMAP 972）：按 myCohabitResidents 真相重繪鈕，換居民/重整頁面後
   // 都不會殘留上一位居民的狀態、也不會把「已同住」誤顯示成可再邀請一次。
@@ -4311,6 +4318,9 @@ if (chatEl) {
   // 贈禮鈕：送背包最多的一件給當前居民（ROADMAP 660）。
   const giftBtnEl = document.getElementById("chatGift");
   if (giftBtnEl) giftBtnEl.addEventListener("click", () => { if (chatRid) trySendGift(); });
+  // 保養鈕：請當前居民保養目前手持的工具（工具耐久 v1，ROADMAP 981）。
+  const repairBtnEl = document.getElementById("chatRepair");
+  if (repairBtnEl) repairBtnEl.addEventListener("click", () => { if (chatRid) tryRepairTool(); });
   // 交易鈕：向當前居民請求以物易物（ROADMAP 670）。
   const tradeBtnEl = document.getElementById("chatTrade");
   if (tradeBtnEl) tradeBtnEl.addEventListener("click", () => { if (chatRid) tryRequestTrade(); });
@@ -4415,6 +4425,42 @@ function trySendGift() {
   }
   lastGiftMs = now;
   ws.send(JSON.stringify({ t: "gift", resident_id: chatRid, item_id: pick.blockId }));
+}
+
+// ── 工具耐久·保養 v1（自主提案切片，ROADMAP 981）───────────────────────────
+// 「🔧 保養」鈕鎖定「目前手持（熱鍵選中）的工具」——伺服器是唯一權威：是否真的
+// 磨到該修了、乙太幣夠不夠，一律由後端回 repair_ok/repair_fail 判定，前端只是
+// 機會性地提供這個入口，不做樂觀判斷（不知道真實耐久，避免誤導玩家）。
+
+/** 更新「🔧 保養」按鈕顯示（呼叫於開對話框 / 熱鍵切換後）。 */
+function updateRepairBtn() {
+  const el = document.getElementById("chatRepair");
+  if (!el) return;
+  const held = selectedBlock();
+  if (!TOOL_IDS.has(held) || !((myInv.get(held) || 0) > 0)) {
+    el.textContent = "🔧 保養";
+    el.classList.add("repair-empty");
+  } else {
+    const iname = BLOCK_NAME[held] || "工具";
+    el.textContent = "🔧 保養" + iname;
+    el.classList.remove("repair-empty");
+  }
+}
+
+let lastRepairMs = 0; // 保養本地冷卻（防連按）
+
+/** 請當前居民保養手持工具（工具耐久 v1，ROADMAP 981）。 */
+function tryRepairTool() {
+  if (!wsReady || !chatRid) return;
+  const now = Date.now();
+  if (now - lastRepairMs < 1500) return; // 1.5 秒本地冷卻，比照贈禮
+  const held = selectedBlock();
+  if (!TOOL_IDS.has(held)) {
+    appendMsg("sys", "先切到你想保養的工具（鎬/斧/鏟）再按保養吧～");
+    return;
+  }
+  lastRepairMs = now;
+  ws.send(JSON.stringify({ t: "repair_tool", resident_id: chatRid, tool_id: held }));
 }
 
 // ── 居民以物易物（ROADMAP 670）───────────────────────────────────────────────
@@ -6270,6 +6316,7 @@ function selectSlot(i) {
   }
   // 手持食物時：放置鈕改標「吃」，提示放置＝吃（玩家生存指標 v1·溫和版）。
   refreshPlaceBtnLabel();
+  updateRepairBtn(); // 工具耐久 v1（981）：切換熱鍵即時反映保養鈕（若對話框開著）
 }
 function selectedBlock() { return HOTBAR[selectedSlot]; }
 
@@ -7438,6 +7485,7 @@ function connect() {
       }
       updateInvHud();
       updateGiftBtn(); // 贈禮 v1：背包恢復後同步更新按鈕
+      updateRepairBtn(); // 工具耐久 v1（981）：背包恢復後同步更新保養鈕
       updateEatBtn();  // 吃 v1：背包恢復後同步更新吃鈕
       refreshPlaceBtnLabel(); // 手持食物 → 放置鈕標「吃」
       updateFireworkBtn(); // 乙太煙火 v1（785）：背包變動同步更新施放鈕
@@ -7447,6 +7495,7 @@ function connect() {
       else myInv.delete(m.block_id);
       updateInvHud();
       updateGiftBtn(); // 贈禮 v1：材料變動後同步更新按鈕
+      updateRepairBtn(); // 工具耐久 v1（981）：材料變動（含扣乙太幣）後同步更新保養鈕
       updateEatBtn();  // 吃 v1：材料變動後同步更新吃鈕
       refreshPlaceBtnLabel(); // 手持食物存量變動 → 更新放置/吃鈕標示
       updateFireworkBtn(); // 乙太煙火 v1（785）：背包變動同步更新施放鈕
@@ -7535,6 +7584,18 @@ function connect() {
       // 贈禮 v1：送禮失敗（太遠 / 沒材料）。
       showErr(m.reason || "無法送禮");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "repair_ok") {
+      // 工具耐久·保養 v1（自主提案切片，ROADMAP 981）：保養成功——居民回應顯示在對話框；
+      // 乙太幣已由 inv_update 同步扣除，換工具/開對話框後重算保養鈕即知是否還需要修。
+      appendMsg("sys", "🔧 " + (m.line || "工具修好了！"));
+    } else if (m.t === "repair_fail") {
+      // 工具耐久·保養 v1：保養失敗（太遠／背包沒有這件工具／還很堪用／乙太幣不夠）。
+      showErr(m.reason || "現在沒法保養");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2200);
+    } else if (m.t === "tool_worn") {
+      // 工具耐久 v1：手上的工具剛好磨到「該修了」——只在跨過門檻那一刻提醒一次，不逐次採集洗版。
+      showMsg(m.line || "🔧 工具用得有點鈍了，去找居民保養一下吧。");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3200);
     } else if (m.t === "eat_ok") {
       // 吃東西回復飢餓 v1：熟食帶暖意回饋句（m.line）；生食沒有那份料理暖意，就給樸實的填飽提示。
       const iname = BLOCK_NAME[m.item_id] || m.item_name || "食物";
