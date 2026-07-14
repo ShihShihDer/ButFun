@@ -5671,9 +5671,21 @@ export function villageMapPoint(worldX, worldZ, centerX, centerZ, rangeUnits, ra
   return { x: (dx / rangeUnits) * radiusPx, y: (dz / rangeUnits) * radiusPx, clamped };
 }
 
-let mapData = null; // 最近一次 /voxel/village-map 回應（{cx,cz,plaza_radius,road_reach,plots}）
+let mapData = null; // 最近一次 /voxel/village-map 回應（{cx,cz,plaza_radius,road_reach,plots,colonies}）
 let mapVisible = false;
 let mapRedrawTimer = null;
+const colonyListEl = document.getElementById("colonyList");
+
+/** 已知殖民地距太遠，畫不進固定範圍的畫布（見 VILLAGE_MAP_RANGE_UNITS 註解）——改用
+ * 文字列表呈現方位／距離／人口，讓玩家知道「還有其他村子，往哪個方向、多遠、住了幾人」。 */
+function renderColonyList() {
+  if (!colonyListEl) return;
+  const colonies = mapData && Array.isArray(mapData.colonies) ? mapData.colonies : [];
+  if (colonies.length === 0) { colonyListEl.innerHTML = ""; return; }
+  colonyListEl.innerHTML = colonies
+    .map((c) => `<div class="colony-row"><span class="colony-name">${c.name}</span><span>${c.bearing} · ${c.dist}格 · ${c.population}人</span></div>`)
+    .join("");
+}
 
 /** 重繪村莊地圖畫布：十字主路 + 廣場方形 + 各地塊（已認領=金點+名字／空地=灰點）+ 玩家藍點。 */
 function renderVillageMap() {
@@ -5735,6 +5747,7 @@ async function refreshVillageMap() {
     mapData = null;
   }
   renderVillageMap();
+  renderColonyList();
 }
 
 /** 開啟村莊地圖面板：抓一次地塊佈局（地塊認領變化很慢，30 秒刷新一次足夠），
@@ -9180,6 +9193,7 @@ window.__voxel = {
     return villageMapPoint(worldX, worldZ, centerX, centerZ, rangeUnits, radiusPx);
   },
   setVillageMapDataForTest(data) { mapData = data; },
+  renderColonyList() { renderColonyList(); return colonyListEl && colonyListEl.innerHTML; },
   // ── 探索紀事 QA 用（自主提案切片，接續 838/839）──
   openDiscoveries() { return openDiscoveries(); },
   closeDiscoveries() { closeDiscoveries(); },
