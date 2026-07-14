@@ -15403,14 +15403,17 @@ fn maybe_crown_masters() {
     // 3) 純計算（無鎖）：算出村裡每門手藝目前的公認名匠。
     let masters = vfame::masters(&evidence);
 
-    // 4) 刷新「手藝→名匠」快照供就地指導讀取（短鎖即釋）。
-    {
+    // 4) 刷新「手藝→名匠」快照供就地指導讀取（短鎖即釋）；覆寫前先留一份前一輪快照，
+    //    供下面判斷「青出於藍」（自主提案切片：新科名匠推翻的前任，正是自己的授業恩師）。
+    let prev_master_by_goal: std::collections::HashMap<u8, String> = {
         let mut by_goal = master_by_goal().lock().unwrap();
+        let prev = by_goal.clone();
         by_goal.clear();
         for m in &masters {
             by_goal.insert(m.goal_block, m.resident.clone());
         }
-    } // 快取鎖釋放
+        prev
+    }; // 快取鎖釋放
 
     // 5) 挑出這一輪**新加冕**的名匠（已加冕帳本短鎖即釋）。
     let newly: Vec<vfame::CraftFame> = {
@@ -15424,7 +15427,19 @@ fn maybe_crown_masters() {
         return;
     }
 
-    // 6) 名匠冒出心聲泡泡（residents 寫鎖短取即釋；名字對回 id 設泡泡）。
+    // 5b) 「青出於藍」判定（自主提案切片，ROADMAP 980）：newly 之中，誰的授業恩師
+    //     正是他推翻的前一任名匠——`resident 顯示名 → 恩師顯示名` 的小映射（純計算，無鎖）。
+    let surpasses: std::collections::HashMap<String, String> = newly
+        .iter()
+        .filter_map(|m| {
+            let prev = prev_master_by_goal.get(&m.goal_block)?;
+            vfame::surpasses_own_teacher(&evidence, &m.resident, m.goal_block, Some(prev))
+                .then(|| (m.resident.clone(), prev.clone()))
+        })
+        .collect();
+
+    // 6) 名匠冒出心聲泡泡（residents 寫鎖短取即釋；名字對回 id 設泡泡）。青出於藍時，
+    //    徒弟改冒感念恩師的專屬泡泡，恩師（若仍在世界裡）也一併冒出百感交集的反應。
     let name_to_id: std::collections::HashMap<&'static str, String> =
         id_to_name.iter().map(|(id, name)| (*name, id.clone())).collect();
     let now_secs = vfarm::now_secs();
@@ -15434,32 +15449,69 @@ fn maybe_crown_masters() {
         for m in &newly {
             if let Some(id) = name_to_id.get(m.resident.as_str()) {
                 if let Some(r) = residents.iter_mut().find(|r| &r.id == id) {
-                    r.say = vfame::crown_say_line(&m.craft, pick).chars().take(50).collect();
+                    r.say = match surpasses.get(&m.resident) {
+                        Some(teacher) => vfame::surpass_student_say_line(teacher, &m.craft, pick),
+                        None => vfame::crown_say_line(&m.craft, pick),
+                    }
+                    .chars()
+                    .take(50)
+                    .collect();
                     r.say_timer = SAY_SECS;
                     r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                }
+            }
+            if let Some(teacher_name) = surpasses.get(&m.resident) {
+                if let Some(tid) = name_to_id.get(teacher_name.as_str()) {
+                    if let Some(tr) = residents.iter_mut().find(|r| &r.id == tid) {
+                        tr.say = vfame::surpass_teacher_say_line(&m.resident, &m.craft, pick)
+                            .chars()
+                            .take(50)
+                            .collect();
+                        tr.say_timer = SAY_SECS;
+                        tr.mood_boost_secs = tr.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+                    }
                 }
             }
         }
     } // residents 寫鎖釋放
     broadcast_players();
 
-    // 7) 各留一筆內心記憶 + 世界 Feed（IO 全在鎖外）。
+    // 7) 各留一筆內心記憶 + 世界 Feed（IO 全在鎖外）。青出於藍時徒弟與恩師各留專屬的
+    //    一筆記憶、Feed 也改播報這段師徒淵源，而非泛用的加冕文案。
     for m in &newly {
+        let teacher_name = surpasses.get(&m.resident);
         if let Some(id) = name_to_id.get(m.resident.as_str()) {
-            let entry = hub().memory.write().unwrap().add_memory(
-                id,
-                m.resident.as_str(),
-                &vfame::crown_memory_line(&m.craft),
-            );
+            let line = match teacher_name {
+                Some(teacher) => vfame::surpass_student_memory_line(teacher, &m.craft),
+                None => vfame::crown_memory_line(&m.craft),
+            };
+            let entry = hub().memory.write().unwrap().add_memory(id, m.resident.as_str(), &line);
             vmem::append_memory(&entry);
         }
-        vfeed::append_feed(
-            vfame::FEED_KIND,
-            &m.resident,
-            &vfame::crown_feed_line(&m.resident, &m.craft),
-        );
+        if let Some(teacher) = teacher_name {
+            if let Some(tid) = name_to_id.get(teacher.as_str()) {
+                let entry = hub().memory.write().unwrap().add_memory(
+                    tid,
+                    teacher.as_str(),
+                    &vfame::surpass_teacher_memory_line(&m.resident, &m.craft),
+                );
+                vmem::append_memory(&entry);
+            }
+            vfeed::append_feed(
+                vfame::SURPASS_FEED_KIND,
+                &m.resident,
+                &vfame::surpass_feed_line(&m.resident, teacher, &m.craft),
+            );
+        } else {
+            vfeed::append_feed(
+                vfame::FEED_KIND,
+                &m.resident,
+                &vfame::crown_feed_line(&m.resident, &m.craft),
+            );
+        }
         tracing::info!(
             master = %m.resident, craft = %m.craft, score = m.score,
+            surpassed_teacher = teacher_name.map(|s| s.as_str()).unwrap_or(""),
             "名匠加冕：村裡公認的手藝權威誕生（純以既有發明/師承紀錄重算，零 LLM/零 migration）"
         );
     }
