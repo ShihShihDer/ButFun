@@ -2517,9 +2517,9 @@ struct VoxelHub {
     /// 暗影生物 v1（怪物/抵禦第一刀）：此刻在世的暗影小靈（伺服器權威，隨 players 快照廣播）。
     /// 純記憶體、重啟消失（黎明本就整批消散，無持久化需求）。純確定性 tick、零 LLM。
     shadows: RwLock<Vec<vshadow::Wisp>>,
-    /// 暗影生物 v1：光源方塊座標快取（火把/冰晶燈/乙太燈/營火）。低頻（數秒）掃一次世界
-    /// delta 重建——成本與「被改過的方塊數」成正比，暗影 tick 逐隻查亮區時 O(燈數) 便宜查。
-    shadow_lights: RwLock<Vec<(i32, i32, i32)>>,
+    /// 暗影生物 v1：光源方塊增量索引（火把/冰晶燈/乙太燈/營火）。啟動時從 delta
+    /// 重放一次；之後每格世界變更在廣播前短鎖更新，不與 deltas 鎖巢狀。
+    shadow_lights: RwLock<vshadow::LightIndex>,
     /// 暗影生物 v1：居民害怕反應冷卻（居民 id → 上次冒害怕泡泡的時刻），避免整夜洗版。
     /// 純記憶體、黎明清空。
     shadow_fear_cd: std::sync::Mutex<HashMap<String, std::time::Instant>>,
@@ -3241,6 +3241,8 @@ fn hub() -> &'static VoxelHub {
         // 木長椅 v1：同理從 replay 後的 delta 掃出所有既存長椅座標，重建歇腳清單（重啟後居民
         // 仍會被重啟前擺的長椅吸引坐下歇腳）。一次性、非熱路徑。
         let benches = vbench::scan_benches(&deltas);
+        // 光源索引只在啟動時全量重放一次；此時 hub 尚未公開，沒有任何鎖序問題。
+        let shadow_lights = vshadow::replay_lights(&deltas);
         VoxelHub {
             players: RwLock::new(HashMap::new()),
             deltas: RwLock::new(deltas),
@@ -3417,9 +3419,9 @@ fn hub() -> &'static VoxelHub {
             )),
             // 啟動時從 data/voxel_waypoints.jsonl 載回玩家個人路標（含刪除 tombstone，重啟後仍記得）。
             waypoints: RwLock::new(vwaypoint::WaypointStore::from_entries(vwaypoint::load_entries())),
-            // 暗影生物 v1：啟動時無暗影（入夜後才在暗處慢慢冒）；光源快取由 tick 低頻重掃。
+            // 暗影生物 v1：啟動時無暗影（入夜後才在暗處慢慢冒）。
             shadows: RwLock::new(Vec::new()),
-            shadow_lights: RwLock::new(Vec::new()),
+            shadow_lights: RwLock::new(shadow_lights),
             shadow_fear_cd: std::sync::Mutex::new(HashMap::new()),
             // 夜裡點燈守望 v1：啟動時無點燈冷卻紀錄（純記憶體、黎明清空）。
             nightwatch_cd: std::sync::Mutex::new(HashMap::new()),
@@ -4022,6 +4024,8 @@ fn pack_chunks_msg(columns: &[(i32, i32)]) -> String {
 
 /// 廣播一則方塊更新（破壞/放置後）給所有連線。前端據此只重建受影響的 chunk mesh。
 fn broadcast_block(x: i32, y: i32, z: i32, b: Block) {
+    // 正式世界寫入皆在 deltas 鎖釋放後廣播；在此同步索引，兩把 RwLock 永不巢狀。
+    vshadow::update_light(&mut hub().shadow_lights.write().unwrap(), x, y, z, b);
     let msg = Arc::new(
         serde_json::json!({ "t": "block", "x": x, "y": y, "z": z, "b": b as u8 }).to_string(),
     );
@@ -11714,16 +11718,8 @@ fn tick_shadows(dt: f32) {
         return;
     }
 
-    // 低頻重掃光源快取（每 LIGHT_RESCAN_SECS 秒）：deltas 讀鎖內純掃描 → drop → 寫回快取。
-    let rescan_every = (vshadow::LIGHT_RESCAN_SECS / dt).max(1.0) as u64;
-    if tick_no % rescan_every == 0 {
-        let lights = {
-            let world = hub().deltas.read().unwrap();
-            vshadow::collect_lights(&world)
-        }; // deltas 讀鎖釋放
-        *hub().shadow_lights.write().unwrap() = lights;
-    }
-    let lights: Vec<(i32, i32, i32)> = { hub().shadow_lights.read().unwrap().clone() };
+    // 光源索引由每次方塊寫入增量維護；此處不再掃 WorldDelta。
+    let lights = { vshadow::collect_lights(&hub().shadow_lights.read().unwrap()) };
 
     // 目標快照（短鎖循序取放）：所有玩家 + 醒著的居民。暗影漂向最近者；居民只會怕、絕不掉血。
     let players: Vec<(f32, f32, f32)> = {
@@ -12125,8 +12121,8 @@ fn tick_nightwatch(dt: f32) {
     if shadows.is_empty() {
         return;
     }
-    // 光源快取（tick_shadows 低頻維護，讀即釋）：判斷候選點是否夠暗。
-    let lights: Vec<(i32, i32, i32)> = { hub().shadow_lights.read().unwrap().clone() };
+    // 光源增量索引（讀即釋）：判斷候選點是否夠暗。
+    let lights = { vshadow::collect_lights(&hub().shadow_lights.read().unwrap()) };
     // 醒著居民快照（短讀鎖）：睡著的不守望。
     let residents_snap: Vec<(String, f32, f32)> = {
         let rs = hub().residents.read().unwrap();
@@ -12185,8 +12181,7 @@ fn tick_nightwatch(dt: f32) {
         // ⑦ 持久化（append-only IO，鎖外）＋廣播給前端亮起這盞燈。
         vbuild::append_world_block(cx, cy, cz, vnwatch::WATCH_LAMP_BLOCK as u8);
         broadcast_block(cx, cy, cz, vnwatch::WATCH_LAMP_BLOCK);
-        // ⑧ 即時補進光源快取：本輪後續檢查與下輪暗影 tick 立刻視為亮區（暗影誤入即化煙）。
-        { hub().shadow_lights.write().unwrap().push((cx, cy, cz)); }
+        // ⑧ broadcast_block 已在 deltas 鎖外同步光源索引；本輪後續立刻視為亮區。
         // ⑨ 記冷卻＋夜間計數。
         { hub().nightwatch_cd.lock().unwrap().insert(rid.clone(), now); }
         NIGHTWATCH_LAMPS_TONIGHT.fetch_add(1, Ordering::Relaxed);
