@@ -859,6 +859,19 @@ struct VoxelResident {
     /// [`vcare::CARE_COOLDOWN_SECS`]，歸零前不再重複關心同一次挨餓——你若持續挨餓，過了這麼久
     /// 才會再被同一位居民注意到一次。各居民初始錯開。純記憶體、重啟歸零。
     hunger_care_cooldown: f32,
+    /// 遠征首領聞訊馳援 v2（自主提案切片，ROADMAP 983）：true＝此刻正被首領事件吸引、放下閒晃
+    /// 走向首領所在地陪玩家一起打；只從「完全閒置」的居民裡挑（見 `tick_residents` 觸發段的
+    /// 守門判定），被選中不需要取消任何進行中任務。首領倒下/撤退時清空。純記憶體、重啟歸零。
+    boss_assist: bool,
+    /// 馳援週期檢查倒數（秒，ROADMAP 983）：歸零時才擲一次「要不要去馳援」的骰
+    /// （[`vboss::ASSIST_CHECK_INTERVAL_SECS`]），避免每 tick 都算機率。各居民初始錯開。
+    boss_assist_check_timer: f32,
+    /// 馳援冷卻倒數（秒，ROADMAP 983）：一次馳援（首領倒下或撤退）結束後設
+    /// [`vboss::ASSIST_COOLDOWN_SECS`]，歸零前不會再被選中——讓馳援名額雨露均霑、不黏著同一位。
+    boss_assist_cooldown: f32,
+    /// 馳援挖擊間隔倒數（秒，ROADMAP 983）：`boss_assist=true` 且貼近首領時才使用，歸零才輕輕
+    /// 削一下（[`vboss::ASSIST_HIT_INTERVAL_SECS`]，遠慢於玩家），防止每 tick 都算一次觸及判定。
+    boss_assist_hit_timer: f32,
 }
 
 /// 環境生物的種類（水中游魚 v1，ROADMAP 848 起 wildlife 系統擴充為可延伸的多種類；
@@ -2182,6 +2195,12 @@ fn build_resident(
             hunger_care_cooldown: vcare::care_cd_offset(i),
             // 居民見賢思齊 v1：首次冷卻各自錯開，避免啟動後一群居民同時路過地標齊聲心生嚮往。
             envy_timer: venvy::ENVY_COOLDOWN_SECS * 0.5 + i as f32 * 90.0,
+            // 遠征首領聞訊馳援 v2（ROADMAP 983）：入場沒在馳援；首次檢查倒數各自錯開，
+            // 避免首領一現身就全員同一 tick 一起擲骰；冷卻歸零（真正觸發還需世界確實有首領在世）。
+            boss_assist: false,
+            boss_assist_check_timer: vboss::ASSIST_CHECK_INTERVAL_SECS * 0.5 + i as f32 * 5.0,
+            boss_assist_cooldown: 0.0,
+            boss_assist_hit_timer: 0.0,
     }
 }
 
@@ -10793,6 +10812,10 @@ async fn handle_socket(
                             "t": "inv_update", "block_id": vshadow::SHARD_ITEM_ID, "count": nc
                         }).to_string())).await;
                     }
+                    // 居民聞訊馳援 v2（ROADMAP 983）：玩家補上最後一擊時，此刻仍在馳援中的居民
+                    // 一併記一筆「我也在場」的記憶＋動態牆點名（world_boss 寫鎖已在上方釋放，
+                    // 這裡再序列取一次 residents 寫鎖不算巢狀，守死鎖鐵律）。
+                    credit_boss_assist_on_defeat();
                 }
             }
 
@@ -11955,11 +11978,45 @@ fn tick_worldboss() {
     let (bx, bz) = vboss::spawn_pos(vcx as f32, vcz as f32, angle, dist);
     let by = crate::voxel::height_at(bx.floor() as i32, bz.floor() as i32) as f32 + 1.0;
     { *hub().world_boss.write().unwrap() = Some(vboss::WorldBoss {
-        x: bx, y: by, z: bz, hp: vboss::BOSS_MAX_HP, spawned_at: vfarm::now_secs(),
+        x: bx, y: by, z: bz, hp: vboss::BOSS_MAX_HP, spawned_at: vfarm::now_secs(), assist_damage: 0,
     }); }
     let dir = vcolony::bearing_label(vcx, vcz, bx.floor() as i32, bz.floor() as i32);
     broadcast_worldboss("spawn", &vboss::spawn_msg(dir));
     vfeed::append_feed(vboss::FEED_KIND, vboss::FEED_ACTOR, &vboss::spawn_feed(dir));
+}
+
+/// 居民聞訊馳援 v2（ROADMAP 983）：首領倒下那一刻（不論是玩家 `BossHit` 補上最後一擊，或
+/// 居民陪打的象徵性傷害剛好補齊），把此刻仍在馳援中的居民各自記一筆「我也在場」的記憶，
+/// 動態牆一併點名感謝，再清空旗標、進冷卻——供兩處擊倒收尾共用（`BossHit` 玩家擊殺分支／
+/// `tick_residents` 居民傷害擊殺分支），避免同一套「有到場的人給 credit」邏輯重複兩份。
+/// **只在真正擊倒時呼叫**——首領逾期撤退走另一條靜默收尾路徑（`tick_residents` 迴圈內既有的
+/// 防禦性兜底：`boss_snap` 讀到 `None` 時逐位靜默清空，不留記憶、不播報，守「撤退無感言」）。
+fn credit_boss_assist_on_defeat() {
+    let assisting: Vec<(String, &'static str)> = {
+        let mut rs = hub().residents.write().unwrap();
+        let picked: Vec<(String, &'static str)> =
+            rs.iter().filter(|r| r.boss_assist).map(|r| (r.id.clone(), r.name)).collect();
+        for r in rs.iter_mut() {
+            if r.boss_assist {
+                r.boss_assist = false;
+                r.boss_assist_cooldown = vboss::ASSIST_COOLDOWN_SECS;
+            }
+        }
+        picked
+    }; // residents 寫鎖釋放
+    if assisting.is_empty() {
+        return;
+    }
+    for (rid, _) in &assisting {
+        let entry = {
+            hub().memory.write().unwrap().add_memory(
+                rid, vboss::ASSIST_MEMORY_PLAYER, &vboss::assist_defeat_memory(),
+            )
+        }; // memory 寫鎖釋放
+        vmem::append_memory(&entry);
+    }
+    let names: Vec<String> = assisting.iter().map(|(_, n)| n.to_string()).collect();
+    vfeed::append_feed(vboss::FEED_KIND, vboss::FEED_ACTOR, &vboss::assist_defeat_feed(&names));
 }
 
 // ── 夜裡點燈守望 tick（把「怕著躲家」升級成「一起點燈守望」）────────────────────────
@@ -16561,6 +16618,13 @@ fn tick_residents(dt: f32) {
             (a.resident.clone(), fx, fz, demolishing)
         })
     }; // relocations 讀鎖釋放
+    // 遠征首領聞訊馳援 v2（自主提案切片，ROADMAP 983）：在**取 residents 鎖之前**短鎖快照首領
+    // 此刻是否在世＋座標（world_boss 與 residents 是兩把獨立鎖，鎖序鐵律要求絕不巢狀持有——
+    // 首領原地不動，這裡快照一次供整段 residents 迴圈使用即可，不必每位居民各鎖一次）。
+    let boss_snap: Option<(f32, f32, f32)> = {
+        let wb = hub().world_boss.read().unwrap();
+        wb.as_ref().map(|b| (b.x, b.y, b.z))
+    }; // world_boss 讀鎖釋放
     // 本 tick 已抵達工地、要整地一批的居民（鎖內收集，鎖外套用方塊改動）。
     let mut level_workers: Vec<String> = Vec::new();
     // say_updates 提前宣告，過渡台詞與建造台詞共用同一張 Vec，在末尾一次套用。
@@ -17015,6 +17079,11 @@ fn tick_residents(dt: f32) {
     // （鎖內收集，鎖外寫記憶＋各聚落 Feed＋更新 last_custom_day）。每筆＝一座聚落這一 tick 開了
     // 一場暮聚。格式：(settlement_id, 聚落顯示名／None=主村, [(居民 id, 居民名字)])。
     let mut custom_gather_events: Vec<(u64, Option<String>, Vec<(String, &'static str)>)> = Vec::new();
+    // 遠征首領聞訊馳援 v2（ROADMAP 983）：本 tick 收集「誰打中了首領、扣多少血」——迴圈跑完、
+    // residents 寫鎖釋放後才統一對 world_boss 拿一次寫鎖套用，絕不在持 residents 鎖時再去拿
+    // world_boss 鎖（守死鎖鐵律，兩鎖任何時候都不互相巢狀持有）。宣告在 residents 寫鎖區塊
+    // **之外**，才能在鎖釋放後仍讀得到本 tick 收集的內容（比照上方其餘鎖外落地事件的慣例）。
+    let mut boss_hits: Vec<u8> = Vec::new();
 
     // 居民情誼 v1（ROADMAP 672）：到達/離開事件（鎖內偵測，鎖外更新情誼+生成問候語）。
     // 抵達格式：(visitor_id, visitor_name, host_name)
@@ -17119,6 +17188,11 @@ fn tick_residents(dt: f32) {
                 .collect()
         }; // romance 讀鎖釋放
 
+        // 遠征首領聞訊馳援 v2（ROADMAP 983）：世界層級馳援人數計數器，迴圈開始前先掃一次現有
+        // 「正在馳援」的居民（此刻仍在 residents 寫鎖內、無需再借用），下方每新選中一位就遞增，
+        // 確保同一輪 tick 不會一口氣選超過 `vboss::ASSIST_MAX_RESIDENTS` 上限。
+        let mut boss_assist_active = residents.iter().filter(|r| r.boss_assist).count();
+
         // 2b) 物理 + 閒晃 + 社交冷卻 + 思考排程。
         for r in residents.iter_mut() {
             // 冒泡倒數。
@@ -17146,6 +17220,90 @@ fn tick_residents(dt: f32) {
             // 名號化為敬意冷卻倒數（ROADMAP 777）。
             if r.esteem_approach_cooldown > 0.0 {
                 r.esteem_approach_cooldown -= dt;
+            }
+
+            // 遠征首領聞訊馳援 v2（自主提案切片，ROADMAP 983）：週期性檢查「要不要放下手邊的事、
+            // 去現場陪玩家打首領」。冷卻／檢查倒數持續遞減；只有 boss_snap 有值（世界確實有首領
+            // 在世）且這位居民**當下真正完全閒置**（見下方落落長的守門——沒有任何進行中的探訪/
+            // 遠行/聚會/跟隨/發明/採集/整地/搬家等既有任務）才會被納入候選；被選中不需要取消任何
+            // 任務（反正本來就沒有），因此其他觸發點完全不必額外加「除非 boss_assist」的排除。
+            if r.boss_assist_check_timer > 0.0 {
+                r.boss_assist_check_timer -= dt;
+            }
+            if r.boss_assist_cooldown > 0.0 {
+                r.boss_assist_cooldown -= dt;
+            }
+            if !r.boss_assist
+                && r.boss_assist_check_timer <= 0.0
+                && r.boss_assist_cooldown <= 0.0
+                && boss_snap.is_some()
+            {
+                // 檢查週期到了：無論擲骰結果如何都重置，避免每 tick 反覆判定。
+                r.boss_assist_check_timer = vboss::ASSIST_CHECK_INTERVAL_SECS;
+                let truly_idle = !r.asleep
+                    && r.expedition.is_none()
+                    && r.summon.is_none()
+                    && r.follow.is_none()
+                    && r.fetch.is_none()
+                    && r.invent_run.is_none()
+                    && r.invent_walk.is_none()
+                    && r.invent_quarry.is_none()
+                    && r.clique_meet.is_none()
+                    && r.custom_meet.is_none()
+                    && r.visiting.is_none()
+                    && r.stroll_partner.is_none()
+                    && r.walk_with.is_none()
+                    && r.pilgrimage.is_none()
+                    && r.gather.is_none()
+                    && r.frontier_visit.is_none()
+                    && r.far_visit.is_none()
+                    && r.caravan.is_none()
+                    && r.cheer_target.is_none()
+                    && !r.seeking_comfort
+                    && r.approaching_esteem.is_none()
+                    && r.daybreak_seek.is_none()
+                    && r.reunion_seek.is_none()
+                    && r.lover_seek.is_none()
+                    && !r.seeking_food
+                    && !r.foraging_food
+                    && r.forage_target.is_none()
+                    && r.larder_target.is_none()
+                    && !directed_snaps.contains_key(&r.id)
+                    && !reloc_snap.as_ref().is_some_and(|(id, ..)| *id == r.id);
+                if truly_idle
+                    && vboss::should_join_assist(boss_assist_active, rand::random::<f32>())
+                {
+                    r.boss_assist = true;
+                    boss_assist_active += 1;
+                    r.boss_assist_hit_timer = vboss::ASSIST_HIT_INTERVAL_SECS;
+                    if r.say.is_empty() {
+                        let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                        r.say = vboss::assist_join_bubble(pick).chars().take(40).collect();
+                        r.say_timer = SAY_SECS;
+                    }
+                }
+            }
+            // 已在馳援：每 [`vboss::ASSIST_HIT_INTERVAL_SECS`] 秒判定一次是否貼近首領，貼近就
+            // 收集一次象徵性傷害（遠慢、遠輕於玩家——見 voxel_worldboss.rs 模組頭註護欄說明）。
+            // 傷害只在此收集，迴圈跑完、residents 寫鎖釋放後才統一對 world_boss 拿一次寫鎖套用，
+            // 絕不在持 residents 鎖時反過來再拿 world_boss 鎖（守死鎖鐵律，兩鎖不互相巢狀）。
+            if r.boss_assist {
+                if let Some((bx, by, bz)) = boss_snap {
+                    if r.boss_assist_hit_timer > 0.0 {
+                        r.boss_assist_hit_timer -= dt;
+                    }
+                    if r.boss_assist_hit_timer <= 0.0 {
+                        r.boss_assist_hit_timer = vboss::ASSIST_HIT_INTERVAL_SECS;
+                        if vboss::hit_in_reach(r.body.x, r.body.y, r.body.z, bx, by, bz) {
+                            boss_hits.push(vboss::ASSIST_HIT_POWER);
+                        }
+                    }
+                } else {
+                    // 首領已不在世（本 tick 快照較早、期間已被打倒/撤退）：防禦性兜底清空旗標，
+                    // 避免卡在馳援狀態回不去平常閒晃（正常收尾另走 BossHit/tick_worldboss 兩處）。
+                    r.boss_assist = false;
+                    r.boss_assist_cooldown = vboss::ASSIST_COOLDOWN_SECS;
+                }
             }
             // 餓意累積（居民也會肚子餓 v1，ROADMAP 799）：每 tick 慢慢餓一點；靜默冷卻同步倒數。
             // QA 加速：`BUTFUN_HUNGER_RATE_MULT`（預設 1.0）僅供隔離測試把數分鐘的餓意壓成數秒觀察，
@@ -20938,12 +21096,15 @@ fn tick_residents(dt: f32) {
                     // ROADMAP 701：白天下雨時也比照夜間歸巢，居民第一次會為了避雨回家。
                     // 遠行中不遮蔽：牠正遠在荒野邊陲探索，不該被夜間／下雨拉回主城的家（遠行有逾時
                     // 與逗留上限自我了結，不會無限滯留）。
+                    // 馳援中不遮蔽（ROADMAP 983）：正被首領事件吸引往現場走，不該被夜間／下雨拉回家
+                    // ——她是自願放下手邊的事出發的，遠征首領本身也不隨黎明消散，陪伴也不該中途折返。
                     let sheltering = r.visiting.is_none()
                         && r.expedition.is_none()
                         && r.clique_meet.is_none()
                         && r.frontier_visit.is_none()
                         && r.far_visit.is_none()
                         && r.caravan.is_none()
+                        && !r.boss_assist
                         && vr::should_shelter(is_night, raining, house_locations.contains_key(&r.id));
                     // 探訪中：以目的地為閒晃中心（讓居民在鄰居家附近自然走動）；
                     // 遠行逗留中（ROADMAP 756）：以邊陲落點為中心，讓牠在遠方一小片範圍自然走動、不被拉回家；
@@ -20991,6 +21152,12 @@ fn tick_residents(dt: f32) {
                             .get(pname.as_str())
                             .copied()
                             .unwrap_or((r.home_x, r.home_z))
+                    } else if r.boss_assist {
+                        // 遠征首領聞訊馳援 v2（ROADMAP 983）：以首領目前所在地為閒晃中心，一路走
+                        // 向它——boss_snap 在迴圈開始前已快照，首領原地不動，直接讀最新座標即可。
+                        // 若本 tick 期間首領恰好已撤退/被打倒（boss_snap 為 None），退回自己家域
+                        // 容錯不 panic，下一 tick 由上方防禦性兜底把 `boss_assist` 收掉。
+                        boss_snap.map(|(bx, _, bz)| (bx, bz)).unwrap_or((r.home_x, r.home_z))
                     } else if sheltering {
                         let (hx, _hy, hz) = house_locations[&r.id];
                         (hx as f32 + 0.5, hz as f32 + 0.5)
@@ -21026,6 +21193,10 @@ fn tick_residents(dt: f32) {
                     } else if r.walk_with.is_some() {
                         // 居民邀你散步同行：小半徑，貼著玩家並肩、不散開（ROADMAP 926）。
                         vwalkw::WALK_WANDER_RADIUS
+                    } else if r.boss_assist {
+                        // 馳援首領：小半徑貼著首領打轉（ROADMAP 983），要夠小才能穩定落在
+                        // hit_in_reach 判定範圍內、不會閒晃著閒晃著又走遠白跑一趟。
+                        vboss::ASSIST_WANDER_RADIUS
                     } else if sheltering {
                         vr::SHELTER_WANDER_RADIUS
                     } else {
@@ -22186,6 +22357,58 @@ fn tick_residents(dt: f32) {
         }
 
     } // deltas/residents 鎖在此一併釋放
+
+    // 2y) 遠征首領聞訊馳援 v2（ROADMAP 983）：residents 寫鎖已釋放，統一對 world_boss 拿一次
+    // 寫鎖套用本 tick 收集到的居民傷害（守死鎖鐵律，兩鎖任何時候都不互相巢狀持有）；世界層級
+    // 累計傷害封頂 `vboss::ASSIST_TOTAL_DAMAGE_CAP`（模組頭註「陪伴不是代打」唯一被真正強制
+    // 的地方）。若這份傷害剛好補齊最後一口血，收尾與玩家 `BossHit` 擊殺分支同款（慶祝橫幅／
+    // 動態牆／掉落乙太礦），並呼叫共用的 `credit_boss_assist_on_defeat` 讓在場居民各自留一筆
+    // 「我也在場」的記憶。
+    if !boss_hits.is_empty() {
+        let requested: u32 = boss_hits.iter().map(|&h| h as u32).sum();
+        let outcome: Option<(vboss::WorldBoss, bool)> = {
+            let mut wb = hub().world_boss.write().unwrap();
+            match wb.as_ref() {
+                Some(b) => {
+                    let allowed = vboss::assist_damage_remaining(b.assist_damage, requested);
+                    if allowed == 0 {
+                        None
+                    } else {
+                        let (nh, dead) = vboss::register_hit(b.hp, allowed as u8);
+                        let mut snap = b.clone();
+                        snap.hp = nh;
+                        snap.assist_damage = b.assist_damage + allowed;
+                        if dead {
+                            *wb = None; // 倒下當下即從世界移除，比照 BossHit 分支同款收尾
+                        } else {
+                            *wb = Some(snap.clone());
+                        }
+                        Some((snap, dead))
+                    }
+                }
+                None => None, // 首領已不在世（本 tick 期間已被玩家打倒／逾期撤退）：靜默忽略
+            }
+        }; // world_boss 寫鎖釋放
+        if let Some((b, true)) = outcome {
+            broadcast_worldboss("defeat", &vboss::defeat_msg());
+            vfeed::append_feed(vboss::FEED_KIND, vboss::FEED_ACTOR, &vboss::defeat_feed());
+            let spawned = {
+                hub().drops.write().unwrap().spawn(
+                    b.x, b.y, b.z, vshadow::SHARD_ITEM_ID, vboss::DEFEAT_REWARD_SHARDS,
+                    vboss::ASSIST_MEMORY_PLAYER, vfarm::now_secs(),
+                )
+            }; // drops 寫鎖釋放
+            if let Some(did) = spawned {
+                broadcast_item_dropped(
+                    did, b.x, b.y, b.z, vshadow::SHARD_ITEM_ID, vboss::DEFEAT_REWARD_SHARDS,
+                    vboss::ASSIST_MEMORY_PLAYER,
+                );
+            }
+            // else：掉落物全域已達上限——沒有特定擊殺玩家可保底發背包，安靜放棄這次獎勵
+            // （極端邊界：世界已塞滿 200 件掉落物、且觸發條件本身就極窄，可接受）。
+            credit_boss_assist_on_defeat();
+        }
+    }
 
     // 2z) 落地本 tick 於臨界區蒐集的檔案 IO（安全健檢 M10）：guard 已 drop，此處不持任何 residents/
     // deltas 鎖、內容已在鎖內擁有化帶出——按蒐集順序統一 append（memory→farm→feed，各類內部保序）。
