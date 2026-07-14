@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
@@ -2805,6 +2805,37 @@ fn give_mastery_bonus(
 
 static HUB: OnceLock<VoxelHub> = OnceLock::new();
 
+/// 玩家快照的居民基礎心情快取：關係／記憶的變化遠慢於 10Hz 廣播，最多容許三秒後反映。
+/// 這把鎖只保護小型 HashMap；呼叫端先取出待重算 id 就立即釋放，絕不帶著它讀其他狀態鎖。
+const SNAPSHOT_MOOD_CACHE_TTL: Duration = Duration::from_secs(3);
+
+#[derive(Default)]
+struct SnapshotMoodCache {
+    entries: HashMap<String, (voxel_mood::MoodTier, Duration)>,
+}
+
+impl SnapshotMoodCache {
+    fn fresh(&self, resident_id: &str, now: Duration) -> Option<voxel_mood::MoodTier> {
+        self.entries.get(resident_id).and_then(|&(tier, calculated_at)| {
+            (now.saturating_sub(calculated_at) < SNAPSHOT_MOOD_CACHE_TTL).then_some(tier)
+        })
+    }
+
+    fn store(&mut self, resident_id: String, tier: voxel_mood::MoodTier, now: Duration) {
+        self.entries.insert(resident_id, (tier, now));
+    }
+}
+
+fn snapshot_mood_cache() -> &'static std::sync::Mutex<SnapshotMoodCache> {
+    static CACHE: OnceLock<std::sync::Mutex<SnapshotMoodCache>> = OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(SnapshotMoodCache::default()))
+}
+
+fn snapshot_mood_cache_now() -> Duration {
+    static STARTED: OnceLock<Instant> = OnceLock::new();
+    STARTED.get_or_init(Instant::now).elapsed()
+}
+
 // ============================================================
 // 玩家生存指標持久化（血/飢跨重登，比照 #1024 位置持久化：jsonl 一行一玩家）
 // ============================================================
@@ -3407,27 +3438,56 @@ fn players_snapshot_json() -> String {
             rs.iter().map(|r| (r.id.clone(), r.asleep)).collect();
         (snaps, boosts, asleep)
     }; // 居民讀鎖在此釋放
-    // 計算每位居民的心情 emoji（ROADMAP 676）：短鎖讀 bonds → drop → 短鎖讀 memory → drop。
-    let resident_id_strs: Vec<String> = (0..resident_count()).map(|i| format!("vox_res_{i}")).collect();
-    let resident_ids: Vec<&str> = resident_id_strs.iter().map(|s| s.as_str()).collect();
-    let mood_map: HashMap<String, String> = {
+    // 基礎心情最多每三秒重算一次；先短取快取找出過期者，釋放後才依序讀 bonds／memory。
+    // 睡眠與互動補助仍在下方每幀套用，保留原本的即時回饋。
+    let resident_ids: Vec<String> = resident_snaps.iter().map(|(id, ..)| id.clone()).collect();
+    let mood_cache_now = snapshot_mood_cache_now();
+    let (mut base_moods, stale_ids): (HashMap<String, voxel_mood::MoodTier>, Vec<String>) = {
+        let cache = snapshot_mood_cache().lock().unwrap();
+        let mut fresh = HashMap::new();
+        let mut stale = Vec::new();
+        for rid in resident_ids {
+            match cache.fresh(&rid, mood_cache_now) {
+                Some(tier) => {
+                    fresh.insert(rid, tier);
+                }
+                None => stale.push(rid),
+            }
+        }
+        (fresh, stale)
+    }; // 心情快取鎖在此釋放，後續才可取 bonds／memory
+    if !stale_ids.is_empty() {
         // 1. bonds 讀鎖
         let bonds = hub().bonds.read().unwrap();
-        let counts: Vec<(String, usize, usize)> = resident_ids
+        let counts: Vec<(String, usize, usize)> = stale_ids
             .iter()
-            .map(|&rid| {
+            .map(|rid| {
                 let (f, a) = resident_bond_counts(&bonds, rid);
-                (rid.to_string(), f, a)
+                (rid.clone(), f, a)
             })
             .collect();
         drop(bonds); // bonds 讀鎖釋放
         // 2. memory 讀鎖
         let mem = hub().memory.read().unwrap();
-        counts
+        let recalculated: Vec<(String, voxel_mood::MoodTier)> = counts
             .into_iter()
             .map(|(rid, friends, acq)| {
                 let mems = mem.memory_count(&rid);
-                let base_tier = voxel_mood::compute_mood(friends, acq, mems);
+                (rid, voxel_mood::compute_mood(friends, acq, mems))
+            })
+            .collect();
+        drop(mem); // memory 讀鎖釋放
+        {
+            let mut cache = snapshot_mood_cache().lock().unwrap();
+            for (rid, tier) in &recalculated {
+                cache.store(rid.clone(), *tier, mood_cache_now);
+            }
+        } // 所有資料鎖都已釋放，才短暫回填快取
+        base_moods.extend(recalculated);
+    }
+    let mood_map: HashMap<String, String> = base_moods
+        .into_iter()
+        .map(|(rid, base_tier)| {
                 // ROADMAP 681：補助期間心情提升一格，讓玩家即時看到 emoji 改變。
                 let tier = if snapshot_mood_boosts.get(&rid).copied().unwrap_or(false) {
                     voxel_mood::boost_mood(base_tier)
@@ -3441,9 +3501,8 @@ fn players_snapshot_json() -> String {
                     voxel_mood::mood_emoji(tier).to_string()
                 };
                 (rid, emoji)
-            })
-            .collect()
-    }; // memory 讀鎖在此釋放
+        })
+        .collect();
     let residents: Vec<ResidentView> = {
         let des = hub().desires.read().unwrap();
         resident_snaps
@@ -27867,6 +27926,32 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── L8 玩家快照心情快取 ───────────────────────────────────────────────
+    #[test]
+    fn snapshot_mood_cache_reuses_value_until_ttl() {
+        let mut cache = SnapshotMoodCache::default();
+        cache.store("vox_res_0".to_string(), voxel_mood::MoodTier::Lonely, Duration::ZERO);
+        assert_eq!(
+            cache.fresh("vox_res_0", SNAPSHOT_MOOD_CACHE_TTL - Duration::from_millis(1)),
+            Some(voxel_mood::MoodTier::Lonely)
+        );
+        assert_eq!(cache.fresh("vox_res_0", SNAPSHOT_MOOD_CACHE_TTL), None);
+    }
+
+    #[test]
+    fn snapshot_mood_cache_recalculation_replaces_expired_value() {
+        let mut cache = SnapshotMoodCache::default();
+        cache.store("vox_res_0".to_string(), voxel_mood::MoodTier::Lonely, Duration::ZERO);
+        let now = SNAPSHOT_MOOD_CACHE_TTL;
+        assert!(cache.fresh("vox_res_0", now).is_none());
+        cache.store(
+            "vox_res_0".to_string(),
+            voxel_mood::compute_mood(1, 0, 5),
+            now,
+        );
+        assert_eq!(cache.fresh("vox_res_0", now), Some(voxel_mood::MoodTier::Joyful));
+    }
 
     // ── 玩家統計批次持久化閘門 ──────────────────────────────────────────────
     #[test]
