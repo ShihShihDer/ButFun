@@ -194,11 +194,13 @@ pub struct BuildPlan {
     /// `#[serde(default)]` 供舊 jsonl 向後相容（舊行沒有這欄，一律視為空、維持原單人完工行為）。
     #[serde(default)]
     pub helpers: Vec<String>,
-    /// 蓋家真的用材料 v1（自主提案切片）：目前是否正因缺原料而暫停（見 `is_raw_material`）。
-    /// 只用來讓缺料/復工的泡泡與動態牆各只冒一次（狀態轉換才觸發），不影響 `remaining`
-    /// 本身。`#[serde(default)]` 供舊 jsonl 向後相容（舊行沒有這欄，一律視為未暫停）。
+    /// 蓋家真的用材料 v3（回應 review #1283 v2 退回：每塊都缺料/復工兩則洗版動態牆）：
+    /// 正卡關的那一種材料方塊 id；`None` = 沒有進行中的材料困擾。用來讓缺料/復工/將就
+    /// 的泡泡與動態牆整份計畫對同一種材料只各講一次（材料換了種類、或這一種終於湊到了
+    /// 才會變化），不影響 `remaining` 本身。`#[serde(default)]` 供舊 jsonl 向後相容
+    /// （這個功能還沒上過 prod，純粹保留一貫的相容寫法）。
     #[serde(default)]
-    pub stalled: bool,
+    pub stall_material: Option<u8>,
 }
 
 impl BuildPlan {
@@ -230,6 +232,19 @@ impl BuildPlan {
     /// 窺視下一個待放方塊，不取出（蓋家真的用材料 v1：放之前先看看要不要扣料）。
     pub fn peek_next(&self) -> Option<&BuildBlock> {
         self.remaining.front()
+    }
+
+    /// 把方塊放回最前面（撤銷剛才的 `pop_next`）：蓋家真的用材料 v3——判定材料不夠、
+    /// 這塊這次不放時用，讓她下個 tick 還是先處理同一塊，不會憑空多算或漏算一塊
+    /// （即使中途被別位居民互助蓋家插了一手，`remaining` 也不會壞帳，見模組檔頭鎖序說明）。
+    pub fn push_front(&mut self, bb: BuildBlock) {
+        self.remaining.push_front(bb);
+    }
+
+    /// 這份計畫剩下（含即將處理的這塊）還要幾塊某種材料——供批次備料抓「一次備多少」
+    /// 的量，別讓她一塊只採一趟（蓋家真的用材料 v3，回應 review #1283 v2「動態牆洗版」退回）。
+    pub fn count_material(&self, block_id: u8) -> u32 {
+        self.remaining.iter().filter(|bb| bb.b == block_id).count() as u32
     }
 }
 
@@ -302,7 +317,7 @@ impl BuildStore {
             expansion,
             inspired_by,
             helpers: Vec::new(),
-            stalled: false,
+            stall_material: None,
         };
         self.next_seq += 1;
         self.plans.insert(resident.to_string(), plan.clone());
@@ -857,8 +872,8 @@ pub fn build_say_line(kind_name: &str, progress_pct: u32) -> String {
 // 是「你給她材料、她自己放」，方向不同、互不重疊，兩者可並存。
 //
 // **純邏輯層**：`is_raw_material` / `material_name_zh` 判斷與命名、缺料/復工的泡泡與
-// 動態牆文案全是確定性純函式，零 LLM、零鎖、零 IO。res_inv 讀寫／`stalled` 旗標切換
-// 全在 `voxel_ws.rs`。
+// 動態牆文案全是確定性純函式，零 LLM、零鎖、零 IO。res_inv 讀寫／`stall_material` 旗標
+// 切換／批次備料執行全在 `voxel_ws.rs`。
 
 /// 是否為「原料類」方塊——居民自己採集就會進 `res_inv` 的四種基礎資源。
 /// 只有這四種蓋家時才真的扣材料；其餘（板材/拋光石/門/床/火把/玻璃……）維持既有
@@ -866,6 +881,12 @@ pub fn build_say_line(kind_name: &str, progress_pct: u32) -> String {
 pub fn is_raw_material(block: Block) -> bool {
     matches!(block, Block::Wood | Block::Stone | Block::Sand | Block::Grass)
 }
+
+/// 蓋家真的用材料 v3（回應 review #1283 v2 退回：`GATHER_QUOTA=2` 讓她一塊採一趟、
+/// 每塊都缺料/復工，動態牆被洗版）：缺料時一次備一批，批量對齊「這份計畫剩下還要
+/// 幾塊同種材料」（見 `BuildPlan::count_material`），但設這個上限——不讓稀有材料的
+/// 房子把居民綁在一趟過長的連續採集上（`GATHER_MAX_RADIUS` 加總可能要走很遠）。
+pub const MATERIAL_BATCH_CAP: u32 = 6;
 
 /// 原料方塊的中文顯示名（供缺料/復工文案使用）。非原料回傳空字串（呼叫端不該對非
 /// 原料呼叫這個函式，回空字串比 panic 安全，且好測）。
@@ -883,7 +904,7 @@ pub fn material_name_zh(block: Block) -> &'static str {
 pub fn material_stall_bubble(material: &str, pick: usize) -> String {
     const TEMPLATES: [&str; 3] = [
         "咦，手邊的{}用完了……去張羅張羅。",
-        "還缺一份{}，先去找找看。",
+        "還缺{}，先去找找看。",
         "{}不夠了，蓋到這邊得先停一下。",
     ];
     TEMPLATES[pick % TEMPLATES.len()].replacen("{}", material, 1)
@@ -1758,7 +1779,7 @@ mod tests {
             expansion: false,
             inspired_by: None,
             helpers: Vec::new(),
-            stalled: false,
+            stall_material: None,
         };
         let s = BuildStore::from_entries(vec![plan]);
         assert!(s.has_plan("vox_res_0"));
@@ -1779,7 +1800,7 @@ mod tests {
             expansion: false,
             inspired_by: None,
             helpers: Vec::new(),
-            stalled: false,
+            stall_material: None,
         };
         let s = BuildStore::from_entries(vec![plan]);
         assert!(!s.has_plan("vox_res_0"), "已完成的計畫不應載回");
@@ -1800,7 +1821,7 @@ mod tests {
             expansion: false,
             inspired_by: None,
             helpers: Vec::new(),
-            stalled: false,
+            stall_material: None,
         };
         let new = BuildPlan {
             resident: "vox_res_0".into(),
@@ -1815,7 +1836,7 @@ mod tests {
             expansion: false,
             inspired_by: None,
             helpers: Vec::new(),
-            stalled: false,
+            stall_material: None,
         };
         let s = BuildStore::from_entries(vec![old, new]);
         assert_eq!(s.plans["vox_res_0"].kind, "tower", "應保留 seq 較大的計畫");
@@ -1842,7 +1863,7 @@ mod tests {
             expansion: false,
             inspired_by: None,
             helpers: Vec::new(),
-            stalled: false,
+            stall_material: None,
         };
         // 檔序：滿 → 遞減 → 0（done）。最新（最後）一行才是真狀態＝蓋完了。
         let entries = vec![mk(31), mk(20), mk(10), mk(1), mk(0)];
@@ -1874,7 +1895,7 @@ mod tests {
             expansion: false,
             inspired_by: None,
             helpers: Vec::new(),
-            stalled: false,
+            stall_material: None,
         };
         let s = BuildStore::from_entries(vec![mk(30), mk(15), mk(7)]);
         assert!(s.has_plan("vox_res_1"), "最新一行未蓋完 → 該續蓋");
@@ -1992,12 +2013,74 @@ mod tests {
             expansion: false,
             inspired_by: None,
             helpers: Vec::new(),
-            stalled: false,
+            stall_material: None,
         };
         assert_eq!(plan.peek_next().map(|b| b.b), Some(Block::Wood as u8));
         // peek 兩次結果一致（不像 pop_next 會消耗掉）。
         assert_eq!(plan.peek_next().map(|b| b.b), Some(Block::Wood as u8));
         assert_eq!(plan.remaining.len(), 1, "peek 不應改動 remaining");
+    }
+
+    // ── push_front / count_material 純函式（蓋家真的用材料 v3）─────────────────
+
+    #[test]
+    fn push_front_undoes_pop_next_without_losing_or_duplicating() {
+        let mut plan = BuildPlan {
+            resident: "vox_res_0".into(),
+            kind: "house".into(),
+            kind_name: "小木屋".into(),
+            cx: 0,
+            cy: 0,
+            cz: 0,
+            remaining: vec![
+                BuildBlock { x: 0, y: 0, z: 0, b: Block::Wood as u8 },
+                BuildBlock { x: 1, y: 0, z: 0, b: Block::Stone as u8 },
+            ]
+            .into(),
+            total: 2,
+            seq: 0,
+            expansion: false,
+            inspired_by: None,
+            helpers: Vec::new(),
+            stall_material: None,
+        };
+        let bb = plan.pop_next().expect("應彈出第一塊");
+        assert_eq!(bb.b, Block::Wood as u8);
+        assert_eq!(plan.remaining.len(), 1, "pop 後只剩一塊");
+        assert_eq!(plan.progress_pct(), 50, "pop 後進度應計入");
+
+        plan.push_front(bb);
+        assert_eq!(plan.remaining.len(), 2, "push_front 撤銷 pop，數量應還原");
+        assert_eq!(plan.peek_next().map(|b| b.b), Some(Block::Wood as u8), "順序應還原到最前面");
+        assert_eq!(plan.progress_pct(), 0, "撤銷後不應誤算已放置");
+    }
+
+    #[test]
+    fn count_material_counts_only_matching_remaining_blocks() {
+        let plan = BuildPlan {
+            resident: "vox_res_0".into(),
+            kind: "house".into(),
+            kind_name: "小木屋".into(),
+            cx: 0,
+            cy: 0,
+            cz: 0,
+            remaining: vec![
+                BuildBlock { x: 0, y: 0, z: 0, b: Block::Wood as u8 },
+                BuildBlock { x: 1, y: 0, z: 0, b: Block::Stone as u8 },
+                BuildBlock { x: 2, y: 0, z: 0, b: Block::Wood as u8 },
+                BuildBlock { x: 3, y: 0, z: 0, b: Block::Plank as u8 },
+            ]
+            .into(),
+            total: 4,
+            seq: 0,
+            expansion: false,
+            inspired_by: None,
+            helpers: Vec::new(),
+            stall_material: None,
+        };
+        assert_eq!(plan.count_material(Block::Wood as u8), 2);
+        assert_eq!(plan.count_material(Block::Stone as u8), 1);
+        assert_eq!(plan.count_material(Block::Glass as u8), 0, "沒出現過的材料應回 0");
     }
 
     // ── should_help_build / help_say_line 純函式 ─────────────────────────────
