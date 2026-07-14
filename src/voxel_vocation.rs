@@ -25,6 +25,14 @@
 //! （比照 `voxel_hobby::hobby_for` 同款 index 取模寫法），不需另存名冊；冷卻純記憶體、重啟歸零
 //! （比照 `angler_cooldown` 同款慣例）。**零新美術、零前端改動、零協議破壞**——全走既有 `say`
 //! 泡泡管線。**零玩家輸入**（居民自發，無濫用面）。
+//!
+//! **v2 修訂（接上行為，回應 review：生計不能只換台詞）**：[`Vocation::preferred_resource`]
+//! 讓生計第一次改寫居民**真的做什麼**，不只說什麼——自主採集（`voxel_ws::start_gather`）會先
+//! 試這位居民生計對應的資源種類，附近真的找得到才用；找不到才退回原本「不挑、找最近任何資源」
+//! 的邏輯（永不因偏好而採不到東西、零回歸風險）。商人刻意回傳 `None`——「什麼貨都收」正是
+//! 她的生計特徵，不是漏做。
+
+use crate::voxel_skills::GatherResource;
 
 /// 居民的生計身分（依居民索引決定性指派，見 [`vocation_for`]）——一生不變，與能力/嗜好無涉。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +86,26 @@ impl Vocation {
             Vocation::Hunter => "檢視著獵具與皮毛",
             Vocation::Artisan => "打磨著手中的木活",
             Vocation::Merchant => "盤點著今天的貨品",
+        }
+    }
+
+    /// 生計偏好資源種類（v2·接上行為）：自主採集時優先找這款材料（呼叫端找不到才退回不挑，
+    /// 見 `voxel_ws::start_gather`）。`None` ＝刻意不偏好——商人什麼貨都收，本身就是她的生計
+    /// 特徵，不是漏做。
+    pub fn preferred_resource(&self) -> Option<GatherResource> {
+        match self {
+            // 農夫：翻整田壟＝整地泥土。
+            Vocation::Farmer => Some(GatherResource::Dirt),
+            // 鐵匠：敲打鐵件前先備爐座用的石材。
+            Vocation::Smith => Some(GatherResource::Stone),
+            // 漁夫：收拾漁具總在岸邊沙地。
+            Vocation::Fisher => Some(GatherResource::Sand),
+            // 獵人：巡查草原地帶找蹤跡，順手採草皮。
+            Vocation::Hunter => Some(GatherResource::Grass),
+            // 工匠：打磨木作，正是木頭。
+            Vocation::Artisan => Some(GatherResource::Wood),
+            // 商人：不挑——什麼貨都收，才是商人的生計特徵。
+            Vocation::Merchant => None,
         }
     }
 }
@@ -191,6 +219,26 @@ mod tests {
         titles.sort_unstable();
         titles.dedup();
         assert_eq!(titles.len(), 6, "六種生計稱謂應各自不同");
+    }
+
+    #[test]
+    fn preferred_resource_distinct_per_vocation_merchant_is_none() {
+        // 五種生計各自偏好互不相同的資源種類（真的接上不同行為，不是同一款換皮）。
+        let mut prefs: Vec<GatherResource> = [
+            Vocation::Farmer,
+            Vocation::Smith,
+            Vocation::Fisher,
+            Vocation::Hunter,
+            Vocation::Artisan,
+        ]
+        .iter()
+        .map(|v| v.preferred_resource().expect("五種生計皆應有偏好資源"))
+        .collect();
+        prefs.sort_by_key(|r| *r as u8);
+        prefs.dedup();
+        assert_eq!(prefs.len(), 5, "五種生計的偏好資源應互不相同");
+        // 商人刻意不偏好——什麼貨都收，才是商人的生計特徵。
+        assert_eq!(Vocation::Merchant.preferred_resource(), None);
     }
 
     #[test]

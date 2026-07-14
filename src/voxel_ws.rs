@@ -20817,10 +20817,9 @@ fn tick_residents(dt: f32) {
             // 純讀居民自身欄位（已持居民寫鎖），記憶寫＋Feed 走鎖外 `vocation_events`（守 prod 死鎖鐵律）。
             if r.say.is_empty()
                 && !r.asleep
-                && r.vocation_work_cooldown <= 0.0
                 && r.pilgrimage.is_none()
                 && r.expedition.is_none()
-                && vvoc::should_work(0.0, rand::random::<f32>(), vvoc::WORK_CHANCE)
+                && vvoc::should_work(r.vocation_work_cooldown, rand::random::<f32>(), vvoc::WORK_CHANCE)
             {
                 r.vocation_work_cooldown = vvoc::WORK_COOLDOWN_SECS;
                 let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
@@ -26532,12 +26531,25 @@ fn pave_worker_tick(
 
 /// 開始一次採集任務：以 (rx,rz) 為原點找最近資源 → 設居民的 gather 技能狀態。
 /// 找不到資源（罕見）→ 視為已備料（gathered=配額），下個 agency tick 直接蓋，避免卡死。
+/// 居民生計 v2（ROADMAP 988 修訂，回應 review）：先試這位居民生計偏好的資源種類
+/// （[`vvoc::Vocation::preferred_resource`]）——附近真的找得到才用；找不到（或商人本就不挑）
+/// 才退回原本「不挑、找最近任何資源」的邏輯，永不因偏好而採不到東西。
 fn start_gather(rid: &str, rx: i32, rz: i32) {
     // 挖掘紀律：這是居民**自主**備料採集（蓋家前的自發採集）→ 帶離村禁區（泛化到最近聚落），選址跳過村內、往村外找。
     let excl = village_dig_exclusion_near(rx, rz);
+    let vocation = {
+        let residents = hub().residents.read().unwrap();
+        residents.iter().find(|r| r.id == rid).map(|r| r.vocation)
+    }; // residents 讀鎖釋放
     let found = {
         let world = hub().deltas.read().unwrap();
-        vskill::find_nearest_resource_excl(&world, rx, rz, vskill::GATHER_MAX_RADIUS, excl)
+        vocation
+            .and_then(|v| v.preferred_resource())
+            .and_then(|res| {
+                vskill::find_nearest_resource_of_excl(&world, rx, rz, vskill::GATHER_MAX_RADIUS, res, excl)
+                    .map(|(tx, ty, tz)| (tx, ty, tz, res))
+            })
+            .or_else(|| vskill::find_nearest_resource_excl(&world, rx, rz, vskill::GATHER_MAX_RADIUS, excl))
     }; // deltas 讀鎖釋放
     let mut residents = hub().residents.write().unwrap();
     if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
