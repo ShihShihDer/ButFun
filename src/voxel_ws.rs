@@ -161,6 +161,7 @@ use crate::voxel_epithet_sign as vepisign;
 use crate::voxel_hosted_visit as vhosted;
 use crate::voxel_player_home as vplayerhome;
 use crate::voxel_landclaim as vlandclaim;
+use crate::voxel_cohabit as vcohabit;
 use crate::voxel_weather as vweather;
 use crate::voxel_season as vseason;
 use crate::voxel_snow as vsnow;
@@ -1874,6 +1875,15 @@ fn init_residents() -> Vec<VoxelResident> {
             r.home_z = nz as f32 + 0.5;
         }
     }
+    // 邀居同住 v1（自主提案切片，ROADMAP 972）：正跟某位玩家同住的居民，家域中心以同住
+    // 覆寫為準（後蓋前，優先於村莊都更/殖民地搬家——同住是玩家主動邀請的最新狀態）。
+    let cohabit = vcohabit::CohabitStore::from_entries(vcohabit::load_cohabit());
+    for r in &mut out {
+        if let Some((cx, cz)) = cohabit.active_home(&r.id) {
+            r.home_x = cx as f32 + 0.5;
+            r.home_z = cz as f32 + 0.5;
+        }
+    }
     // 在世人口（含出生居民）→ resident_count() 無鎖回報的單一事實來源。
     RESIDENT_POP.store(out.len(), Ordering::Relaxed);
     out
@@ -2257,6 +2267,10 @@ struct VoxelHub {
     /// 他信任的一群帳號 email。持久化到 data/voxel_landclaim_trust.jsonl；`claim_blocking_owner`
     /// 判定時查詢（序列化 RwLock 解決競爭，與 `sign` 各自獨立短取即釋，不巢狀）。
     landclaim_trust: RwLock<vlandclaim::TrustStore>,
+    /// 邀居同住 store（自主提案切片，ROADMAP 972）：居民 id → 目前是否同住某位玩家、住在哪
+    /// （玩家登記的家牌座標）。持久化到 data/voxel_cohabit.jsonl（序列化 RwLock 解決競爭，
+    /// 與 `sign`／`residents` 各自獨立短取即釋，不巢狀）。
+    cohabit: RwLock<vcohabit::CohabitStore>,
     /// 漂流瓶 store（漂流瓶 v1，自主提案切片 825）：世界座標 → 一封尚未被撿走的瓶中信。
     /// 持久化到 data/voxel_bottles.jsonl；內文絕不外流（連線同步只送座標），撿走即從世界移除
     /// （一次性拾起，非常駐可讀——序列化 RwLock 解決競爭）。
@@ -3153,6 +3167,8 @@ fn hub() -> &'static VoxelHub {
             sign: RwLock::new(vsign::SignStore::from_entries(vsign::load_signs())),
             // 啟動時從 data/voxel_landclaim_trust.jsonl 載回領地信任名單（重啟後信任關係仍在）。
             landclaim_trust: RwLock::new(vlandclaim::TrustStore::from_entries(vlandclaim::load_trust())),
+            // 啟動時從 data/voxel_cohabit.jsonl 載回邀居同住紀錄（重啟後誰跟誰同住仍記得）。
+            cohabit: RwLock::new(vcohabit::CohabitStore::from_entries(vcohabit::load_cohabit())),
             // 啟動時從 data/voxel_bottles.jsonl 載回尚未被撿走的瓶中信（重啟後瓶子還在水裡）。
             bottle: RwLock::new(BottleStore::from_entries(vbottle::load_bottles())),
             // 掉落物 v1：純記憶體，重啟歸零（暫留地上等人撿的短命狀態，非玩家永久資產）。
@@ -3605,6 +3621,12 @@ enum ClientMsg {
         #[serde(default)]
         pay_with_coin: bool,
     },
+    /// 邀居同住 v1（自主提案切片，ROADMAP 972）：站到深交（`affinity_count` ≥
+    /// `vcohabit::COHABIT_AFFINITY_THRESHOLD`）的居民身邊按下「🏠 邀居」——她若還沒跟任何人
+    /// 同住，就會把家搬到我登記的家牌座標；她若正跟我同住，再按一次即請她搬回原本的家；
+    /// 她若正跟別人同住，v1 不做橫刀奪愛，邀不動（見 `vcohabit::CohabitAction`）。
+    #[serde(rename = "invite_home")]
+    InviteHome { resident_id: String },
     /// 箱子 v1：開啟指定座標的箱子，伺服器回傳 `chest_view`（ROADMAP 692）。
     #[serde(rename = "open_chest")]
     OpenChest { x: i32, y: i32, z: i32 },
@@ -9012,6 +9034,151 @@ async fn handle_socket(
                     rname,
                     &format!("{name}與{rname}交易：{pay_name}×{}→{oname}×{}", pay_count, offer.offer_count),
                 );
+            }
+
+            // ── 邀居同住 v1（自主提案切片，ROADMAP 972）───────────────────────────────
+            Ok(ClientMsg::InviteHome { resident_id }) => {
+                // 必須已登入帳號（同住牽動歸屬鍵，比照瓶中信/領地信任名單護欄）。
+                let my_email = if is_account { account_email.clone() } else { None };
+                let Some(my_email) = my_email else {
+                    let mut players = hub().players.write().unwrap();
+                    if let Some(p) = players.get_mut(&my_id) {
+                        p.say = "先登入帳號才能邀請居民同住喔。".to_string();
+                        p.say_timer = PLAYER_SAY_SECS;
+                    }
+                    continue;
+                };
+                // 1) 短鎖取玩家位置（players 讀鎖即釋）。
+                let player_pos: Option<(f32, f32)> = {
+                    let players = hub().players.read().unwrap();
+                    players.get(&my_id).map(|p| (p.x, p.z))
+                };
+                let Some((px, pz)) = player_pos else { continue; };
+                // 2) 短鎖取居民快照，含她目前的家域中心（revoke 用；residents 讀鎖即釋）。
+                let res_snap: Option<(&'static str, f32, f32, f32, f32)> = {
+                    let residents = hub().residents.read().unwrap();
+                    residents.iter()
+                        .find(|r| r.id == resident_id)
+                        .map(|r| (r.name, r.body.x, r.body.z, r.home_x, r.home_z))
+                };
+                let Some((rname, rx, rz, cur_home_x, cur_home_z)) = res_snap else { continue; };
+                // 3) 驗觸及範圍。
+                let dx = px - rx;
+                let dz = pz - rz;
+                if dx * dx + dz * dz > vcohabit::INVITE_REACH * vcohabit::INVITE_REACH {
+                    let msg = serde_json::json!({
+                        "t": "cohabit_fail",
+                        "reason": "走近一點再邀請她"
+                    }).to_string();
+                    let _ = out_tx.send(Message::Text(msg)).await;
+                    continue;
+                }
+                let pick = (rx.to_bits() ^ rz.to_bits()) as usize;
+                // 4) 目前是誰的房客？決定這次按鈕是「入住」還是「搬走」（cohabit 讀鎖即釋）。
+                let current_host: Option<String> = {
+                    hub().cohabit.read().unwrap().host_of(&resident_id).map(|s| s.to_string())
+                };
+                match vcohabit::decide_action(current_host.as_deref(), &my_email) {
+                    vcohabit::CohabitAction::Blocked => {
+                        let msg = serde_json::json!({
+                            "t": "cohabit_fail",
+                            "reason": format!("{rname}已經和別人同住了，暫時邀不動她。")
+                        }).to_string();
+                        let _ = out_tx.send(Message::Text(msg)).await;
+                    }
+                    vcohabit::CohabitAction::Revoke => {
+                        let Some(ev) = ({
+                            hub().cohabit.write().unwrap().revoke(&resident_id, &my_email)
+                        }) else { continue; };
+                        vcohabit::append_cohabit(&ev);
+                        {
+                            let mut residents = hub().residents.write().unwrap();
+                            if let Some(r) = residents.iter_mut().find(|r| r.id == resident_id) {
+                                r.home_x = ev.prev_home_x as f32 + 0.5;
+                                r.home_z = ev.prev_home_z as f32 + 0.5;
+                                r.target_x = r.home_x;
+                                r.target_z = r.home_z;
+                                r.wait_timer = 0.0;
+                                r.say = vcohabit::move_out_line(pick);
+                                r.say_timer = SAY_SECS;
+                            }
+                        }
+                        let mem = vcohabit::move_out_memory(&name);
+                        let mem_entry = { hub().memory.write().unwrap().add_memory(&resident_id, &name, &mem) };
+                        vmem::append_memory(&mem_entry);
+                        broadcast_players();
+                        vfeed::append_feed("搬離同住", rname, &vcohabit::move_out_feed(rname, &name));
+                        let ok_msg = serde_json::json!({
+                            "t": "cohabit_ok",
+                            "resident_id": &resident_id,
+                            "resident_name": rname,
+                            "active": false,
+                        }).to_string();
+                        let _ = out_tx.send(Message::Text(ok_msg)).await;
+                    }
+                    vcohabit::CohabitAction::Invite => {
+                        // 5) 讀好感度（memory 讀鎖即釋）：邀居門檻仿全庫最深交等級。
+                        let affinity = {
+                            hub().memory.read().unwrap().affinity_count(&name, &resident_id)
+                        };
+                        if affinity < vcohabit::COHABIT_AFFINITY_THRESHOLD {
+                            let msg = serde_json::json!({
+                                "t": "cohabit_fail",
+                                "reason": format!("跟{rname}的感情還不夠深，多互動、多送禮，讓她願意把這裡也當成家吧。")
+                            }).to_string();
+                            let _ = out_tx.send(Message::Text(msg)).await;
+                            continue;
+                        }
+                        // 6) 找我登記的家牌座標（sign 讀鎖即釋；不限距離，人可以站在居民旁邊邀請）。
+                        let hits = { hub().sign.read().unwrap().all_hits() };
+                        let Some((hx, hz)) = vlandclaim::find_owner_home(&hits, &my_email) else {
+                            let msg = serde_json::json!({
+                                "t": "cohabit_fail",
+                                "reason": "你還沒有登記一塊家牌，去立一塊寫著「家」的牌吧。"
+                            }).to_string();
+                            let _ = out_tx.send(Message::Text(msg)).await;
+                            continue;
+                        };
+                        let home = (hx.floor() as i32, hz.floor() as i32);
+                        let prev = (cur_home_x.floor() as i32, cur_home_z.floor() as i32);
+                        // 7) 落地同住紀錄（cohabit 寫鎖即釋；競態下已被別人搶先同住會回 None）。
+                        let Some(ev) = ({
+                            hub().cohabit.write().unwrap().invite(&resident_id, &my_email, home, prev)
+                        }) else {
+                            let msg = serde_json::json!({
+                                "t": "cohabit_fail",
+                                "reason": format!("{rname}已經和別人同住了，暫時邀不動她。")
+                            }).to_string();
+                            let _ = out_tx.send(Message::Text(msg)).await;
+                            continue;
+                        };
+                        vcohabit::append_cohabit(&ev);
+                        {
+                            let mut residents = hub().residents.write().unwrap();
+                            if let Some(r) = residents.iter_mut().find(|r| r.id == resident_id) {
+                                r.home_x = hx;
+                                r.home_z = hz;
+                                r.target_x = hx;
+                                r.target_z = hz;
+                                r.wait_timer = 0.0;
+                                r.say = vcohabit::move_in_line(pick);
+                                r.say_timer = SAY_SECS;
+                            }
+                        }
+                        let mem = vcohabit::move_in_memory(&name);
+                        let mem_entry = { hub().memory.write().unwrap().add_memory(&resident_id, &name, &mem) };
+                        vmem::append_memory(&mem_entry);
+                        broadcast_players();
+                        vfeed::append_feed("邀居同住", rname, &vcohabit::move_in_feed(rname, &name));
+                        let ok_msg = serde_json::json!({
+                            "t": "cohabit_ok",
+                            "resident_id": &resident_id,
+                            "resident_name": rname,
+                            "active": true,
+                        }).to_string();
+                        let _ = out_tx.send(Message::Text(ok_msg)).await;
+                    }
+                }
             }
 
             // ── 箱子 v1：開啟 ─────────────────────────────────────────────────────────
@@ -27528,6 +27695,18 @@ mod tests {
                 assert!(!pay_with_coin, "省略 pay_with_coin 應預設 false（v1 原行為不變）");
             }
             _ => panic!("應解析成 TradeAccept"),
+        }
+    }
+
+    /// 邀居同住 v1（ROADMAP 972）：多詞 variant 鎖死 `#[serde(rename="invite_home")]`（前車之鑑
+    /// 見上一條 `chest_and_trade_tags_match_frontend`，同款坑）。
+    #[test]
+    fn invite_home_tag_matches_frontend() {
+        let m: ClientMsg =
+            serde_json::from_str(r#"{"t":"invite_home","resident_id":"vox_res_0"}"#).unwrap();
+        match m {
+            ClientMsg::InviteHome { resident_id } => assert_eq!(resident_id, "vox_res_0"),
+            _ => panic!("應解析成 InviteHome"),
         }
     }
 

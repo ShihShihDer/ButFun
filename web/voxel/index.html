@@ -382,6 +382,15 @@
       transition: background 0.15s;
     }
     #chatTrade:hover { background: rgba(120,200,255,0.28); }
+    /* 邀居同住鈕（邀居同住 v1，ROADMAP 972）：跟居民深交後可邀她搬進你家 */
+    #chatInviteHome {
+      cursor: pointer; user-select: none; font-size: 13px; padding: 3px 9px;
+      border-radius: 8px; background: rgba(255,150,200,0.16);
+      border: 1px solid rgba(255,150,200,0.35); color: #ffb0d8;
+      transition: background 0.15s;
+    }
+    #chatInviteHome:hover { background: rgba(255,150,200,0.28); }
+    #chatInviteHome.cohabit-active { background: rgba(255,150,200,0.32); color: #ffe0f0; }
     /* 交易提案橫幅（trade_offer 到來後顯示）*/
     #tradeOffer {
       display: none; margin: 4px 12px 0; padding: 8px 12px; border-radius: 10px;
@@ -1767,6 +1776,7 @@
         <span id="chatDiary">📖 日記</span>
         <span id="chatGift">🎁 贈禮</span>
         <span id="chatTrade">⇌ 交易</span>
+        <span id="chatInviteHome">🏠 邀居</span>
         <span id="chatClose">✕</span>
       </div>
     </div>

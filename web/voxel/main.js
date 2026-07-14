@@ -4128,6 +4128,9 @@ if (chatEl) {
   // 交易鈕：向當前居民請求以物易物（ROADMAP 670）。
   const tradeBtnEl = document.getElementById("chatTrade");
   if (tradeBtnEl) tradeBtnEl.addEventListener("click", () => { if (chatRid) tryRequestTrade(); });
+  // 邀居同住鈕：邀深交的居民搬進你登記的家，再按一次即請她搬回原本的家（ROADMAP 972）。
+  const inviteHomeBtnEl = document.getElementById("chatInviteHome");
+  if (inviteHomeBtnEl) inviteHomeBtnEl.addEventListener("click", () => { if (chatRid) sendInviteHome(chatRid); });
   // 接受交易按鈕（用材料換，v1 原行為）。
   const tradeAcceptBtnEl = document.getElementById("tradeAcceptBtn");
   if (tradeAcceptBtnEl) tradeAcceptBtnEl.addEventListener("click", () => { if (chatRid) sendTradeAccept(chatRid, false); });
@@ -4368,6 +4371,7 @@ function tryLaunchFirework() {
 
 let lastTradeMs = 0;     // 交易請求本地冷卻（防連按）
 let pendingTradeRid = null; // 目前有開放提案的居民 id
+let lastInviteHomeMs = 0; // 邀居同住請求本地冷卻（防連按，ROADMAP 972）
 
 /** 請求與當前居民交易（發 TradeRequest，等 trade_offer 回應）。 */
 function tryRequestTrade() {
@@ -4377,6 +4381,15 @@ function tryRequestTrade() {
   lastTradeMs = now;
   hideTradeOffer(); // 清掉舊提案
   ws.send(JSON.stringify({ t: "trade_request", resident_id: chatRid }));
+}
+
+/** 邀請指定居民同住／請她搬回原本的家（發 invite_home，等 cohabit_ok/cohabit_fail 回應）。ROADMAP 972。 */
+function sendInviteHome(rid) {
+  if (!wsReady || !rid) return;
+  const now = Date.now();
+  if (now - lastInviteHomeMs < 2000) return; // 2 秒冷卻，避免手滑連點
+  lastInviteHomeMs = now;
+  ws.send(JSON.stringify({ t: "invite_home", resident_id: rid }));
 }
 
 /** 接受指定居民的交易提案（發 TradeAccept）。payWithCoin=true 時改直接付乙太幣代替湊材料（ROADMAP 874）。 */
@@ -7494,6 +7507,19 @@ function connect() {
       hideTradeOffer();
       showErr(m.reason || "交易失敗");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2200);
+    } else if (m.t === "cohabit_ok") {
+      // 邀居同住 v1（ROADMAP 972）：入住／搬走成功，對話框顯示提示，鈕上打勾標記目前狀態。
+      const rname = m.resident_name || "居民";
+      appendMsg("sys", m.active ? ("🏠 " + rname + " 搬來和你同住了！") : ("🚪 " + rname + " 搬回自己原本的家了。"));
+      const btn = document.getElementById("chatInviteHome");
+      if (btn && chatRid === m.resident_id) {
+        btn.classList.toggle("cohabit-active", !!m.active);
+        btn.textContent = m.active ? "🏠 已同住" : "🏠 邀居";
+      }
+    } else if (m.t === "cohabit_fail") {
+      // 邀居同住 v1：邀請失敗（太遠 / 感情不夠深 / 沒登記家牌 / 她已跟別人同住）。
+      showErr(m.reason || "無法邀請同住");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2600);
     } else if (m.t === "chest_view") {
       // 箱子 v1（ROADMAP 692）：伺服器回傳箱子內容，更新面板。
       _chestPos = { x: m.x, y: m.y, z: m.z };

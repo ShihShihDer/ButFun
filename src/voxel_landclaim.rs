@@ -143,6 +143,20 @@ where
     nearest_other
 }
 
+/// 依帳號歸屬鍵找這位玩家目前登記的家牌世界座標（邀居同住 v1，ROADMAP 972）：靠「每帳號
+/// 僅一塊有效領地」的既有不變量（[`crate::voxel_sign::SignStore::demote_other_claims`]，舊牌
+/// 會被清空 `owner_key`）保證這裡天然只會命中最新那一塊，不必額外去重。呼叫端傳入
+/// [`crate::voxel_sign::SignStore::all_hits`] 的全量掃描結果（不限距離——玩家邀居時人可能
+/// 站在居民旁邊，不是站在自己家門口）；純函式、零 IO。找不到已登記的家牌 → `None`。
+pub fn find_owner_home<'a, I>(hits: I, owner_key: &str) -> Option<(f32, f32)>
+where
+    I: IntoIterator<Item = &'a crate::voxel_sign::SignHit>,
+{
+    hits.into_iter()
+        .find(|h| h.owner_key.as_deref() == Some(owner_key) && is_home_sign(&h.text))
+        .map(|h| (h.cx, h.cz))
+}
+
 /// 被領地擋下時浮出的提示（確定性選句，由呼叫端傳 `pick` 索引；面向玩家字串，i18n 友善）。
 const DENY_LINES: [&str; 3] = [
     "這裡是 {owner} 的家，別人的鎬子伸不進來喔。",
@@ -333,6 +347,46 @@ pub fn append_trust(entry: &TrustEntry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::voxel_sign::SignHit;
+
+    fn hit(cx: f32, cz: f32, text: &str, owner_key: Option<&str>) -> SignHit {
+        SignHit {
+            cx,
+            cz,
+            text: text.to_string(),
+            owner: None,
+            owner_key: owner_key.map(|s| s.to_string()),
+            dist2: 0.0,
+        }
+    }
+
+    #[test]
+    fn find_owner_home_matches_home_toned_sign() {
+        let hits = vec![hit(12.0, 34.0, "阿星的家", Some("astar@example.com"))];
+        assert_eq!(
+            find_owner_home(&hits, "astar@example.com"),
+            Some((12.0, 34.0))
+        );
+    }
+
+    #[test]
+    fn find_owner_home_ignores_non_home_sign_same_owner() {
+        // 同一帳號立的路標牌（非「家」語氣）不該被當成家的座標。
+        let hits = vec![hit(5.0, 5.0, "往礦坑↓", Some("astar@example.com"))];
+        assert_eq!(find_owner_home(&hits, "astar@example.com"), None);
+    }
+
+    #[test]
+    fn find_owner_home_ignores_other_owner() {
+        let hits = vec![hit(1.0, 1.0, "小夜的家", Some("yoru@example.com"))];
+        assert_eq!(find_owner_home(&hits, "astar@example.com"), None);
+    }
+
+    #[test]
+    fn find_owner_home_empty_hits_returns_none() {
+        let hits: Vec<SignHit> = vec![];
+        assert_eq!(find_owner_home(&hits, "astar@example.com"), None);
+    }
 
     #[test]
     fn no_owner_never_denied() {
