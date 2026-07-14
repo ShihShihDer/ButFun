@@ -12910,13 +12910,18 @@ pub async fn voxel_mastery_handler(
         .unwrap()
 }
 
-/// 乙太方界·村莊地圖 v1（自主提案切片，ROADMAP 837）：回傳村莊中心＋廣場/主路尺寸常數＋
-/// 每塊沿路地塊（座標＋認領者，未認領則 None）。
+/// 乙太方界·村莊地圖 v1（自主提案切片，ROADMAP 837；971 補上殖民地方位指標）：回傳村莊
+/// 中心＋廣場/主路尺寸常數＋每塊沿路地塊（座標＋認領者，未認領則 None）＋已知殖民地摘要
+/// （方位/距離/人口）。
 ///
 /// 村莊系統（835）早就把居民的家收攏成中央廣場＋十字主路＋沿路地塊的實體佈局，玩家也能
 /// 走在真正鋪好的石板路上——但那份佈局只活在腳下：玩家從沒有任何管道能一眼看到「村子
 /// 多大、廣場在哪、誰住哪塊地」，只能靠雙腳一格格丈量。跟 708 交情網／719 技能簿同一手法：
 /// 讓早已存在的系統第一次被看見，而非新造一套村莊系統；本端點純讀取、零副作用。
+///
+/// 971：殖民地（884）動輒在主村中心外 500~1000+ 格，遠超地圖畫布涵蓋的範圍（`plots` 那種
+/// 「畫在半徑內」的呈現方式對殖民地並不適用），故不是畫成點，而是比照立村公告既有的
+/// `bearing_label` 文字方位，讓玩家一眼看到「還有其他村子，在哪個方向、多遠、住了幾人」。
 pub async fn voxel_village_map_handler() -> axum::response::Response {
     use axum::http::header;
     // 村莊中心：優先用一次性整理時釘死的中心，缺（村莊尚未規劃）才退回即時質心——
@@ -12949,12 +12954,32 @@ pub async fn voxel_village_map_handler() -> axum::response::Response {
             })
             .collect()
     };
+    // 殖民地方位摘要：colonies 讀鎖取快照即釋 → settlements 讀鎖查人口即釋，循序不巢狀
+    // （比照 voxel_colonies_handler 既有鎖序）。
+    let colonies_snap: Vec<vcolony::Colony> = { hub().colonies.read().unwrap().all().to_vec() };
+    let colonies: Vec<serde_json::Value> = {
+        let st = hub().settlements.read().unwrap();
+        colonies_snap
+            .iter()
+            .map(|c| {
+                let population = st.residents_of(vsettle::colony_settlement_id(c.seq)).len();
+                let e = vcolony::colony_map_entry(c, vcx, vcz, population);
+                serde_json::json!({
+                    "name": e.name,
+                    "bearing": e.bearing,
+                    "dist": e.dist,
+                    "population": e.population,
+                })
+            })
+            .collect()
+    };
     let body = serde_json::json!({
         "cx": vcx,
         "cz": vcz,
         "plaza_radius": vvillage::PLAZA_RADIUS,
         "road_reach": vvillage::ROAD_REACH,
         "plots": plots,
+        "colonies": colonies,
     })
     .to_string();
     axum::response::Response::builder()

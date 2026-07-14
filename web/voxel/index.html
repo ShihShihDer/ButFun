@@ -1026,6 +1026,14 @@
     .map-dot-player { background: #8ab8ff; }
     .map-dot-claimed { background: #ffd479; }
     .map-dot-free { background: rgba(255,255,255,0.35); }
+    /* ── 已知殖民地方位（自主提案切片，ROADMAP 971）────────────────────── */
+    #colonyList {
+      padding: 2px 13px 11px; font-size: 12px; color: #b9c8d8;
+    }
+    #colonyList .colony-row {
+      display: flex; justify-content: space-between; gap: 8px; padding: 2px 0;
+    }
+    #colonyList .colony-name { color: #c9a6ff; }
     @media (orientation: portrait) {
       #mapBtn { top: auto; bottom: 384px; right: 10px; }
       #mapPanel { top: auto; bottom: 428px; right: 10px; max-height: 45vh; }
@@ -1989,6 +1997,7 @@
       <span class="map-legend-item"><span class="map-dot map-dot-claimed"></span>居民的家</span>
       <span class="map-legend-item"><span class="map-dot map-dot-free"></span>空地塊</span>
     </div>
+    <div id="colonyList"></div>
   </div>
   <!-- 探索紀事（自主提案切片，接續 838/839）：找到地標之後除了當下驚喜什麼都沒留下，
        此面板讓玩家第一次能回頭翻閱自己找到過的地標座標與種類 -->

@@ -258,6 +258,29 @@ pub fn bearing_label(mx: i32, mz: i32, cx: i32, cz: i32) -> &'static str {
     }
 }
 
+// ── 村莊地圖標記（純函式，供地圖面板顯示「還有其他村子」）───────────────────────────────
+/// 一座殖民地在村莊地圖面板上的摘要條目：方位＋直線距離＋現居人口，不含世界 IO。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ColonyMapEntry {
+    pub name: String,
+    pub bearing: &'static str,
+    pub dist: i64,
+    pub population: usize,
+}
+
+/// 由一座殖民地與村莊中心座標算出地圖摘要條目。人口數由呼叫端另外查好傳入
+/// （殖民地名冊與聚落歸屬名冊是兩本不同的鎖，本函式保持零 IO／零鎖）。純函式、可測。
+pub fn colony_map_entry(colony: &Colony, vcx: i32, vcz: i32, population: usize) -> ColonyMapEntry {
+    let dx = (colony.cx - vcx) as f64;
+    let dz = (colony.cz - vcz) as f64;
+    ColonyMapEntry {
+        name: colony.name.clone(),
+        bearing: bearing_label(vcx, vcz, colony.cx, colony.cz),
+        dist: (dx * dx + dz * dz).sqrt().round() as i64,
+        population,
+    }
+}
+
 // ── 選拓荒者（純函式、確定性）────────────────────────────────────────────────────────
 /// 從現有居民名字裡確定性挑出這次的拓荒隊（v1 派 2 位）。用 seq 決定起點，避免每次都同一批。
 /// 名單少於 2 人時就給幾位算幾位（呼叫端在人口門檻已擋住太少的情形）。純函式、可測。
@@ -596,5 +619,46 @@ mod tests {
         }
         assert_ne!(biome_wire(VoxelBiome::Snow), biome_wire(VoxelBiome::Desert));
         assert_ne!(biome_label(VoxelBiome::Snow), biome_label(VoxelBiome::Desert));
+    }
+
+    fn sample_colony(cx: i32, cz: i32) -> Colony {
+        Colony {
+            seq: 0,
+            name: "風禾屯".to_string(),
+            cx,
+            cz,
+            biome: biome_wire(VoxelBiome::Grassland).to_string(),
+            founders: vec!["露娜".to_string()],
+            story: "測試故事".to_string(),
+            founded_unix: 0,
+        }
+    }
+
+    #[test]
+    fn colony_map_entry_computes_distance_and_bearing() {
+        // 正東方 300 格：距離即 300，方位「東方」。
+        let c = sample_colony(400, 100);
+        let e = colony_map_entry(&c, 100, 100, 3);
+        assert_eq!(e.dist, 300);
+        assert_eq!(e.bearing, "東方");
+        assert_eq!(e.population, 3);
+        assert_eq!(e.name, "風禾屯");
+    }
+
+    #[test]
+    fn colony_map_entry_pythagorean_distance() {
+        // 3-4-5 三角形：東 300、南 400 → 距離 500。
+        let c = sample_colony(400, 500);
+        let e = colony_map_entry(&c, 100, 100, 0);
+        assert_eq!(e.dist, 500);
+        assert_eq!(e.bearing, "東南方");
+        assert_eq!(e.population, 0);
+    }
+
+    #[test]
+    fn colony_map_entry_same_point_zero_distance() {
+        let c = sample_colony(100, 100);
+        let e = colony_map_entry(&c, 100, 100, 1);
+        assert_eq!(e.dist, 0);
     }
 }
