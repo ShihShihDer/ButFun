@@ -102,6 +102,16 @@ pub fn decide_action(current_host: Option<&str>, player_key: &str) -> CohabitAct
     }
 }
 
+/// review PR #1258 二輪修復：這位居民是否卡在都更／殖民遷居的 in-flight 搬家窗口中
+/// （`RelocationStore` 全村同時至多一件在搬；`active_relocation_resident` 是那件的居民 id，
+/// 無在搬 → `None`）。挑人階段（`voxel_settle::exclude_cohabiting`）已排除同住中的居民，
+/// 但那只擋得住「她已經同住」才排除她——這裡補的是反過來的窗口：她被挑中搬家之後、
+/// 新家蓋完拆舊家收尾（`relocation_finish`）之前，若這段期間被邀居，收尾時 `home_x` 會被
+/// 靜默改寫成新址，同一顆「家域與建物錨點永久分裂」的洞從另一側鑽進來。純函式、窮舉可測。
+pub fn is_being_relocated(active_relocation_resident: Option<&str>, resident: &str) -> bool {
+    active_relocation_resident == Some(resident)
+}
+
 impl CohabitStore {
     pub fn new() -> Self {
         Self::default()
@@ -399,6 +409,13 @@ mod tests {
         s.invite("vox_res_0", "a@example.com", (10, 20), (0, 0));
         assert_eq!(s.active_home("vox_res_1"), None);
         assert_eq!(s.host_of("vox_res_1"), None);
+    }
+
+    #[test]
+    fn is_being_relocated_true_only_for_the_active_resident() {
+        assert!(is_being_relocated(Some("vox_res_0"), "vox_res_0"));
+        assert!(!is_being_relocated(Some("vox_res_1"), "vox_res_0"));
+        assert!(!is_being_relocated(None, "vox_res_0"));
     }
 
     #[test]

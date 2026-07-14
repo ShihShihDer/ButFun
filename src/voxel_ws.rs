@@ -9117,6 +9117,21 @@ async fn handle_socket(
                         let _ = out_tx.send(Message::Text(ok_msg)).await;
                     }
                     vcohabit::CohabitAction::Invite => {
+                        // review PR #1258 二輪修復：她若正卡在都更／殖民遷居的 in-flight 搬家窗口
+                        // （已被 kickoff 選中、新家還沒蓋完拆完），先別讓邀居把 home_x 蓋過去——
+                        // 那份覆寫會在 relocation_finish 收尾時被靜默改回新址，造成家域與建物錨點
+                        // 永久分裂（relocations 讀鎖即釋）。
+                        let active_reloc = {
+                            hub().relocations.read().unwrap().active().map(|a| a.resident.clone())
+                        };
+                        if vcohabit::is_being_relocated(active_reloc.as_deref(), &resident_id) {
+                            let msg = serde_json::json!({
+                                "t": "cohabit_fail",
+                                "reason": format!("{rname}正在搬家，等她安頓好再邀請她吧。")
+                            }).to_string();
+                            let _ = out_tx.send(Message::Text(msg)).await;
+                            continue;
+                        }
                         // 5) 讀好感度（memory 讀鎖即釋）：邀居門檻仿全庫最深交等級。
                         let affinity = {
                             hub().memory.read().unwrap().affinity_count(&name, &resident_id)
