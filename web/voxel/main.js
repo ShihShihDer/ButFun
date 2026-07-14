@@ -178,6 +178,10 @@ const GLOW_CRYSTAL = 106;
 // 方塊，為發光方塊（比照發光結晶靠 lightColorFor 投出柔和青綠點光）。純世界生成、玩家不可放置、
 // 砍不掉（後端保護）。id 113：0~110 皆已用，111/112＝稀有魚（夜光魚/深海乙太魚）已佔，113 是空號。
 const AETHER_BLOOM = 113;
+// 地底遺跡神殿 v1（ROADMAP 975）——全世界唯一一座人工鑿建的地底密室，藏寶室正中央的核心
+// 方塊，找到即得一份獎勵。發光方塊（比照發光結晶投出柔和幽光）；可放置、可挖下帶回家當光源。
+// id 114：0~113 皆已用（113=乙太世界樹花冠），114 是首個空號。
+const RELIC_GLOW = 114;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -325,6 +329,9 @@ const COLOR = {
   // 世界奇觀·乙太世界樹 v1（ROADMAP 940）——花冠泛著青綠幽光，比樹葉更亮更帶青，一眼是自體發光
   // 的奇觀花冠（靠 lightColorFor 在四周投出柔和青綠點光）。
   [AETHER_BLOOM]: [0.50, 0.98, 0.72],
+  // 地底遺跡神殿 v1（ROADMAP 975）——暖金幽光，與發光結晶/乙太花冠的青綠刻意區隔（先民藏寶的
+  // 暖色，而非天然礦晶的冷色），一眼認出這是「找到的寶物」而非天然點綴。
+  [RELIC_GLOW]: [0.95, 0.78, 0.32],
 };
 
 // ── 裝飾植物十字貼片渲染 v2 ─────────────────────────────────────────────
@@ -2187,15 +2194,17 @@ const AETHER_LIGHT_COLOR = 0x66ccff;     // 乙太燈——清冷青藍（比火
 const CAMPFIRE_LIGHT_COLOR = 0xff6a1e;   // 營火——炙熱橘紅（比火把更飽和暖烈，一堆真的在燒的火）
 const GLOW_CRYSTAL_COLOR = 0x5cffb0;     // 發光結晶——柔和青綠（洞穴腔室岩壁上的天然幽光，冷而療癒）
 const AETHER_BLOOM_COLOR = 0x7cffb8;     // 乙太世界樹花冠——柔和青綠（比發光結晶更亮更帶青，遠遠望見的奇觀光暈）
+const RELIC_GLOW_COLOR = 0xf2c752;       // 地底遺跡神殿核心——暖金幽光（與發光結晶/花冠的青綠刻意區隔）
 
 /** 此方塊是否為「發光方塊」（會被登記進光源池）。 */
-function isLightBlock(b) { return b === TORCH || b === AETHER_LAMP || b === CAMPFIRE || b === GLOW_CRYSTAL || b === AETHER_BLOOM; }
+function isLightBlock(b) { return b === TORCH || b === AETHER_LAMP || b === CAMPFIRE || b === GLOW_CRYSTAL || b === AETHER_BLOOM || b === RELIC_GLOW; }
 /** 發光方塊的光色（不同方塊不同色調）。 */
 function lightColorFor(b) {
   if (b === AETHER_LAMP) return AETHER_LIGHT_COLOR;
   if (b === CAMPFIRE) return CAMPFIRE_LIGHT_COLOR;
   if (b === GLOW_CRYSTAL) return GLOW_CRYSTAL_COLOR;
   if (b === AETHER_BLOOM) return AETHER_BLOOM_COLOR;
+  if (b === RELIC_GLOW) return RELIC_GLOW_COLOR;
   return TORCH_LIGHT_COLOR;
 }
 
@@ -6044,6 +6053,8 @@ const BLOCK_NAME = {
   // 地下洞穴探索 v1（ROADMAP 934）
   [GLOW_CRYSTAL]: "發光結晶",
   [AETHER_BLOOM]: "乙太花冠",
+  // 地底遺跡神殿 v1（ROADMAP 975）
+  [RELIC_GLOW]: "遺跡核心",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -6360,6 +6371,8 @@ const BLOCK_HARDNESS = {
   [CARPET]: 0.4, [FLOWERPOT]: 0.5, [TABLE]: 0.6, [BANNER]: 0.4,
   // 地下洞穴探索 v1（ROADMAP 934）——洞穴岩壁上的發光結晶，比照冰晶（結晶偏脆），輕鬆敲下採走。
   [GLOW_CRYSTAL]: 1.2,
+  // 地底遺跡神殿 v1（ROADMAP 975）——先民藏寶的核心結晶，比照發光結晶（偏脆），輕鬆敲下採走。
+  [RELIC_GLOW]: 1.2,
 };
 function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
 
@@ -7406,6 +7419,12 @@ function connect() {
       showMsg(m.line || "你抵達了世界盡頭的巨型古樹——乙太世界樹🌳");
       const _we = document.getElementById("msg");
       if (_we) { clearTimeout(_we._hideTimer); _we._hideTimer = setTimeout(() => { _we.style.display = "none"; }, 6000); }
+    } else if (m.t === "dungeon_discovered") {
+      // 地底遺跡神殿 v1（ROADMAP 975）：挖穿石牆、首次走到藏寶室核心旁的那一刻——浮出一句
+      // 驚喜提示（只給自己看，多停留一會兒，值得慢慢看清）。
+      showMsg(m.line || "你挖穿了深層岩壁，找到了一座人工鑿建的地底遺跡神殿🏺");
+      const _dg = document.getElementById("msg");
+      if (_dg) { clearTimeout(_dg._hideTimer); _dg._hideTimer = setTimeout(() => { _dg.style.display = "none"; }, 6000); }
     } else if (m.t === "wonder_protected") {
       // 世界奇觀·乙太世界樹 v1：試圖砍奇觀——被後端擋下，浮出一句溫柔說明（別讓路過的人拆掉它）。
       showMsg(m.line || "乙太世界樹是世界唯一的奇觀，它不會為任何人的鎬子讓步。");

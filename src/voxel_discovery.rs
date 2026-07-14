@@ -52,6 +52,10 @@ pub enum LandmarkKind {
     /// 決定、獨一無二、遠離主村（`voxel::worldtree_base`）。與遺跡/溫泉的「格狀重複、四處散落」
     /// 不同，這是走到世界邊陲才撞見的單一壯麗天然地標；玩家走近樹腳即記一筆探索紀事。
     Wonder,
+    /// 地底遺跡神殿（ROADMAP 975）——全世界唯一一座**人工鑿建**的地底密室，座標由世界種子
+    /// 確定性決定、埋在深層岩壁裡（`voxel::dungeon_base`）。與地表遺跡（Ruin，一望即穿的
+    /// 四根殘柱）不同：得先挖穿石牆才看得見裡頭；找到藏寶室核心即記一筆探索紀事、得一份獎勵。
+    Dungeon,
 }
 
 impl LandmarkKind {
@@ -63,6 +67,7 @@ impl LandmarkKind {
             LandmarkKind::Outpost => "邊陲營地",
             LandmarkKind::Colony => "野外村落",
             LandmarkKind::Wonder => "乙太世界樹",
+            LandmarkKind::Dungeon => "地底遺跡神殿",
         }
     }
 
@@ -75,6 +80,7 @@ impl LandmarkKind {
             LandmarkKind::Outpost => "outpost",
             LandmarkKind::Colony => "colony",
             LandmarkKind::Wonder => "wonder",
+            LandmarkKind::Dungeon => "dungeon",
         }
     }
 
@@ -86,6 +92,7 @@ impl LandmarkKind {
             LandmarkKind::Outpost => "⛺",
             LandmarkKind::Colony => "🏘️",
             LandmarkKind::Wonder => "🌳",
+            LandmarkKind::Dungeon => "🏺",
         }
     }
 }
@@ -343,6 +350,7 @@ mod tests {
             LandmarkKind::Outpost,
             LandmarkKind::Colony,
             LandmarkKind::Wonder,
+            LandmarkKind::Dungeon,
         ];
         for (i, a) in kinds.iter().enumerate() {
             for b in &kinds[i + 1..] {
@@ -361,6 +369,19 @@ mod tests {
         assert!(
             s.record("阿光", LandmarkKind::Wonder, (7, 7), 7, 40, 7).is_none(),
             "同一座奇觀重複抵達不該累加"
+        );
+        assert_eq!(s.list_for("阿光").len(), 1);
+    }
+
+    #[test]
+    fn dungeon_landmark_records_and_dedups() {
+        // 地底遺跡神殿（975）走與其他地標同一套 record 去重路徑：唯一那座用固定去重鍵，
+        // 同一玩家只記第一次找到。
+        let mut s = DiscoveryStore::new();
+        assert!(s.record("阿光", LandmarkKind::Dungeon, (260, 0), 280, 2, 0).is_some());
+        assert!(
+            s.record("阿光", LandmarkKind::Dungeon, (260, 0), 280, 2, 0).is_none(),
+            "同一座神殿重複抵達不該累加"
         );
         assert_eq!(s.list_for("阿光").len(), 1);
     }
