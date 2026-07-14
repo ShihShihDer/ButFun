@@ -1,11 +1,15 @@
 // ============================================================
-// voxel-worldboss-qa.mjs — 遠征首領 v1 WS 功能 QA
+// voxel-worldboss-qa.mjs — 遠征首領 v1/v2/v2.1 WS 功能 QA
 // ============================================================
 // 真 WebSocket 直連隔離伺服器（記憶體/jsonl 模式、獨立 port），驗後端權威湧現行為：
 //   (a) 反覆撥鐘「夜→日」觸發白天擲骰（低機率，多次嘗試提高中獎機會）→ 收到 worldboss spawn 橫幅
 //       ＋ players 快照的 world_boss 由 null 變非 null（位置在生成環內、血量=上限）
-//   (b) 送 boss_hit → 收到 boss_hit_ok、血量遞減，players 快照的 world_boss.hp 同步下降
-//   (c) 連續打到血量歸零 → 收到 worldboss defeat 橫幅、players 快照 world_boss 變回 null、
+//   (b) 玩家暫不出手，靜候居民聞訊馳援（ROADMAP 983/984）→ 觀察 world_boss.hp 是否在玩家
+//       完全沒送出任何 boss_hit 時自行下降（證明傷害確實來自居民）、以及是否有居民座標曾真的
+//       貼近首領（走了生成環外的真實路程，非瞬移代表）——全庫第一條驗「居民真的走得到現場、
+//       真的打得到首領」的端到端測試，機率+時間事件，best-effort。
+//   (c) 送 boss_hit → 收到 boss_hit_ok、血量遞減，players 快照的 world_boss.hp 同步下降
+//   (d) 連續打到血量歸零 → 收到 worldboss defeat 橫幅、players 快照 world_boss 變回 null、
 //       附近掉出一批乙太礦（item_dropped）
 // 需要伺服器以 BUTFUN_QA_DEBUG=1 啟動（qa_set_time/qa_grant 才生效；正式線上惰性忽略）。
 // 生成本身是機率事件，關鍵斷言採 best-effort 長逾時＋多次嘗試；純函式正確性另有單元測試把關。
@@ -16,6 +20,9 @@ import WebSocket from "ws";
 const PORT = process.env.VQA_PORT || 48391;
 const WS_URL = `ws://127.0.0.1:${PORT}/voxel/ws`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// 居民馳援 best-effort 靜候上限（秒）：check interval 25s×多輪擲骰 + 生成環最遠情境的真實
+// 走路時間，需要留夠寬裕；可用 VQA_ASSIST_WAIT_SECS 覆寫（例如本機重跑想縮短等待）。
+const ASSIST_WAIT_SECS = Number(process.env.VQA_ASSIST_WAIT_SECS || 200);
 
 let pass = 0, fail = 0, warn = 0;
 function check(label, ok, extra = "") {
@@ -31,13 +38,16 @@ const ws = new WebSocket(WS_URL);
 const send = (o) => ws.send(JSON.stringify(o));
 const st = {
   ready: false, worldBoss: null, spawnBanner: null, defeatBanner: null,
-  hitAcks: [], drops: [], pos: null,
+  hitAcks: [], drops: [], pos: null, residents: [],
 };
 ws.on("message", (buf) => {
   let m; try { m = JSON.parse(buf.toString()); } catch { return; }
   switch (m.t) {
     case "welcome": st.ready = true; if (m.spawn) st.pos = { x: m.spawn.x, y: m.spawn.y, z: m.spawn.z }; break;
-    case "players": st.worldBoss = m.world_boss || null; break;
+    case "players":
+      st.worldBoss = m.world_boss || null;
+      st.residents = m.residents || [];
+      break;
     case "worldboss":
       if (m.phase === "spawn") st.spawnBanner = m;
       if (m.phase === "defeat") st.defeatBanner = m;
@@ -74,7 +84,34 @@ if (st.worldBoss) {
 }
 
 if (st.worldBoss) {
-  console.log("② 分段走位到首領身邊（M3+L1 反瞬移守衛限單則位移 ≤64 格），連續挖擊直到倒下…");
+  console.log(`② 玩家暫不出手，靜候居民聞訊馳援（ROADMAP 983/984，best-effort，最長 ${ASSIST_WAIT_SECS} 秒）…`);
+  const spawnHp = st.worldBoss.hp;
+  const deadline = Date.now() + ASSIST_WAIT_SECS * 1000;
+  let residentDamageSeen = false;
+  let nearestSeen = Infinity;
+  while (Date.now() < deadline && st.worldBoss) {
+    if (st.worldBoss.hp < spawnHp) residentDamageSeen = true;
+    for (const r of st.residents) {
+      const d = Math.hypot(r.x - st.worldBoss.x, r.z - st.worldBoss.z);
+      if (d < nearestSeen) nearestSeen = d;
+    }
+    if (residentDamageSeen && nearestSeen <= 10) break;
+    await sleep(1000);
+  }
+  softCheck(
+    "首領血量在玩家出手前已因居民馳援而下降（未送出任何 boss_hit 卻血量減少，證明傷害來自居民）",
+    residentDamageSeen,
+    `spawnHp=${spawnHp} 現況=${st.worldBoss ? st.worldBoss.hp : "(不在世)"}`,
+  );
+  softCheck(
+    "至少一位居民座標曾真的貼近首領（走了生成環外的真實路程，非瞬移代表）",
+    nearestSeen <= 10,
+    `最近距離≈${Number.isFinite(nearestSeen) ? nearestSeen.toFixed(1) : "∞"}`,
+  );
+}
+
+if (st.worldBoss) {
+  console.log("③ 分段走位到首領身邊（M3+L1 反瞬移守衛限單則位移 ≤64 格），連續挖擊直到倒下…");
   // move_is_acceptable（voxel_ws.rs）擋單則超過 MAX_MOVE_STEP=64 格的位移，QA 探針不能一步
   // 瞬移過去——改成分段走位（每步 ≤50 格，留餘裕），驗的正是「後端權威 reach 判定」而非
   // 「client 自報位置就算數」，比一步到位更貼近真實反作弊路徑。
@@ -104,7 +141,7 @@ if (st.worldBoss) {
   softCheck("收到 worldboss defeat 橫幅", !!st.defeatBanner, st.defeatBanner ? st.defeatBanner.msg : "");
   softCheck("擊倒處掉出乙太礦（item_dropped）", st.drops.length > 0, `drops=${st.drops.length}`);
 } else {
-  console.log("（跳過②：本輪未撥中首領生成，機率事件）");
+  console.log("（跳過②③：本輪未撥中首領生成，機率事件）");
 }
 
 console.log(`\n結果：${pass} 通過，${warn} 警告，${fail} 失敗`);

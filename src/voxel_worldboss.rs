@@ -64,6 +64,33 @@
 //! 準備好，傷害套用則是 `residents` 迴圈裡先收集「誰打中了首領、扣多少血」成一份清單，
 //! 迴圈跑完、`residents` 寫鎖釋放後才統一對 `world_boss` 拿一次寫鎖套用——`world_boss` 與
 //! `residents` 兩把鎖任何時候都不互相巢狀持有，嚴守 prod 死鎖鐵律。
+//!
+//! ## v2.1：馳援途中若真的到不了，第一次會知難而退（收 PR #1274 review2dev 明點的真缺口）
+//!
+//! **真缺口**：v2 讓居民啟程後，唯一能讓她放下馳援的路只有「首領倒下/撤退」——若她啟程後在
+//! 90～160 格的路上被地形卡住（水域/斷崖/迷宮般的洞窟），既有的「卡住偵測」（`voxel_ws.rs`
+//! `stuck_timer`）雖然仍會定期把她脫困/送回，但**脫困後 `boss_assist` 從不清空**，她只會繼續
+//! 朝首領方向重新出發、卡住、脫困、再出發……無限循環。首領存續上限長達 [`BOSS_LIFETIME_SECS`]
+//! （1800 秒），她可能整整半小時都占著全世界僅 2 個馳援名額之一、卻永遠打不到首領——排擠了
+//! 原本該有機會去、真正到得了的下一位居民。既有 [`crate::voxel_expedition::EXPEDITION_TIMEOUT`]
+//! （遠行）早就靠逾時自我了結解決了同一類「路上會出岔子」的問題，馳援卻獨漏這一道。
+//!
+//! **做法**：一旦啟程即開始累計「趕路已耗時」（`boss_assist_travel_elapsed`，`voxel_ws.rs`
+//! 持有）；只要她**曾經**有一次真的貼近首領、觸發過 [`hit_in_reach`]（`boss_assist_engaged`
+//! 設一次即恆真，不因後續走遠而重置——已經到過現場的不該再被追打逾時），逾時判定就永久失效；
+//! 若一直沒能真正貼近、耗時達到 [`ASSIST_TRAVEL_TIMEOUT_SECS`] 才會知難而退：安靜清空馳援
+//! 旗標、進入正常冷卻、冒一句自知打不到的收尾泡泡——比照 v2 既有的「稀少事件才上 Feed」成本
+//! 紀律，這是她個人的小小遺憾、不寫記憶也不上動態牆（首領本身這時仍可能在世，不是撤退事件）。
+//!
+//! **逾時值怎麼訂**：生成環最遠 [`RING_MAX`]（160 格）＋居民家域半徑
+//! [`crate::voxel_residents::HOME_RADIUS`]（20 格）粗抓最壞情況直線距離約 180 格，
+//! 以 [`crate::voxel_residents::RES_SPEED`]（2.6 格/秒）換算直線約需 69 秒；比照
+//! [`crate::voxel_expedition::EXPEDITION_TIMEOUT`] 相對其遠行距離抓的「直線時間 ×3 倍」緩衝
+//! 慣例，抓 [`ASSIST_TRAVEL_TIMEOUT_SECS`]＝240 秒（≈3.5 倍），對正常抵達留足夠餘裕，
+//! 又遠遠小於首領 1800 秒的存續上限，能真正騰出名額。
+//!
+//! **護欄**：只影響「一直到不了」的極端案例，正常抵達的居民完全不受影響（`boss_assist_engaged`
+//! 一旦成立即終身豁免這道逾時）；零 migration（純記憶體）、零協議破壞、零新美術、零 LLM。
 
 // ── 調性參數（集中一處，日後平衡好調）───────────────────────────────────────────
 
@@ -274,6 +301,29 @@ pub fn assist_defeat_feed(names: &[String]) -> String {
     format!("{joined}也隨隊出力，見證了{BOSS_NAME}倒下的那一刻。")
 }
 
+// ── v2.1：馳援途中知難而退（自主提案切片，ROADMAP 984）─────────────────────────
+
+/// 啟程後若一直沒能真正貼近首領（見 [`hit_in_reach`]），累計耗時達這麼久就自行放棄馳援——
+/// 見模組頭註「逾時值怎麼訂」的換算依據。已經貼近過一次的居民不受此限（見 `should_give_up_travel`）。
+pub const ASSIST_TRAVEL_TIMEOUT_SECS: f32 = 240.0;
+
+/// 是否該放棄這趟馳援（純函式、可測）：只要曾經真正貼近過首領（`engaged`），永遠不會逾時放棄；
+/// 否則耗時達到 [`ASSIST_TRAVEL_TIMEOUT_SECS`] 才算數。
+pub fn should_give_up_travel(engaged: bool, elapsed_secs: f32) -> bool {
+    !engaged && elapsed_secs >= ASSIST_TRAVEL_TIMEOUT_SECS
+}
+
+/// 知難而退時的收尾泡泡（i18n 集中池）：安靜的個人小遺憾，語氣刻意與「首領撤退」的
+/// 沉默兜底（不冒泡）不同——這是她自己選擇放棄，值得留一句話，但不必大書特書。
+pub fn assist_give_up_bubble(pick: usize) -> &'static str {
+    const POOL: [&str; 3] = [
+        "唉，這條路太難走了，看來我幫不上忙……先回去做自己的事吧。",
+        "繞來繞去都到不了，算了，還是別耽誤時間了。",
+        "路太遠、太難走了，這次就當我心意到了。",
+    ];
+    POOL[pick % POOL.len()]
+}
+
 // ── 單元測試 ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -461,5 +511,58 @@ mod tests {
         assert!(theoretical_max_without_cap > BOSS_MAX_HP as u32 * 10);
         // 有封頂後，居民能造成的傷害遠低於首領血量。
         assert!(ASSIST_TOTAL_DAMAGE_CAP < BOSS_MAX_HP as u32 / 2);
+    }
+
+    // ── v2.1：馳援知難而退（ROADMAP 984）──────────────────────────────────────
+
+    #[test]
+    fn should_give_up_travel_false_while_engaged_regardless_of_elapsed() {
+        // 已經真正貼近過首領一次（engaged=true）：永遠不因逾時被追打放棄，
+        // 即使耗時遠遠超過逾時門檻也一樣（她已經到現場了，不該被半路請回）。
+        assert!(!should_give_up_travel(true, 0.0));
+        assert!(!should_give_up_travel(true, ASSIST_TRAVEL_TIMEOUT_SECS));
+        assert!(!should_give_up_travel(true, ASSIST_TRAVEL_TIMEOUT_SECS * 100.0));
+    }
+
+    #[test]
+    fn should_give_up_travel_false_before_timeout_when_not_engaged() {
+        // 未貼近過、但耗時還沒到門檻：繼續趕路，不放棄。
+        assert!(!should_give_up_travel(false, 0.0));
+        assert!(!should_give_up_travel(false, ASSIST_TRAVEL_TIMEOUT_SECS - 0.001));
+    }
+
+    #[test]
+    fn should_give_up_travel_true_once_timeout_reached_when_not_engaged() {
+        // 從未真正貼近過、耗時達到（含剛好等於）門檻：知難而退。
+        assert!(should_give_up_travel(false, ASSIST_TRAVEL_TIMEOUT_SECS));
+        assert!(should_give_up_travel(false, ASSIST_TRAVEL_TIMEOUT_SECS + 1.0));
+    }
+
+    #[test]
+    fn assist_give_up_bubble_pool_nonempty_distinct_and_bounded() {
+        let seen: std::collections::HashSet<&str> =
+            (0..8).map(assist_give_up_bubble).collect();
+        assert!(seen.len() >= 2, "台詞應輪替，不是永遠同一句");
+        for line in seen {
+            assert!(!line.is_empty());
+            assert!(line.chars().count() <= 40, "應在泡泡上限內：{line}");
+            // 與啟程時的 assist_join_bubble 語氣不同，不該互相撞句。
+            assert!(!line.contains(BOSS_NAME), "知難而退不必再點名首領，語氣是個人的小小遺憾");
+        }
+    }
+
+    #[test]
+    fn assist_travel_timeout_generous_vs_worst_case_spawn_distance() {
+        // 護欄：逾時值要對「正常趕得到」留足夠餘裕——即使落在生成環最遠處＋家域半徑的
+        // 最壞情況直線距離，以正常移動速度換算的直線耗時仍要明顯小於逾時門檻
+        // （見模組頭註「逾時值怎麼訂」），否則正常抵達的居民也會被誤判逾時放棄。
+        let worst_case_dist = RING_MAX + crate::voxel_residents::HOME_RADIUS;
+        let straight_line_secs = worst_case_dist / crate::voxel_residents::RES_SPEED;
+        assert!(
+            ASSIST_TRAVEL_TIMEOUT_SECS > straight_line_secs * 2.0,
+            "逾時門檻應遠寬裕於最壞情況直線耗時：門檻={ASSIST_TRAVEL_TIMEOUT_SECS} 直線={straight_line_secs}"
+        );
+        // 又要遠遠小於首領存續上限，逾時真的能提早騰出名額，不是形同虛設。
+        assert!(ASSIST_TRAVEL_TIMEOUT_SECS < BOSS_LIFETIME_SECS as f32 / 4.0);
     }
 }
