@@ -14,6 +14,8 @@
 //! （嚴守 prod 死鎖鐵律：短鎖快照 → drop → 純計算 → 短鎖套用，絕不持鎖 await）。
 //! 零 LLM：暗影的移動是純確定性計算，一毛腦力預算都不花。
 
+use std::collections::HashMap;
+
 use crate::voxel::{self, Block, WorldDelta, CHUNK};
 use crate::voxel_time::TimePhase;
 
@@ -47,8 +49,6 @@ pub const SPAWN_INTERVAL_SECS: f32 = 3.0;
 pub const SPAWN_CHANCE: f32 = 0.5;
 /// 村莊庇護半徑（方塊）：村莊中心此距離內絕不生成（廣場的燈火與人氣是天然安全區）。
 pub const VILLAGE_SAFE_RADIUS: f32 = 48.0;
-/// 光源快取重掃間隔（秒）：低頻掃一次世界 delta 收集光源座標（成本與改動量成正比）。
-pub const LIGHT_RESCAN_SECS: f32 = 5.0;
 /// 居民害怕半徑（方塊）：暗影靠到這麼近，居民會冒害怕泡泡並折返回家。
 pub const FEAR_RADIUS: f32 = 9.0;
 /// 同一位居民兩次害怕反應的冷卻（秒）：避免整夜狂洗泡泡。
@@ -148,10 +148,12 @@ pub fn is_light_block(b: Block) -> bool {
     matches!(b, Block::Torch | Block::IceLantern | Block::AetherLamp | Block::Campfire)
 }
 
-/// 掃世界 delta 收集所有光源方塊的世界座標（低頻呼叫，成本與「被改過的方塊數」成正比，
-/// 非世界大小；玩家/居民放的燈都在 delta 層，程序地形本身無光源）。純函式、可測。
-pub fn collect_lights(world: &WorldDelta) -> Vec<(i32, i32, i32)> {
-    let mut out = Vec::new();
+/// 光源增量索引：保留方塊種類，讓光源互相覆蓋時也能正確更新。
+pub type LightIndex = HashMap<(i32, i32, i32), Block>;
+
+/// 啟動時從世界 delta 一次性重放光源。之後熱路徑只做單格增量更新。
+pub fn replay_lights(world: &WorldDelta) -> LightIndex {
+    let mut out = LightIndex::new();
     for (coord, delta) in world {
         for (&li, &b) in delta {
             if is_light_block(b) {
@@ -160,11 +162,25 @@ pub fn collect_lights(world: &WorldDelta) -> Vec<(i32, i32, i32)> {
                 let lx = (li % c) as i32;
                 let lz = ((li / c) % c) as i32;
                 let ly = (li / (c * c)) as i32;
-                out.push((coord.cx * CHUNK + lx, coord.cy * CHUNK + ly, coord.cz * CHUNK + lz));
+                out.insert((coord.cx * CHUNK + lx, coord.cy * CHUNK + ly, coord.cz * CHUNK + lz), b);
             }
         }
     }
     out
+}
+
+/// 套用一格世界變更：新方塊是光源就新增或更新，否則移除舊光源。
+pub fn update_light(index: &mut LightIndex, x: i32, y: i32, z: i32, b: Block) {
+    if is_light_block(b) {
+        index.insert((x, y, z), b);
+    } else {
+        index.remove(&(x, y, z));
+    }
+}
+
+/// 直接從增量索引收集座標，成本只與目前光源數量成正比。
+pub fn collect_lights(index: &LightIndex) -> Vec<(i32, i32, i32)> {
+    index.keys().copied().collect()
 }
 
 /// 求 (x,z) 柱在（含 delta）世界裡可站的地表 y（腳底高度）：從地形高度起算，
@@ -380,9 +396,41 @@ mod tests {
         voxel::set_block(&mut world, 5, 12, 7, Block::Torch);
         voxel::set_block(&mut world, -3, 20, -18, Block::AetherLamp);
         voxel::set_block(&mut world, 4, 12, 7, Block::Stone);
-        let mut lights = collect_lights(&world);
+        let index = replay_lights(&world);
+        let mut lights = collect_lights(&index);
         lights.sort();
         assert_eq!(lights, vec![(-3, 20, -18), (5, 12, 7)], "光源座標應精確反解回世界座標");
+    }
+
+    #[test]
+    fn light_index_tracks_place_break_and_overwrite() {
+        let mut lights = LightIndex::new();
+        update_light(&mut lights, 1, 2, 3, Block::Torch);
+        assert_eq!(lights.get(&(1, 2, 3)), Some(&Block::Torch));
+        update_light(&mut lights, 1, 2, 3, Block::AetherLamp);
+        assert_eq!(lights.get(&(1, 2, 3)), Some(&Block::AetherLamp));
+        update_light(&mut lights, 1, 2, 3, Block::Stone);
+        assert!(!lights.contains_key(&(1, 2, 3)));
+        update_light(&mut lights, 4, 5, 6, Block::Campfire);
+        update_light(&mut lights, 4, 5, 6, Block::Air);
+        assert!(!lights.contains_key(&(4, 5, 6)));
+    }
+
+    #[test]
+    fn replay_matches_incremental_index() {
+        let mut world = WorldDelta::new();
+        let changes = [
+            (5, 12, 7, Block::Torch),
+            (-3, 20, -18, Block::IceLantern),
+            (5, 12, 7, Block::AetherLamp),
+            (9, 4, 2, Block::Stone),
+        ];
+        let mut incremental = LightIndex::new();
+        for &(x, y, z, b) in &changes {
+            voxel::set_block(&mut world, x, y, z, b);
+            update_light(&mut incremental, x, y, z, b);
+        }
+        assert_eq!(replay_lights(&world), incremental);
     }
 
     #[test]
