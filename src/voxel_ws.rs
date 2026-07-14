@@ -216,6 +216,7 @@ use crate::voxel_player_pos as vpp;
 use crate::voxel_bottle::{self as vbottle, BottleStore};
 use crate::voxel_coop_gather as vcoop_gather;
 use crate::voxel_dropitem::{self as vdrop, DropStore};
+use crate::voxel_player_bond::{self as vplayerbond, PlayerBonds};
 use crate::voxel_stall::{self as vstall, StallStore};
 use crate::voxel_stall_notify as vstallnotify;
 use crate::voxel_frontier_find as vffind;
@@ -2353,6 +2354,11 @@ struct VoxelHub {
     /// 撿的短命狀態，非玩家永久資產）。玩家丟下手上一件材料 → 落地存進這裡；任何玩家
     /// （含自己）走近即自動撿起；沒人撿的話 `DESPAWN_SECS` 後安靜消失。
     drops: RwLock<DropStore>,
+    /// 玩家羈絆帳本（玩家羈絆帳本 v1，自主提案切片，ROADMAP 985）：兩位真人玩家之間累積的
+    /// 真實互動（並肩協作命中／收下轉手的掉落物），持久化到 `data/voxel_player_bonds.jsonl`
+    /// （append-only delta，重啟後交情仍在；每對玩家的冷卻計時器純記憶體、重啟歸零，不影響
+    /// 已持久化的交情本身）。
+    player_bonds: RwLock<PlayerBonds>,
     /// 交易攤 store（玩家自由市集 v1，自主提案切片 832）：世界座標 → 一攤待人接手的以物易物
     /// 提案。純記憶體、重啟歸零（比照 `bottle`/`drops` 慣例）。擺攤者的給出材料在擺攤當下
     /// 就已 escrow 進攤位本身（非其背包）；任何身上有攤位所求材料的玩家路過都能接手成交，
@@ -2714,6 +2720,50 @@ fn try_unlock_milestone(player: &str, id: &str, out_tx: &mpsc::Sender<Message>) 
         ));
         // 居民為你的個人里程碑喝采 v1（自主提案切片）：私人旅程之外，讓身邊閒著的居民也
         // 為這一刻由衷喝采。里程碑本身全庫只對每位玩家觸發一次，天然不會刷版。
+        maybe_cheer_milestone(player, def);
+    }
+}
+
+/// 玩家羈絆帳本 v1（自主提案切片，ROADMAP 985）：記錄 `actor`／`partner` 之間一次真實互動
+/// （並肩協作命中／收下轉手的掉落物），冷卻中或已達上限時安靜跳過（`record_interaction`
+/// 回 `None`）。只在真的升級時才 append 持久化＋跳雙方提示（全域廣播，前端依 a/b 是否為
+/// 自己過濾）＋動態牆記一筆＋解鎖里程碑（冪等，天然防洗版）。`actor_out_tx` 是**這則觸發事件
+/// 所在連線**（呼叫端唯一手上有的連線）；`partner` 可能此刻並不在線（例如撿到她很久以前丟下
+/// 又離線的掉落物），其里程碑走 [`unlock_milestone_quiet`]（照樣冪等寫入＋持久化，只是不即時
+/// 推播 toast，下次她打開里程碑面板就會看到）。
+/// **鎖紀律**：`player_bonds` 寫鎖短取即釋，append/broadcast 在鎖外，不巢狀、不持鎖 await。
+fn record_and_broadcast_player_bond(actor: &str, partner: &str, actor_out_tx: &mpsc::Sender<Message>) {
+    let now = vfarm::now_secs();
+    let result = { hub().player_bonds.write().unwrap().record_interaction(actor, partner, now) }; // player_bonds 寫鎖釋放
+    let Some((tier, upgraded)) = result else { return };
+    vplayerbond::append_player_bond(actor, partner);
+    if !upgraded {
+        return;
+    }
+    try_unlock_milestone(actor, "first_player_bond", actor_out_tx);
+    unlock_milestone_quiet(partner, "first_player_bond");
+    vfeed::append_feed("玩家羈絆", actor, &vplayerbond::tier_up_feed_line(tier, actor, partner));
+    let msg = serde_json::json!({
+        "t": "player_bond_up",
+        "a": actor,
+        "b": partner,
+        "tier": vplayerbond::tier_key(tier),
+    })
+    .to_string();
+    let _ = hub().tx.send(std::sync::Arc::new(msg));
+}
+
+/// 里程碑解鎖但不即時推播（供 [`record_and_broadcast_player_bond`] 通知交情另一側時用——
+/// 那一側此刻的連線 out_tx 不在呼叫端掌握範圍內，可能甚至已離線）。冪等寫入＋持久化＋
+/// 一樣可能被居民喝采，只是不跳 toast；下次她打開里程碑面板（`GET /voxel/milestones`）就會
+/// 看到，比照多數里程碑本就非即時同步的既有慣例。
+fn unlock_milestone_quiet(player: &str, id: &str) {
+    let newly = { hub().milestones.write().unwrap().unlock(player, id) }; // milestones 寫鎖釋放
+    if !newly {
+        return;
+    }
+    vmiles::append_milestone(&vmiles::MilestoneEntry { player: player.to_string(), id: id.to_string() });
+    if let Some(def) = vmiles::MILESTONES.iter().find(|m| m.id == id) {
         maybe_cheer_milestone(player, def);
     }
 }
@@ -3384,6 +3434,8 @@ fn hub() -> &'static VoxelHub {
             bottle: RwLock::new(BottleStore::from_entries(vbottle::load_bottles())),
             // 掉落物 v1：純記憶體，重啟歸零（暫留地上等人撿的短命狀態，非玩家永久資產）。
             drops: RwLock::new(DropStore::new()),
+            // 啟動時從 data/voxel_player_bonds.jsonl 載回玩家羈絆 delta 記錄（重啟後交情仍在）。
+            player_bonds: RwLock::new(PlayerBonds::from_entries(vplayerbond::load_player_bonds())),
             // 交易攤 v1：純記憶體，重啟歸零（比照 drops，世界暫態，非玩家永久資產）。
             stalls: RwLock::new(StallStore::new()),
             // 自由市集賣家通知佇列：純記憶體，重啟歸零（比照 stalls，世界暫態，非玩家永久資產）。
@@ -5470,6 +5522,11 @@ async fn handle_socket(
                             "t": "inv_update", "block_id": item.item_id, "count": nc
                         }).to_string())).await;
                         broadcast_item_removed(item.id);
+                        // 玩家羈絆帳本 v1（自主提案切片，接續 827/828，ROADMAP 985）：撿到別人
+                        // （非自己）丟下的東西也算一次真實互動——即使對方此刻早已離線。
+                        if item.dropped_by != name {
+                            record_and_broadcast_player_bond(&name, &item.dropped_by, &out_tx);
+                        }
                     }
                 }
                 // 跌落傷害 v1（溫和版）：偵測著陸事件並結算落差。
@@ -5968,15 +6025,17 @@ async fn handle_socket(
                         // 濫用防護：同伴數由伺服器讀既有 players map 權威判定（非客戶端自報）；
                         // 只是額外一份既有材料、不觸發 LLM、封頂 MAX_PARTNERS，無經濟破壞面。
                         if vcoop_gather::coop_eligible_block(target_block) {
-                            let others: Vec<(f32, f32, f32)> = hub()
+                            let others: Vec<(String, f32, f32, f32)> = hub()
                                 .players
                                 .read()
                                 .unwrap()
                                 .values()
                                 .filter(|p| p.id != my_id)
-                                .map(|p| (p.x, p.y, p.z))
+                                .map(|p| (p.name.clone(), p.x, p.y, p.z))
                                 .collect();
-                            let partners = vcoop_gather::count_partners((px, py, pz), &others);
+                            let coords: Vec<(f32, f32, f32)> =
+                                others.iter().map(|(_, x, y, z)| (*x, *y, *z)).collect();
+                            let partners = vcoop_gather::count_partners((px, py, pz), &coords);
                             let bonus = vcoop_gather::coop_yield_bonus(partners);
                             if bonus > 0 {
                                 // 玩家里程碑（自主提案切片，追上 827）：第一次因協作多得一份。
@@ -6002,6 +6061,25 @@ async fn handle_socket(
                                     })
                                     .to_string(),
                                 ));
+
+                                // 玩家羈絆帳本 v1（自主提案切片，接續 827/828，ROADMAP 985）：真正
+                                // 在協作半徑內的旅伴各自記一次真實互動（伺服器權威判定，非客戶端
+                                // 自報；冷卻/上限見 voxel_player_bond，天然防洗刷）。
+                                let radius2 = vcoop_gather::COOP_RADIUS * vcoop_gather::COOP_RADIUS;
+                                let nearby_partners: Vec<&str> = others
+                                    .iter()
+                                    .filter(|(_, ox, oy, oz)| {
+                                        let dx = ox - px;
+                                        let dy = oy - py;
+                                        let dz = oz - pz;
+                                        dx * dx + dy * dy + dz * dz <= radius2
+                                    })
+                                    .map(|(n, _, _, _)| n.as_str())
+                                    .take(vcoop_gather::MAX_PARTNERS)
+                                    .collect();
+                                for partner in nearby_partners {
+                                    record_and_broadcast_player_bond(&name, partner, &out_tx);
+                                }
                             }
 
                             // 玩家熟練度 v1（自主提案切片，ROADMAP 842）：挖天然方塊累積⛏️採集

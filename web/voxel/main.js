@@ -7779,6 +7779,17 @@ function connect() {
       // 跳一句小回饋（背包由 inv_update 更新）。
       showMsg(m.line || "🤝 並肩採集，默契多收了一份！");
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 1800);
+    } else if (m.t === "player_bond_up") {
+      // 玩家羈絆帳本 v1（自主提案切片，ROADMAP 985）：全域廣播，只有 a/b 其中一方是自己才顯示——
+      // 對方名字取另一側，跳一句提示，讓「處出交情了」這件事第一次被玩家自己看見。
+      const other = m.a === myName ? m.b : (m.b === myName ? m.a : null);
+      if (other) {
+        const line = m.tier === "confidant"
+          ? ("🤝 你和 " + other + " 成了摯友！這份交情，世界都記住了。")
+          : ("🚶 你和 " + other + " 好像處出交情了——成了旅伴！");
+        showMsg(line);
+        setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2400);
+      }
     } else if (m.t === "treasure") {
       // 深層寶藏 v1（自主提案切片）：天然礦脈裡的秘密驚喜，挖礦意外多得乙太幣——
       // 跳一句醒目的慶祝提示（背包由 inv_update 更新）。

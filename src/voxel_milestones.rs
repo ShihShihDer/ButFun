@@ -88,6 +88,8 @@ pub const MILESTONES: &[MilestoneDef] = &[
     // 地底遺跡神殿 v1（自主提案切片，ROADMAP 975）：世界第一座人工鑿建的地底密室，
     // 得先挖穿深層石牆才看得見裡頭，垂直/室內探索第一次被打開。
     MilestoneDef { id: "first_dungeon", name_zh: "初闖遺跡", desc_zh: "鑿穿深層岩壁，找到了一座人工鑿建的地底遺跡神殿", icon: "🏺" },
+    // 玩家羈絆帳本 v1（自主提案切片，ROADMAP 985）：玩家↔玩家的真實互動第一次被世界記住。
+    MilestoneDef { id: "first_player_bond", name_zh: "初結旅伴", desc_zh: "和另一位真人玩家處出了交情——旅伴", icon: "🚶" },
 ];
 
 /// 查表確認是否為已知里程碑 id（守 store 資料乾淨，未知 id 不寫入）。
