@@ -146,6 +146,41 @@ pub fn masters(evidence: &[SkillEvidence]) -> Vec<CraftFame> {
     best.into_values().collect()
 }
 
+/// 已加冕帳本上的一筆：`(名匠顯示名, 手藝名)`。
+pub type CrownedKey = (String, String);
+
+/// 這一輪要公告哪些「新加冕」名匠、並算出寫回帳本後的新狀態（純函式，抽出來好測）。
+///
+/// **真缺口**：`crowned_masters` 帳本只活在記憶體，重啟即清空——但村裡目前公認的名匠
+/// 並不會因為伺服器重啟就跟著消失（`masters` 每輪都從既有技能紀錄誠實重算）。若沿用
+/// 「帳本沒有＝新加冕」的舊語意，**每次重啟後的第一輪都會把當下所有現任名匠當成剛加冕**，
+/// 重放一次心聲泡泡＋Feed＋append-only 記憶——同一頂桂冠隨部署次數重複寫入，
+/// 與 #1267 領地繁榮「拆除==放置即恆真」那類無限 churn 同一分類的收斂缺陷。
+///
+/// **修法**：`is_first_run=true`（程序剛啟動、帳本因重啟而空）時，把這一輪算出的全部
+/// 名匠**靜默**收進帳本、不產生任何公告——用「這是重啟後的既有事實，不是新事件」當守衛，
+/// 而非「帳本裡沒有」。非首輪則沿用既有語意：帳本沒有才算新加冕。
+pub fn crown_diff(
+    masters: &[CraftFame],
+    crowned_before: &std::collections::HashSet<CrownedKey>,
+    is_first_run: bool,
+) -> (std::collections::HashSet<CrownedKey>, Vec<CraftFame>) {
+    let mut crowned_after = crowned_before.clone();
+    if is_first_run {
+        for m in masters {
+            crowned_after.insert((m.resident.clone(), m.craft.clone()));
+        }
+        return (crowned_after, Vec::new());
+    }
+    let mut newly = Vec::new();
+    for m in masters {
+        if crowned_after.insert((m.resident.clone(), m.craft.clone())) {
+            newly.push(m.clone());
+        }
+    }
+    (crowned_after, newly)
+}
+
 /// 名匠稱謂（面向玩家字串，集中此處便於 i18n）：「露娜·燒玻璃名匠」。
 pub fn master_epithet(name: &str, craft: &str) -> String {
     format!("{name}·{craft}名匠")
@@ -276,7 +311,10 @@ pub fn craft_directory(evidence: &[SkillEvidence]) -> Vec<CraftDirectoryEntry> {
 // **不新增任何資料**：與 888/889 一脈相承的「零重複資料」精神——不新建師徒關係表，
 // 「誰是誰的老師」早就寫在既有師承紀錄的 `source` 欄位裡；「前一任名匠是誰」也早就存在
 // `voxel_ws.rs::master_by_goal` 這份既有快取裡（本刀只是在它被覆寫前多留一份給下一輪比對）。
-// 純粹是「這兩份早就存在的資料，第一次被放在一起比對」，重啟後由既有紀錄自然還原，零新風險。
+// 純粹是「這兩份早就存在的資料，第一次被放在一起比對」，零新資料。**注意**：`master_by_goal`
+// 快取本身重啟歸零、不落地，`prev_master_by_goal` 在重啟後第一輪必為空——但 [`crown_diff`]
+// 的首輪守衛讓那一輪本就不比對青出於藍（見 `crown_first_run_done` 文件），故此空白不會造成
+// 誤判或漏報，重啟不是「自然還原」而是「首輪本就跳過比對」。
 //
 // **與既有系統的區隔**：`crowned_masters`（888）只負責「別把同一頂桂冠的公告刷第二次」，
 // 從不區分新舊科名匠是不是師徒——本刀專門挑出「新科名匠的授業恩師，正是他推翻的前任」這一種
@@ -452,6 +490,62 @@ mod tests {
         assert_eq!(m.len(), 2);
         assert_eq!(m[0].resident, "露娜");
         assert_eq!(m[1].resident, "米拉");
+    }
+
+    #[test]
+    fn crown_diff_首輪重啟靜默收編既有名匠_不公告() {
+        // 露娜早已是燒玻璃名匠，但程序剛啟動、帳本因重啟而空。
+        let e = vec![
+            ev("露娜", "燒玻璃", 40, None, false),
+            ev("s1", "燒玻璃", 40, Some("露娜"), true),
+            ev("s2", "燒玻璃", 40, Some("露娜"), true),
+        ];
+        let m = masters(&e);
+        let empty = std::collections::HashSet::new();
+        let (after, newly) = crown_diff(&m, &empty, true);
+        assert!(newly.is_empty(), "首輪重啟不該把既有名匠當成新加冕重放公告");
+        assert!(after.contains(&("露娜".to_string(), "燒玻璃".to_string())));
+    }
+
+    #[test]
+    fn crown_diff_首輪之後真正新加冕才公告() {
+        // 承上：首輪靜默收編後，下一輪真的多了一位新名匠（米拉織布達標）才該公告，
+        // 且已收編的露娜不會被重複公告。
+        let e_before = vec![
+            ev("露娜", "燒玻璃", 40, None, false),
+            ev("s1", "燒玻璃", 40, Some("露娜"), true),
+            ev("s2", "燒玻璃", 40, Some("露娜"), true),
+        ];
+        let (crowned_after_boot, first_newly) =
+            crown_diff(&masters(&e_before), &std::collections::HashSet::new(), true);
+        assert!(first_newly.is_empty());
+
+        let mut e_after = e_before;
+        e_after.push(ev("米拉", "織布", 50, None, false));
+        for stu in ["a", "b", "c", "d", "e"] {
+            e_after.push(ev(stu, "織布", 50, Some("米拉"), true));
+        }
+        let (_after2, newly2) = crown_diff(&masters(&e_after), &crowned_after_boot, false);
+        assert_eq!(newly2.len(), 1, "只有米拉是真正的新加冕");
+        assert_eq!(newly2[0].resident, "米拉");
+    }
+
+    #[test]
+    fn crown_diff_非首輪沿用舊語意_帳本沒有才算新加冕() {
+        let e = vec![
+            ev("露娜", "燒玻璃", 40, None, false),
+            ev("s1", "燒玻璃", 40, Some("露娜"), true),
+            ev("s2", "燒玻璃", 40, Some("露娜"), true),
+        ];
+        let m = masters(&e);
+        let empty = std::collections::HashSet::new();
+        let (after, newly) = crown_diff(&m, &empty, false);
+        assert_eq!(newly.len(), 1);
+        assert_eq!(newly[0].resident, "露娜");
+
+        // 同一位名匠再算一輪（帳本已有）：不該重複公告。
+        let (_after2, newly_again) = crown_diff(&m, &after, false);
+        assert!(newly_again.is_empty(), "帳本已收編過的名匠不該重複公告");
     }
 
     #[test]
