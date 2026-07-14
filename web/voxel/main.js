@@ -3053,6 +3053,89 @@ function updateShadowFx(dt) {
   }
 }
 
+// ── 遠征首領 v1（自主提案切片·世界第一次有了一個需要遠行討伐的目標）─────────────
+// 全服至多同時存在一位（伺服器權威，隨 players 快照廣播 world_boss，null＝未在世）。
+// 前端只渲染巨型暗影體＋頂部持久 HP 條＋把「準心挖擊」轉送 boss_hit。復用暗影同一套
+// 深色核心/微光外殼美術語彙（零新美術），純放大＋加一圈更濃的光暈，一眼可辨「這是首領」。
+let bossEnt = null; // { group, core, glow } 或 null（未在世）
+const BOSS_CORE_MAT = new THREE.MeshBasicMaterial({ color: 0x1a1030, transparent: true, opacity: 0.88 });
+const BOSS_GLOW_MAT = new THREE.MeshBasicMaterial({
+  color: 0xb06bff, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false,
+});
+const BOSS_CORE_GEO = new THREE.IcosahedronGeometry(1.3, 1);
+const BOSS_GLOW_GEO = new THREE.IcosahedronGeometry(1.9, 1);
+const BOSS_VISIBLE_DIST = 200; // 巨大體型，遠遠就該看得見（遠征目標，本就要老遠望見它）
+const BOSS_PICK_REACH = 10; // 準心挑選距離（前端提示；真正打不打得到由伺服器 reach 複驗）
+let bossHitFlash = 0;
+
+function buildBoss() {
+  const group = new THREE.Group();
+  const core = new THREE.Mesh(BOSS_CORE_GEO, BOSS_CORE_MAT.clone());
+  core.position.y = 1.6;
+  group.add(core);
+  const glow = new THREE.Mesh(BOSS_GLOW_GEO, BOSS_GLOW_MAT.clone());
+  glow.position.y = 1.6;
+  group.add(glow);
+  group.userData.isBoss = true;
+  scene.add(group);
+  return { group, core, glow };
+}
+
+// 依伺服器快照更新首領（`b` 為 world_boss 物件或 null/undefined）。現身/消失時建立/移除實體，
+// HP 條隨血量即時更新；首次見到首領時提示玩法（一台裝置只提示一次，localStorage 記憶）。
+function updateBoss(b) {
+  const bar = document.getElementById("bossBar");
+  if (!b) {
+    if (bossEnt) { scene.remove(bossEnt.group); bossEnt = null; }
+    if (bar) bar.classList.remove("show");
+    return;
+  }
+  if (!bossEnt) bossEnt = buildBoss();
+  bossEnt.group.position.set(b.x, b.y, b.z);
+  const dx = b.x - player.x, dz = b.z - player.z;
+  bossEnt.group.visible = (dx * dx + dz * dz) < (BOSS_VISIBLE_DIST * BOSS_VISIBLE_DIST);
+  if (bar) {
+    bar.classList.add("show");
+    const nameEl = bar.querySelector(".bb-name");
+    if (nameEl) nameEl.textContent = `🌋 ${b.name || "巨蝕者"}`;
+    const fill = document.getElementById("bossBarFill");
+    if (fill) fill.style.width = Math.max(0, Math.min(100, (b.hp / Math.max(1, b.max_hp)) * 100)) + "%";
+  }
+  if (!localStorage.getItem("bfBossHint")) {
+    localStorage.setItem("bfBossHint", "1");
+    showMsg("🌋 遠方出現了一頭巨蝕者！召集夥伴、帶上武器，遠遠走一趟去會會牠吧。");
+    setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 5200);
+  }
+}
+
+// 準心挑首領（同款 raycast；命中回 true，否則 false）。伺服器仍會權威複驗 reach。
+function pickWorldBoss(clientX, clientY) {
+  if (!bossEnt || !bossEnt.group.visible) return false;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((clientX - rect.left) / rect.width) * 2 - 1,
+    -((clientY - rect.top) / rect.height) * 2 + 1
+  );
+  raycaster.setFromCamera(ndc, camera);
+  const pickables = [];
+  bossEnt.group.traverse((o) => { if (o.isMesh) pickables.push(o); });
+  const hits = raycaster.intersectObjects(pickables, false);
+  return hits.length > 0 && hits[0].distance <= BOSS_PICK_REACH;
+}
+
+// 每幀推進首領氛圍：微光呼吸 + 受擊閃白。體型巨大、原地不動，故無漂浮/位移。
+function updateBossFx(dt) {
+  if (!bossEnt) return;
+  const now = performance.now() * 0.001;
+  const breathe = 1.0 + Math.sin(now * 1.6) * 0.06;
+  bossEnt.glow.scale.setScalar(breathe);
+  if (bossHitFlash > 0) {
+    bossHitFlash -= dt;
+    bossEnt.core.material.color.setHex(0xe6d4ff);
+    if (bossHitFlash <= 0) bossEnt.core.material.color.setHex(0x1a1030);
+  }
+}
+
 // 文字貼圖 sprite（名牌/泡泡共用工廠）。bubble=true 用柔色圓底（像在說話），否則白描邊名牌。
 function makeTextSprite(text, bubble) {
   const canvas = document.createElement("canvas");
@@ -6668,6 +6751,8 @@ if (!isTouch) {
       // 暗影生物 v1：準心對到暗影 → 挖擊它（送 shadow_hit；打不打得到由伺服器權威複驗）。
       const sid = pickShadow(cx, cy);
       if (sid !== null) { ws.send(JSON.stringify({ t: "shadow_hit", id: sid })); return; }
+      // 遠征首領 v1：準心對到首領 → 挖擊牠（送 boss_hit；打不打得到由伺服器權威複驗）。
+      if (pickWorldBoss(cx, cy)) { ws.send(JSON.stringify({ t: "boss_hit" })); return; }
       startMining(); // 採礦手感 v1：開始計時挖掘，而非立即 break
     }
   });
@@ -6748,6 +6833,8 @@ if (isTouch) {
           // 暗影生物 v1：輕點到暗影 → 挖擊（兩種觸控模式皆可——像點居民一樣直覺、無誤觸風險）。
           const sid = pickShadow(t.clientX, t.clientY);
           if (sid !== null) ws.send(JSON.stringify({ t: "shadow_hit", id: sid }));
+          // 遠征首領 v1：輕點到首領 → 挖擊牠（兩種觸控模式皆可）。
+          else if (pickWorldBoss(t.clientX, t.clientY)) ws.send(JSON.stringify({ t: "boss_hit" }));
           // 點世界＝挖：只在「點擊互動」模式生效；準心+按鈕模式拖曳/輕點都不挖（改按挖鈕）。
           else if (settings.touchMode === "tap") breakAtTarget();
         }
@@ -7124,6 +7211,8 @@ function connect() {
       if (m.wildlife) updateWildlife(m.wildlife);
       // 暗影生物 v1：夜間暗處的漂浮小靈（伺服器權威；白天陣列為空自然全移除）。
       if (m.shadows) updateShadows(m.shadows);
+      // 遠征首領 v1：全服至多一位（伺服器權威；"world_boss" in m 判定 null 也要處理，即首領消失）。
+      if ("world_boss" in m) updateBoss(m.world_boss);
       // 晝夜循環 v1：伺服器每幀帶 time_of_day(0.0–1.0)，前端據此更新天空/光照。
       // 下雨天氣 v1（ROADMAP 700）：raining 隨同一份快照送達，一併觸發天空重繪。
       let skyDirty = false;
@@ -7288,6 +7377,14 @@ function connect() {
       // 暗影生物 v1：自己的挖擊命中——該暗影閃一下淡紫白（gone=true 時等 shadow_puff 收尾）。
       const ent = shadowEnts.get(m.id);
       if (ent) ent.hitFlash = 0.12;
+    } else if (m.t === "boss_hit_ok") {
+      // 遠征首領 v1：自己的挖擊命中——首領閃一下淡紫白（dead=true 時等 worldboss defeat 橫幅收尾）。
+      bossHitFlash = 0.12;
+    } else if (m.t === "worldboss") {
+      // 遠征首領 v1：全服級的現身（spawn）／擊倒（defeat）橫幅——整句由伺服器給，i18n 集中在後端。
+      showMsg(m.msg || (m.phase === "spawn" ? "🌋 巨蝕者現身了！" : "🎉 巨蝕者倒下了！"));
+      const el = document.getElementById("msg");
+      if (el) { clearTimeout(el._hideTimer); el._hideTimer = setTimeout(() => { el.style.display = "none"; }, 6000); }
     } else if (m.t === "siege") {
       // 暗潮之夜 v1：全村級的降臨（onset）／退去（cleared）橫幅——整句由伺服器給，i18n 集中在後端。
       // 降臨時橫幅多留一會兒（是一整夜的事，不像一般提示一閃即逝）。
@@ -8096,6 +8193,7 @@ function update(dt) {
   updateClouds(dt); // 天空雲彩 v1（933）：白天天空掛幾團柔和飄動的雲，隨時段/天氣染色
   updateFireworks(dt); // 乙太煙火 v1（785）：推進進行中的煙火綻放
   updateShadowFx(dt);  // 暗影生物 v1：暗影浮動/微光呼吸/受擊閃白/輕煙淡出
+  updateBossFx(dt);    // 遠征首領 v1：微光呼吸/受擊閃白（原地不動，無漂浮位移）
   updateBellRings(dt); // 集會鐘 v1（自主提案切片）：推進進行中的鐘聲漣漪
   updateHumNotes(dt);  // 居民哼歌 v1（788）：推進頭頂飄浮音符
   animateResidents(dt); // 居民表情/肢體 v1：依心情/說話/附近暗影驅動柔和肢體語言

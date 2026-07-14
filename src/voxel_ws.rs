@@ -105,6 +105,7 @@ use crate::voxel_roster as vroster;
 use crate::voxel_petname as vpet;
 use crate::voxel_shadow as vshadow;
 use crate::voxel_siege as vsiege;
+use crate::voxel_worldboss as vboss;
 use crate::voxel_time::{self as vt, WorldTime, TimePhase};
 use crate::voxel_announce as vannounce;
 use crate::voxel_bonds::{self as vbonds, ResidentBonds};
@@ -1047,6 +1048,18 @@ struct ShadowView {
     y: f32,
     z: f32,
     hits: u8,
+}
+
+/// 遠征首領序列化視圖（遠征首領 v1，自主提案切片）：位置＋血量／血量上限，前端據此畫出
+/// 巨型暗影體＋頂部持久 HP 條。全服至多同時存在一位；未有首領在世時上層直接送 `null`。
+#[derive(Serialize)]
+struct WorldBossView {
+    name: &'static str,
+    x: f32,
+    y: f32,
+    z: f32,
+    hp: u32,
+    max_hp: u32,
 }
 
 /// 居民名字池（取自 resident_npc 的近城居民風格名，柔和轉寫式、與主要 NPC 一致）。
@@ -2468,6 +2481,10 @@ struct VoxelHub {
     /// 守夜恩人 v1（ROADMAP 888）：居民對你的道謝冷卻（居民 id → 上次道謝的時刻），避免整夜
     /// 你連驅數團暗影、同一位居民連環道謝洗版。純記憶體、黎明清空。
     nightguard_cd: std::sync::Mutex<HashMap<String, std::time::Instant>>,
+    /// 遠征首領 v1（自主提案切片）：全服至多同時存在一位（伺服器權威，隨 players 快照廣播）。
+    /// 純記憶體、重啟消失（比照暗影/暗潮，無持久化需求）。用 `RwLock` 而非裸原子——
+    /// 挖擊由多條連線並發送達，血量套用必須靠寫鎖序列化，避免併發扣血互相蓋掉。
+    world_boss: RwLock<Option<vboss::WorldBoss>>,
     tx: broadcast::Sender<Arc<String>>,
 }
 
@@ -3279,6 +3296,8 @@ fn hub() -> &'static VoxelHub {
             // 夜裡點燈守望 v1：啟動時無點燈冷卻紀錄（純記憶體、黎明清空）。
             nightwatch_cd: std::sync::Mutex::new(HashMap::new()),
             nightguard_cd: std::sync::Mutex::new(HashMap::new()),
+            // 遠征首領 v1：啟動時無首領在世（白天低機率擲骰才生成）。
+            world_boss: RwLock::new(None),
             tx,
         }
     })
@@ -3420,12 +3439,21 @@ fn players_snapshot_json() -> String {
         let ws = hub().shadows.read().unwrap();
         ws.iter().map(|w| ShadowView { id: w.id, x: w.x, y: w.y, z: w.z, hits: w.hits }).collect()
     }; // 暗影讀鎖在此釋放
+    // 遠征首領快照（遠征首領 v1，短鎖、不巢狀）：全服至多一位，未在世時送 null（前端隱藏 HP 條）。
+    let world_boss: Option<WorldBossView> = {
+        hub().world_boss.read().unwrap().as_ref().map(|b| {
+            WorldBossView {
+                name: vboss::BOSS_NAME, x: b.x, y: b.y, z: b.z, hp: b.hp, max_hp: vboss::BOSS_MAX_HP,
+            }
+        })
+    }; // 首領讀鎖在此釋放
     serde_json::json!({
         "t": "players",
         "players": players,
         "residents": residents,
         "wildlife": wildlife,
         "shadows": shadows,
+        "world_boss": world_boss,
         "time_of_day": time_of_day,
         "raining": raining,
         "rainbow": rainbow,
@@ -3716,6 +3744,11 @@ enum ClientMsg {
     /// 客戶端無法自報擊殺）。累計 [`vshadow::HITS_TO_DISSIPATE`] 下化成輕煙、掉一枚乙太礦。
     #[serde(rename = "shadow_hit")]
     ShadowHit { id: u64 },
+    /// 遠征首領 v1（自主提案切片）：挖擊此刻在世的遠征首領。無座標/id 欄位——全服至多同時
+    /// 存在一位，客戶端只自報「我在打首領」，**打不打得到、扣幾點血、打不打得倒全由伺服器算**
+    /// （觸及驗證＋每連線揮擊節流，客戶端無法自報擊殺）。
+    #[serde(rename = "boss_hit")]
+    BossHit,
     /// 乙太煙火 v1（ROADMAP 785）：朝夜空施放一束背包裡的乙太煙火(68)。伺服器驗每連線
     /// 冷卻＋消耗一份煙火後，廣播 `firework`（施放者頭頂上方位置＋火花配色）給全場，附近
     /// 醒著的居民抬頭歡呼。無座標欄位——火花在施放者頭頂夜空綻放，位置由伺服器取施放者當前
@@ -3877,6 +3910,15 @@ fn broadcast_shadow_puff(x: f32, y: f32, z: f32) {
 fn broadcast_siege(phase: &str, msg: &str) {
     let payload = Arc::new(
         serde_json::json!({ "t": "siege", "phase": phase, "msg": msg }).to_string(),
+    );
+    let _ = hub().tx.send(payload);
+}
+
+/// 廣播遠征首領橫幅（遠征首領 v1）：`phase` = "spawn"（現身）／"defeat"（擊倒），
+/// `msg` 是給前端直接 showMsg 的整句（面向玩家字串集中於 `voxel_worldboss`，i18n 友善）。
+fn broadcast_worldboss(phase: &str, msg: &str) {
+    let payload = Arc::new(
+        serde_json::json!({ "t": "worldboss", "phase": phase, "msg": msg }).to_string(),
     );
     let _ = hub().tx.send(payload);
 }
@@ -4838,6 +4880,8 @@ async fn handle_socket(
     // 擋封包連發瞬殺）。皆 per-connection、斷線即清、零跨連線鎖。
     let mut last_shadow_touch: Option<std::time::Instant> = None;
     let mut last_shadow_swing: Option<std::time::Instant> = None;
+    // 遠征首領 v1：這條連線最近一次有效挖擊首領的時刻（伺服器端節流，擋封包連發瞬殺）。
+    let mut last_boss_swing: Option<std::time::Instant> = None;
     // 邊陲營地探索 v1（自主提案切片，接續 881）：這條連線上一 tick 是否正站在某位居民的邊陲
     // 營地床邊，用來偵測「剛走近」的那一刻只嘗試記一次探索紀事（避免逗留原地時每秒都取一次
     // discovery 寫鎖；record() 本身已冪等，此旗標純粹省一趟鎖，非正確性必要）。
@@ -10201,6 +10245,72 @@ async fn handle_socket(
                 }
             }
 
+            // 遠征首領 v1（自主提案切片）：玩家挖擊此刻在世的首領（後端權威——觸及/節奏/擊倒全由
+            // 伺服器算）。全服至多一位，無座標/id 欄位；命中判定與傷害套用全在 world_boss 寫鎖內
+            // 一次做完（併發挖擊靠寫鎖序列化，不用裸原子，避免同時扣血互相蓋掉）。
+            Ok(ClientMsg::BossHit) => {
+                // ① 每連線揮擊節流：擋封包連發瞬殺（客戶端就算灌包也快不過這個間隔）。
+                let now = std::time::Instant::now();
+                let swing_ok = last_boss_swing
+                    .map_or(true, |t| now.duration_since(t).as_secs_f32() >= vboss::HIT_MIN_INTERVAL_SECS);
+                if !swing_ok {
+                    continue;
+                }
+                last_boss_swing = Some(now);
+                // ② 觸及驗證：伺服器記載的玩家位置 → 打不打得到由伺服器算，不信客戶端。
+                let Some((px, py, pz)) = player_pos(my_id) else { continue };
+                // 驅影之劍同一套加成：讀玩家手持物 → 若真持有劍就一擊更重（必查背包，防偽報白嫖）。
+                let held_sword: Option<u8> = {
+                    let hid = hub().players.read().unwrap().get(&my_id).and_then(|p| p.held);
+                    match hid {
+                        Some(id) if vcraft::is_sword(id)
+                            && hub().inventory.read().unwrap().count(&name, id) >= 1 => Some(id),
+                        _ => None,
+                    }
+                }; // players / inventory 讀鎖各自短取即釋
+                let power = held_sword.map_or(1, vcraft::sword_power);
+                let outcome: Option<(vboss::WorldBoss, bool)> = {
+                    let mut wb = hub().world_boss.write().unwrap();
+                    match wb.as_ref() {
+                        Some(b) if vboss::hit_in_reach(px, py, pz, b.x, b.y, b.z) => {
+                            let (nh, dead) = vboss::register_hit(b.hp, power);
+                            if dead {
+                                let snap = vboss::WorldBoss { hp: nh, ..b.clone() };
+                                *wb = None; // 倒下當下即從世界移除，理論上不會被序列化出 0 血
+                                Some((snap, true))
+                            } else {
+                                let mut snap = b.clone();
+                                snap.hp = nh;
+                                *wb = Some(snap.clone());
+                                Some((snap, false))
+                            }
+                        }
+                        _ => None, // 首領不存在／太遠 → 靜默忽略（不影響手感、也不給探測回饋）
+                    }
+                }; // world_boss 寫鎖釋放
+                let Some((b, dead)) = outcome else { continue };
+                // ③ 命中回饋單播（前端閃一下首領；dead=true 時前端等 worldboss defeat 橫幅收尾）。
+                let _ = out_tx.send(Message::Text(serde_json::json!({
+                    "t": "boss_hit_ok", "hp": b.hp, "dead": dead
+                }).to_string())).await;
+                if dead {
+                    // 全服慶祝橫幅＋動態牆，並在首領倒下處掉一大筆乙太礦（值回一趟遠征的溫柔獎勵）。
+                    broadcast_worldboss("defeat", &vboss::defeat_msg());
+                    vfeed::append_feed(vboss::FEED_KIND, vboss::FEED_ACTOR, &vboss::defeat_feed());
+                    let spawned = {
+                        hub().drops.write().unwrap().spawn(
+                            b.x, b.y, b.z, vshadow::SHARD_ITEM_ID, vboss::DEFEAT_REWARD_SHARDS,
+                            &name, vfarm::now_secs(),
+                        )
+                    }; // drops 寫鎖釋放
+                    if let Some(did) = spawned {
+                        broadcast_item_dropped(
+                            did, b.x, b.y, b.z, vshadow::SHARD_ITEM_ID, vboss::DEFEAT_REWARD_SHARDS, &name,
+                        );
+                    }
+                }
+            }
+
             Ok(ClientMsg::Eat { item_id }) => {
                 // 親手煮的暖食自己也能享用 v1（779）。
                 // 玩家生存指標 v1（溫和版·後端權威）：吃東西真的回復飢餓、扣背包。
@@ -10567,6 +10677,7 @@ pub fn spawn_residents() {
             tick_residents(RESIDENT_DT);
             tick_wildlife(RESIDENT_DT); // 野兔 v1：同節拍，各自獨立鎖，不與居民鎖巢狀。
             tick_shadows(RESIDENT_DT); // 暗影生物 v1：同節拍，各自獨立鎖，零 LLM、上限 6 隻。
+            tick_worldboss(); // 遠征首領 v1：白天低頻擲骰，各自獨立鎖，全服至多一位、不隨黎明消散。
             tick_nightwatch(RESIDENT_DT); // 夜裡點燈守望 v1：低頻檢查、各自獨立鎖，見暗影靠近就近點盞燈。
             tick_longing(); // 居民惦記離開的你 v1：低頻掃待送出的想念，到期由醒著居民念叨出口。
             tick_farbond(); // 兩村相思 v1：低頻掃分屬不同聚落的摯友，偶爾由醒著居民念叨一句隔村的老朋友。
@@ -11293,6 +11404,55 @@ fn tick_shadows(dt: f32) {
             }
         }
     } // wildlife 寫鎖釋放
+}
+
+// ── 遠征首領（World Boss）v1 狀態機（自主提案切片）──────────────────────────────
+//
+// 與暗潮之夜共用「白天重置擲骰旗標、換一天只擲一次」的既有慣例，但方向相反：暗潮在**夜間**
+// 擲一次骰決定今晚，首領在**白天**擲一次骰決定今天要不要生成——首領不隨晝夜消長，一旦生成
+// 便持續存在到被打倒為止（不像暗潮天亮必退）。純旗標，tick_residents 單執行緒循序推進，
+// 無資料競態；血量本體另走 `world_boss: RwLock<Option<WorldBoss>>`（見 Hub），因為那個是
+// 會被多條連線併發挖擊寫入的狀態，裸原子在此不安全，鎖序列化才對。
+
+/// 今天是否已擲過「要不要生成遠征首領」的骰（每天一次，非白天時重置）：擋一天擲多次。
+static BOSS_ROLLED: AtomicBool = AtomicBool::new(false);
+
+/// 推進遠征首領一個 tick：白天低頻擲骰（僅在無首領在世、有玩家在線時）→ 中獎則在遠離村莊
+/// 的生成環上釘一個固定點、廣播現身橫幅＋動態牆。首領本身原地不動、不主動攻擊，v1 刻意
+/// 不做每 tick 物理/AI（省成本，也是與暗影/暗潮「主動追人」的關鍵區隔）。
+fn tick_worldboss() {
+    let phase = { hub().world_time.read().unwrap().phase() };
+    if phase != TimePhase::Day {
+        BOSS_ROLLED.store(false, Ordering::Relaxed); // 新的一天可重新擲骰
+        return;
+    }
+    if BOSS_ROLLED.swap(true, Ordering::Relaxed) {
+        return; // 今天已經擲過骰，沿用結果（不生成／已生成都不重擲）
+    }
+    let active = { hub().world_boss.read().unwrap().is_some() };
+    if !vboss::should_spawn(active, rand::random::<f32>()) {
+        return;
+    }
+    let any_online = { !hub().players.read().unwrap().is_empty() };
+    if !any_online {
+        return; // 沒人在線的世界不必開場遠征（留待下次擲骰，這次視同沒中）
+    }
+    // 村莊中心：優先讀存檔釘死的中心，缺席則用居民家域質心兜底（比照暗潮之夜同款 fallback）。
+    let (vcx, vcz) = vvillage::load_village_center().unwrap_or_else(|| {
+        let home_bases: Vec<(i32, i32)> = {
+            let rs = hub().residents.read().unwrap();
+            rs.iter().map(|r| (r.home_x.floor() as i32, r.home_z.floor() as i32)).collect()
+        }; // residents 讀鎖釋放
+        vvillage::village_center(&home_bases)
+    });
+    let angle = rand::random::<f32>() * std::f32::consts::TAU;
+    let dist = vboss::spawn_dist(rand::random::<f32>());
+    let (bx, bz) = vboss::spawn_pos(vcx as f32, vcz as f32, angle, dist);
+    let by = crate::voxel::height_at(bx.floor() as i32, bz.floor() as i32) as f32 + 1.0;
+    { *hub().world_boss.write().unwrap() = Some(vboss::WorldBoss { x: bx, y: by, z: bz, hp: vboss::BOSS_MAX_HP }); }
+    let dir = vcolony::bearing_label(vcx, vcz, bx.floor() as i32, bz.floor() as i32);
+    broadcast_worldboss("spawn", &vboss::spawn_msg(dir));
+    vfeed::append_feed(vboss::FEED_KIND, vboss::FEED_ACTOR, &vboss::spawn_feed(dir));
 }
 
 // ── 夜裡點燈守望 tick（把「怕著躲家」升級成「一起點燈守望」）────────────────────────
