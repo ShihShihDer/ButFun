@@ -87,6 +87,22 @@ pub fn can_start_riding(has_item: bool) -> bool {
     has_item
 }
 
+// ── 樂器物品 ID（純物品，不可放置於世界，街頭手風琴 v1，自主提案切片）───────────────
+/// 街頭手風琴（ROADMAP 977）——物品 ID 116；世界至今與音樂沾邊的唯一一筆是居民心情好時
+/// 自己哼的歌（`voxel_humming`）——玩家完全插不上手；集會鐘能把居民召到你身邊，但你到了
+/// 之後什麼都做不了。世界從沒有一件玩家能主動操作、對著居民表演的樂器。工作台合成後可
+/// 切換演奏／收起，附近閒著的居民會停下腳步聆聽。純物品、不可放置。115（蒸汽獨輪車）
+/// 是目前最大已用 id，116 是首個空號。
+pub const STREET_ACCORDION_ID: u8 = 116;
+
+/// 是否允許把 `performing` 設為 `true`（純判定，voxel_ws 的 SetPerforming handler 用）。
+/// 唯一條件：真實背包持有至少 1 把街頭手風琴——伺服器必須自己查背包算出 `has_item`，
+/// 不能信任客戶端自報「我有手風琴」（比照 `can_start_riding` 同款持有驗證手法）。
+/// 收起演奏（performing=false）不經過這條判定，呼叫端直接放行。純函式、確定性、可測。
+pub fn can_start_performing(has_item: bool) -> bool {
+    has_item
+}
+
 /// 一把武器每次揮擊對暗影造成的「傷害點」（暗影耐久＝[`crate::voxel_shadow::HITS_TO_DISSIPATE`]=3）。
 /// 徒手不是武器→回 0（呼叫端據此退回既有徒手 1 點）。木劍 2、石劍 3（一擊即散）、鐵劍 3。
 /// 純函式、確定性、無副作用、可測。i18n 無涉（純數值）。
@@ -683,6 +699,18 @@ pub const WORKBENCH_RECIPES: &[Recipe] = &[
         output_block: STEAM_UNICYCLE_ID,
         output_count: 1,
     },
+    // ── 街頭手風琴 v1（ROADMAP 977，自主提案切片）：世界第一件玩家可操作的樂器 ──────────
+    // 3 木板(8) + 2 鐵錠(22) + 1 玻璃(10) → 1 街頭手風琴。木製琴身、黃銅簧片、玻璃視窗，
+    // 蒸汽龐克風味用既有材料拼出，不發明新素材。多重集 {8:3,22:2,10:1} 獨一無二：
+    // 鐵鎬/鐵斧 {22:3,8:2}、鐵鏟 {22:2,8:3}、鐵劍 {5:2,22:3} 皆不相撞。6 格材料超過背包
+    // 2×2，比照獨輪車/鐵劍的合成規模，名正言順需工作台。
+    Recipe {
+        id: "street_accordion",
+        name_zh: "街頭手風琴",
+        inputs: &[(8, 3), (22, 2), (10, 1)], // 3 木板 + 2 鐵錠 + 1 玻璃 → 1 街頭手風琴
+        output_block: STREET_ACCORDION_ID,
+        output_count: 1,
+    },
 ];
 
 /// 熔爐冶煉配方（需放置熔爐方塊後右鍵開啟冶煉面板才能使用）。
@@ -1109,7 +1137,8 @@ mod tests {
                 || r.output_block == crate::voxel_blueprint::BLUEPRINT_GARDEN // 花圃藍圖（純物品 id=87）
                 || r.output_block == crate::voxel_blueprint::BLUEPRINT_PAVILION // 涼亭藍圖（純物品 id=88）
                 || r.output_block == SWORD_IRON_ID // 鐵劍（純物品 id=101，驅影之劍 v1，ROADMAP 887 自主提案切片）
-                || r.output_block == STEAM_UNICYCLE_ID; // 蒸汽獨輪車（純物品 id=115，ROADMAP 976 自主提案切片）
+                || r.output_block == STEAM_UNICYCLE_ID // 蒸汽獨輪車（純物品 id=115，ROADMAP 976 自主提案切片）
+                || r.output_block == STREET_ACCORDION_ID; // 街頭手風琴（純物品 id=116，ROADMAP 977 自主提案切片）
             assert!(
                 ok,
                 "工作台配方「{}」產出 id={} 超出範圍",
@@ -1968,5 +1997,67 @@ mod tests {
         // 伺服器權威判定：持有才准騎，不持有拒絕（不信客戶端自報）。
         assert!(can_start_riding(true), "真持有蒸汽獨輪車應允許騎乘");
         assert!(!can_start_riding(false), "沒有蒸汽獨輪車不該允許騎乘");
+    }
+
+    // ── 街頭手風琴 v1（ROADMAP 977，自主提案切片）───────────────────────────────────
+
+    #[test]
+    fn street_accordion_id_is_first_free_slot_after_steam_unicycle() {
+        // 115（蒸汽獨輪車）是目前最大已用 id，116 應是首個空號。
+        assert_eq!(STREET_ACCORDION_ID, 116);
+    }
+
+    #[test]
+    fn street_accordion_recipe_exists_only_in_workbench_table() {
+        assert!(find_recipe("street_accordion").is_none(), "街頭手風琴應只在工作台配方（6 格超出背包 2×2）");
+        let r = find_workbench_recipe("street_accordion").unwrap();
+        assert_eq!(r.output_block, STREET_ACCORDION_ID);
+        assert_eq!(r.output_count, 1);
+        assert_eq!(r.inputs, &[(8, 3), (22, 2), (10, 1)], "應為 3 木板 + 2 鐵錠 + 1 玻璃");
+    }
+
+    #[test]
+    fn street_accordion_recipe_findable_via_find_any_recipe() {
+        // WS Craft handler 統一走 find_any_recipe，確保新配方也能被這條路徑找到。
+        let r = find_any_recipe("street_accordion").unwrap();
+        assert_eq!(r.output_block, STREET_ACCORDION_ID);
+    }
+
+    #[test]
+    fn street_accordion_recipe_has_unique_input_multiset() {
+        // {8:3,22:2,10:1} 不應與任何其他工作台配方的多重集相撞。
+        let mut mine = find_workbench_recipe("street_accordion").unwrap().inputs.to_vec();
+        mine.sort();
+        for r in WORKBENCH_RECIPES {
+            if r.id == "street_accordion" {
+                continue;
+            }
+            let mut other = r.inputs.to_vec();
+            other.sort();
+            assert_ne!(mine, other, "街頭手風琴與工作台配方「{}」多重集相撞", r.id);
+        }
+    }
+
+    #[test]
+    fn street_accordion_craft_requires_full_material_set() {
+        let r = find_workbench_recipe("street_accordion").unwrap();
+        let mut short = InvStore::default();
+        short.give("旅人", 8, 3);
+        short.give("旅人", 22, 2);
+        // 缺玻璃(10) → 不能合成
+        assert!(!can_craft(r, &short, "旅人"), "缺玻璃不該能合成街頭手風琴");
+
+        let mut ok = InvStore::default();
+        ok.give("旅人", 8, 3);
+        ok.give("旅人", 22, 2);
+        ok.give("旅人", 10, 1);
+        assert!(can_craft(r, &ok, "旅人"), "湊齊 3 木板+2 鐵錠+1 玻璃應可合成");
+    }
+
+    #[test]
+    fn can_start_performing_requires_real_item_ownership() {
+        // 伺服器權威判定：持有才准開演，不持有拒絕（不信客戶端自報）。
+        assert!(can_start_performing(true), "真持有街頭手風琴應允許開演");
+        assert!(!can_start_performing(false), "沒有街頭手風琴不該允許開演");
     }
 }

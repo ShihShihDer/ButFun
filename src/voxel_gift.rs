@@ -113,6 +113,13 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         // 稀有魚 v1（ROADMAP 939）：環境限定的稀有漁獲，可珍藏/餽贈居民（居民有專屬驚喜道謝）。
         111 => "夜光魚",       // 對齊 voxel_fishing::MOONFISH_ID（夜釣限定）
         112 => "深海乙太魚",   // 對齊 voxel_fishing::ABYSSAL_FISH_ID（深水限定、最稀）
+        // 地底遺跡神殿 v1（ROADMAP 975）：藏寶室核心，可採可放，此前漏補此名（PR #1262
+        // review 點名）——沒登記時餽贈/交易會顯示 fallback「物品」。
+        114 => "遺跡核心", // 對齊 voxel::Block::RelicGlow
+        // 蒸汽獨輪車 v1（ROADMAP 976）：純物品，同一漏洞順手補上，避免餽贈顯示 fallback。
+        crate::voxel_craft::STEAM_UNICYCLE_ID => "蒸汽獨輪車",
+        // 街頭手風琴 v1（ROADMAP 977，自主提案切片）：純物品，可餽贈居民。
+        crate::voxel_craft::STREET_ACCORDION_ID => "街頭手風琴",
         _ => "物品",
     }
 }
@@ -589,6 +596,15 @@ mod tests {
         // 806 漏補的莓果名、808 新增的莓果醬名——不再 fallback 成「物品」。
         assert_eq!(item_name_zh(77), "莓果");
         assert_eq!(item_name_zh(crate::voxel_berry::JAM_ID), "莓果醬");
+    }
+
+    #[test]
+    fn item_name_relic_unicycle_accordion_registered() {
+        // PR #1262 review 點名 114（遺跡核心）漏補此名表，順手一併補上 115/116，
+        // 不再讓餽贈/交易顯示 fallback「物品」。
+        assert_eq!(item_name_zh(114), "遺跡核心");
+        assert_eq!(item_name_zh(crate::voxel_craft::STEAM_UNICYCLE_ID), "蒸汽獨輪車");
+        assert_eq!(item_name_zh(crate::voxel_craft::STREET_ACCORDION_ID), "街頭手風琴");
     }
 
     #[test]

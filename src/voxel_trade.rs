@@ -164,6 +164,12 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         // 乙太幣（`voxel_craft::COIN_ID`，ROADMAP 873）：付幣代替湊材料 v1 起，交易台詞/
         // 成交回條也可能提到「乙太幣」，補進這份獨立維護的命名表。
         98 => "乙太幣",
+        // 地底遺跡神殿 v1（ROADMAP 975）：藏寶室核心，此前漏補此名（PR #1262 review 點名，
+        // 與 voxel_gift::item_name_zh 同步補上）。
+        114 => "遺跡核心",
+        // 蒸汽獨輪車 v1（ROADMAP 976）／街頭手風琴 v1（ROADMAP 977）：純物品，同一漏洞順手補上。
+        115 => "蒸汽獨輪車",
+        116 => "街頭手風琴",
         _ => "物品",
     }
 }
@@ -369,6 +375,14 @@ mod tests {
     #[test]
     fn item_name_zh_coin() {
         assert_eq!(item_name_zh(98), "乙太幣");
+    }
+
+    #[test]
+    fn item_name_zh_relic_unicycle_accordion_registered() {
+        // PR #1262 review 點名 114（遺跡核心）漏補此名表，順手一併補上 115/116。
+        assert_eq!(item_name_zh(114), "遺跡核心");
+        assert_eq!(item_name_zh(115), "蒸汽獨輪車");
+        assert_eq!(item_name_zh(116), "街頭手風琴");
     }
 
     #[test]
