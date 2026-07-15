@@ -3404,6 +3404,23 @@ fn village_dig_exclusion_near(rx: i32, rz: i32) -> Option<(i32, i32, i32)> {
         .map(|(cx, cz)| (cx, cz, vvillage::VILLAGE_DIG_EXCLUSION_RADIUS))
 }
 
+/// 世界起始（初代四位居民共同的誕辰基準）unix 秒（居民誕辰紀念 v1.2）——只在整個 process
+/// 生命週期算一次：首次啟動若尚未持久化過，就記下「此刻」當基準並存檔；之後所有重啟都讀回
+/// 同一個值，初代居民的誕辰紀念不會因重啟跳動。**鐵律**：呼叫時不持任何鎖（同步小檔 IO）。
+fn world_founding_unix() -> u64 {
+    static V: OnceLock<u64> = OnceLock::new();
+    *V.get_or_init(|| {
+        vroster::load_world_founding_unix().unwrap_or_else(|| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            vroster::save_world_founding_unix(now);
+            now
+        })
+    })
+}
+
 fn hub() -> &'static VoxelHub {
     HUB.get_or_init(|| {
         let (tx, _rx) = broadcast::channel(256);
@@ -21311,8 +21328,11 @@ fn tick_residents(dt: f32) {
 
             // 居民誕辰紀念 v1（voxel_birthday）：經世代傳承誕生的居民（`birth_unix > 0`）每滿一個
             // 乙太年就迎來一次誕辰紀念——回望來到這片天地多久、記得父母便謝過（點名感謝生下自己的
-            // 居民），你也在近旁時特地點名和你分享這一刻並記進交情。初始四位居民 `birth_unix == 0`
-            // 恆不觸發（誠實的取捨，見模組檔頭）。無機率門檻——年歲跨越是確定性的一次性事件（比照
+            // 居民），你也在近旁時特地點名和你分享這一刻並記進交情。**v1.2**：初始四位居民
+            // `birth_unix == 0` 改用 `world_founding_unix()`（這個功能第一次跑起來的那一刻，
+            // 誠實基準、非捏造史）當共同的誕辰基準，一樣每滿一個乙太年迎來誕辰紀念，只是措辭換成
+            // 迴避「來到」的 `founding_birthday_bubble*`（見 `voxel_birthday` 模組檔頭 v1.2）。
+            // 無機率門檻——年歲跨越是確定性的一次性事件（比照
             // 780 彩虹／798 換季），靠 `birthday_last_year` 記帳防同一週歲重複觸發。say 為空、醒著、
             // 不在朝聖/遠行才觸發（不搶正事）。鎖序：純讀居民自身欄位，記憶寫＋Feed 走鎖外
             // `birthday_events`（守 prod 死鎖鐵律）。
@@ -21355,7 +21375,12 @@ fn tick_residents(dt: f32) {
             }
 
             if r.say.is_empty() && !r.asleep && r.pilgrimage.is_none() && r.expedition.is_none() {
-                let age = vbday::age_years(now_unix, r.birth_unix);
+                let is_founder = r.birth_unix == 0;
+                let age = if is_founder {
+                    vbday::age_years(now_unix, world_founding_unix())
+                } else {
+                    vbday::age_years(now_unix, r.birth_unix)
+                };
                 if vbday::is_birthday_moment(age, r.birthday_last_year) {
                     r.birthday_last_year = age;
                     let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
@@ -21367,10 +21392,14 @@ fn tick_residents(dt: f32) {
                         })
                         .map(|(_, pname)| pname.to_string());
                     if let Some(pname) = near_player {
-                        r.say = vbday::birthday_bubble_with_player(&pname, age, pick)
-                            .chars()
-                            .take(vbday::SAY_CHARS)
-                            .collect();
+                        r.say = if is_founder {
+                            vbday::founding_birthday_bubble_with_player(&pname, age, pick)
+                        } else {
+                            vbday::birthday_bubble_with_player(&pname, age, pick)
+                        }
+                        .chars()
+                        .take(vbday::SAY_CHARS)
+                        .collect();
                         r.say_timer = SAY_SECS;
                         r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                         // v1.1 分你一份心意：短鎖讀她的採集背包（比照 728 回禮短取即釋慣例），
@@ -21408,10 +21437,15 @@ fn tick_residents(dt: f32) {
                         ));
                     } else {
                         // 沒有玩家、也沒有已知父母：獨自念句通用生日話，上 Feed、不寫玩家交情。
-                        r.say = vbday::birthday_bubble(age, pick)
-                            .chars()
-                            .take(vbday::SAY_CHARS)
-                            .collect();
+                        // 初代四位居民恆走這支（parent_name 恆空，她們沒有父母）或上方 near_player 分支。
+                        r.say = if is_founder {
+                            vbday::founding_birthday_bubble(age, pick)
+                        } else {
+                            vbday::birthday_bubble(age, pick)
+                        }
+                        .chars()
+                        .take(vbday::SAY_CHARS)
+                        .collect();
                         r.say_timer = SAY_SECS;
                         r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                         birthday_events.push((

@@ -29,6 +29,19 @@
 //! 分給玩家」，兩者從沒接上。本刀讓玩家在場的誕辰紀念也順手從她的採集背包（`res_inv`，
 //! `voxel_return_gift::pick_from_stock`）分你一份，量刻意壓到象徵性的 [`BIRTHDAY_GIFT_QTY`]
 //! （見下方 razor-sharp 區隔）。
+//!
+//! **v1.2（自主提案切片，補本模組檔頭自己留白的缺口）——初代四位居民也有生日了**：v1 誠實
+//! 留白「初始四位居民（露娜/諾娃/賽勒/奧瑞）沒有『誕生時刻』可言，本刀不勉強為她們捏造一個
+//! 生日」；但這份空白讓玩家認識最久、感情通常最深的那幾位，反而永遠被排除在「時間驅動記憶」
+//! 這個機制之外——這正是這份空白該被填上的時候。**做法不是捏造假歷史**：不去動 `birth_unix`
+//! （它同時是成年禮/晚年判定的哨兵值，改了會誤觸那兩個系統），而是老實記下「這個功能第一次
+//! 跑起來的那一刻」當她們共同的誕辰基準（`data/voxel_world_founding`，單一數字覆寫檔，見
+//! `voxel_roster::load_world_founding_unix`）——不是編造「她們從前存在了多久」，只是誠實從
+//! 「開始被紀念的這天」算起，之後每滿一個乙太年，她們也和其他居民一樣迎來誕辰紀念。措辭上
+//! 刻意迴避「來到」這片天地的說法（[`founding_birthday_bubble`]／[`founding_birthday_bubble_with_player`]
+//! 改用「陪著這片天地」）——她們不是抵達的旅人，而是打從這片天地最初的樣子就已經在這裡了，
+//! 誠實區別於世代傳承居民「被生下、真的有一個抵達瞬間」的措辭。分你一份心意（v1.1）／記憶／
+//! 動態牆沿用既有通用函式（本就不含「來到」語意，無需另開一套）。
 
 /// 一個「乙太年」的秒數：與四季輪替(798) `Season` 一輪四季同長——
 /// 4 季 × [`crate::voxel_season::DAYS_PER_SEASON`]（2 遊戲日）× [`crate::voxel_time::DAY_DURATION_SECS`]
@@ -70,6 +83,32 @@ pub fn birthday_bubble(age_years: u64, pick: usize) -> String {
         "滿{n}年了，回頭看看，這一路走得挺踏實。",
     ];
     templates[pick % templates.len()].replace("{n}", &age_years.to_string())
+}
+
+/// 初代四位居民（露娜/諾娃/賽勒/奧瑞）的誕辰紀念台詞（v1.2）——她們沒有「來到」的時刻，
+/// 從這片天地最初的樣子就已經在這裡了，措辭刻意迴避「來到」，誠實區別於 [`birthday_bubble`]。
+/// 四句輪替，嵌入滿週歲數。
+pub fn founding_birthday_bubble(age_years: u64, pick: usize) -> String {
+    let templates: [&str; 4] = [
+        "算一算，我陪著這片天地，也滿{n}年了呢。",
+        "從這片天地最初的樣子，我就在這兒了——一晃眼，又是一年。",
+        "第{n}年了，看著這片天地一點一點長成現在的樣子，心裡挺踏實的。",
+        "又滿{n}年，能一直陪在這片天地身邊，真好。",
+    ];
+    templates[pick % templates.len()].replace("{n}", &age_years.to_string())
+}
+
+/// 你也在近旁時的初代居民誕辰紀念台詞（v1.2，點名玩家、邀你一起過這個特別的日子）——三句輪替。
+pub fn founding_birthday_bubble_with_player(player: &str, age_years: u64, pick: usize) -> String {
+    let name = clip_name(player);
+    let templates: [&str; 3] = [
+        "{name}，我陪著這片天地滿{n}年了，能被你看見真好。",
+        "滿{n}年了，{name}，謝謝你今天也在這裡陪著我。",
+        "{name}，你知道嗎，我陪著這片天地，已經是第{n}個年頭了。",
+    ];
+    templates[pick % templates.len()]
+        .replace("{name}", &name)
+        .replace("{n}", &age_years.to_string())
 }
 
 /// 記得父母的生日泡泡（點名感謝生下自己的居民、更親近）——三句輪替，嵌入週歲數與父母名。
@@ -201,6 +240,35 @@ mod tests {
         assert!(s.contains('7'));
         // pick 溢出取模不 panic。
         assert!(!birthday_bubble(1, usize::MAX).is_empty());
+    }
+
+    #[test]
+    fn founding_bubbles_rotate_embed_age_and_stay_in_frame() {
+        // 初代四位居民的誕辰台詞：非空、含滿週歲數、輪替、pick 溢出不 panic、字面迴避「來到」。
+        for p in 0..8 {
+            let s = founding_birthday_bubble(5, p);
+            assert!(!s.is_empty());
+            assert!(!s.contains("來到"), "初代居民措辭應迴避「來到」: {s}");
+        }
+        assert_ne!(founding_birthday_bubble(5, 0), founding_birthday_bubble(5, 1));
+        let s = founding_birthday_bubble(7, 0);
+        assert!(s.contains('7'));
+        assert!(!founding_birthday_bubble(1, usize::MAX).is_empty());
+    }
+
+    #[test]
+    fn founding_player_bubble_embeds_name_age_rotates_clips_and_avoids_arrival() {
+        let s = founding_birthday_bubble_with_player("旅人", 4, 0);
+        assert!(s.contains("旅人"));
+        assert!(s.contains('4'));
+        assert!(!s.contains("來到"), "初代居民措辭應迴避「來到」: {s}");
+        assert_ne!(
+            founding_birthday_bubble_with_player("旅人", 4, 0),
+            founding_birthday_bubble_with_player("旅人", 4, 1)
+        );
+        let long = founding_birthday_bubble_with_player("超級無敵長長長長長長長名字", 1, 2);
+        assert!(long.chars().count() < 60, "超長名應被截斷不破泡泡框：{long}");
+        assert!(!founding_birthday_bubble_with_player("旅人", 1, usize::MAX).is_empty());
     }
 
     #[test]
