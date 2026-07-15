@@ -117,6 +117,7 @@ use crate::voxel_family as vfamily;
 use crate::voxel_sibling as vsibling;
 use crate::voxel_coming_of_age as vcoa;
 use crate::voxel_childhood as vchild;
+use crate::voxel_playmate as vplaymate;
 use crate::voxel_elder as velder;
 use crate::voxel_first_invention as vfirstinv;
 use crate::voxel_lover_seek as vlover;
@@ -18238,6 +18239,30 @@ fn tick_residents(dt: f32) {
         // 確保同一輪 tick 不會一口氣選超過 `vboss::ASSIST_MAX_RESIDENTS` 上限。
         let mut boss_assist_active = residents.iter().filter(|r| r.boss_assist).count();
 
+        // 孩童玩伴 v1（自主提案切片，接續 1016）：入 residents 寫鎖迴圈前先快照「此刻是孩子、
+        // 手邊沒正事」的居民 id/名/座標（比照 745/752 的「寫鎖前快照」慣例，residents 此刻已在
+        // 寫鎖內、`iter()` 借用零額外鎖），交給 `find_playmates` 貪婪配對，下方迴圈只需查表——
+        // 避免在持 residents 寫鎖的迴圈裡再對同一個 Vec 借第二次。
+        let playmate_of: HashMap<String, &'static str> = {
+            let candidates: Vec<vplaymate::PlaymateActor> = residents
+                .iter()
+                .filter(|r| {
+                    r.say.is_empty()
+                        && !r.asleep
+                        && r.pilgrimage.is_none()
+                        && r.expedition.is_none()
+                        && vchild::is_child(r.birth_unix, now_unix)
+                })
+                .map(|r| vplaymate::PlaymateActor { id: r.id.clone(), name: r.name, x: r.body.x, z: r.body.z })
+                .collect();
+            let mut map = HashMap::new();
+            for pair in vplaymate::find_playmates(&candidates) {
+                map.insert(pair.a_id, pair.b_name);
+                map.insert(pair.b_id, pair.a_name);
+            }
+            map
+        };
+
         // 2b) 物理 + 閒晃 + 社交冷卻 + 思考排程。
         for r in residents.iter_mut() {
             // 生病時真的「動作慢下來」（voxel_illness v3，自主提案）：與既有日夜降速相乘
@@ -21776,6 +21801,10 @@ fn tick_residents(dt: f32) {
             // 偶爾忍不住玩起純真的小把戲（頭頂泡泡以 ☆ 起頭，前端據此播放較活潑的跳動姿態）。
             // 純氛圍：不寫記憶、不上動態牆、不觸發任何持久化——與 942 成年禮/987 晚年那類
             // 一生一次的儀式性事件不同軸，是童年期間**持續**的日常樣貌，可反覆觸發。
+            // 孩童玩伴 v1（接續 1016）：若上方快照替這位孩子配到了玩伴（`playmate_of`），
+            // 就改播「一起玩」台詞、點名對方；沒配到玩伴（落單或附近沒有其他孩子）則維持
+            // 1016 原有的獨處小把戲——觸發條件（冷卻/機率/是否孩子）完全不變，只換挑句來源，
+            // 童年行為第一次從「獨處」延伸成「兩人共享」，仍是純氛圍、零新持久化。
             // 鎖序：純讀/寫居民自身欄位（已持居民寫鎖），零鎖外 IO。
             if r.say.is_empty()
                 && !r.asleep
@@ -21791,7 +21820,10 @@ fn tick_residents(dt: f32) {
             {
                 r.child_play_cooldown = vchild::PLAY_COOLDOWN_SECS;
                 let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
-                r.say = vchild::play_line(pick);
+                r.say = match playmate_of.get(&r.id) {
+                    Some(partner_name) => vplaymate::playmate_line(partner_name, pick),
+                    None => vchild::play_line(pick),
+                };
                 r.say_timer = SAY_SECS;
             }
 
