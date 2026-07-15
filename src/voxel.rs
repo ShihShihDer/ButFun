@@ -1093,16 +1093,35 @@ fn river_carve_depth(wx: i32, wz: i32) -> f32 {
     }
 }
 
-/// 若此座標落在河道核心（非緩坡帶，真正的水域）內，回傳河面所在的世界 Y
-/// （原始地表下方一格——河床已被 `river_carve_depth` 下凹出足夠深度，水面貼著
-/// 「這裡本該有的地表」下緣，同一段河不論流過平地或山丘都自然吃出一段水深）；
-/// 否則 `None`（緩坡帶只是乾燥的斜坡河岸，不淹水）。純函式、確定性、O(1)。
+/// 若此座標的（已下凹）地形低於河流水位，回傳河面所在的世界 Y；否則 `None`
+/// （地形已回升到水位以上，是乾燥河岸，不淹水；或根本不在河道範圍內）。
+///
+/// 水位取「該 z 位置河流中心線」的原始地表下方一格（`height_at_base(centerline, wz) − 1`）
+/// 當一條**同一 wz 橫剖面上恆定**的水平面——不論核心或緩坡帶都用這同一條線判斷，
+/// 這是修正「懸空水牆」缺陷的關鍵：
+/// - 舊版只在核心（`dist ≤ RIVER_HALF_WIDTH`）填水，但緊鄰核心的緩坡帶地形當下仍接近
+///   河床深度、遠低於水位，導致水柱側向緊貼空氣。
+/// - 第一版修正曾改用「每欄自己的 `height_at_base(wx,wz)`」，但地表噪聲本身沿 x 方向
+///   也會起伏，兩個相鄰欄的環境地表高度可能不同，水位就跟著逐欄跳動，一樣會在某些
+///   欄位間鑿出裸露水牆——所以水位必須是整條河橫剖面共用的**一個**值，只能取自中心線，
+///   不能逐欄各算各的。
+///
+/// 現在整個下凹橫剖面（核心＋水位以下的緩坡帶）只要地形低於這條共用水位就淹水，
+/// 水深隨緩坡帶地形回升而自然變淺，在地形爬升穿越水位處收斂成一道天然河灘——
+/// 側向永遠是水或實地，不再有裸露垂直水牆。限定在河道半寬+緩坡帶範圍內才判斷，
+/// 避免地圖上與河流無關、恰好也低於這條水位的遠方地形被誤淹。純函式、確定性、O(1)。
 fn river_water_top(wx: i32, wz: i32) -> Option<i32> {
-    let dist = (wx as f32 - river_center_x(wz as f32)).abs();
-    if dist > RIVER_HALF_WIDTH {
+    let center = river_center_x(wz as f32);
+    let dist = (wx as f32 - center).abs();
+    if dist > RIVER_HALF_WIDTH + RIVER_BANK_WIDTH {
         return None;
     }
-    Some(height_at_base(wx, wz) - 1)
+    let water_top = height_at_base(center.round() as i32, wz) - 1;
+    if height_at(wx, wz) < water_top {
+        Some(water_top)
+    } else {
+        None
+    }
 }
 
 /// 某格 (cellx,cellz) 是否長樹；長的話回傳該樹（已驗證地表為草、在保護圈外）。
@@ -3650,5 +3669,38 @@ mod tests {
     fn river_water_top_none_far_from_river() {
         assert_eq!(river_water_top(0, 0), None);
         assert_eq!(river_water_top(-9999, 500), None);
+    }
+
+    #[test]
+    fn river_bank_water_never_exposes_air_wall_beside_it() {
+        // 回歸測（PR #1300 review 抓到的核心幾何缺陷）：河核心之外緊鄰的緩坡帶，
+        // 當下地形若還在水位以下，該格在水面 Y 必須是水（被水淹沒）或至少不是空氣，
+        // 絕不能讓核心水柱側向直接貼著懸空的空氣——那會渲染成一道裸露水牆。
+        // 逐格掃過核心到緩坡帶外緣（河道定義範圍內），斷言側向永遠是「實地或水」、
+        // 從不是空氣。範圍刻意只到緩坡帶幾何邊界為止——邊界再外面是與河流無關的
+        // 環境地形噪聲，那裡本就可能自然起伏（如同世界任何角落的小地形起伏），
+        // 不屬於本次修正的河流幾何缺陷範圍。
+        let band = RIVER_HALF_WIDTH + RIVER_BANK_WIDTH;
+        for wz in [-300, -50, 0, 77, 260] {
+            let center = river_center_x(wz as f32);
+            let span = band.floor() as i32;
+            for dx in -span..=span {
+                let wx = center.round() as i32 + dx;
+                let dist_here = (wx as f32 - center).abs();
+                let dist_neighbor = (wx as f32 + 1.0 - center).abs();
+                if dist_here > band || dist_neighbor > band {
+                    continue; // 鄰格已踏出河道幾何定義範圍，交給環境地形噪聲，非本測範圍
+                }
+                if let Some(water_top) = river_water_top(wx, wz) {
+                    let neighbor_block = block_at(wx + 1, water_top, wz);
+                    assert_ne!(
+                        neighbor_block,
+                        Block::Air,
+                        "wz={wz} wx={wx}: 核心/緩坡帶水面 Y={water_top} 側向鄰格是空氣，\
+                         會渲染成懸空水牆"
+                    );
+                }
+            }
+        }
     }
 }
