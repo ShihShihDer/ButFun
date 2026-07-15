@@ -3945,6 +3945,9 @@ function updateWildlife(list) {
     }
     ent.group.position.set(w.x, w.y, w.z);
     ent.group.rotation.y = w.yaw || 0;
+    // 幼獸長大 v1：伺服器已算好當下的體型縮放（寶寶偏小、長大後恆 1.0），前端只需套用，
+    // 不必自己重算成長曲線；省略欄位（成年／既有動物）視為 1.0。
+    ent.group.scale.setScalar(w.scale ?? 1.0);
     // 為馴服的動物取名 v1（ROADMAP 895）：記住是否已馴服（點一下能否取名，伺服器仍權威複驗），
     // 已命名的小夥伴頭頂掛上專屬名牌（懶建立、內容變更才重繪貼圖，守 FPS 鐵律）。
     ent.group.userData.wtamed = !!w.tamed;
