@@ -12,6 +12,11 @@
 //!    自動漲價（見 [`CoinDemandTracker`]）——874 當初刻意留白「之後要分級再擴充」，本刀補上。
 //!    v4（自主提案切片，ROADMAP 989）起，居民**拿什麼出來跟你換**改由她的生計
 //!    （`voxel_vocation::Vocation`）決定，見下方「各居民特長」。
+//!    v5（自主提案切片，ROADMAP 1013）：交易「內容」四刀（v1~v4）都收斂好了，但交易
+//!    「介面」至今仍只有一問一答——玩家得一個個走近居民、開對話、點交易，才知道她手上
+//!    拿什麼換什麼；世界從沒有一處能讓玩家先「看一眼附近誰在賣什麼」再決定找誰換。
+//!    本刀補上 [`nearby_trade_previews`]：純函式把「附近居民快照」轉成依距離排序的貨品
+//!    預覽清單，玩家一次瀏覽比較、再走去中意的那位面前成交（實際成交流程 v1~v4 一行未動）。
 //!
 //! **各居民特長**（v4：依居民**生計身分**決定，永遠確定性，見 [`vocation_trade_pair`]）——
 //! 生計（`voxel_vocation`，ROADMAP 988）原本只讓居民「看起來」像鐵匠/漁夫，本刀讓她跟你
@@ -248,6 +253,47 @@ pub fn trade_memory(player_name: &str, gave_name: &str, got_name: &str) -> Strin
 /// 區隔開（點名「直接付了乙太幣」而非某種原礦，讓居民記得的是「省事」而非「以物易物」）。
 pub fn trade_memory_coin(player_name: &str, coin_count: u32, got_name: &str) -> String {
     format!("和{}交易：他直接付了{}枚乙太幣，換走了{}，省事又乾脆", player_name, coin_count, got_name)
+}
+
+// ── 附近居民貨品一覽 v1（自主提案切片，ROADMAP 1013）───────────────────────────
+
+/// 「看一眼附近誰在賣什麼」的掃描半徑（世界方塊，水平 XZ 平面）——刻意比 [`TRADE_REACH`]
+/// 寬得多：這是**預覽**（先看看、再決定走去找誰），不是實際成交的觸及範圍，玩家仍得走到
+/// [`TRADE_REACH`] 內才真的談得成——兩者刻意不同值，預覽視野理當比伸手可及的範圍更廣。
+pub const NEARBY_TRADE_RADIUS: f32 = 20.0;
+
+/// 一筆「附近居民貨品預覽」：貨品內容與真的 [`TradeRequest`](crate::voxel_ws::ClientMsg::TradeRequest)
+/// 會生成的提案完全一致（同一顆 [`make_offer`]），只是不寫入 `pending_trades`——單純讓玩家先看看，
+/// 不消耗、不佔用任何交易額度，看了不找她換也無妨。
+#[derive(Clone, Debug)]
+pub struct TradePreview {
+    pub resident_id: String,
+    pub resident_name: &'static str,
+    /// 與玩家的水平距離（世界方塊）。
+    pub dist: f32,
+    pub offer: TradeOffer,
+}
+
+/// 把「附近居民快照」（id／名字／生計／距離／好感度，皆由呼叫端鎖內取好、鎖外傳入）轉成
+/// 依距離由近到遠排序的貨品預覽清單。純函式、零鎖、零 IO、確定性，可窮舉單元測試。
+///
+/// 距離用 [`f32::total_cmp`] 排序而非 `partial_cmp`——即便呼叫端不慎傳入 `NaN`（壞資料），
+/// 排序本身仍不 panic、只是那筆的相對順序不保證，比整支請求打斷更符合「療癒優先、只擋不罰」。
+pub fn nearby_trade_previews(
+    residents: &[(String, &'static str, crate::voxel_vocation::Vocation, f32, usize)],
+    demand: &CoinDemandTracker,
+) -> Vec<TradePreview> {
+    let mut list: Vec<TradePreview> = residents
+        .iter()
+        .map(|(id, name, vocation, dist, affinity)| TradePreview {
+            resident_id: id.clone(),
+            resident_name: name,
+            dist: *dist,
+            offer: make_offer(id, *vocation, *affinity, demand),
+        })
+        .collect();
+    list.sort_by(|a, b| a.dist.total_cmp(&b.dist));
+    list
 }
 
 // ── 測試 ──────────────────────────────────────────────────────────────────────
@@ -624,5 +670,61 @@ mod tests {
             assert_eq!(offer.offer_item, expect_offer, "生計={v:?} offer_item 應對應生計產物");
             assert_eq!(offer.want_item, expect_want, "生計={v:?} want_item 應對應生計偏好");
         }
+    }
+
+    // ── 附近居民貨品一覽 v1（ROADMAP 1013）─────────────────────────────────────
+
+    #[test]
+    fn nearby_trade_previews_empty_in_empty_out() {
+        assert!(nearby_trade_previews(&[], &no_demand()).is_empty());
+    }
+
+    #[test]
+    fn nearby_trade_previews_sorted_by_distance_ascending() {
+        let residents = vec![
+            ("far".to_string(), "遠方居民", Vocation::Smith, 18.0, 1usize),
+            ("near".to_string(), "近旁居民", Vocation::Farmer, 3.0, 1usize),
+            ("mid".to_string(), "中間居民", Vocation::Fisher, 9.5, 1usize),
+        ];
+        let list = nearby_trade_previews(&residents, &no_demand());
+        let dists: Vec<f32> = list.iter().map(|p| p.dist).collect();
+        assert_eq!(dists, vec![3.0, 9.5, 18.0], "應依距離由近到遠排序");
+        assert_eq!(list[0].resident_id, "near");
+        assert_eq!(list[2].resident_id, "far");
+    }
+
+    #[test]
+    fn nearby_trade_previews_preview_matches_make_offer() {
+        // 預覽的貨品內容必須與真的 TradeRequest 會生成的提案一致——不能是另一套算法，
+        // 否則玩家先看了一眼、走過去卻拿到不同的東西，等於預覽在騙人。
+        let residents = vec![("r1".to_string(), "露娜", Vocation::Farmer, 5.0, 2usize)];
+        let demand = no_demand();
+        let list = nearby_trade_previews(&residents, &demand);
+        let direct = make_offer("r1", Vocation::Farmer, 2, &demand);
+        assert_eq!(list[0].offer.offer_item, direct.offer_item);
+        assert_eq!(list[0].offer.want_item, direct.want_item);
+        assert_eq!(list[0].offer.offer_count, direct.offer_count);
+        assert_eq!(list[0].offer.want_count, direct.want_count);
+        assert_eq!(list[0].offer.coin_price, direct.coin_price);
+    }
+
+    #[test]
+    fn nearby_trade_previews_does_not_panic_on_nan_distance() {
+        // 壞資料防禦：NaN 距離不該讓整支請求 panic（療癒優先、只擋不罰）。
+        let residents = vec![
+            ("a".to_string(), "甲", Vocation::Smith, f32::NAN, 0usize),
+            ("b".to_string(), "乙", Vocation::Fisher, 4.0, 0usize),
+        ];
+        let list = nearby_trade_previews(&residents, &no_demand());
+        assert_eq!(list.len(), 2, "NaN 距離不應讓任何一筆消失");
+    }
+
+    #[test]
+    fn nearby_trade_previews_preserves_all_entries() {
+        let residents: Vec<(String, &'static str, Vocation, f32, usize)> = (0..5)
+            .map(|i| (format!("r{i}"), "居民", Vocation::Artisan, i as f32, 0usize))
+            .collect();
+        let list = nearby_trade_previews(&residents, &no_demand());
+        assert_eq!(list.len(), 5, "不應憑空增減筆數");
     }
 }

@@ -5780,6 +5780,77 @@ if (lighthouseEl) {
   if (closeBtn) closeBtn.addEventListener("click", closeLighthouse);
 }
 
+// ── 附近居民貨品一覽 v1（自主提案切片，ROADMAP 1013）────────────────────────
+// 交易「內容」四刀（670/874/958/989）都收斂好了，但玩家至今得一個個走近居民、開對話、
+// 點交易才知道她手上拿什麼換什麼。本面板讓玩家先看一眼附近誰在賣什麼，再走去中意的
+// 那位面前成交——實際成交流程（trade_offer/trade_accept）一行未動。
+const nearbyTradeEl = document.getElementById("nearbyTradePanel");
+const nearbyTradeBodyEl = document.getElementById("nearbyTradeBody");
+const nearbyTradeBtnEl = document.getElementById("nearbyTradeBtn");
+let nearbyTradeVisible = false;
+let nearbyTradeRefreshTimer = null;
+
+/** 渲染附近居民貨品一覽。點一列直接開啟與那位居民的對話（沿用既有交易流程，不必重找人）。
+ * @param {Array<{resident_id:string, resident_name:string, dist:number,
+ *   offer_name:string, offer_count:number, want_name:string, want_count:number, coin_price:number}>} items
+ */
+function renderNearbyTradePanel(items) {
+  if (!nearbyTradeBodyEl) return;
+  nearbyTradeBodyEl.innerHTML = "";
+  if (!items || items.length === 0) {
+    nearbyTradeBodyEl.innerHTML = '<div class="ntrade-empty">附近沒有居民。</div>';
+    return;
+  }
+  for (const it of items) {
+    const row = document.createElement("div");
+    row.className = "ntrade-row";
+    row.innerHTML =
+      '<div class="ntrade-text">' +
+        '<span class="ntrade-name">' + escHtml(it.resident_name || "居民") + '</span>' +
+        '<span class="ntrade-offer">' + escHtml(it.offer_name) + '×' + it.offer_count +
+          ' ⇌ ' + escHtml(it.want_name) + '×' + it.want_count +
+          '（💰' + it.coin_price + '）</span>' +
+      '</div>' +
+      '<span class="ntrade-dist">' + Math.round(it.dist) + ' 格</span>';
+    row.addEventListener("click", () => {
+      closeNearbyTrade();
+      openChat(it.resident_id, it.resident_name);
+    });
+    nearbyTradeBodyEl.appendChild(row);
+  }
+}
+
+/** 送出附近貨品請求——伺服器依連線追蹤的玩家位置決定範圍，不吃客戶端自報座標。 */
+function refreshNearbyTrade() {
+  if (!wsReady) return;
+  ws.send(JSON.stringify({ t: "nearby_trades" }));
+}
+
+/** 開啟附近居民貨品一覽面板（走動中貨品內容會變，10 秒刷新一次跟上位置）。 */
+function openNearbyTrade() {
+  if (!nearbyTradeEl) return;
+  nearbyTradeVisible = true;
+  nearbyTradeEl.style.display = "flex";
+  refreshNearbyTrade();
+  if (nearbyTradeRefreshTimer) clearInterval(nearbyTradeRefreshTimer);
+  nearbyTradeRefreshTimer = setInterval(() => { if (nearbyTradeVisible) refreshNearbyTrade(); }, 10_000);
+}
+
+/** 關閉附近居民貨品一覽面板。 */
+function closeNearbyTrade() {
+  nearbyTradeVisible = false;
+  if (nearbyTradeEl) nearbyTradeEl.style.display = "none";
+  if (nearbyTradeRefreshTimer) { clearInterval(nearbyTradeRefreshTimer); nearbyTradeRefreshTimer = null; }
+}
+
+if (nearbyTradeBtnEl) nearbyTradeBtnEl.addEventListener("click", () => {
+  nearbyTradeVisible ? closeNearbyTrade() : openNearbyTrade();
+});
+if (nearbyTradeEl) {
+  const closeBtn = document.getElementById("nearbyTradeClose");
+  if (closeBtn) closeBtn.addEventListener("click", closeNearbyTrade);
+}
+
 // ── 夜間指路光柱 v1（自主提案切片，接續 PR #1248 遺留缺口「落成後零遊戲機制效果」）──
 // 落成前的乙太燈塔純裝飾；落成後，入夜起從塔頂升起一道柔光光柱——遠遠就看得見，
 // 幫玩家夜裡辨認回村方向，「大家一起蓋起來的塔」第一次真的照亮了世界。純視覺、零新協議：
@@ -8061,6 +8132,9 @@ function connect() {
       hideTradeOffer();
       showErr(m.reason || "交易失敗");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2200);
+    } else if (m.t === "nearby_trades") {
+      // 附近居民貨品一覽 v1（自主提案切片，ROADMAP 1013）。
+      renderNearbyTradePanel(m.items);
     } else if (m.t === "cohabit_ok") {
       // 邀居同住 v1（ROADMAP 972）：入住／搬走成功，對話框顯示提示，鈕上打勾標記目前狀態。
       const rname = m.resident_name || "居民";

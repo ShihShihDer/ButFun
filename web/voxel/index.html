@@ -1292,6 +1292,51 @@
       #lighthousePanel { top: auto; bottom: 596px; right: 10px; max-height: 45vh; }
     }
 
+    /* ── 附近居民貨品一覽（自主提案切片，ROADMAP 1008）───────────────────── */
+    #nearbyTradeBtn {
+      position: fixed; right: 10px; top: 592px; z-index: 6;
+      background: rgba(40,32,14,0.65); color: #e0b168; border: 1px solid rgba(224,177,104,0.3);
+      padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      user-select: none; pointer-events: auto;
+    }
+    #nearbyTradeBtn:hover { background: rgba(74,58,16,0.75); }
+    #nearbyTradePanel {
+      position: fixed; right: 10px; top: 592px; z-index: 20;
+      width: min(290px, 94vw); max-height: 60vh;
+      display: none; flex-direction: column;
+      background: rgba(16,22,34,0.95); color: #eaf2ff; border-radius: 14px;
+      border: 1px solid rgba(224,177,104,0.22); box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      overflow: hidden;
+    }
+    #nearbyTradeHead {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 9px 13px; background: rgba(224,177,104,0.07); font-size: 14px; font-weight: bold;
+    }
+    #nearbyTradeTitle { color: #e0b168; }
+    #nearbyTradeClose {
+      cursor: pointer; user-select: none; font-size: 18px; line-height: 1;
+      padding: 2px 8px; border-radius: 8px; background: rgba(255,255,255,0.10);
+    }
+    #nearbyTradeBody {
+      flex: 1; overflow-y: auto; padding: 10px 13px;
+      display: flex; flex-direction: column; gap: 8px; font-size: 13px;
+    }
+    .ntrade-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      padding: 7px 9px; border-radius: 10px; background: rgba(255,255,255,0.05);
+      cursor: pointer;
+    }
+    .ntrade-row:hover { background: rgba(224,177,104,0.14); }
+    .ntrade-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .ntrade-name { font-weight: bold; color: #eaf2ff; }
+    .ntrade-offer { color: #e0b168; font-size: 12px; }
+    .ntrade-dist { color: #9fb0c0; font-size: 11px; white-space: nowrap; }
+    .ntrade-empty { color: #506070; font-size: 12px; font-style: italic; text-align: center; padding: 8px 0; }
+    @media (orientation: portrait) {
+      #nearbyTradeBtn { top: auto; bottom: 594px; right: 10px; }
+      #nearbyTradePanel { top: auto; bottom: 638px; right: 10px; max-height: 45vh; }
+    }
+
     /* ── 成功提示（綠色小吐司）──────────────────────────────────────────── */
     #msg {
       position: fixed; left: 50%; top: 58px; transform: translateX(-50%);
@@ -1899,6 +1944,8 @@
     <div id="craftDirBtn">🏛️ 技藝譜</div>
     <!-- 眾力共築·乙太燈塔（自主提案切片）開關 -->
     <div id="lighthouseBtn">🗼 共築燈塔</div>
+    <!-- 附近居民貨品一覽（自主提案切片，ROADMAP 1008）開關 -->
+    <div id="nearbyTradeBtn">🛍️ 附近貨品</div>
     <!-- 視角切換鈕（第一/三人稱；桌機也可按 F5）。文字由 main.js 依模式更新 -->
     <button id="viewBtn">👁 第一人稱</button>
     <!-- 操作設定齒輪鈕（開操作設定面板：模式/靈敏度/按鈕/慣用手/自動跳/人稱/鍵盤/手把）-->
@@ -2095,6 +2142,16 @@
       <span id="lighthouseClose">✕</span>
     </div>
     <div id="lighthouseBody"></div>
+  </div>
+  <!-- 附近居民貨品一覽（自主提案切片，ROADMAP 1008）：交易「內容」四刀（v1~v4）都收斂好了，
+       但玩家至今得一個個走近居民、開對話、點交易才知道她手上拿什麼換什麼；此面板讓玩家
+       先看一眼附近誰在賣什麼，再走去中意的那位面前成交（實際成交流程一行未動）。 -->
+  <div id="nearbyTradePanel">
+    <div id="nearbyTradeHead">
+      <span id="nearbyTradeTitle">🛍️ 附近貨品</span>
+      <span id="nearbyTradeClose">✕</span>
+    </div>
+    <div id="nearbyTradeBody"></div>
   </div>
   <!-- 背包 + 合成格面板（ROADMAP 664）-->
   <div id="bagPanel">
