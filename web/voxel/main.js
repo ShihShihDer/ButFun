@@ -205,6 +205,12 @@ const STREET_ACCORDION = 116;
 const FARMER_CHARM = 117, SMITH_RING = 118, FISHER_CHARM = 119, HUNTER_CHARM = 120, MERCHANT_CHARM = 121;
 // 圍籬圈院 v1：居民專用木籬；玩家不能從 hotbar 放置，但可挖下回收。
 const FENCE = 122;
+// 木筏 v1（ROADMAP 1017，自主提案切片）——世界第一件水上代步工具：背包 2×2（6 木板）
+// 合成後，泡進水裡即可切換乘筏／下筏。純物品、不可放置。123 是 122（圍籬）之後的首個空號。
+const RAFT = 123;
+// 乘筏水平移動速度倍率（水中）——比純游泳快得多，讓渡河不必再繞去唯一那座固定橋（比照
+// RIDING_SPEED_MULT／SWIM_HORIZ_SPEED_MULT 同款寫法，純視覺+移動手感常數，非玩家可調）。
+const BOATING_SPEED_MULT = 1.3;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -369,6 +375,9 @@ const COLOR = {
   [FISHER_CHARM]:   [0.42, 0.68, 0.78], // 潮貝墜——淺潮水青，貝殼與水色交融
   [HUNTER_CHARM]:   [0.46, 0.52, 0.28], // 獵具束——雜草苔綠，狩獵裝具的樸實色
   [MERCHANT_CHARM]: [0.86, 0.66, 0.34], // 秤砣墜——溫潤黃銅，商旅信物的貴氣感
+  // 木筏 v1（ROADMAP 1017，自主提案切片）——原色木板色，紮實綁起的木料，與圍籬/工具的
+  // 木色系一脈相承，一眼認得出是木料製品。
+  [RAFT]: [0.62, 0.44, 0.25],
 };
 
 // ── 裝飾植物十字貼片渲染 v2 ─────────────────────────────────────────────
@@ -2942,6 +2951,9 @@ function setHeldItem(av, itemId) {
 // 腳下一顆扁圓輪子（共用幾何＋各自一份材質，比照 HELD_ITEM_GEO 慣例），預設隱藏；
 // 伺服器權威廣播 riding 欄位改變時才切 visible，零每幀成本。
 const RIDE_WHEEL_GEO = new THREE.CylinderGeometry(0.34, 0.34, 0.14, 12);
+// 木筏 v1（ROADMAP 1017，自主提案切片）：腳下一片扁平木板平台（純程序幾何、比照輪子
+// 慣例，非美術資產），預設隱藏；伺服器權威廣播 boating 欄位改變時才切 visible。
+const RAFT_PLATFORM_GEO = new THREE.BoxGeometry(1.3, 0.14, 1.6);
 function attachRideWheel(av) {
   const mat = new THREE.MeshLambertMaterial({ color: 0x000000 });
   const c = COLOR[STEAM_UNICYCLE];
@@ -2955,6 +2967,15 @@ function attachRideWheel(av) {
   av.riding = false;
   av.performing = false; // 街頭手風琴 v1：與 riding 同一初始化點一併歸零
   av.performNoteTimer = 0;
+  const raftMat = new THREE.MeshLambertMaterial({ color: 0x000000 });
+  const rc = COLOR[RAFT];
+  if (rc) raftMat.color.setRGB(rc[0], rc[1], rc[2]);
+  const raftMesh = new THREE.Mesh(RAFT_PLATFORM_GEO, raftMat);
+  raftMesh.position.y = 0.8 - AV_C; // 略低於腳底，托著人浮在水面上
+  raftMesh.visible = false;
+  av.group.add(raftMesh);
+  av.raftMesh = raftMesh;
+  av.boating = false; // 木筏 v1：與 riding/performing 同一初始化點一併歸零
   return av;
 }
 /** 切換某具 avatar 腳下的騎乘輪子顯隱（純視覺，riding 狀態一律以伺服器廣播為準）。 */
@@ -2962,6 +2983,12 @@ function setRiding(av, isRiding) {
   if (!av || !av.wheelMesh || av.riding === isRiding) return;
   av.riding = isRiding;
   av.wheelMesh.visible = isRiding;
+}
+/** 切換某具 avatar 腳下的木筏平台顯隱（純視覺，boating 狀態一律以伺服器廣播為準）。 */
+function setBoating(av, isBoating) {
+  if (!av || !av.raftMesh || av.boating === isBoating) return;
+  av.boating = isBoating;
+  av.raftMesh.visible = isBoating;
 }
 
 // ── 街頭手風琴 v1（ROADMAP 977，自主提案切片）：演奏視覺 ────────────────────────
@@ -4714,6 +4741,25 @@ function togglePerforming() {
   }
   lastPerformMs = now;
   ws.send(JSON.stringify({ t: "set_performing", performing: !performing }));
+}
+
+// ── 木筏 v1（ROADMAP 1017，自主提案切片）：乘筏／下筏 ─────────────────────────────
+// 本地乘筏旗標只在 boating_ok 回應（伺服器直接對我這次請求的權威回覆）才翻轉，不樂觀
+// 更新——比照 riding／performing 同款濫用防護慣例，伺服器說了算，UI 只是反應端。
+let boating = false;
+let lastBoatMs = 0; // 本地防連按（伺服器仍是唯一權威，這裡只擋手滑連按 B 洗版）
+
+/** 按 B 切換乘筏／下筏：下筏永遠可送，上筏先做客戶端持有提示（伺服器仍會再驗一次）。 */
+function toggleBoating() {
+  if (!wsReady) return;
+  const now = Date.now();
+  if (now - lastBoatMs < 500) return; // 0.5 秒本地防連按
+  if (!boating) {
+    const cnt = (myInv instanceof Map ? myInv.get(RAFT) : 0) || 0;
+    if (cnt <= 0) { showMsg("背包裡沒有木筏——用 6 木板做一艘吧（背包 2×2 即可）。"); return; }
+  }
+  lastBoatMs = now;
+  ws.send(JSON.stringify({ t: "set_boating", boating: !boating }));
 }
 
 /** 接受指定居民的交易提案（發 TradeAccept）。payWithCoin=true 時改直接付乙太幣代替湊材料（ROADMAP 874）。 */
@@ -6529,6 +6575,8 @@ const BLOCK_NAME = {
   // 生計信物 v2（ROADMAP 1003，自主提案切片）
   [FARMER_CHARM]: "豐收吊飾", [SMITH_RING]: "鍛環", [FISHER_CHARM]: "潮貝墜",
   [HUNTER_CHARM]: "獵具束", [MERCHANT_CHARM]: "秤砣墜",
+  // 木筏 v1（ROADMAP 1017，自主提案切片）
+  [RAFT]: "木筏",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -7215,6 +7263,9 @@ addEventListener("keydown", (e) => {
   // 自動重複觸發把 set_riding 洗版（本檔案唯一需要這道防呆的單鍵切換）。
   if (e.code === "KeyR" && !e.repeat) { e.preventDefault(); toggleRiding(); }
   if (e.code === "KeyP" && !e.repeat) { e.preventDefault(); togglePerforming(); }
+  // 木筏 v1（自主提案切片，ROADMAP 1017）：B 切換乘筏／下筏；e.repeat 防瀏覽器按鍵
+  // 自動重複觸發把 set_boating 洗版（比照 R/P 同款單鍵切換防呆）。
+  if (e.code === "KeyB" && !e.repeat) { e.preventDefault(); toggleBoating(); }
   // Esc：關操作設定面板（也讓瀏覽器解除滑鼠鎖定，兩者不衝突）。
   if (e.code === "Escape" && settingsPanelVisible()) closeSettingsPanel();
   // Esc：也收起 ☰ 主選單抽屜（若正開著）。
@@ -7662,6 +7713,10 @@ function connect() {
       // 本地旗標一併歸零，避免重連後顯示與伺服器不同步。
       performing = false;
       setPerforming(myAvatar, false);
+      // 木筏 v1（自主提案切片，ROADMAP 1017）：同理，每次連線 boating 預設 false，
+      // 本地旗標一併歸零，避免重連後顯示與伺服器不同步。
+      boating = false;
+      setBoating(myAvatar, false);
       // 出生瞬間先脫困一次（若出生 chunk 已到、地表把人埋住，立刻頂出來）。
       unstuckIfNeeded();
       // 好感度 v1：連線後立即拉取與各居民的好感度，讓指示燈盡快亮起。
@@ -7726,6 +7781,8 @@ function connect() {
         setRiding(ent.av, !!p.riding);
         // 街頭手風琴 v1（自主提案切片，ROADMAP 977）：伺服器廣播的 performing 換頭頂音符特效。
         setPerforming(ent.av, !!p.performing);
+        // 木筏 v1（自主提案切片，ROADMAP 1017）：伺服器廣播的 boating 換腳下木筏平台顯隱。
+        setBoating(ent.av, !!p.boating);
         // 位置有明顯變化 → 記下時間戳，讓 render 迴圈判定「在走路」而擺手腳（快照間也持續動）。
         const moved = Math.hypot(p.x - ent.mesh.position.x, p.z - ent.mesh.position.z);
         if (moved > 0.002) ent.lastMoveT = performance.now();
@@ -8152,6 +8209,17 @@ function connect() {
     } else if (m.t === "performing_fail") {
       // 街頭手風琴 v1：開演不成（沒有手風琴——本地已先擋過一次，這裡是伺服器再驗一次的保底）。
       showErr(m.reason || "沒法開演");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "boating_ok") {
+      // 木筏 v1（自主提案切片，ROADMAP 1017）：伺服器直接對本次請求的權威回覆——
+      // 本地 boating 只在這裡翻轉（不樂觀更新），驅動水中移動速度倍率＋腳下木筏平台 mesh。
+      boating = !!m.boating;
+      setBoating(myAvatar, boating);
+      showMsg(boating ? "🛶 上筏了，水面上滑得快多了～" : "🛶 下筏了。");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+    } else if (m.t === "boating_fail") {
+      // 木筏 v1：上不了筏（沒有木筏——本地已先擋過一次，這裡是伺服器再驗一次的保底）。
+      showErr(m.reason || "沒法乘筏");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "pet_command_ok") {
       // 寵物指令「安置／召回」v1（ROADMAP 898）：切換成功——浮出暖句（💤 待命標記由 players 廣播即時掛上/取下）。
@@ -8664,7 +8732,9 @@ function update(dt) {
   const swimming = !climbing && bodyInWater(player.x, player.y, player.z);
   // 上浮意圖：跳鍵/跳鈕；下潛意圖：Shift/潛鈕（水中 S 仍是後退，下潛另用 Shift，不搶走走位）。
   const swimUp = swimming && (keys["Space"] || diveUpBtnHeld);
-  const swimDown = swimming && (keys["ShiftLeft"] || keys["ShiftRight"] || diveDownBtnHeld);
+  // 木筏 v1（ROADMAP 1017）：乘筏時下潛意圖被遮罩——筏身撐著，人不會被拖下水面以下；
+  // 被動浮力（swimVerticalAccel 無按鍵分支恆略偏上浮）自然把人托回水面，零新垂直數學。
+  const swimDown = swimming && !boating && (keys["ShiftLeft"] || keys["ShiftRight"] || diveDownBtnHeld);
   // swim-out（#1200 bug 修）：游泳中貼岸推進時允許踏階蹬上岸——頭已出水在水面漂著也適用。
   // 陸地幀（swimming=false）恆為 false，moveAxis 的陸地踏階條件原封不動。
   swimStepUpOk = swimStepUpEligible(swimming, settings.autoJump, swimUp);
@@ -8676,9 +8746,12 @@ function update(dt) {
   dir.addScaledVector(fwd, mz).addScaledVector(right, mx);
   if (dir.lengthSq() > 1e-4) {
     dir.normalize();
-    // 水中水平比陸地慢（水阻）；陸地騎乘蒸汽獨輪車（ROADMAP 976）更快；兩者互斥
-    // （下水視為下車手感，riding 旗標本身不因下水而翻轉，僅暫停加成，出水即刻恢復）。
-    const horiz = swimming ? SPEED * SWIM_HORIZ_SPEED_MULT : (riding ? SPEED * RIDING_SPEED_MULT : SPEED);
+    // 水中水平比陸地慢（水阻）；陸地騎乘蒸汽獨輪車（ROADMAP 976）更快；水中乘木筏
+    // （ROADMAP 1017）比純游泳快得多——三者互斥於各自的情境（下水視為下車手感，riding/
+    // boating 旗標本身不因情境切換而翻轉，僅暫停/套用加成，情境一變即刻生效）。
+    const horiz = swimming
+      ? (boating ? SPEED * BOATING_SPEED_MULT : SPEED * SWIM_HORIZ_SPEED_MULT)
+      : (riding ? SPEED * RIDING_SPEED_MULT : SPEED);
     moveAxis("x", dir.x * horiz * dt);
     moveAxis("z", dir.z * horiz * dt);
   }
@@ -8982,6 +9055,9 @@ const RECIPES_JS = [
   { id: "flowerpot", name: "花盆",   inputs: [[TERRACOTTA_RED, 2], [LEAVES, 1]], output_block: FLOWERPOT, out_count: 1 },
   { id: "table",     name: "小圓桌", inputs: [[PLANK, 2], [STONE_BRICK, 1]],   output_block: TABLE,     out_count: 1 },
   { id: "banner",    name: "掛旗",   inputs: [[WOOD, 1], [LEAVES, 2]],         output_block: BANNER,    out_count: 1 },
+  // 木筏 v1（ROADMAP 1017，自主提案切片）——世界第一件水上代步工具，6 木板剛好背包 2×2。
+  // 對齊後端 voxel_craft::RECIPES：{8:6}。
+  { id: "raft",      name: "木筏",   inputs: [[PLANK, 6]],                     output_block: RAFT,      out_count: 1 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────
@@ -9846,6 +9922,12 @@ window.__voxel = {
   otherRiding(id) {
     const ent = others.get(id);
     return ent ? { riding: ent.av.riding, wheelVisible: ent.av.wheelMesh.visible } : null;
+  },
+  // ── 木筏 v1 QA 用（自主提案切片，ROADMAP 1017）：讀自己/指定其他玩家目前乘筏狀態 ──
+  get myBoating() { return { boating, raftVisible: myAvatar.raftMesh.visible }; },
+  otherBoating(id) {
+    const ent = others.get(id);
+    return ent ? { boating: ent.av.boating, raftVisible: ent.av.raftMesh.visible } : null;
   },
   // ── 暗影生物 v1 QA 用：讀暗影實體清單＋把視角轉向某座標（截圖/準心驗證）──
   get shadows() {
