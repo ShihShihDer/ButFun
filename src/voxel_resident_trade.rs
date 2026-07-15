@@ -22,13 +22,15 @@
 //! （[`wants_from`]）——農夫想要鐵匠的鐵磚修農具、鐵匠想要漁夫的烤魚補力氣、漁夫想要獵人的
 //! 火把夜釣照明、獵人想要工匠的木板修獵具、工匠想要農夫的麵包填肚子——五者環環相扣，玩家
 //! 撞見兩位生計環上相鄰的居民互易時，兩人會用格外合拍的台詞道謝（[`is_complementary`]），
-//! 第一次讓「小社會的內部經濟」看得出誰的生計真的需要誰。跨村商隊（950）沿用的是舊版
-//! `specialty_item`（依 id 雜湊），本刀不動它——見該函式文件的範圍說明。
+//! 第一次讓「小社會的內部經濟」看得出誰的生計真的需要誰。**（更新，ROADMAP 1007）**
+//! 當初這裡誠實留白「跨村商隊（950）沿用的是舊版 `specialty_item`（依 id 雜湊），本刀
+//! 不動它」——1007 已補上這塊：商隊帶出去的貨改用 [`crate::voxel_trade::vocation_trade_pair`]，
+//! 舊版 `specialty_item`（依 id 雜湊、與生計無關）自此無人呼叫，予以移除。
 //!
 //! 純邏輯、零 LLM、零新持久化格式（沿用既有 Feed + memory 路徑）、確定性、可測。
 
 use crate::voxel_bonds::BondTier;
-use crate::voxel_trade::{resident_trade_slot, vocation_trade_pair};
+use crate::voxel_trade::vocation_trade_pair;
 use crate::voxel_vocation::Vocation;
 
 /// 居民互相易物觸發機率（比照 teach(0.15)/quarrel(0.12) 同量級，保持稀有感）。
@@ -50,20 +52,6 @@ pub fn should_resident_trade(
         && !quarrel_happened
         && !teach_happened
         && roll < RESIDENT_TRADE_CHANCE
-}
-
-/// 依居民 id 取得其交易特長物品（沿用 670 `resident_trade_slot` 的舊版 slot 分類，
-/// 與生計身分無關）。**本刀範圍外**：跨村商隊（950，`voxel_caravan`）仍沿用這一版決定
-/// 商隊帶去的貨——商隊v1 當初就是承接這份舊分類，換掉它屬另一刀的範圍，這裡刻意不動、
-/// 只留給 [`vocation_specialty_item`] 承接「居民互易」這條新因果線。`pub(crate)`：避免
-/// 第三份重複硬編。
-pub(crate) fn specialty_item(resident_id: &str) -> u8 {
-    match resident_trade_slot(resident_id) {
-        0 => 14, // 種子
-        1 => 3,  // 石頭
-        2 => 5,  // 木頭
-        _ => 10, // 玻璃
-    }
 }
 
 /// 依居民**生計身分**取得其交易特長物品（生計互相依賴 v1）——與 989 玩家↔居民版本
@@ -190,17 +178,6 @@ mod tests {
         let a = trade_pair("vox_res_0", Vocation::Hunter, "vox_res_2", Vocation::Artisan);
         let b = trade_pair("vox_res_0", Vocation::Hunter, "vox_res_2", Vocation::Artisan);
         assert_eq!(a, b);
-    }
-
-    #[test]
-    fn trade_pair_specialty_item_in_known_set() {
-        for id in ["vox_res_0", "vox_res_1", "vox_res_2", "vox_res_3", "任意居民"] {
-            let item = specialty_item(id);
-            assert!(
-                [14u8, 3, 5, 10].contains(&item),
-                "specialty_item({id})={item} 應落在已知交易物品集合"
-            );
-        }
     }
 
     #[test]

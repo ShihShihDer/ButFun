@@ -20440,7 +20440,9 @@ fn tick_residents(dt: f32) {
                         r.say.is_empty(),
                         rand::random::<f32>(),
                     ) {
-                        let gave_item = vrtrade::specialty_item(&r.id);
+                        // 生計接軌商隊 v1（ROADMAP 1007）：帶出去的貨改用生計對照表
+                        // （989/992 同一份 `vocation_trade_pair`），不再是與身分無關的舊版雜湊。
+                        let gave_item = vtrade::vocation_trade_pair(&r.id, r.vocation).0;
                         let got_item = vcaravan::settlement_specialty_item(&dest_name, gave_item);
                         r.caravan = Some((dx, dz, dest_name.clone(), dest_id, gave_item, got_item));
                         r.caravan_stay = 0.0;
