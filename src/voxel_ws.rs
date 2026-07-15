@@ -26460,6 +26460,8 @@ fn tick_residents(dt: f32) {
                         vskill::append_goal(&a);
                         tracing::info!(resident = %rid, anchor = ?plan_anchor, "小屋座標補漏：認養剛完工的家");
                     }
+                    // 圍籬圈院 v1：完工收尾後才圈院；函式內短持 deltas 鎖蒐集，鎖外落地廣播。
+                    place_house_fence(&rid, plan_anchor, false);
                 }
             }
             // 完工 Feed（每個建物只發一次，不洗版）。合力蓋家 v1（ROADMAP 834）：有協力者
@@ -28549,7 +28551,10 @@ fn tick_home_relocation(dt: f32, say_updates: &mut Vec<(String, String)>) {
         // 殖民地真居住 v1：拓荒者遷居殖民地優先於主村內都更（兩者共用「一次一位」名額與
         // 同一套搬家引擎）；殖民者補蓋（遷居時因遠古資料座標失傳而漏蓋的家，冪等補上）
         // 次之；沒有待遷/待補的才輪主村都更掃描。
-        if !migration_kickoff(say_updates) && !colonist_house_repair(say_updates) {
+        if !migration_kickoff(say_updates)
+            && !colonist_house_repair(say_updates)
+            && !repair_one_house_fence()
+        {
             relocation_kickoff(say_updates);
         }
         RELOC_PACE.lock().unwrap().timer = reloc_scan_secs();
@@ -28625,6 +28630,62 @@ fn tick_home_relocation(dt: f32, say_updates: &mut Vec<(String, String)>) {
             RELOC_PACE.lock().unwrap().timer = reloc_gap_secs();
         }
     }
+}
+
+/// 既有 Door+Bed 家補圈：每次低頻掃描至多處理一家，節奏與 colonist_house_repair 共用。
+fn repair_one_house_fence() -> bool {
+    let residents: Vec<String> = hub().residents.read().unwrap().iter().map(|r| r.id.clone()).collect();
+    for rid in residents {
+        let Some(anchor) = hub().goals.read().unwrap().house_of(&rid) else { continue };
+        if place_house_fence(&rid, anchor, true) { return true; }
+    }
+    false
+}
+
+/// 替一座 House 圈院。`require_home` 會先確認現況仍有門與床，供舊家補圈保守辨識。
+/// 鎖紀律：先以唯讀鎖取現況，寫鎖內只蒐集／設 delta，釋鎖後才 append+broadcast。
+fn place_house_fence(rid: &str, anchor: (i32, i32, i32), require_home: bool) -> bool {
+    let house = vbuild::house_blocks_at(rid, anchor.0, anchor.1, anchor.2);
+    let style = vbuild::BuildStyle::for_resident(
+        rid, voxel::biome_at_voxel(anchor.0, anchor.2), anchor.0, anchor.2,
+    );
+    // annex／門前點綴不是主屋 footprint；院界以主屋地板含界矩形計，缺口才會正對 x=0 的門。
+    let fp = vsettle::HouseFootprint {
+        min_x: anchor.0 + vbuild::BuildStyle::X_MIN,
+        max_x: anchor.0 + style.x_max,
+        min_z: anchor.2 + vbuild::BuildStyle::Z_MIN,
+        max_z: anchor.2 + style.z_max,
+    };
+
+    let world = hub().deltas.read().unwrap();
+    if require_home {
+        let has_door = house.iter().filter(|b| b.b == Block::DoorClosed as u8).any(|b| {
+            matches!(voxel::effective_block_at(&world, b.x, b.y, b.z), Block::DoorClosed | Block::DoorOpen)
+        });
+        let has_bed = house.iter().filter(|b| b.b == Block::Bed as u8).any(|b| {
+            voxel::effective_block_at(&world, b.x, b.y, b.z) == Block::Bed
+        });
+        if !has_door || !has_bed { return false; }
+    }
+    let all = vsettle::fence_cells(fp, vsettle::DoorSide::South, vbuild::surface_y, |_, _, _| false);
+    let existing = all.iter().filter(|c| voxel::effective_block_at(&world, c.x, c.y, c.z) == Block::Fence).count();
+    if vsettle::fence_ring_present(existing, all.len()) { return false; }
+    drop(world);
+
+    let mut placed = Vec::new();
+    {
+        let mut world = hub().deltas.write().unwrap();
+        for c in all {
+            if voxel::effective_block_at(&world, c.x, c.y, c.z) != Block::Air { continue; }
+            voxel::set_block(&mut world, c.x, c.y, c.z, Block::Fence);
+            placed.push(c);
+        }
+    }
+    for c in &placed {
+        vbuild::append_world_block(c.x, c.y, c.z, Block::Fence as u8);
+        broadcast_block(c.x, c.y, c.z, Block::Fence);
+    }
+    !placed.is_empty()
 }
 
 /// 殖民地真居住 v1：掃「奠基紀錄裡的拓荒者、還沒真的遷居殖民地」的名單，挑第一位此刻

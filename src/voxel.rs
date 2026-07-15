@@ -307,6 +307,9 @@ pub enum Block {
     /// 乙太花冠投出柔和幽光），可採、可放（如發光結晶，挖下後能拿回家當一盞獨特的光源）。
     /// id 114：0~113 皆已用（113=乙太世界樹花冠），114 是首個空號。
     RelicGlow = 114,
+    /// 木籬（圍籬圈院 v1）——居民的家完工後自動沿院界放置；普通實心方塊，硬度低，
+    /// 玩家挖除會回收自身。115~121 已被載具／樂器／生計信物純物品占用，122 是下一個空號。
+    Fence = 122,
 }
 
 impl Block {
@@ -409,6 +412,7 @@ impl Block {
             108 => Some(Block::PumpkinMature),
             113 => Some(Block::AetherBloom),
             114 => Some(Block::RelicGlow),
+            122 => Some(Block::Fence),
             _ => None,
         }
     }
@@ -435,6 +439,7 @@ impl Block {
             // 地底遺跡神殿 v1（ROADMAP 975）：遺跡核心挖下後可帶回家當光源重新擺放，
             // 同發光結晶的「可採可放」慣例。
             Block::RelicGlow
+            | Block::Fence
             // BerryBushRipe / CoopReady 皆是伺服器維護的狀態方塊（由 tick_berry / tick_coop 長成），
             // 玩家不能手動放置。HotSpringWater 是世界生成的溫泉水，同來源水不可手動放置。
         )

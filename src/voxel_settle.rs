@@ -49,6 +49,58 @@ use serde::{Deserialize, Serialize};
 
 use crate::voxel_village::Plot;
 
+// ── 居民圈院（純幾何）────────────────────────────────────────────────────────────
+
+/// 房門所在的 footprint 邊；House v1 的正面固定是南側（+z）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DoorSide { North, South, West, East }
+
+/// 房屋在 x/z 平面的含界矩形。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HouseFootprint {
+    pub min_x: i32,
+    pub max_x: i32,
+    pub min_z: i32,
+    pub max_z: i32,
+}
+
+/// 一根籬笆的世界座標。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FenceCell { pub x: i32, pub y: i32, pub z: i32 }
+
+/// footprint 外擴兩格的矩形環；門側中央留相鄰兩格作院門。
+/// `surface_y` 可注入不同坡度，`occupied` 讓道路／建物等既有方塊原地保留。
+pub fn fence_cells(
+    fp: HouseFootprint,
+    door: DoorSide,
+    mut surface_y: impl FnMut(i32, i32) -> i32,
+    mut occupied: impl FnMut(i32, i32, i32) -> bool,
+) -> Vec<FenceCell> {
+    let (x0, x1, z0, z1) = (fp.min_x - 2, fp.max_x + 2, fp.min_z - 2, fp.max_z + 2);
+    let gate_x = (fp.min_x + fp.max_x) / 2;
+    let gate_z = (fp.min_z + fp.max_z) / 2;
+    let is_gate = |x, z| match door {
+        DoorSide::North => z == z0 && (x == gate_x || x == gate_x + 1),
+        DoorSide::South => z == z1 && (x == gate_x || x == gate_x + 1),
+        DoorSide::West => x == x0 && (z == gate_z || z == gate_z + 1),
+        DoorSide::East => x == x1 && (z == gate_z || z == gate_z + 1),
+    };
+    let mut out = Vec::new();
+    for x in x0..=x1 {
+        for z in z0..=z1 {
+            if !(x == x0 || x == x1 || z == z0 || z == z1) || is_gate(x, z) { continue; }
+            let y = surface_y(x, z);
+            if !occupied(x, y, z) { out.push(FenceCell { x, y, z }); }
+        }
+    }
+    out
+}
+
+/// 環上已有至少一半（且至少四根）即視為已圈院；避免週期掃描重複疊放。
+pub fn fence_ring_present(existing: usize, ring_len: usize) -> bool {
+    ring_len > 0 && existing >= (ring_len / 2).max(4)
+}
+
 /// 聚落歸屬落地路徑（`data/` 已 gitignore）。
 pub const SETTLE_PATH: &str = "data/voxel_settlements.jsonl";
 
@@ -677,5 +729,39 @@ mod tests {
         // 等距時（罕見但非不可能）min_by 取第一個遇到的候選（main 排最前）——確定性、可重現。
         let got = nearest_settlement_center(0.0, 0.0, Some((10, 0)), &[(-10, 0)]);
         assert_eq!(got, Some((10, 0)));
+    }
+
+    #[test]
+    fn fence_rectangle_and_south_gate_face_door() {
+        let fp = HouseFootprint { min_x: -1, max_x: 1, min_z: -1, max_z: 1 };
+        let cells = fence_cells(fp, DoorSide::South, |_, _| 9, |_, _, _| false);
+        assert_eq!(cells.len(), 22, "7×7 外環 24 格扣院門兩格");
+        assert!(!cells.iter().any(|c| c.z == 3 && (c.x == 0 || c.x == 1)));
+        assert!(cells.iter().all(|c| c.x == -3 || c.x == 3 || c.z == -3 || c.z == 3));
+    }
+
+    #[test]
+    fn fence_gate_follows_each_door_side() {
+        let fp = HouseFootprint { min_x: 10, max_x: 12, min_z: 20, max_z: 22 };
+        for side in [DoorSide::North, DoorSide::South, DoorSide::West, DoorSide::East] {
+            let cells = fence_cells(fp, side, |_, _| 7, |_, _, _| false);
+            assert_eq!(cells.len(), 22, "每個朝向都只留兩格缺口：{side:?}");
+        }
+    }
+
+    #[test]
+    fn fence_follows_slope_and_skips_occupied_cells() {
+        let fp = HouseFootprint { min_x: 0, max_x: 2, min_z: 0, max_z: 2 };
+        let cells = fence_cells(fp, DoorSide::South, |x, z| 8 + x - z, |x, _, z| x == -2 && z == 0);
+        assert!(!cells.iter().any(|c| c.x == -2 && c.z == 0), "路／建物占格必須保留");
+        assert!(cells.iter().all(|c| c.y == 8 + c.x - c.z), "每根籬笆各取自己的坡地高度");
+    }
+
+    #[test]
+    fn fence_presence_is_idempotent() {
+        assert!(!fence_ring_present(3, 20));
+        assert!(!fence_ring_present(9, 20));
+        assert!(fence_ring_present(10, 20));
+        assert!(!fence_ring_present(0, 0));
     }
 }
