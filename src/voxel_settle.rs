@@ -218,6 +218,15 @@ pub fn colony_plots_outer(cx: i32, cz: i32) -> Vec<Plot> {
     plot_ring(cx, cz, COLONY_PLOT_DIST_2)
 }
 
+/// 殖民地「全部」可認領地塊：內圈接擴建圈（16 塊）。供「這座標是不是這座殖民地的
+/// 地塊」之類的成員檢查共用（PR #1298 review：只有 [`colony_plots`] 會漏掉外圈居民）；
+/// 認領時的內圈優先序仍走 `colony_plots` → 全滿才試 `colony_plots_outer`，見呼叫端。
+pub fn colony_all_plots(cx: i32, cz: i32) -> Vec<Plot> {
+    let mut all = colony_plots(cx, cz);
+    all.extend(colony_plots_outer(cx, cz));
+    all
+}
+
 // ── 遷居名單（純函式、確定性）────────────────────────────────────────────────────────
 
 /// 待遷居名單：每座殖民地的拓荒者（已換算成居民 id）中，**還住在主村、還沒遷去任何殖民地**的那些。

@@ -28279,6 +28279,25 @@ fn claim_or_reuse_plot(rid: &str, hx: i32, hz: i32) -> (i32, i32) {
     }
 }
 
+/// 殖民地地塊認領共用語意（PR #1298 review：三個呼叫端——`claim_colony_plot`／
+/// `migration_kickoff`／`colonist_house_repair`——原本各自寫一份，只有這裡補了擴建圈
+/// fallback，另兩處漏改，外圈居民（第 9–16 戶）踩到就永遠補不回家/遷不進殖民地）。
+/// 內圈（[`vsettle::colony_plots`]）優先，全滿才試擴建圈（[`vsettle::colony_plots_outer`]，
+/// v3 ROADMAP 1004）——保證新居民優先填滿離中心近的內圈。純粹「挑哪一塊」，不真的認領。
+fn colony_pick_free_plot(
+    village: &vvillage::PlotRegistry,
+    ccx: i32,
+    ccz: i32,
+    near_x: i32,
+    near_z: i32,
+) -> Option<vvillage::Plot> {
+    let inner = vsettle::colony_plots(ccx, ccz);
+    village.nearest_free_plot(&inner, near_x, near_z).or_else(|| {
+        let outer = vsettle::colony_plots_outer(ccx, ccz); // 內圈全滿才算擴建圈
+        village.nearest_free_plot(&outer, near_x, near_z)
+    })
+}
+
 /// 殖民地真居住 v1：替一位已遷居殖民地的居民，在她那座殖民地中心周圍認領一塊小地塊
 /// （[`vsettle::colony_plots`] 內圈 8 塊環；住滿後見 [`vsettle::colony_plots_outer`]
 /// 擴建圈，v3 ROADMAP 1004），並從殖民地中心鋪一小段路連過去（只加不拆）。
@@ -28294,19 +28313,15 @@ fn claim_colony_plot(rid: &str, sid: u64, hx: i32, hz: i32) -> Option<(i32, i32)
             .find(|c| c.seq == cseq)
             .map(|c| (c.cx, c.cz, c.name.clone()))?
     }; // colonies 讀鎖釋放
-    // 內圈算鎖外，先試；住滿才試擴建圈——保證新居民優先填滿離中心近的內圈。
-    let inner = vsettle::colony_plots(ccx, ccz); // 純函式、鎖外算
-    // village 寫鎖：挑最近空地塊 + 認領（double-check 併發安全，比照主村路徑）。
-    // 認領會自動釋放她在主村的舊地塊（PlotRegistry::claim 內建換塊語意）——主村地塊讓給後人。
+    // village 寫鎖：挑最近空地塊（內圈優先、全滿才擴建圈）+ 認領（double-check 併發安全，
+    // 比照主村路徑）。認領會自動釋放她在主村的舊地塊（PlotRegistry::claim 內建換塊語意）
+    // ——主村地塊讓給後人。
     let (claim, plot) = {
         let mut village = hub().village.write().unwrap();
         if let Some((cx, cz)) = village.claim_of(rid) {
             return Some((cx, cz)); // 併發下別的 tick 已幫這居民認領
         }
-        let picked = village.nearest_free_plot(&inner, hx, hz).or_else(|| {
-            let outer = vsettle::colony_plots_outer(ccx, ccz); // 內圈全滿才算擴建圈
-            village.nearest_free_plot(&outer, hx, hz)
-        });
+        let picked = colony_pick_free_plot(&village, ccx, ccz, hx, hz);
         match picked {
             Some(p) => (Some(village.claim(rid, p.cx, p.cz)), Some(p)),
             None => (None, None), // 殖民地全滿（16 戶）→ 呼叫端保守退回
@@ -28650,12 +28665,11 @@ fn migration_kickoff(say_updates: &mut Vec<(String, String)>) -> bool {
         else {
             continue;
         };
-        // 認領殖民地小地塊（換塊語意自動釋放主村舊地塊）＋鋪短路。全滿（8 戶）→ 這位遷不了，
-        // 換下一位（極少：v1 只遷 founders 兩位）。
+        // 認領殖民地小地塊（換塊語意自動釋放主村舊地塊）＋鋪短路。內圈優先，全滿才落到
+        // 擴建圈（v3 ROADMAP 1004，16 戶）；兩圈都滿 → 這位遷不了，換下一位。
         let plot = {
-            let plots = vsettle::colony_plots(*ccx, *ccz);
             let mut village = hub().village.write().unwrap();
-            match village.nearest_free_plot(&plots, *ccx, *ccz) {
+            match colony_pick_free_plot(&village, *ccx, *ccz, *ccx, *ccz) {
                 Some(p) => {
                     let rec = village.claim(&rid, p.cx, p.cz);
                     Some((p, rec))
@@ -28792,9 +28806,10 @@ fn colonist_house_repair(say_updates: &mut Vec<(String, String)>) -> bool {
         let Some((_, cname, ccx, ccz)) = colonies.iter().find(|(s, ..)| *s == cseq) else {
             continue;
         };
-        // 她在這座殖民地的小地塊：既有認領若就是本殖民地的某塊 → 沿用；否則（沒認領/
-        // 認領還留在別處——震盪時代的殘留）重新認領最近空塊（換塊語意自動釋放舊塊）。
-        let plots = vsettle::colony_plots(*ccx, *ccz);
+        // 她在這座殖民地的小地塊：既有認領若就是本殖民地的某塊（內圈或擴建圈皆算）→
+        // 沿用；否則（沒認領/認領還留在別處——震盪時代的殘留）重新認領最近空塊（內圈
+        // 優先、全滿才擴建圈，換塊語意自動釋放舊塊）。
+        let plots = vsettle::colony_all_plots(*ccx, *ccz);
         let existing = { hub().village.read().unwrap().claim_of(&rid) }; // village 讀鎖釋放
         let plot_here = existing.and_then(|(cx, cz)| {
             plots.iter().find(|p| (p.cx, p.cz) == (cx, cz)).copied()
@@ -28804,7 +28819,7 @@ fn colonist_house_repair(say_updates: &mut Vec<(String, String)>) -> bool {
             None => {
                 let claimed = {
                     let mut village = hub().village.write().unwrap();
-                    match village.nearest_free_plot(&plots, *ccx, *ccz) {
+                    match colony_pick_free_plot(&village, *ccx, *ccz, *ccx, *ccz) {
                         Some(p) => Some((p, village.claim(&rid, p.cx, p.cz))),
                         None => None,
                     }
@@ -30814,5 +30829,67 @@ mod tests {
         // 同一 XZ 位置，但垂直落差超過 STATION_RANGE_Y——不同樓層的工作台不算數。
         voxel::set_block(&mut deltas, 0, 5 + STATION_RANGE_Y + 3, 0, Block::Workbench);
         assert!(!station_nearby(&deltas, 0.5, 5.0, 0.5, Block::Workbench));
+    }
+
+    // ── 殖民地擴建圈 fallback（PR #1298 review：三個呼叫端共用同一份語意）──────
+    #[test]
+    fn colony_pick_free_plot_falls_back_to_outer_when_inner_full() {
+        let mut village = vvillage::PlotRegistry::default();
+        let (ccx, ccz) = (500, 500);
+        // 塞滿內圈 8 塊（第 1–8 戶）。
+        for (i, p) in vsettle::colony_plots(ccx, ccz).iter().enumerate() {
+            village.claim(&format!("colonist_{i}"), p.cx, p.cz);
+        }
+        // 內圈全滿：第 9 戶該落到擴建圈，而非回傳 None（此為本次修復前 migration_kickoff／
+        // colonist_house_repair 會踩的 bug）。
+        let picked = colony_pick_free_plot(&village, ccx, ccz, ccx, ccz)
+            .expect("內圈全滿仍應能認領到擴建圈的地塊");
+        let outer = vsettle::colony_plots_outer(ccx, ccz);
+        assert!(
+            outer.iter().any(|p| (p.cx, p.cz) == (picked.cx, picked.cz)),
+            "內圈全滿時挑到的地塊應落在擴建圈"
+        );
+    }
+
+    #[test]
+    fn colony_pick_free_plot_prefers_inner_ring_first() {
+        let village = vvillage::PlotRegistry::default();
+        let (ccx, ccz) = (200, 200);
+        let picked = colony_pick_free_plot(&village, ccx, ccz, ccx, ccz)
+            .expect("全空時應能挑到地塊");
+        let inner = vsettle::colony_plots(ccx, ccz);
+        assert!(
+            inner.iter().any(|p| (p.cx, p.cz) == (picked.cx, picked.cz)),
+            "內圈尚有空位時不該提前落到擴建圈"
+        );
+    }
+
+    #[test]
+    fn colony_pick_free_plot_none_when_both_rings_full() {
+        let mut village = vvillage::PlotRegistry::default();
+        let (ccx, ccz) = (900, 900);
+        let all_plots: Vec<_> = vsettle::colony_plots(ccx, ccz)
+            .into_iter()
+            .chain(vsettle::colony_plots_outer(ccx, ccz))
+            .collect();
+        for (i, p) in all_plots.iter().enumerate() {
+            village.claim(&format!("colonist_{i}"), p.cx, p.cz);
+        }
+        assert!(
+            colony_pick_free_plot(&village, ccx, ccz, ccx, ccz).is_none(),
+            "16 戶都認領滿後應保守回 None，讓呼叫端退回既有邏輯"
+        );
+    }
+
+    #[test]
+    fn colony_all_plots_includes_both_rings_for_membership_checks() {
+        let (ccx, ccz) = (300, 300);
+        let all = vsettle::colony_all_plots(ccx, ccz);
+        assert_eq!(all.len(), 16, "內圈 8 塊＋擴建圈 8 塊，成員檢查要涵蓋全部 16 塊");
+        let outer_sample = vsettle::colony_plots_outer(ccx, ccz)[0];
+        assert!(
+            all.iter().any(|p| (p.cx, p.cz) == (outer_sample.cx, outer_sample.cz)),
+            "colonist_house_repair 用來比對『既有認領是不是本殖民地地塊』時，外圈居民不能被漏掉"
+        );
     }
 }
