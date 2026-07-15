@@ -1055,7 +1055,10 @@ fn height_at_base(wx: i32, wz: i32) -> i32 {
 // 真缺口：世界地形至今只有 `height_at` 噪聲窪地偶然形成的零星小湖泊/海灣，從未有過
 // 一條「貫穿整個地圖、把遠方連在一起」的定向水系——河流。本節讓世界沿 z 軸長出一條
 // 蜿蜒（雙頻 sin 疊加）貫穿地圖的河，河床平滑下凹、往兩岸線性回升到原始地表
-// （`RIVER_BANK_WIDTH` ≥ `RIVER_DEPTH` → 每格坡度 ≤1，不形成峭壁牆）。
+// （緩坡帶寬度依 `river_bank_width` 動態撐開到 ≥ 當地所需深度 → 每格坡度 ≤1，
+// 不形成峭壁牆）。水位是全域唯一常數 `RIVER_WATER_LEVEL`（見該處說明：PR #1300
+// 前兩輪都改用「跟著地形走」的水位，只是把懸空水牆從一個軸挪到另一個軸——唯有
+// 處處相同的常數水位才能同時保證 ±x 與 ±z 側向鄰格永遠不是空氣）。
 //
 // 居民/野兔物理判定水體零碰撞（`Block::is_solid()` 排除 `Water`），本就會直接蹚水
 // 穿越；平緩坡度只是確保「爬得上岸」，長途遠行/巡邏路徑不會被攔腰截斷（見
@@ -1069,11 +1072,12 @@ fn height_at_base(wx: i32, wz: i32) -> i32 {
 
 /// 河道核心（水域）半寬（世界方塊）——中心線左右各 3 格是固定深度的河床。
 const RIVER_HALF_WIDTH: f32 = 3.0;
-/// 河岸緩坡帶寬度（核心之外再往外這麼多格，深度線性回升到 0）。
-/// 刻意 ≥ `RIVER_DEPTH`，讓斜率 ≤1 格/格，居民踏階能力足以爬上岸、不形成峭壁。
+/// 河岸緩坡帶最小寬度（核心之外再往外這麼多格，深度線性回落到 0）。
+/// 實際緩坡帶寬度依 [`river_bank_width`] 動態撐開到 ≥ 當地所需深度，
+/// 讓斜率恆 ≤1 格/格，居民踏階能力足以爬上岸、不形成峭壁。
 const RIVER_BANK_WIDTH: f32 = 5.0;
-/// 河道核心下凹深度（世界方塊）。
-const RIVER_DEPTH: f32 = 4.0;
+/// 河床保底深度（世界方塊）——平地河段也維持這麼深，不會因水位貼著地表而像水窪。
+const RIVER_MIN_DEPTH: f32 = 4.0;
 /// 河流蜿蜒基準 x 座標——刻意離四位居民家域核心（x∈[-75,75]）夠遠，河不會切過主城。
 const RIVER_BASE_X: f32 = 220.0;
 
@@ -1083,77 +1087,94 @@ fn river_center_x(wz: f32) -> f32 {
     RIVER_BASE_X + (wz / 140.0).sin() * 60.0 + (wz / 37.0).sin() * 14.0
 }
 
-/// 給定世界座標「應下凹的深度」：核心 0..RIVER_DEPTH 全深，緩坡帶線性回落到 0，
-/// 再外面恆 0（不是河）。純函式、確定性、O(1)。
+/// 河流水位——**全域唯一常數**，不隨 wx/wz 變動。
+///
+/// PR #1300 前兩輪都改用「同一橫剖面／同一欄共用一個值」的水位（先中心線統一 x、
+/// 再加堤岸擋 x 邊界），結果只是把懸空水牆從 x 軸挪到 z 軸（review 第三輪：河沿 z
+/// 蜿蜒、地表噪聲沿 z 也起伏，相鄰 wz 切片各自算出的水位仍會跳動）。任何「跟著地形
+/// 走」的水位，不論用哪個座標當參考，都可能在**某個方向**上跟鄰格對不齊。
+///
+/// 唯一能同時保證「側向鄰格（±x 與 ±z）永遠不是空氣」的水位，是一個處處相同的常數：
+/// 兩個相鄰欄不管怎麼移動，只要都被判定「有淹水」，水面高度就是同一個數字，沒有
+/// 跳動的可能——「水位不一致」這整類缺陷從此在幾何上不可能發生。
+const RIVER_WATER_LEVEL: i32 = BASE_HEIGHT - 1;
+
+/// 這個 z 切片的河核心要挖多深，才能保證挖到 [`RIVER_WATER_LEVEL`] 這條全域水位之下
+/// （不論當地原始地形多高，河都能「切」到水）。用「中心線」的原始地表（而非各欄自己
+/// 的地表噪聲）當本切片的基準——同一 wz 橫剖面共用一個深度值，延續 review 第二輪已
+/// 驗證有效的手法，避免深度本身逐欄跳動。丘陵愈高，回傳深度愈大；平地則回落到保底的
+/// [`RIVER_MIN_DEPTH`]。純函式、確定性、O(1)。
+fn river_required_depth(wz: i32) -> f32 {
+    let cx = river_center_x(wz as f32).round() as i32;
+    let base = height_at_base(cx, wz) as f32;
+    // +2.0（不是 +1.0）：保底挖到水位下**兩格**，不論丘陵多高都留一點水深，
+    // 不會在極端情況下讓河核心正好卡在「地表＝水位下一格」、視覺上只剩一層薄水。
+    (base - RIVER_WATER_LEVEL as f32 + 2.0).max(RIVER_MIN_DEPTH)
+}
+
+/// 這個 z 切片實際使用的緩坡帶寬度：動態撐開到 ≥ 當地所需深度
+/// （[`river_required_depth`]），讓「深度 / 緩坡帶寬度 ≤1」恆成立——河切過愈高的
+/// 丘陵，兩岸緩坡自然愈寬，物理上仍走得上岸，不會出現峭壁。純函式、確定性、O(1)。
+fn river_bank_width(wz: i32) -> f32 {
+    river_required_depth(wz).max(RIVER_BANK_WIDTH)
+}
+
+/// 給定世界座標「應下凹的深度」：核心全深，緩坡帶線性回落到 0，再外面恆 0（不是河）。
+/// 純函式、確定性、O(1)。
 fn river_carve_depth(wx: i32, wz: i32) -> f32 {
     let dist = (wx as f32 - river_center_x(wz as f32)).abs();
+    let depth = river_required_depth(wz);
+    let bank = river_bank_width(wz);
     if dist <= RIVER_HALF_WIDTH {
-        RIVER_DEPTH
-    } else if dist <= RIVER_HALF_WIDTH + RIVER_BANK_WIDTH {
-        let t = (dist - RIVER_HALF_WIDTH) / RIVER_BANK_WIDTH; // 0..1，離核心愈遠愈淺
-        RIVER_DEPTH * (1.0 - t)
+        depth
+    } else if dist <= RIVER_HALF_WIDTH + bank {
+        let t = (dist - RIVER_HALF_WIDTH) / bank; // 0..1，離核心愈遠愈淺
+        depth * (1.0 - t)
     } else {
         0.0
     }
 }
 
-/// 若此座標的（已下凹）地形低於河流水位，回傳河面所在的世界 Y；否則 `None`
-/// （地形已回升到水位以上，是乾燥河岸，不淹水；或根本不在河道範圍內）。
+/// 若此座標在河道範圍內、且（已下凹的）地形低於全域水位，回傳水面所在的世界 Y
+/// （恆為 [`RIVER_WATER_LEVEL`]）；否則 `None`。
 ///
-/// 水位取「該 z 位置河流中心線」的原始地表下方一格（`height_at_base(centerline, wz) − 1`）
-/// 當一條**同一 wz 橫剖面上恆定**的水平面——不論核心或緩坡帶都用這同一條線判斷，
-/// 這是修正「懸空水牆」缺陷的關鍵：
-/// - 舊版只在核心（`dist ≤ RIVER_HALF_WIDTH`）填水，但緊鄰核心的緩坡帶地形當下仍接近
-///   河床深度、遠低於水位，導致水柱側向緊貼空氣。
-/// - 第一版修正曾改用「每欄自己的 `height_at_base(wx,wz)`」，但地表噪聲本身沿 x 方向
-///   也會起伏，兩個相鄰欄的環境地表高度可能不同，水位就跟著逐欄跳動，一樣會在某些
-///   欄位間鑿出裸露水牆——所以水位必須是整條河橫剖面共用的**一個**值，只能取自中心線，
-///   不能逐欄各算各的。
-///
-/// 現在整個下凹橫剖面（核心＋水位以下的緩坡帶）只要地形低於這條共用水位就淹水，
-/// 水深隨緩坡帶地形回升而自然變淺，在地形爬升穿越水位處收斂成一道天然河灘——
-/// 側向永遠是水或實地，不再有裸露垂直水牆。限定在河道半寬+緩坡帶範圍內才判斷，
-/// 避免地圖上與河流無關、恰好也低於這條水位的遠方地形被誤淹。純函式、確定性、O(1)。
+/// 水位是全域常數，因此不論核心或緩坡帶、不論哪個 wz 切片，只要判定「有淹水」，
+/// 回傳值永遠相同——這正是根治懸空水牆的關鍵（見 [`RIVER_WATER_LEVEL`] 說明）。
+/// [`river_required_depth`]／[`river_bank_width`] 已保證河核心與緩坡帶挖得夠深，
+/// 一定能淹到這條水位之下；限定在河道半寬+緩坡帶範圍內才判斷，避免地圖上與河流
+/// 無關、恰好也低於這條水位的遠方地形被誤淹。純函式、確定性、O(1)。
 fn river_water_top(wx: i32, wz: i32) -> Option<i32> {
     let center = river_center_x(wz as f32);
     let dist = (wx as f32 - center).abs();
-    if dist > RIVER_HALF_WIDTH + RIVER_BANK_WIDTH {
+    if dist > RIVER_HALF_WIDTH + river_bank_width(wz) {
         return None;
     }
-    let water_top = height_at_base(center.round() as i32, wz) - 1;
-    if height_at(wx, wz) < water_top {
-        Some(water_top)
+    if height_at(wx, wz) < RIVER_WATER_LEVEL {
+        Some(RIVER_WATER_LEVEL)
     } else {
         None
     }
 }
 
-/// 緩坡帶外緣再往外留的一圈「堤岸保護帶」寬度——只需要蓋住緊鄰緩坡帶外緣的
-/// 那一格（`river_water_top` 判斷淹水與否的邊界就在此），多留一點當浮點/取整餘裕。
-const RIVER_LEVEE_GUARD_WIDTH: f32 = 2.0;
+/// 緩坡帶外緣再往外留的一圈「堤岸保護帶」寬度——蓋住緊鄰緩坡帶外緣的那一圈
+/// （`river_water_top` 判斷淹水與否的邊界就在此），並留餘裕吸收緩坡帶寬度本身
+/// 隨 wz 變動（[`river_bank_width`]）時，相鄰切片邊界位置的些微不對齊。
+const RIVER_LEVEE_GUARD_WIDTH: f32 = 6.0;
 
-/// PR #1300 review 第二輪抓到的根因修正：`river_water_top` 用「河道中心線」統一水位後，
-/// 緩坡帶內任兩欄比對同一條水位線互相自洽（見下方推論），但緩坡帶**外緣那一圈**
-/// 是硬性切斷成 `None`（不受水位判斷約束），若環境地形噪聲恰好在那裡自然低於水位，
-/// 核心/緩坡帶的水面就會直接貼著這圈「沒被檢查、剛好又矮」的空氣，鑿出懸空水牆。
-///
-/// 自洽推論：只要兩個相鄰欄都用同一個固定 `water_top` 去比較「淹水與否」，這兩欄
-/// 之間就不可能出現水貼空氣——不是兩欄都被同一水位淹過半，就是沒被淹的那欄地表
-/// 高度本就 ≥ water_top（比水面還高，側向必是實地）。真正會出事的唯一介面，是
-/// 「有被水位規則檢查」（緩坡帶內）與「完全不檢查、逕自回 None」（緩坡帶外）的交界。
-///
-/// 修法：緩坡帶外緣再往外一圈（本函式定義的範圍）強制把地形墊高到「水位再往上一格」
-/// （不可能被淹沒、也保證比水面高），堵住那個唯一有風險的交界；範圍外的世界其餘地方
-/// 完全不受影響。純函式、確定性、O(1)。
+/// 緩坡帶外緣是硬性切斷成 `None`（不受水位判斷約束）的邊界；若環境地形噪聲恰好在
+/// 那裡自然低於全域水位，核心/緩坡帶的水面就會直接貼著這圈「沒被檢查、剛好又矮」的
+/// 空氣，鑿出懸空水牆。修法：緩坡帶外緣再往外一圈（本函式定義的範圍）強制把地形墊高
+/// 到「水位再往上一格」（不可能被淹沒、也保證比水面高——注意水位是全域常數，這裡的
+/// 墊高高度也因此處處相同，不會像深度/緩坡帶寬度那樣隨 wz 跳動），堵住這個交界；
+/// 範圍外的世界其餘地方完全不受影響。純函式、確定性、O(1)。
 fn river_levee_floor(wx: i32, wz: i32) -> Option<i32> {
     let center = river_center_x(wz as f32);
     let dist = (wx as f32 - center).abs();
-    let band = RIVER_HALF_WIDTH + RIVER_BANK_WIDTH;
+    let band = RIVER_HALF_WIDTH + river_bank_width(wz);
     if dist <= band || dist > band + RIVER_LEVEE_GUARD_WIDTH {
         return None;
     }
-    let water_top = height_at_base(center.round() as i32, wz) - 1;
-    Some(water_top + 1)
+    Some(RIVER_WATER_LEVEL + 1)
 }
 
 /// 某格 (cellx,cellz) 是否長樹；長的話回傳該樹（已驗證地表為草、在保護圈外）。
@@ -3635,20 +3656,21 @@ mod tests {
 
     #[test]
     fn river_carve_depth_full_at_centerline_zero_beyond_band() {
-        // 中心線上恰為最深；遠遠偏離中心線（超出核心+緩坡帶）應完全不下凹。
+        // 中心線上恰為這個 wz 切片所需深度；遠遠偏離中心線（超出核心+緩坡帶）應完全不下凹。
         let wz = 30;
         let cx = river_center_x(wz as f32).round() as i32;
-        assert_eq!(river_carve_depth(cx, wz), RIVER_DEPTH);
+        assert_eq!(river_carve_depth(cx, wz), river_required_depth(wz));
         assert_eq!(river_carve_depth(cx + 1000, wz), 0.0);
     }
 
     #[test]
     fn river_carve_depth_slope_never_exceeds_one_block_per_step() {
         // 安全不變式：沿 x 方向逐格掃描緩坡帶，深度變化每步 ≤1 格——避免峭壁牆
-        // 讓居民（零避水邏輯、靠踏階爬坡）被攔腰截斷。掃過核心+緩坡帶還多留餘裕。
+        // 讓居民（零避水邏輯、靠踏階爬坡）被攔腰截斷。緩坡帶寬度依這個 wz 切片
+        // 實際需要的深度動態撐開（`river_bank_width`），掃過核心+緩坡帶還多留餘裕。
         for wz in [-300, -50, 0, 77, 260] {
             let cx = river_center_x(wz as f32).round() as i32;
-            let span = (RIVER_HALF_WIDTH + RIVER_BANK_WIDTH).ceil() as i32 + 4;
+            let span = (RIVER_HALF_WIDTH + river_bank_width(wz)).ceil() as i32 + 4;
             let mut prev = river_carve_depth(cx - span - 1, wz);
             for dx in -span..=span {
                 let cur = river_carve_depth(cx + dx, wz);
@@ -3674,27 +3696,35 @@ mod tests {
         let wz = 10;
         let cx = river_center_x(wz as f32).round() as i32;
         let base = height_at_base(cx, wz);
-        assert_eq!(height_at(cx, wz), base - RIVER_DEPTH as i32);
+        let expected = (base as f32 - river_required_depth(wz)).round() as i32;
+        assert_eq!(height_at(cx, wz), expected);
     }
 
     #[test]
-    fn block_at_is_water_inside_river_core_regardless_of_ambient_height() {
-        // 不論河核心當地原始地形高於海平面多少，河面附近都應是水——
-        // 這正是「河能切過丘陵」與既有海平面補水機制的區別。
-        let wz = 5;
-        let cx = river_center_x(wz as f32).round() as i32;
-        let base = height_at_base(cx, wz);
-        let river_top = base - 1;
-        assert_eq!(block_at(cx, river_top, wz), Block::Water);
-        assert_eq!(block_at(cx, river_top - 1, wz), Block::Water);
+    fn block_at_is_water_at_global_level_regardless_of_ambient_height() {
+        // 不論河核心當地原始地表多高，核心水面都應落在同一條**全域固定水位**——
+        // 這正是「河能切過丘陵」與根治懸空水牆的關鍵設計（見 `RIVER_WATER_LEVEL`）。
+        for wz in [5, 137, -260, 320, -77] {
+            let cx = river_center_x(wz as f32).round() as i32;
+            assert_eq!(block_at(cx, RIVER_WATER_LEVEL, wz), Block::Water, "wz={wz}");
+            assert_eq!(block_at(cx, RIVER_WATER_LEVEL - 1, wz), Block::Water, "wz={wz}");
+        }
+        // 額外找一個原始地表明顯高於水位的丘陵切片，證明「不論多高都切得到水」。
+        let hilly_wz = (0..2000)
+            .find(|&wz| {
+                let cx = river_center_x(wz as f32).round() as i32;
+                height_at_base(cx, wz) > RIVER_WATER_LEVEL + 5
+            })
+            .expect("測試前提：這個 seed 下沿河沿線應能找到明顯高於水位的丘陵切片");
+        let cx = river_center_x(hilly_wz as f32).round() as i32;
+        assert_eq!(block_at(cx, RIVER_WATER_LEVEL, hilly_wz), Block::Water);
     }
 
     #[test]
     fn block_at_dry_above_river_water_top() {
         let wz = 5;
         let cx = river_center_x(wz as f32).round() as i32;
-        let base = height_at_base(cx, wz);
-        assert_ne!(block_at(cx, base + 5, wz), Block::Water, "河面之上應離水");
+        assert_ne!(block_at(cx, RIVER_WATER_LEVEL + 5, wz), Block::Water, "河面之上應離水");
     }
 
     #[test]
@@ -3705,25 +3735,27 @@ mod tests {
 
     #[test]
     fn river_never_exposes_air_wall_beside_water_full_runtime_probe() {
-        // 回歸測（PR #1300 review 第二輪抓到：上一版把範圍縮到緩坡帶幾何邊界內、
-        // 只看右鄰格，邊界外一樣會被抬高的水位淹到卻沒人檢查，測試綠燈但真缺陷還在）。
-        // 這條改走 review 實跑探針的邏輯——不再信任 river_water_top 的回傳範圍，
-        // 直接呼叫 block_at（實際渲染依據）掃過整條河多個 wz 樣本、dist 涵蓋核心+
-        // 緩坡帶再往外多留緩衝、wy 全落在海平面以上到丘陵頂、左右兩個鄰格都查：
-        // 任何一格水面，兩側鄰格永遠不能是空氣，否則就是一道懸空水牆。
-        for wz in (-400..=400).step_by(20) {
+        // 回歸測（PR #1300 review 第三輪抓到：前兩版的水位都「跟著地形走」，只是把
+        // 懸空水牆從一個軸挪到另一個軸——第二輪測只查 ±x 鄰格、z 方向 1405 處懸空
+        // 水牆完全漏測）。這條改走全域常數水位設計後，直接呼叫 block_at（實際渲染
+        // 依據）**逐 wz 密集掃過整條河**（z 鄰格連續性必須逐格查，不能跳採樣）、
+        // dist 涵蓋核心+緩坡帶再往外留緩衝、查**四個水平鄰格（±x 與 ±z）**：
+        // 任何一格水面，四個鄰格永遠不能是空氣，否則就是一道懸空水牆。
+        for wz in -450..=450 {
             let center = river_center_x(wz as f32);
-            for dx in -16..=16 {
+            for dx in -30..=30 {
                 let wx = center.round() as i32 + dx;
-                for wy in (SEA_LEVEL + 1)..=(BASE_HEIGHT + 20) {
+                for wy in (SEA_LEVEL + 1)..=(RIVER_WATER_LEVEL + 2) {
                     if block_at(wx, wy, wz) != Block::Water {
                         continue;
                     }
-                    for nx in [wx - 1, wx + 1] {
+                    for (nx, ny, nz) in
+                        [(wx - 1, wy, wz), (wx + 1, wy, wz), (wx, wy, wz - 1), (wx, wy, wz + 1)]
+                    {
                         assert_ne!(
-                            block_at(nx, wy, wz),
+                            block_at(nx, ny, nz),
                             Block::Air,
-                            "wz={wz} wx={wx} wy={wy}: 河水鄰格 nx={nx} 是空氣，懸空水牆"
+                            "wz={wz} wx={wx} wy={wy}: 河水鄰格 ({nx},{ny},{nz}) 是空氣，懸空水牆"
                         );
                     }
                 }
