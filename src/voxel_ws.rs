@@ -287,6 +287,10 @@ struct VoxelPlayer {
     /// 誰正在演奏（前端據此飄浮音符特效）。
     #[serde(default)]
     performing: bool,
+    /// 上一次 `tick_pathwear` 取樣時這位玩家所在的地面格 (x,z)（居民踏出來的小徑 v3：
+    /// 玩家的腳步也算數）。純伺服器內部節拍狀態，不廣播（`#[serde(skip)]`）、不影響協議。
+    #[serde(skip)]
+    last_step_cell: Option<(i32, i32)>,
 }
 
 // ── 乙太方界 AI 居民（切片③）────────────────────────────────────────────────
@@ -4912,6 +4916,7 @@ async fn handle_socket(
                 held: None,
                 riding: false,
                 performing: false,
+                last_step_cell: None,
             },
         );
         old_id
@@ -11889,17 +11894,19 @@ fn tick_farbond() {
 
 // ── 居民踏出來的小徑 tick（自主提案切片·小社會湧現寫進世界地面）──────────────────
 //
-// 每隔幾個 tick 取樣一次醒著、非遠行的居民腳下格：只在「踏進了新格子」那一步記一筆磨損
-// （站著不動不計，避免卡住/發呆的居民在腳下磨出一塊泥）。某格草皮累積被踏 vpath::PATHWEAR_THRESHOLD
-// 次後，就把那格草皮踏成泥土小徑——居民日復一日的動線，第一次自己走進了世界的地面。
+// 每隔幾個 tick 取樣一次醒著、非遠行的居民腳下格，以及未騎乘中的玩家腳下格：只在「踏進了
+// 新格子」那一步記一筆磨損（站著不動不計，避免卡住/發呆的居民、或站著不動的玩家在腳下磨出
+// 一塊泥）。某格草皮累積被踏 vpath::PATHWEAR_THRESHOLD 次後，就把那格草皮踏成泥土小徑——
+// 居民與玩家共同日復一日的動線，第一次自己走進了世界的地面（v3：玩家的腳步也算數）。
 //
 // 對稱地：一條小徑若長期無人再走（連續 vpath::HEAL_IDLE_SAMPLES 次取樣都沒人踏上），且此刻仍是
 // 我們當初鋪的泥土（玩家沒改動過），就讓草重新長回來——村子的動線因此隨作息改變而「呼吸」，
 // 不會永遠留著一條條泥疤。走時踏上小徑會重置它的閒置，所以常走的動線永遠不會癒合。
 //
-// 純確定性、零 LLM。嚴守鎖紀律：residents 寫鎖（取樣＋更新上一步格）→ pathwear 寫鎖（記磨損、
-// 取達標格、重置踏上者的閒置、推進閒置取待癒合格）→ deltas 讀鎖（確認地表）→ deltas 寫鎖（放土/放草）
-// 各自短取即釋、循序不巢狀；surface_y 純函式在鎖外算、廣播/持久化/Feed 全在鎖外（守死鎖鐵律）。
+// 純確定性、零 LLM。嚴守鎖紀律：residents 寫鎖（取樣＋更新上一步格）→ players 寫鎖（取樣＋更新
+// 上一步格）→ pathwear 寫鎖（記磨損、取達標格、重置踏上者的閒置、推進閒置取待癒合格）→
+// deltas 讀鎖（確認地表）→ deltas 寫鎖（放土/放草）各自短取即釋、循序不巢狀；surface_y 純函式
+// 在鎖外算、廣播/持久化/Feed 全在鎖外（守死鎖鐵律）。
 // 低頻（每 PATHWEAR_SAMPLE_TICKS 掃一次）——小徑是日積月累走出來、也是日積月累褪回去的。
 static PATHWEAR_TICKS: AtomicU64 = AtomicU64::new(0);
 /// 每隔幾個 resident tick 取樣一次居民腳下（10Hz 下每 6 tick ≈ 1.7Hz，足以連成路、成本可忽略）。
@@ -11917,7 +11924,7 @@ fn tick_pathwear() {
 
     // ① 取樣：醒著、非遠行的居民腳下格。只收「踏進新格」那一步，並更新各人上一步格。
     //    順帶捕捉「腳正踩著的那塊方塊 y」＝floor(feet_y)-1（延後到鎖外才讀方塊，這裡只算 y）。
-    let stepped: Vec<(i32, i32, i32)> = {
+    let mut stepped: Vec<(i32, i32, i32)> = {
         let mut residents = hub().residents.write().unwrap();
         let mut acc = Vec::new();
         for r in residents.iter_mut() {
@@ -11935,6 +11942,26 @@ fn tick_pathwear() {
         }
         acc
     }; // residents 寫鎖釋放
+
+    // ①b 取樣：玩家的腳下格（居民踏出來的小徑 v3——玩家的腳步也算數，見 `voxel_pathwear.rs`
+    //    「刻意的邊界」）。騎乘蒸汽獨輪車時輪子不算踏路（`player_counts_toward_wear`）。
+    //    與居民同款：只收「踏進新格」那一步，並更新各人上一步格。
+    {
+        let mut players = hub().players.write().unwrap();
+        for p in players.values_mut() {
+            if !vpath::player_counts_toward_wear(p.riding) {
+                continue;
+            }
+            let cell = vpath::ground_cell(p.x, p.z);
+            let is_step = vpath::stepped_into(p.last_step_cell, cell);
+            p.last_step_cell = Some(cell);
+            if is_step {
+                let gby = p.y.floor() as i32 - 1;
+                stepped.push((cell.0, cell.1, gby));
+            }
+        }
+    } // players 寫鎖釋放
+
     if stepped.is_empty() {
         return;
     }
@@ -30436,6 +30463,7 @@ mod tests {
             held: None,
             riding: false,
             performing: false,
+            last_step_cell: None,
         }
     }
 

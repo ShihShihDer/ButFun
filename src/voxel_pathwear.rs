@@ -30,7 +30,11 @@
 //!
 //! **刻意的邊界**：只有**天然草皮**（`Block::Grass`）會被踏成小徑；農田土、玩家/居民
 //! 放下的方塊、沙地、已成型的小徑本身都不受影響（見 [`wears_into_path`]）——絕不踩壞
-//! 玩家的作物或建材。只計**居民**的往返（v1 聚焦「村子自己的動線」；玩家個人足跡留待後續）。
+//! 玩家的作物或建材。**v3（自主提案切片）**：v1/v2 只計居民的往返（「村子自己的動線」），
+//! 玩家親自走過的腳步至今毫無痕跡——你在這座小村住了再久，地面也認不出你曾經來過。
+//! 本刀把玩家的腳步也算進同一份磨損計數（見 [`player_counts_toward_wear`]）：你和居民
+//! 常走的同一條路，會被兩邊共同踩得更快成形；你自己私房的散步路線，也會第一次被世界記住。
+//! 騎乘蒸汽獨輪車（976）時輪子滾過不算「踏」，只有親自用腳走才算數。
 //!
 //! **純邏輯層**：本模組零 IO／零鎖／零 LLM／零 async，全是確定性純函式與一個記憶體
 //! 計數器，可完整單元測試。取樣居民座標／讀地表方塊／放土／廣播／持久化全在
@@ -58,6 +62,13 @@ pub const HEAL_IDLE_SAMPLES: u16 = 1024;
 #[inline]
 pub fn ground_cell(x: f32, z: f32) -> (i32, i32) {
     (x.floor() as i32, z.floor() as i32)
+}
+
+/// 玩家此刻是否仍算「用腳踏路」——騎乘蒸汽獨輪車（976）時輪子壓過草地不算踏出來的小徑，
+/// 只有親自用腳走的玩家才會累積磨損（與居民同一份計數共享同一格，跟居民互相踩出同一條路）。
+#[inline]
+pub fn player_counts_toward_wear(riding: bool) -> bool {
+    !riding
 }
 
 /// 這一步是否「踏進了一個新格子」（相對上一次取樣所在的格）。
@@ -214,6 +225,12 @@ mod tests {
         assert_eq!(ground_cell(3.9, 7.1), (3, 7));
         assert_eq!(ground_cell(-0.1, -2.9), (-1, -3));
         assert_eq!(ground_cell(0.0, 0.0), (0, 0));
+    }
+
+    #[test]
+    fn player_walking_counts_but_riding_does_not() {
+        assert!(player_counts_toward_wear(false)); // 用腳走 → 算
+        assert!(!player_counts_toward_wear(true)); // 騎獨輪車 → 輪子不算踏路
     }
 
     #[test]
