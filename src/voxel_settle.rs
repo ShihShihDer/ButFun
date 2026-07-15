@@ -114,6 +114,38 @@ pub fn yard_clutter_cells(fp: HouseFootprint, door: DoorSide) -> [(i32, i32); 2]
     }
 }
 
+/// 街廓連棟籬——沿路同側緊鄰的兩戶，若兩家都已圈院完工，兩家院牆外緣之間補一段矮籬笆
+/// （重用既有 `Block::Fence`，呼叫端負責），把原本動輒十餘格空蕩蕩的間距收窄，讓兩戶
+/// 第一次在視覺上「靠攏」成同一段街廓，不再各自孤立、中間空無一物——聚落景觀密度四方向
+/// 最後一項「建物靠攏成街廓」。兩端各留 1 格緩衝，絕不覆蓋任一家的院牆本身；呼叫端仍要
+/// 逐格驗證現況是空氣才落子（比照 `fence_cells`/`yard_clutter_cells` 慣例）。
+/// 純幾何、不依賴 `plot_layout`/`VillagePlan`：只要兩戶的家錨點 `anchor_a`/`anchor_b`
+/// 恰好在同一路側相距一個地塊間距（呼叫端比對），此函式就能算出連接線；兩家的圍籬外擴
+/// 尺寸（`fp_a`/`fp_b`）各自獨立（依居民各自的 `BuildStyle` 決定），非同側／非直線相鄰
+/// （anchor 既非同 x 也非同 z）回空清單。
+pub fn street_link_cells(
+    anchor_a: (i32, i32),
+    fp_a: HouseFootprint,
+    anchor_b: (i32, i32),
+    fp_b: HouseFootprint,
+) -> Vec<(i32, i32)> {
+    if anchor_a.1 == anchor_b.1 && anchor_a.0 != anchor_b.0 {
+        let (west, east) = if anchor_a.0 < anchor_b.0 { (fp_a, fp_b) } else { (fp_b, fp_a) };
+        let z = anchor_a.1;
+        let (x0, x1) = (west.max_x + 3, east.min_x - 3);
+        if x0 > x1 { return Vec::new(); }
+        return (x0..=x1).map(|x| (x, z)).collect();
+    }
+    if anchor_a.0 == anchor_b.0 && anchor_a.1 != anchor_b.1 {
+        let (north, south) = if anchor_a.1 < anchor_b.1 { (fp_a, fp_b) } else { (fp_b, fp_a) };
+        let x = anchor_a.0;
+        let (z0, z1) = (north.max_z + 3, south.min_z - 3);
+        if z0 > z1 { return Vec::new(); }
+        return (z0..=z1).map(|z| (x, z)).collect();
+    }
+    Vec::new()
+}
+
 /// 聚落歸屬落地路徑（`data/` 已 gitignore）。
 pub const SETTLE_PATH: &str = "data/voxel_settlements.jsonl";
 
@@ -803,5 +835,40 @@ mod tests {
             };
             assert!(on_back_side, "背側角落必須在院門對側：{side:?}");
         }
+    }
+
+    #[test]
+    fn street_link_cells_connects_east_west_neighbors_without_touching_either_fence() {
+        // 兩家院牆外緣分別在 x=-3（東界）與 x=19（西界）；兩戶家錨點同 z（同路側）、相距 22。
+        let fp_a = HouseFootprint { min_x: -5, max_x: -3, min_z: -1, max_z: 1 };
+        let fp_b = HouseFootprint { min_x: 19, max_x: 21, min_z: -1, max_z: 1 };
+        let cells = street_link_cells((-2, 0), fp_a, (20, 0), fp_b);
+        assert!(!cells.is_empty(), "有足夠空間就該補上連接段");
+        assert!(cells.iter().all(|&(_, z)| z == 0), "連接線落在共同 z 上");
+        assert!(cells.iter().all(|&(x, _)| x >= fp_a.max_x + 3 && x <= fp_b.min_x - 3), "兩端各留緩衝、不覆蓋院牆");
+    }
+
+    #[test]
+    fn street_link_cells_connects_north_south_neighbors_symmetrically() {
+        let fp_a = HouseFootprint { min_x: 10, max_x: 12, min_z: -5, max_z: -3 };
+        let fp_b = HouseFootprint { min_x: 10, max_x: 12, min_z: 19, max_z: 21 };
+        let ab = street_link_cells((11, -4), fp_a, (11, 20), fp_b);
+        let ba = street_link_cells((11, 20), fp_b, (11, -4), fp_a);
+        assert_eq!(ab, ba, "無論哪一戶先傳入，算出來的連接線必須一致");
+        assert!(!ab.is_empty());
+        assert!(ab.iter().all(|&(x, _)| x == 11), "連接線落在共同 x 上");
+        assert!(ab.iter().all(|&(_, z)| z >= fp_a.max_z + 3 && z <= fp_b.min_z - 3), "兩端各留緩衝、不覆蓋院牆");
+    }
+
+    #[test]
+    fn street_link_cells_empty_when_anchors_not_axis_aligned_or_too_close() {
+        let fp = HouseFootprint { min_x: -1, max_x: 1, min_z: -1, max_z: 1 };
+        // 對角線鄰居（非同 x 亦非同 z）：不成立。
+        assert!(street_link_cells((0, 0), fp, (22, 22), fp).is_empty());
+        // 同一戶（座標相同）：不成立。
+        assert!(street_link_cells((0, 0), fp, (0, 0), fp).is_empty());
+        // 同 z 但間距太窄、兩家院牆幾乎貼在一起：無空間可留緩衝。
+        let fp_wide = HouseFootprint { min_x: -8, max_x: 8, min_z: -1, max_z: 1 };
+        assert!(street_link_cells((0, 0), fp_wide, (10, 0), fp_wide).is_empty());
     }
 }
