@@ -1022,10 +1022,14 @@ pub fn biome_at_voxel(wx: i32, wz: i32) -> VoxelBiome {
 pub fn height_at(wx: i32, wz: i32) -> i32 {
     let base = height_at_base(wx, wz);
     let carve = river_carve_depth(wx, wz);
-    if carve > 0.0 {
+    let carved = if carve > 0.0 {
         (base as f32 - carve).round() as i32
     } else {
         base
+    };
+    match river_levee_floor(wx, wz) {
+        Some(floor) => carved.max(floor),
+        None => carved,
     }
 }
 
@@ -1122,6 +1126,34 @@ fn river_water_top(wx: i32, wz: i32) -> Option<i32> {
     } else {
         None
     }
+}
+
+/// 緩坡帶外緣再往外留的一圈「堤岸保護帶」寬度——只需要蓋住緊鄰緩坡帶外緣的
+/// 那一格（`river_water_top` 判斷淹水與否的邊界就在此），多留一點當浮點/取整餘裕。
+const RIVER_LEVEE_GUARD_WIDTH: f32 = 2.0;
+
+/// PR #1300 review 第二輪抓到的根因修正：`river_water_top` 用「河道中心線」統一水位後，
+/// 緩坡帶內任兩欄比對同一條水位線互相自洽（見下方推論），但緩坡帶**外緣那一圈**
+/// 是硬性切斷成 `None`（不受水位判斷約束），若環境地形噪聲恰好在那裡自然低於水位，
+/// 核心/緩坡帶的水面就會直接貼著這圈「沒被檢查、剛好又矮」的空氣，鑿出懸空水牆。
+///
+/// 自洽推論：只要兩個相鄰欄都用同一個固定 `water_top` 去比較「淹水與否」，這兩欄
+/// 之間就不可能出現水貼空氣——不是兩欄都被同一水位淹過半，就是沒被淹的那欄地表
+/// 高度本就 ≥ water_top（比水面還高，側向必是實地）。真正會出事的唯一介面，是
+/// 「有被水位規則檢查」（緩坡帶內）與「完全不檢查、逕自回 None」（緩坡帶外）的交界。
+///
+/// 修法：緩坡帶外緣再往外一圈（本函式定義的範圍）強制把地形墊高到「水位再往上一格」
+/// （不可能被淹沒、也保證比水面高），堵住那個唯一有風險的交界；範圍外的世界其餘地方
+/// 完全不受影響。純函式、確定性、O(1)。
+fn river_levee_floor(wx: i32, wz: i32) -> Option<i32> {
+    let center = river_center_x(wz as f32);
+    let dist = (wx as f32 - center).abs();
+    let band = RIVER_HALF_WIDTH + RIVER_BANK_WIDTH;
+    if dist <= band || dist > band + RIVER_LEVEE_GUARD_WIDTH {
+        return None;
+    }
+    let water_top = height_at_base(center.round() as i32, wz) - 1;
+    Some(water_top + 1)
 }
 
 /// 某格 (cellx,cellz) 是否長樹；長的話回傳該樹（已驗證地表為草、在保護圈外）。
@@ -3672,33 +3704,28 @@ mod tests {
     }
 
     #[test]
-    fn river_bank_water_never_exposes_air_wall_beside_it() {
-        // 回歸測（PR #1300 review 抓到的核心幾何缺陷）：河核心之外緊鄰的緩坡帶，
-        // 當下地形若還在水位以下，該格在水面 Y 必須是水（被水淹沒）或至少不是空氣，
-        // 絕不能讓核心水柱側向直接貼著懸空的空氣——那會渲染成一道裸露水牆。
-        // 逐格掃過核心到緩坡帶外緣（河道定義範圍內），斷言側向永遠是「實地或水」、
-        // 從不是空氣。範圍刻意只到緩坡帶幾何邊界為止——邊界再外面是與河流無關的
-        // 環境地形噪聲，那裡本就可能自然起伏（如同世界任何角落的小地形起伏），
-        // 不屬於本次修正的河流幾何缺陷範圍。
-        let band = RIVER_HALF_WIDTH + RIVER_BANK_WIDTH;
-        for wz in [-300, -50, 0, 77, 260] {
+    fn river_never_exposes_air_wall_beside_water_full_runtime_probe() {
+        // 回歸測（PR #1300 review 第二輪抓到：上一版把範圍縮到緩坡帶幾何邊界內、
+        // 只看右鄰格，邊界外一樣會被抬高的水位淹到卻沒人檢查，測試綠燈但真缺陷還在）。
+        // 這條改走 review 實跑探針的邏輯——不再信任 river_water_top 的回傳範圍，
+        // 直接呼叫 block_at（實際渲染依據）掃過整條河多個 wz 樣本、dist 涵蓋核心+
+        // 緩坡帶再往外多留緩衝、wy 全落在海平面以上到丘陵頂、左右兩個鄰格都查：
+        // 任何一格水面，兩側鄰格永遠不能是空氣，否則就是一道懸空水牆。
+        for wz in (-400..=400).step_by(20) {
             let center = river_center_x(wz as f32);
-            let span = band.floor() as i32;
-            for dx in -span..=span {
+            for dx in -16..=16 {
                 let wx = center.round() as i32 + dx;
-                let dist_here = (wx as f32 - center).abs();
-                let dist_neighbor = (wx as f32 + 1.0 - center).abs();
-                if dist_here > band || dist_neighbor > band {
-                    continue; // 鄰格已踏出河道幾何定義範圍，交給環境地形噪聲，非本測範圍
-                }
-                if let Some(water_top) = river_water_top(wx, wz) {
-                    let neighbor_block = block_at(wx + 1, water_top, wz);
-                    assert_ne!(
-                        neighbor_block,
-                        Block::Air,
-                        "wz={wz} wx={wx}: 核心/緩坡帶水面 Y={water_top} 側向鄰格是空氣，\
-                         會渲染成懸空水牆"
-                    );
+                for wy in (SEA_LEVEL + 1)..=(BASE_HEIGHT + 20) {
+                    if block_at(wx, wy, wz) != Block::Water {
+                        continue;
+                    }
+                    for nx in [wx - 1, wx + 1] {
+                        assert_ne!(
+                            block_at(nx, wy, wz),
+                            Block::Air,
+                            "wz={wz} wx={wx} wy={wy}: 河水鄰格 nx={nx} 是空氣，懸空水牆"
+                        );
+                    }
                 }
             }
         }
