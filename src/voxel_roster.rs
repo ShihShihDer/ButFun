@@ -177,6 +177,33 @@ pub fn save_last_birth_unix(unix: u64) {
     let _ = std::fs::write(LAST_BIRTH_PATH, format!("{unix}\n"));
 }
 
+/// 世界起始（初代四位居民共同的誕辰基準）的 unix 秒持久化路徑（居民誕辰紀念 v1.2）——
+/// 初代四位居民 `birth_unix==0` 沒有「誕生時刻」，改用「這個功能第一次跑起來的那一刻」
+/// 當她們共同的誕辰基準：誠實地只記下「開始被紀念的那天」，不編造假歷史。單一數字覆寫檔
+/// （非 append），只寫一次——之後重啟都讀回同一個值，誕辰紀念不會因重啟跳動或歸零。
+const WORLD_FOUNDING_PATH: &str = "data/voxel_world_founding";
+
+/// 從 `data/voxel_world_founding` 讀回世界起始（初代居民誕辰基準）的 unix 秒。
+/// 檔不存在（舊部署／首次啟動）→ `None`。解析失敗（損毀）→ `None`（向後相容）。
+/// **鐵律**：只在不持任何鎖時呼叫（同步小檔讀、不 await）。
+pub fn load_world_founding_unix() -> Option<u64> {
+    std::fs::read_to_string(WORLD_FOUNDING_PATH)
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+}
+
+/// 把「世界起始」的 unix 秒寫入 `data/voxel_world_founding`（覆寫、非 append，理論上只寫一次）。
+/// 失敗只吞掉，不 panic（比照 voxel_feed 慣例）；data/ 目錄缺失自動建立。
+/// **鐵律**：只在不持任何鎖時呼叫（同步小檔寫、不 await）。
+pub fn save_world_founding_unix(unix: u64) {
+    if let Some(parent) = std::path::Path::new(WORLD_FOUNDING_PATH).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(WORLD_FOUNDING_PATH, format!("{unix}\n"));
+}
+
 /// Append 一筆名冊記錄。**鐵律**：只在不持任何鎖時呼叫（同步小檔寫、不 await）。
 pub fn append_roster_entry(rec: &RosterEntry) {
     if let Ok(line) = serde_json::to_string(rec) {
