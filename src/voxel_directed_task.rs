@@ -695,6 +695,28 @@ pub fn plan_ore_well(world: &WorldDelta, ox: i32, oy: i32, oz: i32) -> Option<Qu
     cells.contains(&(ox, oy, oz)).then_some(QuarryDig { cells, idx: 0 })
 }
 
+/// **礦井回填**（採集回填 v1，回應維護者親玩回饋——風禾屯±30 實測 135 筆挖除疤痕全留地上）：
+/// 一口階梯礦井取完料後，把清空的頭頂淨空格填回它們天然本來的地形，不留常駐的階梯坑疤。
+/// 只填「天然本是實心、目前卻是空的」的格——階梯上段常有幾階天然就已在地表之上（本來就是
+/// 空氣，例如井口附近地形較低處），那些天然非實心的格保持原樣，不誤填成擋路的實心塊；
+/// 若這段時間有人在坑道裡放了方塊，`effective_block_at` 已非空 → 一併跳過、不覆蓋玩家的東西。
+/// 純函式（吃 &WorldDelta 純判定），呼叫端才真的寫世界／廣播／持久化。可測、確定性。
+pub fn quarry_backfill(world: &WorldDelta, q: &QuarryDig) -> Vec<(i32, i32, i32, Block)> {
+    q.cells
+        .iter()
+        .filter_map(|&(x, y, z)| {
+            let base = voxel::block_at(x, y, z);
+            if !base.is_solid() {
+                return None; // 天然本就非實心 → 不誤填
+            }
+            if voxel::effective_block_at(world, x, y, z).is_solid() {
+                return None; // 已經是實心（挖完前/已被填過/被人放了東西）→ 不覆蓋
+            }
+            Some((x, y, z, base))
+        })
+        .collect()
+}
+
 /// **礦井·一批**：從 q.idx 起處理至多 `max_cells` 格，回傳（要清的實心格與其原方塊, 新 idx）。
 /// 只回傳**實心**格（呼叫端：設為空氣＋原方塊入袋＝誠實收料）；空氣/水格直接跳過
 /// （不收料、也不動水——挖穿水脈讓水流進來是誠實的物理，交給水流模擬）。純函式、可測。
@@ -1750,6 +1772,64 @@ mod tests {
         for step in 0..QUARRY_DEPTH {
             let tread = voxel::effective_block_at(&world, sx + step, sy - step, 300);
             assert!(tread.is_solid(), "第 {step} 階踏面應保留（走得回地面）");
+        }
+    }
+
+    #[test]
+    fn quarry_backfill_restores_dug_cells_to_natural_terrain() {
+        let world = WorldDelta::new();
+        let q = plan_quarry(&world, 400, 400, 0);
+        // 開挖前：這口井任何一格若天然實心，effective_block 就已是實心（尚未動世界）。
+        // 逐格把天然實心的格挖成 Air（模擬 quarry_step 挖完整口井），驗證回填後恢復原樣。
+        let mut world = world;
+        let mut expect_solid = 0usize;
+        for &(x, y, z) in &q.cells {
+            if voxel::block_at(x, y, z).is_solid() {
+                voxel::set_block(&mut world, x, y, z, Block::Air);
+                expect_solid += 1;
+            }
+        }
+        assert!(expect_solid > 0, "測試地形至少要有幾格天然實心");
+        let fill = quarry_backfill(&world, &q);
+        assert_eq!(fill.len(), expect_solid, "只回填天然實心、確實被挖空的格");
+        for (x, y, z, b) in fill {
+            assert_eq!(b, voxel::block_at(x, y, z), "回填塊須等於天然地形");
+            voxel::set_block(&mut world, x, y, z, b);
+        }
+        // 回填後：整口井沿線每一格 effective_block 都應等於天然地形（不留常駐坑疤）。
+        for &(x, y, z) in &q.cells {
+            assert_eq!(
+                voxel::effective_block_at(&world, x, y, z),
+                voxel::block_at(x, y, z),
+                "回填後 ({x},{y},{z}) 應與天然地形一致"
+            );
+        }
+    }
+
+    #[test]
+    fn quarry_backfill_skips_naturally_air_cells_and_player_placed_blocks() {
+        let mut world = WorldDelta::new();
+        let q = plan_quarry(&world, 500, 500, 0);
+        // 找一格天然實心的，先手動填回實心（模擬「已被填過/或那格本就沒挖到底」）→ 不該回填。
+        let already_solid = q
+            .cells
+            .iter()
+            .copied()
+            .find(|&(x, y, z)| voxel::block_at(x, y, z).is_solid())
+            .expect("測試地形至少要有一格天然實心");
+        // 找一格天然非實心的（若有）→ 挖不挖都不該進回填清單。
+        let naturally_air =
+            q.cells.iter().copied().find(|&(x, y, z)| !voxel::block_at(x, y, z).is_solid());
+        if let Some((x, y, z)) = naturally_air {
+            voxel::set_block(&mut world, x, y, z, Block::Air);
+        }
+        let fill = quarry_backfill(&world, &q);
+        assert!(
+            !fill.iter().any(|&(x, y, z, _)| (x, y, z) == already_solid),
+            "已是實心的格不該出現在回填清單"
+        );
+        if let Some(pos) = naturally_air {
+            assert!(!fill.iter().any(|&(x, y, z, _)| (x, y, z) == pos), "天然非實心的格不該回填");
         }
     }
 
