@@ -4148,6 +4148,11 @@ enum ClientMsg {
     /// 伺服器回 `trade_offer`，玩家再傳 TradeAccept 接受；提案 30 秒後自動過期。
     #[serde(rename = "trade_request")]
     TradeRequest { resident_id: String },
+    /// 附近居民貨品一覽 v1（自主提案切片，ROADMAP 1013）：不必一個個走近問過去，先看看
+    /// `voxel_trade::NEARBY_TRADE_RADIUS` 內每位居民手上拿什麼換什麼。伺服器回 `nearby_trades`
+    /// （純預覽，不建立任何待確認提案，看了不找她換也無妨）。
+    #[serde(rename = "nearby_trades")]
+    NearbyTrades,
     /// 居民交易 v1：接受當前待確認的交易提案（ROADMAP 670）。
     /// 付幣代替湊材料 v1（ROADMAP 874）起，`pay_with_coin=true` 時改直接扣提案的
     /// `coin_price` 枚乙太幣成交，不必湊出 `want_item`；省略／`false` 維持 v1 原行為。
@@ -10061,6 +10066,70 @@ async fn handle_socket(
                     "affinity": affinity,
                     "coin_price": offer.coin_price,
                 }).to_string();
+                let _ = out_tx.send(Message::Text(msg)).await;
+            }
+
+            // ── 附近居民貨品一覽 v1（自主提案切片，ROADMAP 1013）──────────────────
+            Ok(ClientMsg::NearbyTrades) => {
+                // 1) 短鎖取玩家位置（players 讀鎖即釋）。
+                let player_pos: Option<(f32, f32)> = {
+                    let players = hub().players.read().unwrap();
+                    players.get(&my_id).map(|p| (p.x, p.z))
+                };
+                let Some((px, pz)) = player_pos else { continue; };
+                // 2) 短鎖取半徑內居民快照（residents 讀鎖即釋，循序不巢狀）。
+                let nearby_residents: Vec<(String, &'static str, vvoc::Vocation, f32)> = {
+                    let residents = hub().residents.read().unwrap();
+                    residents
+                        .iter()
+                        .filter_map(|r| {
+                            let dx = px - r.body.x;
+                            let dz = pz - r.body.z;
+                            let dist = (dx * dx + dz * dz).sqrt();
+                            if dist > vtrade::NEARBY_TRADE_RADIUS {
+                                return None;
+                            }
+                            Some((r.id.clone(), r.name, r.vocation, dist))
+                        })
+                        .collect()
+                }; // residents 讀鎖釋放
+                // 3) 逐一補上好感度（memory 讀鎖即釋，循序不巢狀）。
+                let nearby: Vec<(String, &'static str, vvoc::Vocation, f32, usize)> = {
+                    let memory = hub().memory.read().unwrap();
+                    nearby_residents
+                        .into_iter()
+                        .map(|(id, rname, vocation, dist)| {
+                            let affinity = memory.affinity_count(&name, &id);
+                            (id, rname, vocation, dist, affinity)
+                        })
+                        .collect()
+                }; // memory 讀鎖釋放
+                // 4) 供需 v1（ROADMAP 958）短鎖 clone 一份快照，讓預覽的漲價階與真提案一致。
+                let demand_snapshot = hub().coin_demand.read().unwrap().clone();
+                // 5) 生成貨品預覽（確定性純函式，無鎖）。
+                let previews = vtrade::nearby_trade_previews(&nearby, &demand_snapshot);
+                let items: Vec<serde_json::Value> = previews
+                    .iter()
+                    .map(|p| {
+                        serde_json::json!({
+                            "resident_id": &p.resident_id,
+                            "resident_name": p.resident_name,
+                            "dist": p.dist,
+                            "offer_item": p.offer.offer_item,
+                            "offer_count": p.offer.offer_count,
+                            "offer_name": vtrade::item_name_zh(p.offer.offer_item),
+                            "want_item": p.offer.want_item,
+                            "want_count": p.offer.want_count,
+                            "want_name": vtrade::item_name_zh(p.offer.want_item),
+                            "coin_price": p.offer.coin_price,
+                        })
+                    })
+                    .collect();
+                let msg = serde_json::json!({
+                    "t": "nearby_trades",
+                    "items": items,
+                })
+                .to_string();
                 let _ = out_tx.send(Message::Text(msg)).await;
             }
 
@@ -30760,6 +30829,17 @@ mod tests {
                 assert!(!pay_with_coin, "省略 pay_with_coin 應預設 false（v1 原行為不變）");
             }
             _ => panic!("應解析成 TradeAccept"),
+        }
+    }
+
+    /// 附近居民貨品一覽 v1（ROADMAP 1013）：多詞 variant 鎖死 `#[serde(rename="nearby_trades")]`
+    /// （前車之鑑見上一條 `chest_and_trade_tags_match_frontend`，同款坑）。
+    #[test]
+    fn nearby_trades_tag_matches_frontend() {
+        let m: ClientMsg = serde_json::from_str(r#"{"t":"nearby_trades"}"#).unwrap();
+        match m {
+            ClientMsg::NearbyTrades => {}
+            _ => panic!("應解析成 NearbyTrades"),
         }
     }
 
