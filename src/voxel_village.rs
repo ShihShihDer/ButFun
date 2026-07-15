@@ -58,6 +58,14 @@ pub const PLOT_STRIDE: i32 = 22;
 /// 第一塊地塊中心距村莊中心的沿路距離（格）：跳過廣場與交叉口，第一塊從這裡起算。
 pub const PLOT_FIRST_OFFSET: i32 = 20;
 
+/// 行道樹沿路間距（格）：每隔這麼多格種一株，兩側交錯排開，讓筆直大路不再光禿禿
+/// （維護者親玩回饋硬性優先項第三項「聚落景觀密度」：路旁行道樹，一次一刀）。
+pub const ROAD_TREE_SPACING: i32 = 10;
+
+/// 行道樹距路面外緣的退縮（格）：路面本身佔中線 {0,1} 兩格，樹種在外緣再退這麼多格，
+/// 留一條乾淨的人行帶、絕不與路面重疊。
+pub const ROAD_TREE_SETBACK: i32 = 2;
+
 // ── 路面 / 廣場材質（依村莊群系選一種「石板路」感建材）──────────────────────────
 
 /// 依村莊中心群系選路面材質（麥塊村莊石板路的味道；沙漠改用沙礫感的拋光石襯托）。
@@ -126,6 +134,10 @@ pub struct VillagePlan {
     pub road: Vec<(i32, i32)>,
     /// 沿路地塊（居民認領後當蓋家錨點）。
     pub plots: Vec<Plot>,
+    /// 行道樹樹幹落點（平面座標；聚落景觀密度 v1，路旁行道樹）。實際方塊由
+    /// `voxel_grove::grown_tree_blocks` 生成，這裡只給錨點——與 `lantern_cells`/`plots`
+    /// 同一慣例，呼叫端就地找地表、只在自然地表且樹形完全落在空氣中時才種。
+    pub road_trees: Vec<(i32, i32)>,
 }
 
 /// 依村莊中心 (cx, cz) + 群系確定性生成一份村莊藍圖（純函式、可測）。
@@ -135,6 +147,7 @@ pub fn plan_village(cx: i32, cz: i32, biome: crate::voxel::VoxelBiome) -> Villag
     let lantern_cells = plaza_lantern_cells(cx, cz);
     let road = road_cells(cx, cz);
     let plots = plot_layout(cx, cz);
+    let road_trees = road_tree_cells(cx, cz);
     VillagePlan {
         cx,
         cz,
@@ -144,6 +157,7 @@ pub fn plan_village(cx: i32, cz: i32, biome: crate::voxel::VoxelBiome) -> Villag
         lantern_cells,
         road,
         plots,
+        road_trees,
     }
 }
 
@@ -206,6 +220,69 @@ pub fn road_cells(cx: i32, cz: i32) -> Vec<(i32, i32)> {
 /// (x, z) 是否落在廣場佔地方形內。
 fn in_plaza(cx: i32, cz: i32, x: i32, z: i32) -> bool {
     (x - cx).abs() <= PLAZA_RADIUS && (z - cz).abs() <= PLAZA_RADIUS
+}
+
+/// 沿十字主路兩側種行道樹的樹幹落點（純函式、確定性）：東西向主路的南／北兩側、
+/// 南北向主路的東／西兩側，各以 [`ROAD_TREE_SPACING`] 等距排開、退縮 [`ROAD_TREE_SETBACK`]
+/// 格（路面本身佔中線 {0,1}，樹種在外緣再退這麼多格，不占路面）。起點跳過廣場淨空
+/// （`start > PLAZA_RADIUS` 保證沿路方向那一軸已離開廣場方形，無論垂直側是哪一側都不會
+/// 落進廣場——廣場自己已有四角燈，不需要樹）。只回平面座標——呼叫端就地找地表，
+/// 且只在自然地表、樹形（[`road_tree_blocks`]）每一格目前都是空氣時才種，比照
+/// [`pave_path_cells`] 的保守慣例（只加不拆、遇既有東西就跳過不種）。
+pub fn road_tree_cells(cx: i32, cz: i32) -> Vec<(i32, i32)> {
+    use std::collections::HashSet;
+    let mut set: HashSet<(i32, i32)> = HashSet::new();
+    // 路面佔中線 {0,1} 兩格；退縮後的兩側偏移：近側在 0 之外、遠側在 1 之外。
+    let near = -ROAD_TREE_SETBACK;
+    let far = 1 + ROAD_TREE_SETBACK;
+    let start = PLAZA_RADIUS + ROAD_TREE_SPACING;
+
+    // 東西向主路：樹在南（+z）／北（-z）兩側，沿 x 等距排開。
+    let mut step = start;
+    while step <= ROAD_REACH {
+        for &sign in &[1, -1] {
+            let x = cx + sign * step;
+            for &side in &[near, far] {
+                set.insert((x, cz + side));
+            }
+        }
+        step += ROAD_TREE_SPACING;
+    }
+    // 南北向主路：樹在東（+x）／西（-x）兩側，沿 z 等距排開。
+    let mut step = start;
+    while step <= ROAD_REACH {
+        for &sign in &[1, -1] {
+            let z = cz + sign * step;
+            for &side in &[near, far] {
+                set.insert((cx + side, z));
+            }
+        }
+        step += ROAD_TREE_SPACING;
+    }
+
+    let mut out: Vec<(i32, i32)> = set.into_iter().collect();
+    out.sort(); // 確定性順序（HashSet 迭代序不穩，排序後才可測/重啟一致）
+    out
+}
+
+/// 一株行道樹的方塊清單（純函式、確定性）：底座 `(x, y, z)` 起——樹幹 2 節（`Wood`）
+/// 直上，樹冠在頂端一層以十字形（中心 + 東西南北四鄰，`Leaves`）鋪開。**刻意比野生
+/// 森林樹（[`crate::voxel_grove::grown_tree_blocks`]，樹幹 3 節＋兩層 3×3 環＋頂蓋十字，
+/// 共 23 格）小巧許多**（僅 7 格、佔地只碰正交四鄰不碰對角）——世界本身天然樹木密度不低
+/// （[`crate::voxel::TREE_CELL`] 7×7 格一株），要求整株野生樹形完全淨空幾乎不可能過關；
+/// 行道樹本該是「人工修剪過、排列整齊」的小樹，形狀刻意精巧也更貼合這層敘事。
+pub fn road_tree_blocks(x: i32, y: i32, z: i32) -> Vec<(i32, i32, i32, Block)> {
+    let top = y + 1; // 樹幹頂（含底座共 2 節）
+    let mut out = vec![
+        (x, y, z, Block::Wood),
+        (x, top, z, Block::Wood),
+    ];
+    let canopy_y = top + 1;
+    out.push((x, canopy_y, z, Block::Leaves));
+    for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+        out.push((x + dx, canopy_y, z + dz, Block::Leaves));
+    }
+    out
 }
 
 /// 沿四條主路兩側劃地塊：每條路（東西/南北）× 兩側 × `PLOTS_PER_ROAD_SIDE` 塊。
@@ -408,10 +485,26 @@ pub fn is_natural_ground(b: Block) -> bool {
     )
 }
 
+/// 行道樹的某一格目前的方塊 `current` 能不能被種下去（純函式、可測）。**實測教訓**：世界
+/// 天然樹木密度不低（[`crate::voxel::TREE_CELL`] 7×7 格一株），若要求整株樹形碰到的每一格
+/// 都得是空氣，對著真實已運行的村子跑一輪幾乎全數因鄰近野樹擋道而槓龜（實測 0 株種成）。
+/// 因此放寬：**空氣**或**既有樹葉**皆可覆蓋（樹葉疊樹葉是純視覺融入，不吃掉任何資訊；一株
+/// 行道樹的枝條探進鄰近野樹的樹冠邊緣，看起來仍是自然的一叢綠）——但樹幹（`Wood`，代表另一
+/// 株樹的主幹或玩家的木造建物）與其他任何材質（路面/水/建材）一律不准覆蓋，絕不砍斷別人的
+/// 樹幹或蓋掉任何建物/路面。
+pub fn road_tree_cell_writable(current: Block) -> bool {
+    matches!(current, Block::Air | Block::Leaves)
+}
+
 /// 廣場中央該不該（一次性整理時）補放一盞燈以外，是否也要放中央水井——由呼叫端決定。
 /// 這裡集中一句 migration 動工的 Feed 文字（面向玩家、i18n 友善）。
 pub fn village_feed_line() -> &'static str {
     "村裡鋪起了石板路，散落的家被一條條路連了起來。"
+}
+
+/// 行道樹種下時（一次性整理）的 Feed 文字（面向玩家、i18n 友善集中此處）。
+pub fn road_trees_feed_line() -> &'static str {
+    "大路兩旁冒出一排新種的行道樹，筆直的石板路不再光禿禿。"
 }
 
 /// 某居民在南/北/東/西哪個方位安了新家的 Feed 文字（認領地塊時用）。
@@ -1002,6 +1095,7 @@ mod tests {
         assert!(!p.plaza.is_empty(), "應有廣場鋪面");
         assert!(!p.road.is_empty(), "應有主路");
         assert!(!p.plots.is_empty(), "應劃出地塊");
+        assert!(!p.road_trees.is_empty(), "應有行道樹落點");
         assert_eq!(p.well_center, (0, 0), "水井在廣場中央");
         assert_eq!(p.lantern_cells.len(), 4, "廣場四角各一盞燈");
     }
@@ -1105,6 +1199,79 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── 行道樹：不重疊主路/廣場、確定性、兩軸兩側皆有（聚落景觀密度 v1）───────────
+
+    #[test]
+    fn road_trees_is_deterministic() {
+        let a = road_tree_cells(3, -8);
+        let b = road_tree_cells(3, -8);
+        assert_eq!(a, b, "同輸入應生出逐格相同的行道樹落點");
+    }
+
+    #[test]
+    fn road_trees_has_no_duplicates_and_is_sorted() {
+        let cells = road_tree_cells(0, 0);
+        let mut sorted = cells.clone();
+        sorted.sort();
+        assert_eq!(cells, sorted, "行道樹落點應已排序（確定性）");
+        let uniq: std::collections::HashSet<_> = cells.iter().collect();
+        assert_eq!(uniq.len(), cells.len(), "行道樹落點不得重複");
+    }
+
+    #[test]
+    fn road_trees_never_sit_on_road_or_plaza() {
+        let (vcx, vcz) = (0, 0);
+        let road: std::collections::HashSet<(i32, i32)> = road_cells(vcx, vcz).into_iter().collect();
+        for &(x, z) in &road_tree_cells(vcx, vcz) {
+            assert!(!road.contains(&(x, z)), "行道樹不該種在路面上（{x},{z}）");
+            assert!(
+                !((x - vcx).abs() <= PLAZA_RADIUS && (z - vcz).abs() <= PLAZA_RADIUS),
+                "行道樹不該種進廣場（{x},{z}）",
+            );
+        }
+    }
+
+    #[test]
+    fn road_trees_appear_on_both_sides_of_both_axes() {
+        let (vcx, vcz) = (10, -5);
+        let cells = road_tree_cells(vcx, vcz);
+        // 東西向主路：南（z 較大）／北（z 較小）兩側都要有樹。
+        assert!(cells.iter().any(|&(x, z)| x != vcx && z < vcz), "東西路北側應有行道樹");
+        assert!(cells.iter().any(|&(x, z)| x != vcx && z > vcz), "東西路南側應有行道樹");
+        // 南北向主路：東（x 較大）／西（x 較小）兩側都要有樹。
+        assert!(cells.iter().any(|&(x, z)| z != vcz && x > vcx), "南北路東側應有行道樹");
+        assert!(cells.iter().any(|&(x, z)| z != vcz && x < vcx), "南北路西側應有行道樹");
+    }
+
+    // ── 行道樹造型：小巧、可測（聚落景觀密度 v1）───────────────────────────────
+
+    #[test]
+    fn road_tree_blocks_has_expected_shape_and_count() {
+        let blocks = road_tree_blocks(5, 10, -3);
+        assert_eq!(blocks.len(), 7, "行道樹應恰 7 格（2 節樹幹 + 十字樹冠 5 格）");
+        // 樹幹底座、頂節各一格 Wood，皆落在 (x, *, z) 這一縱列。
+        assert!(blocks.contains(&(5, 10, -3, Block::Wood)));
+        assert!(blocks.contains(&(5, 11, -3, Block::Wood)));
+        // 樹冠：中心 + 東西南北四鄰，皆在同一層（top+1）、皆 Leaves。
+        let canopy_y = 12;
+        for (dx, dz) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
+            assert!(
+                blocks.contains(&(5 + dx, canopy_y, -3 + dz, Block::Leaves)),
+                "樹冠缺一格 ({},{},{})", 5 + dx, canopy_y, -3 + dz
+            );
+        }
+    }
+
+    #[test]
+    fn road_tree_blocks_is_deterministic_and_no_duplicates() {
+        let a = road_tree_blocks(1, 2, 3);
+        let b = road_tree_blocks(1, 2, 3);
+        assert_eq!(a, b);
+        let uniq: std::collections::HashSet<(i32, i32, i32)> =
+            a.iter().map(|&(x, y, z, _)| (x, y, z)).collect();
+        assert_eq!(uniq.len(), a.len(), "行道樹方塊不得重複座標");
     }
 
     // ── PlotRegistry 認領註冊 ─────────────────────────────────────────────────
@@ -1275,6 +1442,20 @@ mod tests {
             Block::Glass, Block::FarmSoil, Block::Workbench,
         ] {
             assert!(!is_natural_ground(b), "{b:?} 不該被路面覆蓋（保護作品）");
+        }
+    }
+
+    // ── road_tree_cell_writable：空氣/既有樹葉可種，樹幹/建材/水絕不覆蓋 ────────
+
+    #[test]
+    fn road_tree_writable_accepts_air_and_leaves_only() {
+        assert!(road_tree_cell_writable(Block::Air), "空氣應可種");
+        assert!(road_tree_cell_writable(Block::Leaves), "既有樹葉應可融入（純視覺疊加）");
+        for b in [
+            Block::Wood, Block::Water, Block::StoneBrick, Block::SmoothStone,
+            Block::Plank, Block::DoorClosed, Block::Grass, Block::Dirt,
+        ] {
+            assert!(!road_tree_cell_writable(b), "{b:?} 不該被行道樹覆蓋（樹幹/建材/水/地表）");
         }
     }
 

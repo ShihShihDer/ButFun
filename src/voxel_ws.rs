@@ -3387,6 +3387,103 @@ fn migrate_restore_village(deltas: &mut WorldDelta, residents: &[VoxelResident])
     wake
 }
 
+/// 行道樹一次性種植標記（存在即代表已跑過，冪等不再跑；`data/` 已 gitignore）。
+/// 與 [`VILLAGE_RESTORE_MARKER`] 各自獨立：既有 prod 世界早已跑過村莊整理／大修復，
+/// 這一刀要能「補種」進**已經存在**的村莊，所以另開一支旗標，不重跑前兩步。
+const VILLAGE_ROAD_TREES_MARKER: &str = "data/.village_road_trees_v1";
+
+/// **聚落景觀密度 v1·路旁行道樹（migration，只加不拆、冪等）**。
+///
+/// 背景：維護者親玩回饋硬性優先項第三項「聚落景觀密度」——「建物小而散、路細、花園飄在
+/// 空地」；本刀先治「路細」：村莊十字主路兩側種一排行道樹（沿用 [`vvillage::road_tree_cells`]
+/// 的落點、[`vvillage::road_tree_blocks`] 的樹形），讓筆直的石板路第一次不再光禿禿。
+///
+/// **只加不拆的鐵律**：每一株候選樹，先查腳下地表是否為
+/// [`vvillage::is_natural_ground`]（遇建築/路面/農田/水就跳過那格，絕不覆蓋）；再查樹形
+/// （[`vvillage::road_tree_blocks`] 展開的每一格）是否**整株**都落在
+/// [`vvillage::road_tree_cell_writable`] 允許的格子上（空氣或既有樹葉，樹幹/建材/水絕對不准
+/// 覆蓋）——只要有一格不允許，就在候選點附近小範圍（曼哈頓距離 ≤2）挪動找一格能種的，仍找
+/// 不到才真的放棄這一叢。**實測教訓**：世界天然樹木密度不低（[`crate::voxel::TREE_CELL`]
+/// 7×7 格一株，且這座跑了許久的村子周邊早已枝繁葉茂）——原始設計「野生樹滿版樹形＋原地
+/// 整株必須全空氣」對著真實已運行的世界跑一輪，候選幾乎全數因鄰近既有樹木/水塘槓龜（實測
+/// 0 株種成）；改用 [`vvillage::road_tree_blocks`] 小巧造型（7 格）＋放寬可覆蓋既有樹葉＋
+/// 原地卡住時就近挪位，三者疊加才種得進一座活過的村子周邊。
+fn migrate_plant_road_trees(deltas: &mut WorldDelta, residents: &[VoxelResident]) {
+    // ① 已跑過就跳過（冪等）。
+    if std::path::Path::new(VILLAGE_ROAD_TREES_MARKER).exists() {
+        return;
+    }
+    // ② 動檔前備份（僅在原檔存在時）。備份失敗就中止本次整理（不冒險改資料），下次啟動再試。
+    let src = vbuild::VOXEL_RES_BLOCKS_PATH;
+    if std::path::Path::new(src).exists() {
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let bak = format!("{src}.bak-roadtrees-{epoch}");
+        if let Err(e) = std::fs::copy(src, &bak) {
+            tracing::warn!("行道樹：備份 {src} 失敗，本次略過（下次啟動再試）：{e}");
+            return;
+        }
+        tracing::info!("行道樹：已備份世界改動到 {bak}");
+    }
+
+    // 村莊中心：優先用一次性整理釘死的中心，缺檔（極舊世界）→ 退回居民 home_base 群聚質心。
+    let (vcx, vcz) = vvillage::load_village_center().unwrap_or_else(|| {
+        let home_bases: Vec<(i32, i32)> = residents
+            .iter()
+            .map(|r| (r.home_x.floor() as i32, r.home_z.floor() as i32))
+            .collect();
+        vvillage::village_center(&home_bases)
+    });
+
+    // 候選點卡住（鄰近既有野樹/水塘）就在附近小範圍（曼哈頓距離遞增）找一格能種的——
+    // 世界天然樹木密度不低，硬卡死原始落點命中率太差；就近挪一兩格仍讀作「沿路那一叢」，
+    // 不破壞行道樹沿路排開的觀感，也絕不跳出這一叢的範圍。
+    const NEARBY_OFFSETS: [(i32, i32); 12] = [
+        (0, 0),
+        (1, 0), (-1, 0), (0, 1), (0, -1),
+        (1, 1), (1, -1), (-1, 1), (-1, -1),
+        (2, 0), (-2, 0), (0, 2),
+    ];
+
+    let mut planted = 0usize;
+    for (base_tx, base_tz) in vvillage::road_tree_cells(vcx, vcz) {
+        for &(ox, oz) in &NEARBY_OFFSETS {
+            let (tx, tz) = (base_tx + ox, base_tz + oz);
+            let sy = vbuild::surface_y(tx, tz); // 地面正上方（樹幹底座落點）
+            let gy = sy - 1; // 地表方塊本身
+            let ground = voxel::effective_block_at(deltas, tx, gy, tz);
+            if !vvillage::is_natural_ground(ground) {
+                continue; // 遇建築/路面/農田/水等 → 這個偏移不行，換下一個
+            }
+            let tree = vvillage::road_tree_blocks(tx, sy, tz);
+            let all_clear = tree.iter().all(|&(x, y, z, _)| {
+                vvillage::road_tree_cell_writable(voxel::effective_block_at(deltas, x, y, z))
+            });
+            if !all_clear {
+                continue; // 樹形碰到樹幹/建物/水等不可覆蓋的格 → 換下一個偏移
+            }
+            for (x, y, z, b) in tree {
+                voxel::set_block(deltas, x, y, z, b);
+                vbuild::append_world_block(x, y, z, b as u8);
+            }
+            planted += 1;
+            break; // 這個候選點種成了，不再嘗試其餘偏移
+        }
+    }
+
+    // ③ 寫 marker（冪等）。
+    if let Some(parent) = std::path::Path::new(VILLAGE_ROAD_TREES_MARKER).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(VILLAGE_ROAD_TREES_MARKER, b"1");
+    if planted > 0 {
+        vfeed::append_feed("聚落景觀", "村子", vvillage::road_trees_feed_line());
+    }
+    tracing::info!("行道樹種植完成：中心 ({vcx},{vcz})，沿主路種了 {planted} 株（只種自然地表、未覆蓋任何既有方塊）");
+}
+
 /// 挖掘紀律：居民自主開挖的**離村禁區**——泛化成「離該居民最近的聚落」（主村或任一殖民地），
 /// 不再死認主村（殖民地補平 v1）。回 `Some((cx, cz, radius))`＝那個聚落的中心與禁區半徑，
 /// 供 [`vskill::find_nearest_resource_excl`] 等選址跳過該聚落內的格；`None`＝一個聚落中心
@@ -3445,6 +3542,9 @@ fn hub() -> &'static VoxelHub {
         // 回傳需喚醒水流重算的邊界格，預先排入水流佇列讓殘餘水穩定（hub 尚未成形，不能呼叫
         // enqueue_water_around；改成建構時就把這些格塞進 water_queue 初值）。
         let water_wake = migrate_restore_village(&mut deltas, &residents);
+        // 聚落景觀密度 v1（冪等、備份後）：村莊十字主路兩側補種一排行道樹——獨立旗標，
+        // 專治「已經整理過」的既有村莊也能補上這一刀，不必重跑前兩步。只加不拆、絕不覆蓋。
+        migrate_plant_road_trees(&mut deltas, &residents);
         // 乙太營火 v1：從已 replay 的 delta 掃出所有既存營火座標，重建取暖清單（重啟後居民
         // 仍會被重啟前蓋的火堆吸引）。掃描發生在 deltas 被 move 進 RwLock 之前，一次性、非熱路徑。
         let campfires = vcamp::scan_campfires(&deltas);
