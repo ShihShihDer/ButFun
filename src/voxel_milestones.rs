@@ -90,6 +90,9 @@ pub const MILESTONES: &[MilestoneDef] = &[
     MilestoneDef { id: "first_dungeon", name_zh: "初闖遺跡", desc_zh: "鑿穿深層岩壁，找到了一座人工鑿建的地底遺跡神殿", icon: "🏺" },
     // 玩家羈絆帳本 v1（自主提案切片，ROADMAP 985）：玩家↔玩家的真實互動第一次被世界記住。
     MilestoneDef { id: "first_player_bond", name_zh: "初結旅伴", desc_zh: "和另一位真人玩家處出了交情——旅伴", icon: "🚶" },
+    // 圓夢地標 v1.1（自主提案切片，接續 `voxel_lifeproject` v1）：居民親手圓滿的個人大夢，
+    // 第一次也被世界記住——地標系統從「天然生成／居民立牌」延伸出「她默默做完的事」。
+    MilestoneDef { id: "first_dream_landmark", name_zh: "初見圓夢", desc_zh: "路過，撞見了一位居民親手圓滿的夢想角落", icon: "🌟" },
 ];
 
 /// 查表確認是否為已知里程碑 id（守 store 資料乾淨，未知 id 不寫入）。

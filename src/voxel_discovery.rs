@@ -56,6 +56,10 @@ pub enum LandmarkKind {
     /// 確定性決定、埋在深層岩壁裡（`voxel::dungeon_base`）。與地表遺跡（Ruin，一望即穿的
     /// 四根殘柱）不同：得先挖穿石牆才看得見裡頭；找到藏寶室核心即記一筆探索紀事、得一份獎勵。
     Dungeon,
+    /// 居民圓夢角落（居民長程自主專案 v1.1）——某位居民親手圓滿的個人大夢（小花園／燈路／
+    /// 展台），座標由該居民的家＋夢想種類純函式算出（`voxel_lifeproject::LifeDream::anchor_cell`）。
+    /// 與前面幾種皆不同：不是世界生成、不是居民刻意立牌，是「一件她默默做完的事」被玩家撞見。
+    Dream,
 }
 
 impl LandmarkKind {
@@ -68,6 +72,7 @@ impl LandmarkKind {
             LandmarkKind::Colony => "野外村落",
             LandmarkKind::Wonder => "乙太世界樹",
             LandmarkKind::Dungeon => "地底遺跡神殿",
+            LandmarkKind::Dream => "圓夢角落",
         }
     }
 
@@ -81,6 +86,7 @@ impl LandmarkKind {
             LandmarkKind::Colony => "colony",
             LandmarkKind::Wonder => "wonder",
             LandmarkKind::Dungeon => "dungeon",
+            LandmarkKind::Dream => "dream",
         }
     }
 
@@ -93,6 +99,7 @@ impl LandmarkKind {
             LandmarkKind::Colony => "🏘️",
             LandmarkKind::Wonder => "🌳",
             LandmarkKind::Dungeon => "🏺",
+            LandmarkKind::Dream => "🌟",
         }
     }
 }

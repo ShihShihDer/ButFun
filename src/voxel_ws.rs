@@ -4823,6 +4823,50 @@ fn player_near_built_outpost(px: f32, pz: f32) -> Option<(String, &'static str, 
     None
 }
 
+/// 圓夢地標 v1.1（自主提案切片，接續 `voxel_lifeproject` v1）：玩家走到某位居民已圓滿的
+/// 個人大夢錨點附近 → 回傳該居民與地標世界座標，供發現/留言簿接線使用。模式比照
+/// `player_near_built_outpost`：residents 讀鎖只取一次快照即釋，之後每位候選各自短讀
+/// `life_projects` 鎖即釋，兩鎖不巢狀。多位居民各自有夢，回傳掃到的第一座（候選數量小，
+/// 成本可忽略）。錨點座標算法與 `tick_life_projects` 放置那一塊時完全一致（同一份純函式），
+/// 故與世界裡實際放下的方塊天生對得上。
+fn player_near_finished_life_project(px: f32, pz: f32) -> Option<(String, &'static str, i32, i32, i32)> {
+    let candidates: Vec<(String, &'static str, i32, i32)> = {
+        let rs = hub().residents.read().unwrap();
+        rs.iter()
+            .map(|r| (r.id.clone(), r.name, r.home_x.round() as i32, r.home_z.round() as i32))
+            .collect()
+    }; // residents 讀鎖釋放
+    let village_center = vvillage::load_village_center();
+    for (rid, rname, ax, az) in candidates {
+        let kind = {
+            let lp = hub().life_projects.read().unwrap();
+            match lp.get(&rid) {
+                Some(entry) if entry.done => vlife::LifeDreamKind::from_id(&entry.kind),
+                _ => None,
+            }
+        }; // life_projects 讀鎖釋放
+        let Some(kind) = kind else { continue };
+        // 「朝村子的方向」只有點燈連路用得到，算法與 `tick_life_projects` 放塊時一致
+        // （確定性、重啟穩定，故重算永遠對得上世界裡實際放下的方塊）。
+        let (tx, tz) = match kind {
+            vlife::LifeDreamKind::LanternPath => match village_center {
+                Some((vx, vz)) => ((vx - ax).signum(), (vz - az).signum()),
+                None => (1, 0),
+            },
+            _ => (0, 0),
+        };
+        let dream = vlife::build_dream(kind, tx, tz);
+        let anchor = dream.anchor_cell();
+        let (lx, lz) = (ax + anchor.dx, az + anchor.dz);
+        if !vlife::near_dream_landmark(px, pz, lx, lz) {
+            continue;
+        }
+        let ly = vbuild::surface_y(lx, lz) + anchor.dy;
+        return Some((rid, rname, lx, ly, lz));
+    }
+    None
+}
+
 /// 地標旅人留言 v1（自主提案切片，ROADMAP 862）：把這處地標目前的留言簿（可能是空的）
 /// 單播給這位玩家，並附上 `(x,y,z)`——前端據此讓玩家能就地回送 `LeaveLandmarkNote`
 /// 寫下自己的一句話（溫泉不看座標，附的是玩家此刻的腳下位置即可；遺跡則必須是乙太礦
@@ -5557,6 +5601,10 @@ async fn handle_socket(
     // 地底遺跡神殿 v1（ROADMAP 975）：這條連線上一 tick 是否正站在藏寶室核心旁，用來偵測
     // 「剛挖穿石牆走進來」那一刻只嘗試記一次探索紀事＋領一次獎勵（同上，逗留原地省一趟寫鎖）。
     let mut was_near_dungeon = false;
+    // 圓夢地標 v1.1（自主提案切片，接續 `voxel_lifeproject` v1）：這條連線上一 tick 是否正站在
+    // 某位居民已圓夢的錨點旁，用來偵測「剛走近」那一刻只嘗試記一次探索紀事（同上，逗留原地
+    // 省一趟寫鎖；`record()` 本身已冪等，此旗標純粹省鎖非正確性必要）。
+    let mut was_near_dream_landmark = false;
 
     // 玩家生存指標 tick（溫和版）：per-connection 每秒推進一次飢餓衰減／溺水／飽食回血，
     // 並在指標變動時單播 player_stats（只給玩家自己，減噪）。放這條連線的 select loop 裡跑，
@@ -5775,6 +5823,31 @@ async fn handle_socket(
                     }
                 }
                 was_near_dungeon = near_dungeon;
+                // 圓夢地標 v1.1（自主提案切片，接續 `voxel_lifeproject` v1）：v1 讓居民的長程
+                // 大夢在世界裡跨天長出來，但圓滿之後什麼都沒留下——跟遺跡/溫泉/邊陲營地/世界
+                // 奇觀/地底遺跡神殿比起來，「居民親手圓的夢」此前是探索紀事系統裡唯一沒被世界
+                // 記住的一種地標。這一刀讓玩家走近任一位已圓夢居民的錨點時，也記一筆探索紀事、
+                // 解鎖里程碑、順手看看先前旅人留下的話。
+                let near_dream = player_near_finished_life_project(px, pz);
+                if let Some((_rid, rname, lx, ly, lz)) = &near_dream {
+                    if !was_near_dream_landmark {
+                        try_unlock_milestone(&name, "first_dream_landmark", &out_tx);
+                        let found = {
+                            let mut d = hub().discovery.write().unwrap();
+                            d.record(&name, vdisc::LandmarkKind::Dream, (*lx, *lz), *lx, *ly, *lz)
+                        }; // discovery 寫鎖釋放
+                        if let Some(entry) = found {
+                            vdisc::append_discovery(&entry);
+                            send_landmark_notes(vdisc::LandmarkKind::Dream, (*lx, *lz), *lx, *ly, *lz, &out_tx).await;
+                            vfeed::append_feed(
+                                "探索",
+                                &name,
+                                &format!("路過，撞見了{rname}親手圓滿的一個夢想角落"),
+                            );
+                        }
+                    }
+                }
+                was_near_dream_landmark = near_dream.is_some();
                 // 溺水扣血走統一傷害路徑（含死亡→重生判定、廣播、持久化）。
                 if drown_dmg > 0 {
                     apply_player_damage(&name, drown_dmg, &out_tx).await;
