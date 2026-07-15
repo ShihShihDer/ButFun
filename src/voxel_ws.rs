@@ -26562,6 +26562,9 @@ fn tick_residents(dt: f32) {
                     }
                     // 圍籬圈院 v1：完工收尾後才圈院；函式內短持 deltas 鎖蒐集，鎖外落地廣播。
                     place_house_fence(&rid, plan_anchor, false);
+                    // 院子柴堆填充 v1：圈院之後緊接著擺柴堆（同一次完工事件，圍籬已在上一行
+                    // 落地，place_yard_woodpiles 內部的 fence_ring_present 檢查此刻已成立）。
+                    place_yard_woodpiles(&rid, plan_anchor, false);
                 }
             }
             // 完工 Feed（每個建物只發一次，不洗版）。合力蓋家 v1（ROADMAP 834）：有協力者
@@ -28654,6 +28657,7 @@ fn tick_home_relocation(dt: f32, say_updates: &mut Vec<(String, String)>) {
         if !migration_kickoff(say_updates)
             && !colonist_house_repair(say_updates)
             && !repair_one_house_fence()
+            && !repair_one_house_woodpile()
         {
             relocation_kickoff(say_updates);
         }
@@ -28784,6 +28788,78 @@ fn place_house_fence(rid: &str, anchor: (i32, i32, i32), require_home: bool) -> 
     for c in &placed {
         vbuild::append_world_block(c.x, c.y, c.z, Block::Fence as u8);
         broadcast_block(c.x, c.y, c.z, Block::Fence);
+    }
+    !placed.is_empty()
+}
+
+/// 既有已圈院的家補柴堆：每次低頻掃描至多處理一家，節奏與 repair_one_house_fence 共用。
+fn repair_one_house_woodpile() -> bool {
+    let residents: Vec<String> = hub().residents.read().unwrap().iter().map(|r| r.id.clone()).collect();
+    for rid in residents {
+        let Some(anchor) = hub().goals.read().unwrap().house_of(&rid) else { continue };
+        if place_yard_woodpiles(&rid, anchor, true) { return true; }
+    }
+    false
+}
+
+/// 替一座已圈院的 House 擺柴堆填充：柴堆是圈院後的下一刀，只在圍籬已完成才擺（敘事順序
+/// 與風險都晚 place_house_fence 一步）。`require_home` 同 place_house_fence，供舊家補放時
+/// 保守辨識仍是真的家（有門有床）。
+/// 鎖紀律：先以唯讀鎖取現況，寫鎖內只蒐集／設 delta，釋鎖後才 append+broadcast。
+fn place_yard_woodpiles(rid: &str, anchor: (i32, i32, i32), require_home: bool) -> bool {
+    let house = vbuild::house_blocks_at(rid, anchor.0, anchor.1, anchor.2);
+    let style = vbuild::BuildStyle::for_resident(
+        rid, voxel::biome_at_voxel(anchor.0, anchor.2), anchor.0, anchor.2,
+    );
+    let fp = vsettle::HouseFootprint {
+        min_x: anchor.0 + vbuild::BuildStyle::X_MIN,
+        max_x: anchor.0 + style.x_max,
+        min_z: anchor.2 + vbuild::BuildStyle::Z_MIN,
+        max_z: anchor.2 + style.z_max,
+    };
+
+    let world = hub().deltas.read().unwrap();
+    if require_home {
+        let has_door = house.iter().filter(|b| b.b == Block::DoorClosed as u8).any(|b| {
+            matches!(voxel::effective_block_at(&world, b.x, b.y, b.z), Block::DoorClosed | Block::DoorOpen)
+        });
+        let has_bed = house.iter().filter(|b| b.b == Block::Bed as u8).any(|b| {
+            voxel::effective_block_at(&world, b.x, b.y, b.z) == Block::Bed
+        });
+        if !has_door || !has_bed { return false; }
+    }
+    // 圍籬未完成就先不擺柴堆——柴堆是圈院後的下一刀，敘事順序接續「先圈院、才擺柴堆」。
+    let fence_all = vsettle::fence_cells(fp, vsettle::DoorSide::South, vbuild::surface_y, |_, _, _| false);
+    let fence_existing = fence_all.iter()
+        .filter(|c| voxel::effective_block_at(&world, c.x, c.y, c.z) == Block::Fence)
+        .count();
+    if !vsettle::fence_ring_present(fence_existing, fence_all.len()) { return false; }
+
+    let corners = vsettle::yard_clutter_cells(fp, vsettle::DoorSide::South);
+    let mut to_place: Vec<(i32, i32, i32)> = Vec::new();
+    for (x, z) in corners {
+        let y = vbuild::surface_y(x, z);
+        if voxel::effective_block_at(&world, x, y, z) != Block::Air { continue; }
+        if voxel::effective_block_at(&world, x, y + 1, z) != Block::Air { continue; }
+        if !vvillage::is_natural_ground(voxel::effective_block_at(&world, x, y - 1, z)) { continue; }
+        to_place.push((x, y, z));
+    }
+    drop(world);
+    if to_place.is_empty() { return false; }
+
+    let mut placed = Vec::new();
+    {
+        let mut world = hub().deltas.write().unwrap();
+        for (x, y, z) in &to_place {
+            for &(bx, by, bz) in &[(*x, *y, *z), (*x, *y + 1, *z)] {
+                voxel::set_block(&mut world, bx, by, bz, Block::Wood);
+                placed.push((bx, by, bz));
+            }
+        }
+    }
+    for (x, y, z) in &placed {
+        vbuild::append_world_block(*x, *y, *z, Block::Wood as u8);
+        broadcast_block(*x, *y, *z, Block::Wood);
     }
     !placed.is_empty()
 }
