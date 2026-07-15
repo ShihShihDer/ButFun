@@ -26565,6 +26565,10 @@ fn tick_residents(dt: f32) {
                     // 院子柴堆填充 v1：圈院之後緊接著擺柴堆（同一次完工事件，圍籬已在上一行
                     // 落地，place_yard_woodpiles 內部的 fence_ring_present 檢查此刻已成立）。
                     place_yard_woodpiles(&rid, plan_anchor, false);
+                    // 街廓連棟籬 v1：圈院之後若沿路同側緊鄰的鄰居也已完工，兩家補一段連接矮籬
+                    // （聚落景觀密度四方向最後一項）；鄰居還沒完工時本次不做事，靠低頻補放迴圈
+                    // 事後補上（見 repair_one_street_link）。
+                    place_street_link(&rid, plan_anchor, false);
                 }
             }
             // 完工 Feed（每個建物只發一次，不洗版）。合力蓋家 v1（ROADMAP 834）：有協力者
@@ -28658,6 +28662,7 @@ fn tick_home_relocation(dt: f32, say_updates: &mut Vec<(String, String)>) {
             && !colonist_house_repair(say_updates)
             && !repair_one_house_fence()
             && !repair_one_house_woodpile()
+            && !repair_one_street_link()
         {
             relocation_kickoff(say_updates);
         }
@@ -28860,6 +28865,113 @@ fn place_yard_woodpiles(rid: &str, anchor: (i32, i32, i32), require_home: bool) 
     for (x, y, z) in &placed {
         vbuild::append_world_block(*x, *y, *z, Block::Wood as u8);
         broadcast_block(*x, *y, *z, Block::Wood);
+    }
+    !placed.is_empty()
+}
+
+/// 兩戶的家錨點是否沿路同側緊鄰（恰好相距一個 [`vvillage::PLOT_STRIDE`]、同 x 或同 z）。
+/// 純幾何比對，不需要重算 `plot_layout`/`VillagePlan`——同一路側相鄰兩塊地塊的家錨點
+/// 恰好差一個固定間距，見 `vsettle::street_link_cells` 文件。
+fn street_neighbor_anchor(anchor: (i32, i32, i32), other: (i32, i32, i32)) -> bool {
+    let stride = vvillage::PLOT_STRIDE;
+    (anchor.2 == other.2 && (anchor.0 - other.0).abs() == stride)
+        || (anchor.0 == other.0 && (anchor.2 - other.2).abs() == stride)
+}
+
+/// 在既有居民名單中找 `rid` 沿路同側緊鄰的另一戶（若有）。O(現存居民數)，與既有補放
+/// 掃描同量級，成本可忽略。
+fn find_street_neighbor(rid: &str, anchor: (i32, i32, i32)) -> Option<(String, (i32, i32, i32))> {
+    let residents: Vec<String> = hub().residents.read().unwrap().iter().map(|r| r.id.clone()).collect();
+    let goals = hub().goals.read().unwrap();
+    for other_id in residents {
+        if other_id == rid { continue; }
+        let Some(other_anchor) = goals.house_of(&other_id) else { continue };
+        if street_neighbor_anchor(anchor, other_anchor) {
+            return Some((other_id, other_anchor));
+        }
+    }
+    None
+}
+
+/// 既有街廓連棟籬補放：每次低頻掃描至多處理一對，節奏與 `repair_one_house_fence`／
+/// `repair_one_house_woodpile` 共用（見 `tick_home_relocation`）。
+fn repair_one_street_link() -> bool {
+    let residents: Vec<String> = hub().residents.read().unwrap().iter().map(|r| r.id.clone()).collect();
+    for rid in residents {
+        let Some(anchor) = hub().goals.read().unwrap().house_of(&rid) else { continue };
+        if place_street_link(&rid, anchor, true) { return true; }
+    }
+    false
+}
+
+/// 替一對沿路同側緊鄰、都已圈院完工的家補一段連接矮籬（重用 `Block::Fence`）。
+/// `require_home` 同 `place_house_fence`：`false`（完工事件觸發）時不查門/床，只認圍籬是否
+/// 完工；`true`（低頻補放）時額外驗證兩戶現況仍是真的家。只由「家錨點座標較小」的一側觸發
+/// 落子，避免雙向各算一次（結果本就冪等，純粹省一趟鎖）。
+/// 鎖紀律：先以唯讀鎖取現況，寫鎖內只蒐集／設 delta，釋鎖後才 append+broadcast。
+fn place_street_link(rid_a: &str, anchor_a: (i32, i32, i32), require_home: bool) -> bool {
+    let Some((rid_b, anchor_b)) = find_street_neighbor(rid_a, anchor_a) else { return false };
+    if (anchor_b.0, anchor_b.2) < (anchor_a.0, anchor_a.2) { return false; }
+
+    let footprint_of = |rid: &str, anchor: (i32, i32, i32)| -> vsettle::HouseFootprint {
+        let style = vbuild::BuildStyle::for_resident(
+            rid, voxel::biome_at_voxel(anchor.0, anchor.2), anchor.0, anchor.2,
+        );
+        vsettle::HouseFootprint {
+            min_x: anchor.0 + vbuild::BuildStyle::X_MIN,
+            max_x: anchor.0 + style.x_max,
+            min_z: anchor.2 + vbuild::BuildStyle::Z_MIN,
+            max_z: anchor.2 + style.z_max,
+        }
+    };
+    let fp_a = footprint_of(rid_a, anchor_a);
+    let fp_b = footprint_of(&rid_b, anchor_b);
+
+    let world = hub().deltas.read().unwrap();
+    let ready = |rid: &str, anchor: (i32, i32, i32), fp: vsettle::HouseFootprint| -> bool {
+        if require_home {
+            let house = vbuild::house_blocks_at(rid, anchor.0, anchor.1, anchor.2);
+            let has_door = house.iter().filter(|b| b.b == Block::DoorClosed as u8).any(|b| {
+                matches!(voxel::effective_block_at(&world, b.x, b.y, b.z), Block::DoorClosed | Block::DoorOpen)
+            });
+            let has_bed = house.iter().filter(|b| b.b == Block::Bed as u8).any(|b| {
+                voxel::effective_block_at(&world, b.x, b.y, b.z) == Block::Bed
+            });
+            if !has_door || !has_bed { return false; }
+        }
+        let fence_all = vsettle::fence_cells(fp, vsettle::DoorSide::South, vbuild::surface_y, |_, _, _| false);
+        let existing = fence_all.iter()
+            .filter(|c| voxel::effective_block_at(&world, c.x, c.y, c.z) == Block::Fence)
+            .count();
+        vsettle::fence_ring_present(existing, fence_all.len())
+    };
+    if !ready(rid_a, anchor_a, fp_a) || !ready(&rid_b, anchor_b, fp_b) {
+        drop(world);
+        return false;
+    }
+
+    let cells = vsettle::street_link_cells((anchor_a.0, anchor_a.2), fp_a, (anchor_b.0, anchor_b.2), fp_b);
+    let mut to_place = Vec::new();
+    for (x, z) in cells {
+        let y = vbuild::surface_y(x, z);
+        if voxel::effective_block_at(&world, x, y, z) != Block::Air { continue; }
+        to_place.push((x, y, z));
+    }
+    drop(world);
+    if to_place.is_empty() { return false; }
+
+    let mut placed = Vec::new();
+    {
+        let mut world = hub().deltas.write().unwrap();
+        for (x, y, z) in &to_place {
+            if voxel::effective_block_at(&world, *x, *y, *z) != Block::Air { continue; }
+            voxel::set_block(&mut world, *x, *y, *z, Block::Fence);
+            placed.push((*x, *y, *z));
+        }
+    }
+    for (x, y, z) in &placed {
+        vbuild::append_world_block(*x, *y, *z, Block::Fence as u8);
+        broadcast_block(*x, *y, *z, Block::Fence);
     }
     !placed.is_empty()
 }
