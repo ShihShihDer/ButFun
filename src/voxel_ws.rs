@@ -116,6 +116,7 @@ use crate::voxel_wedding::{self as vwed, ResidentWeddings};
 use crate::voxel_family as vfamily;
 use crate::voxel_sibling as vsibling;
 use crate::voxel_coming_of_age as vcoa;
+use crate::voxel_childhood as vchild;
 use crate::voxel_elder as velder;
 use crate::voxel_first_invention as vfirstinv;
 use crate::voxel_lover_seek as vlover;
@@ -647,6 +648,11 @@ struct VoxelResident {
     /// 哼歌冷卻倒數（秒，ROADMAP 788）：一次哼歌後設 [`vhum::HUM_COOLDOWN_SECS`]，歸零前不再哼——
     /// 心情正好時偶爾滿溢一段旋律、不洗版。各居民初始錯開。純記憶體、重啟歸零。
     humming_cooldown: f32,
+    /// 孩子玩耍冷卻倒數（秒，孩子的模樣與玩耍時光 v1）：一次玩耍後設
+    /// [`vchild::PLAY_COOLDOWN_SECS`]，歸零前不再觸發——偶爾一拍才有童趣、不洗版。
+    /// 成年居民恆不觸發（`is_child` 判定為假），此欄位對他們純粹是不會被用到的閒置遞減。
+    /// 各居民初始錯開。純記憶體、重啟歸零。
+    child_play_cooldown: f32,
     /// 長程自主專案「回來添一塊」的節奏倒數（秒，居民長程自主專案 v1）：歸零＋閒著時回到自己的大夢
     /// 前添一塊、再設回工作間隔（各居民初始大幅錯開，讓不同人的夢在不同時間各自慢慢長）。純記憶體、
     /// 重啟歸零（進度本身走 `hub().life_projects` 持久化，重啟接續；這個只是節拍器，重啟大不了下次再添）。
@@ -1082,6 +1088,10 @@ struct ResidentView {
     /// 居民當前心情 emoji（None / 省略 = 跳過更新）。ROADMAP 676。
     #[serde(skip_serializing_if = "Option::is_none")]
     mood: Option<String>,
+    /// 是否為尚未行成年禮的孩子（孩子的模樣與玩耍時光 v1）——前端據此縮小體型渲染。
+    /// additive 欄位，舊前端安全忽略；預設省略序列化以節省頻寬時一律視為 `false`（成年）。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    is_child: bool,
 }
 
 /// 環境生物序列化視圖（廣播給客戶端渲染：位置/朝向/種類。野兔 v1 ROADMAP 847
@@ -2141,6 +2151,8 @@ fn build_resident(
             keepsake_recall_cooldown: 90.0 + i as f32 * 40.0,
             // 哼歌 v1（ROADMAP 788）：哼歌冷卻各自錯開，避免大家同時哼起來。
             humming_cooldown: 60.0 + i as f32 * 35.0,
+            // 孩子的模樣與玩耍時光 v1：玩耍冷卻各自錯開（成年居民恆不觸發，錯開只是保守慣例）。
+            child_play_cooldown: 50.0 + i as f32 * 30.0,
             // 居民長程自主專案 v1：首次「回來添一塊」的節拍大幅錯開，讓不同居民的大夢在不同時間
             // 各自慢慢長，玩家隨時路過都可能撞見某一位正在忙自己的事（FAST 環境變數下大幅縮短供測試）。
             life_project_timer: lifeproject_initial_timer(i),
@@ -3772,14 +3784,16 @@ fn players_snapshot_json() -> String {
     // 同時收集心情補助快照（ROADMAP 681），供後續 mood_map 計算套用。
     // 同時收集睡眠快照（ROADMAP 739）：睡著的居民名牌旁改顯示 💤，蓋過一般心情 emoji。
     let (resident_snaps, snapshot_mood_boosts, snapshot_asleep): (
-        Vec<(String, &'static str, f32, f32, f32, f32, String)>,
+        Vec<(String, &'static str, f32, f32, f32, f32, String, u64)>,
         HashMap<String, bool>,
         HashMap<String, bool>,
     ) = {
         let rs = hub().residents.read().unwrap();
         let snaps = rs
             .iter()
-            .map(|r| (r.id.clone(), r.name, r.body.x, r.body.y, r.body.z, r.yaw, r.say.clone()))
+            .map(|r| {
+                (r.id.clone(), r.name, r.body.x, r.body.y, r.body.z, r.yaw, r.say.clone(), r.birth_unix)
+            })
             .collect();
         let boosts: HashMap<String, bool> =
             rs.iter().map(|r| (r.id.clone(), r.mood_boost_secs > 0.0)).collect();
@@ -3852,12 +3866,15 @@ fn players_snapshot_json() -> String {
                 (rid, emoji)
         })
         .collect();
+    // 孩子的模樣與玩耍時光 v1：算 is_child 用，讀鎖外一次即可（比照 wildlife_now 慣例）。
+    let child_now = vfarm::now_secs();
     let residents: Vec<ResidentView> = {
         let des = hub().desires.read().unwrap();
         resident_snaps
             .into_iter()
-            .map(|(id, name, x, y, z, yaw, say)| {
+            .map(|(id, name, x, y, z, yaw, say, birth_unix)| {
                 let mood = mood_map.get(&id).cloned();
+                let is_child = vchild::is_child(birth_unix, child_now);
                 ResidentView {
                     desire: des.get_desire(&id).map(|d| d.desire.clone()),
                     mood,
@@ -3868,6 +3885,7 @@ fn players_snapshot_json() -> String {
                     z,
                     yaw,
                     say,
+                    is_child,
                 }
             })
             .collect()
@@ -19937,6 +19955,10 @@ fn tick_residents(dt: f32) {
             if r.humming_cooldown > 0.0 {
                 r.humming_cooldown -= dt;
             }
+            // 孩子的模樣與玩耍時光 v1：玩耍冷卻遞減（純記憶體、每 tick 一次）。
+            if r.child_play_cooldown > 0.0 {
+                r.child_play_cooldown -= dt;
+            }
             // 乙太營火 v1：取暖冷卻遞減（純記憶體、每 tick 一次）。
             if r.campfire_warm_cooldown > 0.0 {
                 r.campfire_warm_cooldown -= dt;
@@ -21700,6 +21722,29 @@ fn tick_residents(dt: f32) {
                 r.say_timer = SAY_SECS;
                 r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                 coming_of_age_events.push((r.id.clone(), r.name, r.birth_parent_name.clone()));
+            }
+
+            // 孩子的模樣與玩耍時光 v1：尚未行成年禮的孩子，say 為空、醒著、手邊沒正事時，
+            // 偶爾忍不住玩起純真的小把戲（頭頂泡泡以 ☆ 起頭，前端據此播放較活潑的跳動姿態）。
+            // 純氛圍：不寫記憶、不上動態牆、不觸發任何持久化——與 942 成年禮/987 晚年那類
+            // 一生一次的儀式性事件不同軸，是童年期間**持續**的日常樣貌，可反覆觸發。
+            // 鎖序：純讀/寫居民自身欄位（已持居民寫鎖），零鎖外 IO。
+            if r.say.is_empty()
+                && !r.asleep
+                && r.pilgrimage.is_none()
+                && r.expedition.is_none()
+                && r.child_play_cooldown <= 0.0
+                && vchild::should_play(
+                    vchild::is_child(r.birth_unix, now_unix),
+                    true,
+                    true,
+                    rand::random::<f32>(),
+                )
+            {
+                r.child_play_cooldown = vchild::PLAY_COOLDOWN_SECS;
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                r.say = vchild::play_line(pick);
+                r.say_timer = SAY_SECS;
             }
 
             // 居民晚年 v1（ROADMAP 987）：世代傳承誕生的居民活過整整 3 個乙太年，第二次、也是
