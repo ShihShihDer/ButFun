@@ -28,6 +28,16 @@
 //! 判定。紀念柱／村莊集體里程碑／村莊地圖端點三項留待後續刀（各自要接的資料流不同，一次
 //! 一塊）。
 //!
+//! **v3·殖民地擴建（自主提案切片，ROADMAP 1004）**：`colony_plots` 頭註自己誠實寫著
+//! 「v1 上限 8 戶——殖民地是小村，有界成長」——但 965 已補上安全網、996 也讓殖民地有了
+//! 自己的集體里程碑（2/4/8 三檔，8＝「住滿的殖民地」），風禾屯這種第二村撞頂之後就此
+//! 凍結：待遷居名單裡的居民永遠遷不進去、里程碑衝到頂也再無下文。本刀不改「殖民地是
+//! 小村」的療癒調性（不做無界成長），而是老實把「小村」的天花板抬高一階：
+//! [`colony_plots_outer`] 補一圈更外圍的 8 塊地（[`colony_plots`] 那圈住滿才會用到），
+//! 讓一座殖民地能繼續長到 16 戶——仍是有界成長，只是把界往外挪了一圈。
+//! **與既有系統區隔**：不動 [`colony_plots`] 本身（既有玩家的地塊座標零回歸），純粹在
+//! 它全滿時多一個備援環可認領；`voxel_colony_milestone.rs` 對應補兩檔更高門檻（12/16）。
+//!
 //! **純邏輯層鐵律**：本檔零 LLM、零鎖、零 async、零世界 IO——聚落歸屬/遷居名單/殖民地
 //! 小地塊佈局/句式池全是確定性純函式，方便單元測試釘死。真正動世界（認領、鋪路、搬家 tick）
 //! 全在 `voxel_ws.rs`，嚴守短鎖鐵律。
@@ -175,10 +185,15 @@ pub fn load_settlements() -> Vec<SettlementRecord> {
 /// 22 ≥ 2×[`Plot::HOMESTEAD_HALF`]（20），彼此的建物群不相撞。
 pub const COLONY_PLOT_DIST: i32 = 22;
 
-/// 殖民地中心周圍的小地塊環（8 塊：四正向＋四對角，全距中心 [`COLONY_PLOT_DIST`]）。
-/// 純函式、確定性（同中心同佈局，重啟一致）。v1 上限 8 戶——殖民地是小村，有界成長。
-pub fn colony_plots(cx: i32, cz: i32) -> Vec<Plot> {
-    let d = COLONY_PLOT_DIST;
+/// 殖民地擴建圈（v3，ROADMAP 1004）距中心的距離：取 [`COLONY_PLOT_DIST`] 的兩倍——
+/// 與內圈同款四正向＋四對角佈局在外圍多排一圈，內外兩圈任兩塊的 Chebyshev 距離最小值
+/// 仍 ≥ [`COLONY_PLOT_DIST`]（＞ 2×[`Plot::HOMESTEAD_HALF`]），彼此建物群不相撞
+/// （見 `colony_rings_never_overlap` 測試窮舉核對）。
+pub const COLONY_PLOT_DIST_2: i32 = COLONY_PLOT_DIST * 2;
+
+/// 以 `d` 為距中心距離，鋪出四正向＋四對角共 8 塊地——[`colony_plots`]／
+/// [`colony_plots_outer`] 共用的同一份幾何，只是半徑不同。
+fn plot_ring(cx: i32, cz: i32, d: i32) -> Vec<Plot> {
     vec![
         Plot { cx: cx + d, cz },
         Plot { cx: cx - d, cz },
@@ -189,6 +204,18 @@ pub fn colony_plots(cx: i32, cz: i32) -> Vec<Plot> {
         Plot { cx: cx - d, cz: cz + d },
         Plot { cx: cx - d, cz: cz - d },
     ]
+}
+
+/// 殖民地中心周圍的小地塊內圈（8 塊：四正向＋四對角，全距中心 [`COLONY_PLOT_DIST`]）。
+/// 純函式、確定性（同中心同佈局，重啟一致）。住滿後見 [`colony_plots_outer`]。
+pub fn colony_plots(cx: i32, cz: i32) -> Vec<Plot> {
+    plot_ring(cx, cz, COLONY_PLOT_DIST)
+}
+
+/// 殖民地擴建圈（v3，ROADMAP 1004）：內圈（[`colony_plots`]）全滿時的備援 8 塊地，
+/// 距中心 [`COLONY_PLOT_DIST_2`]（內圈的兩倍遠）。純函式、確定性、可窮舉測試。
+pub fn colony_plots_outer(cx: i32, cz: i32) -> Vec<Plot> {
+    plot_ring(cx, cz, COLONY_PLOT_DIST_2)
 }
 
 // ── 遷居名單（純函式、確定性）────────────────────────────────────────────────────────
@@ -405,7 +432,7 @@ mod tests {
     fn colony_plots_are_deterministic_and_apart() {
         let a = colony_plots(484, 173);
         assert_eq!(a, colony_plots(484, 173), "同中心同佈局（重啟一致）");
-        assert_eq!(a.len(), 8, "v1 每座殖民地 8 塊小地塊");
+        assert_eq!(a.len(), 8, "內圈每座殖民地 8 塊小地塊");
         // 彼此不重疊（用主村同一套「家園佔地」重疊判定）。
         for i in 0..a.len() {
             for j in (i + 1)..a.len() {
@@ -418,6 +445,35 @@ mod tests {
             assert_eq!(cheb, COLONY_PLOT_DIST);
             assert!(cheb - Plot::HOMESTEAD_HALF > crate::voxel_colony::NUCLEUS_PLAZA_RADIUS,
                 "家園佔地不得侵入奠基殘核廣場");
+        }
+    }
+
+    #[test]
+    fn colony_plots_outer_are_deterministic_and_farther() {
+        let outer = colony_plots_outer(484, 173);
+        assert_eq!(outer, colony_plots_outer(484, 173), "同中心同佈局（重啟一致）");
+        assert_eq!(outer.len(), 8, "擴建圈也是 8 塊小地塊（合計 16 戶上限）");
+        for p in &outer {
+            let cheb = (p.cx - 484).abs().max((p.cz - 173).abs());
+            assert_eq!(cheb, COLONY_PLOT_DIST_2, "擴建圈距中心恰為內圈的兩倍遠");
+        }
+        // 擴建圈內部彼此也不重疊。
+        for i in 0..outer.len() {
+            for j in (i + 1)..outer.len() {
+                assert!(!outer[i].overlaps(&outer[j]), "擴建圈小地塊 {i} 與 {j} 重疊");
+            }
+        }
+    }
+
+    #[test]
+    fn colony_rings_never_overlap() {
+        // 內圈住滿才會用到擴建圈——兩圈的地塊必須彼此不相撞，建物群才不會互相侵入。
+        let inner = colony_plots(0, 0);
+        let outer = colony_plots_outer(0, 0);
+        for p in &inner {
+            for q in &outer {
+                assert!(!p.overlaps(q), "內圈 {p:?} 與擴建圈 {q:?} 重疊");
+            }
         }
     }
 

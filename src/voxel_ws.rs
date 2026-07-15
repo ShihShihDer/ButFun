@@ -28280,8 +28280,9 @@ fn claim_or_reuse_plot(rid: &str, hx: i32, hz: i32) -> (i32, i32) {
 }
 
 /// 殖民地真居住 v1：替一位已遷居殖民地的居民，在她那座殖民地中心周圍認領一塊小地塊
-/// （[`vsettle::colony_plots`] 的 8 塊環），並從殖民地中心鋪一小段路連過去（只加不拆）。
-/// 認領成功回地塊中心；殖民地全滿／名冊查無 → None（呼叫端保守退回家域中心）。
+/// （[`vsettle::colony_plots`] 內圈 8 塊環；住滿後見 [`vsettle::colony_plots_outer`]
+/// 擴建圈，v3 ROADMAP 1004），並從殖民地中心鋪一小段路連過去（只加不拆）。
+/// 認領成功回地塊中心；殖民地全滿（16 戶）／名冊查無 → None（呼叫端保守退回家域中心）。
 /// 鎖紀律：colonies(讀) → village(寫) 各短取即釋、循序不巢狀；鋪路/落地/Feed 全在鎖外。
 fn claim_colony_plot(rid: &str, sid: u64, hx: i32, hz: i32) -> Option<(i32, i32)> {
     let cseq = vsettle::settlement_colony_seq(sid)?;
@@ -28293,7 +28294,8 @@ fn claim_colony_plot(rid: &str, sid: u64, hx: i32, hz: i32) -> Option<(i32, i32)
             .find(|c| c.seq == cseq)
             .map(|c| (c.cx, c.cz, c.name.clone()))?
     }; // colonies 讀鎖釋放
-    let plots = vsettle::colony_plots(ccx, ccz); // 純函式、鎖外算
+    // 內圈算鎖外，先試；住滿才試擴建圈——保證新居民優先填滿離中心近的內圈。
+    let inner = vsettle::colony_plots(ccx, ccz); // 純函式、鎖外算
     // village 寫鎖：挑最近空地塊 + 認領（double-check 併發安全，比照主村路徑）。
     // 認領會自動釋放她在主村的舊地塊（PlotRegistry::claim 內建換塊語意）——主村地塊讓給後人。
     let (claim, plot) = {
@@ -28301,9 +28303,13 @@ fn claim_colony_plot(rid: &str, sid: u64, hx: i32, hz: i32) -> Option<(i32, i32)
         if let Some((cx, cz)) = village.claim_of(rid) {
             return Some((cx, cz)); // 併發下別的 tick 已幫這居民認領
         }
-        match village.nearest_free_plot(&plots, hx, hz) {
+        let picked = village.nearest_free_plot(&inner, hx, hz).or_else(|| {
+            let outer = vsettle::colony_plots_outer(ccx, ccz); // 內圈全滿才算擴建圈
+            village.nearest_free_plot(&outer, hx, hz)
+        });
+        match picked {
             Some(p) => (Some(village.claim(rid, p.cx, p.cz)), Some(p)),
-            None => (None, None), // 殖民地全滿（8 戶）→ 呼叫端保守退回
+            None => (None, None), // 殖民地全滿（16 戶）→ 呼叫端保守退回
         }
     }; // village 寫鎖釋放
     let (rec, p) = (claim?, plot?);
