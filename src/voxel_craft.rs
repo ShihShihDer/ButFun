@@ -111,6 +111,22 @@ pub const HUNTER_CHARM_ID: u8 = 120;
 /// 秤砣墜（ROADMAP 1003）——物品 ID 121；商人的獨門配方，秤貨用的鐵砣鑄進一捧沙模，商旅隨身帶著。
 pub const MERCHANT_CHARM_ID: u8 = 121;
 
+// ── 木筏物品 ID（純物品，不可放置於世界，木筏 v1，自主提案切片）────────────────────
+/// 木筏（ROADMAP 1017）——物品 ID 123；世界至今唯一能不涉水過河的方式是一座固定渡口的
+/// 木橋（`BRIDGE_Z=230`），其餘河段只能靠會扣血的游泳硬渡。木筏是世界第一件**水上**代步
+/// 工具：背包 2×2 合成後，泡進水裡即可切換乘筏／下筏，水面滑行比游泳快得多，且乘筏時
+/// 不會被拖下水面以下（下潛意圖被乘筏狀態遮罩，見前端 `BOATING_SPEED_MULT`）。純物品、
+/// 不可放置。122（圍籬 Block::Fence）是目前最大已用 id，123 是首個空號。
+pub const RAFT_ID: u8 = 123;
+
+/// 是否允許把「乘筏」設為 `true`（純判定，voxel_ws 的 SetBoating handler 用）。
+/// 唯一條件：真實背包持有至少 1 艘木筏——伺服器必須自己查背包算出 `has_item`，不能信任
+/// 客戶端自報「我有木筏」（比照 `can_start_riding`／`can_start_performing` 同款持有驗證
+/// 手法）。下筏（boating=false）不經過這條判定，呼叫端直接放行。純函式、確定性、可測。
+pub fn can_start_boating(has_item: bool) -> bool {
+    has_item
+}
+
 /// 是否允許把 `performing` 設為 `true`（純判定，voxel_ws 的 SetPerforming handler 用）。
 /// 唯一條件：真實背包持有至少 1 把街頭手風琴——伺服器必須自己查背包算出 `has_item`，
 /// 不能信任客戶端自報「我有手風琴」（比照 `can_start_riding` 同款持有驗證手法）。
@@ -481,6 +497,18 @@ pub const RECIPES: &[Recipe] = &[
         name_zh: "掛旗",
         inputs: &[(5, 1), (6, 2)], // 1 木頭 + 2 葉片 → 1 掛旗
         output_block: crate::voxel_furniture::BANNER_ID, // 105
+        output_count: 1,
+    },
+    // ── 木筏 v1（ROADMAP 1017，自主提案切片）：世界第一件水上代步工具，背包 2×2 即可 ──────
+    // 不比照獨輪車走工作台大格——獨輪車靠鐵＋乙太礦驅動的蒸汽機構，木筏只是紮實綁起的
+    // 木板，材質單純、便宜好上手，讓「渡河不必再繞去唯一那座固定橋」一開始就伸手可得。
+    // 多重集 {8:6} 為獨特：工作台唯一同用純木板的箱子是 {8:8}，梯子 {8:3}、木門/工作台
+    // 皆 {8:4}，2×2 全表亦無「只吃 6 木板」的既有配方，見下方測試逐一核對。
+    Recipe {
+        id: "raft",
+        name_zh: "木筏",
+        inputs: &[(8, 6)], // 6 木板 → 1 木筏
+        output_block: RAFT_ID,
         output_count: 1,
     },
 ];
@@ -1208,7 +1236,8 @@ mod tests {
                 || r.output_block == SWORD_WOOD_ID   // 木劍（純物品 id=99，驅影之劍 v1，ROADMAP 887 自主提案切片）
                 || r.output_block == SWORD_STONE_ID  // 石劍（純物品 id=100，驅影之劍 v1）
                 || (r.output_block >= crate::voxel_furniture::CARPET_ID
-                    && r.output_block <= crate::voxel_furniture::BANNER_ID); // 四樣裝飾傢俱（可放置方塊 id=102~105，ROADMAP 931 自主提案切片）
+                    && r.output_block <= crate::voxel_furniture::BANNER_ID) // 四樣裝飾傢俱（可放置方塊 id=102~105，ROADMAP 931 自主提案切片）
+                || r.output_block == RAFT_ID; // 木筏（純物品 id=123，木筏 v1，ROADMAP 1017 自主提案切片）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
@@ -2156,5 +2185,64 @@ mod tests {
         // 伺服器權威判定：持有才准開演，不持有拒絕（不信客戶端自報）。
         assert!(can_start_performing(true), "真持有街頭手風琴應允許開演");
         assert!(!can_start_performing(false), "沒有街頭手風琴不該允許開演");
+    }
+
+    // ── 木筏 v1（ROADMAP 1017，自主提案切片）───────────────────────────────────────
+
+    #[test]
+    fn raft_id_is_first_free_slot_after_fence() {
+        // 122（圍籬 Block::Fence）是目前最大已用 id，123 應是首個空號。
+        assert_eq!(RAFT_ID, 123);
+    }
+
+    #[test]
+    fn raft_recipe_exists_only_in_bag_table() {
+        // 木筏只需 6 木板（單一材料），刻意留在背包 2×2，不需工作台。
+        assert!(find_workbench_recipe("raft").is_none(), "木筏應只在背包 2×2 配方");
+        let r = find_recipe("raft").unwrap();
+        assert_eq!(r.output_block, RAFT_ID);
+        assert_eq!(r.output_count, 1);
+        assert_eq!(r.inputs, &[(8, 6)], "應為 6 木板");
+    }
+
+    #[test]
+    fn raft_recipe_findable_via_find_any_recipe() {
+        // WS Craft handler 統一走 find_any_recipe，確保新配方也能被這條路徑找到。
+        let r = find_any_recipe("raft").unwrap();
+        assert_eq!(r.output_block, RAFT_ID);
+    }
+
+    #[test]
+    fn raft_recipe_has_unique_input_multiset() {
+        // {8:6} 不應與任何其他背包 2×2 配方的多重集相撞。
+        let mut mine = find_recipe("raft").unwrap().inputs.to_vec();
+        mine.sort();
+        for r in RECIPES {
+            if r.id == "raft" {
+                continue;
+            }
+            let mut other = r.inputs.to_vec();
+            other.sort();
+            assert_ne!(mine, other, "木筏與背包配方「{}」多重集相撞", r.id);
+        }
+    }
+
+    #[test]
+    fn raft_craft_requires_full_material_set() {
+        let r = find_recipe("raft").unwrap();
+        let mut short = InvStore::default();
+        short.give("旅人", 8, 5);
+        assert!(!can_craft(r, &short, "旅人"), "5 木板不足以合成木筏（需 6）");
+
+        let mut ok = InvStore::default();
+        ok.give("旅人", 8, 6);
+        assert!(can_craft(r, &ok, "旅人"), "湊齊 6 木板應可合成木筏");
+    }
+
+    #[test]
+    fn can_start_boating_requires_real_item_ownership() {
+        // 伺服器權威判定：持有才准乘筏，不持有拒絕（不信客戶端自報）。
+        assert!(can_start_boating(true), "真持有木筏應允許乘筏");
+        assert!(!can_start_boating(false), "沒有木筏不該允許乘筏");
     }
 }

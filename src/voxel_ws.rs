@@ -289,6 +289,12 @@ struct VoxelPlayer {
     /// 誰正在演奏（前端據此飄浮音符特效）。
     #[serde(default)]
     performing: bool,
+    /// 木筏 v1（自主提案切片，ROADMAP 1017）：此刻是否正乘筏。**additive 欄位**——
+    /// 舊前端解析 JSON 時本就會忽略陌生欄位，零協議破壞；預設 `false`。伺服器權威：只有
+    /// `SetBoating{boating:true}` 通過真持有背包驗證才會翻成 `true`（見
+    /// [`ClientMsg::SetBoating`]），下筏永遠放行。廣播給所有人，讓其他玩家也看得到誰正乘筏。
+    #[serde(default)]
+    boating: bool,
     /// 上一次 `tick_pathwear` 取樣時這位玩家所在的地面格 (x,z)（居民踏出來的小徑 v3：
     /// 玩家的腳步也算數）。純伺服器內部節拍狀態，不廣播（`#[serde(skip)]`）、不影響協議。
     #[serde(skip)]
@@ -4162,6 +4168,14 @@ enum ClientMsg {
     /// 讓其他人也看得到誰正在演奏；開演那一刻同時掃描附近閒著的居民，觸發駐足聆聽反應。
     #[serde(rename = "set_performing")]
     SetPerforming { performing: bool },
+    /// 木筏 v1（自主提案切片，ROADMAP 1017）：切換乘筏／下筏。`boating=true` 時伺服器
+    /// **必查真實背包持有** `voxel_craft::RAFT_ID` ≥ 1（比照 `SetRiding`／`SetPerforming`
+    /// 的持有驗證手法）才放行，不信客戶端自報；`boating=false`（下筏）永遠放行，不需驗證。
+    /// 成功後翻轉 `VoxelPlayer::boating` 並隨 `players` 廣播，讓其他人也看得到誰正乘筏；
+    /// 前端只在身體泡進水裡時才套用乘筏加成（陸地上乘筏無效，比照騎乘/游泳互斥手法），
+    /// 水平移動速度乘上固定倍率、且乘筏時下潛意圖被遮罩（筏身撐著不會被拖下水面）。
+    #[serde(rename = "set_boating")]
+    SetBoating { boating: bool },
     /// 居民交易 v1：向指定居民請求以物易物（ROADMAP 670）。
     /// 伺服器回 `trade_offer`，玩家再傳 TradeAccept 接受；提案 30 秒後自動過期。
     #[serde(rename = "trade_request")]
@@ -5212,6 +5226,7 @@ async fn handle_socket(
                 held: None,
                 riding: false,
                 performing: false,
+                boating: false,
                 last_step_cell: None,
             },
         );
@@ -9041,6 +9056,39 @@ async fn handle_socket(
                         }
                     }
                 }
+            }
+            // ── 木筏 v1（自主提案切片，ROADMAP 1017）：切換乘筏／下筏 ───────────────────
+            Ok(ClientMsg::SetBoating { boating }) => {
+                // 濫用防護：boating=true 必查真實背包持有木筏(123) ≥1，比照 SetRiding／
+                // SetPerforming 的持有驗證手法（不信客戶端自報）；boating=false（下筏）
+                // 永遠放行，不需驗證。零自由文字、零 LLM、零對外端點。
+                let allow = if boating {
+                    let has_item =
+                        hub().inventory.read().unwrap().count(&name, vcraft::RAFT_ID) >= 1;
+                    vcraft::can_start_boating(has_item)
+                } else {
+                    true
+                };
+                if !allow {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({
+                            "t": "boating_fail",
+                            "reason": "沒有木筏——先合成一艘吧（6 木板，背包 2×2 即可）"
+                        }).to_string(),
+                    ));
+                    continue;
+                }
+                {
+                    let mut players = hub().players.write().unwrap();
+                    if let Some(p) = players.get_mut(&my_id) {
+                        p.boating = boating;
+                    }
+                } // players 寫鎖釋放
+                // 廣播讓所有在場玩家立即看到（含自己），前端據此套用水上移動手感。
+                broadcast_players();
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "boating_ok", "boating": boating }).to_string(),
+                ));
             }
             // ── 集會鐘 v1（自主提案切片）：敲響一座鐘，把附近閒著的居民召到身邊 ─────────
             Ok(ClientMsg::RingBell { x, y, z }) => {
@@ -31349,6 +31397,7 @@ mod tests {
             held: None,
             riding: false,
             performing: false,
+            boating: false,
             last_step_cell: None,
         }
     }

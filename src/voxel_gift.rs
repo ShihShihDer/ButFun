@@ -126,6 +126,8 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         crate::voxel_craft::STEAM_UNICYCLE_ID => "蒸汽獨輪車",
         // 街頭手風琴 v1（ROADMAP 977，自主提案切片）：純物品，可餽贈居民。
         crate::voxel_craft::STREET_ACCORDION_ID => "街頭手風琴",
+        // 木筏 v1（ROADMAP 1017，自主提案切片）：純物品，同一漏洞順手補上，避免餽贈顯示 fallback。
+        crate::voxel_craft::RAFT_ID => "木筏",
         _ => "物品",
     }
 }
@@ -611,6 +613,12 @@ mod tests {
         assert_eq!(item_name_zh(114), "遺跡核心");
         assert_eq!(item_name_zh(crate::voxel_craft::STEAM_UNICYCLE_ID), "蒸汽獨輪車");
         assert_eq!(item_name_zh(crate::voxel_craft::STREET_ACCORDION_ID), "街頭手風琴");
+    }
+
+    #[test]
+    fn item_name_raft_registered() {
+        // 木筏 v1（ROADMAP 1017，自主提案切片）：純物品，不 fallback 成「物品」。
+        assert_eq!(item_name_zh(crate::voxel_craft::RAFT_ID), "木筏");
     }
 
     #[test]
