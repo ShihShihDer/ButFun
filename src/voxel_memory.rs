@@ -12,6 +12,15 @@
 //! 純函式 [`classify_importance`]：寒暄/瑣事 → 只進 A 層；名字宣告/目標/偏好/承諾 → 提煉進 B 層。
 //! 零 LLM、確定性、可測；LLM 提煉路徑留擴充點，不燒 token。
 //!
+//! ## importance 加權（PLAN_ETHERVOX 記憶 v2「相關+近期+重要」明列項目）
+//! 重要性不只用來決定「進不進 B 層」，還貫穿兩處下游行為：
+//! - **[`VoxelMemory::relevant_memories`] 排序**：先過純文字相似度門檻（安全閘不變），
+//!   再對曾被判為 Persistent 的舊記憶加權——她「想起」的舊事更常是真正重要的那件，
+//!   而非隨口一句瑣事。
+//! - **[`merge_into_semantic`] 淘汰**：B 層滿載被迫騰位置時，優先犧牲重要性最低的類別
+//!   （偏好 < 目標 < 承諾 < 身份），而非單純比新舊——身份/承諾因此更禁得起長期記憶洪流
+//!   的擠壓，落實「你的互動有後果」：答應過的事不會被悄悄擠掉遺忘。
+//!
 //! 本模組**只放與連線/鎖/LLM 無關的確定性純邏輯**；真正的 tick 驅動、廣播、無鎖 async 思考、
 //! 鎖的取放都在 `voxel_ws.rs`，嚴守 prod 死鎖鐵律：
 //! 短鎖快照 → drop → spawn → 下一步套用，**記憶讀寫絕不在持鎖中 await**。
@@ -38,6 +47,12 @@ pub const RELEVANT_RECALL_LIMIT: usize = 2;
 /// 「被勾起」的字元 bigram Jaccard 相似度門檻——低於這個分數視為雜訊、不觸發
 /// （寧可少想起、也別答非所問地硬掰「這讓我想起…」）。
 pub const RELEVANCE_MIN_SCORE: f32 = 0.15;
+/// 記憶 v2「importance 加權檢索」——被 [`classify_importance`] 判為 Persistent
+/// （身份/目標/偏好/承諾）的舊記憶，在相關性排序時額外加這麼多分。
+/// **先過門檻（純文字相似度）、後加權排序**：不足以讓不相關的重要記憶硬闖過門檻
+/// （見 `RELEVANCE_MIN_SCORE` 的「寧可少想起」鐵律），只在幾筆都夠像時，
+/// 讓「真正重要的那件事」比「隨口一句瑣事」優先被想起。
+pub const IMPORTANCE_RECALL_BOOST: f32 = 0.12;
 /// 一筆 episodic 摘要的字元上限：規則擷取後截斷。
 pub const SUMMARY_MAX_CHARS: usize = 80;
 /// 淡忘印象最多保留幾個主題標籤（記憶 v2「整併/壓縮」最小可行版）。
@@ -281,7 +296,16 @@ impl VoxelMemory {
                 let body = extract_inner_quote(&e.summary).unwrap_or(&e.summary);
                 (bigram_jaccard(&query_grams, &char_bigrams(body)), e.clone())
             })
+            // 先用純文字相似度過門檻——importance 加權只排序，不繞過「寧可少想起」的安全閘。
             .filter(|(score, _)| *score >= RELEVANCE_MIN_SCORE)
+            .map(|(score, e)| {
+                let boosted = if is_importance_recalled(&e.summary) {
+                    (score + IMPORTANCE_RECALL_BOOST).min(1.0)
+                } else {
+                    score
+                };
+                (boosted, e)
+            })
             .collect();
         scored.sort_by(|a, b| {
             b.0.partial_cmp(&a.0)
@@ -479,6 +503,13 @@ fn try_extract_name_after<'a>(text: &'a str, kw: &str) -> Option<&'a str> {
     if name.is_empty() { None } else { Some(name) }
 }
 
+/// 這筆 episodic 記憶的內容是否曾被 [`classify_importance`] 判為 Persistent（身份/目標/
+/// 偏好/承諾）——供 [`VoxelMemory::relevant_memories`] 的 importance 加權排序使用。
+/// 零額外狀態、直接重跑同一套規則判定，確定性、可測。
+fn is_importance_recalled(summary: &str) -> bool {
+    matches!(classify_importance(summary), Importance::Persistent(_))
+}
+
 /// 重要性判定：純規則、零 LLM。回傳 [`Importance`]。
 ///
 /// 判定順序：身份 > 目標 > 偏好 > 承諾 > 瑣事。
@@ -538,12 +569,29 @@ pub fn classify_importance(summary: &str) -> Importance {
     Importance::Ephemeral
 }
 
+/// 精華事實類別的「重要性優先序」——數字越大越不該被淘汰。供 [`merge_into_semantic`]
+/// 在找不到同類別可替換、被迫騰位置時，優先犧牲最不重要的那條，而非隨機/純按新舊。
+/// Identity 最高：她記得你是誰，本就該全域唯一、幾乎不該經此路徑被擠掉（正常走上面
+/// 「全局唯一取代」分支）；Promise 次之（答應過的事被悄悄遺忘＝背信，違反「你的互動有
+/// 後果」的世界信念）；Goal、Preference 依序遞減——聊過的喜好最禁得起被新的重要事實擠掉。
+fn category_priority(category: &FactCategory) -> u8 {
+    match category {
+        FactCategory::Identity   => 3,
+        FactCategory::Promise    => 2,
+        FactCategory::Goal       => 1,
+        FactCategory::Preference => 0,
+    }
+}
+
 /// 把一條新精華事實合併進 store（最多 [`SEMANTIC_CAP`] 條）。
 ///
 /// 合併規則（純函式、確定性、可測）：
 /// - **Identity**：全局唯一，永遠取代舊的（名字只有一個）。
 /// - **其他類別**：同類別且內容前 20 字相符 → 就地更新（避免重複堆疊）；否則新增。
-/// - 已達 cap：優先移除同類別最舊，若無同類別則移除整體最舊（index 0）。
+/// - 已達 cap 且無同類別可替換：淘汰 store 裡「重要性最低」的那一條（見 [`category_priority`]），
+///   同分則淘汰最舊；**絕不淘汰 Identity**——cap ≥ 2 時，滿載的 store 必定還有其他類別可犧牲，
+///   身份與承諾因此比偏好更禁得起長期記憶洪流的擠壓，落實模組頭註「身份/目標/偏好/承諾
+///   在此永久留存」的承諾。
 pub fn merge_into_semantic(store: &mut Vec<SemanticFact>, new_fact: SemanticFact) {
     // Identity：全局唯一
     if new_fact.category == FactCategory::Identity {
@@ -565,10 +613,22 @@ pub fn merge_into_semantic(store: &mut Vec<SemanticFact>, new_fact: SemanticFact
 
     // 新增（若已達 cap 先騰出位置）
     if store.len() >= SEMANTIC_CAP {
-        if let Some(idx) = store.iter().position(|f| f.category == new_fact.category) {
+        let idx = store
+            .iter()
+            .position(|f| f.category == new_fact.category)
+            .or_else(|| {
+                // 找不到同類別可替換 → 犧牲全店重要性最低者（同分取最舊，即索引最小者）。
+                store
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.category != FactCategory::Identity)
+                    .min_by_key(|(_, f)| category_priority(&f.category))
+                    .map(|(i, _)| i)
+            });
+        if let Some(idx) = idx {
             store.remove(idx);
-        } else {
-            store.remove(0); // 移除最舊的整體記錄
+        } else if !store.is_empty() {
+            store.remove(0); // 理論上不可達：cap ≥ 2 時滿店不可能全是 Identity。
         }
     }
     store.push(new_fact);
@@ -975,6 +1035,38 @@ mod tests {
         );
         assert_eq!(hits.len(), 1, "剝殼後應撈回這筆帶固定前綴格式的真實記憶");
         assert!(hits[0].summary.contains("流星"));
+    }
+
+    // ── relevant_memories：importance 加權排序（記憶 v2 PLAN_ETHERVOX #18 明列項目）───
+
+    #[test]
+    fn relevant_memories_ranks_important_recollection_above_higher_raw_similarity_trivia() {
+        let mut m = VoxelMemory::new();
+        let query = "你之前是不是提過乙太鑰匙的事";
+        // memA：文字相似度較高（0.25）但只是隨口瑣事，不含身份/目標/偏好/承諾關鍵字。
+        m.add_memory("vox_res_0", "阿星", "乙太鑰匙的事我記得一點點喔");
+        // memB：文字相似度較低（0.238）但含「答應」，會被 classify_importance 判為 Promise。
+        m.add_memory("vox_res_0", "阿星", "乙太鑰匙的事情我答應你會辦到");
+
+        let hits = m.relevant_memories("vox_res_0", "阿星", query, &[], 2);
+        assert_eq!(hits.len(), 2, "兩筆都應超過相似度門檻，一起入選");
+        assert!(
+            hits[0].summary.contains("答應"),
+            "重要性加權後，承諾應排在單純文字相似度較高的瑣事之前：{:?}",
+            hits.iter().map(|e| &e.summary).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn relevant_memories_importance_boost_cannot_bypass_similarity_threshold() {
+        // 重要性加權只影響「已過門檻者」的排序，絕不能讓文字上八竿子打不著的重要記憶
+        // 硬闖過門檻（「寧可少想起、也別答非所問」鐵律）。
+        let mut m = VoxelMemory::new();
+        m.add_memory("vox_res_0", "阿星", "我答應你我最喜歡的顏色是藍色");
+        let hits = m.relevant_memories(
+            "vox_res_0", "阿星", "今天的晚餐吃了什麼呢", &[], RELEVANT_RECALL_LIMIT,
+        );
+        assert!(hits.is_empty(), "文字完全不相關，即使含重要性關鍵字也不該被硬拉出來");
     }
 
     #[test]
@@ -1389,6 +1481,81 @@ mod tests {
             });
         }
         assert!(store.len() <= SEMANTIC_CAP, "精華層不應超過 SEMANTIC_CAP：{}", store.len());
+    }
+
+    // ── merge_into_semantic：重要性加權淘汰（永不背信/永不忘記你是誰）────────
+
+    #[test]
+    fn eviction_never_removes_identity_even_when_forced() {
+        let mut store = Vec::new();
+        merge_into_semantic(&mut store, SemanticFact {
+            category: FactCategory::Identity, content: "我叫濕濕的".to_string(),
+        });
+        // 塞滿剩下 SEMANTIC_CAP - 1 格全是偏好（各自內容前 20 字不同，不會就地合併）。
+        for i in 0..(SEMANTIC_CAP - 1) {
+            merge_into_semantic(&mut store, SemanticFact {
+                category: FactCategory::Preference,
+                content: format!("偏好編號{i:04}——不會就地合併的獨立內容"),
+            });
+        }
+        assert_eq!(store.len(), SEMANTIC_CAP);
+        // 逼淘汰：塞進一條全新類別（Goal，店裡目前沒有），無同類別可替換 → 必須犧牲別人。
+        merge_into_semantic(&mut store, SemanticFact {
+            category: FactCategory::Goal, content: "我想蓋一座燈塔".to_string(),
+        });
+        assert_eq!(store.len(), SEMANTIC_CAP, "淘汰後仍守 cap");
+        let identity = store.iter().find(|f| f.category == FactCategory::Identity);
+        assert!(identity.is_some(), "身份永遠不該被這條路徑擠掉");
+        assert_eq!(identity.unwrap().content, "我叫濕濕的");
+        let goal = store.iter().find(|f| f.category == FactCategory::Goal);
+        assert!(goal.is_some(), "新目標應成功擠進去");
+    }
+
+    #[test]
+    fn eviction_sacrifices_lowest_priority_category_not_just_oldest() {
+        // 店裡沒有 Promise：1 個 Identity + 5 個 Goal + 6 個 Preference = 12（cap）。
+        let mut store = Vec::new();
+        merge_into_semantic(&mut store, SemanticFact {
+            category: FactCategory::Identity, content: "我叫阿偉".to_string(),
+        });
+        for i in 0..5 {
+            merge_into_semantic(&mut store, SemanticFact {
+                category: FactCategory::Goal,
+                content: format!("目標編號{i:04}——各自獨立不合併"),
+            });
+        }
+        for i in 0..6 {
+            merge_into_semantic(&mut store, SemanticFact {
+                category: FactCategory::Preference,
+                content: format!("偏好編號{i:04}——各自獨立不合併"),
+            });
+        }
+        assert_eq!(store.len(), SEMANTIC_CAP);
+
+        // 逼淘汰：新增一條全新類別 Promise（店裡目前沒有 Promise 可同類別替換）。
+        // 重要性最低的是 Preference（優先序 0），比 Goal（優先序 1）更該被犧牲——
+        // 即使最舊的一筆其實是 Identity 或最早的 Goal，也不該被誤選。
+        merge_into_semantic(&mut store, SemanticFact {
+            category: FactCategory::Promise, content: "答應你一定會回來".to_string(),
+        });
+
+        assert_eq!(store.len(), SEMANTIC_CAP, "淘汰後仍守 cap");
+        assert_eq!(
+            store.iter().filter(|f| f.category == FactCategory::Preference).count(), 5,
+            "應犧牲一條重要性最低的偏好，而非目標"
+        );
+        assert_eq!(
+            store.iter().filter(|f| f.category == FactCategory::Goal).count(), 5,
+            "目標優先序高於偏好，不該被這次淘汰波及"
+        );
+        assert!(
+            store.iter().any(|f| f.category == FactCategory::Identity),
+            "身份仍完整保留"
+        );
+        assert!(
+            store.iter().any(|f| f.category == FactCategory::Promise),
+            "新承諾應成功擠進去"
+        );
     }
 
     // ════════════════════════════════════════════════════════════════════════
