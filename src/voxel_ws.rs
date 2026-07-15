@@ -27687,12 +27687,13 @@ fn advance_invent_run(
                     }
                 }
                 let Some((gx, gy, gz)) = found else {
-                    // 播種自給（第九刀）：附近／遠方都撞不到熟作物，若她手邊已攢有對應種子
-                    // （見採集分潤，只有胡蘿蔔／馬鈴薯支援）、附近又找得到可翻土的地表，就地
-                    // 翻土播種——這次嘗試仍誠實算失敗（種子還沒長熟，這輪領不到材料），但
-                    // 世界因此多了一畦她自己種下的田，下次冷卻後再試也許就已經熟了。
-                    if let (Some(seed_id), Some(till_block), Some(crop_kind)) =
-                        (crop.seed_id(), crop.tillable_block(), crop.crop_kind())
+                    // 播種自給（第九刀＋第十一刀）：附近／遠方都撞不到熟作物，若她手邊已攢有
+                    // 對應種子（胡蘿蔔／馬鈴薯來自採集分潤；莓果第十一刀改用收成到的生莓果
+                    // 自己當種子，見 `CropResource::seed_id`）、附近又找得到可翻土的地表，
+                    // 就地翻土播種——這次嘗試仍誠實算失敗（種子還沒長熟，這輪領不到材料），
+                    // 但世界因此多了一畦／一叢她自己種下的，下次冷卻後再試也許就已經熟了。
+                    if let (Some(seed_id), Some(till_block)) =
+                        (crop.seed_id(), crop.tillable_block())
                     {
                         let has_seed = {
                             let inv = hub().res_inv.read().unwrap();
@@ -27720,12 +27721,20 @@ fn advance_invent_run(
                                     } // deltas 寫鎖釋放
                                     broadcast_block(tx, ty, tz, seeded);
                                     vbuild::append_world_block(tx, ty, tz, seeded as u8);
-                                    let farm_e = {
-                                        hub().farm.write().unwrap().plant(
-                                            tx, ty, tz, vfarm::now_secs(), crop_kind,
-                                        )
-                                    }; // farm 寫鎖釋放
-                                    vfarm::append_farm(&farm_e);
+                                    // 一次性作物（小麥/胡蘿蔔/馬鈴薯）登記進 `voxel_farm` 計時；
+                                    // 多年生莓果叢（第十一刀，`crop_kind()` 回 `None`）改登記進
+                                    // 自己的 `voxel_berry::BerryStore`（比照收成後退回態的既有
+                                    // 登記路徑，見上方 `Block::BerryBush` 分支）。
+                                    if let Some(crop_kind) = crop.crop_kind() {
+                                        let farm_e = {
+                                            hub().farm.write().unwrap().plant(
+                                                tx, ty, tz, vfarm::now_secs(), crop_kind,
+                                            )
+                                        }; // farm 寫鎖釋放
+                                        vfarm::append_farm(&farm_e);
+                                    } else {
+                                        hub().berry.write().unwrap().plant(tx, ty, tz, vfarm::now_secs());
+                                    }
                                     say_updates.push((
                                         rid.to_string(),
                                         vinvent::planted_seed_line(crop.display_name()),
