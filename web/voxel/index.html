@@ -1337,6 +1337,52 @@
       #nearbyTradePanel { top: auto; bottom: 638px; right: 10px; max-height: 45vh; }
     }
 
+    /* ── 村莊委託牆（自主提案切片，ROADMAP 1015）───────────────────────────── */
+    #requestBoardBtn {
+      position: fixed; right: 10px; top: 634px; z-index: 6;
+      background: rgba(40,32,14,0.65); color: #e0b168; border: 1px solid rgba(224,177,104,0.3);
+      padding: 6px 11px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      user-select: none; pointer-events: auto;
+    }
+    #requestBoardBtn:hover { background: rgba(74,58,16,0.75); }
+    #requestBoardPanel {
+      position: fixed; right: 10px; top: 634px; z-index: 20;
+      width: min(290px, 94vw); max-height: 60vh;
+      display: none; flex-direction: column;
+      background: rgba(16,22,34,0.95); color: #eaf2ff; border-radius: 14px;
+      border: 1px solid rgba(224,177,104,0.22); box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      overflow: hidden;
+    }
+    #requestBoardHead {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 9px 13px; background: rgba(224,177,104,0.07); font-size: 14px; font-weight: bold;
+    }
+    #requestBoardTitle { color: #e0b168; }
+    #requestBoardClose {
+      cursor: pointer; user-select: none; font-size: 18px; line-height: 1;
+      padding: 2px 8px; border-radius: 8px; background: rgba(255,255,255,0.10);
+    }
+    #requestBoardBody {
+      flex: 1; overflow-y: auto; padding: 10px 13px;
+      display: flex; flex-direction: column; gap: 8px; font-size: 13px;
+    }
+    .rboard-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      padding: 7px 9px; border-radius: 10px; background: rgba(255,255,255,0.05);
+      cursor: pointer;
+    }
+    .rboard-row:hover { background: rgba(224,177,104,0.14); }
+    .rboard-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .rboard-name { font-weight: bold; color: #eaf2ff; }
+    .rboard-want { color: #e0b168; font-size: 12px; }
+    .rboard-time { color: #9fb0c0; font-size: 11px; white-space: nowrap; }
+    .rboard-time.rboard-urgent { color: #e07868; font-weight: bold; }
+    .rboard-empty { color: #506070; font-size: 12px; font-style: italic; text-align: center; padding: 8px 0; }
+    @media (orientation: portrait) {
+      #requestBoardBtn { top: auto; bottom: 636px; right: 10px; }
+      #requestBoardPanel { top: auto; bottom: 680px; right: 10px; max-height: 45vh; }
+    }
+
     /* ── 成功提示（綠色小吐司）──────────────────────────────────────────── */
     #msg {
       position: fixed; left: 50%; top: 58px; transform: translateX(-50%);
@@ -1946,6 +1992,8 @@
     <div id="lighthouseBtn">🗼 共築燈塔</div>
     <!-- 附近居民貨品一覽（自主提案切片，ROADMAP 1008）開關 -->
     <div id="nearbyTradeBtn">🛍️ 附近貨品</div>
+    <!-- 村莊委託牆（自主提案切片，ROADMAP 1015）開關 -->
+    <div id="requestBoardBtn">📋 委託牆</div>
     <!-- 視角切換鈕（第一/三人稱；桌機也可按 F5）。文字由 main.js 依模式更新 -->
     <button id="viewBtn">👁 第一人稱</button>
     <!-- 操作設定齒輪鈕（開操作設定面板：模式/靈敏度/按鈕/慣用手/自動跳/人稱/鍵盤/手把）-->
@@ -2152,6 +2200,16 @@
       <span id="nearbyTradeClose">✕</span>
     </div>
     <div id="nearbyTradeBody"></div>
+  </div>
+  <!-- 村莊委託牆（自主提案切片，ROADMAP 1015）：居民反過來拜託你幫個小忙（664/665）至今只能
+       靠運氣巧遇——只有此刻正巧站在她面前才聽得到那句泡泡話；此面板彙整全村目前掛著未了請求
+       的居民，依剩餘等待時間排序，玩家第一次能主動挑一則最急迫的委託去幫。 -->
+  <div id="requestBoardPanel">
+    <div id="requestBoardHead">
+      <span id="requestBoardTitle">📋 村莊委託牆</span>
+      <span id="requestBoardClose">✕</span>
+    </div>
+    <div id="requestBoardBody"></div>
   </div>
   <!-- 背包 + 合成格面板（ROADMAP 664）-->
   <div id="bagPanel">

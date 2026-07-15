@@ -5851,6 +5851,77 @@ if (nearbyTradeEl) {
   if (closeBtn) closeBtn.addEventListener("click", closeNearbyTrade);
 }
 
+// ── 村莊委託牆 v1（自主提案切片，ROADMAP 1015）─────────────────────────────────
+// 居民反過來拜託你幫個小忙（664/665）至今只能靠運氣巧遇——只有此刻正巧站在她面前
+// 才聽得到那句泡泡話。本面板彙整全村目前掛著未了請求的居民，依剩餘等待時間排序
+// （越快沒耐性排越前面），玩家第一次能主動挑一則最急迫的委託去幫，而非隨緣路過。
+const requestBoardEl = document.getElementById("requestBoardPanel");
+const requestBoardBodyEl = document.getElementById("requestBoardBody");
+const requestBoardBtnEl = document.getElementById("requestBoardBtn");
+let requestBoardVisible = false;
+let requestBoardRefreshTimer = null;
+
+/** 渲染村莊委託牆。點一列直接開啟與那位居民的對話（帶著材料走近送禮即可，沿用既有送禮流程）。
+ * @param {Array<{resident_id:string, resident_name:string, item_id:number,
+ *   item_name:string, remaining_secs:number}>} items
+ */
+function renderRequestBoardPanel(items) {
+  if (!requestBoardBodyEl) return;
+  requestBoardBodyEl.innerHTML = "";
+  if (!items || items.length === 0) {
+    requestBoardBodyEl.innerHTML = '<div class="rboard-empty">目前沒有居民在等你幫忙。</div>';
+    return;
+  }
+  for (const it of items) {
+    const row = document.createElement("div");
+    row.className = "rboard-row";
+    const secs = Math.max(0, Math.round(it.remaining_secs));
+    const urgent = secs <= 20 ? " rboard-urgent" : "";
+    row.innerHTML =
+      '<div class="rboard-text">' +
+        '<span class="rboard-name">' + escHtml(it.resident_name || "居民") + '</span>' +
+        '<span class="rboard-want">想要 ' + escHtml(it.item_name) + '</span>' +
+      '</div>' +
+      '<span class="rboard-time' + urgent + '">還剩 ' + secs + ' 秒</span>';
+    row.addEventListener("click", () => {
+      closeRequestBoard();
+      openChat(it.resident_id, it.resident_name);
+    });
+    requestBoardBodyEl.appendChild(row);
+  }
+}
+
+/** 送出委託牆請求——純讀取，不建立任何新狀態。 */
+function refreshRequestBoard() {
+  if (!wsReady) return;
+  ws.send(JSON.stringify({ t: "request_board" }));
+}
+
+/** 開啟村莊委託牆面板（居民的請求會逾期/被別人搶先幫上，10 秒刷新一次跟上狀態）。 */
+function openRequestBoard() {
+  if (!requestBoardEl) return;
+  requestBoardVisible = true;
+  requestBoardEl.style.display = "flex";
+  refreshRequestBoard();
+  if (requestBoardRefreshTimer) clearInterval(requestBoardRefreshTimer);
+  requestBoardRefreshTimer = setInterval(() => { if (requestBoardVisible) refreshRequestBoard(); }, 10_000);
+}
+
+/** 關閉村莊委託牆面板。 */
+function closeRequestBoard() {
+  requestBoardVisible = false;
+  if (requestBoardEl) requestBoardEl.style.display = "none";
+  if (requestBoardRefreshTimer) { clearInterval(requestBoardRefreshTimer); requestBoardRefreshTimer = null; }
+}
+
+if (requestBoardBtnEl) requestBoardBtnEl.addEventListener("click", () => {
+  requestBoardVisible ? closeRequestBoard() : openRequestBoard();
+});
+if (requestBoardEl) {
+  const closeBtn = document.getElementById("requestBoardClose");
+  if (closeBtn) closeBtn.addEventListener("click", closeRequestBoard);
+}
+
 // ── 夜間指路光柱 v1（自主提案切片，接續 PR #1248 遺留缺口「落成後零遊戲機制效果」）──
 // 落成前的乙太燈塔純裝飾；落成後，入夜起從塔頂升起一道柔光光柱——遠遠就看得見，
 // 幫玩家夜裡辨認回村方向，「大家一起蓋起來的塔」第一次真的照亮了世界。純視覺、零新協議：
@@ -8145,6 +8216,9 @@ function connect() {
     } else if (m.t === "nearby_trades") {
       // 附近居民貨品一覽 v1（自主提案切片，ROADMAP 1013）。
       renderNearbyTradePanel(m.items);
+    } else if (m.t === "request_board") {
+      // 村莊委託牆 v1（自主提案切片，ROADMAP 1015）。
+      renderRequestBoardPanel(m.items);
     } else if (m.t === "cohabit_ok") {
       // 邀居同住 v1（ROADMAP 972）：入住／搬走成功，對話框顯示提示，鈕上打勾標記目前狀態。
       const rname = m.resident_name || "居民";
