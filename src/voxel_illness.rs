@@ -35,6 +35,13 @@
 //! 雨躲得好不好」第一次影響發病機率（見 [`RAIN_ONSET_MULTIPLIER`]），病倒台詞/動態牆也依
 //! 雨因區分（[`onset_bubble_rain`]／[`onset_feed_line_rain`]），把兩套至今互不相知的既有
 //! 系統接成一條看得見的因果，而非再開一條新軸線。
+//!
+//! **v3（自主提案）：生病真的「動作慢下來」**——本模組文件開頭第一段自己寫的承諾，從 v1
+//! 上線以來從沒真的接上：`voxel_ws.rs` 唯一控制居民移動速度的 `speed_mult`（日夜作息 739）
+//! 從沒讀過 `illness_severity` 一次，一位剛病倒、正硬撐著的居民走路/採集速度跟健康時一模
+//! 一樣。本刀補上 [`illness_speed_mult`]——病況越重走得越慢（線性遞減、留速度下限，不會
+//! 卡死不動），與既有日夜降速相乘套用（夜間又生病＝更慢，兩套降速正交疊加）。零協議破壞、
+//! 零新狀態（沿用既有 `illness_severity`）、零新持久化。
 
 use crate::voxel_bonds::BondTier;
 
@@ -102,6 +109,19 @@ pub fn tick_recover(cur: f32, dt: f32) -> f32 {
 /// 是否正處於生病狀態（病況 > 0）。
 pub fn is_sick(severity: f32) -> bool {
     severity > 0.0
+}
+
+/// 生病時移動變慢的速度下限：病得越重、走得越慢，剛病倒（`ILLNESS_MAX`）時最慢，但仍留
+/// 這個下限（不降到 0）——脆弱、拖著腳步，但不會被生病這件事徹底卡死不動。
+pub const SICK_SPEED_FLOOR: f32 = 0.55;
+
+/// 依此刻病況嚴重度，算出移動速度倍率（v3：生病真的「動作慢下來」）——健康（0）全速 1.0，
+/// 隨病況線性遞減到 [`SICK_SPEED_FLOOR`]。純函式、確定性；壞值（負數／超過 `ILLNESS_MAX`）
+/// 安全夾限，不會產生負值或超速。呼叫端只需乘上既有的日夜 `speed_mult` 即可，兩套降速
+/// 正交疊加（夜間又生病＝更慢）。
+pub fn illness_speed_mult(severity: f32) -> f32 {
+    let s = severity.clamp(0.0, ILLNESS_MAX);
+    1.0 - s * (1.0 - SICK_SPEED_FLOOR)
 }
 
 /// 發病門檻：目前健康（未生病）+ 冷卻已過 + 過了機率骰。純函式、確定性、可測。
@@ -297,6 +317,41 @@ mod tests {
         assert!(!is_sick(0.0));
         assert!(is_sick(0.01));
         assert!(is_sick(ILLNESS_MAX));
+    }
+
+    #[test]
+    fn illness_speed_mult_healthy_is_full_speed() {
+        assert_eq!(illness_speed_mult(0.0), 1.0);
+    }
+
+    #[test]
+    fn illness_speed_mult_max_severity_hits_floor() {
+        let m = illness_speed_mult(ILLNESS_MAX);
+        assert!((m - SICK_SPEED_FLOOR).abs() < 1e-6, "剛病倒應落在速度下限");
+    }
+
+    #[test]
+    fn illness_speed_mult_monotonic_non_increasing() {
+        let a = illness_speed_mult(0.2);
+        let b = illness_speed_mult(0.6);
+        let c = illness_speed_mult(ILLNESS_MAX);
+        assert!(a >= b && b >= c, "病況越重速度應越慢（或持平），不會反過來變快");
+    }
+
+    #[test]
+    fn illness_speed_mult_stays_in_bounds() {
+        for tenths in 0..=10 {
+            let severity = tenths as f32 / 10.0 * ILLNESS_MAX;
+            let m = illness_speed_mult(severity);
+            assert!(m >= SICK_SPEED_FLOOR - 1e-6 && m <= 1.0 + 1e-6, "速度倍率應落在 [下限, 1.0] 之間");
+        }
+    }
+
+    #[test]
+    fn illness_speed_mult_clamps_bad_values() {
+        // 壞值：負數視同健康、超過上限視同最重病況——不會產生負值或超過 1.0 的怪速度。
+        assert_eq!(illness_speed_mult(-1.0), illness_speed_mult(0.0));
+        assert_eq!(illness_speed_mult(ILLNESS_MAX + 5.0), illness_speed_mult(ILLNESS_MAX));
     }
 
     #[test]
