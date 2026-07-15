@@ -144,6 +144,14 @@ pub struct RosterEntry {
     /// 父母的 id 與名字（世代傳承的來源記錄）。
     pub parent: String,
     pub parent_name: String,
+    /// 另一位父母的 id 與名字（愛的結晶 v1，ROADMAP 928：夫妻共同迎來孩子時才有值；
+    /// 單親出生則為 `None`）。`#[serde(default)]` 向後相容——928 上線以來累積的舊名冊
+    /// 行沒有這兩個欄位，重播時自然回填 `None`，不影響既有資料、不用 migration。
+    /// 家族樹面板（自主提案切片）第一次讀出這份早就算好、卻從未落地的資訊。
+    #[serde(default)]
+    pub co_parent: Option<String>,
+    #[serde(default)]
+    pub co_parent_name: Option<String>,
     /// 出生的 unix 秒（生日）。
     pub birth_unix: u64,
 }
@@ -342,11 +350,23 @@ mod tests {
             home_base_z: 88,
             parent: "vox_res_1".to_string(),
             parent_name: "諾娃".to_string(),
+            co_parent: Some("vox_res_2".to_string()),
+            co_parent_name: Some("賽勒".to_string()),
             birth_unix: 1_700_000_000,
         };
         let line = serde_json::to_string(&rec).unwrap();
         let back: RosterEntry = serde_json::from_str(&line).unwrap();
         assert_eq!(rec, back);
+    }
+
+    /// 家族樹面板（自主提案切片）：928 上線以來累積的舊名冊行沒有 `co_parent`/
+    /// `co_parent_name` 欄位——重播時必須安全回填 `None`，不能因為欄位缺失就整行解析失敗。
+    #[test]
+    fn roster_entry_missing_co_parent_fields_defaults_to_none() {
+        let old_line = r#"{"resident":"vox_res_4","name":"米拉","home_base_x":12,"home_base_z":88,"parent":"vox_res_1","parent_name":"諾娃","birth_unix":1700000000}"#;
+        let back: RosterEntry = serde_json::from_str(old_line).unwrap();
+        assert_eq!(back.co_parent, None);
+        assert_eq!(back.co_parent_name, None);
     }
 
     #[test]

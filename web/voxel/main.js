@@ -5362,7 +5362,71 @@ function renderCliquesSection(cliques) {
   }
 }
 
-/** 向後端抓最新交情資料（兩兩情誼 + 小圈子）並重新渲染。 */
+// ── 家族樹面板（自主提案切片，接續 708 交情網 + 927 戀人成婚 + 928 愛的結晶）───────
+// 927 讓戀人結為連理、928 讓已成婚的夫妻共同迎來孩子——這兩份資料早就分別持久化
+// 在案，卻從沒有一處把它們攤開成看得懂的「這座小社會誰跟誰成家了、生了誰」。
+// 讀新後端唯讀端點 `/voxel/family`（婚書配對 + 每個孩子的父母），純前端合併成
+// 「家族列」渲染在交情網面板頂端（緊接小圈子之後），跟 708/711 同一手法：讓早已
+// 存在的資料第一次被看見，不是新造一套家族系統。
+const familyBodyEl = document.getElementById("familyBody");
+
+/** 正規化一對名字的鍵順序，讓 (a,b) 與 (b,a) 落在同一組（純函式、確定性）。
+ * 用 "M"/"S" 前綴區分「一對父母」與「單親」，避免兩種鍵格式意外撞在一起。
+ * @param {string} a @param {string} b @returns {string} */
+function familyPairKey(a, b) {
+  return a <= b ? "M " + a + " " + b : "M " + b + " " + a;
+}
+
+/** 把婚書配對 + 孩子的父母紀錄，合併成一份「家族列」清單：每列是一對父母
+ * （已成婚，含目前尚無孩子的）或一位單親，加上他們（她）的孩子（若有）。
+ * 純函式、確定性、不碰 DOM，供 QA 直接餵合成資料驗證。
+ * @param {Array<{a:string,b:string}>} marriages
+ * @param {Array<{name:string,parent:string,co_parent:?string}>} children
+ * @returns {Array<{parents:string[],children:string[]}>} 依父母姓名字典序排列
+ */
+export function buildFamilyLines(marriages, children) {
+  const groups = new Map(); // key → { parents: string[], children: string[] }
+  for (const m of marriages || []) {
+    if (!m || !m.a || !m.b) continue;
+    const key = familyPairKey(m.a, m.b);
+    if (!groups.has(key)) groups.set(key, { parents: [m.a, m.b].sort(), children: [] });
+  }
+  for (const c of children || []) {
+    if (!c || !c.name || !c.parent) continue;
+    const key = c.co_parent ? familyPairKey(c.parent, c.co_parent) : "S " + c.parent;
+    if (!groups.has(key)) {
+      const parents = c.co_parent ? [c.parent, c.co_parent].sort() : [c.parent];
+      groups.set(key, { parents, children: [] });
+    }
+    groups.get(key).children.push(c.name);
+  }
+  return [...groups.values()].sort((x, y) => x.parents.join("").localeCompare(y.parents.join("")));
+}
+
+/** 重新渲染家族樹段落。沒有任何家族資料（沒人結婚、沒人生育）時整段留白
+ * （CSS `:empty` 隱藏），不佔面板空間、不干擾原本的兩兩交情列表。
+ * @param {{marriages:Array,children:Array}} data */
+function renderFamilySection(data) {
+  if (!familyBodyEl) return;
+  familyBodyEl.innerHTML = "";
+  const lines = buildFamilyLines(data && data.marriages, data && data.children);
+  for (const line of lines) {
+    const div = document.createElement("div");
+    div.className = "family-row";
+    // 一對父母（已成婚）用 💍，單親（舊資料或尚未補上第二位父母）用 👶。
+    const icon = line.parents.length === 2 ? "💍" : "👶";
+    const parentsText = line.parents.map(escHtml).join(" ＆ ");
+    const childrenText = line.children.length > 0
+      ? '<span class="family-children">・孩子：' + line.children.map(escHtml).join("、") + "</span>"
+      : "";
+    div.innerHTML =
+      '<span class="family-icon">' + icon + '</span>' +
+      '<span class="family-names">' + parentsText + childrenText + '</span>';
+    familyBodyEl.appendChild(div);
+  }
+}
+
+/** 向後端抓最新交情資料（兩兩情誼 + 小圈子 + 家族樹）並重新渲染。 */
 async function refreshRelations() {
   if (!relationsBodyEl) return;
   try {
@@ -5378,6 +5442,12 @@ async function refreshRelations() {
     if (cResp.ok) renderCliquesSection(await cResp.json());
   } catch (err) {
     // 小圈子是錦上添花的附加資訊，讀取失敗不影響主要的兩兩交情列表。
+  }
+  try {
+    const fResp = await fetch("/voxel/family");
+    if (fResp.ok) renderFamilySection(await fResp.json());
+  } catch (err) {
+    // 家族樹同樣是附加資訊，讀取失敗不影響主要的兩兩交情列表。
   }
 }
 
@@ -9684,6 +9754,9 @@ window.__voxel = {
   sortRelationRows(rows) { return sortRelationRows(rows); },
   // ── 小圈子攤開 QA 用（自主提案切片，接續 708+711）──
   renderCliquesSection(cliques) { renderCliquesSection(cliques); return cliquesBodyEl && cliquesBodyEl.innerHTML; },
+  // ── 家族樹面板 QA 用（自主提案切片，接續 708+927+928）──
+  buildFamilyLines(marriages, children) { return buildFamilyLines(marriages, children); },
+  renderFamilySection(data) { renderFamilySection(data); return familyBodyEl && familyBodyEl.innerHTML; },
   // ── 居民技能簿 QA 用（ROADMAP 719）──
   openSkills() { return openSkills(); },
   closeSkills() { closeSkills(); },

@@ -723,6 +723,8 @@ async fn main() {
         .route("/voxel/cohabit_mine", get(voxel_ws::voxel_cohabit_mine_handler))
         // 乙太方界·小圈子攤開（自主提案切片，接續 708+711）：彼此皆為老朋友的圈子清單 JSON。
         .route("/voxel/cliques", get(voxel_ws::voxel_cliques_handler))
+        // 乙太方界·家族樹面板（自主提案切片，接續 708/927/928）：婚書配對＋每個孩子的父母 JSON。
+        .route("/voxel/family", get(voxel_ws::voxel_family_handler))
         // 乙太方界·居民技能簿（ROADMAP 719）：每位居民已發明/學會的技能名清單 JSON。
         .route("/voxel/skills", get(voxel_ws::voxel_skills_handler))
         // 乙太方界·村莊技藝總覽（自主提案切片）：全村技能第一次以「手藝」為單位攤開——
