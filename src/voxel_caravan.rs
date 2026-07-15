@@ -1,12 +1,19 @@
-//! 乙太方界·跨村商隊 v1（自主提案切片 ROADMAP 950，PLAN_ETHERVOX §7「居民散佈世界各處住」
-//! ×「記憶→行為」——殖民地生活閉環裡缺席的最後一塊：物資流通）。
+//! 乙太方界·跨村商隊 v1／v2（自主提案切片 ROADMAP 950／997，PLAN_ETHERVOX §7「居民散佈世界
+//! 各處住」×「記憶→行為」——殖民地生活閉環裡缺席的最後一塊：物資流通）。
 //!
-//! **真缺口**：殖民地真居住（943）讓拓荒者真的搬去了第二村，兩村相思（945）與相思成行·跨村
-//! 探親（947）也接連讓兩村的老朋友彼此惦記、真的走上幾百格遠路重逢——但這些全是**情感**的
+//! **真缺口（v1）**：殖民地真居住（943）讓拓荒者真的搬去了第二村，兩村相思（945）與相思成行·
+//! 跨村探親（947）也接連讓兩村的老朋友彼此惦記、真的走上幾百格遠路重逢——但這些全是**情感**的
 //! 流動：兩村之間至今從沒有一絲一毫的**物資**流通，主村與殖民地是兩座各自為政、老死不相往來
-//! 的經濟孤島。本刀把「兩座聚落」第一次接上一條**跑商隊**的路：一位居民偶爾會帶著自己的
+//! 的經濟孤島。v1 把「兩座聚落」第一次接上一條**跑商隊**的路：一位居民偶爾會帶著自己的
 //! 特產物資，長途跋涉去另一座聚落，跟當地交換一批這裡沒有的東西，再帶著換來的貨踏上歸途。
 //!
+//! **真缺口（v2，ROADMAP 997）**：v1 自己的文件開頭就留白「v1 刻意有界，殖民地互跑留給未來
+//! 一刀」——世界一旦奠基出第二座殖民地，商隊路線仍死死焊在「主村⇄最早那座殖民地」這一條線，
+//! 其餘殖民地永遠只能眼巴巴看著主村商隊過門不入，殖民地與殖民地之間更是連一次都沒互跑過。
+//! v2 把「主村」與「殖民地」原本兩條不對稱分支，攤平成同一份聚落名冊——任兩座聚落之間都能
+//! 互跑商隊，商隊出發時不再區分「我是主村」或「我是殖民地」，一視同仁地從所有其他聚落裡挑
+//! 一座去（[`pick_settlement_destination`]）。世界只有一座殖民地時自然退回 v1 行為（唯一
+//! 候選必是它/主村，行為零回歸）。
 //! **與既有系統 razor-sharp 區隔（非同軸換皮）**：
 //! - **兩村相思／跨村探親（945／947）**＝**情感**驅動、**只在 Friend 級摯友之間**才會發生、
 //!   目的是**見到特定一個人**（重逢），不涉及任何物資。本刀＝**經濟**驅動、**不吃好感度門檻**
@@ -64,16 +71,29 @@ pub fn should_embark(idle_free: bool, asleep: bool, cooldown: f32, say_empty: bo
     idle_free && !asleep && cooldown <= 0.0 && say_empty && roll < CARAVAN_CHANCE
 }
 
-/// 從已奠基的殖民地名冊裡，挑一座當商隊目的地（主村出發時用）：取**聚落 id 最小**（最早奠基）
-/// 的那座，確定性、穩定——世界只有一座殖民地時自然只有一個選擇，多座殖民地時商隊固定先往
-/// 最早那座跑（v1 刻意有界，殖民地互跑留給未來一刀）。`colonies` 為
-/// `(settlement_id, name, cx, cz)` 快照；空 → `None`（世界還沒有第二座聚落，商隊無處可去）。
-/// 純函式、可測。
-pub fn pick_colony_destination(colonies: &[(u64, String, i32, i32)]) -> Option<(f32, f32, String, u64)> {
-    colonies
-        .iter()
-        .min_by_key(|(sid, ..)| *sid)
-        .map(|(sid, name, cx, cz)| (*cx as f32, *cz as f32, name.clone(), *sid))
+/// 從「全世界所有聚落」名冊裡，替一座出發聚落挑商隊目的地（v2，取代 v1 的
+/// `pick_colony_destination`）：候選＝`settlements` 中**排除自己**的其餘每一座（主村＋每座
+/// 已奠基殖民地一視同仁），依聚落 id 排序後用 `roll`（`[0,1)`）等分索引挑一座——同輸入同
+/// 輸出、純函式、可測。世界只有兩座聚落（主村＋一座殖民地）時，候選必只剩對方那一座，
+/// `roll` 不影響結果、與 v1 行為一致（零回歸）；三座以上聚落時，`roll` 才真的讓不同趟商隊
+/// 散落去不同目的地，殖民地與殖民地之間第一次真的能互跑。
+///
+/// `settlements` 為 `(settlement_id, name, cx, cz)` 快照；`self_id` 是出發聚落自己的 id。
+/// 候選為空（世界還沒有第二座聚落、或名冊只有自己）→ `None`（商隊無處可去）。
+pub fn pick_settlement_destination(
+    settlements: &[(u64, String, f32, f32)],
+    self_id: u64,
+    roll: f32,
+) -> Option<(f32, f32, String, u64)> {
+    let mut candidates: Vec<&(u64, String, f32, f32)> =
+        settlements.iter().filter(|(sid, ..)| *sid != self_id).collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    candidates.sort_by_key(|(sid, ..)| *sid); // 確定性排序：同輸入同輸出
+    let idx = ((roll.clamp(0.0, 0.999_999) * candidates.len() as f32) as usize).min(candidates.len() - 1);
+    let (sid, name, cx, cz) = candidates[idx];
+    Some((*cx, *cz, name.clone(), *sid))
 }
 
 /// 目的地聚落換回來的特產物品（沿用 [`ITEMS`] 調色盤，依聚落名確定性雜湊挑選）；
@@ -157,29 +177,74 @@ mod tests {
     }
 
     #[test]
-    fn pick_colony_destination_empty_is_none() {
-        assert_eq!(pick_colony_destination(&[]), None);
+    fn pick_settlement_destination_empty_is_none() {
+        assert_eq!(pick_settlement_destination(&[], 0, 0.0), None);
     }
 
     #[test]
-    fn pick_colony_destination_single() {
-        let colonies = vec![(7u64, "霜語屯".to_string(), 500, -300)];
+    fn pick_settlement_destination_only_self_is_none() {
+        let settlements = vec![(0u64, "主村".to_string(), 0.0, 0.0)];
+        assert_eq!(pick_settlement_destination(&settlements, 0, 0.5), None, "名冊只有自己，無處可去");
+    }
+
+    #[test]
+    fn pick_settlement_destination_single_other_ignores_roll() {
+        // 世界只有主村＋一座殖民地：候選必只剩對方那一座，roll 不影響結果（v1 行為零回歸）。
+        let settlements = vec![
+            (0u64, "主村".to_string(), 0.0, 0.0),
+            (7u64, "霜語屯".to_string(), 500.0, -300.0),
+        ];
+        for roll in [0.0, 0.3, 0.7, 0.999] {
+            assert_eq!(
+                pick_settlement_destination(&settlements, 0, roll),
+                Some((500.0, -300.0, "霜語屯".to_string(), 7)),
+                "roll={roll}"
+            );
+        }
+        // 反向：從殖民地出發，候選必只剩主村。
         assert_eq!(
-            pick_colony_destination(&colonies),
-            Some((500.0, -300.0, "霜語屯".to_string(), 7))
+            pick_settlement_destination(&settlements, 7, 0.5),
+            Some((0.0, 0.0, "主村".to_string(), 0))
         );
     }
 
     #[test]
-    fn pick_colony_destination_picks_lowest_settlement_id_deterministically() {
-        let colonies = vec![
-            (9u64, "風禾屯".to_string(), 100, 200),
-            (3u64, "霜語屯".to_string(), -50, 60),
+    fn pick_settlement_destination_excludes_self_among_many() {
+        let settlements = vec![
+            (0u64, "主村".to_string(), 0.0, 0.0),
+            (3u64, "霜語屯".to_string(), -50.0, 60.0),
+            (9u64, "風禾屯".to_string(), 100.0, 200.0),
         ];
-        let a = pick_colony_destination(&colonies);
-        let b = pick_colony_destination(&colonies);
+        // 從霜語屯（id 3）出發：候選只剩主村(0)/風禾屯(9)，永遠不會選到自己。
+        for roll in [0.0, 0.25, 0.5, 0.75, 0.99] {
+            let dest = pick_settlement_destination(&settlements, 3, roll).unwrap();
+            assert_ne!(dest.3, 3, "roll={roll} 不該選到自己");
+        }
+    }
+
+    #[test]
+    fn pick_settlement_destination_roll_spreads_across_candidates() {
+        // 殖民地互跑（ROADMAP 997）：三座以上聚落時，不同 roll 真的能落在不同目的地，
+        // 而非永遠焊死同一座——這正是 v2 相較 v1「固定挑最早奠基那座」補上的缺口。
+        let settlements = vec![
+            (0u64, "主村".to_string(), 0.0, 0.0),
+            (3u64, "霜語屯".to_string(), -50.0, 60.0),
+            (9u64, "風禾屯".to_string(), 100.0, 200.0),
+        ];
+        let low = pick_settlement_destination(&settlements, 0, 0.0).unwrap();
+        let high = pick_settlement_destination(&settlements, 0, 0.99).unwrap();
+        assert_ne!(low.3, high.3, "低 roll 與高 roll 應落在不同候選");
+    }
+
+    #[test]
+    fn pick_settlement_destination_deterministic() {
+        let settlements = vec![
+            (0u64, "主村".to_string(), 0.0, 0.0),
+            (3u64, "霜語屯".to_string(), -50.0, 60.0),
+        ];
+        let a = pick_settlement_destination(&settlements, 0, 0.42);
+        let b = pick_settlement_destination(&settlements, 0, 0.42);
         assert_eq!(a, b, "確定性：同輸入同輸出");
-        assert_eq!(a.unwrap().3, 3, "應挑聚落 id 最小（最早奠基）的那座");
     }
 
     #[test]
