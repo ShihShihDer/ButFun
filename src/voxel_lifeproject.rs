@@ -25,6 +25,17 @@
 //! `voxel_ws.rs`（沿用村碑 885 的「golden safe pattern」：`surface_y` 鎖外算 → `deltas` 寫鎖
 //! 批次**只在空氣格**落子（絕不覆蓋任何既有方塊、冪等）→ 鎖外廣播＋append-only 落地，守死鎖鐵律）。
 //! 記憶為第一人稱內心句、不含任何玩家名／私密渴望（比照 `voxel_monument::monument_memory_line`）。
+//!
+//! ## v1.1：圓夢角落成為世界地標（自主提案切片，接續 v1）
+//! **真缺口**：v1 讓夢想在世界裡跨天長出來，但圓滿之後**什麼都沒留下**——跟遺跡（838）／溫泉
+//! （839）／邊陲營地（881）／世界奇觀（940）／地底遺跡神殿（975）比起來，「居民親手圓的夢」
+//! 是探索紀事系統裡唯一沒被世界記住的一種地標；玩家路過同一位居民已完工的花園／燈路／展台，
+//! 世界毫無反應。本刀把已圓滿的夢接進既有 `voxel_discovery::LandmarkKind`（新增 `Dream` 一種）：
+//! 玩家走近任一位已圓夢居民的錨點（[`LifeDream::anchor_cell`]）→ 記一筆探索紀事、解鎖里程碑、
+//! 順手看看先前旅人在這座圓夢角落留下的話（沿用旅人留言簿 862 既有管道）。純加法：不改夢想的
+//! 挑選／佈局／進度邏輯，只讓「已完工」這件事被世界看見。接線（proximity 掃描、milestone、
+//! discovery/landmark_notes 呼叫）全在 `voxel_ws.rs`，本模組只加兩個確定性純函式
+//! （[`LifeDream::anchor_cell`]／[`near_dream_landmark`]）。
 
 use std::collections::HashMap;
 
@@ -37,6 +48,17 @@ const LIFEPROJECT_PATH: &str = "data/voxel_lifeprojects.jsonl";
 
 /// 泡泡／Feed 片段字元上限（比照其他泡泡台詞）。
 pub const BUBBLE_MAX: usize = 40;
+
+/// 圓夢地標偵測半徑（世界方塊，比照 `voxel::DUNGEON_DISCOVER_RADIUS` 量級）：玩家走到這麼近
+/// 圓滿夢想的錨點，視為「發現這座地標」——記一筆探索紀事、可留言。純函式、確定性、零狀態。
+pub const DISCOVER_RADIUS: f32 = 4.0;
+
+/// 距離平方判定「玩家走到某位居民已圓滿的夢想錨點附近」。純函式（不含 sqrt）。
+pub fn near_dream_landmark(px: f32, pz: f32, ax: i32, az: i32) -> bool {
+    let dx = px - ax as f32;
+    let dz = pz - az as f32;
+    dx * dx + dz * dz <= DISCOVER_RADIUS * DISCOVER_RADIUS
+}
 
 // ── 夢想種類 ─────────────────────────────────────────────────────────────────
 
@@ -192,6 +214,12 @@ impl LifeDream {
     /// 全夢是否已完成（已放數量 ≥ 總數）。
     pub fn is_complete(&self, placed: usize) -> bool {
         placed >= self.total_cells()
+    }
+
+    /// 圓夢地標 v1（自主提案切片，接續本模組 v1）：這座夢的「代表點」——取第一塊的相對位移，
+    /// 供玩家路過偵測與旅人留言簿定位。夢至少有一塊（見 `build_dream` 各分支），故必回傳。
+    pub fn anchor_cell(&self) -> DreamCell {
+        self.cell_at(0).expect("每個夢至少有一塊")
     }
 }
 
@@ -723,5 +751,29 @@ mod tests {
         assert_eq!(s.placed("nobody"), 0);
         assert!(!s.is_done("nobody"));
         assert!(s.get("nobody").is_none());
+    }
+
+    // ── 圓夢地標 v1.1 ────────────────────────────────────────────────────────
+
+    #[test]
+    fn anchor_cell_is_first_cell_for_every_dream_kind() {
+        for k in [LifeDreamKind::FlowerGarden, LifeDreamKind::LanternPath, LifeDreamKind::BiomeShrine] {
+            let d = build_dream(k, 1, 0);
+            assert_eq!(d.anchor_cell(), d.cell_at(0).unwrap(), "{:?} 錨點應為第一塊", k);
+        }
+    }
+
+    #[test]
+    fn near_dream_landmark_within_radius_true_outside_false() {
+        assert!(near_dream_landmark(100.0, 200.0, 100, 200), "站在錨點正上方應算抵達");
+        assert!(near_dream_landmark(103.0, 200.0, 100, 200), "半徑內應算抵達");
+        assert!(!near_dream_landmark(200.0, 200.0, 100, 200), "遠在半徑外不該誤判");
+    }
+
+    #[test]
+    fn near_dream_landmark_boundary_is_inclusive() {
+        // 剛好貼著半徑邊界（dx=DISCOVER_RADIUS, dz=0 → dx²+dz²=16=DISCOVER_RADIUS²）。
+        assert!(near_dream_landmark(104.0, 0.0, 100, 0), "邊界應視為抵達（<=）");
+        assert!(!near_dream_landmark(104.01, 0.0, 100, 0), "剛超出邊界不該誤判");
     }
 }

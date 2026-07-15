@@ -6037,8 +6037,18 @@ let landmarkNoteJustSent = false;
 // 840 探索紀事是私人足跡；本段接住伺服器在「第一次發現這處地標」那一刻主動推來的既有
 // 留言簿——先秀給玩家看先前旅人留了什麼話，再問要不要也留一句給後來的人。真正的驗證/
 // 去重/內容審查都在伺服器 `LeaveLandmarkNote` 那一刀，這裡純粹是問與顯示。
+const LANDMARK_ICONS = {
+  ruin: "🏛️",
+  hot_spring: "♨️",
+  outpost: "⛺",
+  colony: "🏘️",
+  wonder: "🌳",
+  dungeon: "🏺",
+  dream: "🌟",
+};
+
 function showLandmarkNotes(kind, x, y, z, notes) {
-  const icon = kind === "ruin" ? "🏛️" : "♨️";
+  const icon = LANDMARK_ICONS[kind] || "📍";
   if (landmarkNoteJustSent) {
     landmarkNoteJustSent = false;
     showMsg(icon + " 留言已收錄進地標留言簿了！");
