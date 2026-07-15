@@ -148,6 +148,13 @@ impl SignStore {
         self.signs.get(pos).map(|s| s.as_str())
     }
 
+    /// 查詢某座標告示牌目前的穩定歸屬鍵（領地反插旗守衛用，見
+    /// [`crate::voxel_landclaim::claim_blocked_by_existing_structure`]）：判斷「這是不是我
+    /// 已經在動自己的地」，無牌／無主一律 `None`。
+    pub fn owner_key_at(&self, pos: &str) -> Option<&str> {
+        self.owners_key.get(pos).map(|s| s.as_str())
+    }
+
     /// 寫入／改寫告示牌文字（傳入已清洗文字）＋這塊牌是哪位玩家立的：`owner` 顯示名（居民
     /// 認得你的家 v1，辨識/提示句用）＋ `owner_key` 穩定歸屬鍵（領地權限判定用，review 修正
     /// ROADMAP 963）。皆 `None`＝訪客或非玩家親手寫的牌，行為與既有一致。空字串＝清除。

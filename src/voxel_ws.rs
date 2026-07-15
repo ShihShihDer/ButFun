@@ -2382,6 +2382,11 @@ struct VoxelHub {
     /// 他信任的一群帳號 email。持久化到 data/voxel_landclaim_trust.jsonl；`claim_blocking_owner`
     /// 判定時查詢（序列化 RwLock 解決競爭，與 `sign` 各自獨立短取即釋，不巢狀）。
     landclaim_trust: RwLock<vlandclaim::TrustStore>,
+    /// 最近方塊放置紀錄（領地反插旗守衛 v5，自主提案切片）：已登入玩家最近成功放置過的
+    /// (owner_key, x, z)，供立「家」牌時判斷「這裡是不是明顯已經是別人蓋好的建物」
+    /// （見 `vlandclaim::claim_blocked_by_existing_structure`）。純記憶體、重啟歸零（與世界
+    /// delta 對一般玩家放置本就不落地的既有行為一致），全域上限有界成長，不落地、零 IO。
+    recent_placements: RwLock<vlandclaim::PlacementLog>,
     /// 領地繁榮帳本（自主提案切片，ROADMAP 979）：帳號 email → 累積繁榮經驗／已產出／已收取
     /// 乙太幣。持久化到 data/voxel_prosperity.jsonl（append-only delta，比照 `voxel_mastery`
     /// 範式；序列化 RwLock 解決競爭，與 `sign`／`landclaim_trust`／`players` 各自獨立短取即釋，
@@ -3519,6 +3524,8 @@ fn hub() -> &'static VoxelHub {
             sign: RwLock::new(vsign::SignStore::from_entries(vsign::load_signs())),
             // 啟動時從 data/voxel_landclaim_trust.jsonl 載回領地信任名單（重啟後信任關係仍在）。
             landclaim_trust: RwLock::new(vlandclaim::TrustStore::from_entries(vlandclaim::load_trust())),
+            // 反插旗守衛 v5：純記憶體、重啟歸零，不從磁碟載回（見欄位註解）。
+            recent_placements: RwLock::new(vlandclaim::PlacementLog::new()),
             // 啟動時從 data/voxel_prosperity.jsonl 載回領地繁榮帳本（重啟後累積的繁榮度仍在）。
             prosperity: RwLock::new(vprosperity::ProsperityStore::from_entries(vprosperity::load_prosperity())),
             // 啟動時從 data/voxel_tool_wear.jsonl 載回工具耐久帳本（重啟後磨損量仍在）。
@@ -6428,6 +6435,13 @@ async fn handle_socket(
                         let _ = out_tx.send(Message::Text(m)).await;
                     }
                     broadcast_block(x, y, z, block);
+                    // 領地反插旗守衛 v5：已登入玩家每成功放一塊，記一筆最近放置紀錄（純記憶體，
+                    // 見欄位註解），供之後立「家」牌時判斷這一圈是不是明顯已經是別人蓋好的。
+                    if is_account {
+                        if let Some(owner_key) = account_email.as_deref() {
+                            hub().recent_placements.write().unwrap().record(owner_key, x, z);
+                        }
+                    }
                     // 植樹造林 v1（ROADMAP 738）：剛種下的樹苗記進 grove store，
                     // 由 `tick_grove`（15 秒節拍）計時，約 150 秒後長成一株樹。
                     if block == Block::Sapling {
@@ -10410,6 +10424,31 @@ async fn handle_socket(
                 let owner = if is_account && !clean.is_empty() { Some(name.clone()) } else { None };
                 let owner_key = if is_account && !clean.is_empty() { account_email.clone() } else { None };
                 let pos_key = vsign::pos_key(x, y, z);
+                // 領地反插旗守衛 v5（自主提案切片，補 v1 review 留白的「無主建物被搶」活口）：
+                // 這塊牌若真的立下，會不會是「明顯是別人蓋好、我沒出過力」的既有建物——只在
+                // ①這是「家」語氣、②這座標目前不是我自己已有效認領的地（改寫自己的牌永遠放行）
+                // 才檢查。sign 讀鎖／recent_placements 讀鎖各自短取即釋，循序不巢狀。
+                if vlandclaim::is_home_sign(&clean) {
+                    if let Some(requester_key) = owner_key.as_deref() {
+                        let already_mine = {
+                            hub().sign.read().unwrap().owner_key_at(&pos_key) == Some(requester_key)
+                        }; // sign 讀鎖釋放
+                        if !already_mine {
+                            let nearby = {
+                                hub().recent_placements.read().unwrap()
+                                    .owners_within(x, z, vlandclaim::CLAIM_RADIUS)
+                            }; // recent_placements 讀鎖釋放
+                            if vlandclaim::claim_blocked_by_existing_structure(requester_key, false, &nearby) {
+                                let mut players = hub().players.write().unwrap();
+                                if let Some(p) = players.get_mut(&my_id) {
+                                    p.say = "這裡看起來已經有人蓋好家了——先找塊沒人動過的空地，或問問附近蓋屋的人願不願意分你一塊吧。".to_string();
+                                    p.say_timer = PLAYER_SAY_SECS;
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
                 // 每帳號僅一塊有效領地（review 修正 第三輪，堵住「無限插旗」濫用面，ROADMAP
                 // 963）：立新家牌時，若這帳號在別的座標已有一塊有主的家牌，舊的自動失效——
                 // 把單一帳號的破壞面上界壓到「一個半徑 CLAIM_RADIUS 的圈」，同一顆寫鎖內完成

@@ -73,11 +73,34 @@
 //! 只有本人放行），其餘七個入口維持 `true` 不動。信任朋友依然能開你家箱子、幫你鋤地種田，
 //! 動不了你的「家」牌本身。
 //!
+//! **v5（自主提案切片，補 v1 review 明列、連三刀繞過去的活口）：反插旗守衛——「別人蓋過
+//! 但沒立牌的地能被搶」**。v1 review 已白紙黑字承認這個洞（「留待下一刀（v1 可接受）」），
+//! 但 v2~v4（信任名單／撤銷修正／立牌不吃信任）三刀都在補別的活口，這個最根本的洞至今原封
+//! 不動：任何人都能走進別人辛苦蓋好、卻還沒來得及／忘記立牌的房子，插一塊自己的「家」牌，
+//! 把整棟房子連同方圓 [`CLAIM_RADIUS`] 格當場搶成自己的領地——受害者連拆自己的牆都要被擋。
+//!
+//! **做法（不需要幫每個方塊記完整擁有者，只留一份輕量「誰最近在哪蓋過」的線索）**：新增
+//! [`PlacementLog`]——玩家（已登入帳號）每成功放一塊方塊，記一筆 `(owner_key, x, z)`；
+//! 純記憶體、全域上限 [`RECENT_PLACEMENT_CAP`]（超過淘汰最舊），**重啟歸零**——與世界 delta
+//! 對一般玩家放置本就不落地的既有行為一致（見 `voxel_building.rs` 世界方塊持久化只收居民
+//! 改動的說明），不是新退步。立「家」牌那一刻，若這個座標**目前不是我自己已有效認領的地**
+//! （[`SignStore::owner_key_at`] 對不上我），掃一圈 [`PlacementLog::owners_within`]：只要
+//! 有**別人**（非我）在這圈內放過至少 [`OTHER_BUILDER_STEAL_THRESHOLD`] 塊、而我自己在這圈
+//! 放過不到 [`SELF_CONTRIBUTION_EXEMPT`] 塊——判定這是「明顯是別人蓋好、我沒出過力」的既有
+//! 建物，拒絕這塊插旗，浮出提示引導去找空地或找屋主談。**自己出過力就永遠放行**（哪怕別人在
+//! 附近放得更多）：不擋眾力共築（#1248 PR）的合建情境，也不擋在自己土地上正常擴建。
+//!
+//! **誠實邊界（v1 限制，留給下一刀）**：①密度用「單一其他 owner 是否達門檻」判定，不加總
+//! 多人各自的少量貢獻——刻意如此，避免多位合建者各自貢獻一點就被誤判成「有人在搶地」；
+//! ②`SELF_CONTRIBUTION_EXEMPT` 門檻不高，惡意者理論上能先隨手放幾塊填料墊高自己的計數再插旗
+//! ——比今日「零成本、一鎬就搶」仍是實質提高門檻，但不是密不透風；③`PlacementLog` 重啟歸零，
+//! 剛重啟後的窗口這道守衛暫時空白，直到重新累積放置紀錄。
+//!
 //! **純邏輯層**：零 async、零鎖、零 IO；確定性純函式，窮舉可測。鎖 / 距離掃描 / 廣播在
 //! `voxel_ws.rs`（短鎖即釋、不巢狀，守死鎖鐵律）。
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Write},
 };
@@ -342,6 +365,85 @@ pub fn append_trust(entry: &TrustEntry) {
     let Ok(line) = serde_json::to_string(entry) else { return; };
     let Ok(mut f) = OpenOptions::new().create(true).append(true).open(TRUST_PATH) else { return; };
     let _ = writeln!(f, "{line}");
+}
+
+// ── 反插旗守衛 v5（自主提案切片，補 v1 review 留白的「無主建物被搶」活口）─────────────────
+
+/// [`PlacementLog`] 全域上限（筆）：只留「最近」的放置紀錄，超過淘汰最舊——有界成長，
+/// 不會隨伺服器跑越久越吃記憶體。夠大到不會被幾間房子的建造量瞬間洗掉。
+pub const RECENT_PLACEMENT_CAP: usize = 20_000;
+
+/// 立「家」牌時，這一圈內若有**別人**放過至少這麼多塊，判定「這裡明顯是別人蓋好的建物」。
+pub const OTHER_BUILDER_STEAL_THRESHOLD: usize = 20;
+
+/// 立「家」牌時，只要我自己在這一圈放過至少這麼多塊，一律放行（自建／合建永遠不被擋）。
+pub const SELF_CONTRIBUTION_EXEMPT: usize = 5;
+
+/// 最近方塊放置紀錄（純記憶體，見模組頭註「誠實邊界」）：只記已登入帳號的成功放置，
+/// 供反插旗守衛判斷「這一圈最近是誰在蓋」。零鎖／零 IO——由 `voxel_ws.rs` 包進 `RwLock`。
+#[derive(Default)]
+pub struct PlacementLog {
+    entries: VecDeque<(String, i32, i32)>,
+}
+
+impl PlacementLog {
+    /// 空 log（測試 / 首次啟動）。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 記一筆成功放置：`owner_key`＝放置者穩定歸屬鍵（帳號 email）。超過
+    /// [`RECENT_PLACEMENT_CAP`] 淘汰最舊。
+    pub fn record(&mut self, owner_key: &str, x: i32, z: i32) {
+        self.entries.push_back((owner_key.to_string(), x, z));
+        while self.entries.len() > RECENT_PLACEMENT_CAP {
+            self.entries.pop_front();
+        }
+    }
+
+    /// (cx, cz) 方圓 `radius`（方塊，XZ 平面，同 [`CLAIM_RADIUS`] 的圓形判定）內，所有紀錄
+    /// 的 `owner_key`（含重複，供密度計數；呼叫端交給
+    /// [`claim_blocked_by_existing_structure`] 判定）。
+    pub fn owners_within(&self, cx: i32, cz: i32, radius: f32) -> Vec<String> {
+        let r2 = radius * radius;
+        self.entries
+            .iter()
+            .filter(|(_, x, z)| {
+                let dx = (*x - cx) as f32;
+                let dz = (*z - cz) as f32;
+                dx * dx + dz * dz <= r2
+            })
+            .map(|(o, _, _)| o.clone())
+            .collect()
+    }
+}
+
+/// 這塊「家」牌若此刻立下，會不會落在「明顯是別人蓋好、我沒出過力」的既有建物上——
+/// 反插旗守衛的核心判定。純函式、確定性、可測；`nearby_owners` 是呼叫端已用
+/// [`PlacementLog::owners_within`] 篩過半徑範圍的放置紀錄。
+///
+/// `already_owns_this_spot=true`（這座標目前的告示牌已經是我自己有效認領的地，見
+/// [`crate::voxel_sign::SignStore::owner_key_at`]）一律放行——單純改寫自己既有的牌，
+/// 不是新插旗，不該被自己或朋友在自己地上蓋的東西擋下。
+pub fn claim_blocked_by_existing_structure(
+    requester_owner_key: &str,
+    already_owns_this_spot: bool,
+    nearby_owners: &[String],
+) -> bool {
+    if already_owns_this_spot {
+        return false;
+    }
+    let self_count = nearby_owners.iter().filter(|o| o.as_str() == requester_owner_key).count();
+    if self_count >= SELF_CONTRIBUTION_EXEMPT {
+        return false;
+    }
+    let mut other_counts: HashMap<&str, usize> = HashMap::new();
+    for o in nearby_owners {
+        if o.as_str() != requester_owner_key {
+            *other_counts.entry(o.as_str()).or_insert(0) += 1;
+        }
+    }
+    other_counts.values().any(|c| *c >= OTHER_BUILDER_STEAL_THRESHOLD)
 }
 
 #[cfg(test)]
@@ -650,5 +752,106 @@ mod tests {
             TrustedFriend { trusted_key: "d@example.com".into(), trusted_name: "小明".into() },
         ];
         assert!(matches!(resolve_trust_target(&trusted, &[]), TrustLookup::Ambiguous));
+    }
+
+    // ── PlacementLog（反插旗守衛 v5）───────────────────────────────────────────────────
+
+    #[test]
+    fn placement_log_owners_within_filters_by_radius() {
+        let mut log = PlacementLog::new();
+        log.record("a@example.com", 0, 0);
+        log.record("a@example.com", 100, 100); // 遠在圈外
+        let owners = log.owners_within(0, 0, 6.0);
+        assert_eq!(owners, vec!["a@example.com".to_string()]);
+    }
+
+    #[test]
+    fn placement_log_owners_within_includes_boundary_point() {
+        let mut log = PlacementLog::new();
+        log.record("a@example.com", 6, 0); // 恰好在半徑上
+        assert_eq!(log.owners_within(0, 0, 6.0).len(), 1);
+        assert_eq!(log.owners_within(0, 0, 5.99).len(), 0);
+    }
+
+    #[test]
+    fn placement_log_owners_within_empty_when_no_records() {
+        let log = PlacementLog::new();
+        assert!(log.owners_within(0, 0, 6.0).is_empty());
+    }
+
+    #[test]
+    fn placement_log_evicts_oldest_over_cap() {
+        let mut log = PlacementLog::new();
+        for i in 0..(RECENT_PLACEMENT_CAP + 10) {
+            log.record("a@example.com", i as i32, 0);
+        }
+        assert_eq!(log.entries.len(), RECENT_PLACEMENT_CAP);
+        // 最舊的 (0,0)~(9,0) 應已被淘汰，範圍窄查詢命中不到。
+        assert!(log.owners_within(0, 0, 0.5).is_empty());
+        // 最新一筆仍在。
+        let last_x = (RECENT_PLACEMENT_CAP + 9) as i32;
+        assert_eq!(log.owners_within(last_x, 0, 0.5).len(), 1);
+    }
+
+    // ── claim_blocked_by_existing_structure（反插旗守衛 v5）─────────────────────────────
+
+    #[test]
+    fn claim_not_blocked_on_empty_land() {
+        assert!(!claim_blocked_by_existing_structure("me@example.com", false, &[]));
+    }
+
+    #[test]
+    fn claim_not_blocked_when_already_own_this_spot() {
+        // 這是我自己既有的地——就算範圍內全是「別人」的放置紀錄（例如信任朋友幫我蓋），
+        // 改寫自己的牌永遠放行。
+        let others: Vec<String> = (0..50).map(|_| "friend@example.com".to_string()).collect();
+        assert!(!claim_blocked_by_existing_structure("me@example.com", true, &others));
+    }
+
+    #[test]
+    fn claim_not_blocked_when_self_contributed_enough() {
+        let mut nearby: Vec<String> =
+            (0..30).map(|_| "stranger@example.com".to_string()).collect();
+        nearby.extend((0..SELF_CONTRIBUTION_EXEMPT).map(|_| "me@example.com".to_string()));
+        assert!(!claim_blocked_by_existing_structure("me@example.com", false, &nearby));
+    }
+
+    #[test]
+    fn claim_blocked_when_stranger_house_dense_and_self_absent() {
+        let nearby: Vec<String> = (0..OTHER_BUILDER_STEAL_THRESHOLD)
+            .map(|_| "stranger@example.com".to_string())
+            .collect();
+        assert!(claim_blocked_by_existing_structure("me@example.com", false, &nearby));
+    }
+
+    #[test]
+    fn claim_not_blocked_when_stranger_density_below_threshold() {
+        let nearby: Vec<String> = (0..(OTHER_BUILDER_STEAL_THRESHOLD - 1))
+            .map(|_| "stranger@example.com".to_string())
+            .collect();
+        assert!(!claim_blocked_by_existing_structure("me@example.com", false, &nearby));
+    }
+
+    #[test]
+    fn claim_not_blocked_when_no_single_owner_reaches_threshold() {
+        // 兩位不同的人各放不到門檻的量（合建情境的近似）——不判定成「有人在搶地」。
+        let mut nearby: Vec<String> = (0..(OTHER_BUILDER_STEAL_THRESHOLD - 1))
+            .map(|_| "a@example.com".to_string())
+            .collect();
+        nearby.extend(
+            (0..(OTHER_BUILDER_STEAL_THRESHOLD - 1)).map(|_| "b@example.com".to_string()),
+        );
+        assert!(!claim_blocked_by_existing_structure("me@example.com", false, &nearby));
+    }
+
+    #[test]
+    fn claim_blocked_self_count_below_exempt_still_blocked() {
+        let mut nearby: Vec<String> = (0..OTHER_BUILDER_STEAL_THRESHOLD)
+            .map(|_| "stranger@example.com".to_string())
+            .collect();
+        nearby.extend(
+            (0..(SELF_CONTRIBUTION_EXEMPT - 1)).map(|_| "me@example.com".to_string()),
+        );
+        assert!(claim_blocked_by_existing_structure("me@example.com", false, &nearby));
     }
 }
