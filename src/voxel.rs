@@ -1020,6 +1020,20 @@ pub fn biome_at_voxel(wx: i32, wz: i32) -> VoxelBiome {
 
 /// 地表高度（世界方塊 Y）：多 octave value noise 疊加。確定性 → 同 (wx,wz) 永遠同高度。
 pub fn height_at(wx: i32, wz: i32) -> i32 {
+    let base = height_at_base(wx, wz);
+    let carve = river_carve_depth(wx, wz);
+    if carve > 0.0 {
+        (base as f32 - carve).round() as i32
+    } else {
+        base
+    }
+}
+
+/// 未經河流下凹的原始地形高度（丘陵/盆地噪聲）。`height_at` 在此之上疊加河道
+/// （[`river_carve_depth`]）；世界其餘生成邏輯一律呼叫 `height_at`（已含河流），
+/// 只有河流自己的水面計算（[`river_water_top`]）需要「河流不存在時地表本該多高」
+/// 這個原始基準，才拆成獨立函式。
+fn height_at_base(wx: i32, wz: i32) -> i32 {
     let x = wx as f32;
     let z = wz as f32;
     // 大尺度起伏（丘陵/盆地）+ 中尺度細節。把 value_noise(0..1) 平移成「以 0 為中心」
@@ -1030,6 +1044,65 @@ pub fn height_at(wx: i32, wz: i32) -> i32 {
     h += (value_noise(x / 18.0, z / 18.0, SEED ^ 0x_9e37_79b9) - 0.5) * 5.0;
     h += (value_noise(x / 7.0, z / 7.0, SEED ^ 0x_1234_5678) - 0.5) * 2.0;
     BASE_HEIGHT + h.round() as i32
+}
+
+// ── 世界河流 v1（自主提案切片）──────────────────────────────────────────────
+//
+// 真缺口：世界地形至今只有 `height_at` 噪聲窪地偶然形成的零星小湖泊/海灣，從未有過
+// 一條「貫穿整個地圖、把遠方連在一起」的定向水系——河流。本節讓世界沿 z 軸長出一條
+// 蜿蜒（雙頻 sin 疊加）貫穿地圖的河，河床平滑下凹、往兩岸線性回升到原始地表
+// （`RIVER_BANK_WIDTH` ≥ `RIVER_DEPTH` → 每格坡度 ≤1，不形成峭壁牆）。
+//
+// 居民/野兔物理判定水體零碰撞（`Block::is_solid()` 排除 `Water`），本就會直接蹚水
+// 穿越；平緩坡度只是確保「爬得上岸」，長途遠行/巡邏路徑不會被攔腰截斷（見
+// `voxel_residents::move_axis` 逐軸自動踏階 ~1 格的既有假設）。河流刻意繞開四位
+// 居民的家域核心（出生點 (0,0) 與南/西/東方 75 格內，見 `resident_home_base`），
+// 落在更遠處當一處「要走出去才找得到」的地圖級新地標，呼應既有邊陲探索精神。
+//
+// 純函式、確定性、O(1)（無鄰域搜尋）——與既有 `is_cave_void`／`wildflower_block_at`
+// 同一寫法哲學。零 migration（無狀態程序生成）、零新方塊 ID（沿用既有 Water/Sand/
+// Dirt/Grass，河岸沙灘由既有「近海平面→Sand」表層邏輯自然浮現，不必新增裝飾方塊）。
+
+/// 河道核心（水域）半寬（世界方塊）——中心線左右各 3 格是固定深度的河床。
+const RIVER_HALF_WIDTH: f32 = 3.0;
+/// 河岸緩坡帶寬度（核心之外再往外這麼多格，深度線性回升到 0）。
+/// 刻意 ≥ `RIVER_DEPTH`，讓斜率 ≤1 格/格，居民踏階能力足以爬上岸、不形成峭壁。
+const RIVER_BANK_WIDTH: f32 = 5.0;
+/// 河道核心下凹深度（世界方塊）。
+const RIVER_DEPTH: f32 = 4.0;
+/// 河流蜿蜒基準 x 座標——刻意離四位居民家域核心（x∈[-75,75]）夠遠，河不會切過主城。
+const RIVER_BASE_X: f32 = 220.0;
+
+/// 河流中心線在給定 z 的世界 x 座標。雙頻 sin 疊加出自然蜿蜒（大彎+小波折），
+/// 純解析式、無鄰域搜尋，O(1)。
+fn river_center_x(wz: f32) -> f32 {
+    RIVER_BASE_X + (wz / 140.0).sin() * 60.0 + (wz / 37.0).sin() * 14.0
+}
+
+/// 給定世界座標「應下凹的深度」：核心 0..RIVER_DEPTH 全深，緩坡帶線性回落到 0，
+/// 再外面恆 0（不是河）。純函式、確定性、O(1)。
+fn river_carve_depth(wx: i32, wz: i32) -> f32 {
+    let dist = (wx as f32 - river_center_x(wz as f32)).abs();
+    if dist <= RIVER_HALF_WIDTH {
+        RIVER_DEPTH
+    } else if dist <= RIVER_HALF_WIDTH + RIVER_BANK_WIDTH {
+        let t = (dist - RIVER_HALF_WIDTH) / RIVER_BANK_WIDTH; // 0..1，離核心愈遠愈淺
+        RIVER_DEPTH * (1.0 - t)
+    } else {
+        0.0
+    }
+}
+
+/// 若此座標落在河道核心（非緩坡帶，真正的水域）內，回傳河面所在的世界 Y
+/// （原始地表下方一格——河床已被 `river_carve_depth` 下凹出足夠深度，水面貼著
+/// 「這裡本該有的地表」下緣，同一段河不論流過平地或山丘都自然吃出一段水深）；
+/// 否則 `None`（緩坡帶只是乾燥的斜坡河岸，不淹水）。純函式、確定性、O(1)。
+fn river_water_top(wx: i32, wz: i32) -> Option<i32> {
+    let dist = (wx as f32 - river_center_x(wz as f32)).abs();
+    if dist > RIVER_HALF_WIDTH {
+        return None;
+    }
+    Some(height_at_base(wx, wz) - 1)
 }
 
 /// 某格 (cellx,cellz) 是否長樹；長的話回傳該樹（已驗證地表為草、在保護圈外）。
@@ -1549,6 +1622,13 @@ pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
         // 地表之上：海平面（含）以下補水。
         if wy <= SEA_LEVEL {
             return Block::Water;
+        }
+        // 世界河流 v1：河道核心（非緩坡帶）水面下補水——不論流過平地或山丘，
+        // 河都吃出一段水深；與海平面同層級優先（既有 landmark 不會落在河核心裡）。
+        if let Some(river_top) = river_water_top(wx, wz) {
+            if wy <= river_top {
+                return Block::Water;
+            }
         }
         // 古代遺跡（世界第一種可探索地標）：極稀有、離出生點夠遠，優先於樹——
         // 巧合命中同一柱腳座標時，殘柱理應蓋過恰好路過的樹苗。
@@ -3480,5 +3560,95 @@ mod tests {
         assert_eq!(Block::from_u8(Block::RelicGlow as u8), Some(Block::RelicGlow));
         assert!(Block::RelicGlow.is_placeable(), "遺跡核心挖下後應可重新擺放當光源");
         assert!(Block::RelicGlow.is_solid());
+    }
+
+    // ── 世界河流 v1 ──────────────────────────────────────────────────────
+
+    #[test]
+    fn river_center_x_is_deterministic() {
+        for wz in [-500, -137, 0, 42, 999] {
+            assert_eq!(river_center_x(wz as f32), river_center_x(wz as f32));
+        }
+    }
+
+    #[test]
+    fn river_carve_depth_zero_at_village_home_bases() {
+        // 四位居民家域核心：出生點 (0,0) 與南/西/東方 75 格，河流不該淹到主城。
+        for (hx, hz) in [(0, 0), (0, 75), (-75, 0), (75, 0)] {
+            assert_eq!(
+                river_carve_depth(hx, hz), 0.0,
+                "家域核心 ({hx},{hz}) 不該落在河道範圍內"
+            );
+        }
+    }
+
+    #[test]
+    fn river_carve_depth_full_at_centerline_zero_beyond_band() {
+        // 中心線上恰為最深；遠遠偏離中心線（超出核心+緩坡帶）應完全不下凹。
+        let wz = 30;
+        let cx = river_center_x(wz as f32).round() as i32;
+        assert_eq!(river_carve_depth(cx, wz), RIVER_DEPTH);
+        assert_eq!(river_carve_depth(cx + 1000, wz), 0.0);
+    }
+
+    #[test]
+    fn river_carve_depth_slope_never_exceeds_one_block_per_step() {
+        // 安全不變式：沿 x 方向逐格掃描緩坡帶，深度變化每步 ≤1 格——避免峭壁牆
+        // 讓居民（零避水邏輯、靠踏階爬坡）被攔腰截斷。掃過核心+緩坡帶還多留餘裕。
+        for wz in [-300, -50, 0, 77, 260] {
+            let cx = river_center_x(wz as f32).round() as i32;
+            let span = (RIVER_HALF_WIDTH + RIVER_BANK_WIDTH).ceil() as i32 + 4;
+            let mut prev = river_carve_depth(cx - span - 1, wz);
+            for dx in -span..=span {
+                let cur = river_carve_depth(cx + dx, wz);
+                assert!(
+                    (cur - prev).abs() <= 1.0 + 1e-4,
+                    "wz={wz} dx={dx}: 深度從 {prev} 跳到 {cur}，坡度超過 1 格/步"
+                );
+                prev = cur;
+            }
+        }
+    }
+
+    #[test]
+    fn height_at_matches_base_outside_river_band() {
+        // 家域核心遠離河流，height_at 應與未下凹的原始地形完全一致。
+        for (hx, hz) in [(0, 0), (0, 75), (-75, 0), (75, 0)] {
+            assert_eq!(height_at(hx, hz), height_at_base(hx, hz));
+        }
+    }
+
+    #[test]
+    fn height_at_is_carved_lower_at_river_centerline() {
+        let wz = 10;
+        let cx = river_center_x(wz as f32).round() as i32;
+        let base = height_at_base(cx, wz);
+        assert_eq!(height_at(cx, wz), base - RIVER_DEPTH as i32);
+    }
+
+    #[test]
+    fn block_at_is_water_inside_river_core_regardless_of_ambient_height() {
+        // 不論河核心當地原始地形高於海平面多少，河面附近都應是水——
+        // 這正是「河能切過丘陵」與既有海平面補水機制的區別。
+        let wz = 5;
+        let cx = river_center_x(wz as f32).round() as i32;
+        let base = height_at_base(cx, wz);
+        let river_top = base - 1;
+        assert_eq!(block_at(cx, river_top, wz), Block::Water);
+        assert_eq!(block_at(cx, river_top - 1, wz), Block::Water);
+    }
+
+    #[test]
+    fn block_at_dry_above_river_water_top() {
+        let wz = 5;
+        let cx = river_center_x(wz as f32).round() as i32;
+        let base = height_at_base(cx, wz);
+        assert_ne!(block_at(cx, base + 5, wz), Block::Water, "河面之上應離水");
+    }
+
+    #[test]
+    fn river_water_top_none_far_from_river() {
+        assert_eq!(river_water_top(0, 0), None);
+        assert_eq!(river_water_top(-9999, 500), None);
     }
 }
