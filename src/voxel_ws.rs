@@ -92,6 +92,7 @@ use crate::voxel_farm_admire as vfarmadmire;
 use crate::voxel_structure_name as vstructname;
 use crate::voxel_village_milestone as vvillms;
 use crate::voxel_monument as vmonument;
+use crate::voxel_colony_milestone as vcolms;
 use crate::voxel_lifeproject as vlife;
 use crate::voxel_confide as vconfide;
 use crate::voxel_request as vrequest;
@@ -2603,6 +2604,10 @@ struct VoxelHub {
     /// 哪些集體門檻」帳本，與 `milestones`（per-player）刻意區隔。持久化到
     /// `data/voxel_village_milestones.jsonl`（append-only，重啟後仍記得）。
     village_milestones: RwLock<vvillms::VillageMilestoneStore>,
+    /// 殖民地集體里程碑 v1（自主提案切片；補 `voxel_settle` 地基缺口）：以聚落 id 分帳的
+    /// 「這座殖民地達成過哪些人口門檻」帳本，與主村專屬的 `village_milestones` 刻意區隔。
+    /// 持久化到 `data/voxel_colony_milestones.jsonl`（append-only，重啟後仍記得）。
+    colony_milestones: RwLock<vcolms::ColonyMilestoneStore>,
     /// 個人路標 v1（自主提案切片）：玩家名 → 自己插的路標（名字＋座標），在羅盤/雷達面板
     /// 與居民座標並列導航。持久化到 data/voxel_waypoints.jsonl（append-only，含刪除
     /// tombstone，重啟後仍記得）。
@@ -3619,6 +3624,10 @@ fn hub() -> &'static VoxelHub {
             village_milestones: RwLock::new(vvillms::VillageMilestoneStore::from_entries(
                 vvillms::load_village_milestones(),
             )),
+            // 啟動時從 data/voxel_colony_milestones.jsonl 載回各殖民地已達成的集體門檻（重啟後仍記得）。
+            colony_milestones: RwLock::new(vcolms::ColonyMilestoneStore::from_entries(
+                vcolms::load_colony_milestones(),
+            )),
             // 啟動時從 data/voxel_waypoints.jsonl 載回玩家個人路標（含刪除 tombstone，重啟後仍記得）。
             waypoints: RwLock::new(vwaypoint::WaypointStore::from_entries(vwaypoint::load_entries())),
             // 暗影生物 v1：啟動時無暗影（入夜後才在暗處慢慢冒）。
@@ -4255,6 +4264,104 @@ fn broadcast_block(x: i32, y: i32, z: i32, b: Block) {
         serde_json::json!({ "t": "block", "x": x, "y": y, "z": z, "b": b as u8 }).to_string(),
     );
     let _ = hub().tx.send(msg);
+}
+
+/// 殖民地集體里程碑檢查（自主提案切片；補 `voxel_settle` 頭註自己留白的地基缺口——紀念柱／
+/// 村莊集體里程碑此前只認主村）：某聚落人口剛好變動（遷居/誕生）後呼叫一次。`sid` 為主村
+/// 時直接早退（主村已有自己的 856/885 那一套，兩份帳本刻意不共用）。短鎖循序即釋、廣播與
+/// 落地皆在鎖外（守 prod 死鎖鐵律），比照既有村莊里程碑/村碑呼叫慣例。
+fn check_colony_milestone(sid: u64) {
+    if sid == vsettle::MAIN_SETTLEMENT {
+        return;
+    }
+    let count = { hub().settlements.read().unwrap().residents_of(sid).len() }; // settlements 讀鎖釋放
+    let new_tier = {
+        hub().colony_milestones.write().unwrap().try_unlock_new_tier(sid, count)
+    }; // colony_milestones 寫鎖釋放
+    let Some(tier) = new_tier else { return };
+    vcolms::append_colony_milestone(&vcolms::ColonyMilestoneEntry {
+        settlement: sid,
+        id: tier.id.to_string(),
+    });
+
+    let Some(cseq) = vsettle::settlement_colony_seq(sid) else { return };
+    let colony = {
+        hub().colonies.read().unwrap().all().iter().find(|c| c.seq == cseq).cloned()
+    }; // colonies 讀鎖釋放
+    let Some(colony) = colony else { return };
+    let cname = colony.name.clone();
+
+    // 這座聚落自己的居民名冊——只有他們會慶祝/立碑，主村居民不會為遠方殖民地的成長冒泡。
+    let member_ids: std::collections::HashSet<String> =
+        { hub().settlements.read().unwrap().residents_of(sid).into_iter().collect() }; // settlements 讀鎖釋放
+
+    let pick = vfarm::now_secs() as usize;
+    {
+        let mut residents = hub().residents.write().unwrap();
+        for (i, r) in residents.iter_mut().enumerate() {
+            if member_ids.contains(&r.id) && r.say.is_empty() {
+                r.say = vcolms::celebrate_say_line(pick + i).to_string();
+                r.say_timer = SAY_SECS;
+                r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+            }
+        }
+    } // residents 寫鎖釋放
+    broadcast_players();
+    vfeed::append_feed(
+        "殖民地里程碑",
+        &cname,
+        &vcolms::celebrate_feed_line(&cname, tier.name_zh, count),
+    );
+
+    // 殖民地自己的村碑：沿用既有村碑幾何（純函式，零新程式碼），只是落在殖民地自己的中心。
+    let Some(tier_idx) = vcolms::tier_index(tier.id) else { return };
+    let sy = vbuild::surface_y(colony.cx, colony.cz);
+    let cells = vmonument::monument_cells(colony.cx, colony.cz, sy, tier_idx);
+    let mut placed: Vec<(i32, i32, i32, Block)> = Vec::new();
+    {
+        let mut world = hub().deltas.write().unwrap();
+        for &(x, y, z, blk) in &cells {
+            let cur = voxel::effective_block_at(&world, x, y, z);
+            if cur == blk {
+                continue; // 已是目標（重跑冪等）
+            }
+            if cur == Block::Air {
+                voxel::set_block(&mut world, x, y, z, blk);
+                placed.push((x, y, z, blk));
+            }
+        }
+    } // deltas 寫鎖釋放
+    for &(x, y, z, blk) in &placed {
+        broadcast_block(x, y, z, blk);
+        vbuild::append_world_block(x, y, z, blk as u8);
+    }
+    if placed.is_empty() {
+        return;
+    }
+    let height = vmonument::total_height(tier_idx);
+    vfeed::append_feed(
+        "殖民地里程碑",
+        &cname,
+        &vcolms::colony_monument_feed_line(&cname, tier.name_zh, height),
+    );
+    let summary = vcolms::colony_monument_memory_line(&cname, height);
+    let roster: Vec<(String, String)> = {
+        let rs = hub().residents.read().unwrap();
+        rs.iter()
+            .filter(|r| member_ids.contains(&r.id))
+            .map(|r| (r.id.to_string(), r.name.to_string()))
+            .collect()
+    }; // residents 讀鎖釋放
+    let mut entries = Vec::new();
+    {
+        let mut mem = hub().memory.write().unwrap();
+        for (rid, rname) in &roster {
+            entries.push(mem.add_memory(rid, rname, &summary));
+        }
+    } // memory 寫鎖釋放
+    for e in &entries {
+        vmem::append_memory(e);
+    }
 }
 
 /// 廣播一面告示牌的文字變化（寫字/清空/破壞後）給所有連線（ROADMAP 740）。
@@ -12890,6 +12997,8 @@ fn maybe_birth() {
         if parent_sid != vsettle::MAIN_SETTLEMENT {
             let srec = { hub().settlements.write().unwrap().assign(&new_id, parent_sid) }; // 寫鎖釋放
             vsettle::append_settlement(&srec);
+            // 殖民地集體里程碑 v1：這個新生兒讓殖民地人口跨過門檻了嗎？
+            check_colony_milestone(parent_sid);
         }
     }
 
@@ -28458,6 +28567,8 @@ fn migration_kickoff(say_updates: &mut Vec<(String, String)>) -> bool {
         // 聚落歸屬先落地（冪等閘：從此不再列入待遷名單；她的蓋家/擴建從此以殖民地為中心）。
         let srec = { hub().settlements.write().unwrap().assign(&rid, sid) }; // settlements 寫鎖釋放
         vsettle::append_settlement(&srec);
+        // 殖民地集體里程碑 v1：這位拓荒者遷入，讓殖民地人口跨過門檻了嗎？
+        check_colony_milestone(sid);
         let rname = resident_name_of(&rid);
         let old_house = { hub().goals.read().unwrap().house_of(&rid) }; // goals 讀鎖釋放
         match old_house {
