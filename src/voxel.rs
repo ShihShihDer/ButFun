@@ -1204,7 +1204,16 @@ fn river_levee_floor(wx: i32, wz: i32) -> Option<i32> {
 /// 橋所在的固定 z 切片。刻意選在遠離四位居民家域核心（[-75,75] 內，見 `SPAWN_ANCHORS`）
 /// 的距離——河流本身已繞開家域核心（見 `river_carve_depth_zero_at_village_home_bases`），
 /// 橋落在河上，天然繼承這個避讓。
-const BRIDGE_Z: i32 = 260;
+///
+/// review 第三輪教訓：`BRIDGE_Z=260` 東岸原始地表在橋面盡頭恰好陡升（y=9→y=11，
+/// 2 格落差），玩家踏階平滑只吃 1 格，過橋在東岸被小懸崖擋住——橋面高度/位置全
+/// 固定，這個缺陷不是機率性、每次都會發生。`bridge_block_at` 的安全閥只保證「橋面
+/// 架在較低地形之上」，不保證「橋面盡頭到岸的坡度平順」，兩者是獨立的不變式。此值
+/// 改選 230：實測（見 review worktree 一次性掃描工具，審完已刪除，不留在 diff 裡）
+/// 兩岸在橋面盡頭±1格內走道腳高差恆 ≤1、且 `wz∈[229,231]`（`BRIDGE_HALF_WIDTH` 覆蓋
+/// 的整個橋寬）皆平順，離最近家域核心距離同樣遠超 130 格。落地平順不變式見
+/// `bridge_landing_never_steps_more_than_one_block_full_runtime_probe`。
+const BRIDGE_Z: i32 = 230;
 /// 橋面前後半寬（世界方塊）——`BRIDGE_Z ± BRIDGE_HALF_WIDTH` 共 3 格寬的木板便橋。
 const BRIDGE_HALF_WIDTH: i32 = 1;
 /// 橋面比河流全域水位高幾格（淨空）——留出玩家/居民站立通行的空間，且保證橋面
@@ -3958,6 +3967,35 @@ mod tests {
             let (ddx, ddz) = ((cx - ax) as i64, (BRIDGE_Z - az) as i64);
             let dist2 = ddx * ddx + ddz * ddz;
             assert!(dist2 > 130 * 130, "橋 ({cx},{BRIDGE_Z}) 離家域核心 ({ax},{az}) 太近");
+        }
+    }
+
+    #[test]
+    fn bridge_landing_never_steps_more_than_one_block_full_runtime_probe() {
+        // ground-truth 不變式（review 第三輪教訓）：`bridge_deck_never_floats_...`／
+        // x-span 探針都只驗「核心整段有橋」「跨距外恆無橋板」，從沒驗兩端落地——
+        // 剛好漏掉「橋面盡頭到岸坡度」這個獨立缺陷（東岸曾在 y=9→y=11 鑿出 2 格
+        // 斷崖，踏階平滑只吃 1 格）。這裡直接走真實 `bridge_block_at`／`height_at`，
+        // 逐欄比較「走道腳踩高度」（有橋板→`BRIDGE_DECK_Y+1`，否則→`height_at+1`），
+        // 斷言沿橋整個寬度（`BRIDGE_HALF_WIDTH`）、核心+兩端落地緩衝區內，相鄰欄
+        // 恆差 ≤1——把 `BRIDGE_Z` 改回舊值 260 這條測試會直接紅（296→297 落差 2）。
+        for dz in -BRIDGE_HALF_WIDTH..=BRIDGE_HALF_WIDTH {
+            let wz = BRIDGE_Z + dz;
+            let cx = river_center_x(wz as f32).round() as i32;
+            let span = bridge_x_span(wz).ceil() as i32;
+            let mut prev: Option<i32> = None;
+            for dx in -(span + 30)..=(span + 30) {
+                let wx = cx + dx;
+                let planked = bridge_block_at(wx, BRIDGE_DECK_Y, wz) == Some(Block::Plank);
+                let standing = if planked { BRIDGE_DECK_Y + 1 } else { height_at(wx, wz) + 1 };
+                if let Some(p) = prev {
+                    assert!(
+                        (standing - p).abs() <= 1,
+                        "wx={wx} wz={wz}: 走道腳高從 {p} 跳到 {standing}，落差 >1 格踏階吃不下"
+                    );
+                }
+                prev = Some(standing);
+            }
         }
     }
 }
