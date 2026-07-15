@@ -1177,6 +1177,96 @@ fn river_levee_floor(wx: i32, wz: i32) -> Option<i32> {
     Some(RIVER_WATER_LEVEL + 1)
 }
 
+// ── 世界第一座橋 v1（自主提案切片，接續世界河流 v1／ROADMAP 1005）──────────────
+//
+// 真缺口：河流（1005）第一次讓地圖裂出一條貫穿遠方的水系，但河純粹是地形——世界從沒
+// 有一件「人工造物」跨在它之上。這一刀在河流上架一座固定渡口木橋：世界地圖第一次
+// 不只是「河流過的地方」，也長出一處「有人在這裡搭了橋」的痕跡，呼應遺跡（838）／
+// 溫泉／世界樹（940）等「值得走遠一趟」的地圖級地標傳統。
+//
+// 幾何安全設計（吸取 PR #1300 四輪教訓：地標的落點判斷一律跟「真實地形」比大小，
+// 不要用固定距離猜——固定距離在噪聲地形前總會在邊界跳動；也吸取 PR #1301 第一輪
+// 教訓：只鎖 z 不夠，x 向沒有邊界時「安全閥」對半數平原地表恆真，橋會漫延成橫貫
+// 整張地圖的懸空棧道）：橋面高度是全域常數 `BRIDGE_DECK_Y`（不隨 wx/wz 變動，同
+// `RIVER_WATER_LEVEL` 手法），落點有兩道閘——① x 向必須落在河道跨距內
+// （[`bridge_x_span`]：河核心半寬 + 當地緩坡帶寬度 + 橋台餘裕，把橋夾在「這條河
+// 跨過的範圍」）；② 「這一欄的原始地表本就低於橋面」（`height_at(wx,wz) <
+// BRIDGE_DECK_Y`）才鋪橋面——這個條件是第二道安全閥：任何鋪出橋面的欄位，其下方
+// 原本就比橋面低（河水或凹陷地形），橋天生就架在「比它低」的東西上方，這正是橋
+// 該有的樣子，不可能出現「橋面貼著同高或更高地形側向露出」那類缺陷。橋不改動
+// `height_at`／不動地形本身，只在地表之上疊加，純函式、確定性、O(1)，零
+// migration、零協議破壞、零新方塊 ID（沿用既有木板 `Plank`）。
+//
+// 橋只落在單一固定 z 切片（世界唯一一座，值得走遠一趟；比照世界樹「全世界僅一株」
+// 走單一固定地標手法，而非像遺跡/溫泉格狀機率散佈各處——世界目前只有一條河，
+// 配一座橋恰如其分，多座留給未來刀）。
+
+/// 橋所在的固定 z 切片。刻意選在遠離四位居民家域核心（[-75,75] 內，見 `SPAWN_ANCHORS`）
+/// 的距離——河流本身已繞開家域核心（見 `river_carve_depth_zero_at_village_home_bases`），
+/// 橋落在河上，天然繼承這個避讓。
+///
+/// review 第三輪教訓：`BRIDGE_Z=260` 東岸原始地表在橋面盡頭恰好陡升（y=9→y=11，
+/// 2 格落差），玩家踏階平滑只吃 1 格，過橋在東岸被小懸崖擋住——橋面高度/位置全
+/// 固定，這個缺陷不是機率性、每次都會發生。`bridge_block_at` 的安全閥只保證「橋面
+/// 架在較低地形之上」，不保證「橋面盡頭到岸的坡度平順」，兩者是獨立的不變式。此值
+/// 改選 230：實測（見 review worktree 一次性掃描工具，審完已刪除，不留在 diff 裡）
+/// 兩岸在橋面盡頭±1格內走道腳高差恆 ≤1、且 `wz∈[229,231]`（`BRIDGE_HALF_WIDTH` 覆蓋
+/// 的整個橋寬）皆平順，離最近家域核心距離同樣遠超 130 格。落地平順不變式見
+/// `bridge_landing_never_steps_more_than_one_block_full_runtime_probe`。
+const BRIDGE_Z: i32 = 230;
+/// 橋面前後半寬（世界方塊）——`BRIDGE_Z ± BRIDGE_HALF_WIDTH` 共 3 格寬的木板便橋。
+const BRIDGE_HALF_WIDTH: i32 = 1;
+/// 橋面比河流全域水位高幾格（淨空）——留出玩家/居民站立通行的空間，且保證橋面
+/// 恆高於 [`RIVER_WATER_LEVEL`]，不會與河水填補邏輯衝突（`block_at` 河水只填到
+/// `RIVER_WATER_LEVEL`，橋面在其上方 [`BRIDGE_DECK_CLEARANCE`] 格）。
+const BRIDGE_DECK_CLEARANCE: i32 = 2;
+/// 橋面世界 Y 座標——全域常數，理由同 `RIVER_WATER_LEVEL`：不隨 wx/wz 變動，
+/// 任兩個相鄰欄只要都判定「架橋」，橋面高度必是同一個數字，橋面本身不可能有
+/// 高低落差斷層。
+const BRIDGE_DECK_Y: i32 = RIVER_WATER_LEVEL + BRIDGE_DECK_CLEARANCE;
+/// 橋台在河岸緩坡帶之外，再往乾地多鋪這麼多格（讓橋看起來「搭在岸上」而非
+/// 貼著緩坡帶邊界硬切）。與 [`bridge_x_span`] 合力把橋夾在河道跨距內——
+/// review 指出上一版完全沒有 x 向邊界，這個常數就是補上的邊界寬度。
+const BRIDGE_ABUTMENT: f32 = 6.0;
+
+/// 橋在這個 z 切片允許鋪板的 x 向半跨距：河核心半寬 + 當地緩坡帶寬度
+/// （[`river_bank_width`]，隨地形動態撐開）+ 橋台餘裕。只有落在
+/// `river_center_x(wz) ± bridge_x_span(wz)` 內的欄位才可能架橋，橋因此
+/// 天生被夾在「這條河跨過的範圍」，不會漫延到整條 z 線的其他地形上。
+fn bridge_x_span(wz: i32) -> f32 {
+    RIVER_HALF_WIDTH + river_bank_width(wz) + BRIDGE_ABUTMENT
+}
+
+/// 若此座標落在橋面範圍內，回傳橋面/欄杆方塊；否則 `None`。
+///
+/// 落點條件有兩道閘：x 向必須落在 [`bridge_x_span`] 之內（把橋夾在河道跨距內，
+/// 修正 review 指出的「完全沒有 x 邊界」缺陷），且 `height_at(wx,wz) < BRIDGE_DECK_Y`
+/// ——只有原始地形本就低於橋面的欄位才鋪板，見本節開頭「幾何安全設計」說明。
+/// 純函式、確定性、O(1)。
+fn bridge_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
+    let dz = wz - BRIDGE_Z;
+    if dz.abs() > BRIDGE_HALF_WIDTH {
+        return None;
+    }
+    let center = river_center_x(wz as f32);
+    if (wx as f32 - center).abs() > bridge_x_span(wz) {
+        return None; // 超出河道跨距，橋不會漫延到這裡
+    }
+    if height_at(wx, wz) >= BRIDGE_DECK_Y {
+        return None; // 這一欄地勢本就夠高，橋跟地面自然相接、不必額外鋪板
+    }
+    if wy == BRIDGE_DECK_Y {
+        return Some(Block::Plank); // 橋面
+    }
+    // 兩側欄杆：只在橋面兩條最外緣（dz 取極值）、橋面正上方一格，防止走在橋上
+    // 誤以為河邊也能走過去而跌落水中。與橋面同一個安全閥（同一欄才鋪），
+    // 不可能出現「欄杆懸空、橋面卻沒鋪」的錯位。
+    if dz.abs() == BRIDGE_HALF_WIDTH && wy == BRIDGE_DECK_Y + 1 {
+        return Some(Block::Plank); // 欄杆
+    }
+    None
+}
+
 /// 某格 (cellx,cellz) 是否長樹；長的話回傳該樹（已驗證地表為草、在保護圈外）。
 /// 純函式、確定性（同格永遠同結果）、可測。是「樹是地形一部分」的單一真相來源。
 /// 樹機率依群系：森林 0.95 + 第二棵樹 0.85（每格可長兩棵→實測密度約草原 2.5–3 倍）、
@@ -1701,6 +1791,12 @@ pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
             if wy <= river_top {
                 return Block::Water;
             }
+        }
+        // 世界第一座橋（世界河流 v1 的延伸）：固定渡口木橋，優先於其餘地標——
+        // 落點條件已保證橋面永遠架在較低地形之上（見該節「幾何安全設計」），
+        // 巧合命中同一欄位時，橋面理應蓋過恰好路過的樹苗/野花。
+        if let Some(bb) = bridge_block_at(wx, wy, wz) {
+            return bb;
         }
         // 古代遺跡（世界第一種可探索地標）：極稀有、離出生點夠遠，優先於樹——
         // 巧合命中同一柱腳座標時，殘柱理應蓋過恰好路過的樹苗。
@@ -3759,6 +3855,146 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn bridge_block_at_is_deterministic() {
+        for (wx, wy, wz) in [(180, 6, 259), (220, 6, 260), (260, 7, 261)] {
+            assert_eq!(bridge_block_at(wx, wy, wz), bridge_block_at(wx, wy, wz));
+        }
+    }
+
+    #[test]
+    fn bridge_absent_far_from_bridge_z() {
+        // 離 BRIDGE_Z 超過半寬，不論 wx/wy 為何都不該架橋。
+        for wz in [BRIDGE_Z - 100, BRIDGE_Z + 50, 0, -260] {
+            for wx in [0, 100, 220, 300] {
+                assert_eq!(bridge_block_at(wx, BRIDGE_DECK_Y, wz), None, "wz={wz} wx={wx}");
+            }
+        }
+    }
+
+    #[test]
+    fn bridge_deck_spans_river_core_at_bridge_z() {
+        // 河核心（中心線 ± RIVER_HALF_WIDTH，地形保證被河下凹到水位之下、遠低於橋面）
+        // 整段必定架橋、不留缺口——橋面正是在這裡「跨過河水」。
+        let cx = river_center_x(BRIDGE_Z as f32).round() as i32;
+        for dz in -BRIDGE_HALF_WIDTH..=BRIDGE_HALF_WIDTH {
+            for dx in -(RIVER_HALF_WIDTH as i32)..=(RIVER_HALF_WIDTH as i32) {
+                assert_eq!(
+                    block_at(cx + dx, BRIDGE_DECK_Y, BRIDGE_Z + dz),
+                    Block::Plank,
+                    "dx={dx} dz={dz}: 河核心正上方應是橋面、不留缺口"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bridge_deck_never_floats_above_higher_or_equal_ground() {
+        // ground-truth 不變式（吸取 PR #1300 教訓）：任何一格被判定「架橋」，
+        // 這一欄原始地表本就低於橋面——橋不可能貼著同高或更高地形側向露出。
+        for dz in -BRIDGE_HALF_WIDTH..=BRIDGE_HALF_WIDTH {
+            let wz = BRIDGE_Z + dz;
+            for dx in -40..=40 {
+                let cx = river_center_x(wz as f32).round() as i32;
+                let wx = cx + dx;
+                if bridge_block_at(wx, BRIDGE_DECK_Y, wz) == Some(Block::Plank) {
+                    assert!(
+                        height_at(wx, wz) < BRIDGE_DECK_Y,
+                        "wx={wx} wz={wz}: 橋面落在此欄，但地表未低於橋面"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bridge_deck_never_spans_outside_river_channel_full_runtime_probe() {
+        // ground-truth 不變式（吸取 PR #1301 第一輪教訓：worker 附測只掃 dx∈-40..40，
+        // 窗外 2600+ 欄從沒被檢查，橋因此漫延成橫貫整張地圖的懸空棧道）。這裡逐 wx
+        // 密集掃過遠超河道跨距的範圍、多組 wz，直接斷言「跨距外恆無橋板」——
+        // 在補上 `bridge_x_span` 的 x 向邊界之前，這條測試會在此範圍抓到大量鋪板。
+        for dz in -BRIDGE_HALF_WIDTH..=BRIDGE_HALF_WIDTH {
+            let wz = BRIDGE_Z + dz;
+            let center = river_center_x(wz as f32);
+            let span = bridge_x_span(wz);
+            for wx in (center.round() as i32 - 1000)..=(center.round() as i32 + 1000) {
+                let dist = (wx as f32 - center).abs();
+                if dist > span {
+                    let has_deck = bridge_block_at(wx, BRIDGE_DECK_Y, wz) == Some(Block::Plank)
+                        || bridge_block_at(wx, BRIDGE_DECK_Y + 1, wz) == Some(Block::Plank);
+                    assert!(!has_deck, "wx={wx} wz={wz} dist={dist} span={span}: 超出河道跨距卻鋪了橋板/欄杆");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bridge_rail_only_where_deck_also_present() {
+        // 欄杆與橋面共用同一安全閥（同一欄才鋪），不該出現「欄杆懸空、橋面卻沒鋪」。
+        for dx in -40..=40 {
+            let cx = river_center_x(BRIDGE_Z as f32).round() as i32;
+            let wx = cx + dx;
+            for &dz in &[-BRIDGE_HALF_WIDTH, BRIDGE_HALF_WIDTH] {
+                let wz = BRIDGE_Z + dz;
+                if bridge_block_at(wx, BRIDGE_DECK_Y + 1, wz) == Some(Block::Plank) {
+                    assert_eq!(
+                        bridge_block_at(wx, BRIDGE_DECK_Y, wz),
+                        Some(Block::Plank),
+                        "wx={wx} wz={wz}: 欄杆存在但橋面缺席"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bridge_deck_above_river_water_level() {
+        // 橋面恆高於河流全域水位——不會被河水填補邏輯覆蓋。
+        assert!(BRIDGE_DECK_Y > RIVER_WATER_LEVEL);
+    }
+
+    #[test]
+    fn bridge_far_from_resident_home_bases() {
+        // 橋落在河上，河本身已繞開四位居民家域核心（見
+        // river_carve_depth_zero_at_village_home_bases）；橋中心離最近的
+        // SPAWN_ANCHOR 也應遠遠超出家域核心半徑，天然繼承這個避讓。
+        let cx = river_center_x(BRIDGE_Z as f32).round() as i32;
+        for (ax, az) in SPAWN_ANCHORS {
+            let (ddx, ddz) = ((cx - ax) as i64, (BRIDGE_Z - az) as i64);
+            let dist2 = ddx * ddx + ddz * ddz;
+            assert!(dist2 > 130 * 130, "橋 ({cx},{BRIDGE_Z}) 離家域核心 ({ax},{az}) 太近");
+        }
+    }
+
+    #[test]
+    fn bridge_landing_never_steps_more_than_one_block_full_runtime_probe() {
+        // ground-truth 不變式（review 第三輪教訓）：`bridge_deck_never_floats_...`／
+        // x-span 探針都只驗「核心整段有橋」「跨距外恆無橋板」，從沒驗兩端落地——
+        // 剛好漏掉「橋面盡頭到岸坡度」這個獨立缺陷（東岸曾在 y=9→y=11 鑿出 2 格
+        // 斷崖，踏階平滑只吃 1 格）。這裡直接走真實 `bridge_block_at`／`height_at`，
+        // 逐欄比較「走道腳踩高度」（有橋板→`BRIDGE_DECK_Y+1`，否則→`height_at+1`），
+        // 斷言沿橋整個寬度（`BRIDGE_HALF_WIDTH`）、核心+兩端落地緩衝區內，相鄰欄
+        // 恆差 ≤1——把 `BRIDGE_Z` 改回舊值 260 這條測試會直接紅（296→297 落差 2）。
+        for dz in -BRIDGE_HALF_WIDTH..=BRIDGE_HALF_WIDTH {
+            let wz = BRIDGE_Z + dz;
+            let cx = river_center_x(wz as f32).round() as i32;
+            let span = bridge_x_span(wz).ceil() as i32;
+            let mut prev: Option<i32> = None;
+            for dx in -(span + 30)..=(span + 30) {
+                let wx = cx + dx;
+                let planked = bridge_block_at(wx, BRIDGE_DECK_Y, wz) == Some(Block::Plank);
+                let standing = if planked { BRIDGE_DECK_Y + 1 } else { height_at(wx, wz) + 1 };
+                if let Some(p) = prev {
+                    assert!(
+                        (standing - p).abs() <= 1,
+                        "wx={wx} wz={wz}: 走道腳高從 {p} 跳到 {standing}，落差 >1 格踏階吃不下"
+                    );
+                }
+                prev = Some(standing);
             }
         }
     }
