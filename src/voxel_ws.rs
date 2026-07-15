@@ -26996,6 +26996,39 @@ fn tick_home_decor_envy(dt: f32, say_updates: &mut Vec<(String, String)>) {
     }
 }
 
+/// 一口階梯礦井挖完後，就地回填天然地形（採集回填 v1，回應維護者親玩回饋——風禾屯±30
+/// 實測 135 筆挖除疤痕全留地上）：`vdt::quarry_backfill` 純判定要填哪幾格＋填什麼，
+/// 這裡才真的寫世界——鎖序同挖井（deltas 寫即釋 → broadcast → 持久化 → 喚醒鄰格水流），
+/// 全短鎖循序、不巢狀、不 await。呼叫端在 `q.is_done()` 那一刻叫一次即可（純記憶體、
+/// 一口井至多 `QUARRY_DEPTH*STAIR_HEADROOM` 格，一次寫完不分批不拖 tick）。
+/// 身體格保護：比照挖井同一慣例，絕不把她此刻站立/頭頂那格填實——挖井是井口在她東側、
+/// 人站原地不進坑道，但完工當下她仍可能貼著井口，填實貼身格會把她悶死/卡死，故一律跳過。
+fn apply_quarry_backfill(rid: &str, q: &vdt::QuarryDig) {
+    let fill = {
+        let world = hub().deltas.read().unwrap();
+        vdt::quarry_backfill(&world, q)
+    }; // deltas 讀鎖釋放
+    let body = {
+        let res = hub().residents.read().unwrap();
+        res.iter().find(|r| r.id == rid).map(|r| (r.body.x, r.body.y, r.body.z))
+    }; // residents 讀鎖釋放
+    for (x, y, z, b) in fill {
+        if let Some((px, py, pz)) = body {
+            if vdt::cell_in_body(x, y, z, px, py, pz) {
+                continue;
+            }
+        }
+        {
+            let mut world = hub().deltas.write().unwrap();
+            voxel::set_block(&mut world, x, y, z, b);
+        } // deltas 寫鎖釋放
+        broadcast_block(x, y, z, b);
+        // 回填實心可能封住挖井時滲進來的水 → 喚醒鄰格重算，讓殘餘水穩定。
+        enqueue_water_around(x, y, z);
+        vbuild::append_world_block(x, y, z, b as u8);
+    }
+}
+
 // ── agency v1 輔助（全在 tick_residents 鎖釋放後呼叫；各短鎖即釋、不巢狀、不 await）──────
 
 /// 鋪面任務·單居民單 tick 推進（她已抵達工地時由 tick_residents 的施工段呼叫）。
@@ -27028,7 +27061,8 @@ fn pave_worker_tick(
     // ① 礦井進行中：清幾格；挖到的實心方塊（石頭/泥土…）誠實歸她的小背包。
     if let Some(q) = task.quarry.clone() {
         if q.is_done() {
-            task.quarry = None; // 這口井挖完了 → 同 tick 接著查料/合成/鋪
+            apply_quarry_backfill(rid, &q); // 這口井挖完了 → 就地回填，不留常駐坑疤
+            task.quarry = None; // 同 tick 接著查料/合成/鋪
         } else {
             let (cells, next_idx) = {
                 let world = hub().deltas.read().unwrap();
@@ -27417,6 +27451,9 @@ fn advance_invent_run(
                         }
                         let stepped = vdt::QuarryDig { cells: q.cells, idx: next_idx };
                         let done = stepped.is_done();
+                        if done {
+                            apply_quarry_backfill(rid, &stepped); // 井挖完了 → 就地回填，不留常駐坑疤
+                        }
                         {
                             let mut residents = hub().residents.write().unwrap();
                             if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
