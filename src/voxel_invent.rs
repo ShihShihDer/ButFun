@@ -67,6 +67,17 @@
 //! 就是真的進展。**小麥刻意不含**：小麥種子只從葉片掉落，居民不採葉片，誠實維持只能撞見
 //! 既有麥田（比照第七刀刻意排除南瓜的邊界精神）。
 //!
+//! **第十刀（莓果入自採閉包，接續第七刀作物入自採閉包）**：第七刀模組頭註留的邊界只點名
+//! 「小麥/胡蘿蔔/馬鈴薯」三種一次性作物，`voxel_berry`（多年生莓果叢）從沒被接進來——
+//! 她至今連撞見一叢已經結果的莓果叢都不會順手採，果醬（`smelt_jam`，唯一途徑）自然也
+//! 沒進過閉包，996 刀走完整條發明鏈仍留了這一味沒補。本刀把 `CropResource::Berry`
+//! 接上：她會找**已經結果**的莓果叢（`Block::BerryBushRipe`）順手採，比照第八刀「附近
+//! 沒有就走遠一點找」的既有機制；莓果叢是多年生（採完回退成苗、重新計時，不像一次性
+//! 作物採完要重播種），故**自己種下新的一叢**這件事誠實留給更後面一刀（`seed_id`／
+//! `tillable_block` 皆回 `None`，與小麥同款邊界——她只能撞見**已經存在**的叢）。
+//! 莓果（`BERRY_ID`）進種子集 → **莓果醬**（`smelt_jam`，3 莓果→1 果醬）第一次自動
+//! 落進可發明閉包。
+//!
 //! 北極星（維護者原話）：「我們沒說可以挖可以放，他就自己組合出來了」——
 //! 居民自己從基礎動作組合發明、存成自己的技能。這是 Voyager（MineDojo）式 skill library
 //! 的精神（吸收概念、原創實作，不抄任何外部碼），長在既有 agency 架構上。
@@ -94,6 +105,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 use crate::voxel::{self, Block, WorldDelta};
+use crate::voxel_berry as vberry;
 use crate::voxel_craft as vcraft;
 use crate::voxel_farm as vfarm;
 use crate::voxel_fishing::FISH_ID;
@@ -239,15 +251,19 @@ pub enum CropResource {
     Wheat,
     Carrot,
     Potato,
+    /// 莓果（第十刀）——多年生莓果叢結出的果實，與一次性作物不同：只認「已結果的叢」，
+    /// 自己種下新的一叢誠實留給更後面一刀（見 `seed_id`／`tillable_block`）。
+    Berry,
 }
 
 impl CropResource {
-    /// 收成產出的生料物品 id（`voxel_farm` 常數，單一事實源）。
+    /// 收成產出的生料物品 id（`voxel_farm`/`voxel_berry` 常數，單一事實源）。
     pub fn raw_id(self) -> u8 {
         match self {
             CropResource::Wheat => vfarm::WHEAT_ID,
             CropResource::Carrot => vfarm::CARROT_ID,
             CropResource::Potato => vfarm::POTATO_ID,
+            CropResource::Berry => vberry::BERRY_ID,
         }
     }
 
@@ -257,6 +273,7 @@ impl CropResource {
             CropResource::Wheat => Block::WheatMature,
             CropResource::Carrot => Block::CarrotMature,
             CropResource::Potato => Block::PotatoMature,
+            CropResource::Berry => Block::BerryBushRipe,
         }
     }
 
@@ -266,6 +283,7 @@ impl CropResource {
             CropResource::Wheat => "小麥",
             CropResource::Carrot => "胡蘿蔔",
             CropResource::Potato => "馬鈴薯",
+            CropResource::Berry => "莓果",
         }
     }
 
@@ -275,44 +293,54 @@ impl CropResource {
             CropResource::Wheat => "wheat",
             CropResource::Carrot => "carrot",
             CropResource::Potato => "potato",
+            CropResource::Berry => "berry",
         }
     }
 
     /// 播種自給（第九刀）需要的種子物品 id——**只有能從日常採集額外攢到種子的作物**才有：
     /// 胡蘿蔔種子來自採草皮、馬鈴薯種子來自採泥土（比照 `voxel_ws.rs` 玩家破壞分潤表）。
     /// 小麥種子只從葉片掉落、居民不採葉片，誠實回 `None`（她仍只能撞見既有麥田）。
+    /// 莓果叢（第十刀）同款誠實邊界：自己種一叢新的留給更後面一刀，回 `None`。
     pub fn seed_id(self) -> Option<u8> {
         match self {
             CropResource::Wheat => None,
             CropResource::Carrot => Some(vfarm::CARROT_SEEDS_ID),
             CropResource::Potato => Some(vfarm::POTATO_SEEDS_ID),
+            CropResource::Berry => None,
         }
     }
 
-    /// 播種前要先翻土的地表方塊型別（草皮／泥土；小麥不支援自給播種，回 `None`）。
+    /// 播種前要先翻土的地表方塊型別（草皮／泥土；小麥/莓果不支援自給播種，回 `None`）。
     pub fn tillable_block(self) -> Option<Block> {
         match self {
             CropResource::Wheat => None,
             CropResource::Carrot => Some(Block::Grass),
             CropResource::Potato => Some(Block::Dirt),
+            CropResource::Berry => None,
         }
     }
 
     /// 翻土播種後的「已播種、還沒熟」方塊態（`voxel_farm` 種植流程的 Seeded 態）。
+    /// 莓果從不會走到這條路（`tillable_block` 回 `None`），但填上真實對應值
+    /// （莓果叢種下就是未結果的苗態）保持誠實、不留假值。
     pub fn seeded_block(self) -> Block {
         match self {
             CropResource::Wheat => Block::FarmSoilSeeded,
             CropResource::Carrot => Block::CarrotSeeded,
             CropResource::Potato => Block::PotatoSeeded,
+            CropResource::Berry => Block::BerryBush,
         }
     }
 
-    /// 對應的 `voxel_farm::CropKind`（登記進 farm store 的生長計時器用）。
-    pub fn crop_kind(self) -> vfarm::CropKind {
+    /// 對應的 `voxel_farm::CropKind`（登記進 farm store 的生長計時器用）；只有支援自給播種
+    /// 的作物才有意義，`None` = 這種作物不走 `voxel_farm` 的計時（莓果叢有自己的
+    /// `voxel_berry::BerryStore`，且第十刀仍不支援自己種新的一叢）。
+    pub fn crop_kind(self) -> Option<vfarm::CropKind> {
         match self {
-            CropResource::Wheat => vfarm::CropKind::Wheat,
-            CropResource::Carrot => vfarm::CropKind::Carrot,
-            CropResource::Potato => vfarm::CropKind::Potato,
+            CropResource::Wheat => Some(vfarm::CropKind::Wheat),
+            CropResource::Carrot => Some(vfarm::CropKind::Carrot),
+            CropResource::Potato => Some(vfarm::CropKind::Potato),
+            CropResource::Berry => None,
         }
     }
 }
@@ -323,6 +351,7 @@ pub fn crop_from_token(s: &str) -> Option<CropResource> {
         "wheat" | "小麥" | "麥" => Some(CropResource::Wheat),
         "carrot" | "胡蘿蔔" | "蘿蔔" => Some(CropResource::Carrot),
         "potato" | "馬鈴薯" | "地瓜" | "薯" => Some(CropResource::Potato),
+        "berry" | "莓果" | "莓" => Some(CropResource::Berry),
         _ => None,
     }
 }
@@ -333,6 +362,7 @@ fn crop_of_raw_id(bid: u8) -> Option<CropResource> {
         x if x == vfarm::WHEAT_ID => Some(CropResource::Wheat),
         x if x == vfarm::CARROT_ID => Some(CropResource::Carrot),
         x if x == vfarm::POTATO_ID => Some(CropResource::Potato),
+        x if x == vberry::BERRY_ID => Some(CropResource::Berry),
         _ => None,
     }
 }
@@ -2124,9 +2154,9 @@ pub fn invention_prompt(
         6. 釣魚：{{\"op\":\"fish\",\"count\":<數量1~{max_c}>}}——**必須附近有水**才能執行；\
         釣魚跟冶煉一樣要等上鉤，不是拋竿立刻有魚，放心，上鉤了自然會收到，釣起的是生小魚。\n\
         7. 收成：{{\"op\":\"harvest\",\"crop\":\"<作物>\",\"count\":<數量1~{max_c}>}}，\
-        crop 只能是 wheat / carrot / potato（小麥/胡蘿蔔/馬鈴薯）——**必須附近有一畦這種\
-        作物已經熟了**才能執行；你不會種田播種，只能收成已經熟在那裡的作物，收成的是\
-        生料（不是麵包/烤地薯——那些還要再合成/冶煉）。\n\
+        crop 只能是 wheat / carrot / potato / berry（小麥/胡蘿蔔/馬鈴薯/莓果）——**必須附近\
+        有一畦這種作物（或一叢已結果的莓果叢）已經熟了**才能執行；你不會種田播種，只能收成\
+        已經熟在那裡的作物，收成的是生料（不是麵包/烤地薯/莓果醬——那些還要再合成/冶煉）。\n\
         {use_skill_line}\
         你知道的隨身合成配方（事實，不可捏造別的）：\n{recipes}\n\
         你知道的工作台配方（要先有工作台在旁邊，才能用 craft_wb 做這些）：\n{wb_recipes}\n\
@@ -2429,6 +2459,8 @@ fn one_step_resource_ids() -> &'static HashSet<u8> {
         set.insert(vfarm::WHEAT_ID);
         set.insert(vfarm::CARROT_ID);
         set.insert(vfarm::POTATO_ID);
+        // 第十刀：莓果（已結果的莓果叢收成的產物）也是一步到手的葉節點。
+        set.insert(vberry::BERRY_ID);
         set
     })
 }
@@ -3605,12 +3637,13 @@ mod tests {
         // 第五刀（鑿井尋礦）後礦石可採 → smelt_iron 也第一次可發明。
         // 第六刀（漁獲入自採閉包）後小魚可釣 → smelt_fish（烤魚）也第一次可發明。
         // 第七刀（作物入自採閉包）後馬鈴薯可收成 → smelt_potato（烤地薯）也第一次可發明。
-        for want in ["smelt_stone", "smelt_glass", "smelt_brick", "smelt_iron", "smelt_fish", "smelt_potato"] {
+        // 第十刀（莓果入自採閉包）後莓果可收成 → smelt_jam（莓果醬）也第一次可發明——
+        // 全部 7 條熔爐配方至此皆已落進可發明閉包。
+        for want in [
+            "smelt_stone", "smelt_glass", "smelt_brick", "smelt_iron", "smelt_fish",
+            "smelt_potato", "smelt_jam",
+        ] {
             assert!(ids.contains(&want), "{want} 配料可自採，應可發明");
-        }
-        // 莓果醬要莓果 → 她弄不到料，仍不可發明（誠實邊界，莓園採集留給更後面一刀）。
-        for no in ["smelt_jam"] {
-            assert!(!ids.contains(&no), "{no} 生料弄不到（莓果），不應可發明");
         }
     }
 
@@ -3853,14 +3886,11 @@ mod tests {
     }
 
     #[test]
-    fn check_step_rejects_non_inventable_furnace_recipe() {
-        // 熬煮果醬冶煉配方存在，但生料（莓果）她弄不到 → 誠實拒絕。
-        // （smelt_iron 在第五刀鑿井尋礦後礦石可採、smelt_fish 在第六刀漁獲入自採閉包後
-        //   小魚可釣、smelt_potato 在第七刀作物入自採閉包後馬鈴薯可收成，皆已改為可發明，
-        //   不再當反例；莓果採集留給更後面一刀，暫仍是反例。）
-        let s = PrimStep::Smelt { recipe: "smelt_jam".into() };
-        assert_eq!(check_step(&s), None);
-        assert!(explain_bad_step(&s).contains("弄不到"), "{}", explain_bad_step(&s));
+    fn check_step_accepts_all_furnace_recipes_after_berry_closure() {
+        // 第十刀（莓果入自採閉包）後，最後一條熔爐配方 smelt_jam（莓果醬）也可發明——
+        // 至此 7 條熔爐配方全數落進閉包，無一還在誠實拒絕清單裡。
+        let ok_jam = PrimStep::Smelt { recipe: "smelt_jam".into() };
+        assert_eq!(check_step(&ok_jam), Some(CheckedStep::Smelt { recipe_id: "smelt_jam" }));
         // 第五刀正例：鐵錠冶煉（礦石生料如今可自採）通過檢查。
         let ok = PrimStep::Smelt { recipe: "smelt_iron".into() };
         assert_eq!(check_step(&ok), Some(CheckedStep::Smelt { recipe_id: "smelt_iron" }));
@@ -4015,8 +4045,17 @@ mod tests {
             "烤魚（生魚可自釣→smelt_fish）應在閉包裡"
         );
         // 第七刀（作物入自採閉包）後馬鈴薯生料也進了閉包（見 obtainable_ids_include_crops_and_their_recipes）；
-        // 莓果（BERRY_ID）仍不可自採，誠實留在閉包外（莓園採集留給更後面一刀）。
-        assert!(!obtainable_ids().contains(&crate::voxel_berry::BERRY_ID));
+        // 第十刀（莓果入自採閉包）後莓果生料也進了閉包（見 obtainable_ids_include_berry_and_jam）。
+    }
+
+    #[test]
+    fn obtainable_ids_include_berry_and_jam() {
+        // 第十刀：莓果（收成原語的產物）與莓果醬（smelt_jam，唯一途徑）都應落進閉包。
+        assert!(obtainable_ids().contains(&vberry::BERRY_ID), "莓果應在種子集裡");
+        assert!(
+            obtainable_ids().contains(&vberry::JAM_ID),
+            "莓果醬（莓果可自採→smelt_jam）應在閉包裡"
+        );
     }
 
     #[test]
@@ -4229,12 +4268,16 @@ mod tests {
 
     #[test]
     fn crop_token_round_trips() {
-        for c in [CropResource::Wheat, CropResource::Carrot, CropResource::Potato] {
+        for c in [
+            CropResource::Wheat, CropResource::Carrot, CropResource::Potato, CropResource::Berry,
+        ] {
             assert_eq!(crop_from_token(c.token()), Some(c));
         }
         assert_eq!(crop_from_token("wheat"), Some(CropResource::Wheat));
         assert_eq!(crop_from_token("胡蘿蔔"), Some(CropResource::Carrot));
         assert_eq!(crop_from_token("薯"), Some(CropResource::Potato));
+        assert_eq!(crop_from_token("莓果"), Some(CropResource::Berry));
+        assert_eq!(crop_from_token("莓"), Some(CropResource::Berry));
         assert_eq!(crop_from_token("pumpkin"), None, "南瓜不在白名單");
     }
 
@@ -4263,6 +4306,11 @@ mod tests {
         assert!(explain_bad_step(&bad_crop).contains("wheat"));
         let bad_count = PrimStep::Harvest { crop: "wheat".into(), count: 0 };
         assert!(explain_bad_step(&bad_count).contains(&MAX_GATHER_COUNT.to_string()));
+        // 第十刀：莓果也是合法收成目標。
+        assert_eq!(
+            check_step(&PrimStep::Harvest { crop: "berry".into(), count: 2 }),
+            Some(CheckedStep::Harvest { crop: CropResource::Berry, count: 2 })
+        );
     }
 
     #[test]
@@ -4500,6 +4548,7 @@ mod tests {
         assert_eq!(CropResource::Wheat.seed_id(), None, "小麥種子只從葉片來，居民不採葉片");
         assert_eq!(CropResource::Carrot.seed_id(), Some(vfarm::CARROT_SEEDS_ID));
         assert_eq!(CropResource::Potato.seed_id(), Some(vfarm::POTATO_SEEDS_ID));
+        assert_eq!(CropResource::Berry.seed_id(), None, "自種新叢留給更後面一刀");
     }
 
     #[test]
@@ -4507,6 +4556,7 @@ mod tests {
         assert_eq!(CropResource::Wheat.tillable_block(), None);
         assert_eq!(CropResource::Carrot.tillable_block(), Some(Block::Grass));
         assert_eq!(CropResource::Potato.tillable_block(), Some(Block::Dirt));
+        assert_eq!(CropResource::Berry.tillable_block(), None);
     }
 
     #[test]
@@ -4514,9 +4564,11 @@ mod tests {
         assert_eq!(CropResource::Wheat.seeded_block(), Block::FarmSoilSeeded);
         assert_eq!(CropResource::Carrot.seeded_block(), Block::CarrotSeeded);
         assert_eq!(CropResource::Potato.seeded_block(), Block::PotatoSeeded);
-        assert_eq!(CropResource::Wheat.crop_kind(), vfarm::CropKind::Wheat);
-        assert_eq!(CropResource::Carrot.crop_kind(), vfarm::CropKind::Carrot);
-        assert_eq!(CropResource::Potato.crop_kind(), vfarm::CropKind::Potato);
+        assert_eq!(CropResource::Berry.seeded_block(), Block::BerryBush);
+        assert_eq!(CropResource::Wheat.crop_kind(), Some(vfarm::CropKind::Wheat));
+        assert_eq!(CropResource::Carrot.crop_kind(), Some(vfarm::CropKind::Carrot));
+        assert_eq!(CropResource::Potato.crop_kind(), Some(vfarm::CropKind::Potato));
+        assert_eq!(CropResource::Berry.crop_kind(), None, "莓果不走 voxel_farm 計時");
     }
 
     // ── tillable_ground_nearby：播種自給（第九刀）鄰近翻土地表搜尋 ─────────────────
@@ -4917,10 +4969,15 @@ mod tests {
             ids.contains(&crate::voxel_farm::BREAD_ID),
             "麵包（3 小麥）第七刀後應進目錄：{ids:?}"
         );
-        // 不可發明的誠實不列：床(45 要葉片)、冰晶燈(57)、果醬(要莓果，莓果採集留給更後面一刀)。
-        for bad in [45u8, 57, crate::voxel_berry::JAM_ID] {
+        // 不可發明的誠實不列：床(45 要葉片)、冰晶燈(57)。
+        for bad in [45u8, 57] {
             assert!(!ids.contains(&bad), "id {bad} 她備不了料，不該進目錄");
         }
+        // 第十刀（莓果入自採閉包）後莓果醬（熔爐產物）也該進目錄。
+        assert!(
+            ids.contains(&vberry::JAM_ID),
+            "莓果醬第十刀後應進目錄：{ids:?}"
+        );
         // 去重：同產物（木板 8 同時是 2×2 與 3×3 產物）只列一次。
         let mut sorted = ids.clone();
         sorted.sort_unstable();
