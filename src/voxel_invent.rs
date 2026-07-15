@@ -78,6 +78,17 @@
 //! 莓果（`BERRY_ID`）進種子集 → **莓果醬**（`smelt_jam`，3 莓果→1 果醬）第一次自動
 //! 落進可發明閉包。
 //!
+//! **第十一刀（莓果自己種下新的一叢，接續第十刀）**：第十刀自己的模組頭註誠實留了
+//! 邊界——「自己種下新的一叢誠實留給更後面一刀」。本刀補上：不比照工作台配方
+//! （`berry_bush` 配方要 1 樹苗＋2 種子，樹苗只從葉片掉落、居民不採葉片，這條路走不通），
+//! 而是比照第九刀「播種自給」的既有機制——**莓果本身就是種子**（多年生莓果靠果實裡的
+//! 種子繁殖，不必額外攢一種專屬種子物品）：`seed_id()` 回 `BERRY_ID`、`tillable_block()`
+//! 回 `Block::Grass`（比照胡蘿蔔同款地表）。收成／遠尋都撲空、但手邊已攢有 ≥1 顆生莓果時，
+//! 她會就地翻土、消耗一顆生莓果種下新的一叢未結果苗（`Block::BerryBush`）——與胡蘿蔔／
+//! 馬鈴薯不同，莓果叢不登記進 `voxel_farm` 計時（`crop_kind()` 仍回 `None`），而是登記進
+//! 自己的 `voxel_berry::BerryStore`（比照收成後退回態的既有登記路徑，見 `voxel_ws.rs`）。
+//! 至此第七/十刀留的「她種不出新的一畦／一叢」邊界，三種一次性作物＋莓果叢全數補齊。
+//!
 //! 北極星（維護者原話）：「我們沒說可以挖可以放，他就自己組合出來了」——
 //! 居民自己從基礎動作組合發明、存成自己的技能。這是 Voyager（MineDojo）式 skill library
 //! 的精神（吸收概念、原創實作，不抄任何外部碼），長在既有 agency 架構上。
@@ -251,8 +262,8 @@ pub enum CropResource {
     Wheat,
     Carrot,
     Potato,
-    /// 莓果（第十刀）——多年生莓果叢結出的果實，與一次性作物不同：只認「已結果的叢」，
-    /// 自己種下新的一叢誠實留給更後面一刀（見 `seed_id`／`tillable_block`）。
+    /// 莓果（第十刀撞見已結果的叢順手採＋第十一刀自己種下新的一叢，見
+    /// `seed_id`／`tillable_block`：莓果本身就是自己的種子）。
     Berry,
 }
 
@@ -297,32 +308,34 @@ impl CropResource {
         }
     }
 
-    /// 播種自給（第九刀）需要的種子物品 id——**只有能從日常採集額外攢到種子的作物**才有：
-    /// 胡蘿蔔種子來自採草皮、馬鈴薯種子來自採泥土（比照 `voxel_ws.rs` 玩家破壞分潤表）。
-    /// 小麥種子只從葉片掉落、居民不採葉片，誠實回 `None`（她仍只能撞見既有麥田）。
-    /// 莓果叢（第十刀）同款誠實邊界：自己種一叢新的留給更後面一刀，回 `None`。
+    /// 播種自給（第九刀＋第十一刀）需要的種子物品 id——**只有能從日常採集／收成額外攢到
+    /// 種子的作物**才有：胡蘿蔔種子來自採草皮、馬鈴薯種子來自採泥土（比照 `voxel_ws.rs`
+    /// 玩家破壞分潤表）。小麥種子只從葉片掉落、居民不採葉片，誠實回 `None`（她仍只能撞見
+    /// 既有麥田）。莓果叢（第十一刀，接續第十刀留的邊界）改用**收成到的生莓果自己當種子**
+    /// （多年生莓果本就靠果實裡的種子繁殖，不必額外攢一種專屬種子物品）——她至少先撞見
+    /// 撿收成過一次、手邊留有生莓果，才有本錢種下新的一叢。
     pub fn seed_id(self) -> Option<u8> {
         match self {
             CropResource::Wheat => None,
             CropResource::Carrot => Some(vfarm::CARROT_SEEDS_ID),
             CropResource::Potato => Some(vfarm::POTATO_SEEDS_ID),
-            CropResource::Berry => None,
+            CropResource::Berry => Some(vberry::BERRY_ID),
         }
     }
 
-    /// 播種前要先翻土的地表方塊型別（草皮／泥土；小麥/莓果不支援自給播種，回 `None`）。
+    /// 播種前要先翻土的地表方塊型別（草皮／泥土；小麥不支援自給播種，回 `None`）。
+    /// 莓果叢（第十一刀）種在草皮上，比照胡蘿蔔同款地表。
     pub fn tillable_block(self) -> Option<Block> {
         match self {
             CropResource::Wheat => None,
             CropResource::Carrot => Some(Block::Grass),
             CropResource::Potato => Some(Block::Dirt),
-            CropResource::Berry => None,
+            CropResource::Berry => Some(Block::Grass),
         }
     }
 
-    /// 翻土播種後的「已播種、還沒熟」方塊態（`voxel_farm` 種植流程的 Seeded 態）。
-    /// 莓果從不會走到這條路（`tillable_block` 回 `None`），但填上真實對應值
-    /// （莓果叢種下就是未結果的苗態）保持誠實、不留假值。
+    /// 翻土播種後的「已播種、還沒熟」方塊態（`voxel_farm` 種植流程的 Seeded 態，或
+    /// 莓果叢自己的未結果苗態）。
     pub fn seeded_block(self) -> Block {
         match self {
             CropResource::Wheat => Block::FarmSoilSeeded,
@@ -332,9 +345,9 @@ impl CropResource {
         }
     }
 
-    /// 對應的 `voxel_farm::CropKind`（登記進 farm store 的生長計時器用）；只有支援自給播種
-    /// 的作物才有意義，`None` = 這種作物不走 `voxel_farm` 的計時（莓果叢有自己的
-    /// `voxel_berry::BerryStore`，且第十刀仍不支援自己種新的一叢）。
+    /// 對應的 `voxel_farm::CropKind`（登記進 farm store 的生長計時器用）；`None` = 這種
+    /// 作物不走 `voxel_farm` 的計時。莓果叢有自己的 `voxel_berry::BerryStore`（多年生，
+    /// 第十一刀播下新叢時改登記進那邊，見 `voxel_ws.rs` DoHarvest 播種分支）。
     pub fn crop_kind(self) -> Option<vfarm::CropKind> {
         match self {
             CropResource::Wheat => Some(vfarm::CropKind::Wheat),
@@ -4541,14 +4554,18 @@ mod tests {
         );
     }
 
-    // ── 播種自給（第九刀）：CropResource 種子/翻土映射 ───────────────────────────
+    // ── 播種自給（第九刀＋第十一刀）：CropResource 種子/翻土映射 ───────────────────
 
     #[test]
-    fn crop_seed_id_only_carrot_and_potato() {
+    fn crop_seed_id_carrot_potato_and_berry() {
         assert_eq!(CropResource::Wheat.seed_id(), None, "小麥種子只從葉片來，居民不採葉片");
         assert_eq!(CropResource::Carrot.seed_id(), Some(vfarm::CARROT_SEEDS_ID));
         assert_eq!(CropResource::Potato.seed_id(), Some(vfarm::POTATO_SEEDS_ID));
-        assert_eq!(CropResource::Berry.seed_id(), None, "自種新叢留給更後面一刀");
+        assert_eq!(
+            CropResource::Berry.seed_id(),
+            Some(vberry::BERRY_ID),
+            "莓果本身就是種子（第十一刀），不必額外攢一種專屬種子物品"
+        );
     }
 
     #[test]
@@ -4556,7 +4573,11 @@ mod tests {
         assert_eq!(CropResource::Wheat.tillable_block(), None);
         assert_eq!(CropResource::Carrot.tillable_block(), Some(Block::Grass));
         assert_eq!(CropResource::Potato.tillable_block(), Some(Block::Dirt));
-        assert_eq!(CropResource::Berry.tillable_block(), None);
+        assert_eq!(
+            CropResource::Berry.tillable_block(),
+            Some(Block::Grass),
+            "莓果叢種在草皮上（第十一刀，比照胡蘿蔔同款地表）"
+        );
     }
 
     #[test]
