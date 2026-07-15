@@ -458,6 +458,11 @@ pub struct BuildStyle {
     pub annex: bool,
     /// 建築創作第三刀：annex 貼在主屋的哪一側，只有 `annex` 為真時才有意義。
     pub annex_pos: AnnexPos,
+    /// 居家 v2·隔間 v1（房間概念，維護者親玩回饋硬性優先項第二項）：內部是否隔成
+    /// 臥室／起居兩間房，而不是四面牆包一張床的空殼。為真時佔地固定拉大到 5×5
+    /// （3×3 內部，才擠得下一道隔間牆＋走道），且與 `annex` 互斥（一次一刀，不疊加
+    /// 另一種形狀變化）。
+    pub room_split: bool,
 }
 
 impl BuildStyle {
@@ -492,13 +497,21 @@ impl BuildStyle {
             2 => AnnexPos::Left,
             _ => AnnexPos::Right,
         };
+        // 居家 v2·隔間 v1：約半數的家改隔成臥室／起居兩間房——固定拉大到 5×5 佔地
+        // （3×3 內部）才擠得下隔間牆＋走道，annex 一律關閉（不與另一種形狀變化疊加）。
+        let room_split = (h >> 13) & 1 == 1;
+        let (x_max, z_max) = if room_split { (3, 3) } else { (x_max, z_max) };
+        let annex = if room_split { false } else { annex };
         // 地板由牆材質衍生（木系→木板、沙→沙、其餘→拋石），保持質感一致。
         let floor = match wall {
             Block::Wood | Block::Plank => Block::Plank,
             Block::Sand => Block::Sand,
             _ => Block::SmoothStone,
         };
-        BuildStyle { wall, roof, floor, peaked, windows, wall_h, x_max, z_max, decor, annex, annex_pos }
+        BuildStyle {
+            wall, roof, floor, peaked, windows, wall_h, x_max, z_max, decor, annex, annex_pos,
+            room_split,
+        }
     }
 }
 
@@ -603,12 +616,27 @@ fn generate_blocks(kind: BuildKind, cx: i32, cy: i32, cz: i32, style: &BuildStyl
                     }
                 }
             }
-            // 床鋪 v1（居民親手佈置新家）：內部從沒放過任何家具，蓋好只是四面牆包著空氣——
-            // 放在建物錨點正上方（x0=z0=X_MIN/Z_MIN 恆為 -1，故 x0+1=z0+1=0，正是 cx/cz 本身）：
-            // 恆落在內部（border 只在 x==x0/x1 或 z==z0/z1，0 永遠不是邊界）、不與門重疊
-            // （門在 z=z1≠0）、不與任何裝飾/annex 座標相撞，無論房子多小都至少有這一格可站。
-            // 讓「蓋好的家」第一次真的有人住的痕跡，不再是空氣包空氣的空殼。
-            add(&mut out, cx, cy, cz, Block::Bed);
+            if s.room_split {
+                // 居家 v2·隔間 v1：3×3 內部（x0+1..x1-1、z0+1..z1-1 恆為 0..=2）一分為二——
+                // 門在 x==0，走道就沿 x==0 那一列從門口直通到底；隔間牆立在中排 z==1、
+                // 扣掉走道那格；前排 z==2（貼近正門）是起居（桌+箱），後排 z==0（最深處）
+                // 是臥室（床）。三者互不相鄰、也都不落在走道 x==0 上，永不擋路。
+                for &ix in &[1i32, 2] {
+                    for layer in 0..s.wall_h {
+                        add(&mut out, cx + ix, cy + layer, cz + 1, s.wall);
+                    }
+                }
+                add(&mut out, cx + 1, cy, cz, Block::Bed);
+                add(&mut out, cx + 1, cy, cz + 2, Block::Table);
+                add(&mut out, cx + 2, cy, cz + 2, Block::Chest);
+            } else {
+                // 床鋪 v1（居民親手佈置新家）：內部從沒放過任何家具，蓋好只是四面牆包著空氣——
+                // 放在建物錨點正上方（x0=z0=X_MIN/Z_MIN 恆為 -1，故 x0+1=z0+1=0，正是 cx/cz 本身）：
+                // 恆落在內部（border 只在 x==x0/x1 或 z==z0/z1，0 永遠不是邊界）、不與門重疊
+                // （門在 z=z1≠0）、不與任何裝飾/annex 座標相撞，無論房子多小都至少有這一格可站。
+                // 讓「蓋好的家」第一次真的有人住的痕跡，不再是空氣包空氣的空殼。
+                add(&mut out, cx, cy, cz, Block::Bed);
+            }
             // 門口點綴（正面外一格，不動地基/不與牆重疊；每家不同的小細節）。
             let dz = front_z + 1;
             match s.decor {
@@ -1308,6 +1336,7 @@ mod tests {
             decor: Decor::None,
             annex: false,
             annex_pos: AnnexPos::Back,
+            room_split: false,
         }
     }
 
@@ -1319,9 +1348,11 @@ mod tests {
     }
 
     #[test]
-    fn house_has_exactly_one_bed_at_center_never_on_wall_or_door() {
-        // 床鋪 v1：不管尺寸/風格如何變化，家的內部永遠恰好一張床，落在建物錨點（內部、
-        // 非邊界牆、非門格），讓蓋好的家第一次真的有人住的痕跡。
+    fn house_has_exactly_one_bed_inside_never_on_wall_or_door() {
+        // 床鋪 v1（居家 v2 隔間後仍守此不變式）：不管尺寸/風格如何變化，家的內部
+        // 永遠恰好一張床，落在內部（非邊界牆、非門格），讓蓋好的家第一次真的有人住
+        // 的痕跡。隔間房的床不再固定在錨點正上方（挪進臥室），故只驗「落在內部」，
+        // 無隔間時才驗「仍在錨點」（守舊行為零回歸）。
         for rid in ["vox_res_0", "vox_res_1", "露娜", "諾娃"] {
             for biome in [
                 VoxelBiome::Grassland,
@@ -1334,10 +1365,86 @@ mod tests {
                 let beds: Vec<_> = blocks.iter().filter(|b| b.b == Block::Bed as u8).collect();
                 assert_eq!(beds.len(), 1, "{rid}/{biome:?} 應恰好一張床");
                 let bed = beds[0];
-                assert_eq!((bed.x, bed.y, bed.z), (3, 5, 9), "床應落在建物錨點座標");
-                // 不與門重疊（門在 z=z1=cz+style.z_max，恆 ≠ cz）。
+                assert_eq!(bed.y, 5, "床應落在站立層");
+                let (x_lo, x_hi) = (3 + BuildStyle::X_MIN + 1, 3 + style.x_max - 1);
+                let (z_lo, z_hi) = (9 + BuildStyle::Z_MIN + 1, 9 + style.z_max - 1);
+                assert!(bed.x >= x_lo && bed.x <= x_hi, "{rid}/{biome:?} 床 x 應落在內部");
+                assert!(bed.z >= z_lo && bed.z <= z_hi, "{rid}/{biome:?} 床 z 應落在內部");
+                // 不與門重疊（門在 z=z1=cz+style.z_max，恆 ≠ 內部任何 z）。
                 assert_ne!(bed.z, 9 + style.z_max);
+                if !style.room_split {
+                    assert_eq!((bed.x, bed.z), (3, 9), "無隔間時床仍應落在建物錨點座標");
+                }
             }
+        }
+    }
+
+    // ── 隔間（room_split，居家 v2 v1）────────────────────────────────────────────
+
+    #[test]
+    fn house_room_split_variant_exists_and_is_well_formed() {
+        // 隔間並非死開關：真的存在會觸發它的居民/群系組合，且觸發時佔地固定拉大、
+        // 不疊加 annex（一次一刀）。
+        let mut saw_split = false;
+        for rid in ["vox_res_0", "vox_res_1", "vox_res_2", "vox_res_3", "露娜", "諾娃", "米雅"] {
+            for biome in [
+                VoxelBiome::Grassland,
+                VoxelBiome::Forest,
+                VoxelBiome::Desert,
+                VoxelBiome::Snow,
+            ] {
+                let style = BuildStyle::for_resident(rid, biome, 0, 0);
+                if style.room_split {
+                    saw_split = true;
+                    assert!(!style.annex, "隔間房不該疊加 annex");
+                    assert_eq!((style.x_max, style.z_max), (3, 3), "隔間房固定 5×5 佔地");
+                }
+            }
+        }
+        assert!(saw_split, "應存在至少一組居民/群系觸發隔間變體");
+    }
+
+    #[test]
+    fn house_room_split_has_partition_walkway_bed_table_chest_no_overlap() {
+        // 隔間房：恰好一床（臥室）＋一桌一箱（起居），隔間牆立在中排、扣走道那格，
+        // 走道從門口貫通到底，任何方塊都不重疊。
+        let mut s = style_small();
+        s.x_max = 3;
+        s.z_max = 3;
+        s.annex = false;
+        s.room_split = true;
+        let (cx, cy, cz) = (10, 5, 20);
+        let blocks = generate_blocks(BuildKind::House, cx, cy, cz, &s);
+
+        assert_eq!(blocks.iter().filter(|b| b.b == Block::Bed as u8).count(), 1, "恰好一床");
+        assert_eq!(blocks.iter().filter(|b| b.b == Block::Table as u8).count(), 1, "恰好一桌");
+        assert_eq!(blocks.iter().filter(|b| b.b == Block::Chest as u8).count(), 1, "恰好一箱");
+
+        // 走道（x==cx, z==cz+1）在隔間牆那一整排高度都淨空，貫通正門到後排臥室。
+        for layer in 0..s.wall_h {
+            let y = cy + layer;
+            assert!(
+                blocks.iter().all(|b| !(b.x == cx && b.y == y && b.z == cz + 1)),
+                "走道不該被隔間牆佔住"
+            );
+        }
+        // 隔間牆確實立在中排（x=cx+1、cx+2，z=cz+1），高度同外牆。
+        for ix in [1i32, 2] {
+            for layer in 0..s.wall_h {
+                let hit = blocks.iter().any(|b| {
+                    b.x == cx + ix && b.y == cy + layer && b.z == cz + 1 && b.b == s.wall as u8
+                });
+                assert!(hit, "隔間牆應立在 (cx+{ix}, layer {layer})");
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        for b in &blocks {
+            assert!(
+                seen.insert((b.x, b.y, b.z)),
+                "隔間房出現重疊方塊於 ({},{},{})",
+                b.x, b.y, b.z
+            );
         }
     }
 
@@ -1574,8 +1681,9 @@ mod tests {
 
     #[test]
     fn house_block_count_stays_bounded() {
-        // 效能：房子方塊數不得暴增（尺寸變化有上限）。掃過所有變化維度，皆 ≤ 90
-        // （最大主屋 4×4×3 牆約 74 塊 + annex 最多 8 塊，留餘裕上限 90）。
+        // 效能：房子方塊數不得暴增（尺寸變化有上限）。掃過所有變化維度，皆 ≤ 120
+        // （居家 v2 隔間房固定 5×5×3 牆約 25+25+54=104 塊 + 隔間牆 6 + 家具 3 + 點綴
+        // 最多 2，上限抓 118，留餘裕上限 120；無隔間的舊尺寸house仍遠低於此，一併涵蓋）。
         for rid in ["vox_res_0", "vox_res_1", "vox_res_2", "vox_res_3", "vox_res_9"] {
             for biome in [
                 VoxelBiome::Grassland,
@@ -1585,7 +1693,7 @@ mod tests {
             ] {
                 let s = BuildStyle::for_resident(rid, biome, 7, 0);
                 let n = generate_blocks(BuildKind::House, 0, 5, 0, &s).len();
-                assert!(n <= 90, "房子方塊數暴增（{n}）：{rid}/{biome:?}");
+                assert!(n <= 120, "房子方塊數暴增（{n}）：{rid}/{biome:?}");
                 assert!(n >= 30, "房子方塊數異常過少（{n}）：{rid}/{biome:?}");
             }
         }
