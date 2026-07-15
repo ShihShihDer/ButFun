@@ -17668,6 +17668,11 @@ fn tick_residents(dt: f32) {
 
         // 2b) 物理 + 閒晃 + 社交冷卻 + 思考排程。
         for r in residents.iter_mut() {
+            // 生病時真的「動作慢下來」（voxel_illness v3，自主提案）：與既有日夜降速相乘
+            // 套用，遮蔽本輪迴圈內下方所有移動呼叫（正下方就是本 tick 讀到的 illness_severity，
+            // 零額外鎖、零協議破壞）。
+            let speed_mult = speed_mult * villness::illness_speed_mult(r.illness_severity);
+
             // 冒泡倒數。
             if r.say_timer > 0.0 {
                 r.say_timer -= dt;
