@@ -203,6 +203,8 @@ const STREET_ACCORDION = 116;
 // 任何居民都可能教；本刀讓五種生計（農夫/鐵匠/漁夫/獵人/商人）各自教一道專屬信物，工匠固定
 // 教護身符。純物品、不可放置。117~121 是 116（街頭手風琴）之後的首個空號。
 const FARMER_CHARM = 117, SMITH_RING = 118, FISHER_CHARM = 119, HUNTER_CHARM = 120, MERCHANT_CHARM = 121;
+// 圍籬圈院 v1：居民專用木籬；玩家不能從 hotbar 放置，但可挖下回收。
+const FENCE = 122;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -210,6 +212,7 @@ const COLOR = {
   [STONE]:             [0.50, 0.50, 0.52],
   [SAND]:              [0.85, 0.78, 0.55],
   [WOOD]:              [0.45, 0.31, 0.18],
+  [FENCE]:             [0.62, 0.44, 0.25], // 木籬——比原木淺一階，與屋牆清楚區分
   [LEAVES]:            [0.27, 0.55, 0.27],
   [WATER]:             [0.20, 0.45, 0.85],
   // 合成方塊：比自然原料更精緻（淺色調）
@@ -6329,6 +6332,7 @@ const BLOCK_NAME = {
   [AETHER_BLOOM]: "乙太花冠",
   // 地底遺跡神殿 v1（ROADMAP 975）
   [RELIC_GLOW]: "遺跡核心",
+  [FENCE]: "木籬",
   // 蒸汽獨輪車 v1（ROADMAP 976，自主提案切片）
   [STEAM_UNICYCLE]: "蒸汽獨輪車",
   // 街頭手風琴 v1（ROADMAP 977，自主提案切片）
@@ -6689,6 +6693,7 @@ const BLOCK_HARDNESS = {
   [GLOW_CRYSTAL]: 1.2,
   // 地底遺跡神殿 v1（ROADMAP 975）——先民藏寶的核心結晶，比照發光結晶（偏脆），輕鬆敲下採走。
   [RELIC_GLOW]: 1.2,
+  [FENCE]: 0.45, // 木籬低硬度，空手也能很快拆下回收
 };
 function blockHardness(bid) { return BLOCK_HARDNESS[bid] ?? 1.0; }
 
