@@ -29,6 +29,15 @@
 //! 這是 PLAN_ETHERVOX「記憶→行為·你的互動有後果」第一次真的落在「你選擇不回應」這一側，而不只是
 //! 「你回應了會怎樣」。
 //!
+//! **v3·村莊委託牆（自主提案切片，ROADMAP 1015）**：v1~v2 讓居民「反過來拜託你」，但發現一則
+//! 請求純靠運氣——只有此刻正巧站在她面前才聽得到，全村從沒有一處能一次看到「現在到底有誰在
+//! 等」、更遑論知道誰最快就要放棄。[`RequestBoardEntry`] / [`sort_board_by_urgency`] 把散落
+//! 各居民身上的 `open_request` 彙整成一張依剩餘等待時間排序的清單，玩家第一次能**主動挑一則
+//! 最急迫的委託去幫**，而非隨緣路過巧遇——與 `voxel_trade::nearby_trade_previews`（附近貨品
+//! 一覽，1013）同款「彙整→依序瀏覽」介面手法，但彙整的是**居民主動開口的請求**而非**居民手上
+//! 的貨品**，
+//! 資料源頭與玩家意圖皆不同軸（一個是「誰缺什麼你能幫」，一個是「誰在賣什麼你能買」）。
+//!
 //! **純邏輯層**：是否開口（[`should_post_request`]）、討什麼（[`pick_request`]）、把請求包成一句話
 //! （[`request_line`]）、送到後的道謝（[`fulfil_thanks_line`]）與記進記憶的摘要（[`fulfil_memory_line`]）、
 //! 逾期未兌現的追蹤與台詞（v2，見上）全是確定性純函式，零 LLM、零鎖、零 IO。冷卻計時 / 好感讀取 /
@@ -183,6 +192,36 @@ pub fn unfulfilled_memory_line(player: &str, item_name: &str) -> String {
     format!("我跟{player}討過{item_name}，接連兩次都沒等到，這次我打算不再開口了。")
 }
 
+/// **村莊委託牆 v1（自主提案切片，ROADMAP 1015）**：v1~v2 讓居民能「反過來拜託你」，但發現
+/// 的路徑純粹靠運氣——只有此刻正巧站在她面前才聽得到那句泡泡話；就算城鎮動態牆飄過一句
+/// 「某某正想要某材料」，那也只是一閃即逝的日誌，讀到時她可能早就等到、或早就放棄了。全村
+/// 從沒有一處能讓玩家一次看到「現在到底有誰在等」，也無從得知**哪一位最快就要放棄**——你永遠
+/// 只能隨緣路過，不能主動選擇去幫誰。本結構把散落各居民身上的 `open_request` 彙整成一張依
+/// 剩餘等待時間（越快沒耐性排越前面）排序的清單，讓玩家第一次能**主動挑一則最急迫的委託去幫**，
+/// 而非碰運氣巧遇。
+#[derive(Clone, Debug, PartialEq)]
+pub struct RequestBoardEntry {
+    pub resident_id: String,
+    pub resident_name: &'static str,
+    pub item_id: u8,
+    pub item_name: &'static str,
+    /// 距離這位居民放棄等待還剩幾秒（`request_timer`，越小越急迫）。
+    pub remaining_secs: f32,
+}
+
+/// 把「目前掛著未了請求的居民」快照（呼叫端已在鎖內濾出，本函式零鎖零 IO）依剩餘秒數由小到大
+/// 排序——快沒耐性的排最前面，讓玩家一眼看到最該優先去幫誰。剩餘秒數相同時退回 `resident_name`
+/// 確定性排序，結果不受輸入順序影響、可窮舉測試。
+pub fn sort_board_by_urgency(mut entries: Vec<RequestBoardEntry>) -> Vec<RequestBoardEntry> {
+    entries.sort_by(|a, b| {
+        a.remaining_secs
+            .partial_cmp(&b.remaining_secs)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.resident_name.cmp(b.resident_name))
+    });
+    entries
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,5 +362,67 @@ mod tests {
         assert!(m.contains("諾瓦"), "記憶應含玩家名");
         assert!(m.contains("木頭"), "記憶應含材料名");
         assert!(!m.is_empty());
+    }
+
+    fn board_entry(id: &str, name: &'static str, remaining: f32) -> RequestBoardEntry {
+        RequestBoardEntry {
+            resident_id: id.to_string(),
+            resident_name: name,
+            item_id: 5,
+            item_name: "木頭",
+            remaining_secs: remaining,
+        }
+    }
+
+    #[test]
+    fn sort_board_by_urgency_empty_in_empty_out() {
+        assert!(sort_board_by_urgency(vec![]).is_empty());
+    }
+
+    #[test]
+    fn sort_board_by_urgency_ascending_remaining() {
+        let entries = vec![
+            board_entry("a", "露娜", 80.0),
+            board_entry("b", "諾娃", 5.0),
+            board_entry("c", "賽勒", 40.0),
+        ];
+        let sorted = sort_board_by_urgency(entries);
+        let names: Vec<&str> = sorted.iter().map(|e| e.resident_name).collect();
+        assert_eq!(names, vec!["諾娃", "賽勒", "露娜"], "最急迫（剩餘秒數最少）應排最前面");
+    }
+
+    #[test]
+    fn sort_board_by_urgency_tie_breaks_by_name() {
+        let entries = vec![
+            board_entry("a", "露娜", 10.0),
+            board_entry("b", "奧瑞", 10.0),
+        ];
+        let sorted = sort_board_by_urgency(entries);
+        let names: Vec<&str> = sorted.iter().map(|e| e.resident_name).collect();
+        assert_eq!(names, vec!["奧瑞", "露娜"], "剩餘秒數相同時應以名字確定性排序");
+    }
+
+    #[test]
+    fn sort_board_by_urgency_does_not_panic_on_nan() {
+        let entries = vec![
+            board_entry("a", "露娜", f32::NAN),
+            board_entry("b", "諾娃", 10.0),
+        ];
+        let sorted = sort_board_by_urgency(entries);
+        assert_eq!(sorted.len(), 2, "壞資料不該讓排序整支 panic，只影響相對順序");
+    }
+
+    #[test]
+    fn sort_board_by_urgency_preserves_all_entries() {
+        let entries = vec![
+            board_entry("a", "露娜", 30.0),
+            board_entry("b", "諾娃", 10.0),
+            board_entry("c", "賽勒", 20.0),
+        ];
+        let sorted = sort_board_by_urgency(entries);
+        assert_eq!(sorted.len(), 3);
+        for id in ["a", "b", "c"] {
+            assert!(sorted.iter().any(|e| e.resident_id == id), "不應遺漏任何一筆");
+        }
     }
 }

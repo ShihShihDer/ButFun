@@ -4153,6 +4153,11 @@ enum ClientMsg {
     /// （純預覽，不建立任何待確認提案，看了不找她換也無妨）。
     #[serde(rename = "nearby_trades")]
     NearbyTrades,
+    /// 村莊委託牆 v1（自主提案切片，ROADMAP 1015）：全村目前掛著未了請求（`open_request`）的
+    /// 居民一次瀏覽，依剩餘等待時間（越快沒耐性排越前面）排序。伺服器回 `request_board`
+    /// （純預覽，不建立任何新狀態，看了不去幫也無妨）。
+    #[serde(rename = "request_board")]
+    RequestBoard,
     /// 居民交易 v1：接受當前待確認的交易提案（ROADMAP 670）。
     /// 付幣代替湊材料 v1（ROADMAP 874）起，`pay_with_coin=true` 時改直接扣提案的
     /// `coin_price` 枚乙太幣成交，不必湊出 `want_item`；省略／`false` 維持 v1 原行為。
@@ -10200,6 +10205,55 @@ async fn handle_socket(
                     .collect();
                 let msg = serde_json::json!({
                     "t": "nearby_trades",
+                    "items": items,
+                })
+                .to_string();
+                let _ = out_tx.send(Message::Text(msg)).await;
+            }
+
+            // ── 村莊委託牆 v1（自主提案切片，ROADMAP 1015）──────────────────────────
+            Ok(ClientMsg::RequestBoard) => {
+                // 1) 短鎖取全村目前掛著未了請求的居民快照（residents 讀鎖即釋）。
+                //    全村範圍、不做距離篩選——委託牆的價值正是讓玩家不必人在附近就能看到
+                //    「現在到底有誰在等」，據此決定要不要專程走一趟。
+                let board_snapshot: Vec<(String, &'static str, u8, f32)> = {
+                    let residents = hub().residents.read().unwrap();
+                    residents
+                        .iter()
+                        .filter_map(|r| {
+                            let item_id = r.open_request?;
+                            Some((r.id.clone(), r.name, item_id, r.request_timer.max(0.0)))
+                        })
+                        .collect()
+                }; // residents 讀鎖釋放
+                // 2) 組成純資料結構、依剩餘秒數排序（確定性純函式，無鎖）。
+                let entries: Vec<vrequest::RequestBoardEntry> = board_snapshot
+                    .into_iter()
+                    .map(|(resident_id, resident_name, item_id, remaining_secs)| {
+                        vrequest::RequestBoardEntry {
+                            resident_id,
+                            resident_name,
+                            item_id,
+                            item_name: vrequest::item_name_by_id(item_id),
+                            remaining_secs,
+                        }
+                    })
+                    .collect();
+                let sorted = vrequest::sort_board_by_urgency(entries);
+                let items: Vec<serde_json::Value> = sorted
+                    .iter()
+                    .map(|e| {
+                        serde_json::json!({
+                            "resident_id": &e.resident_id,
+                            "resident_name": e.resident_name,
+                            "item_id": e.item_id,
+                            "item_name": e.item_name,
+                            "remaining_secs": e.remaining_secs,
+                        })
+                    })
+                    .collect();
+                let msg = serde_json::json!({
+                    "t": "request_board",
                     "items": items,
                 })
                 .to_string();
@@ -30913,6 +30967,17 @@ mod tests {
         match m {
             ClientMsg::NearbyTrades => {}
             _ => panic!("應解析成 NearbyTrades"),
+        }
+    }
+
+    /// 村莊委託牆 v1（ROADMAP 1015）：多詞 variant 鎖死 `#[serde(rename="request_board")]`
+    /// （前車之鑑見上一條 `nearby_trades_tag_matches_frontend`，同款坑）。
+    #[test]
+    fn request_board_tag_matches_frontend() {
+        let m: ClientMsg = serde_json::from_str(r#"{"t":"request_board"}"#).unwrap();
+        match m {
+            ClientMsg::RequestBoard => {}
+            _ => panic!("應解析成 RequestBoard"),
         }
     }
 
