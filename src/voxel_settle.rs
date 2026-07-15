@@ -101,6 +101,19 @@ pub fn fence_ring_present(existing: usize, ring_len: usize) -> bool {
     ring_len > 0 && existing >= (ring_len / 2).max(4)
 }
 
+/// 院子柴堆填充格——貼在圍籬環內側、院門對側的兩個背側角落。yard 夾層（房屋牆體與圍籬
+/// 之間）只有 1 格寬，背側角落各恰好 1 格可用，天然避開院門走道與房屋牆體，不必額外碰撞判定。
+/// 只在已圈院的家才會被呼叫（呼叫端先驗 `fence_ring_present`）——柴堆是圈院後的下一刀，
+/// 敘事順序接續「先圈院、才擺柴堆」。
+pub fn yard_clutter_cells(fp: HouseFootprint, door: DoorSide) -> [(i32, i32); 2] {
+    match door {
+        DoorSide::South => [(fp.min_x - 1, fp.min_z - 1), (fp.max_x + 1, fp.min_z - 1)],
+        DoorSide::North => [(fp.min_x - 1, fp.max_z + 1), (fp.max_x + 1, fp.max_z + 1)],
+        DoorSide::East => [(fp.min_x - 1, fp.min_z - 1), (fp.min_x - 1, fp.max_z + 1)],
+        DoorSide::West => [(fp.max_x + 1, fp.min_z - 1), (fp.max_x + 1, fp.max_z + 1)],
+    }
+}
+
 /// 聚落歸屬落地路徑（`data/` 已 gitignore）。
 pub const SETTLE_PATH: &str = "data/voxel_settlements.jsonl";
 
@@ -763,5 +776,32 @@ mod tests {
         assert!(!fence_ring_present(9, 20));
         assert!(fence_ring_present(10, 20));
         assert!(!fence_ring_present(0, 0));
+    }
+
+    #[test]
+    fn yard_clutter_cells_sit_inside_fence_ring_on_back_side() {
+        let fp = HouseFootprint { min_x: -1, max_x: 1, min_z: -1, max_z: 1 };
+        let corners = yard_clutter_cells(fp, DoorSide::South);
+        // 南門對側＝北側（z 較小那面）；兩角都落在 footprint 外一格、圍籬環（±3）內一格。
+        assert!(corners.iter().all(|&(_, z)| z == fp.min_z - 1));
+        assert!(corners.iter().all(|&(x, _)| x == fp.min_x - 1 || x == fp.max_x + 1));
+        assert!(corners.iter().all(|&(x, z)| x > -3 && x < 3 && z > -3 && z < 3), "必須落在圍籬環內側，不與籬笆本身重疊");
+        assert_ne!(corners[0], corners[1], "兩角不重複");
+    }
+
+    #[test]
+    fn yard_clutter_cells_follow_each_door_side_to_the_back() {
+        let fp = HouseFootprint { min_x: 10, max_x: 12, min_z: 20, max_z: 22 };
+        for side in [DoorSide::North, DoorSide::South, DoorSide::West, DoorSide::East] {
+            let corners = yard_clutter_cells(fp, side);
+            assert_ne!(corners[0], corners[1], "每個朝向兩角都不重複：{side:?}");
+            let on_back_side = match side {
+                DoorSide::South => corners.iter().all(|&(_, z)| z == fp.min_z - 1),
+                DoorSide::North => corners.iter().all(|&(_, z)| z == fp.max_z + 1),
+                DoorSide::East => corners.iter().all(|&(x, _)| x == fp.min_x - 1),
+                DoorSide::West => corners.iter().all(|&(x, _)| x == fp.max_x + 1),
+            };
+            assert!(on_back_side, "背側角落必須在院門對側：{side:?}");
+        }
     }
 }
