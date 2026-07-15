@@ -29,6 +29,12 @@
 //! **純邏輯層**：本檔零 IO／零鎖／零 async（除 append-only 持久化小節）；門檻判定、選句、
 //! 文案皆確定性純函式，可窮舉測試。鎖／廣播／世界寫入／記憶落地全在 `voxel_ws.rs`
 //! （比照 `voxel_village_milestone`／`voxel_monument` 既有短鎖循序慣例，守 prod 死鎖鐵律）。
+//!
+//! **v2·殖民地擴建（自主提案切片，ROADMAP 1004，接續 `voxel_settle.rs` 補的擴建圈）**：
+//! 「8＝殖民地小地塊全滿、v1 極限人口」這句話被 [`crate::voxel_settle::colony_plots_outer`]
+//! 補上的擴建圈改寫了——`colony_full`（既有 id，不動、仍在 8 人時解鎖）不再是終點，本刀
+//! 只**往後append** 兩檔更高門檻（12＝擴建中、16＝擴建圈也住滿），已持久化的 `colony_full`
+//! 解鎖記錄零回歸。
 
 use std::collections::{HashMap, HashSet};
 
@@ -49,11 +55,15 @@ pub struct TierDef {
 }
 
 /// 全部門檻，依人口由小到大排列（新增門檻只准往後 append、數字只准遞增）。
-/// 8＝`voxel_settle::colony_plots` 一座殖民地的小地塊上限——住滿即是這座殖民地 v1 的極限人口。
+/// 8＝`voxel_settle::colony_plots` 內圈小地塊上限（v1 一度是極限人口，`colony_full` id 沿用
+/// 不動）；12/16＝`voxel_settle::colony_plots_outer` 擴建圈開放後的新門檻，16 為擴建圈也
+/// 住滿的現行上限（v2，ROADMAP 1004）。
 pub const TIERS: &[TierDef] = &[
     TierDef { id: "colony_settling", threshold: 2, name_zh: "剛安頓下來的拓荒地" },
     TierDef { id: "colony_hamlet", threshold: 4, name_zh: "像模像樣的聚落" },
     TierDef { id: "colony_full", threshold: 8, name_zh: "住滿的殖民地" },
+    TierDef { id: "colony_expanding", threshold: 12, name_zh: "正在擴建的殖民地" },
+    TierDef { id: "colony_thriving", threshold: 16, name_zh: "興盛的殖民地" },
 ];
 
 /// 查表確認是否為已知門檻 id（守 store 資料乾淨，未知 id 不寫入）。
@@ -221,7 +231,7 @@ mod tests {
         for w in TIERS.windows(2) {
             assert!(w[0].threshold < w[1].threshold, "門檻應嚴格遞增");
         }
-        assert_eq!(TIERS.last().unwrap().threshold, 8, "最高門檻應對齊殖民地小地塊上限");
+        assert_eq!(TIERS.last().unwrap().threshold, 16, "最高門檻應對齊殖民地擴建圈住滿上限");
     }
 
     #[test]
@@ -237,6 +247,8 @@ mod tests {
     fn is_known_matches_static_list() {
         assert!(is_known("colony_settling"));
         assert!(is_known("colony_full"));
+        assert!(is_known("colony_expanding"));
+        assert!(is_known("colony_thriving"));
         assert!(!is_known(""));
         assert!(!is_known("colony_metropolis"));
     }
@@ -246,7 +258,22 @@ mod tests {
         assert_eq!(tier_index("colony_settling"), Some(0));
         assert_eq!(tier_index("colony_hamlet"), Some(1));
         assert_eq!(tier_index("colony_full"), Some(2));
+        assert_eq!(tier_index("colony_expanding"), Some(3));
+        assert_eq!(tier_index("colony_thriving"), Some(4));
         assert_eq!(tier_index("bogus"), None);
+    }
+
+    #[test]
+    fn check_new_tier_progresses_past_v1_cap_into_expansion() {
+        // v2（1004）：colony_full（8）不再是終點，人口繼續長能一路解到 16。
+        let mut unlocked: HashSet<String> =
+            ["colony_settling", "colony_hamlet", "colony_full"].iter().map(|s| s.to_string()).collect();
+        let t = check_new_tier(12, &unlocked).expect("達 12 應解鎖擴建門檻");
+        assert_eq!(t.id, "colony_expanding");
+        unlocked.insert(t.id.to_string());
+        assert!(check_new_tier(15, &unlocked).is_none(), "未達 16 不解鎖最高檔");
+        let t2 = check_new_tier(16, &unlocked).expect("達 16 應解鎖最高門檻");
+        assert_eq!(t2.id, "colony_thriving");
     }
 
     #[test]
@@ -292,6 +319,9 @@ mod tests {
         assert_eq!(s.try_unlock_new_tier(1, 2).unwrap().id, "colony_settling");
         assert_eq!(s.try_unlock_new_tier(1, 4).unwrap().id, "colony_hamlet");
         assert_eq!(s.try_unlock_new_tier(1, 8).unwrap().id, "colony_full");
+        // v2（1004）：8 不再是終點，擴建圈開放後人口能繼續解到 12/16。
+        assert_eq!(s.try_unlock_new_tier(1, 12).unwrap().id, "colony_expanding");
+        assert_eq!(s.try_unlock_new_tier(1, 16).unwrap().id, "colony_thriving");
         assert!(s.try_unlock_new_tier(1, 999).is_none(), "門檻已全數解鎖");
     }
 
