@@ -394,18 +394,28 @@ mod tests {
     fn collect_for_vehicle_picks_node_within_arm_reach() {
         // 騎乘巡採（ROADMAP 544）：採集臂範圍比徒步寬，貼著節點開過就採得到、回基礎產量。
         let mut f = NodeField::new();
-        f.ensure_chunks_around(0.0, 0.0, 2000.0);
+        // 多載一圈安全邊界（+CHUNK_SIZE）：`f.gather_near`/`f.collect_for_vehicle` 內部
+        // 會再呼叫一次 `ensure_chunks_around(px, py, reach)`——若挑到的 target 貼著原本
+        // 2000 半徑的載入邊界，偏移後的採點可能踩出邊界外，觸發**這裡的 `nodes` 快照
+        // 從未見過**的新區塊（確定性生成，非隨機，但快照時還沒載入）。那個新區塊若剛好
+        // 生了節點，「此距離徒步搆不到」的前提斷言就會隨機失敗——這才是全套件下
+        // 約 1/3~1/8 機率炸、單獨跑必過的真正 flaky 成因（先前只解了 HashMap 迭代序，
+        // 沒解到「快照邊界外還會再長新區塊」這一半）。多載這圈邊界，確保任何
+        // target/px/py 用得到的區塊在快照當下都已載入、快照涵蓋全部。
+        f.ensure_chunks_around(0.0, 0.0, 2000.0 + CHUNK_SIZE);
         let d = (GATHER_REACH + VEHICLE_COLLECT_REACH) / 2.0;
         let nodes = f.nodes();
         // `nodes()` 走訪 HashMap、順序不保證（跨執行緒/跨次執行可能不同）——
         // 先前直接拿 `nodes()[0]` 當 target 是 flaky bug：在節點密集處，
         // 隨機選到的 target 偏移後的採點 (target.x+d, target.y) 有機率恰好落進
-        // 「另一個」節點的徒步範圍內，導致「此距離徒步搆不到」的前提斷言隨機失敗
-        // （已實測：全套件下約 1/3~1/8 機率炸；單獨跑該測試又必過，是典型 flaky）。
+        // 「另一個」節點的徒步範圍內，導致「此距離徒步搆不到」的前提斷言隨機失敗。
         // 修法：顯式挑一個「孤立」節點——偏移後的採點在 GATHER_REACH 內找不到任何節點，
-        // 不依賴 HashMap 迭代順序，讓斷言在任何雜湊種子下都成立。
+        // 不依賴 HashMap 迭代順序，讓斷言在任何雜湊種子下都成立；且只從**遠低於**
+        // 上方多載邊界的內圈（≤2000）挑，確保 target/px/py 需要的所有區塊都在
+        // 快照時已經在 `nodes` 裡，不會漏算快照之後才生成的新區塊。
         let target = nodes
             .iter()
+            .filter(|cand| cand.x.abs() <= 2000.0 && cand.y.abs() <= 2000.0)
             .find(|cand| {
                 let (px, py) = (cand.x + d, cand.y);
                 !nodes.iter().any(|n| {
