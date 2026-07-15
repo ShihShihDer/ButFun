@@ -38,6 +38,18 @@
 //! 全域節流（不分哪一對，同一時間全世界至多生一隻）、population 天花板
 //! （[`MAX_RABBITS`]）防止無限增長、寶寶落在雙親中點附近最近的乾地、純記憶體
 //! （重啟歸零，比照 wildlife 系統既有慣例）——不做基因/外觀差異，最小、最有感的一步。
+//!
+//! **幼獸長大 v1（自主提案切片）**：855 讓小兔子第一次誕生，但誕生之後呢？盤點下來，
+//! 小兔子從出生那一刻起就與成兔**毫無二致**——同樣的體型、同樣「一出生就已馴服」，甚至
+//! **同一 tick 就能被 [`find_breeding_pair`] 選為下一輪的親代**，世界裡因此可能出現「剛出生
+//! 的寶寶下一秒就當了爸媽」的怪異時序（與居民成年禮 942 補上之前「還沒長大就當了父母」
+//! 是同一種缺口，只是這次發生在野生動物身上）。本刀補上「長大」本身：小兔子要活過
+//! [`GROWTH_SECS`] 才算長大成兔——**長大前**：體型明顯偏小（[`growth_scale`] 隨時間漸漸長到
+//! 1.0，前端直接讀取伺服器算好的縮放套用，零額外前端數學）、**不會被選為繁殖親代**
+//! （行為後果，不只是視覺裝飾）；**長大那一刻**：世界動態牆播報一句「小兔子長大了」，
+//! 一生僅此一次（`grown_announced` 純記憶體旗標，比照 `tamed`/`following` 同款 wildlife
+//! 暫態慣例，重啟歸零、不持久化）。世界初始生成的兔子與寶寶誕生前的既有兔群一律視為
+//! **已成年**（`born_unix == 0`），不受影響、零回歸。
 
 /// 野兔閒晃速度（方塊/秒）——比居民散步（2.6）更悠閒，符合小動物碎步的觀感。
 pub const WANDER_SPEED: f32 = 1.4;
@@ -266,6 +278,61 @@ pub fn flee_target(rx: f32, rz: f32, px: f32, pz: f32) -> (f32, f32) {
     } else {
         (rx + dx / dist * FLEE_DIST, rz + dz / dist * FLEE_DIST)
     }
+}
+
+// ── 幼獸長大 v1（自主提案切片）：出生（855）之後第一次真的會「長大」 ──────────────
+
+/// 小兔子要活過這麼久（秒）才算長大成兔——刻意設得比居民成年禮（[`COMING_OF_AGE_SECS`]
+/// 一整個乙太年）短得多，動物比人類長得快，一個遊玩階段內就看得見寶寶長大的過程。
+///
+/// [`COMING_OF_AGE_SECS`]: crate::voxel_coming_of_age::COMING_OF_AGE_SECS
+pub const GROWTH_SECS: f32 = 600.0;
+
+/// 長大前的最小體型縮放（出生那一刻）；長大後固定為 1.0（見 [`growth_scale`]）。
+pub const BABY_MIN_SCALE: f32 = 0.5;
+
+/// 判斷這隻兔子此刻是不是還沒長大的寶寶。`born_unix == 0` 代表世界初始生成／出生系統
+/// 補上前既有的兔子，一律視為已成年（不受本刀影響，零回歸）。壞值（`now < born_unix`，
+/// 理論上不該發生但保守處理）視為剛出生、仍是寶寶，不會 panic。
+pub fn is_baby(born_unix: u64, now: u64) -> bool {
+    born_unix != 0 && now.saturating_sub(born_unix) < GROWTH_SECS as u64
+}
+
+/// 依出生時刻算出此刻的體型縮放：出生那一刻是 [`BABY_MIN_SCALE`]，隨時間線性長到
+/// [`GROWTH_SECS`] 那一刻滿 `1.0`，之後恆為 `1.0`。`born_unix == 0`（既有成兔）恆 `1.0`。
+/// 純函式、確定性、對壞值（`now < born_unix`）安全夾限，永不越界或 panic。
+pub fn growth_scale(born_unix: u64, now: u64) -> f32 {
+    if born_unix == 0 {
+        return 1.0;
+    }
+    let elapsed = now.saturating_sub(born_unix) as f32;
+    let frac = (elapsed / GROWTH_SECS).clamp(0.0, 1.0);
+    BABY_MIN_SCALE + (1.0 - BABY_MIN_SCALE) * frac
+}
+
+/// 從「已馴服兔子」候選名單裡濾掉還沒長大的寶寶——長大前不會被 [`find_breeding_pair`]
+/// 選為親代（行為後果，不只是體型變化）。純函式、保留原本的索引/座標不動。
+pub fn eligible_breeders(
+    tamed_positions: &[(usize, f32, f32, u64)],
+    now: u64,
+) -> Vec<(usize, f32, f32)> {
+    tamed_positions
+        .iter()
+        .filter(|(_, _, _, born_unix)| !is_baby(*born_unix, now))
+        .map(|(i, x, z, _)| (*i, *x, *z))
+        .collect()
+}
+
+/// 長大成兔那一刻的動態牆播報句（確定性輪替，`pick` 由呼叫端提供隨機源）。
+const GROWN_UP_LINES: [&str; 3] = [
+    "🐰 那隻曾經跌跌撞撞的小兔子，不知不覺已經長得跟爸媽一樣大了。",
+    "🐰 一眨眼的功夫，小兔子已經長大成兔，蹦跳的模樣沉穩了不少。",
+    "🐰 曾經怯生生的寶寶，如今已經是一隻像模像樣的成兔了。",
+];
+
+/// 依 `pick` 取一句長大回饋（越界安全取模，永不 panic）。
+pub fn grown_up_line(pick: usize) -> &'static str {
+    GROWN_UP_LINES[pick % GROWN_UP_LINES.len()]
 }
 
 #[cfg(test)]
@@ -593,5 +660,97 @@ mod tests {
         // 名字已在呼叫端清洗，但組句本身對空字串／長字串也不該 panic。
         let _ = command_ack_line(true, "");
         let _ = command_ack_line(false, &"喵".repeat(64));
+    }
+
+    // ── 幼獸長大 v1 ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_baby_true_right_after_birth() {
+        assert!(is_baby(1000, 1000), "剛出生那一刻仍是寶寶");
+        assert!(is_baby(1000, 1000 + (GROWTH_SECS as u64) - 1), "還沒滿長大門檻仍是寶寶");
+    }
+
+    #[test]
+    fn is_baby_false_once_grown_secs_elapsed() {
+        assert!(!is_baby(1000, 1000 + GROWTH_SECS as u64), "剛好滿門檻該算長大");
+        assert!(!is_baby(1000, 1000 + GROWTH_SECS as u64 + 999), "門檻之後恆為成兔");
+    }
+
+    #[test]
+    fn is_baby_legacy_born_unix_zero_always_adult() {
+        // 世界初始生成／出生系統補上前既有的兔子，born_unix==0，永遠不是寶寶。
+        assert!(!is_baby(0, 0));
+        assert!(!is_baby(0, 999_999));
+    }
+
+    #[test]
+    fn is_baby_clock_underflow_is_safe_and_still_baby() {
+        // now < born_unix 理論上不該發生，但不可 panic；saturating_sub 得 0，視為剛出生。
+        assert!(is_baby(1000, 500));
+    }
+
+    #[test]
+    fn growth_scale_starts_at_min_and_ends_at_one() {
+        assert_eq!(growth_scale(1000, 1000), BABY_MIN_SCALE);
+        assert_eq!(growth_scale(1000, 1000 + GROWTH_SECS as u64), 1.0);
+        assert_eq!(growth_scale(1000, 1000 + GROWTH_SECS as u64 + 500), 1.0, "長大後恆為 1.0 不越界");
+    }
+
+    #[test]
+    fn growth_scale_monotonic_and_bounded() {
+        let mut prev = growth_scale(1000, 1000);
+        for step in [100u64, 200, 300, 400, 500, 600] {
+            let cur = growth_scale(1000, 1000 + step);
+            assert!(cur >= prev, "體型應隨時間單調不減");
+            assert!((BABY_MIN_SCALE..=1.0).contains(&cur), "縮放應落在 [BABY_MIN_SCALE, 1.0] 內");
+            prev = cur;
+        }
+    }
+
+    #[test]
+    fn growth_scale_legacy_born_unix_zero_is_full_size() {
+        assert_eq!(growth_scale(0, 12345), 1.0);
+    }
+
+    #[test]
+    fn growth_scale_clock_underflow_is_safe() {
+        let s = growth_scale(1000, 500);
+        assert!((BABY_MIN_SCALE..=1.0).contains(&s), "壞值也不該越界或 panic");
+    }
+
+    #[test]
+    fn eligible_breeders_excludes_babies() {
+        let now = 10_000u64;
+        let candidates = vec![
+            (0usize, 0.0f32, 0.0f32, 0u64),        // 成兔（既有兔子）
+            (1usize, 1.0, 1.0, now - 100),          // 剛出生不久，仍是寶寶
+            (2usize, 2.0, 2.0, now - (GROWTH_SECS as u64) - 1), // 早就長大了
+        ];
+        let out = eligible_breeders(&candidates, now);
+        let ids: Vec<usize> = out.iter().map(|(i, _, _)| *i).collect();
+        assert_eq!(ids, vec![0, 2], "寶寶（索引1）應被濾掉，只留下已長大的親代候選");
+    }
+
+    #[test]
+    fn eligible_breeders_empty_when_all_babies() {
+        let now = 100u64;
+        let candidates = vec![(0usize, 0.0f32, 0.0f32, now)];
+        assert!(eligible_breeders(&candidates, now).is_empty());
+    }
+
+    #[test]
+    fn grown_up_line_picks_vary_and_stay_nonempty() {
+        let a = grown_up_line(0);
+        let b = grown_up_line(1);
+        assert_ne!(a, b);
+        for line in [a, b, grown_up_line(2)] {
+            assert!(!line.is_empty());
+            assert!(!line.contains('\n'), "動態牆單行，不可含換行");
+        }
+    }
+
+    #[test]
+    fn grown_up_line_pick_wraps_without_panic() {
+        let _ = grown_up_line(9999);
     }
 }

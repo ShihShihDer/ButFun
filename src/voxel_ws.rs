@@ -963,6 +963,13 @@ struct WildlifeAnimal {
     /// 走遠後由 `tick_wildlife` 按 dt 遞減、歸零即鬆開回歸日常。只有 `tamed` 的兔／雞會用到；
     /// 魚／未馴服者恆為 `0.0`（不使用）。純記憶體、重啟歸零（比照 `tamed`/`following` 同款慣例，零 migration）。
     spooked_secs: f32,
+    /// 幼獸長大 v1（自主提案切片）：出生時刻（unix 秒）。`0` = 世界初始生成／出生系統補上前
+    /// 既有的兔子，一律視為已成年（見 `voxel_wildlife::is_baby`）；魚／雞恆為 `0`（本刀只做
+    /// 兔子繁殖產下的寶寶）。純記憶體、重啟歸零（比照 `tamed`/`following` 同款 wildlife 暫態慣例）。
+    born_unix: u64,
+    /// 幼獸長大 v1：這隻寶寶「長大成兔」的動態牆播報是否已經發過（一生僅一次）。世界初始生成／
+    /// 已成年的既有兔子（`born_unix == 0`）恆為 `true`（不會、也不需要再播報）。純記憶體、重啟歸零。
+    grown_announced: bool,
 }
 
 /// 野兔家域點（世界座標偏移，散布在村莊周圍，玩家出生後很快就有機會撞見）。
@@ -1000,6 +1007,8 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             name: None,
             settled: false,
             spooked_secs: 0.0,
+            born_unix: 0, // 世界初始生成，一律視為已成年（幼獸長大 v1）
+            grown_announced: true,
         }
     });
     let fish = FISH_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
@@ -1021,6 +1030,8 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             name: None,
             settled: false,
             spooked_secs: 0.0,
+            born_unix: 0, // 世界初始生成，一律視為已成年（幼獸長大 v1）
+            grown_announced: true,
         }
     });
     let chickens = CHICKEN_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
@@ -1042,6 +1053,8 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             name: None,
             settled: false,
             spooked_secs: 0.0,
+            born_unix: 0, // 世界初始生成，一律視為已成年（幼獸長大 v1）
+            grown_announced: true,
         }
     });
     rabbits.chain(fish).chain(chickens).collect()
@@ -1093,6 +1106,16 @@ struct WildlifeView {
     /// `None`（未受驚）時不送欄位（additive，向後相容），前端只在此欄位為真時於頭頂掛表情。
     #[serde(skip_serializing_if = "Option::is_none")]
     emote: Option<&'static str>,
+    /// 幼獸長大 v1：此刻的體型縮放（`voxel_wildlife::growth_scale`，已長大／既有動物恆 `1.0`
+    /// 時不送欄位，additive、向後相容）。前端直接乘上這個值即可，伺服器已算好當下進度，
+    /// 前端不必重算成長曲線。
+    #[serde(skip_serializing_if = "is_full_grown")]
+    scale: f32,
+}
+
+/// `scale` 欄位的 `skip_serializing_if` 判斷式：已滿 `1.0`（成年／既有動物）就不送欄位。
+fn is_full_grown(scale: &f32) -> bool {
+    *scale >= 1.0
 }
 
 /// 暗影小靈序列化視圖（暗影生物 v1）：位置＋已受擊數（前端據 hits 顯示「快散了」的變淡）。
@@ -3752,6 +3775,7 @@ fn players_snapshot_json() -> String {
         vmoon::illumination(wt.days_elapsed(), wt.time_of_day())
     };
     // 野兔快照（野兔 v1，ROADMAP 847，短鎖、不巢狀）：純位置/朝向，前端渲染環境點綴用。
+    let wildlife_now = vfarm::now_secs(); // 幼獸長大 v1：算體型縮放用，讀鎖外一次即可。
     let wildlife: Vec<WildlifeView> = {
         let a = hub().wildlife.read().unwrap();
         a.iter()
@@ -3764,6 +3788,8 @@ fn players_snapshot_json() -> String {
                 } else {
                     None
                 },
+                // 幼獸長大 v1：長大前體型偏小，伺服器算好縮放直接送給前端。
+                scale: vwild::growth_scale(w.born_unix, wildlife_now),
             })
             .collect()
     }; // 野兔讀鎖在此釋放
@@ -14465,12 +14491,21 @@ fn tick_wildlife(dt: f32) {
     let world = hub().deltas.read().unwrap();
     // 這一 tick 該下蛋的已馴服雞座標，留到 wildlife 寫鎖釋放後才落地掉落物（不巢狀鎖）。
     let mut egg_layers: Vec<(f32, f32, f32)> = Vec::new();
+    // 幼獸長大 v1：這一 tick 剛好長大成兔的回饋句，留到 wildlife 寫鎖釋放後才落地 Feed（不巢狀鎖）。
+    let mut grown_feed: Vec<String> = Vec::new();
+    let now_unix = vfarm::now_secs();
     {
     let mut animals = hub().wildlife.write().unwrap();
     for a in animals.iter_mut() {
         let (bx, bz) = (a.body.x, a.body.z);
         match a.kind {
             WildlifeKind::Rabbit => {
+                // 幼獸長大 v1：一生僅播報一次，長大那一刻翻旗標＋排一句動態牆（既有兔子
+                // `born_unix==0` 恆 `grown_announced==true`，這裡不會再進入）。
+                if !a.grown_announced && !vwild::is_baby(a.born_unix, now_unix) {
+                    a.grown_announced = true;
+                    grown_feed.push(vwild::grown_up_line(rand::random::<u64>() as usize).to_string());
+                }
                 // 找最近玩家（沒有玩家在線 = 視為無限遠，永遠不受驚）。
                 let nearest = player_pts.iter().min_by(|(x1, z1), (x2, z2)| {
                     let d1 = (a.body.x - x1).powi(2) + (a.body.z - z1).powi(2);
@@ -14690,6 +14725,9 @@ fn tick_wildlife(dt: f32) {
             broadcast_item_dropped(id, x, y, z, vcoop::EGG_ID, 1, "雞");
         }
     }
+    for line in grown_feed {
+        vfeed::append_feed("幼獸長大", "野兔", &line);
+    }
 }
 
 /// 全域生育節流時間戳記（馴服兔子生寶寶 v1，自主提案切片，ROADMAP 855）。
@@ -14717,13 +14755,16 @@ fn maybe_breed_rabbits() {
     let feed_line = {
         let mut animals = hub().wildlife.write().unwrap();
         let rabbit_count = animals.iter().filter(|a| a.kind == WildlifeKind::Rabbit).count();
-        let tamed_positions: Vec<(usize, f32, f32)> = animals
+        let tamed_positions: Vec<(usize, f32, f32, u64)> = animals
             .iter()
             .enumerate()
             .filter(|(_, a)| a.kind == WildlifeKind::Rabbit && a.tamed)
-            .map(|(i, a)| (i, a.body.x, a.body.z))
+            .map(|(i, a)| (i, a.body.x, a.body.z, a.born_unix))
             .collect();
-        let Some((ia, ib)) = vwild::find_breeding_pair(&tamed_positions) else {
+        // 幼獸長大 v1：還沒長大的寶寶不會被選為繁殖親代（行為後果，不只是體型變化），
+        // 避免出現「剛出生就當爸媽」的怪異時序（同居民成年禮 942 的教訓）。
+        let breeder_positions = vwild::eligible_breeders(&tamed_positions, now);
+        let Some((ia, ib)) = vwild::find_breeding_pair(&breeder_positions) else {
             return;
         };
         if !vwild::should_breed_seasonal(rabbit_count, elapsed, rand::random::<f32>(), current_season)
@@ -14754,6 +14795,8 @@ fn maybe_breed_rabbits() {
             name: None,
             settled: false,
             spooked_secs: 0.0,
+            born_unix: now, // 幼獸長大 v1：記下出生時刻，長大前體型偏小且不會被選為親代。
+            grown_announced: false,
         });
         // 春季誕生用專屬感言（春回兔繁 v1），其餘季節沿用四季通用句。
         if is_spring {
