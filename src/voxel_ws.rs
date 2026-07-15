@@ -17318,6 +17318,19 @@ fn tick_residents(dt: f32) {
     // 世界站穩腳跟後自然恢復——零 panic、零硬編座標）。
     let main_village_center: Option<(f32, f32)> =
         vvillage::load_village_center().map(|(x, z)| (x as f32, z as f32));
+    // 跨村商隊 v2（ROADMAP 997，殖民地互跑）：把主村＋每座殖民地攤平成同一份「全世界聚落
+    // 名冊」，`vcaravan::pick_settlement_destination` 用它替任一出發聚落挑目的地——不再區分
+    // 「我是主村」或「我是殖民地」，任兩座聚落之間都能互跑商隊。
+    let all_settlements_snap: Vec<(u64, String, f32, f32)> = {
+        let mut v: Vec<(u64, String, f32, f32)> = Vec::new();
+        if let Some((mx, mz)) = main_village_center {
+            v.push((vsettle::MAIN_SETTLEMENT, "主村".to_string(), mx, mz));
+        }
+        for (seq, name, cx, cz) in &colonies_snap {
+            v.push((vsettle::colony_settlement_id(*seq), name.clone(), *cx as f32, *cz as f32));
+        }
+        v
+    };
 
     // 殖民地暮聚 v1（接續 943「殖民地真居住」v1 明確不動清單「暮聚…主村限定」的缺口）：暮聚
     // （村莊自發習俗 v1）至今只認主村廣場中心——風禾屯這樣的殖民地離主村太遠，從沒被暮聚吸引過，
@@ -20350,14 +20363,11 @@ fn tick_residents(dt: f32) {
                     && r.stroll_partner.is_none()
                     && r.walk_with.is_none();
                 let sid = settlement_snap.get(&r.id).copied().unwrap_or(vsettle::MAIN_SETTLEMENT);
-                // 目的地：主村居民挑最早奠基的殖民地；殖民地居民回主村（v1 只走這兩種方向，
-                // 殖民地互跑留給未來一刀）。世界還沒有第二座聚落／查不到主村中心 → 無處可去。
-                let dest = if sid == vsettle::MAIN_SETTLEMENT {
-                    vcaravan::pick_colony_destination(&colonies_snap)
-                } else {
-                    main_village_center
-                        .map(|(mx, mz)| (mx, mz, "主村".to_string(), vsettle::MAIN_SETTLEMENT))
-                };
+                // 目的地（v2·殖民地互跑，ROADMAP 997）：從「全世界聚落名冊」裡排除自己這座，
+                // 任兩座聚落之間都能互跑——不再區分「我是主村」或「我是殖民地」。世界還沒有
+                // 第二座聚落／查不到主村中心 → 名冊裡沒有其他候選，無處可去。
+                let dest =
+                    vcaravan::pick_settlement_destination(&all_settlements_snap, sid, rand::random::<f32>());
                 if let Some((dx, dz, dest_name, dest_id)) = dest {
                     if vcaravan::should_embark(
                         idle_free,
