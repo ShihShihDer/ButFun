@@ -25398,19 +25398,30 @@ fn tick_residents(dt: f32) {
         // 這個方向，本節讓老朋友到訪時，偶爾比照同一套特長分類「順手交換」一次，小社會
         // 第一次有了內部經濟流動。只在這次到訪沒有觸發互助蓋家/拌嘴/傳授技能時才可能
         // 發生（同一次到訪只演一齣戲，鏡像既有優先序）。
+        //
+        // 生計互相依賴 v1（自主提案切片）：拿出來換的東西改依雙方生計身分決定
+        // （`vrtrade::trade_pair` 現吃 Vocation，見該模組文件的真缺口說明），兩人生計剛好
+        // 環環相扣（`vrtrade::is_complementary`）時用一組格外合拍的台詞，讓玩家看得出
+        // 「這對生計真的互相需要」。
         let mut resident_trade_line: Option<String> = None;
         if vrtrade::should_resident_trade(
             tier, help_line.is_some(), quarrel_line.is_some(), teach_line.is_some(),
             rand::random::<f32>(),
         ) {
-            let host_id = {
+            let host_lookup = {
                 let residents = hub().residents.read().unwrap();
-                residents.iter().find(|r| r.name == host_name).map(|r| r.id.clone())
+                let host = residents.iter().find(|r| r.name == host_name);
+                let host_id_vocation = host.map(|r| (r.id.clone(), r.vocation));
+                let visitor_vocation = residents.iter().find(|r| r.id == visitor_id).map(|r| r.vocation);
+                host_id_vocation.zip(visitor_vocation)
             }; // residents 讀鎖釋放
-            if let Some(host_id) = host_id {
-                if let Some((v_item, h_item)) = vrtrade::trade_pair(&visitor_id, &host_id) {
+            if let Some(((host_id, host_vocation), visitor_vocation)) = host_lookup {
+                if let Some((v_item, h_item)) =
+                    vrtrade::trade_pair(&visitor_id, visitor_vocation, &host_id, host_vocation)
+                {
                     let v_name = vtrade::item_name_zh(v_item);
                     let h_name = vtrade::item_name_zh(h_item);
+                    let complementary = vrtrade::is_complementary(visitor_vocation, host_vocation);
                     vfeed::append_feed(
                         vrtrade::FEED_KIND,
                         visitor_name,
@@ -25426,7 +25437,7 @@ fn tick_residents(dt: f32) {
                             .add_memory(&host_id, visitor_name, &vrtrade::trade_memory_line(visitor_name, h_name, v_name));
                         vmem::append_memory(&entry);
                     } // memory 寫鎖釋放
-                    resident_trade_line = Some(vrtrade::trade_say_line(&host_name, h_name, pick));
+                    resident_trade_line = Some(vrtrade::trade_say_line(&host_name, h_name, complementary, pick));
                 }
             }
         }
