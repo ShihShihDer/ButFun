@@ -27691,8 +27691,8 @@ fn advance_invent_run(
                     // （見採集分潤，只有胡蘿蔔／馬鈴薯支援）、附近又找得到可翻土的地表，就地
                     // 翻土播種——這次嘗試仍誠實算失敗（種子還沒長熟，這輪領不到材料），但
                     // 世界因此多了一畦她自己種下的田，下次冷卻後再試也許就已經熟了。
-                    if let (Some(seed_id), Some(till_block)) =
-                        (crop.seed_id(), crop.tillable_block())
+                    if let (Some(seed_id), Some(till_block), Some(crop_kind)) =
+                        (crop.seed_id(), crop.tillable_block(), crop.crop_kind())
                     {
                         let has_seed = {
                             let inv = hub().res_inv.read().unwrap();
@@ -27722,7 +27722,7 @@ fn advance_invent_run(
                                     vbuild::append_world_block(tx, ty, tz, seeded as u8);
                                     let farm_e = {
                                         hub().farm.write().unwrap().plant(
-                                            tx, ty, tz, vfarm::now_secs(), crop.crop_kind(),
+                                            tx, ty, tz, vfarm::now_secs(), crop_kind,
                                         )
                                     }; // farm 寫鎖釋放
                                     vfarm::append_farm(&farm_e);
@@ -27778,6 +27778,11 @@ fn advance_invent_run(
                     let farm_e =
                         { hub().farm.write().unwrap().plant(gx, gy, gz, vfarm::now_secs(), kind) };
                     vfarm::append_farm(&farm_e);
+                } else if matches!(regrow, Block::BerryBush) {
+                    // 第十刀（莓果入自採閉包）：莓果叢是多年生，不走 `voxel_farm` 的一次性
+                    // 計時，而是自己的 `berry` store（比照玩家破壞路徑 L5905 同款重新登記
+                    // 計時，否則這叢會卡在「未結果」再也不會被 `tick_berry` 排進去）。
+                    hub().berry.write().unwrap().plant(gx, gy, gz, vfarm::now_secs());
                 }
                 {
                     let mut inv = hub().res_inv.write().unwrap();
