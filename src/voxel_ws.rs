@@ -13003,6 +13003,8 @@ fn maybe_birth() {
         home_base_z: hoz,
         parent: parent_id.clone(),
         parent_name: parent_name.to_string(),
+        co_parent: co_parent_id.clone(),
+        co_parent_name: co_parent_name.map(|s| s.to_string()),
         birth_unix: now,
     });
 
@@ -14090,6 +14092,47 @@ pub async fn voxel_cliques_handler() -> axum::response::Response {
             .collect()
     };
     let body = serde_json::to_string(&cliques).unwrap_or_else(|_| "[]".into());
+    axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
+/// 乙太方界·家族樹面板（自主提案切片，接續 708 交情網 + 927 戀人成婚 + 928 愛的結晶）：
+///
+/// 誰跟誰結為連理（927 `voxel_wedding`）、誰是誰的孩子（928 人口成長世代傳承）——這兩份
+/// 資料早就分別持久化在案，卻從沒有一處把它們攤開給玩家看：交情網（708）只畫兩兩情誼的
+/// 數字，看不出這座小社會裡「誰跟誰成家了、生了誰」。本端點純讀取、零副作用，直接複用
+/// 既有的 `ResidentWeddings::to_entries()`（婚書帳本）與 `vroster::load_roster()`（名冊，
+/// 928 起就記著每個孩子的父母——含 `co_parent`/`co_parent_name`，這兩個欄位一直都算得出來，
+/// 只是至今從未被讀出來用過），把「這座小社會的家族樹」第一次攤開。
+pub async fn voxel_family_handler() -> axum::response::Response {
+    use axum::http::header;
+    let marriages: Vec<serde_json::Value> = {
+        // 短讀鎖一次性快照全部婚書 → 立即釋放，不與其他鎖巢狀（比照交情網手法）。
+        let weddings = hub().weddings.read().unwrap();
+        weddings
+            .to_entries()
+            .into_iter()
+            .map(|e| serde_json::json!({ "a": e.id_a, "b": e.id_b }))
+            .collect()
+    }; // weddings 讀鎖釋放
+    let children: Vec<serde_json::Value> = vroster::load_roster()
+        .into_iter()
+        .map(|e| {
+            serde_json::json!({
+                "name": e.name,
+                "parent": e.parent_name,
+                "co_parent": e.co_parent_name,
+            })
+        })
+        .collect();
+    let body = serde_json::to_string(&serde_json::json!({
+        "marriages": marriages,
+        "children": children,
+    }))
+    .unwrap_or_else(|_| "{}".into());
     axum::response::Response::builder()
         .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-cache")

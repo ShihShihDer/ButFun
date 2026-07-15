@@ -915,6 +915,17 @@
     }
     .clique-icon { font-size: 15px; }
     .clique-names { flex: 1; color: #ffdca0; font-size: 12.5px; }
+    /* 家族樹面板（自主提案切片，接續 708+927+928）：沒有婚姻/親子資料時整段不渲染。 */
+    #familyBody:empty { display: none; }
+    #familyBody { display: flex; flex-direction: column; gap: 6px; padding: 10px 13px 0; }
+    .family-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 8px; border-radius: 10px; background: rgba(255,176,200,0.10);
+      border: 1px solid rgba(255,176,200,0.25);
+    }
+    .family-icon { font-size: 15px; }
+    .family-names { flex: 1; color: #ffd6e4; font-size: 12.5px; }
+    .family-children { color: #c9d6ea; }
     @media (orientation: portrait) {
       #relationsBtn { top: auto; bottom: 264px; right: 10px; }
       #relationsPanel { top: auto; bottom: 308px; right: 10px; max-height: 45vh; }
@@ -2015,6 +2026,7 @@
       <span id="relationsClose">✕</span>
     </div>
     <div id="cliquesBody"></div>
+    <div id="familyBody"></div>
     <div id="relationsBody"></div>
   </div>
   <!-- 居民技能簿（ROADMAP 719）：真進化（716）+ 傳授（717）只靠 Feed 一次性播報，此面板讓玩家第一次能回頭查「誰會什麼」 -->
