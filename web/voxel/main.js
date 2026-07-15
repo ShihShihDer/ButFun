@@ -199,6 +199,10 @@ const RIDING_SPEED_MULT = 1.8;
 // 可切換演奏／收起，附近閒著的居民會停下腳步聆聽。純物品、不可放置。116 是 115
 // （蒸汽獨輪車）之後的首個空號。
 const STREET_ACCORDION = 116;
+// 生計信物 v2（ROADMAP 1003，自主提案切片）——居民教你一道獨門配方 v1（849）只有護身符一道、
+// 任何居民都可能教；本刀讓五種生計（農夫/鐵匠/漁夫/獵人/商人）各自教一道專屬信物，工匠固定
+// 教護身符。純物品、不可放置。117~121 是 116（街頭手風琴）之後的首個空號。
+const FARMER_CHARM = 117, SMITH_RING = 118, FISHER_CHARM = 119, HUNTER_CHARM = 120, MERCHANT_CHARM = 121;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -355,6 +359,13 @@ const COLOR = {
   // 街頭手風琴 v1（ROADMAP 977，自主提案切片）——深栗色琴身帶點黃銅感，與獨輪車的鏽銅色
   // 區隔開（同屬蒸汽龐克手持物但色相不同，一眼分得出誰是載具、誰是樂器）。
   [STREET_ACCORDION]: [0.55, 0.32, 0.22],
+  // 生計信物 v2（ROADMAP 1003，自主提案切片）——五道各自呼應生計本業的色系，且與護身符的
+  // 琥珀色（AMULET）明顯分開，一眼看出「這是哪位生計朋友教的」。
+  [FARMER_CHARM]:   [0.82, 0.66, 0.20], // 豐收吊飾——麥穗金橘，農穫暖色
+  [SMITH_RING]:     [0.70, 0.70, 0.76], // 鍛環——冷鐵灰藍，呼應鐵錠色系但更沉穩
+  [FISHER_CHARM]:   [0.42, 0.68, 0.78], // 潮貝墜——淺潮水青，貝殼與水色交融
+  [HUNTER_CHARM]:   [0.46, 0.52, 0.28], // 獵具束——雜草苔綠，狩獵裝具的樸實色
+  [MERCHANT_CHARM]: [0.86, 0.66, 0.34], // 秤砣墜——溫潤黃銅，商旅信物的貴氣感
 };
 
 // ── 裝飾植物十字貼片渲染 v2 ─────────────────────────────────────────────
@@ -6322,6 +6333,9 @@ const BLOCK_NAME = {
   [STEAM_UNICYCLE]: "蒸汽獨輪車",
   // 街頭手風琴 v1（ROADMAP 977，自主提案切片）
   [STREET_ACCORDION]: "街頭手風琴",
+  // 生計信物 v2（ROADMAP 1003，自主提案切片）
+  [FARMER_CHARM]: "豐收吊飾", [SMITH_RING]: "鍛環", [FISHER_CHARM]: "潮貝墜",
+  [HUNTER_CHARM]: "獵具束", [MERCHANT_CHARM]: "秤砣墜",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -8745,6 +8759,13 @@ const RECIPES_JS = [
   // `taught: true`——與其餘配方不同，湊對材料還不夠，要先被某位感情夠深的居民教過
   // （`knownRecipes` 由伺服器權威回報）才真正合成得出來，見 matchBagRecipe。
   { id: "amulet", name: "護身符", inputs: [[STONE, 1], [WILDFLOWER_RED, 1]], output_block: AMULET, out_count: 1, taught: true },
+  // 生計信物 v2（ROADMAP 1003，自主提案切片）：五道獨門配方，對齊後端 voxel_craft::TAUGHT_RECIPES
+  // ——農夫/鐵匠/漁夫/獵人/商人各教一道，同款 `taught: true`（要先被對應生計的居民教過才合成得出）。
+  { id: "farmer_charm",   name: "豐收吊飾", inputs: [[WHEAT, 1], [CARROT, 1]],       output_block: FARMER_CHARM,   out_count: 1, taught: true },
+  { id: "smith_ring",     name: "鍛環",     inputs: [[IRON_INGOT, 1], [STONE, 1]],   output_block: SMITH_RING,     out_count: 1, taught: true },
+  { id: "fisher_charm",   name: "潮貝墜",   inputs: [[SAND, 1], [FISH, 1]],          output_block: FISHER_CHARM,   out_count: 1, taught: true },
+  { id: "hunter_charm",   name: "獵具束",   inputs: [[GRASS, 1], [WOOD, 1]],         output_block: HUNTER_CHARM,   out_count: 1, taught: true },
+  { id: "merchant_charm", name: "秤砣墜",   inputs: [[SAND, 1], [IRON_INGOT, 1]],    output_block: MERCHANT_CHARM, out_count: 1, taught: true },
   // 乙太幣鑄造 v1（ROADMAP 873，自主提案切片）：三種最容易湊齊的原礦各開一條「賣出換幣」
   // 配方，統一 4 份原礦 → 1 枚乙太幣的匯率。鑄出的幣可拿去自由市集標價收付（832 已支援
   // 任意物品當 want_item，乙太幣天生就能直接掛上去，不必再改市集半行程式碼）。

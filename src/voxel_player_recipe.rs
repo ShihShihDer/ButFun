@@ -14,6 +14,15 @@
 //! **範圍（v1，誠實的取捨）**：先做**一道**配方，任何一位居民、只要夠熟都可能教（不綁定
 //! 特定居民身分）——機制先驗證通過，日後可再往 [`TAUGHT_RECIPE_ID`] 這個池子加更多獨門配方。
 //!
+//! **v2（本輪，ROADMAP 1003，自主提案切片，補 v1 自己文件開頭留白的缺口）**：v1 誠實留了
+//! 一句「不綁定特定居民身分」——但居民↔居民傳授技能（717 `voxel_teach`）早就與生計無關，
+//! 唯獨這裡的教學至今真的與 `voxel_vocation::Vocation` 完全脫鉤：農夫、鐵匠、漁夫、獵人、
+//! 商人教出來的都是同一件護身符，「這位居民的本事」沒有個性可言。本刀補上 [`recipe_id_for_vocation`]——
+//! `voxel_craft::TAUGHT_RECIPES` 池子擴到六道，哪位居民教哪一道由她的 `vocation` 決定（工匠固定
+//! 教護身符，其餘五種生計各自一道專屬信物），從此「你跟哪位居民熟」第一次也決定「你學到哪一種
+//! 本事」——正中北極星「記憶驅動行為」：交情不只換來一句話，還換來一件跟這份交情的身分綁在一起
+//! 的東西。純函式擴充、零協議破壞（`recipe_teach_events` 新增一個 recipe_id 欄位、additive）。
+//!
 //! **與既有系統的定位區隔**：居民互相傳授（717）是居民↔居民、技能發明系統（`voxel_invent`）
 //! 的原語組合；本刀是居民↔玩家、既有 2×2 合成配方系統（`voxel_craft::Recipe`）的解鎖開關，
 //! 兩套配方系統完全獨立，互不干擾。
@@ -31,9 +40,26 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-/// 目前池子裡唯一的獨門配方 id（`voxel_craft::TAUGHT_RECIPES` 對應項的 `id`，
-/// 對應物品為 `voxel_craft::AMULET_ID` 護身符）。
+/// v1 遺留常數（`voxel_craft::TAUGHT_RECIPES` 首道、護身符）。v2 起實際教學走
+/// [`recipe_id_for_vocation`] 依居民生計決定，此常數只作為工匠一支的固定值與既有測試錨點保留。
 pub const TAUGHT_RECIPE_ID: &str = "amulet";
+
+/// 依居民的生計身分決定她會教你哪一道獨門配方（v2，ROADMAP 1003）。
+///
+/// 六道配方與六種生計一一對應（見 `voxel_craft::TAUGHT_RECIPES`）：工匠固定教護身符（v1
+/// 遺留、與 [`TAUGHT_RECIPE_ID`] 一致），其餘五種生計各自一道專屬信物。純函式、確定性、
+/// 窮舉 `Vocation` 全部變體（新增生計種類時編譯期會強制在此補上對應配方，不會悄悄漏接）。
+pub fn recipe_id_for_vocation(vocation: crate::voxel_vocation::Vocation) -> &'static str {
+    use crate::voxel_vocation::Vocation;
+    match vocation {
+        Vocation::Artisan => "amulet",
+        Vocation::Farmer => "farmer_charm",
+        Vocation::Smith => "smith_ring",
+        Vocation::Fisher => "fisher_charm",
+        Vocation::Hunter => "hunter_charm",
+        Vocation::Merchant => "merchant_charm",
+    }
+}
 
 /// 居民願意教你獨門配方的最低好感（＝關於這位玩家的記憶筆數）。設 8——高於老友情境問候
 /// 門檻 `FOND_AFFINITY`(5)，也高於掏心事門檻 `CONFIDE_MIN_AFFINITY`(3)：教一道會跟著你一輩子
@@ -214,6 +240,28 @@ mod tests {
         assert!(s.knows("小星", TAUGHT_RECIPE_ID));
         assert!(!s.learn("小星", TAUGHT_RECIPE_ID), "重複學會應回 false（冪等）");
         assert!(!s.knows("阿明", TAUGHT_RECIPE_ID), "不同玩家互不影響");
+    }
+
+    #[test]
+    fn recipe_id_for_vocation_covers_all_variants_distinctly() {
+        use crate::voxel_vocation::Vocation;
+        let all = [
+            Vocation::Farmer,
+            Vocation::Smith,
+            Vocation::Fisher,
+            Vocation::Hunter,
+            Vocation::Artisan,
+            Vocation::Merchant,
+        ];
+        // 六種生計各自對到一道獨門配方，且彼此互不相同（沒有兩種生計共用同一道）。
+        let ids: Vec<&str> = all.iter().map(|&v| recipe_id_for_vocation(v)).collect();
+        for (i, a) in ids.iter().enumerate() {
+            for b in ids.iter().skip(i + 1) {
+                assert_ne!(a, b, "兩種不同生計不該教出同一道獨門配方");
+            }
+        }
+        // 工匠固定教護身符，與 v1 遺留常數一致（既有玩家已學會的資料不因 v2 改語意）。
+        assert_eq!(recipe_id_for_vocation(Vocation::Artisan), TAUGHT_RECIPE_ID);
     }
 
     #[test]

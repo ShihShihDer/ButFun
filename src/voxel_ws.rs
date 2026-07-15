@@ -17654,10 +17654,11 @@ fn tick_residents(dt: f32) {
     // memory 寫鎖記一筆「你翻過我的日記」（episodic），守「residents 寫鎖內不巢狀取 memory
     // 寫鎖」的死鎖鐵律（比照 `confide_mems` 同一手法）。
     let mut diary_peek_reveals: Vec<(String, String)> = Vec::new();
-    // 居民教你一道獨門配方 v1（自主提案，ROADMAP 849）：招呼時序內偵測「感情深厚的居民主動
-    // 教你一道獨門配方」→ 收集 (居民 id, 居民顯示名, 玩家顯示名)；residents 寫鎖釋放後才
-    // 落地學會（player_recipes 寫鎖）+ 記憶（memory 寫鎖）+ Feed + 廣播，守死鎖鐵律。
-    let mut recipe_teach_events: Vec<(String, &'static str, String)> = Vec::new();
+    // 居民教你一道獨門配方 v1/v2（自主提案，ROADMAP 849/1003）：招呼時序內偵測「感情深厚的
+    // 居民主動教你一道獨門配方」→ 收集 (居民 id, 居民顯示名, 玩家顯示名, 依她生計決定的配方 id)；
+    // residents 寫鎖釋放後才落地學會（player_recipes 寫鎖）+ 記憶（memory 寫鎖）+ Feed + 廣播，
+    // 守死鎖鐵律。
+    let mut recipe_teach_events: Vec<(String, &'static str, String, &'static str)> = Vec::new();
     // 居民回饋糧倉 v1（自主提案）：鎖內偵測「有餘裕材料＋附近有一口已知箱子」→ 決定要存的
     // (item_id, qty)（泡泡已於鎖內設好 r.say），鎖外統一執行真正的轉移（res_inv 寫→chest 寫，
     // 各自短鎖循序不巢狀）。格式：(居民 id, 居民顯示名, wx, wy, wz, item_id, qty)。
@@ -18588,17 +18589,20 @@ fn tick_residents(dt: f32) {
                         && !nearest_name.is_empty()
                         && rand::random::<f32>() < TEACH_CHANCE_PER_TICK
                     {
+                        // 教哪一道由這位居民的生計決定（v2，ROADMAP 1003）——與掏出好感無關，
+                        // 純看她是誰；工匠固定教護身符，其餘生計各自一道專屬信物。
+                        let recipe_id = vprecipe::recipe_id_for_vocation(r.vocation);
                         // 好感 + 是否已學會，兩把短讀鎖各自即釋、不巢狀、不持鎖 await。
                         let affinity = hub().memory.read().unwrap().affinity_count(nearest_name, &r.id);
                         let already_known = hub()
                             .player_recipes
                             .read()
                             .unwrap()
-                            .knows(nearest_name, vprecipe::TAUGHT_RECIPE_ID);
+                            .knows(nearest_name, recipe_id);
                         // cooldown_ok 由外層 `teach_timer <= 0` 分支保證；roll 已在上面過門檻，
                         // 這裡再過一次好感／已學會門檻（把判定集中在純函式裡）。
                         if vprecipe::should_teach_recipe(affinity, already_known, true, 0.0, 1.0) {
-                            if let Some(recipe) = vcraft::find_taught_recipe(vprecipe::TAUGHT_RECIPE_ID) {
+                            if let Some(recipe) = vcraft::find_taught_recipe(recipe_id) {
                                 let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                                 r.say = vprecipe::teach_bubble(recipe.name_zh, pick)
                                     .chars()
@@ -18609,7 +18613,7 @@ fn tick_residents(dt: f32) {
                                 r.mood_boost_secs =
                                     r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                                 // 落地學會 + 記憶 + Feed + 廣播（鎖外 flush，守死鎖鐵律）。
-                                recipe_teach_events.push((r.id.clone(), r.name, nearest_name.to_string()));
+                                recipe_teach_events.push((r.id.clone(), r.name, nearest_name.to_string(), recipe_id));
                             }
                         }
                     }
@@ -25118,23 +25122,21 @@ fn tick_residents(dt: f32) {
         vmem::append_memory(&entry);
     }
 
-    // 5c-2g-1b-1) 居民教你一道獨門配方 v1（自主提案，ROADMAP 849）：居民主動教了某玩家一道獨門
-    // 配方（泡泡已於鎖內設好）後，鎖外依序：① player_recipes 寫鎖學會（冪等，`learn` 回 true 才
-    // 繼續）→ ② append 持久化 → ③ memory 寫鎖記一筆「我教了她」episodic 記憶（累積好感）→
-    // ④ Feed 動態牆 → ⑤ 廣播 `recipe_taught`（前端只有當事玩家會彈提示，比照 `player_care`）。
-    // 全程短鎖循序取放、不巢狀、不持鎖 await，守死鎖鐵律。
-    for (rid, rname, pname) in &recipe_teach_events {
-        let newly = { hub().player_recipes.write().unwrap().learn(pname, vprecipe::TAUGHT_RECIPE_ID) };
+    // 5c-2g-1b-1) 居民教你一道獨門配方 v1/v2（自主提案，ROADMAP 849/1003）：居民主動教了某玩家
+    // 一道獨門配方（泡泡已於鎖內設好，配方 id 已依她的生計決定）後，鎖外依序：① player_recipes
+    // 寫鎖學會（冪等，`learn` 回 true 才繼續）→ ② append 持久化 → ③ memory 寫鎖記一筆「我教了她」
+    // episodic 記憶（累積好感）→ ④ Feed 動態牆 → ⑤ 廣播 `recipe_taught`（前端只有當事玩家會彈
+    // 提示，比照 `player_care`）。全程短鎖循序取放、不巢狀、不持鎖 await，守死鎖鐵律。
+    for (rid, rname, pname, recipe_id) in &recipe_teach_events {
+        let newly = { hub().player_recipes.write().unwrap().learn(pname, recipe_id) };
         if !newly {
             continue; // 已學過（理論上鎖內 already_known 已擋，這裡再防一層重入/競態）
         }
         vprecipe::append_player_recipe(&vprecipe::PlayerRecipeEntry {
             player: pname.clone(),
-            recipe_id: vprecipe::TAUGHT_RECIPE_ID.to_string(),
+            recipe_id: recipe_id.to_string(),
         });
-        let recipe_name = vcraft::find_taught_recipe(vprecipe::TAUGHT_RECIPE_ID)
-            .map(|r| r.name_zh)
-            .unwrap_or("獨門配方");
+        let recipe_name = vcraft::find_taught_recipe(recipe_id).map(|r| r.name_zh).unwrap_or("獨門配方");
         let summary = vprecipe::teach_memory_line(pname, recipe_name);
         let entry = hub().memory.write().unwrap().add_memory(rid, pname, &summary); // memory 寫鎖即釋
         vmem::append_memory(&entry);
@@ -25143,7 +25145,7 @@ fn tick_residents(dt: f32) {
             "t": "recipe_taught",
             "resident_name": rname,
             "player": pname,
-            "recipe_id": vprecipe::TAUGHT_RECIPE_ID,
+            "recipe_id": recipe_id,
             "name_zh": recipe_name,
         })
         .to_string();

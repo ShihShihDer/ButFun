@@ -95,6 +95,22 @@ pub fn can_start_riding(has_item: bool) -> bool {
 /// 是目前最大已用 id，116 是首個空號。
 pub const STREET_ACCORDION_ID: u8 = 116;
 
+// ── 生計信物物品 ID（純物品，不可放置於世界，居民教你一道獨門配方 v2，自主提案切片）───
+// v1（849）先驗證機制、只放一道護身符（任何居民都可能教）。本刀補上 v1 自己文件開頭
+// 誠實留白的缺口：居民↔玩家「教」這件事至今與居民的生計身分（`voxel_vocation`）完全無關，
+// 農夫、鐵匠、漁夫、獵人、商人教出來的都是同一件護身符。五種生計各自的信物，讓「這位
+// 居民的本事」第一次帶著她的身分——見 `voxel_player_recipe::recipe_id_for_vocation`。
+/// 豐收吊飾（ROADMAP 1003）——物品 ID 117；農夫的獨門配方，用親手種收的麥穗與胡蘿蔔編成。
+pub const FARMER_CHARM_ID: u8 = 117;
+/// 鍛環（ROADMAP 1003）——物品 ID 118；鐵匠的獨門配方，自己鍛的鐵錠嵌著一塊爐邊的石。
+pub const SMITH_RING_ID: u8 = 118;
+/// 潮貝墜（ROADMAP 1003）——物品 ID 119；漁夫的獨門配方，沙灘拾來的貝形墜子配一尾親手釣的魚。
+pub const FISHER_CHARM_ID: u8 = 119;
+/// 獵具束（ROADMAP 1003）——物品 ID 120；獵人的獨門配方，編織雜草纏上一截木柄的隨身小物。
+pub const HUNTER_CHARM_ID: u8 = 120;
+/// 秤砣墜（ROADMAP 1003）——物品 ID 121；商人的獨門配方，秤貨用的鐵砣鑄進一捧沙模，商旅隨身帶著。
+pub const MERCHANT_CHARM_ID: u8 = 121;
+
 /// 是否允許把 `performing` 設為 `true`（純判定，voxel_ws 的 SetPerforming handler 用）。
 /// 唯一條件：真實背包持有至少 1 把街頭手風琴——伺服器必須自己查背包算出 `has_item`，
 /// 不能信任客戶端自報「我有手風琴」（比照 `can_start_riding` 同款持有驗證手法）。
@@ -777,19 +793,60 @@ pub const FURNACE_RECIPES: &[Recipe] = &[
     },
 ];
 
-/// 居民教你的獨門配方池（`voxel_player_recipe`，居民教你一道獨門配方 v1，自主提案切片）。
+/// 居民教你的獨門配方池（`voxel_player_recipe`，居民教你一道獨門配方 v1/v2，自主提案切片）。
 ///
 /// 與 `RECIPES`/`WORKBENCH_RECIPES`/`FURNACE_RECIPES` 三張表刻意分開、**不併入**
 /// `find_any_recipe` 的搜尋鏈——這裡的配方要先被居民教過才能合成，`voxel_ws.rs` 的
 /// Craft handler 對這張表要額外查 `PlayerRecipeStore::knows` 才放行，見 [`is_taught_recipe`]。
-/// v1 先放一道（護身符），機制驗證通過、日後可再往這個池子加更多獨門配方。
-pub const TAUGHT_RECIPES: &[Recipe] = &[Recipe {
-    id: "amulet",
-    name_zh: "護身符",
-    inputs: &[(3, 1), (94, 1)], // 1 石頭(Stone=3) + 1 紅花(WildflowerRed=94)
-    output_block: AMULET_ID,
-    output_count: 1,
-}];
+/// v1 先放一道（護身符，任何居民都可能教，機制驗證通過）；v2（ROADMAP 1003）補上生計
+/// 專屬的五道——哪位居民教哪一道由 `voxel_player_recipe::recipe_id_for_vocation` 依她的
+/// `voxel_vocation::Vocation` 決定，護身符固定歸給工匠（其餘五種生計各自一道）。
+/// 六道 inputs 多重集彼此互異、也與 `RECIPES`/`WORKBENCH_RECIPES` 全表不撞（見
+/// `taught_recipes_have_unique_input_multisets` 測試）。
+pub const TAUGHT_RECIPES: &[Recipe] = &[
+    Recipe {
+        id: "amulet",
+        name_zh: "護身符",
+        inputs: &[(3, 1), (94, 1)], // 1 石頭(Stone=3) + 1 紅花(WildflowerRed=94)：工匠教
+        output_block: AMULET_ID,
+        output_count: 1,
+    },
+    Recipe {
+        id: "farmer_charm",
+        name_zh: "豐收吊飾",
+        inputs: &[(18, 1), (49, 1)], // 1 小麥(Wheat=18) + 1 胡蘿蔔(Carrot=49)：農夫教
+        output_block: FARMER_CHARM_ID,
+        output_count: 1,
+    },
+    Recipe {
+        id: "smith_ring",
+        name_zh: "鍛環",
+        inputs: &[(22, 1), (3, 1)], // 1 鐵錠(IronIngot=22) + 1 石頭(Stone=3)：鐵匠教
+        output_block: SMITH_RING_ID,
+        output_count: 1,
+    },
+    Recipe {
+        id: "fisher_charm",
+        name_zh: "潮貝墜",
+        inputs: &[(4, 1), (61, 1)], // 1 沙(Sand=4) + 1 小魚(Fish=61)：漁夫教
+        output_block: FISHER_CHARM_ID,
+        output_count: 1,
+    },
+    Recipe {
+        id: "hunter_charm",
+        name_zh: "獵具束",
+        inputs: &[(1, 1), (5, 1)], // 1 雜草(Grass=1) + 1 木頭(Wood=5)：獵人教
+        output_block: HUNTER_CHARM_ID,
+        output_count: 1,
+    },
+    Recipe {
+        id: "merchant_charm",
+        name_zh: "秤砣墜",
+        inputs: &[(4, 1), (22, 1)], // 1 沙(Sand=4) + 1 鐵錠(IronIngot=22)：商人教
+        output_block: MERCHANT_CHARM_ID,
+        output_count: 1,
+    },
+];
 
 /// 依 id 找獨門配方（找不到回 None）。**不**代表玩家已學會——呼叫端仍須另查
 /// `PlayerRecipeStore::knows` 才能放行合成。
@@ -1059,6 +1116,46 @@ mod tests {
         assert!(!is_taught_recipe("does_not_exist"));
         // 獨門配方刻意不併入一般三張表的搜尋鏈——沒學過不該直接查得到能合成。
         assert!(find_any_recipe("amulet").is_none(), "護身符不該出現在一般配方搜尋鏈裡");
+    }
+
+    #[test]
+    fn vocation_charm_recipes_exist_with_expected_shape() {
+        // 生計信物 v2（ROADMAP 1003）：五道新獨門配方各自存在、產出正確、不併入一般搜尋鏈。
+        let cases: &[(&str, u8, &[(u8, u32)])] = &[
+            ("farmer_charm", FARMER_CHARM_ID, &[(18, 1), (49, 1)]),
+            ("smith_ring", SMITH_RING_ID, &[(22, 1), (3, 1)]),
+            ("fisher_charm", FISHER_CHARM_ID, &[(4, 1), (61, 1)]),
+            ("hunter_charm", HUNTER_CHARM_ID, &[(1, 1), (5, 1)]),
+            ("merchant_charm", MERCHANT_CHARM_ID, &[(4, 1), (22, 1)]),
+        ];
+        for &(id, out_block, inputs) in cases {
+            let r = find_taught_recipe(id).unwrap_or_else(|| panic!("生計信物「{id}」應在獨門配方池"));
+            assert_eq!(r.output_block, out_block, "「{id}」產出方塊 id 不符");
+            assert_eq!(r.output_count, 1);
+            assert_eq!(r.inputs, inputs, "「{id}」配料不符");
+            assert!(is_taught_recipe(id));
+            assert!(find_any_recipe(id).is_none(), "「{id}」不該出現在一般配方搜尋鏈裡");
+        }
+    }
+
+    #[test]
+    fn taught_recipes_have_unique_input_multisets() {
+        // 六道獨門配方（護身符 + 五道生計信物）彼此多重集互異，也與 RECIPES/WORKBENCH_RECIPES
+        // 全表不撞——玩家在背包 2×2 格擺料時，永遠只會唯一比對到一道配方。
+        fn key(inputs: &[(u8, u32)]) -> Vec<(u8, u32)> {
+            let mut v = inputs.to_vec();
+            v.sort();
+            v
+        }
+        assert_eq!(TAUGHT_RECIPES.len(), 6, "獨門配方池應為 6 道（護身符 + 五道生計信物）");
+        for (i, a) in TAUGHT_RECIPES.iter().enumerate() {
+            for b in TAUGHT_RECIPES.iter().skip(i + 1) {
+                assert_ne!(key(a.inputs), key(b.inputs), "獨門配方「{}」與「{}」多重集相撞", a.id, b.id);
+            }
+            for other in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()) {
+                assert_ne!(key(a.inputs), key(other.inputs), "獨門配方「{}」與配方「{}」多重集相撞", a.id, other.id);
+            }
+        }
     }
 
     #[test]
