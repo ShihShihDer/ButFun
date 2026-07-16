@@ -656,8 +656,27 @@ async fn main() {
         tracing::warn!("Google OAuth 未設定;走訪客模式(設好 GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI/BUTFUN_SESSION_SECRET 即啟用)");
     }
 
-    // 啟動權威遊戲迴圈。
-    game::spawn(app_state.clone());
+    // 舊 2D 世界迴圈的開關（架構級節流）：正式部署早已 voxel-only（`/ws` 已移除，
+    // `app.tx` 恆無訂閱者），但 `game::spawn` 仍無條件啟動一個 15 Hz 的平行 2D 宇宙——
+    // 沒有玩家入口、沒有畫面出口，卻持續掃描居民/野生動物/敵人/生態導演、每 60 秒
+    // clone 全部歷來農地做 flush、偶爾還 spawn LLM task（輸出無人接收）。這在 8 核常
+    // 過熱的維護機器上是純白燒 CPU/IO（詳見稽核 audit-2d-orphans.md）。
+    //
+    // 因此預設**不啟動** 2D 迴圈（省 CPU/IO）。碼與資料全保留可復原：想跑舊 2D 世界
+    // （本機開發、除錯、或日後把 (b) 類玩法移植進 voxel 前的參照）時，設環境變數
+    // `BUTFUN_DISABLE_2D=0`（或 false/off/no）即恢復。voxel 全隔離（自己的 hub/協定/
+    // 持久化 `data/voxel_*.jsonl`），不受此開關影響——它的 store 與 2D 的
+    // positions/inventories/fields/daynight 落地路徑完全不同。
+    let legacy_2d_enabled = !disable_2d_loop();
+    if legacy_2d_enabled {
+        // 啟動權威（舊 2D）遊戲迴圈。
+        tracing::info!("舊 2D 世界迴圈已啟用(BUTFUN_DISABLE_2D=0)");
+        game::spawn(app_state.clone());
+    } else {
+        tracing::info!(
+            "舊 2D 世界迴圈已停用(預設;設 BUTFUN_DISABLE_2D=0 可恢復)——省下 15 Hz 空轉 CPU/IO"
+        );
+    }
 
     // 乙太方界（voxel）AI 居民 tick 迴圈：讓居民活在新世界、會走動、偶爾冒話。
     // 全隔離（自己的 hub/協定），不碰 AppState；嚴守鎖紀律見 voxel_ws.rs。
@@ -775,15 +794,38 @@ async fn main() {
     // 優雅關機:收到 SIGTERM(deploy 重啟)或 Ctrl-C 時,先停收新連線,再把全部狀態最後
     // flush 一次,才退出。否則換版重啟會丟掉上次週期 flush 之後、線上玩家最多約 10 秒的進度
     // (見 game::flush_all)。flush 是冪等 upsert,多寫一次永遠安全。
-    let flush_state = app_state.clone();
+    // 只有 2D 迴圈啟用時才需要留這份 clone 做最後 flush;停用時不必白 clone。
+    let flush_state = legacy_2d_enabled.then(|| app_state.clone());
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("伺服器執行失敗");
     tracing::info!("收到關機訊號;退出前最後一次落地玩家狀態…");
-    game::flush_all(&flush_state).await;
+    // 只有在舊 2D 迴圈實際啟用時才做最後一次 2D flush；否則它會 clone 全部歷來農地並
+    // 無條件寫日夜時刻（見 game::flush_all），對 voxel-only 部署毫無價值又白做 IO。
+    // voxel 的落地走 flush_player_stats（與 2D 完全分離），永遠執行。
+    if let Some(flush_state) = flush_state.as_ref() {
+        game::flush_all(flush_state).await;
+    }
     voxel_ws::flush_player_stats();
     tracing::info!("狀態已落地,伺服器關閉");
+}
+
+/// 是否停用舊 2D 世界迴圈（`game::spawn`）。**預設停用**(回 true)——正式部署早已
+/// voxel-only，2D 迴圈是純空轉的平行宇宙（詳見稽核 audit-2d-orphans.md）。
+/// 想恢復舊 2D 世界，設 `BUTFUN_DISABLE_2D` 為 `0`/`false`/`off`/`no`（大小寫不拘）。
+/// 其餘值（含未設）一律視為停用。碼與資料全保留，此開關只決定要不要「跑」那個迴圈。
+fn disable_2d_loop() -> bool {
+    parse_disable_2d(std::env::var("BUTFUN_DISABLE_2D").ok().as_deref())
+}
+
+/// 純解析：把 `BUTFUN_DISABLE_2D` 的原始值（`None`＝未設）判定成「是否停用 2D 迴圈」。
+/// 抽成無副作用函式方便單元測試（避免直接讀環境變數的平行競爭）。預設（未設）停用。
+fn parse_disable_2d(raw: Option<&str>) -> bool {
+    match raw {
+        Some(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no"),
+        None => true,
+    }
 }
 
 /// 等待關機訊號:Unix 上同時聽 SIGTERM(systemd/deploy 重啟用)與 Ctrl-C;
@@ -1370,5 +1412,27 @@ mod tests {
         assert!(!out.contains("main.js?v="), "沒有 main.js?v= 不應憑空插入: {out}");
         // __BUILD__ 仍應注入。
         assert!(out.contains(&format!("window.__BUILD__=\"{ver}\"")), "即使無 main.js?v= 也應注入 __BUILD__: {out}");
+    }
+
+    #[test]
+    fn 未設環境變數時預設停用2d迴圈() {
+        // 未設（None）→ 預設停用（voxel-only 部署的常態）。
+        assert!(parse_disable_2d(None), "未設 BUTFUN_DISABLE_2D 應預設停用 2D");
+    }
+
+    #[test]
+    fn 顯式關閉停用旗標可恢復2d迴圈() {
+        // 只有這幾個「假值」代表「不要停用」＝恢復舊 2D 迴圈。
+        for v in ["0", "false", "off", "no", "FALSE", "Off", " no ", "No"] {
+            assert!(!parse_disable_2d(Some(v)), "{v:?} 應視為恢復 2D(不停用)");
+        }
+    }
+
+    #[test]
+    fn 其餘值一律視為停用2d迴圈() {
+        // 任何非假值（含 "1"/"true"/空字串/亂填）都停用，安全預設偏向省 CPU。
+        for v in ["1", "true", "on", "yes", "", "disable", "隨便"] {
+            assert!(parse_disable_2d(Some(v)), "{v:?} 應視為停用 2D");
+        }
     }
 }
