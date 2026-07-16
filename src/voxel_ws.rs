@@ -140,6 +140,7 @@ use crate::voxel_shipwreck as vshipwreck;
 use crate::voxel_busking as vbusk;
 use crate::voxel_festival as vfestival;
 use crate::voxel_wear as vwear;
+use crate::voxel_hotspring_rest as vhsr;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
@@ -935,6 +936,23 @@ struct VoxelResident {
     /// （比照全庫其餘 cosmetic/暫態欄位慣例，如 `stroll_partner`／`custom_meet`）；只由 Gift
     /// handler 寫入，居民自己不會摘下。
     hat: Option<u8>,
+    /// 居民也去溫泉歇腳 v1（自主提案切片，ROADMAP 1025）：`Some(tx, tz)` = 正前往村莊那泓已知
+    /// 溫泉（`voxel::village_hotspring_target`）的路上、或已抵達正在池邊逗留；`None` = 沒在
+    /// 歇腳（正常閒晃/採集/建造）。純記憶體、重啟歸零（比照 `expedition`/`caravan` 同款「這趟
+    /// 歇腳自然作罷、居民照常回家域」慣例）。
+    hotspring_trip: Option<(f32, f32)>,
+    /// 抵達溫泉後的逗留倒數（秒，ROADMAP 1025）：> 0 = 已抵達、正在池邊泡著，到 0 即清空
+    /// `hotspring_trip`、交回一般 wander（此刻遠在家域外，`wander_center` 會把牠一路帶回家）。
+    hotspring_stay: f32,
+    /// 去程逾時倒數（秒，ROADMAP 1025）：啟程時設 [`vhsr::TRAVEL_TIMEOUT_SECS`]；未抵達時遞減，
+    /// 歸零仍沒到（地形擋路等）即放棄這趟歇腳、不無限跋涉。
+    hotspring_timer: f32,
+    /// 歇腳冷卻倒數（秒，ROADMAP 1025）：一趟歇腳（返家或去程放棄）落幕後設
+    /// [`vhsr::REST_COOLDOWN_SECS`]，歸零前不再啟程——稀少才有感、不洗版。各居民初始錯開。
+    hotspring_cooldown: f32,
+    /// 這趟逗留是否已經觸發過「巧遇玩家同泡」的一次性反應（ROADMAP 1025）：避免同一趟逗留每
+    /// tick 反覆冒泡/反覆記憶洗版；`hotspring_trip` 清空（返家）時一併重置。純記憶體。
+    hotspring_shared: bool,
 }
 
 /// 環境生物的種類（水中游魚 v1，ROADMAP 848 起 wildlife 系統擴充為可延伸的多種類；
@@ -2319,6 +2337,13 @@ fn build_resident(
             decor_envy_cd: vdecor::ENVY_COOLDOWN_SECS * 0.5 + i as f32 * 60.0,
             // 染色頭巾 v1（自主提案切片，ROADMAP 1023）：入場沒戴任何頭巾，等玩家送禮才戴上。
             hat: None,
+            // 居民也去溫泉歇腳 v1（自主提案切片，ROADMAP 1025）：入場沒在歇腳；首次冷卻各自大幅
+            // 錯開（比照遠行探野同款「先讓居民在家域安頓、避免啟動後同時都往溫泉跑」）。
+            hotspring_trip: None,
+            hotspring_stay: 0.0,
+            hotspring_timer: 0.0,
+            hotspring_cooldown: vhsr::REST_COOLDOWN_SECS * 0.5 + i as f32 * 220.0,
+            hotspring_shared: false,
     }
 }
 
@@ -18166,6 +18191,10 @@ fn tick_residents(dt: f32) {
     // 帶貨歸途／半路折返」事件，鎖釋放後統一 append_feed（不在持居民鎖時做 IO）。
     // (居民名, 播報詳情)。
     let mut caravan_feed: Vec<(&'static str, String)> = Vec::new();
+    // 居民也去溫泉歇腳 v1（自主提案切片，ROADMAP 1025）：鎖內收集「某居民啟程去溫泉／抵達巧遇
+    // 玩家同泡／逗留落幕返家」事件，鎖釋放後統一 append_feed（不在持居民鎖時做 IO）。
+    // (居民名, 播報詳情)。
+    let mut hotspring_feed: Vec<(&'static str, String)> = Vec::new();
     // 遠行送行 v1（ROADMAP 902）：啟程那刻收集 (送行者 id, 送行者名, 遠行夥伴名, 方位)，
     // residents 寫鎖釋放後鎖外統一落地（memory 寫＋bonds 往來＋Feed，守死鎖鐵律）。
     let mut sendoff_events: Vec<(String, &'static str, &'static str, String)> = Vec::new();
@@ -18680,6 +18709,7 @@ fn tick_residents(dt: f32) {
                     && r.frontier_visit.is_none()
                     && r.far_visit.is_none()
                     && r.caravan.is_none()
+                    && r.hotspring_trip.is_none()
                     && r.cheer_target.is_none()
                     && !r.seeking_comfort
                     && r.approaching_esteem.is_none()
@@ -21204,6 +21234,136 @@ fn tick_residents(dt: f32) {
                 }
             }
 
+            // ── 居民也去溫泉歇腳 v1（自主提案切片，接續 838/839「乙太方界·古代遺跡／溫泉遺跡」，
+            //    ROADMAP 1025）─────────────────────────────────────────────────────────
+            // 溫泉遺跡（839）讓走遠探索的玩家能泡進溫泉加速回血、緩解飢餓，但那份回饋至今只服務
+            // 玩家——居民對這泓暖泉視若無睹。本段讓閒著的居民偶爾放下手邊的事，走去村莊附近那泓
+            // 已知的溫泉（`voxel::village_hotspring_target`，全村共用同一泓、單例快取）泡個舒服
+            // 的澡，逗留一會兒再回家；若恰好巧遇你也在泡，多說一句、記進心裡。地標第一次不只是
+            // 玩家的祕境，也成了居民會去、也會記得的地方。
+            // 鎖序：memory 短寫即釋（比照跨村商隊 950），Feed 走鎖外 hotspring_feed，不巢狀、
+            // 不持鎖 await（守死鎖鐵律）。
+            if r.hotspring_cooldown > 0.0 {
+                r.hotspring_cooldown -= dt;
+            }
+            if let Some((tx, tz)) = r.hotspring_trip {
+                if r.hotspring_stay > 0.0 {
+                    // 已抵達、正在池邊泡著：閒晃中心貼著溫泉本身（見下方 center 覆寫），這裡只
+                    // 管倒數與「巧遇玩家同泡」的一次性反應。
+                    if !r.hotspring_shared {
+                        let dx = r.body.x - tx;
+                        let dz = r.body.z - tz;
+                        // 只在自己確實還在池邊（而非正被脫困機制推走）時判定巧遇，避免誤觸發。
+                        if vhsr::has_arrived(dx * dx + dz * dz) {
+                            let met = walk_player_pos.iter().find(|(_, (px, pz))| {
+                                let pdx = *px - r.body.x;
+                                let pdz = *pz - r.body.z;
+                                vhsr::is_soaking_together(pdx * pdx + pdz * pdz)
+                            });
+                            if let Some((pname, _)) = met {
+                                r.hotspring_shared = true;
+                                if r.say.is_empty() {
+                                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                                    r.say = vhsr::soak_bubble_with_player(pname, pick)
+                                        .chars()
+                                        .take(vexp::SAY_MAX_CHARS)
+                                        .collect();
+                                    r.say_timer = SAY_SECS;
+                                }
+                                let entry = hub().memory.write().unwrap().add_memory(
+                                    &r.id,
+                                    pname,
+                                    &vhsr::soak_with_player_memory_line(pname),
+                                );
+                                pending_io.push_mem(entry); // IO 延後到鎖外 flush（M10）
+                                hotspring_feed
+                                    .push((r.name, vhsr::soak_together_feed_line(r.name, pname)));
+                            }
+                        }
+                    }
+                    r.hotspring_stay -= dt;
+                    if r.hotspring_stay <= 0.0 {
+                        r.hotspring_trip = None;
+                        r.hotspring_cooldown = vhsr::REST_COOLDOWN_SECS;
+                        r.hotspring_shared = false;
+                        if r.say.is_empty() {
+                            let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                            r.say = vhsr::return_bubble(pick).to_string();
+                            r.say_timer = SAY_SECS;
+                        }
+                        hotspring_feed.push((r.name, vhsr::return_feed_line(r.name)));
+                    }
+                } else {
+                    // 去程：持續朝溫泉走。
+                    r.target_x = tx;
+                    r.target_z = tz;
+                    r.wait_timer = 0.0;
+                    let dx = r.body.x - tx;
+                    let dz = r.body.z - tz;
+                    if vhsr::has_arrived(dx * dx + dz * dz) {
+                        if r.say.is_empty() {
+                            r.hotspring_stay = vhsr::SOAK_SECS;
+                            let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                            r.say = vhsr::soak_bubble_alone(pick).to_string();
+                            r.say_timer = SAY_SECS;
+                            let entry = hub().memory.write().unwrap().add_memory(
+                                &r.id,
+                                vhsr::SOLO_MEMORY_KEY,
+                                vhsr::rest_memory_line(),
+                            );
+                            pending_io.push_mem(entry); // IO 延後到鎖外 flush（M10）
+                        }
+                    } else {
+                        // 還在路上：遞減去程逾時；走太久（地形擋路等）沒到就放棄這趟歇腳、
+                        // 清空並設冷卻（交回一般 wander 帶牠回家）。
+                        r.hotspring_timer -= dt;
+                        if r.hotspring_timer <= 0.0 {
+                            r.hotspring_trip = None;
+                            r.hotspring_cooldown = vhsr::REST_COOLDOWN_SECS;
+                        }
+                    }
+                }
+            } else if let Some((hx, _hy, hz)) = crate::voxel::village_hotspring_target() {
+                // 尚未歇腳：閒置自由（沒在忙別的既定任務）+ 冷卻到 + 沒在說話 + 過機率門檻 → 啟程。
+                let idle_free = r.gather.is_none()
+                    && r.fetch.is_none()
+                    && r.visiting.is_none()
+                    && r.cheer_target.is_none()
+                    && !r.seeking_comfort
+                    && r.clique_meet.is_none()
+                    && r.custom_meet.is_none()
+                    && r.follow.is_none()
+                    && r.invent_run.is_none()
+                    && r.pilgrimage.is_none()
+                    && r.daybreak_seek.is_none()
+                    && r.reunion_seek.is_none()
+                    && r.lover_seek.is_none()
+                    && r.expedition.is_none()
+                    && r.frontier_visit.is_none()
+                    && r.far_visit.is_none()
+                    && r.caravan.is_none()
+                    && r.stroll_partner.is_none()
+                    && r.walk_with.is_none()
+                    && r.summon.is_none()
+                    && !r.boss_assist
+                    && !r.asleep;
+                if vhsr::should_depart(idle_free, r.hotspring_cooldown, r.say.is_empty(), rand::random::<f32>())
+                {
+                    let (tx, tz) = (hx as f32 + 0.5, hz as f32 + 0.5);
+                    r.hotspring_trip = Some((tx, tz));
+                    r.hotspring_stay = 0.0;
+                    r.hotspring_timer = vhsr::TRAVEL_TIMEOUT_SECS;
+                    r.hotspring_shared = false;
+                    r.target_x = tx;
+                    r.target_z = tz;
+                    r.wait_timer = 0.0;
+                    let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                    r.say = vhsr::depart_bubble(pick).to_string();
+                    r.say_timer = SAY_SECS;
+                    hotspring_feed.push((r.name, vhsr::depart_feed_line(r.name)));
+                }
+            }
+
             // ── 邊陲探友 v1（ROADMAP 821·PLAN_ETHERVOX item 4「居民↔居民關係」× item 7「散居」）───
             // 散居（756~762）與探訪（671）至今互不相干：朋友遠行在邊陲時，跨域探訪仍只會走到牠
             // 空無一人的家。本段讓留守主城的人格（市集人·露娜／廣場人·賽勒，`expedition_motive`
@@ -22710,6 +22870,7 @@ fn tick_residents(dt: f32) {
                         && r.far_visit.is_none()
                         && r.caravan.is_none()
                         && !r.boss_assist
+                        && r.hotspring_trip.is_none()
                         && vr::should_shelter(is_night, raining, house_locations.contains_key(&r.id));
                     // 探訪中：以目的地為閒晃中心（讓居民在鄰居家附近自然走動）；
                     // 遠行逗留中（ROADMAP 756）：以邊陲落點為中心，讓牠在遠方一小片範圍自然走動、不被拉回家；
@@ -22763,6 +22924,10 @@ fn tick_residents(dt: f32) {
                         // 若本 tick 期間首領恰好已撤退/被打倒（boss_snap 為 None），退回自己家域
                         // 容錯不 panic，下一 tick 由上方防禦性兜底把 `boss_assist` 收掉。
                         boss_snap.map(|(bx, _, bz)| (bx, bz)).unwrap_or((r.home_x, r.home_z))
+                    } else if let Some((hx, hz)) = r.hotspring_trip {
+                        // 居民也去溫泉歇腳（ROADMAP 1025）：去程與抵達逗留皆以溫泉本身為閒晃中心，
+                        // 不被夜間／下雨拉回幾百格外自己的家——她是真的走到那泓溫泉泡著。
+                        (hx, hz)
                     } else if sheltering {
                         let (hx, _hy, hz) = house_locations[&r.id];
                         (hx as f32 + 0.5, hz as f32 + 0.5)
@@ -22802,6 +22967,9 @@ fn tick_residents(dt: f32) {
                         // 馳援首領：小半徑貼著首領打轉（ROADMAP 983），要夠小才能穩定落在
                         // hit_in_reach 判定範圍內、不會閒晃著閒晃著又走遠白跑一趟。
                         vboss::ASSIST_WANDER_RADIUS
+                    } else if r.hotspring_trip.is_some() {
+                        // 溫泉歇腳：小半徑安靜地泡在池子附近打轉（ROADMAP 1025）。
+                        vhsr::WANDER_RADIUS
                     } else if sheltering {
                         vr::SHELTER_WANDER_RADIUS
                     } else {
@@ -23719,6 +23887,7 @@ fn tick_residents(dt: f32) {
                     && r.pilgrimage.is_none()
                     && r.lover_seek.is_none()
                     && r.invent_walk.is_none()
+                    && r.hotspring_trip.is_none()
                     && !directed_snaps.contains_key(&r.id)
             };
             let mut chosen: Option<(usize, usize)> = None;
@@ -25103,6 +25272,12 @@ fn tick_residents(dt: f32) {
     // 動態，讓沒在現場的玩家也讀得到「兩座聚落第一次有貨物流通」。
     for (rname, detail) in &caravan_feed {
         vfeed::append_feed("商隊", rname, detail);
+    }
+
+    // 居民也去溫泉歇腳 v1（自主提案切片，ROADMAP 1025）：某居民啟程去溫泉／巧遇玩家同泡／
+    // 逗留落幕返家時記一筆動態，讓沒在現場的玩家也讀得到「地標第一次成了居民會去的地方」。
+    for (rname, detail) in &hotspring_feed {
+        vfeed::append_feed(vhsr::FEED_KIND, rname, detail);
     }
 
     // 遠行送行 v1（ROADMAP 902）落地：鎖已全釋；送行者把「今天為夥伴送行」記進心裡（episodic，
