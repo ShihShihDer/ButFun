@@ -208,6 +208,10 @@ const FENCE = 122;
 // 木筏 v1（ROADMAP 1017，自主提案切片）——世界第一件水上代步工具：背包 2×2（6 木板）
 // 合成後，泡進水裡即可切換乘筏／下筏。純物品、不可放置。123 是 122（圍籬）之後的首個空號。
 const RAFT = 123;
+// 染色頭巾 v1（ROADMAP 1023，自主提案切片）——世界第一件穿戴外觀：背包 2×2 用葉片＋野花
+// 染色合成，戴上後其他玩家立刻看得見；送給居民她會一直戴著。純物品、不可放置。
+// 124/125 是 123（木筏）之後的首個空號。
+const RED_BANDANA = 124, BLUE_BANDANA = 125;
 // 乘筏水平移動速度倍率（水中）——比純游泳快得多，讓渡河不必再繞去唯一那座固定橋（比照
 // RIDING_SPEED_MULT／SWIM_HORIZ_SPEED_MULT 同款寫法，純視覺+移動手感常數，非玩家可調）。
 const BOATING_SPEED_MULT = 1.3;
@@ -382,6 +386,10 @@ const COLOR = {
   // 木筏 v1（ROADMAP 1017，自主提案切片）——原色木板色，紮實綁起的木料，與圍籬/工具的
   // 木色系一脈相承，一眼認得出是木料製品。
   [RAFT]: [0.62, 0.44, 0.25],
+  // 染色頭巾 v1（ROADMAP 1023，自主提案切片）——布料色（非礦物/花朵的鮮豔飽和色），
+  // 與野花(紅/藍)、染色建材刻意區隔一階，一眼認得出是「戴在頭上的布」而非花或磚。
+  [RED_BANDANA]:  [0.68, 0.16, 0.20], // 紅頭巾——深紅布料色，比紅花更沉穩內斂
+  [BLUE_BANDANA]: [0.20, 0.36, 0.68], // 藍頭巾——靛藍布料色，比青陶磚更柔和
 };
 
 // ── 裝飾植物十字貼片渲染 v2 ─────────────────────────────────────────────
@@ -2965,6 +2973,30 @@ function setHeldItem(av, itemId) {
   av.heldMesh.visible = true;
 }
 
+// ── 染色頭巾 v1（自主提案切片，ROADMAP 1023）：世界第一件穿戴外觀 ─────────────────
+// 玩家與居民的方塊小人至今從出生到終老連一絲外觀都沒變過——薄方塊蓋在頭頂，像一方裹著
+// 的頭巾，共用幾何、材質依戴的頭巾顏色換色（比照 HELD_ITEM_GEO 純色小方塊作法）。
+const HAT_GEO = new THREE.BoxGeometry(0.46, 0.14, 0.46);
+function attachHat(av) {
+  const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+  const mesh = new THREE.Mesh(HAT_GEO, mat);
+  // 頭頂在 group 原點之上 1.70-AV_C（見 buildAvatar 頭部座標），貼著頭頂再往上一點點。
+  mesh.position.set(0, 1.70 - AV_C + 0.07, 0);
+  mesh.visible = false;
+  av.group.add(mesh);
+  av.hatMesh = mesh;
+  av.hatId = null;
+  return av;
+}
+function setHat(av, itemId) {
+  if (!av || !av.hatMesh || av.hatId === itemId) return;
+  av.hatId = itemId;
+  const c = itemId ? COLOR[itemId] : null;
+  if (!c) { av.hatMesh.visible = false; return; }
+  av.hatMesh.material.color.setRGB(c[0], c[1], c[2]);
+  av.hatMesh.visible = true;
+}
+
 // ── 蒸汽獨輪車 v1（自主提案切片，ROADMAP 976）：騎乘視覺 ────────────────────────
 // 腳下一顆扁圓輪子（共用幾何＋各自一份材質，比照 HELD_ITEM_GEO 慣例），預設隱藏；
 // 伺服器權威廣播 riding 欄位改變時才切 visible，零每幀成本。
@@ -3032,7 +3064,7 @@ function tickPerformNotes(av, x, y, z, dt) {
 }
 
 // 玩家自己的身體（第三人稱可見）：金色系方塊小人，一眼認得是自己。
-const myAvatar = attachRideWheel(attachHeldItem(buildAvatar(0xffcf6b, 0xffe0b0, 0xe6b866)));
+const myAvatar = attachHat(attachRideWheel(attachHeldItem(buildAvatar(0xffcf6b, 0xffe0b0, 0xe6b866))));
 const bodyMesh = myAvatar.group; // 沿用 bodyMesh 名：.visible/.position/.rotation.y 都作用在 Group 上
 let myTitleSprite = null; // 僅 QA 用（_qaSetMyTitle）：正式流程玩家自己不掛稱號牌
 scene.add(bodyMesh);
@@ -3775,10 +3807,18 @@ function buildResident(id, name) {
   moodIndicator.position.set(-0.85, 2.05, 0);
   moodIndicator.visible = false;
   group.add(moodIndicator);
+  // 染色頭巾 v1（自主提案切片，ROADMAP 1023）：收到玩家送的頭巾後就一直戴著，掛在頭部
+  // pivot 上隨頭部同動，預設隱藏，伺服器廣播 hat 欄位才換色顯示。
+  const hatMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+  const hatMesh = new THREE.Mesh(HAT_GEO, hatMat);
+  hatMesh.position.set(0, 0.51, 0); // 頭頂在 headPivot 之上 0.44（見 head 座標），再往上一點點
+  hatMesh.visible = false;
+  headPivot.add(hatMesh);
   scene.add(group);
   return {
     group, sizeGroup, body, headPivot, armL, armR,
     label, desireLabel, bubble, affinityIndicator, moodIndicator,
+    hatMesh, hatId: null,
     lastName: name, lastSay: "", lastDesire: "", lastAffinity: "", lastMood: "",
     // 肢體動畫狀態（居民表情/肢體 v1）：
     gestPhase: Math.random() * Math.PI * 2, // 起始相位打散，別讓全村同步呼吸
@@ -3946,6 +3986,15 @@ function updateResidents(list) {
       ent.lastMood = moodEmoji;
       if (moodEmoji) { setMoodEmoji(ent.moodIndicator, moodEmoji); ent.moodIndicator.visible = true; }
       else { ent.moodIndicator.visible = false; }
+    }
+    // 染色頭巾 v1（自主提案切片，ROADMAP 1023）：伺服器廣播的 hat（贈禮觸發、永久戴著）
+    // 換色/顯隱，sig 保護不重複設材質。
+    const hatId = r.hat || null;
+    if (hatId !== ent.hatId) {
+      ent.hatId = hatId;
+      const c = hatId ? COLOR[hatId] : null;
+      if (c) { ent.hatMesh.material.color.setRGB(c[0], c[1], c[2]); ent.hatMesh.visible = true; }
+      else { ent.hatMesh.visible = false; }
     }
     // 居民表情/肢體 v1：驅動彈跳/垂頭/搔頭的當前心情。
     // QA 覆寫（window.__voxelQaMoodOverride，僅 debug 截圖用）優先於伺服器快照，讓 headless
@@ -4782,6 +4831,32 @@ function toggleBoating() {
   }
   lastBoatMs = now;
   ws.send(JSON.stringify({ t: "set_boating", boating: !boating }));
+}
+
+// ── 染色頭巾 v1（ROADMAP 1023，自主提案切片）：戴上／脫下 ─────────────────────────
+// 本地頭巾旗標只在 hat_ok 回應（伺服器直接對我這次請求的權威回覆）才翻轉，不樂觀
+// 更新——比照 riding／performing／boating 同款濫用防護慣例，伺服器說了算，UI 只是反應端。
+let myHat = null; // null=沒戴；否則為當前戴著的頭巾物品 id
+let lastHatMs = 0; // 本地防連按（伺服器仍是唯一權威，這裡只擋手滑連按 H 洗版）
+
+/** 按 H 切換戴上／脫下：已戴著時任何一按都脫下；沒戴時熱鍵選中的物品需為頭巾（伺服器仍會再驗一次）。 */
+function toggleHat() {
+  if (!wsReady) return;
+  const now = Date.now();
+  if (now - lastHatMs < 500) return; // 0.5 秒本地防連按
+  let itemId = null;
+  if (myHat == null) {
+    const sel = selectedBlock();
+    if (sel !== RED_BANDANA && sel !== BLUE_BANDANA) {
+      showMsg("熱鍵選中一頂頭巾再按 H 戴上（背包 2×2：2 葉片 + 1 野花）。");
+      return;
+    }
+    const cnt = (myInv instanceof Map ? myInv.get(sel) : 0) || 0;
+    if (cnt <= 0) { showMsg("背包裡沒有這頂頭巾。"); return; }
+    itemId = sel;
+  }
+  lastHatMs = now;
+  ws.send(JSON.stringify({ t: "set_hat", item_id: itemId }));
 }
 
 // ── 騎乘馴養夥伴 v1（ROADMAP 1021，自主提案切片）：騎上／下馬 ────────────────────
@@ -6628,6 +6703,8 @@ const BLOCK_NAME = {
   [HUNTER_CHARM]: "獵具束", [MERCHANT_CHARM]: "秤砣墜",
   // 木筏 v1（ROADMAP 1017，自主提案切片）
   [RAFT]: "木筏",
+  // 染色頭巾 v1（ROADMAP 1023，自主提案切片）
+  [RED_BANDANA]: "紅頭巾", [BLUE_BANDANA]: "藍頭巾",
 };
 let selectedSlot = 0; // HOTBAR 索引
 // 垂釣 v1（ROADMAP 734）：釣線是否已在水裡（拋竿後、收竿前）。伺服器權威把關時機，
@@ -7320,6 +7397,9 @@ addEventListener("keydown", (e) => {
   // 騎乘馴養夥伴 v1（自主提案切片，ROADMAP 1021）：G 切換騎上／下馬；e.repeat 防瀏覽器
   // 按鍵自動重複觸發把 set_mounted 洗版（比照 R/P/B 同款單鍵切換防呆）。
   if (e.code === "KeyG" && !e.repeat) { e.preventDefault(); toggleMounted(); }
+  // 染色頭巾 v1（自主提案切片，ROADMAP 1023）：H 切換戴上／脫下；e.repeat 防瀏覽器按鍵
+  // 自動重複觸發把 set_hat 洗版（比照 R/P/B/G 同款單鍵切換防呆）。
+  if (e.code === "KeyH" && !e.repeat) { e.preventDefault(); toggleHat(); }
   // Esc：關操作設定面板（也讓瀏覽器解除滑鼠鎖定，兩者不衝突）。
   if (e.code === "Escape" && settingsPanelVisible()) closeSettingsPanel();
   // Esc：也收起 ☰ 主選單抽屜（若正開著）。
@@ -7805,7 +7885,7 @@ function connect() {
         let ent = others.get(p.id);
         if (!ent) {
           // 其他玩家也是方塊小人（藍色系）；mesh＝avatar 的 group，沿用既有 position/rotation/add 邏輯。
-          const av = attachRideWheel(attachHeldItem(buildAvatar(OTHER_PALETTE.body, OTHER_PALETTE.head, OTHER_PALETTE.limb)));
+          const av = attachHat(attachRideWheel(attachHeldItem(buildAvatar(OTHER_PALETTE.body, OTHER_PALETTE.head, OTHER_PALETTE.limb))));
           const mesh = av.group; scene.add(mesh);
           // 頭上對話泡泡（child of mesh，sprite 永遠面向鏡頭、不受 mesh 旋轉影響）。
           const bubble = makeTextSprite("", true);
@@ -7840,6 +7920,8 @@ function connect() {
         setPerforming(ent.av, !!p.performing);
         // 木筏 v1（自主提案切片，ROADMAP 1017）：伺服器廣播的 boating 換腳下木筏平台顯隱。
         setBoating(ent.av, !!p.boating);
+        // 染色頭巾 v1（自主提案切片，ROADMAP 1023）：伺服器廣播的 hat 換頭頂頭巾顯隱/換色。
+        setHat(ent.av, p.hat || null);
         // 位置有明顯變化 → 記下時間戳，讓 render 迴圈判定「在走路」而擺手腳（快照間也持續動）。
         const moved = Math.hypot(p.x - ent.mesh.position.x, p.z - ent.mesh.position.z);
         if (moved > 0.002) ent.lastMoveT = performance.now();
@@ -8291,6 +8373,17 @@ function connect() {
     } else if (m.t === "boating_fail") {
       // 木筏 v1：上不了筏（沒有木筏——本地已先擋過一次，這裡是伺服器再驗一次的保底）。
       showErr(m.reason || "沒法乘筏");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "hat_ok") {
+      // 染色頭巾 v1（自主提案切片，ROADMAP 1023）：伺服器直接對本次請求的權威回覆——
+      // 本地 myHat 只在這裡翻轉（不樂觀更新），驅動自己頭上的頭巾 mesh。
+      myHat = m.item_id || null;
+      setHat(myAvatar, myHat);
+      showMsg(myHat ? "戴上了頭巾，感覺不一樣了～" : "脫下頭巾了。");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+    } else if (m.t === "hat_fail") {
+      // 染色頭巾 v1：戴不上（沒有這頂頭巾——本地已先擋過一次，這裡是伺服器再驗一次的保底）。
+      showErr(m.reason || "沒法戴上");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "mounted_ok") {
       // 騎乘馴養夥伴 v1（自主提案切片，ROADMAP 1021）：伺服器直接對本次請求的權威回覆——
@@ -9141,6 +9234,10 @@ const RECIPES_JS = [
   // 木筏 v1（ROADMAP 1017，自主提案切片）——世界第一件水上代步工具，6 木板剛好背包 2×2。
   // 對齊後端 voxel_craft::RECIPES：{8:6}。
   { id: "raft",      name: "木筏",   inputs: [[PLANK, 6]],                     output_block: RAFT,      out_count: 1 },
+  // 染色頭巾 v1（ROADMAP 1023，自主提案切片）——世界第一件穿戴外觀，葉片當布料底、野花當染料。
+  // 對齊後端 voxel_craft::RECIPES：紅頭巾 {6:2,94:1}、藍頭巾 {6:2,96:1}。
+  { id: "red_bandana",  name: "紅頭巾", inputs: [[LEAVES, 2], [WILDFLOWER_RED, 1]],  output_block: RED_BANDANA,  out_count: 1 },
+  { id: "blue_bandana", name: "藍頭巾", inputs: [[LEAVES, 2], [WILDFLOWER_BLUE, 1]], output_block: BLUE_BANDANA, out_count: 1 },
 ];
 
 // ── 背包面板狀態 ──────────────────────────────────────────────────────────────

@@ -127,6 +127,30 @@ pub fn can_start_boating(has_item: bool) -> bool {
     has_item
 }
 
+// ── 染色頭巾物品 ID（純物品，不可放置於世界，染色頭巾 v1，自主提案切片）─────────────
+/// 紅頭巾（ROADMAP 1023）——物品 ID 124；世界近 200 刀以來，居民有詳盡的家/建物/稱號當
+/// 視覺身分，玩家與居民的方塊小人卻從出生到終老連一絲外觀都沒變過——命名/稱謂/名牌全是
+/// 文字層，沒有任何系統動過「看起來長什麼樣」。頭巾是世界第一件**穿戴外觀**：背包 2×2
+/// 用葉片＋野花染色合成，戴上後其他玩家立刻看得見；送給居民她也會一直戴著。純物品、
+/// 不可放置。123（木筏）是目前最大已用 id，124 是首個空號。
+pub const RED_BANDANA_ID: u8 = 124;
+/// 藍頭巾（ROADMAP 1023）——物品 ID 125，做法與紅頭巾相同、只換一種野花染色。
+pub const BLUE_BANDANA_ID: u8 = 125;
+
+/// 該物品是否為一頂頭巾（染色頭巾 v1）。純函式、可測——`SetHat`／贈禮判斷是否觸發穿戴
+/// 外觀都靠這道窮舉，新增頭巾種類時编譯期不會漏接任何呼叫端判斷式。
+pub fn is_hat(item_id: u8) -> bool {
+    matches!(item_id, RED_BANDANA_ID | BLUE_BANDANA_ID)
+}
+
+/// 是否允許把 `hat` 設為某個頭巾 id（純判定，voxel_ws 的 SetHat handler 用）。
+/// 唯一條件：該 id 真的是頭巾＋真實背包持有至少 1 頂——伺服器必須自己查背包算出
+/// `has_item`，不能信任客戶端自報「我有頭巾」（比照 `can_start_boating` 同款持有驗證
+/// 手法）。脫下（`item_id=None`）不經過這條判定，呼叫端直接放行。純函式、確定性、可測。
+pub fn can_wear_hat(has_item: bool) -> bool {
+    has_item
+}
+
 /// 是否允許把 `performing` 設為 `true`（純判定，voxel_ws 的 SetPerforming handler 用）。
 /// 唯一條件：真實背包持有至少 1 把街頭手風琴——伺服器必須自己查背包算出 `has_item`，
 /// 不能信任客戶端自報「我有手風琴」（比照 `can_start_riding` 同款持有驗證手法）。
@@ -509,6 +533,25 @@ pub const RECIPES: &[Recipe] = &[
         name_zh: "木筏",
         inputs: &[(8, 6)], // 6 木板 → 1 木筏
         output_block: RAFT_ID,
+        output_count: 1,
+    },
+    // ── 染色頭巾 v1（ROADMAP 1023，自主提案切片）：世界第一件穿戴外觀 ───────────────
+    // 葉片當布料底（比照床「無棉花、葉片當被褥」的既有慣例），野花當染料——紅花/藍花
+    // 各染出一色頭巾。多重集 {6:2,94:1}/{6:2,96:1} 為獨特：既有配方用到葉片(6)的有
+    // 床 {8:3,6:3}、掛旗 {5:1,6:2}、花盆 {89:2,6:1}，皆與「2 葉片 + 1 野花」不同；
+    // 用到野花(94/96)的只有護身符 {3:1,94:1}，同樣不撞。
+    Recipe {
+        id: "red_bandana",
+        name_zh: "紅頭巾",
+        inputs: &[(6, 2), (94, 1)], // 2 葉片 + 1 紅花 → 1 紅頭巾（3 格，剛好塞進 2×2）
+        output_block: RED_BANDANA_ID,
+        output_count: 1,
+    },
+    Recipe {
+        id: "blue_bandana",
+        name_zh: "藍頭巾",
+        inputs: &[(6, 2), (96, 1)], // 2 葉片 + 1 野花藍花 → 1 藍頭巾
+        output_block: BLUE_BANDANA_ID,
         output_count: 1,
     },
 ];
@@ -1237,7 +1280,8 @@ mod tests {
                 || r.output_block == SWORD_STONE_ID  // 石劍（純物品 id=100，驅影之劍 v1）
                 || (r.output_block >= crate::voxel_furniture::CARPET_ID
                     && r.output_block <= crate::voxel_furniture::BANNER_ID) // 四樣裝飾傢俱（可放置方塊 id=102~105，ROADMAP 931 自主提案切片）
-                || r.output_block == RAFT_ID; // 木筏（純物品 id=123，木筏 v1，ROADMAP 1017 自主提案切片）
+                || r.output_block == RAFT_ID // 木筏（純物品 id=123，木筏 v1，ROADMAP 1017 自主提案切片）
+                || (r.output_block == RED_BANDANA_ID || r.output_block == BLUE_BANDANA_ID); // 染色頭巾（純物品 id=124/125，ROADMAP 1023 自主提案切片）
             assert!(ok, "配方「{}」產出 id={} 超出允許範圍", r.id, r.output_block);
             assert!(r.output_count > 0, "配方「{}」產出數量應 > 0", r.id);
         }
@@ -1453,6 +1497,8 @@ mod tests {
         store.give("旅人", 31, 10); // Torch（建築藍圖·涼亭配方用）
         store.give("旅人", 55, 10); // Snow（terracotta_white 白陶磚配方用，染色建材 v1）
         store.give("旅人", 89, 10); // TerracottaRed（flowerpot 花盆配方用，裝飾傢俱 v1 ROADMAP 931）
+        store.give("旅人", 94, 10); // WildflowerRed（red_bandana 紅頭巾配方用，染色頭巾 v1 ROADMAP 1023）
+        store.give("旅人", 96, 10); // WildflowerBlue（blue_bandana 藍頭巾配方用，染色頭巾 v1 ROADMAP 1023）
         // 火把配方：1 木頭(5) + 1 煤礦(20) → 4 火把（Wood/CoalOre 已加，數量足夠）
         for r in RECIPES.iter().chain(WORKBENCH_RECIPES.iter()).chain(FURNACE_RECIPES.iter()) {
             assert!(can_craft(r, &store, "旅人"), "配方「{}」材料足夠應可合成", r.id);
@@ -2244,5 +2290,74 @@ mod tests {
         // 伺服器權威判定：持有才准乘筏，不持有拒絕（不信客戶端自報）。
         assert!(can_start_boating(true), "真持有木筏應允許乘筏");
         assert!(!can_start_boating(false), "沒有木筏不該允許乘筏");
+    }
+
+    // ── 染色頭巾 v1（ROADMAP 1023，自主提案切片）───────────────────────────────
+
+    #[test]
+    fn bandana_recipes_exist_only_in_bag_table() {
+        // 頭巾便宜好上手，刻意留在背包 2×2，不需工作台。
+        assert!(find_workbench_recipe("red_bandana").is_none(), "紅頭巾應只在背包 2×2 配方");
+        assert!(find_workbench_recipe("blue_bandana").is_none(), "藍頭巾應只在背包 2×2 配方");
+        let red = find_recipe("red_bandana").unwrap();
+        assert_eq!(red.output_block, RED_BANDANA_ID);
+        assert_eq!(red.output_count, 1);
+        assert_eq!(red.inputs, &[(6, 2), (94, 1)], "紅頭巾應為 2 葉片 + 1 紅花");
+        let blue = find_recipe("blue_bandana").unwrap();
+        assert_eq!(blue.output_block, BLUE_BANDANA_ID);
+        assert_eq!(blue.inputs, &[(6, 2), (96, 1)], "藍頭巾應為 2 葉片 + 1 野花藍花");
+    }
+
+    #[test]
+    fn bandana_recipes_findable_via_find_any_recipe() {
+        // WS Craft handler 統一走 find_any_recipe，確保新配方也能被這條路徑找到。
+        assert_eq!(find_any_recipe("red_bandana").unwrap().output_block, RED_BANDANA_ID);
+        assert_eq!(find_any_recipe("blue_bandana").unwrap().output_block, BLUE_BANDANA_ID);
+    }
+
+    #[test]
+    fn bandana_recipes_have_unique_input_multisets() {
+        // {6:2,94:1}／{6:2,96:1} 不應與任何其他背包 2×2 配方（含彼此）的多重集相撞。
+        for id in ["red_bandana", "blue_bandana"] {
+            let mut mine = find_recipe(id).unwrap().inputs.to_vec();
+            mine.sort();
+            for r in RECIPES {
+                if r.id == id {
+                    continue;
+                }
+                let mut other = r.inputs.to_vec();
+                other.sort();
+                assert_ne!(mine, other, "「{id}」與背包配方「{}」多重集相撞", r.id);
+            }
+        }
+    }
+
+    #[test]
+    fn bandana_craft_requires_full_material_set() {
+        let r = find_recipe("red_bandana").unwrap();
+        let mut short = InvStore::default();
+        short.give("旅人", 6, 2); // 只有葉片，缺紅花
+        assert!(!can_craft(r, &short, "旅人"), "缺紅花不該合成得出紅頭巾");
+
+        let mut ok = InvStore::default();
+        ok.give("旅人", 6, 2);
+        ok.give("旅人", 94, 1);
+        assert!(can_craft(r, &ok, "旅人"), "湊齊 2 葉片 + 1 紅花應可合成紅頭巾");
+    }
+
+    #[test]
+    fn is_hat_matches_only_bandanas() {
+        assert!(is_hat(RED_BANDANA_ID));
+        assert!(is_hat(BLUE_BANDANA_ID));
+        assert!(!is_hat(RAFT_ID), "木筏不是頭巾");
+        assert!(!is_hat(AMULET_ID), "護身符不是頭巾");
+        assert!(!is_hat(0));
+    }
+
+    #[test]
+    fn can_wear_hat_requires_real_item_ownership() {
+        // 伺服器權威判定：持有才准戴上，不持有拒絕（不信客戶端自報）。
+        assert!(can_wear_hat(true), "真持有頭巾應允許戴上");
+        assert!(!can_wear_hat(false), "沒有頭巾不該允許戴上");
     }
 }
