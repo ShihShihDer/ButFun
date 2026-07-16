@@ -138,6 +138,7 @@ use crate::voxel_treasure as vtreasure;
 use crate::voxel_dungeon as vdungeon;
 use crate::voxel_shipwreck as vshipwreck;
 use crate::voxel_busking as vbusk;
+use crate::voxel_festival as vfestival;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
@@ -657,6 +658,10 @@ struct VoxelResident {
     /// 哼歌冷卻倒數（秒，ROADMAP 788）：一次哼歌後設 [`vhum::HUM_COOLDOWN_SECS`]，歸零前不再哼——
     /// 心情正好時偶爾滿溢一段旋律、不洗版。各居民初始錯開。純記憶體、重啟歸零。
     humming_cooldown: f32,
+    /// 慶典日歡慶泡泡冷卻倒數（秒，村莊慶典日 v1）：一次歡慶後設
+    /// [`vfestival::FESTIVAL_BUBBLE_COOLDOWN_SECS`]，歸零前不再冒——慶典日整天都在，偶爾一拍才有
+    /// 節慶感、不洗版。各居民初始錯開。純記憶體、重啟歸零。
+    festival_cooldown: f32,
     /// 孩子玩耍冷卻倒數（秒，孩子的模樣與玩耍時光 v1）：一次玩耍後設
     /// [`vchild::PLAY_COOLDOWN_SECS`]，歸零前不再觸發——偶爾一拍才有童趣、不洗版。
     /// 成年居民恆不觸發（`is_child` 判定為假），此欄位對他們純粹是不會被用到的閒置遞減。
@@ -2167,6 +2172,8 @@ fn build_resident(
             keepsake_recall_cooldown: 90.0 + i as f32 * 40.0,
             // 哼歌 v1（ROADMAP 788）：哼歌冷卻各自錯開，避免大家同時哼起來。
             humming_cooldown: 60.0 + i as f32 * 35.0,
+            // 村莊慶典日 v1：歡慶泡泡冷卻各自錯開，避免慶典日一開始大家同時冒泡泡。
+            festival_cooldown: 80.0 + i as f32 * 42.0,
             // 孩子的模樣與玩耍時光 v1：玩耍冷卻各自錯開（成年居民恆不觸發，錯開只是保守慣例）。
             child_play_cooldown: 50.0 + i as f32 * 30.0,
             // 居民長程自主專案 v1：首次「回來添一塊」的節拍大幅錯開，讓不同居民的大夢在不同時間
@@ -2515,6 +2522,10 @@ struct VoxelHub {
     /// 推算當前季節，與此比對——不同即「換季」，設下方一次性旗標並上一則城鎮動態。純記憶體、重啟
     /// 從初春重新流轉（比照天氣／彩虹狀態）。
     last_season: RwLock<vseason::Season>,
+    /// 上一次播報過「今天是慶典日」的世界日數（村莊慶典日 v1）：`Some(day)` = 這個 day 已播過開場
+    /// 動態，同一慶典日不重播；下個慶典日 `day` 不同即再播一次。純記憶體、重啟歸零（重啟後撞上
+    /// 慶典日會再播一次開場動態，無害，比照換季/滿月夜等世界暫態慣例）。
+    last_festival_day_announced: RwLock<Option<u64>>,
     /// 冬季飄雪 v1（ROADMAP 900）：季內初雪偵測狀態機（純記憶體，比照天氣／季節等世界暫態，
     /// 重啟歸零）。每輪 tick_residents 依「當前是否冬季 ∧ 是否下雨」推進，偵測本冬第一次飄雪。
     snow_tracker: RwLock<vsnow::SnowSeasonTracker>,
@@ -3707,6 +3718,8 @@ fn hub() -> &'static VoxelHub {
             was_full_moon_night: RwLock::new(false),
             // 季節輪替 v1（ROADMAP 798）：啟動時世界日數為 0 ＝初春；之後靠 tick_residents 逐日推進換季。
             last_season: RwLock::new(vseason::season_for_day(0)),
+            // 村莊慶典日 v1：啟動時尚未播過任何一次慶典日開場動態；之後靠 tick_residents 逐 tick 推進。
+            last_festival_day_announced: RwLock::new(None),
             // 冬季飄雪 v1（ROADMAP 900）：啟動時尚未飄雪、本冬未播初雪；之後靠 tick_residents 逐 tick 推進。
             snow_tracker: RwLock::new(vsnow::SnowSeasonTracker::new()),
             // 居民堆雪人 v1（ROADMAP 918）：啟動時世界上沒有任何雪人（純記憶體、重啟即空）。
@@ -3932,6 +3945,12 @@ fn players_snapshot_json() -> String {
         let day = hub().world_time.read().unwrap().days_elapsed();
         (vseason::season_for_day(day).as_str(), vseason::day_of_season(day))
     };
+    // 村莊慶典日 v1（自主提案切片，ROADMAP 1022，短鎖、不巢狀）：帶給前端今天是不是慶典日，
+    // HUD 顯示一枚小徽章＋首次轉為 true 時彈一句提示。純唯讀新增欄位，舊前端安全忽略、零協議破壞。
+    let festival: bool = {
+        let day = hub().world_time.read().unwrap().days_elapsed();
+        vfestival::is_festival_day(day)
+    };
     // 月有圓缺 v1（ROADMAP 946，短鎖、不巢狀）：由世界時鐘現算此刻月相受光比例（0＝新月、1＝滿月），
     // 隨快照帶給前端把那輪月削成當夜的相位（弦月／細月）。純唯讀新增欄位，舊前端安全忽略、零協議破壞。
     let moon_illum: f64 = {
@@ -3991,6 +4010,7 @@ fn players_snapshot_json() -> String {
         "migration_kind": migration_kind,
         "season": season,
         "season_day": season_day,
+        "festival": festival,
         "moon_illum": moon_illum,
     }).to_string()
 }
@@ -17615,6 +17635,25 @@ fn tick_residents(dt: f32) {
             vmigration::migration_feed_detail(kind),
         );
     }
+    // 村莊慶典日 v1（自主提案切片，ROADMAP 1022）：世界時鐘每隔 `FESTIVAL_INTERVAL_DAYS` 天迎來一個
+    // 慶典日，那一天第一輪 tick 上一則城鎮動態（不在線上的玩家回來也讀得到），之後同一天不重播。
+    // 短鎖即釋、不巢狀（守死鎖鐵律）；Feed append 走鎖外。
+    let world_day = hub().world_time.read().unwrap().days_elapsed();
+    let is_festival_day = vfestival::is_festival_day(world_day);
+    let festival_just_began = if is_festival_day {
+        let mut last = hub().last_festival_day_announced.write().unwrap();
+        if *last != Some(world_day) {
+            *last = Some(world_day);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if festival_just_began {
+        vfeed::append_feed("慶典", "乙太方界", vfestival::festival_begin_feed_line());
+    }
     // 秋收囤糧過冬 v1（自主提案）：每輪把「當前是否秋季」餵給初囤追蹤器（短寫鎖即釋、不巢狀）——
     // 一離開秋天就重置本秋旗標，讓下一個秋天能再播一次「秋收開始囤糧」的城鎮時刻。
     hub()
@@ -20219,6 +20258,10 @@ fn tick_residents(dt: f32) {
             if r.humming_cooldown > 0.0 {
                 r.humming_cooldown -= dt;
             }
+            // 村莊慶典日 v1：歡慶泡泡冷卻遞減（純記憶體、每 tick 一次）。
+            if r.festival_cooldown > 0.0 {
+                r.festival_cooldown -= dt;
+            }
             // 孩子的模樣與玩耍時光 v1：玩耍冷卻遞減（純記憶體、每 tick 一次）。
             if r.child_play_cooldown > 0.0 {
                 r.child_play_cooldown -= dt;
@@ -21569,6 +21612,24 @@ fn tick_residents(dt: f32) {
                     r.say = vhum::hum_solo_line(pick);
                     r.say_timer = SAY_SECS;
                 }
+            }
+
+            // 村莊慶典日 v1（自主提案切片，ROADMAP 1022）：慶典日整天、say 為空、醒著、手邊沒正事
+            // 的居民，偶爾忍不住顯露歡慶的心情（頭頂泡泡——前端偵測 say 以 🎉/🎊 起頭）。長冷卻＋
+            // 機率＝天然節流，比照哼歌手法但零記憶／零 Feed（純氛圍點綴，不需要玩家在場）。
+            // 鎖序：純讀寫居民自身欄位，無鎖外落地，守死鎖鐵律。
+            if is_festival_day
+                && r.say.is_empty()
+                && !r.asleep
+                && r.festival_cooldown <= 0.0
+                && r.pilgrimage.is_none()
+                && r.expedition.is_none()
+                && vfestival::should_celebrate(true, true, true, rand::random::<f32>())
+            {
+                r.festival_cooldown = vfestival::FESTIVAL_BUBBLE_COOLDOWN_SECS;
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                r.say = vfestival::festival_bubble_line(pick).to_string();
+                r.say_timer = SAY_SECS;
             }
 
             // 乙太營火 v1：入夜後，閒著、醒著、且恰好路過玩家蓋的某座營火附近時，居民偶爾駐足

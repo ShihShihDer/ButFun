@@ -431,6 +431,7 @@ const hudEl = document.getElementById("hud");
 const dbgEl = document.getElementById("dbg");
 const clockEl = document.getElementById("clock"); // 時段指示器（ROADMAP 896）
 const seasonEl = document.getElementById("season"); // 季節指示器（ROADMAP 897）
+const festivalEl = document.getElementById("festival"); // 村莊慶典日 v1（ROADMAP 1022）
 
 // ── 操作設定 v1（麥塊 Bedrock 式：準心+按鈕防誤觸、靈敏度、慣用手、自動跳、預設人稱）──
 // 全部存 localStorage、重載保留；合理預設。純前端顯示/手感層，不動遊戲規則或後端。
@@ -597,6 +598,16 @@ function updateSeason() {
   seasonEl.querySelector(".se-day").textContent = `第${worldSeasonDay}天`;
 }
 
+// 村莊慶典日 v1（自主提案切片，ROADMAP 1022）：世界時鐘排定的全村慶典日徽章——非慶典日時整個
+// 隱藏（點不到、純顯示），慶典日當天顯示，讓玩家隨時一眼看出「今天是不是特別的日子」。
+let _festivalShown = null; // 記住目前的顯示狀態，只在其變化時才改 DOM（省重繪）
+function updateFestivalBadge() {
+  if (!festivalEl) return;
+  if (worldFestival === _festivalShown) return;
+  _festivalShown = worldFestival;
+  festivalEl.style.display = worldFestival ? "flex" : "none";
+}
+
 // 季節輪替 v1（ROADMAP 798）：各季節的天地染色 [r, g, b, 權重]（皆 0..1）。
 // 依當前季節把插值後的天空/霧色往該季色調輕輕一混——權重刻意小，讓晝夜與晴雨變化仍讀得出，
 // 只在氛圍上一眼分得出「換季了」。春天近乎原色（新綠本就是預設世界的模樣），
@@ -708,6 +719,9 @@ let isRaining = false;
 let worldSeason = "spring";
 // 季節指示器 v1（ROADMAP 897）：伺服器隨快照廣播 season_day（這一季第幾天，1-based）；HUD 徽章顯示用。
 let worldSeasonDay = 1;
+// 村莊慶典日 v1（自主提案切片，ROADMAP 1022）：伺服器隨快照廣播 festival:true/false；
+// 前端只負責視覺（HUD 小徽章＋首次轉真時彈提示），排程完全由伺服器世界時鐘決定。
+let worldFestival = false;
 
 // 初始套用，讓進場就是白天而非等第一幀快照。
 updateSkyAndLight(worldTime);
@@ -7873,6 +7887,14 @@ function connect() {
       if (!window.__qaFreezeSeason && typeof m.season === "string" && m.season !== worldSeason) { worldSeason = m.season; skyDirty = true; remeshForSeason(); /* 四季樹葉 v1：換季重建樹葉顏色 */ }
       // 季節指示器 v1（ROADMAP 897）：season_day（這一季第幾天）隨同一份快照送達，HUD 徽章顯示用。
       if (typeof m.season_day === "number") worldSeasonDay = m.season_day;
+      // 村莊慶典日 v1（自主提案切片，ROADMAP 1022）：festival 隨同一份快照送達，「假→真」上升緣
+      // 彈一句提示（只給自己看），HUD 小徽章由 updateFestivalBadge() 同節拍刷新。
+      if (typeof m.festival === "boolean") {
+        if (m.festival && !worldFestival) {
+          showMsgFor("🎉 今天是村莊的慶典日，村里的人都比平常更容易眉開眼笑～", 5000);
+        }
+        worldFestival = m.festival;
+      }
       // 月有圓缺 v1（ROADMAP 946）：moon_illum（0＝新月、1＝滿月）隨同一份快照送達，updateNightSky 依此
       // 把那輪月削成當夜的相位。舊快照無此欄位時保持上一次值（預設滿月），零協議破壞。
       if (typeof m.moon_illum === "number") moonIllum = m.moon_illum;
@@ -9010,6 +9032,7 @@ function loop() {
     dbgT = 0;
     updateClock(); // 時段指示器（ROADMAP 896）：每 0.25 秒依 worldTime 刷新徽章
     updateSeason(); // 季節指示器（ROADMAP 897）：同節拍依快照 season/season_day 刷新徽章
+    updateFestivalBadge(); // 村莊慶典日 v1（ROADMAP 1022）：同節拍依快照 festival 刷新徽章
     // 觸控裝置顯示精簡文字，避免直式螢幕頂部 HUD 溢出
     hudEl.textContent = isTouch
       ? `乙太方界 · ${myName}\n${settings.touchMode === "crosshair" ? "拖曳看・⛏挖鈕・放置鈕" : "輕點挖・放置鈕放"}\nchunk:${chunks.size} 線上:${others.size + 1} 居民:${residents.size}`
