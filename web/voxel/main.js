@@ -8270,6 +8270,11 @@ function connect() {
       // 跳一句小回饋（背包由 inv_update 更新）。
       showMsg(m.line || "🤝 並肩採集，默契多收了一份！");
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 1800);
+    } else if (m.t === "bond_bonus") {
+      // 摯友協作加成 v1（自主提案切片，接續 985 玩家羈絆帳本）：協作範圍內有摯友一起採集，
+      // 交情深厚多收到材料——跳一句小回饋（背包由 inv_update 更新）。
+      showMsg(m.line || "🤝 你和摯友默契十足，多收了一份！");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 1800);
     } else if (m.t === "player_bond_up") {
       // 玩家羈絆帳本 v1（自主提案切片，ROADMAP 985）：全域廣播，只有 a/b 其中一方是自己才顯示——
       // 對方名字取另一側，跳一句提示，讓「處出交情了」這件事第一次被玩家自己看見。
