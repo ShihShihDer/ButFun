@@ -44,6 +44,7 @@ pub struct TradeStall {
     pub want_item: u8,
     pub want_count: u32,
     pub owner: String,
+    pub owner_name: String,
     pub opened_secs: u64,
 }
 
@@ -83,6 +84,14 @@ impl StallStore {
         owner: &str,
         now_secs: u64,
     ) -> bool {
+        self.open_with_name(pos, give_item, give_count, want_item, want_count, owner, owner, now_secs)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_with_name(
+        &mut self, pos: (i32, i32, i32), give_item: u8, give_count: u32,
+        want_item: u8, want_count: u32, owner: &str, owner_name: &str, now_secs: u64,
+    ) -> bool {
         if self.stalls.len() >= MAX_ACTIVE_STALLS || self.stalls.contains_key(&pos) {
             return false;
         }
@@ -97,6 +106,7 @@ impl StallStore {
                 want_item,
                 want_count,
                 owner: owner.to_string(),
+                owner_name: owner_name.to_string(),
                 opened_secs: now_secs,
             },
         );
