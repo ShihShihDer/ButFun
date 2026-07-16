@@ -2839,7 +2839,8 @@ fn try_unlock_milestone(player: &str, id: &str, out_tx: &mpsc::Sender<Message>) 
         ));
         // 居民為你的個人里程碑喝采 v1（自主提案切片）：私人旅程之外，讓身邊閒著的居民也
         // 為這一刻由衷喝采。里程碑本身全庫只對每位玩家觸發一次，天然不會刷版。
-        maybe_cheer_milestone(player, def);
+        // 私有資產鍵可能含 email，絕不可送進公開居民台詞。
+        maybe_cheer_milestone("旅人", def);
     }
 }
 
@@ -5222,6 +5223,36 @@ async fn handle_socket(
     }
     let name = resolve_identity(account_name.as_deref(), join_name.as_deref());
     let is_account = account_name.is_some();
+    // 玩家資產鍵與顯示名徹底分離：登入者綁後端 cookie 解出的穩定 email；
+    // 訪客綁本條 WS 的 UUID，因此自報任何註冊名都碰不到該帳號資產。
+    let asset_key = account_email
+        .as_deref()
+        .map(|email| format!("account:{email}"))
+        .unwrap_or_else(|| format!("guest:{my_id}"));
+
+    // 高風險玩家資料 migration：登入者才可由其權威帳號顯示名認領舊存檔。
+    // append 前先建立唯讀備份；create_new 令此動作冪等，絕不覆寫既有備份。
+    if is_account {
+        let _ = std::fs::OpenOptions::new().write(true).create_new(true)
+            .open(format!("{}.pre-account-key.bak", vinv::VOXEL_INV_PATH))
+            .and_then(|mut dst| {
+                use std::io::Write;
+                let bytes = std::fs::read(vinv::VOXEL_INV_PATH).unwrap_or_default();
+                dst.write_all(&bytes)
+            });
+        let _ = std::fs::OpenOptions::new().write(true).create_new(true)
+            .open(format!("{}.pre-account-key.bak", vmiles::MILESTONES_PATH))
+            .and_then(|mut dst| {
+                use std::io::Write;
+                dst.write_all(&std::fs::read(vmiles::MILESTONES_PATH).unwrap_or_default())
+            });
+        let migrated = hub().inventory.write().unwrap().migrate_legacy_key(&name, &asset_key);
+        for event in migrated { vinv::append_inv(&event); }
+        let migrated_ms = hub().milestones.write().unwrap().migrate_legacy_key(&name, &asset_key);
+        for id in migrated_ms {
+            vmiles::append_milestone(&vmiles::MilestoneEntry { player: asset_key.clone(), id });
+        }
+    }
     // 特殊身分稱號：綁登入帳號的 email / 顯示名（見 special_title）。訪客永遠無稱號——這是專屬的。
     // 由後端判定並廣播 title 字串，不信客戶端自報（email/名字皆後端 cookie→users 解出）。
     let conn_title: Option<String> =
@@ -5327,7 +5358,7 @@ async fn handle_socket(
 
     // 送目前背包存量（讓前端熱鍵欄立即顯示正確數量）。
     {
-        let pairs = hub().inventory.read().unwrap().pairs(&name);
+        let pairs = hub().inventory.read().unwrap().pairs(&asset_key);
         let inv_sync =
             serde_json::json!({ "t": "inv_sync", "items": pairs }).to_string();
         if out_tx.send(Message::Text(inv_sync)).await.is_err() {
@@ -5371,7 +5402,7 @@ async fn handle_socket(
     // 鎖序：inventory 讀 → onboard_done 讀 → residents 寫，循序短取即釋、不巢狀（守死鎖鐵律）。
     let mut onboard: Option<vonboard::Onboard> = None;
     {
-        let bag_empty = { hub().inventory.read().unwrap().pairs(&name).is_empty() };
+        let bag_empty = { hub().inventory.read().unwrap().pairs(&asset_key).is_empty() };
         let graduated = { hub().onboard_done.read().unwrap().contains(&name) };
         if vonboard::should_onboard(is_account, bag_empty, graduated) {
             let now = vfarm::now_secs();
@@ -5505,7 +5536,7 @@ async fn handle_socket(
                 serde_json::json!({
                     "x": s.x, "y": s.y, "z": s.z,
                     "give_item": s.give_item, "give_count": s.give_count,
-                    "want_item": s.want_item, "want_count": s.want_count, "owner": s.owner,
+                    "want_item": s.want_item, "want_count": s.want_count, "owner": s.owner_name,
                 })
             })
             .collect();
@@ -5759,7 +5790,7 @@ async fn handle_socket(
                     ));
                     // 探索紀事 v1（自主提案切片，接續 839）：溫泉可反覆進出，用所屬格子座標當
                     // 穩定去重鍵，同一玩家對同一泓溫泉只記第一次踏進去的那一拍。
-                    try_unlock_milestone(&name, "first_hotspring", &out_tx);
+                    try_unlock_milestone(&asset_key, "first_hotspring", &out_tx);
                     let cell = voxel::hot_spring_cell_of(px.floor() as i32, pz.floor() as i32);
                     let (ix, iy, iz) = (px.floor() as i32, py.floor() as i32, pz.floor() as i32);
                     let found = {
@@ -5796,7 +5827,7 @@ async fn handle_socket(
                 let near_outpost = player_near_built_outpost(px, pz);
                 if let Some((rid, rname, ax, ay, az)) = &near_outpost {
                     if !was_near_outpost {
-                        try_unlock_milestone(&name, "first_outpost_discover", &out_tx);
+                        try_unlock_milestone(&asset_key, "first_outpost_discover", &out_tx);
                         let found = {
                             let mut d = hub().discovery.write().unwrap();
                             d.record(&name, vdisc::LandmarkKind::Outpost, (*ax, *az), *ax, *ay, *az)
@@ -5867,7 +5898,7 @@ async fn handle_socket(
                     }; // discovery 寫鎖釋放
                     if let Some(entry) = found {
                         vdisc::append_discovery(&entry);
-                        try_unlock_milestone(&name, "first_wonder", &out_tx);
+                        try_unlock_milestone(&asset_key, "first_wonder", &out_tx);
                         send_landmark_notes(vdisc::LandmarkKind::Wonder, (wtx, wtz), wtx, wty, wtz, &out_tx).await;
                         let _ = out_tx.try_send(Message::Text(
                             serde_json::json!({
@@ -5896,11 +5927,11 @@ async fn handle_socket(
                     }; // discovery 寫鎖釋放
                     if let Some(entry) = found {
                         vdisc::append_discovery(&entry);
-                        try_unlock_milestone(&name, vdungeon::MILESTONE_ID, &out_tx);
+                        try_unlock_milestone(&asset_key, vdungeon::MILESTONE_ID, &out_tx);
                         let (rid, rcount) = vdungeon::relic_reward();
-                        let inv_entry = hub().inventory.write().unwrap().give(&name, rid, rcount);
+                        let inv_entry = hub().inventory.write().unwrap().give(&asset_key, rid, rcount);
                         vinv::append_inv(&inv_entry);
-                        let new_count = hub().inventory.read().unwrap().count(&name, rid);
+                        let new_count = hub().inventory.read().unwrap().count(&asset_key, rid);
                         let _ = out_tx.try_send(Message::Text(
                             serde_json::json!({
                                 "t": "inv_update",
@@ -5934,11 +5965,11 @@ async fn handle_socket(
                     }; // discovery 寫鎖釋放
                     if let Some(entry) = found {
                         vdisc::append_discovery(&entry);
-                        try_unlock_milestone(&name, vshipwreck::MILESTONE_ID, &out_tx);
+                        try_unlock_milestone(&asset_key, vshipwreck::MILESTONE_ID, &out_tx);
                         let (rid, rcount) = vshipwreck::relic_reward();
-                        let inv_entry = hub().inventory.write().unwrap().give(&name, rid, rcount);
+                        let inv_entry = hub().inventory.write().unwrap().give(&asset_key, rid, rcount);
                         vinv::append_inv(&inv_entry);
-                        let new_count = hub().inventory.read().unwrap().count(&name, rid);
+                        let new_count = hub().inventory.read().unwrap().count(&asset_key, rid);
                         let _ = out_tx.try_send(Message::Text(
                             serde_json::json!({
                                 "t": "inv_update",
@@ -5968,7 +5999,7 @@ async fn handle_socket(
                 let near_dream = player_near_finished_life_project(px, pz);
                 if let Some((_rid, rname, lx, ly, lz)) = &near_dream {
                     if !was_near_dream_landmark {
-                        try_unlock_milestone(&name, "first_dream_landmark", &out_tx);
+                        try_unlock_milestone(&asset_key, "first_dream_landmark", &out_tx);
                         let found = {
                             let mut d = hub().discovery.write().unwrap();
                             d.record(&name, vdisc::LandmarkKind::Dream, (*lx, *lz), *lx, *ly, *lz)
@@ -6044,9 +6075,9 @@ async fn handle_socket(
                         store.nearest_in_range(x, y, z).and_then(|id| store.remove(id))
                     };
                     if let Some(item) = picked {
-                        let entry = hub().inventory.write().unwrap().give(&name, item.item_id, item.count);
+                        let entry = hub().inventory.write().unwrap().give(&asset_key, item.item_id, item.count);
                         vinv::append_inv(&entry);
-                        let nc = hub().inventory.read().unwrap().count(&name, item.item_id);
+                        let nc = hub().inventory.read().unwrap().count(&asset_key, item.item_id);
                         let _ = out_tx.send(Message::Text(serde_json::json!({
                             "t": "inv_update", "block_id": item.item_id, "count": nc
                         }).to_string())).await;
@@ -6163,12 +6194,12 @@ async fn handle_socket(
                 }; // delta 寫鎖在此釋放
                 if broken {
                     // 玩家里程碑 v1（ROADMAP 724）：人生第一次成功挖出方塊。
-                    try_unlock_milestone(&name, "first_mine", &out_tx);
+                    try_unlock_milestone(&asset_key, "first_mine", &out_tx);
                     // 探索紀事 v1（自主提案切片，接續 838）：剛挖掉的這一格恰是遺跡柱頂裸露的
                     // 乙太礦——固定位置、挖掉即成空氣不會再生，本身就是天然、不必額外去重的
                     // 「發現一處新遺跡」信號。
                     if matches!(target_block, Block::AetherOre) && voxel::ruin_ore_at(x, y, z) {
-                        try_unlock_milestone(&name, "first_ruin", &out_tx);
+                        try_unlock_milestone(&asset_key, "first_ruin", &out_tx);
                         let found = {
                             let mut d = hub().discovery.write().unwrap();
                             d.record(&name, vdisc::LandmarkKind::Ruin, (x, z), x, y, z)
@@ -6260,9 +6291,9 @@ async fn handle_socket(
                     // 木門（開）v1（ROADMAP 693）：非實心但可破壞 → 退還木門（關）。
                     if matches!(target_block, Block::DoorOpen) {
                         let bid = Block::DoorClosed as u8; // 43
-                        let entry = hub().inventory.write().unwrap().give(&name, bid, 1);
+                        let entry = hub().inventory.write().unwrap().give(&asset_key, bid, 1);
                         vinv::append_inv(&entry);
-                        let nc = hub().inventory.read().unwrap().count(&name, bid);
+                        let nc = hub().inventory.read().unwrap().count(&asset_key, bid);
                         let _ = out_tx.try_send(Message::Text(
                             serde_json::json!({"t":"inv_update","block_id":bid,"count":nc}).to_string(),
                         ));
@@ -6340,10 +6371,10 @@ async fn handle_socket(
                             // 不在鎖內做 IO / 廣播（守 prod-deadlock 鐵律）。
                             let mut inv = hub().inventory.write().unwrap();
                             for (cid, cnt) in contents {
-                                let e = inv.give(&name, cid, cnt);
+                                let e = inv.give(&asset_key, cid, cnt);
                                 drop(inv);
                                 vinv::append_inv(&e);
-                                let nc = hub().inventory.read().unwrap().count(&name, cid);
+                                let nc = hub().inventory.read().unwrap().count(&asset_key, cid);
                                 let _ = out_tx.try_send(Message::Text(
                                     serde_json::json!({ "t": "inv_update", "block_id": cid, "count": nc }).to_string(),
                                 ));
@@ -6351,10 +6382,10 @@ async fn handle_socket(
                             }
                             // 還要把箱子方塊本身歸還（掉落自身）。
                             let chest_bid = Block::Chest as u8;
-                            let e2 = inv.give(&name, chest_bid, 1);
+                            let e2 = inv.give(&asset_key, chest_bid, 1);
                             drop(inv);
                             vinv::append_inv(&e2);
-                            let nc2 = hub().inventory.read().unwrap().count(&name, chest_bid);
+                            let nc2 = hub().inventory.read().unwrap().count(&asset_key, chest_bid);
                             let _ = out_tx.try_send(Message::Text(
                                 serde_json::json!({ "t": "inv_update", "block_id": chest_bid, "count": nc2 }).to_string(),
                             ));
@@ -6365,11 +6396,11 @@ async fn handle_socket(
                             // inventory 寫鎖（delta 已釋放，循序不巢狀，守死鎖鐵律）。
                             let mut inv = hub().inventory.write().unwrap();
                             for &(did, cnt) in drops {
-                                let entry = inv.give(&name, did, cnt);
+                                let entry = inv.give(&asset_key, did, cnt);
                                 drop(inv); // 先釋放再 append（不持鎖 IO）
                                 vinv::append_inv(&entry);
                                 let new_count =
-                                    hub().inventory.read().unwrap().count(&name, did);
+                                    hub().inventory.read().unwrap().count(&asset_key, did);
                                 let _ = out_tx.try_send(Message::Text(
                                     serde_json::json!({
                                         "t": "inv_update",
@@ -6384,10 +6415,10 @@ async fn handle_socket(
                         } else {
                             // 一般實心方塊：掉落自身。
                             let bid = target_block as u8;
-                            let entry = hub().inventory.write().unwrap().give(&name, bid, 1);
+                            let entry = hub().inventory.write().unwrap().give(&asset_key, bid, 1);
                             vinv::append_inv(&entry);
                             let new_count =
-                                hub().inventory.read().unwrap().count(&name, bid);
+                                hub().inventory.read().unwrap().count(&asset_key, bid);
                             let _ = out_tx.try_send(Message::Text(
                                 serde_json::json!({
                                     "t": "inv_update",
@@ -6410,9 +6441,9 @@ async fn handle_socket(
                             let extra = vbounty::harvest_bonus(kind, season);
                             if extra > 0 {
                                 let cid = vbounty::crop_item_id(kind);
-                                let entry = hub().inventory.write().unwrap().give(&name, cid, extra);
+                                let entry = hub().inventory.write().unwrap().give(&asset_key, cid, extra);
                                 vinv::append_inv(&entry);
-                                let new_count = hub().inventory.read().unwrap().count(&name, cid);
+                                let new_count = hub().inventory.read().unwrap().count(&asset_key, cid);
                                 let _ = out_tx.try_send(Message::Text(
                                     serde_json::json!({
                                         "t": "inv_update", "block_id": cid, "count": new_count
@@ -6451,9 +6482,9 @@ async fn handle_socket(
                             && rand::random::<f32>() < vgrove::SAPLING_DROP_CHANCE
                         {
                             let sid = vgrove::SAPLING_ID;
-                            let entry = hub().inventory.write().unwrap().give(&name, sid, 1);
+                            let entry = hub().inventory.write().unwrap().give(&asset_key, sid, 1);
                             vinv::append_inv(&entry);
-                            let new_count = hub().inventory.read().unwrap().count(&name, sid);
+                            let new_count = hub().inventory.read().unwrap().count(&asset_key, sid);
                             let _ = out_tx.try_send(Message::Text(
                                 serde_json::json!({
                                     "t": "inv_update",
@@ -6470,7 +6501,7 @@ async fn handle_socket(
                         // 濫用防護：前端自報手持工具 id，這裡**必查背包確認真持有該工具**才給加成，
                         // 防偽報白嫖；機率骰取真隨機（比照上方樹苗/垂釣稀有度慣例），純函式常數可測。
                         if let Some(tid) = tool {
-                            let owns_tool = hub().inventory.read().unwrap().count(&name, tid) >= 1;
+                            let owns_tool = hub().inventory.read().unwrap().count(&asset_key, tid) >= 1;
                             if owns_tool {
                                 // 工具耐久 v1（自主提案切片，ROADMAP 981）：手持對的工具採集對應
                                 // 天然方塊，才算「真的用在刀口上」——與下方加成判定共用同一張
@@ -6520,10 +6551,10 @@ async fn handle_socket(
                                         vtool::tool_bonus_drop(tid, target_block, rand::random::<f32>())
                                     {
                                         let entry =
-                                            hub().inventory.write().unwrap().give(&name, bonus_id, bonus_cnt);
+                                            hub().inventory.write().unwrap().give(&asset_key, bonus_id, bonus_cnt);
                                         vinv::append_inv(&entry);
                                         let new_count =
-                                            hub().inventory.read().unwrap().count(&name, bonus_id);
+                                            hub().inventory.read().unwrap().count(&asset_key, bonus_id);
                                         let _ = out_tx.try_send(Message::Text(
                                             serde_json::json!({
                                                 "t": "inv_update",
@@ -6568,11 +6599,11 @@ async fn handle_socket(
                             let bonus = vcoop_gather::coop_yield_bonus(partners);
                             if bonus > 0 {
                                 // 玩家里程碑（自主提案切片，追上 827）：第一次因協作多得一份。
-                                try_unlock_milestone(&name, "first_coop", &out_tx);
+                                try_unlock_milestone(&asset_key, "first_coop", &out_tx);
                                 let bid = target_block as u8;
-                                let entry = hub().inventory.write().unwrap().give(&name, bid, bonus);
+                                let entry = hub().inventory.write().unwrap().give(&asset_key, bid, bonus);
                                 vinv::append_inv(&entry);
-                                let new_count = hub().inventory.read().unwrap().count(&name, bid);
+                                let new_count = hub().inventory.read().unwrap().count(&asset_key, bid);
                                 let _ = out_tx.try_send(Message::Text(
                                     serde_json::json!({
                                         "t": "inv_update",
@@ -6631,11 +6662,11 @@ async fn handle_socket(
                         if matches!(target_block, Block::CoalOre | Block::IronOre | Block::AetherOre)
                             && voxel::treasure_ore_at(x, y, z)
                         {
-                            try_unlock_milestone(&name, "first_treasure", &out_tx);
+                            try_unlock_milestone(&asset_key, "first_treasure", &out_tx);
                             let (rid, rcount) = vtreasure::treasure_reward();
-                            let entry = hub().inventory.write().unwrap().give(&name, rid, rcount);
+                            let entry = hub().inventory.write().unwrap().give(&asset_key, rid, rcount);
                             vinv::append_inv(&entry);
-                            let new_count = hub().inventory.read().unwrap().count(&name, rid);
+                            let new_count = hub().inventory.read().unwrap().count(&asset_key, rid);
                             let _ = out_tx.try_send(Message::Text(
                                 serde_json::json!({
                                     "t": "inv_update",
@@ -6715,7 +6746,7 @@ async fn handle_socket(
                 }
                 // 步驟1：嘗試消耗材料（inventory 寫鎖，立即釋放）。
                 let inv_entry = {
-                    hub().inventory.write().unwrap().take(&name, b, 1)
+                    hub().inventory.write().unwrap().take(&asset_key, b, 1)
                 }; // inventory 寫鎖在此釋放
                 let Some(inv_e) = inv_entry else {
                     // 材料不足 → 通知客戶端，不更動世界。
@@ -6737,7 +6768,7 @@ async fn handle_socket(
                 if placed {
                     vinv::append_inv(&inv_e); // 放置成功才持久化消耗記錄
                     // 玩家里程碑 v1（ROADMAP 724）：人生第一次成功放下方塊。
-                    try_unlock_milestone(&name, "first_place", &out_tx);
+                    try_unlock_milestone(&asset_key, "first_place", &out_tx);
                     // 居民迎新 v1（948）：第一次成功放下方塊＝完成「放置」一步。
                     for m in onboard_step(&mut onboard, vonboard::STEP_PLACE, &name) {
                         let _ = out_tx.send(Message::Text(m)).await;
@@ -6748,7 +6779,7 @@ async fn handle_socket(
                     if block == Block::Sapling {
                         hub().grove.write().unwrap().plant(x, y, z, vfarm::now_secs());
                         // 玩家里程碑（自主提案切片，追上 738）：第一次親手種下樹苗。
-                        try_unlock_milestone(&name, "first_grove", &out_tx);
+                        try_unlock_milestone(&asset_key, "first_grove", &out_tx);
                     }
                     // 莓果叢 v1（ROADMAP 806）：剛種下的莓果叢苗記進 berry store，
                     // 由 `tick_berry`（15 秒節拍）計時，約 100 秒後結果。
@@ -6781,7 +6812,7 @@ async fn handle_socket(
                     }
                     // 水流動：放了一塊（可能堵住水路或填掉水格）→ 喚醒鄰格重算流向。
                     enqueue_water_around(x, y, z);
-                    let new_count = hub().inventory.read().unwrap().count(&name, b);
+                    let new_count = hub().inventory.read().unwrap().count(&asset_key, b);
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({
                             "t": "inv_update",
@@ -7090,7 +7121,7 @@ async fn handle_socket(
                     }
                 } else {
                     // 放置位置不合法（被搶佔等），退還材料。
-                    hub().inventory.write().unwrap().give(&name, b, 1);
+                    hub().inventory.write().unwrap().give(&asset_key, b, 1);
                     // 不持久化（退還等於沒發生）
                 }
             }
@@ -8168,7 +8199,7 @@ async fn handle_socket(
                             let mut entries = Vec::new();
                             for &(block_id, count) in recipe.inputs {
                                 // can_craft 已確認足夠，take 必成功；失敗不影響已改的（逐項消耗）。
-                                if let Some(e) = inv.take(&name, block_id, count) {
+                                if let Some(e) = inv.take(&asset_key, block_id, count) {
                                     entries.push(e);
                                 }
                             }
@@ -8212,7 +8243,7 @@ async fn handle_socket(
                                 }).to_string(),
                             ));
                             // 開爐也算「動手合成」的第一步，一併解里程碑。
-                            try_unlock_milestone(&name, "first_craft", &out_tx);
+                            try_unlock_milestone(&asset_key, "first_craft", &out_tx);
                             // 居民迎新 v1（948）：第一次合成成功＝完成「合成」一步。
                             for m in onboard_step(&mut onboard, vonboard::STEP_CRAFT, &name) {
                                 let _ = out_tx.send(Message::Text(m)).await;
@@ -8223,7 +8254,7 @@ async fn handle_socket(
                                 &name, recipe.output_block, recipe.output_count,
                             ); // inventory 寫鎖釋放
                             vinv::append_inv(&out_e);
-                            let out_cnt = hub().inventory.read().unwrap().count(&name, recipe.output_block);
+                            let out_cnt = hub().inventory.read().unwrap().count(&asset_key, recipe.output_block);
                             let _ = out_tx.try_send(Message::Text(
                                 serde_json::json!({
                                     "t": "inv_update",
@@ -8240,7 +8271,7 @@ async fn handle_socket(
                                 }).to_string(),
                             ));
                             // 玩家里程碑 v1（ROADMAP 724）：人生第一次成功合成出成品。
-                            try_unlock_milestone(&name, "first_craft", &out_tx);
+                            try_unlock_milestone(&asset_key, "first_craft", &out_tx);
                             // 居民迎新 v1（948）：第一次合成成功＝完成「合成」一步。
                             for m in onboard_step(&mut onboard, vonboard::STEP_CRAFT, &name) {
                                 let _ = out_tx.send(Message::Text(m)).await;
@@ -8327,7 +8358,7 @@ async fn handle_socket(
                     }
                 }
                 // 消耗 1 顆種子（inventory 寫鎖即釋）。
-                let seed_entry = hub().inventory.write().unwrap().take(&name, seed_id, 1);
+                let seed_entry = hub().inventory.write().unwrap().take(&asset_key, seed_id, 1);
                 let Some(seed_e) = seed_entry else {
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({ "t": "plant_fail", "reason": "沒有種子" }).to_string(),
@@ -8377,7 +8408,7 @@ async fn handle_socket(
                 };
                 // 廣播方塊更新 + 送背包更新。
                 broadcast_block(x, y, z, seeded_block);
-                let new_seed_cnt = hub().inventory.read().unwrap().count(&name, seed_id);
+                let new_seed_cnt = hub().inventory.read().unwrap().count(&asset_key, seed_id);
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({
                         "t": "inv_update",
@@ -8397,7 +8428,7 @@ async fn handle_socket(
                     }).to_string(),
                 ));
                 // 玩家里程碑 v1（ROADMAP 724）：人生第一次種下種子。
-                try_unlock_milestone(&name, "first_farm", &out_tx);
+                try_unlock_milestone(&asset_key, "first_farm", &out_tx);
                 // 居民注意到你悉心照料的農地 v1（自主提案切片）：播種也算農忙連段一步。
                 maybe_farm_admire(x as f32, z as f32, &name, &mut farm_streak, &mut farm_admire_cd);
             }
@@ -8433,7 +8464,7 @@ async fn handle_socket(
                     .inventory
                     .write()
                     .unwrap()
-                    .take(&name, vcompost::FERTILIZER_ID, 1);
+                    .take(&asset_key, vcompost::FERTILIZER_ID, 1);
                 let Some(fert_e) = fert_entry else {
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({ "t": "fertilize_fail", "reason": "沒有沃肥" }).to_string(),
@@ -8465,7 +8496,7 @@ async fn handle_socket(
                     .inventory
                     .read()
                     .unwrap()
-                    .count(&name, vcompost::FERTILIZER_ID);
+                    .count(&asset_key, vcompost::FERTILIZER_ID);
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({
                         "t": "inv_update",
@@ -8514,7 +8545,7 @@ async fn handle_socket(
                     .inventory
                     .write()
                     .unwrap()
-                    .take(&name, vbucket::BUCKET_ID, 1);
+                    .take(&asset_key, vbucket::BUCKET_ID, 1);
                 let Some(take_e) = take_e else {
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({ "t": "bucket_fail", "reason": "手上沒有空水桶" })
@@ -8536,15 +8567,15 @@ async fn handle_socket(
                     .inventory
                     .write()
                     .unwrap()
-                    .give(&name, vbucket::WATER_BUCKET_ID, 1);
+                    .give(&asset_key, vbucket::WATER_BUCKET_ID, 1);
                 vinv::append_inv(&give_e);
                 // 兩個 inv_update（空桶減、滿桶增）＋回饋句。
-                let empty_cnt = hub().inventory.read().unwrap().count(&name, vbucket::BUCKET_ID);
+                let empty_cnt = hub().inventory.read().unwrap().count(&asset_key, vbucket::BUCKET_ID);
                 let full_cnt = hub()
                     .inventory
                     .read()
                     .unwrap()
-                    .count(&name, vbucket::WATER_BUCKET_ID);
+                    .count(&asset_key, vbucket::WATER_BUCKET_ID);
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({ "t": "inv_update", "block_id": vbucket::BUCKET_ID, "count": empty_cnt })
                         .to_string(),
@@ -8589,7 +8620,7 @@ async fn handle_socket(
                     .inventory
                     .write()
                     .unwrap()
-                    .take(&name, vbucket::WATER_BUCKET_ID, 1);
+                    .take(&asset_key, vbucket::WATER_BUCKET_ID, 1);
                 let Some(take_e) = take_e else {
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({ "t": "bucket_fail", "reason": "手上沒有滿水桶" })
@@ -8611,14 +8642,14 @@ async fn handle_socket(
                     .inventory
                     .write()
                     .unwrap()
-                    .give(&name, vbucket::BUCKET_ID, 1);
+                    .give(&asset_key, vbucket::BUCKET_ID, 1);
                 vinv::append_inv(&give_e);
-                let empty_cnt = hub().inventory.read().unwrap().count(&name, vbucket::BUCKET_ID);
+                let empty_cnt = hub().inventory.read().unwrap().count(&asset_key, vbucket::BUCKET_ID);
                 let full_cnt = hub()
                     .inventory
                     .read()
                     .unwrap()
-                    .count(&name, vbucket::WATER_BUCKET_ID);
+                    .count(&asset_key, vbucket::WATER_BUCKET_ID);
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({ "t": "inv_update", "block_id": vbucket::WATER_BUCKET_ID, "count": full_cnt })
                         .to_string(),
@@ -8660,7 +8691,7 @@ async fn handle_socket(
                     continue;
                 }
                 // 背包必須真持有鋤頭才生效（前端自報手持工具 id，伺服器必查·防偽報白嫖）。
-                if hub().inventory.read().unwrap().count(&name, vhoe::HOE_ID) < 1 {
+                if hub().inventory.read().unwrap().count(&asset_key, vhoe::HOE_ID) < 1 {
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({ "t": "hoe_fail", "reason": "手上沒有鋤頭" }).to_string(),
                     ));
@@ -8712,15 +8743,15 @@ async fn handle_socket(
                     }
                     // 濫用防護：一份零食＝真扣一根胡蘿蔔（伺服器必查真實庫存，前端不自報），
                     // 自然限流——沒胡蘿蔔就疼不了，不會靠狂點洗版撒嬌泡泡。
-                    let Some(inv_entry) = hub().inventory.write().unwrap().take(&name, vfarm::CARROT_ID, 1) else {
+                    let Some(inv_entry) = hub().inventory.write().unwrap().take(&asset_key, vfarm::CARROT_ID, 1) else {
                         let _ = out_tx.try_send(Message::Text(
                             serde_json::json!({ "t": "feed_wildlife_fail", "reason": "想疼牠？先種點胡蘿蔔當零食吧" }).to_string(),
                         ));
                         continue;
                     };
                     vinv::append_inv(&inv_entry);
-                    try_unlock_milestone(&name, "first_treat", &out_tx);
-                    let remain = hub().inventory.read().unwrap().count(&name, vfarm::CARROT_ID);
+                    try_unlock_milestone(&asset_key, "first_treat", &out_tx);
+                    let remain = hub().inventory.read().unwrap().count(&asset_key, vfarm::CARROT_ID);
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({ "t": "inv_update", "block_id": vfarm::CARROT_ID, "count": remain }).to_string(),
                     ));
@@ -8737,7 +8768,7 @@ async fn handle_socket(
                     continue;
                 }
                 // 背包必須真持有胡蘿蔔（前端不自報合法性·濫用防護：伺服器必查真實庫存）。
-                let Some(inv_entry) = hub().inventory.write().unwrap().take(&name, vfarm::CARROT_ID, 1) else {
+                let Some(inv_entry) = hub().inventory.write().unwrap().take(&asset_key, vfarm::CARROT_ID, 1) else {
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({ "t": "feed_wildlife_fail", "reason": "背包裡沒有胡蘿蔔" }).to_string(),
                     ));
@@ -8750,8 +8781,8 @@ async fn handle_socket(
                         a.tamed = true;
                     }
                 }
-                try_unlock_milestone(&name, "first_tame", &out_tx);
-                let remain = hub().inventory.read().unwrap().count(&name, vfarm::CARROT_ID);
+                try_unlock_milestone(&asset_key, "first_tame", &out_tx);
+                let remain = hub().inventory.read().unwrap().count(&asset_key, vfarm::CARROT_ID);
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({ "t": "inv_update", "block_id": vfarm::CARROT_ID, "count": remain }).to_string(),
                 ));
@@ -8792,15 +8823,15 @@ async fn handle_socket(
                         continue;
                     }
                     // 濫用防護：一份零食＝真扣一把種子（伺服器必查真實庫存），自然限流不洗版。
-                    let Some(inv_entry) = hub().inventory.write().unwrap().take(&name, vfarm::SEEDS_ID, 1) else {
+                    let Some(inv_entry) = hub().inventory.write().unwrap().take(&asset_key, vfarm::SEEDS_ID, 1) else {
                         let _ = out_tx.try_send(Message::Text(
                             serde_json::json!({ "t": "feed_chicken_fail", "reason": "想疼牠？先留點小麥種子當零食吧" }).to_string(),
                         ));
                         continue;
                     };
                     vinv::append_inv(&inv_entry);
-                    try_unlock_milestone(&name, "first_treat", &out_tx);
-                    let remain = hub().inventory.read().unwrap().count(&name, vfarm::SEEDS_ID);
+                    try_unlock_milestone(&asset_key, "first_treat", &out_tx);
+                    let remain = hub().inventory.read().unwrap().count(&asset_key, vfarm::SEEDS_ID);
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({ "t": "inv_update", "block_id": vfarm::SEEDS_ID, "count": remain }).to_string(),
                     ));
@@ -8817,7 +8848,7 @@ async fn handle_socket(
                     continue;
                 }
                 // 背包必須真持有種子（前端不自報合法性·濫用防護：伺服器必查真實庫存）。
-                let Some(inv_entry) = hub().inventory.write().unwrap().take(&name, vfarm::SEEDS_ID, 1) else {
+                let Some(inv_entry) = hub().inventory.write().unwrap().take(&asset_key, vfarm::SEEDS_ID, 1) else {
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({ "t": "feed_chicken_fail", "reason": "背包裡沒有小麥種子" }).to_string(),
                     ));
@@ -8832,8 +8863,8 @@ async fn handle_socket(
                         a.lay_cd = vchicken::next_lay_cooldown(rand::random::<f32>());
                     }
                 }
-                try_unlock_milestone(&name, "first_chicken_tame", &out_tx);
-                let remain = hub().inventory.read().unwrap().count(&name, vfarm::SEEDS_ID);
+                try_unlock_milestone(&asset_key, "first_chicken_tame", &out_tx);
+                let remain = hub().inventory.read().unwrap().count(&asset_key, vfarm::SEEDS_ID);
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({ "t": "inv_update", "block_id": vfarm::SEEDS_ID, "count": remain }).to_string(),
                 ));
@@ -8898,7 +8929,7 @@ async fn handle_socket(
                 }
                 // ④ 首次命名 → 里程碑（只在登入玩家時；訪客無名不掛里程碑）。
                 if !already_named && !name.is_empty() {
-                    try_unlock_milestone(&name, "first_pet_name", &out_tx);
+                    try_unlock_milestone(&asset_key, "first_pet_name", &out_tx);
                 }
                 // ⑤ 廣播讓所有在場玩家立即看到這隻動物頭頂浮起名牌 + 單播確認給命名者。
                 broadcast_players();
@@ -9027,7 +9058,7 @@ async fn handle_socket(
                 // 不查背包——下車沒有利益可圖，不需要防禦。零自由文字、零 LLM、零對外端點。
                 let allow = if riding {
                     let has_item =
-                        hub().inventory.read().unwrap().count(&name, vcraft::STEAM_UNICYCLE_ID) >= 1;
+                        hub().inventory.read().unwrap().count(&asset_key, vcraft::STEAM_UNICYCLE_ID) >= 1;
                     vcraft::can_start_riding(has_item)
                 } else {
                     true
@@ -9063,7 +9094,7 @@ async fn handle_socket(
                         .inventory
                         .read()
                         .unwrap()
-                        .count(&name, vcraft::STREET_ACCORDION_ID)
+                        .count(&asset_key, vcraft::STREET_ACCORDION_ID)
                         >= 1;
                     vcraft::can_start_performing(has_item)
                 } else {
@@ -9163,7 +9194,7 @@ async fn handle_socket(
                 // 永遠放行，不需驗證。零自由文字、零 LLM、零對外端點。
                 let allow = if boating {
                     let has_item =
-                        hub().inventory.read().unwrap().count(&name, vcraft::RAFT_ID) >= 1;
+                        hub().inventory.read().unwrap().count(&asset_key, vcraft::RAFT_ID) >= 1;
                     vcraft::can_start_boating(has_item)
                 } else {
                     true
@@ -9391,7 +9422,7 @@ async fn handle_socket(
                 }; // landmark_notes 寫鎖釋放
                 if let Some(entry) = entry {
                     vlmark::append_note(&entry);
-                    try_unlock_milestone(&name, "first_landmark_note", &out_tx);
+                    try_unlock_milestone(&asset_key, "first_landmark_note", &out_tx);
                     // 回傳這處地標目前的完整留言簿（含剛寫入的這一筆），前端據此更新面板。
                     send_landmark_notes(kind, dedup_key, lx, ly, lz, &out_tx).await;
                 }
@@ -9407,7 +9438,7 @@ async fn handle_socket(
                 match result {
                     Ok(entry) => {
                         vwaypoint::append_entry(&entry);
-                        try_unlock_milestone(&name, "first_waypoint", &out_tx);
+                        try_unlock_milestone(&asset_key, "first_waypoint", &out_tx);
                         send_waypoints(&name, &out_tx).await;
                     }
                     Err(vwaypoint::SetErr::EmptyLabel) => {
@@ -9481,7 +9512,7 @@ async fn handle_socket(
                 // 3) 依「剩餘需求」與「玩家實際持有量」雙重夾住，玩家自報的 qty 只是上限
                 //    （這裡的 remaining_before 只是快照，僅用來決定要不要早退＋友善文案，
                 //    真正夠不夠捐、捐了多少一律以下面 apply_contribution 的權威回傳值為準）。
-                let have = { hub().inventory.read().unwrap().count(&name, item_id) };
+                let have = { hub().inventory.read().unwrap().count(&asset_key, item_id) };
                 let remaining_before = { hub().lighthouse.read().unwrap().remaining(item_id) };
                 let want = qty.min(have).min(remaining_before);
                 if want == 0 {
@@ -9510,7 +9541,7 @@ async fn handle_socket(
                 }
                 // 5) 依「權威 applied」（不是玩家自報的 want）扣背包，applied<=have 恆成立：
                 //    同一玩家的訊息在自己的 WS task 內序列處理，have 不會被別的玩家的動作改變。
-                let taken = { hub().inventory.write().unwrap().take(&name, item_id, applied) };
+                let taken = { hub().inventory.write().unwrap().take(&asset_key, item_id, applied) };
                 let Some(inv_entry) = taken else {
                     // applied<=have 恆成立於「同一次訊息處理」窗口內，理論上不會落此；
                     // 唯一已知落此的路徑是同帳號開兩個分頁，在讀 have 與這裡的 take 之間
@@ -9523,7 +9554,7 @@ async fn handle_socket(
                     continue;
                 };
                 vinv::append_inv(&inv_entry);
-                let remain = hub().inventory.read().unwrap().count(&name, item_id);
+                let remain = hub().inventory.read().unwrap().count(&asset_key, item_id);
                 let _ = out_tx.send(Message::Text(serde_json::json!({
                     "t": "inv_update", "block_id": item_id, "count": remain,
                 }).to_string())).await;
@@ -9533,7 +9564,7 @@ async fn handle_socket(
                     qty: applied,
                     unix: vfarm::now_secs(),
                 });
-                try_unlock_milestone(&name, "first_lighthouse_gift", &out_tx);
+                try_unlock_milestone(&asset_key, "first_lighthouse_gift", &out_tx);
                 let iname = vgift::item_name_zh(item_id);
                 let remaining_after = { hub().lighthouse.read().unwrap().remaining(item_id) };
                 let _ = out_tx.send(Message::Text(serde_json::json!({
@@ -9643,7 +9674,7 @@ async fn handle_socket(
                 }
                 // 4) 驗並消耗背包材料（inventory 寫鎖即釋）。
                 let taken_entry = {
-                    hub().inventory.write().unwrap().take(&name, item_id, 1)
+                    hub().inventory.write().unwrap().take(&asset_key, item_id, 1)
                 };
                 let Some(inv_entry) = taken_entry else {
                     let iname = vgift::item_name_zh(item_id);
@@ -9788,7 +9819,7 @@ async fn handle_socket(
                     };
                     vmem::append_memory(&entry5);
                     // 玩家里程碑（自主提案切片，追上 826）：第一次用藍圖指定居民蓋什麼。
-                    try_unlock_milestone(&name, "first_blueprint", &out_tx);
+                    try_unlock_milestone(&asset_key, "first_blueprint", &out_tx);
                 }
                 // 6) 讀好感度（memory 讀鎖即釋）。
                 let affinity = {
@@ -9882,7 +9913,7 @@ async fn handle_socket(
                 // 9) 廣播讓所有人看到居民道謝泡泡。
                 broadcast_players();
                 // 10) 回送 inv_update（扣材料後存量）+ gift_ok（通知玩家成功）。
-                let remain = hub().inventory.read().unwrap().count(&name, item_id);
+                let remain = hub().inventory.read().unwrap().count(&asset_key, item_id);
                 let inv_msg = serde_json::json!({
                     "t": "inv_update",
                     "block_id": item_id,
@@ -9900,9 +9931,9 @@ async fn handle_socket(
                 let _ = out_tx.send(Message::Text(ok_msg)).await;
                 // 玩家里程碑 v1（ROADMAP 724）：人生第一次送禮 + 若與這位居民已到「友人」門檻
                 // （沿用前端 656 好感度指示燈 count>=3 = 金心的同一道門檻），順便解鎖「初次熟識」。
-                try_unlock_milestone(&name, "first_gift", &out_tx);
+                try_unlock_milestone(&asset_key, "first_gift", &out_tx);
                 if affinity >= FRIEND_AFFINITY_THRESHOLD {
-                    try_unlock_milestone(&name, "first_bond", &out_tx);
+                    try_unlock_milestone(&asset_key, "first_bond", &out_tx);
                 }
                 // 11) Feed：記錄贈禮事件（鎖外 IO）。
                 if let Some(kind) = blueprint_kind_hit {
@@ -10235,7 +10266,7 @@ async fn handle_socket(
                 }
                 // 4) 驗這真是一件工具、且伺服器權威查真持有（濫用防護：不信客戶端自報持有）。
                 if vtool::tool_tier(tool_id).is_none()
-                    || hub().inventory.read().unwrap().count(&name, tool_id) < 1
+                    || hub().inventory.read().unwrap().count(&asset_key, tool_id) < 1
                 {
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({ "t": "repair_fail", "reason": "背包裡沒有這件工具" })
@@ -10257,7 +10288,7 @@ async fn handle_socket(
                 // （inventory 寫鎖即釋）。
                 let visits_before = hub().tool_repair.read().unwrap().visits_of(&name, &resident_id);
                 let cost = vtoolwear::repair_cost(visits_before);
-                let taken = { hub().inventory.write().unwrap().take(&name, vcraft::COIN_ID, cost) };
+                let taken = { hub().inventory.write().unwrap().take(&asset_key, vcraft::COIN_ID, cost) };
                 let Some(coin_entry) = taken else {
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({
@@ -10284,7 +10315,7 @@ async fn handle_socket(
                 }
                 // 9) 回應玩家 + 更新背包顯示 + 居民冒泡 + 記憶 + Feed（皆鎖外 IO）。
                 let iname = vgift::item_name_zh(tool_id);
-                let new_coin_count = hub().inventory.read().unwrap().count(&name, vcraft::COIN_ID);
+                let new_coin_count = hub().inventory.read().unwrap().count(&asset_key, vcraft::COIN_ID);
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({
                         "t": "inv_update",
@@ -10570,7 +10601,7 @@ async fn handle_socket(
                 // 6) 驗並扣玩家背包中 pay_item × pay_count（inventory 寫鎖即釋）。
                 let taken = {
                     hub().inventory.write().unwrap()
-                        .take(&name, pay_item, pay_count)
+                        .take(&asset_key, pay_item, pay_count)
                 };
                 let Some(taken_entry) = taken else {
                     let msg = serde_json::json!({
@@ -10588,7 +10619,7 @@ async fn handle_socket(
                 // 7) 給玩家 offer_item × offer_count（inventory 寫鎖即釋）。
                 let give_entry = {
                     hub().inventory.write().unwrap()
-                        .give(&name, offer.offer_item, offer.offer_count)
+                        .give(&asset_key, offer.offer_item, offer.offer_count)
                 };
                 vinv::append_inv(&give_entry);
                 // 8) 寫 1 筆記憶（memory 寫鎖即釋）。
@@ -10612,8 +10643,8 @@ async fn handle_socket(
                 }
                 broadcast_players();
                 // 10) 回傳兩筆 inv_update（讓前端同步背包） + trade_done。
-                let pay_remain = hub().inventory.read().unwrap().count(&name, pay_item);
-                let offer_new = hub().inventory.read().unwrap().count(&name, offer.offer_item);
+                let pay_remain = hub().inventory.read().unwrap().count(&asset_key, pay_item);
+                let offer_new = hub().inventory.read().unwrap().count(&asset_key, offer.offer_item);
                 let upd1 = serde_json::json!({
                     "t": "inv_update",
                     "block_id": pay_item,
@@ -10639,7 +10670,7 @@ async fn handle_socket(
                 }).to_string();
                 let _ = out_tx.send(Message::Text(done_msg)).await;
                 // 玩家里程碑 v1（ROADMAP 724）：人生第一次與居民完成以物易物。
-                try_unlock_milestone(&name, "first_trade", &out_tx);
+                try_unlock_milestone(&asset_key, "first_trade", &out_tx);
                 // 11) Feed（鎖外 IO）。
                 vfeed::append_feed(
                     "交易",
@@ -10846,7 +10877,7 @@ async fn handle_socket(
                 }
                 let pos = vchest::pos_key(x, y, z);
                 // 1) 扣背包（inventory 寫鎖即釋）。
-                let taken = hub().inventory.write().unwrap().take(&name, item_id, count);
+                let taken = hub().inventory.write().unwrap().take(&asset_key, item_id, count);
                 let Some(inv_e) = taken else {
                     let _ = out_tx.try_send(Message::Text(
                         serde_json::json!({ "t": "chest_fail", "reason": "背包數量不足" }).to_string(),
@@ -10858,9 +10889,9 @@ async fn handle_socket(
                 let chest_e = hub().chest.write().unwrap().put(&pos, item_id, count);
                 vchest::append_chest(&chest_e);
                 // 玩家里程碑（自主提案切片，追上 692）：第一次把材料收進箱子。
-                try_unlock_milestone(&name, "first_chest", &out_tx);
+                try_unlock_milestone(&asset_key, "first_chest", &out_tx);
                 // 3) 回傳最新 inv_update + chest_view。
-                let new_inv_count = hub().inventory.read().unwrap().count(&name, item_id);
+                let new_inv_count = hub().inventory.read().unwrap().count(&asset_key, item_id);
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({ "t": "inv_update", "block_id": item_id, "count": new_inv_count }).to_string(),
                 ));
@@ -10897,10 +10928,10 @@ async fn handle_socket(
                 }
                 vchest::append_chest(&chest_e);
                 // 2) 加入背包（inventory 寫鎖即釋）。
-                let inv_e = hub().inventory.write().unwrap().give(&name, item_id, actual);
+                let inv_e = hub().inventory.write().unwrap().give(&asset_key, item_id, actual);
                 vinv::append_inv(&inv_e);
                 // 3) 回傳最新 inv_update + chest_view。
-                let new_inv_count = hub().inventory.read().unwrap().count(&name, item_id);
+                let new_inv_count = hub().inventory.read().unwrap().count(&asset_key, item_id);
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({ "t": "inv_update", "block_id": item_id, "count": new_inv_count }).to_string(),
                 ));
@@ -11161,7 +11192,7 @@ async fn handle_socket(
                     }
                 }
                 // 6) 手上要有空玻璃瓶（inventory 讀鎖即釋）。
-                let has_bottle = hub().inventory.read().unwrap().count(&name, vbottle::BOTTLE_ID) >= 1;
+                let has_bottle = hub().inventory.read().unwrap().count(&asset_key, vbottle::BOTTLE_ID) >= 1;
                 if !has_bottle {
                     let _ = out_tx.send(Message::Text(serde_json::json!({
                         "t": "bottle_fail", "reason": "你手上沒有空玻璃瓶——先合成一個吧（2 玻璃）。"
@@ -11188,14 +11219,14 @@ async fn handle_socket(
                     continue;
                 }
                 // 8) 扣一只空玻璃瓶（inventory 寫鎖即釋 → append 落地 → 單播新存量）。
-                let Some(inv_e) = hub().inventory.write().unwrap().take(&name, vbottle::BOTTLE_ID, 1) else {
+                let Some(inv_e) = hub().inventory.write().unwrap().take(&asset_key, vbottle::BOTTLE_ID, 1) else {
                     let _ = out_tx.send(Message::Text(serde_json::json!({
                         "t": "bottle_fail", "reason": "你手上沒有空玻璃瓶——先合成一個吧（2 玻璃）。"
                     }).to_string())).await;
                     continue;
                 };
                 vinv::append_inv(&inv_e);
-                let nc = hub().inventory.read().unwrap().count(&name, vbottle::BOTTLE_ID);
+                let nc = hub().inventory.read().unwrap().count(&asset_key, vbottle::BOTTLE_ID);
                 let _ = out_tx.send(Message::Text(serde_json::json!({
                     "t": "inv_update", "block_id": vbottle::BOTTLE_ID, "count": nc
                 }).to_string())).await;
@@ -11203,7 +11234,7 @@ async fn handle_socket(
                 let ev = hub().bottle.write().unwrap().set(&pos, clean);
                 vbottle::append_bottle(&ev);
                 // 玩家里程碑（自主提案切片，追上 825）：第一次把心裡話丟進漂流瓶。
-                try_unlock_milestone(&name, "first_bottle", &out_tx);
+                try_unlock_milestone(&asset_key, "first_bottle", &out_tx);
                 // 10) 廣播座標給所有人（絕不廣播內文）+ 單播成功提示。
                 broadcast_bottle_dropped(x, y, z);
                 let _ = out_tx.send(Message::Text(
@@ -11252,7 +11283,7 @@ async fn handle_socket(
                     continue;
                 }
                 // 2) 背包要有足量的該材料（讀鎖即釋）。
-                let have = hub().inventory.read().unwrap().count(&name, item_id);
+                let have = hub().inventory.read().unwrap().count(&asset_key, item_id);
                 if have < want {
                     let _ = out_tx.send(Message::Text(serde_json::json!({
                         "t": "drop_fail", "reason": "你手上沒有那麼多喔。"
@@ -11260,11 +11291,11 @@ async fn handle_socket(
                     continue;
                 }
                 // 3) 扣下材料（inventory 寫鎖即釋 → append 落地 → 單播新存量）。
-                let Some(inv_e) = hub().inventory.write().unwrap().take(&name, item_id, want) else {
+                let Some(inv_e) = hub().inventory.write().unwrap().take(&asset_key, item_id, want) else {
                     continue;
                 };
                 vinv::append_inv(&inv_e);
-                let nc = hub().inventory.read().unwrap().count(&name, item_id);
+                let nc = hub().inventory.read().unwrap().count(&asset_key, item_id);
                 let _ = out_tx.send(Message::Text(serde_json::json!({
                     "t": "inv_update", "block_id": item_id, "count": nc
                 }).to_string())).await;
@@ -11280,12 +11311,12 @@ async fn handle_socket(
                 if let Some(id) = spawned {
                     broadcast_item_dropped(id, wx, wy, wz, item_id, want, &name);
                     // 玩家里程碑（自主提案切片，追上 828）：第一次把材料親手轉交給另一位真人。
-                    try_unlock_milestone(&name, "first_dropitem", &out_tx);
+                    try_unlock_milestone(&asset_key, "first_dropitem", &out_tx);
                 } else {
                     // 極端競態（多人同時丟到上限）：退還材料，別讓東西憑空消失。
-                    let refund = hub().inventory.write().unwrap().give(&name, item_id, want);
+                    let refund = hub().inventory.write().unwrap().give(&asset_key, item_id, want);
                     vinv::append_inv(&refund);
-                    let nc2 = hub().inventory.read().unwrap().count(&name, item_id);
+                    let nc2 = hub().inventory.read().unwrap().count(&asset_key, item_id);
                     let _ = out_tx.send(Message::Text(serde_json::json!({
                         "t": "inv_update", "block_id": item_id, "count": nc2
                     }).to_string())).await;
@@ -11336,7 +11367,7 @@ async fn handle_socket(
                     continue;
                 }
                 // 4) 背包要有足量的給出材料（讀鎖即釋）。
-                let have = hub().inventory.read().unwrap().count(&name, give_item);
+                let have = hub().inventory.read().unwrap().count(&asset_key, give_item);
                 if have < gcount {
                     let _ = out_tx.send(Message::Text(serde_json::json!({
                         "t": "stall_fail", "reason": "你手上沒有那麼多喔。"
@@ -11344,11 +11375,11 @@ async fn handle_socket(
                     continue;
                 }
                 // 5) 扣下給出材料（escrow 進攤位；inventory 寫鎖即釋 → append 落地 → 單播新存量）。
-                let Some(inv_e) = hub().inventory.write().unwrap().take(&name, give_item, gcount) else {
+                let Some(inv_e) = hub().inventory.write().unwrap().take(&asset_key, give_item, gcount) else {
                     continue;
                 };
                 vinv::append_inv(&inv_e);
-                let nc = hub().inventory.read().unwrap().count(&name, give_item);
+                let nc = hub().inventory.read().unwrap().count(&asset_key, give_item);
                 let _ = out_tx.send(Message::Text(serde_json::json!({
                     "t": "inv_update", "block_id": give_item, "count": nc
                 }).to_string())).await;
@@ -11356,16 +11387,16 @@ async fn handle_socket(
                 let now_secs = vfarm::now_secs();
                 let opened = {
                     hub().stalls.write().unwrap()
-                        .open((x, y, z), give_item, gcount, want_item, wcount, &name, now_secs)
+                        .open_with_name((x, y, z), give_item, gcount, want_item, wcount, &asset_key, &name, now_secs)
                 };
                 if opened {
                     broadcast_stall_open(x, y, z, give_item, gcount, want_item, wcount, &name);
-                    try_unlock_milestone(&name, "first_market", &out_tx);
+                    try_unlock_milestone(&asset_key, "first_market", &out_tx);
                 } else {
                     // 極端競態（多人同時擺到同座標/上限）：退還材料，別讓東西憑空消失。
-                    let refund = hub().inventory.write().unwrap().give(&name, give_item, gcount);
+                    let refund = hub().inventory.write().unwrap().give(&asset_key, give_item, gcount);
                     vinv::append_inv(&refund);
-                    let nc2 = hub().inventory.read().unwrap().count(&name, give_item);
+                    let nc2 = hub().inventory.read().unwrap().count(&asset_key, give_item);
                     let _ = out_tx.send(Message::Text(serde_json::json!({
                         "t": "inv_update", "block_id": give_item, "count": nc2
                     }).to_string())).await;
@@ -11390,7 +11421,7 @@ async fn handle_socket(
                 // 2) 先偷看擁有者是誰（不移除），決定走「收攤」還是「接手」分支。
                 let owner = { hub().stalls.read().unwrap().get((x, y, z)).map(|s| s.owner.clone()) };
                 let Some(owner) = owner else { continue; };
-                if owner == name {
+                if owner == asset_key {
                     // ── 收攤：只有擺攤者本人能收回，退還 escrow 材料 ──
                     let removed = { hub().stalls.write().unwrap().remove((x, y, z)) };
                     let Some(stall) = removed else {
@@ -11399,9 +11430,9 @@ async fn handle_socket(
                         }).to_string())).await;
                         continue;
                     };
-                    let refund = hub().inventory.write().unwrap().give(&name, stall.give_item, stall.give_count);
+                    let refund = hub().inventory.write().unwrap().give(&asset_key, stall.give_item, stall.give_count);
                     vinv::append_inv(&refund);
-                    let nc = hub().inventory.read().unwrap().count(&name, stall.give_item);
+                    let nc = hub().inventory.read().unwrap().count(&asset_key, stall.give_item);
                     let _ = out_tx.send(Message::Text(serde_json::json!({
                         "t": "inv_update", "block_id": stall.give_item, "count": nc
                     }).to_string())).await;
@@ -11419,7 +11450,7 @@ async fn handle_socket(
                         None => continue,
                     }
                 };
-                let have = hub().inventory.read().unwrap().count(&name, want_item);
+                let have = hub().inventory.read().unwrap().count(&asset_key, want_item);
                 if have < want_count {
                     let _ = out_tx.send(Message::Text(serde_json::json!({
                         "t": "stall_fail", "reason": "你身上沒有這攤要換的東西喔。"
@@ -11435,7 +11466,7 @@ async fn handle_socket(
                     continue;
                 };
                 // 再驗一次接手者存量（雙重確認，防競態下夾在中間的極端狀況）；不足就整攤放回去。
-                let have2 = hub().inventory.read().unwrap().count(&name, stall.want_item);
+                let have2 = hub().inventory.read().unwrap().count(&asset_key, stall.want_item);
                 if have2 < stall.want_count {
                     hub().stalls.write().unwrap().put_back(stall);
                     let _ = out_tx.send(Message::Text(serde_json::json!({
@@ -11443,17 +11474,17 @@ async fn handle_socket(
                     }).to_string())).await;
                     continue;
                 }
-                let Some(taken) = hub().inventory.write().unwrap().take(&name, stall.want_item, stall.want_count) else {
+                let Some(taken) = hub().inventory.write().unwrap().take(&asset_key, stall.want_item, stall.want_count) else {
                     hub().stalls.write().unwrap().put_back(stall);
                     continue;
                 };
                 vinv::append_inv(&taken);
                 let owner_credit = hub().inventory.write().unwrap().give(&stall.owner, stall.want_item, stall.want_count);
                 vinv::append_inv(&owner_credit);
-                let acceptor_credit = hub().inventory.write().unwrap().give(&name, stall.give_item, stall.give_count);
+                let acceptor_credit = hub().inventory.write().unwrap().give(&asset_key, stall.give_item, stall.give_count);
                 vinv::append_inv(&acceptor_credit);
-                let nc_want = hub().inventory.read().unwrap().count(&name, stall.want_item);
-                let nc_give = hub().inventory.read().unwrap().count(&name, stall.give_item);
+                let nc_want = hub().inventory.read().unwrap().count(&asset_key, stall.want_item);
+                let nc_give = hub().inventory.read().unwrap().count(&asset_key, stall.give_item);
                 let _ = out_tx.send(Message::Text(serde_json::json!({
                     "t": "inv_update", "block_id": stall.want_item, "count": nc_want
                 }).to_string())).await;
@@ -11464,9 +11495,9 @@ async fn handle_socket(
                 let _ = out_tx.send(Message::Text(serde_json::json!({
                     "t": "stall_trade_ok", "got_item": stall.give_item, "got_count": stall.give_count,
                 }).to_string())).await;
-                try_unlock_milestone(&name, "first_market", &out_tx);
+                try_unlock_milestone(&asset_key, "first_market", &out_tx);
                 vfeed::append_feed("自由市集", &name, &format!(
-                    "在市集用材料和{}的攤位成交了一筆交易", stall.owner
+                    "在市集用材料和{}的攤位成交了一筆交易", stall.owner_name
                 ));
                 // 自由市集賣家通知 v1（自主提案切片，ROADMAP 864）：把「你的攤位被誰接手、換到
                 // 了什麼」塞進賣家的待送達佇列，賣家下次連線時會收到私訊（見連線區塊接線）。
@@ -11524,14 +11555,14 @@ async fn handle_socket(
                 // 睡覺也順帶回滿血飢（一覺好眠，療癒世界）。
                 heal_to_full_on_sleep(&name, &out_tx).await;
                 // 玩家里程碑 v1（ROADMAP 724）：人生第一次在床上睡到天亮。
-                try_unlock_milestone(&name, "first_sleep", &out_tx);
+                try_unlock_milestone(&asset_key, "first_sleep", &out_tx);
             }
 
             // ── 垂釣 v1（ROADMAP 734）：拋竿 ──────────────────────────────────────
             Ok(ClientMsg::FishCast { x, y, z }) => {
                 let Some((px, py, pz)) = player_pos(my_id) else { continue; };
                 // 1) 手上要有釣竿（inventory 讀鎖即釋）。
-                let has_rod = hub().inventory.read().unwrap().count(&name, vfish::FISHING_ROD_ID) >= 1;
+                let has_rod = hub().inventory.read().unwrap().count(&asset_key, vfish::FISHING_ROD_ID) >= 1;
                 if !has_rod {
                     let _ = out_tx.send(Message::Text(serde_json::json!({
                         "t": "fish_fail", "reason": "你手上沒有釣竿——先用木板做一支吧。"
@@ -11620,9 +11651,9 @@ async fn handle_socket(
                 let ctx = vfish::FishContext { raining, night, deep, snow };
                 let fish_id = vfish::pick_catch_ctx(rand::random::<u64>(), ctx);
                 // 4) 漁獲進背包（inventory 寫鎖即釋 → append_inv → inv_update 單播）。
-                let entry = hub().inventory.write().unwrap().give(&name, fish_id, 1);
+                let entry = hub().inventory.write().unwrap().give(&asset_key, fish_id, 1);
                 vinv::append_inv(&entry);
-                let nc = hub().inventory.read().unwrap().count(&name, fish_id);
+                let nc = hub().inventory.read().unwrap().count(&asset_key, fish_id);
                 let _ = out_tx.send(Message::Text(serde_json::json!({
                     "t": "inv_update", "block_id": fish_id, "count": nc
                 }).to_string())).await;
@@ -11637,7 +11668,7 @@ async fn handle_socket(
                     "rare": vfish::is_rare_catch(fish_id),
                 }).to_string())).await;
                 // 玩家里程碑 v1（ROADMAP 724）：人生第一次在水邊釣起魚。
-                try_unlock_milestone(&name, "first_fish", &out_tx);
+                try_unlock_milestone(&asset_key, "first_fish", &out_tx);
                 // 玩家熟練度 v1（自主提案切片，ROADMAP 842）：每次收竿累積🎣垂釣熟練度；
                 // 練到 Lv.5 起額外多釣起一尾同種魚。
                 let level = award_mastery(&name, MasteryKind::Fishing, &out_tx);
@@ -11650,9 +11681,9 @@ async fn handle_socket(
                     continue; // 未開 QA flag → 惰性忽略（濫用防護）
                 }
                 let n = count.min(64); // 上限保護
-                let entry = hub().inventory.write().unwrap().give(&name, item_id, n);
+                let entry = hub().inventory.write().unwrap().give(&asset_key, item_id, n);
                 vinv::append_inv(&entry);
-                let nc = hub().inventory.read().unwrap().count(&name, item_id);
+                let nc = hub().inventory.read().unwrap().count(&asset_key, item_id);
                 let _ = out_tx.send(Message::Text(serde_json::json!({
                     "t": "inv_update", "block_id": item_id, "count": nc
                 }).to_string())).await;
@@ -11686,7 +11717,7 @@ async fn handle_socket(
                     let hid = hub().players.read().unwrap().get(&my_id).and_then(|p| p.held);
                     match hid {
                         Some(id) if vcraft::is_sword(id)
-                            && hub().inventory.read().unwrap().count(&name, id) >= 1 => Some(id),
+                            && hub().inventory.read().unwrap().count(&asset_key, id) >= 1 => Some(id),
                         _ => None,
                     }
                 }; // players / inventory 讀鎖各自短取即釋
@@ -11832,7 +11863,7 @@ async fn handle_socket(
                     let hid = hub().players.read().unwrap().get(&my_id).and_then(|p| p.held);
                     match hid {
                         Some(id) if vcraft::is_sword(id)
-                            && hub().inventory.read().unwrap().count(&name, id) >= 1 => Some(id),
+                            && hub().inventory.read().unwrap().count(&asset_key, id) >= 1 => Some(id),
                         _ => None,
                     }
                 }; // players / inventory 讀鎖各自短取即釋
@@ -11883,7 +11914,7 @@ async fn handle_socket(
                         );
                         vinv::append_inv(&entry);
                         let nc = {
-                            hub().inventory.read().unwrap().count(&name, vshadow::SHARD_ITEM_ID)
+                            hub().inventory.read().unwrap().count(&asset_key, vshadow::SHARD_ITEM_ID)
                         };
                         let _ = out_tx.send(Message::Text(serde_json::json!({
                             "t": "inv_update", "block_id": vshadow::SHARD_ITEM_ID, "count": nc
@@ -11904,7 +11935,7 @@ async fn handle_socket(
                 //      social 交織（is_edible_dish 才觸發居民感染／暖句）。
                 // 1) 後端權威判定：是食物 ＆ 背包有 ＆ 沒吃飽 → 才吃。客戶端只發 item_id，不自報飢餓/血。
                 let is_dish = vmeal::is_edible_dish(item_id);
-                let have = hub().inventory.read().unwrap().count(&name, item_id);
+                let have = hub().inventory.read().unwrap().count(&asset_key, item_id);
                 let cur_hunger = {
                     hub().player_stats.read().unwrap()
                         .get(&name).map(|s| s.hunger).unwrap_or(vstats::MAX_HUNGER)
@@ -11925,7 +11956,7 @@ async fn handle_socket(
                     continue;
                 }
                 // 2) 驗並消耗一份（inventory 寫鎖即釋）。
-                let taken = { hub().inventory.write().unwrap().take(&name, item_id, 1) };
+                let taken = { hub().inventory.write().unwrap().take(&asset_key, item_id, 1) };
                 let Some(inv_entry) = taken else {
                     let iname = vgift::item_name_zh(item_id);
                     let _ = out_tx.send(Message::Text(serde_json::json!({
@@ -11958,7 +11989,7 @@ async fn handle_socket(
                 } else {
                     vmeal::savor_self_line(dish, pick)
                 };
-                let remain = hub().inventory.read().unwrap().count(&name, item_id);
+                let remain = hub().inventory.read().unwrap().count(&asset_key, item_id);
                 let _ = out_tx.send(Message::Text(serde_json::json!({
                     "t": "inv_update", "block_id": item_id, "count": remain,
                 }).to_string())).await;
@@ -11967,7 +11998,7 @@ async fn handle_socket(
                 }).to_string())).await;
                 // 4) 里程碑：人生第一次嚐一口自己親手煮的料理（只算熟食，生嚼原料不算）。
                 if is_dish {
-                    try_unlock_milestone(&name, "first_taste", &out_tx);
+                    try_unlock_milestone(&asset_key, "first_taste", &out_tx);
                 }
                 // 5) 交織點：只有熟食才有那份「暖意分享」——若剛好站在某位居民身邊、且分享冷卻就緒，
                 //    居民被你的滿足感染（心情點亮＋暖泡泡＋交情記憶＋動態牆）。生食不觸發社交交織。
@@ -12056,7 +12087,7 @@ async fn handle_socket(
                 //    防偽造他人施放位置，濫用防護③權限由後端權威判定）。
                 let Some((px, py, pz)) = player_pos(my_id) else { continue; };
                 // 3) 驗並消耗一份煙火（inventory 寫鎖即釋）——放不了就白嫖不到（濫用防護②）。
-                let taken = { hub().inventory.write().unwrap().take(&name, vfw::FIREWORK_ID, 1) };
+                let taken = { hub().inventory.write().unwrap().take(&asset_key, vfw::FIREWORK_ID, 1) };
                 let Some(inv_entry) = taken else {
                     let _ = out_tx.send(Message::Text(serde_json::json!({
                         "t": "firework_fail",
@@ -12069,7 +12100,7 @@ async fn handle_socket(
                 // 4) 選火花配色（真隨機，每次顏色有變化）＋回報新存量＋施放回饋（單播）。
                 let palette = vfw::firework_palette(rand::random::<u64>());
                 let pick = (vfarm::now_secs() as usize).wrapping_add(palette as usize);
-                let remain = hub().inventory.read().unwrap().count(&name, vfw::FIREWORK_ID);
+                let remain = hub().inventory.read().unwrap().count(&asset_key, vfw::FIREWORK_ID);
                 let _ = out_tx.send(Message::Text(serde_json::json!({
                     "t": "inv_update", "block_id": vfw::FIREWORK_ID, "count": remain,
                 }).to_string())).await;
@@ -12079,7 +12110,7 @@ async fn handle_socket(
                 // 5) 廣播火花給全場（火花在施放者頭頂夜空綻放，人人看到同色）。
                 broadcast_firework(px, py, pz, palette);
                 // 6) 里程碑：人生第一次朝夜空施放煙火。
-                try_unlock_milestone(&name, "first_firework", &out_tx);
+                try_unlock_milestone(&asset_key, "first_firework", &out_tx);
                 // 7) 城鎮動態牆（不在場的人回來也讀得到這份熱鬧）。
                 vfeed::append_feed("煙火", &name, &vfw::launch_feed_line(&name));
                 // 8) 附近醒著、有空反應的居民抬頭歡呼（心情點亮＋暖泡泡＋交情記憶）。

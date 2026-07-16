@@ -26,7 +26,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 /// 持久化路徑（`data/` 已 gitignore）。
-const MILESTONES_PATH: &str = "data/voxel_milestones.jsonl";
+pub const MILESTONES_PATH: &str = "data/voxel_milestones.jsonl";
 
 /// 一枚里程碑的靜態定義。
 pub struct MilestoneDef {
@@ -122,6 +122,11 @@ pub struct MilestoneStore {
 }
 
 impl MilestoneStore {
+    pub fn migrate_legacy_key(&mut self, legacy: &str, account: &str) -> Vec<String> {
+        if legacy == account { return vec![]; }
+        self.earned_ids(legacy).into_iter().filter(|id| self.unlock(account, id)).collect()
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -226,6 +231,15 @@ mod tests {
         s.unlock("alice", "first_mine");
         assert!(s.has("alice", "first_mine"));
         assert!(!s.has("bob", "first_mine"));
+    }
+
+    #[test]
+    fn migration_is_account_scoped_and_idempotent() {
+        let mut s = MilestoneStore::new();
+        s.unlock("愛麗絲", "first_mine");
+        assert_eq!(s.migrate_legacy_key("愛麗絲", "account:alice@example.test"), vec!["first_mine"]);
+        assert!(!s.has("guest:愛麗絲", "first_mine"));
+        assert!(s.migrate_legacy_key("愛麗絲", "account:alice@example.test").is_empty());
     }
 
     #[test]

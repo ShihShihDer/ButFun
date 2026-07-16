@@ -75,6 +75,18 @@ pub struct InvStore {
 }
 
 impl InvStore {
+    /// 舊顯示名背包搬到權威帳號鍵；扣舊再加新所回傳的事件可安全 append/replay。
+    pub fn migrate_legacy_key(&mut self, legacy: &str, account: &str) -> Vec<InvEntry> {
+        if legacy == account { return vec![]; }
+        let pairs = self.pairs(legacy);
+        let mut out = Vec::with_capacity(pairs.len() * 2);
+        for (block_id, count) in pairs {
+            if let Some(e) = self.take(legacy, block_id, count) { out.push(e); }
+            out.push(self.give(account, block_id, count));
+        }
+        out
+    }
+
     /// 給予材料，回傳已記錄的 InvEntry（呼叫端 append 落地）。
     pub fn give(&mut self, player: &str, block_id: u8, count: u32) -> InvEntry {
         self.map.entry(player.to_string()).or_default().add(block_id, count);
@@ -404,6 +416,20 @@ mod tests {
         store.give("bob", 5, 7);
         assert_eq!(store.count("alice", 5), 3);
         assert_eq!(store.count("bob", 5), 7);
+    }
+
+    #[test]
+    fn migration_is_idempotent_and_never_mixes_accounts() {
+        let mut s = InvStore::default();
+        s.give("愛麗絲", 5, 7); s.give("鮑伯", 5, 3);
+        let events = s.migrate_legacy_key("愛麗絲", "account:alice@example.test");
+        assert_eq!(s.count("account:alice@example.test", 5), 7);
+        assert_eq!(s.count("愛麗絲", 5), 0);
+        assert_eq!(s.count("鮑伯", 5), 3);
+        assert!(s.migrate_legacy_key("愛麗絲", "account:alice@example.test").is_empty());
+        let replay = InvStore::from_entries(events);
+        assert_eq!(replay.count("account:alice@example.test", 5), 7);
+        assert_eq!(replay.count("guest:other", 5), 0);
     }
 
     #[test]
