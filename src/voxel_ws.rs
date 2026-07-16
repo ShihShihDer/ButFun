@@ -29576,6 +29576,14 @@ fn migration_kickoff(say_updates: &mut Vec<(String, String)>) -> bool {
         else {
             continue;
         };
+        // 收斂鎖前置檢查（#1210 churn 第二道防線）：她若已被鎖定在**別座**殖民地，這輪別
+        // 為她認地塊/寫聚落歸屬（否則會寫下歸屬、relocation 卻被 store 拒絕，造成分裂）。
+        // 正常首次遷居的居民 settlement_of==主村、無鎖，這個檢查不會誤擋她。
+        if let Some(locked) = { hub().relocations.read().unwrap().settled_colony_of(&rid) } {
+            if locked != sid {
+                continue; // 已定居別村：絕不被此村搶走
+            }
+        }
         // 認領殖民地小地塊（換塊語意自動釋放主村舊地塊）＋鋪短路。內圈優先，全滿才落到
         // 擴建圈（v3 ROADMAP 1004，16 戶）；兩圈都滿 → 這位遷不了，換下一位。
         let plot = {
@@ -29648,6 +29656,7 @@ fn migration_kickoff(say_updates: &mut Vec<(String, String)>) -> bool {
                         .unwrap()
                         .record_instant_move(&rid, (ohx, oy, ohz), (bx, by, bz), sid)
                 }; // relocations 寫鎖釋放
+                let Some(rec) = rec else { return true }; // 收斂鎖擋下（已定居別村）：本輪收手
                 vvillage::append_relocation(&rec);
                 {
                     let mut residents = hub().residents.write().unwrap();

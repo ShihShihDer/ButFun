@@ -860,6 +860,13 @@ pub struct RelocationStore {
     active: Option<RelocationRecord>,
     /// 已完成搬家的居民 → 新家錨點（供重啟後家域中心跟著新家走）。
     done: HashMap<String, (i32, i32, i32)>,
+    /// **收斂鎖**（殖民地真居住 v1·#1210 churn 根治的第二道防線）：居民 → 她已定居的
+    /// 非主村聚落 id。一旦落定某座殖民地，任何「把她遷去**別座**殖民地」的呼叫都被本 store
+    /// 直接拒絕（回 None／原地不動）——即使上游候選名單因故回歸（founder 名單重算、聚落
+    /// 歸屬檔異常、prod 舊 churn 資料 replay）也絕不再在兩村間來回搬家。只在**遷回主村**
+    /// （dest=0，人為都更是明確人生選擇）或**遷去同一座殖民地**（冪等 no-op）時才放行。
+    /// 主村（0）不記在此。跨重啟由 [`Self::from_entries`] 從 done 記錄的 `dest_settlement` 還原。
+    settled_colony: HashMap<String, u64>,
     next_seq: u64,
 }
 
@@ -876,6 +883,28 @@ impl RelocationStore {
     /// 已完成搬家的居民 id 清單（供待都更名單排除）。
     pub fn done_residents(&self) -> Vec<String> {
         self.done.keys().cloned().collect()
+    }
+
+    /// 這位居民已定居哪座非主村聚落（沒有 → None，代表她還沒被鎖進任何殖民地）。
+    /// 供收斂鎖對外查詢與測試斷言。
+    pub fn settled_colony_of(&self, resident: &str) -> Option<u64> {
+        self.settled_colony.get(resident).copied()
+    }
+
+    /// **收斂鎖判定**：這筆遷居請求是否該被拒（防兩村來回 churn 的核心）。
+    /// 回 true＝拒絕。規則：
+    /// - `dest == 0`（遷回主村）永遠放行——回主村是明確的人生選擇，不受殖民地鎖限制。
+    /// - 她還沒定居任何殖民地 → 放行（第一次遷居殖民地）。
+    /// - 已定居某殖民地、目的地是**同一座** → 放行（冪等 no-op，呼叫端可自行去重）。
+    /// - 已定居某殖民地、目的地是**另一座** → 拒絕（絕不被別村搶走）。
+    fn colony_move_blocked(&self, resident: &str, dest_settlement: u64) -> bool {
+        if dest_settlement == 0 {
+            return false;
+        }
+        match self.settled_colony.get(resident) {
+            Some(&cur) => cur != dest_settlement,
+            None => false,
+        }
     }
 
     /// 重啟後家域中心該落在哪：已搬完（或新家已完工、正拆舊家）的居民 → 新家錨點。
@@ -918,6 +947,10 @@ impl RelocationStore {
         if dest_settlement == 0 && self.done.contains_key(resident) {
             return None; // 主村內都更一生一次（既有行為不變）
         }
+        // 收斂鎖：已定居某殖民地者，不得被另一座殖民地遷走（#1210 churn 第二道防線）。
+        if self.colony_move_blocked(resident, dest_settlement) {
+            return None;
+        }
         let rec = RelocationRecord {
             resident: resident.to_string(),
             old_x: old.0,
@@ -931,6 +964,10 @@ impl RelocationStore {
             dest_settlement,
         };
         self.next_seq = self.next_seq.wrapping_add(1);
+        // 一開始遷居某殖民地就上鎖（哪怕新家還在蓋）：從此別村的 kickoff 拉不走她。
+        if dest_settlement != 0 {
+            self.settled_colony.insert(resident.to_string(), dest_settlement);
+        }
         self.active = Some(rec.clone());
         Some(rec)
     }
@@ -938,13 +975,19 @@ impl RelocationStore {
     /// 即刻遷家（殖民地真居住 v1·無屋可拆的極少數路徑）：這位居民還沒有完工小屋，不需要
     /// 蓋新家/拆舊家的完整搬家流程——直接記一筆 phase=done 的搬家紀錄（登記進已完成名單，
     /// 讓 [`Self::home_override`] 在重啟後把她的家域還原到新址）。不占「一次一位」名額。
+    ///
+    /// **收斂鎖**（#1210 churn 第二道防線）：已定居某殖民地者若被要求即刻遷去**另一座**
+    /// → 回 None（原地不動、不寫任何記錄），阻斷兩村來回 churn。遷回主村或遷去同一座放行。
     pub fn record_instant_move(
         &mut self,
         resident: &str,
         old: (i32, i32, i32),
         new: (i32, i32, i32),
         dest_settlement: u64,
-    ) -> RelocationRecord {
+    ) -> Option<RelocationRecord> {
+        if self.colony_move_blocked(resident, dest_settlement) {
+            return None;
+        }
         let rec = RelocationRecord {
             resident: resident.to_string(),
             old_x: old.0,
@@ -960,7 +1003,10 @@ impl RelocationStore {
         self.next_seq = self.next_seq.wrapping_add(1);
         self.done
             .insert(resident.to_string(), (new.0, new.1, new.2));
-        rec
+        if dest_settlement != 0 {
+            self.settled_colony.insert(resident.to_string(), dest_settlement);
+        }
+        Some(rec)
     }
 
     /// 新家完工 → 進拆舊家階段。無進行中搬家、或不在 build 階段 → None（冪等防呆）。
@@ -1004,6 +1050,12 @@ impl RelocationStore {
         // done 全收；未完的取 seq 最大的一件當 active（正常情況只會有一件）。
         let mut pending: Vec<RelocationRecord> = Vec::new();
         for (_, e) in latest {
+            // 收斂鎖跨重啟還原：以這位居民**最新一筆**的目的地聚落為準（無論 done 或進行中）。
+            // 這讓 prod 既有的兩村 churn 資料 replay 後，居民被鎖定在她最後落腳的那座殖民地，
+            // 任何舊候選名單的回歸都拉不動她——振盪從此收斂到單一聚落（#1210 根治）。
+            if e.dest_settlement != 0 {
+                s.settled_colony.insert(e.resident.clone(), e.dest_settlement);
+            }
             if e.phase == RELOC_PHASE_DONE {
                 s.done.insert(e.resident.clone(), (e.new_x, e.new_y, e.new_z));
             } else {
@@ -1827,7 +1879,9 @@ mod tests {
     #[test]
     fn record_instant_move_registers_home_override() {
         let mut s = RelocationStore::new();
-        let rec = s.record_instant_move("vox_res_2", (10, 9, 10), (506, 9, 173), 1);
+        let rec = s
+            .record_instant_move("vox_res_2", (10, 9, 10), (506, 9, 173), 1)
+            .expect("首次遷居殖民地應放行");
         assert_eq!(rec.phase, RELOC_PHASE_DONE);
         assert_eq!(rec.dest_settlement, 1);
         assert_eq!(s.home_override("vox_res_2"), Some((506, 9, 173)));
@@ -1865,6 +1919,110 @@ mod tests {
             !demolish_requires_walk_back(active.dest_settlement),
             "跨聚落 demolish 必須就地拆、不走回，否則永久卡死餓死補蓋掃描"
         );
+    }
+
+    /// 依 prod `voxel_relocations.jsonl` 的 vox_res_1 真實振盪形態（71×dest1 + 71×dest2
+    /// 交錯、全 phase=done，最新 seq 157=dest 2）重建這批記錄——end-to-end 重放，非只測純函式。
+    fn prod_res1_churn_entries() -> Vec<RelocationRecord> {
+        // 兩座殖民地中心（prod 實座標）：sid 1＝風禾屯側 (513,173)、sid 2＝另一村 (-264,666)。
+        let home1 = (513, 12, 173);
+        let home2 = (-264, 9, 666);
+        let mut out = Vec::new();
+        // 起始 seq 15（prod 首筆），之後 1↔2 來回；共 142 筆（71 對）。
+        let mut seq = 15u64;
+        for i in 0..71 {
+            // 奇偶交錯：先 dest 1、再 dest 2，……最後一筆（i=70 的第二筆）落在 dest 2。
+            out.push(RelocationRecord {
+                resident: "vox_res_1".into(),
+                old_x: home2.0, old_y: home2.1, old_z: home2.2,
+                new_x: home1.0, new_y: home1.1, new_z: home1.2,
+                phase: RELOC_PHASE_DONE.into(), seq, dest_settlement: 1,
+            });
+            seq += 1;
+            if i == 70 { break; } // 71 對但最後補到 142 筆時最後一筆是 dest 2（下方）
+            out.push(RelocationRecord {
+                resident: "vox_res_1".into(),
+                old_x: home1.0, old_y: home1.1, old_z: home1.2,
+                new_x: home2.0, new_y: home2.1, new_z: home2.2,
+                phase: RELOC_PHASE_DONE.into(), seq, dest_settlement: 2,
+            });
+            seq += 1;
+        }
+        // 收尾補上最新一筆 dest 2（對齊 prod：latest = seq 157, dest 2）。
+        out.push(RelocationRecord {
+            resident: "vox_res_1".into(),
+            old_x: home1.0, old_y: home1.1, old_z: home1.2,
+            new_x: home2.0, new_y: home2.1, new_z: home2.2,
+            phase: RELOC_PHASE_DONE.into(), seq, dest_settlement: 2,
+        });
+        out
+    }
+
+    #[test]
+    fn prod_res1_churn_converges_after_restart_no_more_oscillation() {
+        // ── end-to-end 重放（記取 demolish churn 四修教訓：不只綠純函式）──────────────
+        // 重建 prod vox_res_1 的兩村來回振盪，from_entries 還原後斷言：收斂鎖已把她鎖在
+        // **最後落腳**的那座殖民地（sid 2），且此後任何「另一村來搶」的遷居嘗試全被拒、
+        // 不再產生任何新的搬家記錄——振盪從此收斂到單一聚落。
+        let entries = prod_res1_churn_entries();
+        // 對齊 prod：142 筆、dest1/dest2 各 71、最新一筆 dest 2。
+        assert_eq!(entries.len(), 142, "prod vox_res_1 共 142 筆搬家");
+        assert_eq!(entries.iter().filter(|e| e.dest_settlement == 1).count(), 71);
+        assert_eq!(entries.iter().filter(|e| e.dest_settlement == 2).count(), 71);
+        assert_eq!(entries.last().unwrap().dest_settlement, 2, "最新一筆落在 sid 2");
+
+        let mut s = RelocationStore::from_entries(entries);
+        // 收斂鎖跨重啟還原：她被鎖定在最後落腳的 sid 2。
+        assert_eq!(
+            s.settled_colony_of("vox_res_1"),
+            Some(2),
+            "重啟後收斂鎖應指向她最後落腳的殖民地（sid 2）"
+        );
+
+        // ── 連續 tick 模擬：別村（sid 1）反覆想把她搶回 —— 全被拒，零新記錄 ─────────────
+        let dest1_home = (513, 12, 173);
+        let cur_home = (-264, 9, 666);
+        for round in 0..50 {
+            // 每輪都試「即刻遷家回 sid 1」與「蓋家式遷居回 sid 1」——兩條路徑都該被收斂鎖擋。
+            let instant = s.record_instant_move("vox_res_1", cur_home, dest1_home, 1);
+            assert!(
+                instant.is_none(),
+                "第 {round} 輪：已定居 sid 2 的居民不得被 sid 1 即刻搶走（否則兩村來回 churn）"
+            );
+            let build = s.begin_to("vox_res_1", cur_home, dest1_home, 1);
+            assert!(
+                build.is_none(),
+                "第 {round} 輪：已定居 sid 2 的居民不得被 sid 1 蓋家式搶走"
+            );
+            // 她仍穩定在 sid 2、家域仍指向 sid 2 的家——沒有任何抖動。
+            assert_eq!(s.settled_colony_of("vox_res_1"), Some(2));
+            assert_eq!(s.home_override("vox_res_1"), Some(cur_home));
+            assert!(s.active().is_none(), "被拒的遷居不得留下半途 active 搬家");
+        }
+
+        // ── 冪等再確認：遷去**同一座**（sid 2）放行（例如補家），不算搶奪、不振盪 ─────────
+        let same = s.record_instant_move("vox_res_1", cur_home, cur_home, 2);
+        assert!(same.is_some(), "遷去同一座殖民地是冪等 no-op，允許");
+        assert_eq!(s.settled_colony_of("vox_res_1"), Some(2), "同村再定居不改鎖");
+        // ── 遷回主村（人為都更 dest=0）永遠放行：收斂鎖不綁架「回家」的自由 ──────────────
+        let back_main = s.begin_to("vox_res_1", cur_home, (0, 9, 0), 0);
+        assert!(back_main.is_some(), "遷回主村（dest=0）是明確人生選擇，收斂鎖不擋");
+    }
+
+    #[test]
+    fn dual_colony_founder_relocation_lock_never_thrashes() {
+        // 回歸（#1210 根因、relocation 引擎端第二道防線）：同一位居民同時是兩座殖民地的
+        // 拓荒者。她先落定 sid 1，另一座（sid 2）之後每輪都想把她搶去——全被收斂鎖拒。
+        let mut s = RelocationStore::new();
+        // 首次遷居 sid 1（放行、上鎖）。
+        assert!(s.record_instant_move("vox_res_1", (0, 9, 0), (513, 12, 173), 1).is_some());
+        assert_eq!(s.settled_colony_of("vox_res_1"), Some(1));
+        // sid 2 反覆想搶——全 None、家域穩定不動。
+        for _ in 0..30 {
+            assert!(s.record_instant_move("vox_res_1", (513, 12, 173), (-264, 9, 666), 2).is_none());
+            assert!(s.begin_to("vox_res_1", (513, 12, 173), (-264, 9, 666), 2).is_none());
+            assert_eq!(s.home_override("vox_res_1"), Some((513, 12, 173)), "家域鎖死在 sid 1，不抖");
+        }
     }
 
     #[test]
