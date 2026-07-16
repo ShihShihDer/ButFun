@@ -1646,14 +1646,13 @@ fn ruin_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
     }
 }
 
-/// 溫泉遺跡（世界第二種可探索地標，自主提案切片，接續古代遺跡）——同一手法（格狀機率、
-/// 強制遠離出生點、純函式在地表之上疊加、不改動地形本身），但換一種「有功能性回饋」的
-/// 地標型別：不是挖礦驚喜，而是一泓暖水池——泡進去能加速回血、緩解飢餓消耗（見
-/// `voxel_player_stats` 接線），讓「走遠探索」除了礦藏，也可能巧遇歇腳的暖泉。
-/// 純函式、確定性、零狀態、零 IO；同座標永遠同結果。
-fn hot_spring_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
-    let cellx = wx.div_euclid(HOT_SPRING_CELL);
-    let cellz = wz.div_euclid(HOT_SPRING_CELL);
+/// 溫泉格心（機率 + 落點偏移 + 遠離出生點三項判定合一）：`hot_spring_block_at`（決定某一格
+/// 方塊）與 [`nearest_hot_spring_from`]（由外部找最近一泓，供「居民也去溫泉歇腳 v1」使用）
+/// 共用同一份確定性判定，避免兩處各自重算而漂移。**刻意不含地表高度判定**——原判定是「查詢
+/// 中的那一欄自己的地表高度」（見 `hot_spring_block_at` 內 `height_at(wx, wz)`，逐欄各自判
+/// 定，免得地形起伏時池水懸空或埋進土裡），並非池心單一高度，因此高度判定留在呼叫端各自處理，
+/// 不搬進本函式（否則會悄悄改掉既有逐欄判定的語意）。純函式、確定性、零狀態、零 IO。
+fn hot_spring_cell_center(cellx: i32, cellz: i32) -> Option<(i32, i32)> {
     if hash2(cellx, cellz, HOT_SPRING_SEED) >= HOT_SPRING_CHANCE {
         return None;
     }
@@ -1670,6 +1669,18 @@ fn hot_spring_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
             return None;
         }
     }
+    Some((tx, tz))
+}
+
+/// 溫泉遺跡（世界第二種可探索地標，自主提案切片，接續古代遺跡）——同一手法（格狀機率、
+/// 強制遠離出生點、純函式在地表之上疊加、不改動地形本身），但換一種「有功能性回饋」的
+/// 地標型別：不是挖礦驚喜，而是一泓暖水池——泡進去能加速回血、緩解飢餓消耗（見
+/// `voxel_player_stats` 接線），讓「走遠探索」除了礦藏，也可能巧遇歇腳的暖泉。
+/// 純函式、確定性、零狀態、零 IO；同座標永遠同結果。
+fn hot_spring_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
+    let cellx = wx.div_euclid(HOT_SPRING_CELL);
+    let cellz = wz.div_euclid(HOT_SPRING_CELL);
+    let (tx, tz) = hot_spring_cell_center(cellx, cellz)?;
     let (dx, dz) = (wx - tx, wz - tz);
     let dist2 = dx * dx + dz * dz;
     let outer2 = (HOT_SPRING_RADIUS + 1) * (HOT_SPRING_RADIUS + 1);
@@ -1691,6 +1702,64 @@ fn hot_spring_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
     } else {
         Some(Block::StoneBrick) // 池緣矮石牆，圈住溫泉，一眼認出是個特別的地方
     }
+}
+
+/// 由某個世界座標附近，往外一圈圈找最近一泓有效溫泉的池心（「居民也去溫泉歇腳 v1」，自主
+/// 提案切片，接續 838/839 古代遺跡／溫泉遺跡）。**真缺口**：838/839 讓溫泉成為世界第二種可
+/// 探索地標，泡進去能加速回血、緩解飢餓——但那份功能性回饋至今只服務**玩家**，居民對這泓暖
+/// 泉視若無睹；地標系統與居民的日常至今是兩條互不相干的線。本函式是接上這一線的地基：純粹
+/// 由座標＋世界種子確定性掃描出「離這裡最近的一泓溫泉在哪」，供居民決定要不要走去歇腳（見
+/// `voxel_ws.rs` 接線）。掃描範圍以格（[`HOT_SPRING_CELL`]=56）為單位向外展開一個
+/// `(2*max_cell_radius+1)²` 的方陣，逐格檢查 [`hot_spring_cell_center`] 是否有效＋池心地表
+/// 是否乾燥陸地（比照 `hot_spring_block_at` 對池心那一欄的判定），取歐氏距離最近者。
+/// 找不到（世界種子在此範圍內運氣不好）回 `None`——與其他地標系統一致，允許「這個世界這一帶
+/// 沒有」的誠實結果，呼叫端據此不觸發本刀行為。純函式、確定性、零狀態、零 IO；同輸入永遠同
+/// 結果（掃描成本 O(radius²)，只在呼叫端低頻決策時呼叫，非熱路徑）。
+pub fn nearest_hot_spring_from(ox: i32, oz: i32, max_cell_radius: i32) -> Option<(i32, i32, i32)> {
+    if max_cell_radius < 0 {
+        return None;
+    }
+    let origin_cellx = ox.div_euclid(HOT_SPRING_CELL);
+    let origin_cellz = oz.div_euclid(HOT_SPRING_CELL);
+    let mut best: Option<(i64, i32, i32, i32)> = None; // (dist2, tx, h, tz)
+    for dcz in -max_cell_radius..=max_cell_radius {
+        for dcx in -max_cell_radius..=max_cell_radius {
+            let cellx = origin_cellx + dcx;
+            let cellz = origin_cellz + dcz;
+            let Some((tx, tz)) = hot_spring_cell_center(cellx, cellz) else {
+                continue;
+            };
+            let h = height_at(tx, tz);
+            if h <= SEA_LEVEL + 1 {
+                continue; // 池心恰好落在水邊/水下，這一格實際上長不出溫泉（同逐欄判定慣例）。
+            }
+            let (ddx, ddz) = ((tx - ox) as i64, (tz - oz) as i64);
+            let dist2 = ddx * ddx + ddz * ddz;
+            if best.is_none_or(|(bd, ..)| dist2 < bd) {
+                best = Some((dist2, tx, h + 1, tz));
+            }
+        }
+    }
+    best.map(|(_, tx, ty, tz)| (tx, ty, tz))
+}
+
+/// 全世界最靠近主村（世界原點）的那一泓溫泉——「居民也去溫泉歇腳 v1」用的固定目的地，讓所有
+/// 居民都走向同一泓「村子的溫泉」（比照 [`shipwreck_core_pos`] 的單例快取手法：只由固定常數
+/// 決定、算一次即定，避免每位居民每次決定要不要歇腳都重新掃描一次）。掃描半徑
+/// [`VILLAGE_HOTSPRING_SEARCH_RADIUS`] 個格（56 格／格）——在
+/// [`HOT_SPRING_CHANCE`]=0.045 的機率密度下，這個範圍內找不到任何一泓溫泉的機率趨近於零
+/// （見同名單元測試的機率量級說明），但仍誠實回 `Option`：真的找不到就回 `None`，居民也去
+/// 溫泉歇腳這刀在該世界種子上就安靜不觸發，不 panic、不硬湊一個假座標。
+static VILLAGE_HOTSPRING: std::sync::OnceLock<Option<(i32, i32, i32)>> = std::sync::OnceLock::new();
+
+/// 掃描半徑（格數，每格 [`HOT_SPRING_CELL`]=56 世界方塊）：`village_hotspring_target` 由世界
+/// 原點向外找溫泉的範圍上限，約合 `(2*12+1)*56 = 1400` 格見方的搜尋窗。
+const VILLAGE_HOTSPRING_SEARCH_RADIUS: i32 = 12;
+
+/// 供 `voxel_ws.rs`「居民也去溫泉歇腳 v1」查詢的固定目的地（快取）。見 [`VILLAGE_HOTSPRING`]。
+pub fn village_hotspring_target() -> Option<(i32, i32, i32)> {
+    *VILLAGE_HOTSPRING
+        .get_or_init(|| nearest_hot_spring_from(0, 0, VILLAGE_HOTSPRING_SEARCH_RADIUS))
 }
 
 // ── 地底遺跡神殿 v1（ROADMAP 975，自主提案切片）───────────────────────────────
@@ -3500,6 +3569,76 @@ mod tests {
         assert_eq!(hot_spring_cell_of(10, 10), hot_spring_cell_of(20, 20));
         // 跨到下一格的座標應換算出不同格座標。
         assert_ne!(hot_spring_cell_of(10, 10), hot_spring_cell_of(10 + HOT_SPRING_CELL, 10));
+    }
+
+    // ── 居民也去溫泉歇腳 v1（自主提案切片，接續 838/839）───────────────────────────────
+
+    #[test]
+    fn nearest_hot_spring_from_is_deterministic() {
+        // 同一輸入永遠回同一結果（純函式契約）——供居民行為的可重播測試安心依賴。
+        let a = nearest_hot_spring_from(0, 0, VILLAGE_HOTSPRING_SEARCH_RADIUS);
+        let b = nearest_hot_spring_from(0, 0, VILLAGE_HOTSPRING_SEARCH_RADIUS);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn nearest_hot_spring_from_negative_radius_is_none() {
+        // 負半徑不合法輸入：安全回 None，不 panic、不越界掃描。
+        assert_eq!(nearest_hot_spring_from(0, 0, -1), None);
+    }
+
+    #[test]
+    fn nearest_hot_spring_from_zero_radius_only_checks_origin_cell() {
+        // 半徑 0 只檢查原點所在那一格，與掃描更大半徑時「原點格本身若有效」的結果一致
+        // （若原點格本身無效，0 半徑必回 None——用來驗證函式不會偷跑到鄰格）。
+        let only_origin = nearest_hot_spring_from(0, 0, 0);
+        if let Some((tx, _ty, tz)) = only_origin {
+            let (cellx, cellz) = hot_spring_cell_of(tx, tz);
+            assert_eq!((cellx, cellz), (0i32.div_euclid(HOT_SPRING_CELL), 0i32.div_euclid(HOT_SPRING_CELL)));
+        }
+    }
+
+    #[test]
+    fn nearest_hot_spring_from_result_is_consistent_with_hot_spring_block_at() {
+        // 找到的池心，實際查詢該座標應真的是溫泉水——兩套判定（找最近 vs 決定單一方塊）
+        // 不可漂移，否則居民走到的地方跟玩家看到的地標對不上。
+        if let Some((tx, ty, tz)) = nearest_hot_spring_from(0, 0, VILLAGE_HOTSPRING_SEARCH_RADIUS) {
+            assert_eq!(hot_spring_block_at(tx, ty, tz), Some(Block::HotSpringWater));
+        }
+        // 若在合理搜尋半徑內找不到（機率極低，見下方機率量級說明），測試不失敗——
+        // 這正是函式「誠實回 None」的設計契約本身，此測試只驗證「有找到時必須一致」。
+    }
+
+    #[test]
+    fn nearest_hot_spring_from_found_point_is_within_search_window() {
+        // 找到的池心必落在宣告的搜尋窗內（格數換算世界座標的寬鬆上界），不會回傳掃描範圍外的點。
+        if let Some((tx, _ty, tz)) = nearest_hot_spring_from(0, 0, 5) {
+            let bound = (5 + 1) * HOT_SPRING_CELL; // 每格 56，留一格緩衝（池心可能落在格內側偏移處）
+            assert!(tx.abs() <= bound && tz.abs() <= bound, "找到的池心應在搜尋窗內：({tx},{tz})");
+        }
+    }
+
+    #[test]
+    fn village_hotspring_target_is_cached_and_stable() {
+        // 單例快取：多次呼叫回傳同一結果（不因呼叫次數而變、不重新擲骰）。
+        let a = village_hotspring_target();
+        let b = village_hotspring_target();
+        assert_eq!(a, b);
+        // 應與「未快取版本」用同樣輸入算出的結果一致（快取只是省重算，不改變答案）。
+        assert_eq!(a, nearest_hot_spring_from(0, 0, VILLAGE_HOTSPRING_SEARCH_RADIUS));
+    }
+
+    #[test]
+    fn village_hotspring_search_radius_finds_a_spring_with_overwhelming_probability() {
+        // 機率量級說明：格機率 HOT_SPRING_CHANCE=0.045，搜尋窗 (2*12+1)²=625 格，扣掉
+        // 出生點週邊 HOT_SPRING_MIN_DIST 內天然排除的格數後，期望命中數仍達兩位數，
+        // 至少一泓的機率 1-(1-0.045)^n（n 為有效候選格數）趨近於 1。用目前的固定世界種子
+        // 直接驗證找得到，若未來世界種子/半徑調整導致這裡變 None，代表這個假設不再成立、
+        // 需要重新檢視「居民也去溫泉歇腳」這刀在該設定下是否還能穩定觸發（不可默默失效）。
+        assert!(
+            village_hotspring_target().is_some(),
+            "目前世界種子在既定搜尋半徑內應能找到至少一泓溫泉"
+        );
     }
 
     #[test]
