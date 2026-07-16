@@ -335,6 +335,28 @@ pub fn grown_up_line(pick: usize) -> &'static str {
     GROWN_UP_LINES[pick % GROWN_UP_LINES.len()]
 }
 
+// ── 雨天野兔躲雨 v1（自主提案切片，ROADMAP 1020）───────────────────────────
+//
+// **真缺口**：天氣（`voxel_weather`）至今只讓「居民」對下雨有反應（雨聲台詞＋真的找地方
+// 避雨、雨天農作/生病/篝火各自接了一條線），但世界環境軸線的野生動物（野兔）對下雨
+// 毫無反應——傾盆大雨時，野兔照樣頂著雨在草地上悠閒閒晃，像沒感覺一樣。本節補上這條
+// 缺口：**未馴服、非受驚逃跑中**的野兔下雨時就地蜷縮低伏（暫停遊蕩、原地不動），雨停
+// 才恢復閒晃——世界第一次讓「天氣」與「野生動物」交會。
+//
+// **刻意收斂**：只影響野兔（未馴服／非逃跑中）；已馴服（跟隨／安置／依偎你）、正受驚
+// 逃跑中的，優先權都比躲雨高，一律不受影響（讓生存反射永遠優先於天氣不適）；雞／魚
+// 不受影響（雞是放養家禽、魚本就在水裡，淋雨對牠們沒有敘事意義）。
+
+/// 雨天躲雨表情（頭頂掛的小雨傘），比照臨危依偎 v1（903）已有的 emote 廣播機制。
+pub const RAIN_SHELTER_EMOTE: &str = "☔";
+
+/// 純函式：這隻未馴服的野兔此刻是否該就地躲雨（暫停遊蕩、蜷縮原地）。
+/// 正受驚逃跑中的優先權更高——逃命途中不會停下來躲雨，呼叫端需在 `fleeing` 判定
+/// 之後才呼叫本函式（見 `voxel_ws::tick_wildlife` 的呼叫順序）。
+pub fn should_shelter_from_rain(raining: bool, fleeing: bool) -> bool {
+    raining && !fleeing
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -752,5 +774,30 @@ mod tests {
     #[test]
     fn grown_up_line_pick_wraps_without_panic() {
         let _ = grown_up_line(9999);
+    }
+
+    #[test]
+    fn shelters_when_raining_and_not_fleeing() {
+        assert!(should_shelter_from_rain(true, false));
+    }
+
+    #[test]
+    fn no_shelter_when_dry() {
+        assert!(!should_shelter_from_rain(false, false));
+    }
+
+    #[test]
+    fn fleeing_overrides_shelter_even_while_raining() {
+        assert!(!should_shelter_from_rain(true, true), "逃命優先於躲雨——受驚時不該停下");
+    }
+
+    #[test]
+    fn dry_and_not_fleeing_never_shelters() {
+        assert!(!should_shelter_from_rain(false, true));
+    }
+
+    #[test]
+    fn rain_shelter_emote_is_umbrella() {
+        assert_eq!(RAIN_SHELTER_EMOTE, "☔");
     }
 }
