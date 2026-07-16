@@ -138,6 +138,8 @@ use crate::voxel_treasure as vtreasure;
 use crate::voxel_dungeon as vdungeon;
 use crate::voxel_shipwreck as vshipwreck;
 use crate::voxel_busking as vbusk;
+use crate::voxel_festival as vfestival;
+use crate::voxel_wear as vwear;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
@@ -298,6 +300,13 @@ struct VoxelPlayer {
     /// [`ClientMsg::SetBoating`]），下筏永遠放行。廣播給所有人，讓其他玩家也看得到誰正乘筏。
     #[serde(default)]
     boating: bool,
+    /// 染色頭巾 v1（自主提案切片，ROADMAP 1023）：此刻戴著哪頂頭巾的物品 id（`None` = 沒戴）。
+    /// **additive 欄位**——舊前端解析 JSON 時本就會忽略陌生欄位，零協議破壞；預設 `None`
+    /// 不序列化省頻寬。伺服器權威：只有 `SetHat{item_id:Some(id)}` 通過真持有背包驗證才會
+    /// 設值（見 [`ClientMsg::SetHat`]、`voxel_craft::can_wear_hat`），脫下（`None`）永遠放行。
+    /// 廣播給所有人，讓其他玩家也看得到你戴著哪頂頭巾。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hat: Option<u8>,
     /// 上一次 `tick_pathwear` 取樣時這位玩家所在的地面格 (x,z)（居民踏出來的小徑 v3：
     /// 玩家的腳步也算數）。純伺服器內部節拍狀態，不廣播（`#[serde(skip)]`）、不影響協議。
     #[serde(skip)]
@@ -657,6 +666,10 @@ struct VoxelResident {
     /// 哼歌冷卻倒數（秒，ROADMAP 788）：一次哼歌後設 [`vhum::HUM_COOLDOWN_SECS`]，歸零前不再哼——
     /// 心情正好時偶爾滿溢一段旋律、不洗版。各居民初始錯開。純記憶體、重啟歸零。
     humming_cooldown: f32,
+    /// 慶典日歡慶泡泡冷卻倒數（秒，村莊慶典日 v1）：一次歡慶後設
+    /// [`vfestival::FESTIVAL_BUBBLE_COOLDOWN_SECS`]，歸零前不再冒——慶典日整天都在，偶爾一拍才有
+    /// 節慶感、不洗版。各居民初始錯開。純記憶體、重啟歸零。
+    festival_cooldown: f32,
     /// 孩子玩耍冷卻倒數（秒，孩子的模樣與玩耍時光 v1）：一次玩耍後設
     /// [`vchild::PLAY_COOLDOWN_SECS`]，歸零前不再觸發——偶爾一拍才有童趣、不洗版。
     /// 成年居民恆不觸發（`is_child` 判定為假），此欄位對他們純粹是不會被用到的閒置遞減。
@@ -917,6 +930,11 @@ struct VoxelResident {
     /// 家居擺設嚮往冷卻倒數（秒，自主提案切片）：> 0 表示最近才因為走近鄰居家、看到自己
     /// 家還沒有的擺設而心生嚮往過，暫不再觸發，讓「羨慕鄰居家的擺設」稀有有份量、天然防洗版。
     decor_envy_cd: f32,
+    /// 染色頭巾 v1（自主提案切片，ROADMAP 1023）：收到玩家送的頭巾（`Gift`）後就一直戴著哪頂
+    /// （物品 id，`None` = 沒戴），世界第一次能一眼看出「這位收過我的心意」。純記憶體、重啟歸零
+    /// （比照全庫其餘 cosmetic/暫態欄位慣例，如 `stroll_partner`／`custom_meet`）；只由 Gift
+    /// handler 寫入，居民自己不會摘下。
+    hat: Option<u8>,
 }
 
 /// 環境生物的種類（水中游魚 v1，ROADMAP 848 起 wildlife 系統擴充為可延伸的多種類；
@@ -1108,6 +1126,10 @@ struct ResidentView {
     /// additive 欄位，舊前端安全忽略；預設省略序列化以節省頻寬時一律視為 `false`（成年）。
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     is_child: bool,
+    /// 染色頭巾 v1（自主提案切片，ROADMAP 1023）：這位居民此刻戴著哪頂頭巾的物品 id
+    /// （`None` = 沒戴，不序列化省頻寬）。additive 欄位，舊前端安全忽略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hat: Option<u8>,
 }
 
 /// 環境生物序列化視圖（廣播給客戶端渲染：位置/朝向/種類。野兔 v1 ROADMAP 847
@@ -2167,6 +2189,8 @@ fn build_resident(
             keepsake_recall_cooldown: 90.0 + i as f32 * 40.0,
             // 哼歌 v1（ROADMAP 788）：哼歌冷卻各自錯開，避免大家同時哼起來。
             humming_cooldown: 60.0 + i as f32 * 35.0,
+            // 村莊慶典日 v1：歡慶泡泡冷卻各自錯開，避免慶典日一開始大家同時冒泡泡。
+            festival_cooldown: 80.0 + i as f32 * 42.0,
             // 孩子的模樣與玩耍時光 v1：玩耍冷卻各自錯開（成年居民恆不觸發，錯開只是保守慣例）。
             child_play_cooldown: 50.0 + i as f32 * 30.0,
             // 居民長程自主專案 v1：首次「回來添一塊」的節拍大幅錯開，讓不同居民的大夢在不同時間
@@ -2293,6 +2317,8 @@ fn build_resident(
             // 家居擺設 v1（自主提案切片）：入場沒有嚮往；首次冷卻各自錯開，避免啟動後一群
             // 居民同時路過鄰居家齊聲心生嚮往。
             decor_envy_cd: vdecor::ENVY_COOLDOWN_SECS * 0.5 + i as f32 * 60.0,
+            // 染色頭巾 v1（自主提案切片，ROADMAP 1023）：入場沒戴任何頭巾，等玩家送禮才戴上。
+            hat: None,
     }
 }
 
@@ -2515,6 +2541,10 @@ struct VoxelHub {
     /// 推算當前季節，與此比對——不同即「換季」，設下方一次性旗標並上一則城鎮動態。純記憶體、重啟
     /// 從初春重新流轉（比照天氣／彩虹狀態）。
     last_season: RwLock<vseason::Season>,
+    /// 上一次播報過「今天是慶典日」的世界日數（村莊慶典日 v1）：`Some(day)` = 這個 day 已播過開場
+    /// 動態，同一慶典日不重播；下個慶典日 `day` 不同即再播一次。純記憶體、重啟歸零（重啟後撞上
+    /// 慶典日會再播一次開場動態，無害，比照換季/滿月夜等世界暫態慣例）。
+    last_festival_day_announced: RwLock<Option<u64>>,
     /// 冬季飄雪 v1（ROADMAP 900）：季內初雪偵測狀態機（純記憶體，比照天氣／季節等世界暫態，
     /// 重啟歸零）。每輪 tick_residents 依「當前是否冬季 ∧ 是否下雨」推進，偵測本冬第一次飄雪。
     snow_tracker: RwLock<vsnow::SnowSeasonTracker>,
@@ -3599,7 +3629,7 @@ fn hub() -> &'static VoxelHub {
             // 啟動時從 data/voxel_social.jsonl 載回居民社交記憶（重啟後仍記得聽到過什麼）。
             social: RwLock::new(SocialStore::from_entries(vrel::load_social())),
             // 啟動時從 data/voxel_builds.jsonl 載回未完成的建造計畫（重啟後繼續蓋）。
-            builds: RwLock::new(BuildStore::from_entries(vbuild::load_builds())),
+            builds: RwLock::new(vbuild::load_build_store_compacted()),
             // 啟動時從 data/voxel_goals.jsonl 載回已完成目標（重啟後不重蓋蓋過的）。
             goals: RwLock::new(GoalStore::from_entries(vskill::load_goals())),
             // 村莊系統 v1：啟動時從 data/voxel_village_plots.jsonl 載回地塊認領（重啟後仍記得誰住哪塊）。
@@ -3707,6 +3737,8 @@ fn hub() -> &'static VoxelHub {
             was_full_moon_night: RwLock::new(false),
             // 季節輪替 v1（ROADMAP 798）：啟動時世界日數為 0 ＝初春；之後靠 tick_residents 逐日推進換季。
             last_season: RwLock::new(vseason::season_for_day(0)),
+            // 村莊慶典日 v1：啟動時尚未播過任何一次慶典日開場動態；之後靠 tick_residents 逐 tick 推進。
+            last_festival_day_announced: RwLock::new(None),
             // 冬季飄雪 v1（ROADMAP 900）：啟動時尚未飄雪、本冬未播初雪；之後靠 tick_residents 逐 tick 推進。
             snow_tracker: RwLock::new(vsnow::SnowSeasonTracker::new()),
             // 居民堆雪人 v1（ROADMAP 918）：啟動時世界上沒有任何雪人（純記憶體、重啟即空）。
@@ -3800,7 +3832,7 @@ fn players_snapshot_json() -> String {
     // 同時收集心情補助快照（ROADMAP 681），供後續 mood_map 計算套用。
     // 同時收集睡眠快照（ROADMAP 739）：睡著的居民名牌旁改顯示 💤，蓋過一般心情 emoji。
     let (resident_snaps, snapshot_mood_boosts, snapshot_asleep): (
-        Vec<(String, &'static str, f32, f32, f32, f32, String, u64)>,
+        Vec<(String, &'static str, f32, f32, f32, f32, String, u64, Option<u8>)>,
         HashMap<String, bool>,
         HashMap<String, bool>,
     ) = {
@@ -3808,7 +3840,7 @@ fn players_snapshot_json() -> String {
         let snaps = rs
             .iter()
             .map(|r| {
-                (r.id.clone(), r.name, r.body.x, r.body.y, r.body.z, r.yaw, r.say.clone(), r.birth_unix)
+                (r.id.clone(), r.name, r.body.x, r.body.y, r.body.z, r.yaw, r.say.clone(), r.birth_unix, r.hat)
             })
             .collect();
         let boosts: HashMap<String, bool> =
@@ -3888,7 +3920,7 @@ fn players_snapshot_json() -> String {
         let des = hub().desires.read().unwrap();
         resident_snaps
             .into_iter()
-            .map(|(id, name, x, y, z, yaw, say, birth_unix)| {
+            .map(|(id, name, x, y, z, yaw, say, birth_unix, hat)| {
                 let mood = mood_map.get(&id).cloned();
                 let is_child = vchild::is_child(birth_unix, child_now);
                 ResidentView {
@@ -3902,6 +3934,7 @@ fn players_snapshot_json() -> String {
                     yaw,
                     say,
                     is_child,
+                    hat,
                 }
             })
             .collect()
@@ -3931,6 +3964,12 @@ fn players_snapshot_json() -> String {
     let (season, season_day): (&str, u64) = {
         let day = hub().world_time.read().unwrap().days_elapsed();
         (vseason::season_for_day(day).as_str(), vseason::day_of_season(day))
+    };
+    // 村莊慶典日 v1（自主提案切片，ROADMAP 1022，短鎖、不巢狀）：帶給前端今天是不是慶典日，
+    // HUD 顯示一枚小徽章＋首次轉為 true 時彈一句提示。純唯讀新增欄位，舊前端安全忽略、零協議破壞。
+    let festival: bool = {
+        let day = hub().world_time.read().unwrap().days_elapsed();
+        vfestival::is_festival_day(day)
     };
     // 月有圓缺 v1（ROADMAP 946，短鎖、不巢狀）：由世界時鐘現算此刻月相受光比例（0＝新月、1＝滿月），
     // 隨快照帶給前端把那輪月削成當夜的相位（弦月／細月）。純唯讀新增欄位，舊前端安全忽略、零協議破壞。
@@ -3991,6 +4030,7 @@ fn players_snapshot_json() -> String {
         "migration_kind": migration_kind,
         "season": season,
         "season_day": season_day,
+        "festival": festival,
         "moon_illum": moon_illum,
     }).to_string()
 }
@@ -4200,6 +4240,13 @@ enum ClientMsg {
     /// 前端據此把水平移動速度乘上固定倍率（純視覺+移動手感，非玩家可調，零庫存消耗）。
     #[serde(rename = "set_mounted")]
     SetMounted { animal_id: String, mounted: bool },
+    /// 染色頭巾 v1（自主提案切片，ROADMAP 1023）：戴上／脫下一頂頭巾。`item_id=Some(id)`
+    /// （戴上）時伺服器**必查該 id 真的是頭巾**（`voxel_craft::is_hat`）**＋真實背包持有** ≥ 1
+    /// （比照 `SetRiding`／`SetPerforming`／`SetBoating` 的持有驗證手法）才放行，不信客戶端
+    /// 自報；`item_id=None`（脫下）永遠放行，不需驗證。成功後翻轉 `VoxelPlayer::hat` 並隨
+    /// `players` 廣播，讓其他人也看得到你戴著哪頂頭巾（純視覺 cosmetic，不影響任何判定）。
+    #[serde(rename = "set_hat")]
+    SetHat { item_id: Option<u8> },
     /// 居民交易 v1：向指定居民請求以物易物（ROADMAP 670）。
     /// 伺服器回 `trade_offer`，玩家再傳 TradeAccept 接受；提案 30 秒後自動過期。
     #[serde(rename = "trade_request")]
@@ -5251,6 +5298,7 @@ async fn handle_socket(
                 riding: false,
                 performing: false,
                 boating: false,
+                hat: None,
                 last_step_cell: None,
             },
         );
@@ -6586,6 +6634,42 @@ async fn handle_socket(
                                     .map(|(n, _, _, _)| n.as_str())
                                     .take(vcoop_gather::MAX_PARTNERS)
                                     .collect();
+                                // 摯友協作加成 v1（自主提案切片，接續 985 玩家羈絆帳本；換維度回應
+                                // 「羈絆的深度該不該有實際後果」——查詢用這一刻升級「前」已經建立好
+                                // 的層級，本次互動就算剛好升到摯友也不算數，避免同一 tick 又觸發又
+                                // 加成）。伺服器權威判定（讀既有帳本），玩家無從自報。
+                                let confidant_names: Vec<&str> = {
+                                    let bonds = hub().player_bonds.read().unwrap();
+                                    nearby_partners
+                                        .iter()
+                                        .copied()
+                                        .filter(|p| bonds.tier_of(&name, p) == vplayerbond::PlayerBondTier::Confidant)
+                                        .collect()
+                                }; // player_bonds 讀鎖釋放
+                                let confidant_bonus = vplayerbond::confidant_yield_bonus(confidant_names.len());
+                                if let (Some(&first), true) = (confidant_names.first(), confidant_bonus > 0) {
+                                    let entry = hub().inventory.write().unwrap().give(&name, bid, confidant_bonus);
+                                    vinv::append_inv(&entry);
+                                    let new_count = hub().inventory.read().unwrap().count(&name, bid);
+                                    let _ = out_tx.try_send(Message::Text(
+                                        serde_json::json!({
+                                            "t": "inv_update",
+                                            "block_id": bid,
+                                            "count": new_count
+                                        })
+                                        .to_string(),
+                                    ));
+                                    let _ = out_tx.try_send(Message::Text(
+                                        serde_json::json!({
+                                            "t": "bond_bonus",
+                                            "block_id": bid,
+                                            "count": confidant_bonus,
+                                            "line": vplayerbond::confidant_bonus_toast_line(first)
+                                        })
+                                        .to_string(),
+                                    ));
+                                }
+
                                 for partner in nearby_partners {
                                     record_and_broadcast_player_bond(&name, partner, &out_tx);
                                 }
@@ -9169,6 +9253,40 @@ async fn handle_socket(
                     serde_json::json!({ "t": "boating_ok", "boating": boating }).to_string(),
                 ));
             }
+            // ── 染色頭巾 v1（自主提案切片，ROADMAP 1023）：戴上／脫下頭巾 ─────────────────
+            Ok(ClientMsg::SetHat { item_id }) => {
+                // 濫用防護：戴上（Some）必查 id 真的是頭巾＋真實背包持有 ≥1，比照 SetRiding／
+                // SetPerforming／SetBoating 的持有驗證手法（不信客戶端自報）；脫下（None）
+                // 永遠放行，不需驗證。零自由文字、零 LLM、零對外端點。
+                let allow = match item_id {
+                    Some(id) => {
+                        let has_item =
+                            vcraft::is_hat(id) && hub().inventory.read().unwrap().count(&name, id) >= 1;
+                        vcraft::can_wear_hat(has_item)
+                    }
+                    None => true,
+                };
+                if !allow {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({
+                            "t": "hat_fail",
+                            "reason": "沒有這頂頭巾——先合成一頂吧（背包 2×2：2 葉片 + 1 野花）"
+                        }).to_string(),
+                    ));
+                    continue;
+                }
+                {
+                    let mut players = hub().players.write().unwrap();
+                    if let Some(p) = players.get_mut(&my_id) {
+                        p.hat = item_id;
+                    }
+                } // players 寫鎖釋放
+                // 廣播讓所有在場玩家立即看到（含自己）。
+                broadcast_players();
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "hat_ok", "item_id": item_id }).to_string(),
+                ));
+            }
             // ── 騎乘馴養夥伴 v1（自主提案切片，ROADMAP 1021）：騎上／下馬指定的動物 ──────
             Ok(ClientMsg::SetMounted { animal_id, mounted }) => {
                 // 鎖序：players 讀位置 → wildlife 單次寫鎖內查驗＋落地（查驗與翻轉同一把鎖，
@@ -9610,6 +9728,10 @@ async fn handle_socket(
                 // 建築藍圖 v1（自主提案）：這份禮是不是一張藍圖？藍圖直接指定她接下來蓋哪一種建物
                 // （非猜關鍵詞），下方 5c) 據此改寫她的心願。
                 let blueprint_kind_hit = vblueprint::blueprint_kind(item_id);
+                // 染色頭巾 v1（自主提案切片，ROADMAP 1023）：這份禮是不是一頂頭巾？是的話她收下
+                // 後會一直戴著（下方 8) residents 寫鎖內設 `r.hat`），世界第一次能一眼看出
+                // 「這位收過我的心意」。
+                let hat_gift_hit = vcraft::is_hat(item_id);
                 // 3) 驗觸及範圍（水平 XZ）。
                 let dx = px - rx;
                 let dz = pz - rz;
@@ -9795,6 +9917,9 @@ async fn handle_socket(
                     } else {
                         vdecor::display_thanks_line(iname, pick)
                     }
+                } else if hat_gift_hit {
+                    // 染色頭巾 v1：世界第一件穿戴外觀，她收下後會一直戴著——比一般贈禮更雀躍的專屬道謝。
+                    vwear::hat_gift_thanks_line(iname, pick)
                 } else if vgift::is_treasure_gift(item_id) {
                     vgift::treasure_gift_thanks_line(&name, affinity, pick)
                 } else if vgift::is_cave_treasure_gift(item_id) {
@@ -9856,6 +9981,11 @@ async fn handle_socket(
                         if soup_care_hit {
                             r.illness_severity =
                                 villness::apply_care(r.illness_severity, villness::SOUP_CARE_BOOST);
+                        }
+                        // 染色頭巾 v1（自主提案切片，ROADMAP 1023）：這份禮是頭巾——她收下後就一直
+                        // 戴著（換頭巾＝再送一頂新的直接覆蓋），世界第一次能一眼看出「這位收過我的心意」。
+                        if hat_gift_hit {
+                            r.hat = Some(item_id);
                         }
                     }
                 }
@@ -9924,6 +10054,13 @@ async fn handle_socket(
                             &vdecor::display_feed_line(rname, decor_name),
                         );
                     }
+                } else if hat_gift_hit {
+                    // 染色頭巾 v1：世界第一件穿戴外觀——讓不在場的玩家回來也讀得到「誰戴上了什麼」。
+                    vfeed::append_feed(
+                        "穿戴外觀",
+                        rname,
+                        &vwear::hat_gift_feed_line(rname, &name, iname),
+                    );
                 } else {
                     vfeed::append_feed(
                         "贈禮",
@@ -17615,6 +17752,25 @@ fn tick_residents(dt: f32) {
             vmigration::migration_feed_detail(kind),
         );
     }
+    // 村莊慶典日 v1（自主提案切片，ROADMAP 1022）：世界時鐘每隔 `FESTIVAL_INTERVAL_DAYS` 天迎來一個
+    // 慶典日，那一天第一輪 tick 上一則城鎮動態（不在線上的玩家回來也讀得到），之後同一天不重播。
+    // 短鎖即釋、不巢狀（守死鎖鐵律）；Feed append 走鎖外。
+    let world_day = hub().world_time.read().unwrap().days_elapsed();
+    let is_festival_day = vfestival::is_festival_day(world_day);
+    let festival_just_began = if is_festival_day {
+        let mut last = hub().last_festival_day_announced.write().unwrap();
+        if *last != Some(world_day) {
+            *last = Some(world_day);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if festival_just_began {
+        vfeed::append_feed("慶典", "乙太方界", vfestival::festival_begin_feed_line());
+    }
     // 秋收囤糧過冬 v1（自主提案）：每輪把「當前是否秋季」餵給初囤追蹤器（短寫鎖即釋、不巢狀）——
     // 一離開秋天就重置本秋旗標，讓下一個秋天能再播一次「秋收開始囤糧」的城鎮時刻。
     hub()
@@ -20219,6 +20375,10 @@ fn tick_residents(dt: f32) {
             if r.humming_cooldown > 0.0 {
                 r.humming_cooldown -= dt;
             }
+            // 村莊慶典日 v1：歡慶泡泡冷卻遞減（純記憶體、每 tick 一次）。
+            if r.festival_cooldown > 0.0 {
+                r.festival_cooldown -= dt;
+            }
             // 孩子的模樣與玩耍時光 v1：玩耍冷卻遞減（純記憶體、每 tick 一次）。
             if r.child_play_cooldown > 0.0 {
                 r.child_play_cooldown -= dt;
@@ -21569,6 +21729,24 @@ fn tick_residents(dt: f32) {
                     r.say = vhum::hum_solo_line(pick);
                     r.say_timer = SAY_SECS;
                 }
+            }
+
+            // 村莊慶典日 v1（自主提案切片，ROADMAP 1022）：慶典日整天、say 為空、醒著、手邊沒正事
+            // 的居民，偶爾忍不住顯露歡慶的心情（頭頂泡泡——前端偵測 say 以 🎉/🎊 起頭）。長冷卻＋
+            // 機率＝天然節流，比照哼歌手法但零記憶／零 Feed（純氛圍點綴，不需要玩家在場）。
+            // 鎖序：純讀寫居民自身欄位，無鎖外落地，守死鎖鐵律。
+            if is_festival_day
+                && r.say.is_empty()
+                && !r.asleep
+                && r.festival_cooldown <= 0.0
+                && r.pilgrimage.is_none()
+                && r.expedition.is_none()
+                && vfestival::should_celebrate(true, true, true, rand::random::<f32>())
+            {
+                r.festival_cooldown = vfestival::FESTIVAL_BUBBLE_COOLDOWN_SECS;
+                let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
+                r.say = vfestival::festival_bubble_line(pick).to_string();
+                r.say_timer = SAY_SECS;
             }
 
             // 乙太營火 v1：入夜後，閒著、醒著、且恰好路過玩家蓋的某座營火附近時，居民偶爾駐足
@@ -31361,6 +31539,25 @@ mod tests {
         }
     }
 
+    /// 染色頭巾 v1（ROADMAP 1023，自主提案切片）：多詞 variant 鎖死
+    /// `#[serde(rename="set_hat")]`，防止重蹈 `chest_and_trade_tags_match_frontend` 註解描述的
+    /// 覆轍——`rename_all="lowercase"` 不分詞會把 `SetHat` 期待成無底線的 `"sethat"`，
+    /// 與前端 `web/voxel/main.js` 實際送的 `"set_hat"` 對不上、悄悄解析失敗零錯誤訊息。
+    #[test]
+    fn set_hat_tag_matches_frontend() {
+        let on: ClientMsg =
+            serde_json::from_str(r#"{"t":"set_hat","item_id":124}"#).unwrap();
+        match on {
+            ClientMsg::SetHat { item_id } => assert_eq!(item_id, Some(124)),
+            _ => panic!("應解析成 SetHat"),
+        }
+        let off: ClientMsg = serde_json::from_str(r#"{"t":"set_hat","item_id":null}"#).unwrap();
+        match off {
+            ClientMsg::SetHat { item_id } => assert_eq!(item_id, None),
+            _ => panic!("應解析成 SetHat"),
+        }
+    }
+
     /// 附近居民貨品一覽 v1（ROADMAP 1013）：多詞 variant 鎖死 `#[serde(rename="nearby_trades")]`
     /// （前車之鑑見上一條 `chest_and_trade_tags_match_frontend`，同款坑）。
     #[test]
@@ -31707,6 +31904,7 @@ mod tests {
             riding: false,
             performing: false,
             boating: false,
+            hat: None,
             last_step_cell: None,
         }
     }
