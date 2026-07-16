@@ -1,6 +1,12 @@
 //! 乙太方界·玩家羈絆帳本 v1（voxel-player-bond，自主提案切片，ROADMAP 985；接續 984，
 //! reviewer 明令離開遠征首領／馳援維度，回主軸挑一個內聚新維度）。
 //!
+//! **v2 追加（自主提案切片，本輪 PR）：摯友協作加成**——v1 讓玩家↔玩家的交情第一次「被
+//! 世界記住」（升級提示＋動態牆），但交情再深，日常互動的結果仍與陌生人無異，是「記憶→
+//! 行為」這個北極星原則唯一還沒接上玩家↔玩家這條線的地方。本刀補上 [`confidant_yield_bonus`]：
+//! 並肩協作範圍內每有一位已是摯友層級的旅伴，額外多收一份材料——讓「處出交情」這件事
+//! 第一次真的改寫互動結果，而不只是一句溫情的提示。
+//!
 //! **真缺口**：`voxel_coop_gather.rs`（827 並肩協作）與 `voxel_dropitem.rs`（828 掉落物
 //! 轉手）自己的模組頭註解都白紙黑字寫著「玩家↔玩家至今只有兩三種互動」——但這兩種互動
 //! 都是**瞬間的、不留痕跡**：並肩協作只在挖礦那一擊當下算一次加成，收穫進背包後什麼都
@@ -173,6 +179,28 @@ impl PlayerBonds {
     pub fn tick_count(&self, a: &str, b: &str) -> u32 {
         self.ticks.get(&pair_key(a, b)).copied().unwrap_or(0)
     }
+}
+
+// ── 摯友協作加成（自主提案切片，接續本模組 985；換維度回應「羈絆的深度該不該有實際
+// 後果」——居民彼此的交情早已改寫互動本身（`voxel_bonds` 熟識度調整問候語），玩家↔玩家
+// 的交情至今卻只是一句升級提示與動態牆記錄，交情再深，日常互動的結果仍與陌生人無異）───
+
+/// 每有一位摯友層級的協作旅伴，並肩採集額外多收的材料量。
+pub const CONFIDANT_BONUS_QTY: u32 = 1;
+
+/// 封頂人數：協作範圍內摯友再多，加成也不無限疊加（防洗刷）。
+pub const MAX_CONFIDANT_BONUS_PARTNERS: usize = 2;
+
+/// 純函式：協作範圍內有幾位「摯友」層級的旅伴 → 額外掉落量（封頂）。
+/// 與 827 並肩協作的「人數」加成各自獨立疊加——那份加成獎勵「人多」，
+/// 本刀獎勵「交情深」，兩者判斷順序互不影響。
+pub fn confidant_yield_bonus(confidant_count: usize) -> u32 {
+    confidant_count.min(MAX_CONFIDANT_BONUS_PARTNERS) as u32 * CONFIDANT_BONUS_QTY
+}
+
+/// 摯友加成觸發時的回饋句（確定性、非 LLM）。
+pub fn confidant_bonus_toast_line(other: &str) -> String {
+    format!("🤝 你和摯友 {other} 默契十足，多收了一份！")
 }
 
 // ── 台詞（確定性、零 LLM）─────────────────────────────────────────────────────
@@ -399,5 +427,29 @@ mod tests {
             assert!(line.contains("小明"));
             assert!(line.contains("小美"));
         }
+    }
+
+    #[test]
+    fn confidant_yield_bonus_zero_when_no_confidant() {
+        assert_eq!(confidant_yield_bonus(0), 0);
+    }
+
+    #[test]
+    fn confidant_yield_bonus_scales_with_count() {
+        assert_eq!(confidant_yield_bonus(1), CONFIDANT_BONUS_QTY);
+        assert_eq!(confidant_yield_bonus(2), CONFIDANT_BONUS_QTY * 2);
+    }
+
+    #[test]
+    fn confidant_yield_bonus_caps_at_max_partners() {
+        let capped = confidant_yield_bonus(MAX_CONFIDANT_BONUS_PARTNERS);
+        assert_eq!(confidant_yield_bonus(MAX_CONFIDANT_BONUS_PARTNERS + 10), capped);
+    }
+
+    #[test]
+    fn confidant_bonus_toast_line_mentions_name_and_nonempty() {
+        let line = confidant_bonus_toast_line("小美");
+        assert!(!line.is_empty());
+        assert!(line.contains("小美"));
     }
 }

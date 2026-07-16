@@ -6634,6 +6634,42 @@ async fn handle_socket(
                                     .map(|(n, _, _, _)| n.as_str())
                                     .take(vcoop_gather::MAX_PARTNERS)
                                     .collect();
+                                // 摯友協作加成 v1（自主提案切片，接續 985 玩家羈絆帳本；換維度回應
+                                // 「羈絆的深度該不該有實際後果」——查詢用這一刻升級「前」已經建立好
+                                // 的層級，本次互動就算剛好升到摯友也不算數，避免同一 tick 又觸發又
+                                // 加成）。伺服器權威判定（讀既有帳本），玩家無從自報。
+                                let confidant_names: Vec<&str> = {
+                                    let bonds = hub().player_bonds.read().unwrap();
+                                    nearby_partners
+                                        .iter()
+                                        .copied()
+                                        .filter(|p| bonds.tier_of(&name, p) == vplayerbond::PlayerBondTier::Confidant)
+                                        .collect()
+                                }; // player_bonds 讀鎖釋放
+                                let confidant_bonus = vplayerbond::confidant_yield_bonus(confidant_names.len());
+                                if let (Some(&first), true) = (confidant_names.first(), confidant_bonus > 0) {
+                                    let entry = hub().inventory.write().unwrap().give(&name, bid, confidant_bonus);
+                                    vinv::append_inv(&entry);
+                                    let new_count = hub().inventory.read().unwrap().count(&name, bid);
+                                    let _ = out_tx.try_send(Message::Text(
+                                        serde_json::json!({
+                                            "t": "inv_update",
+                                            "block_id": bid,
+                                            "count": new_count
+                                        })
+                                        .to_string(),
+                                    ));
+                                    let _ = out_tx.try_send(Message::Text(
+                                        serde_json::json!({
+                                            "t": "bond_bonus",
+                                            "block_id": bid,
+                                            "count": confidant_bonus,
+                                            "line": vplayerbond::confidant_bonus_toast_line(first)
+                                        })
+                                        .to_string(),
+                                    ));
+                                }
+
                                 for partner in nearby_partners {
                                     record_and_broadcast_player_bond(&name, partner, &out_tx);
                                 }
