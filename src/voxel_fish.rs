@@ -13,6 +13,17 @@
 //!
 //! **刻意的範圍收斂**：純點綴、無 AI 大腦（零 LLM）、不影響釣魚機率/機制、無記憶、無持久化
 //! （純記憶體，重啟於固定家域點重新生成，比照 `voxel_wildlife` 慣例）。
+//!
+//! ## 雨天魚群振奮 v1（自主提案切片，ROADMAP 1021）
+//! 天氣（700/701/780/841/1020）至今碰過農地、居民、彩虹、垂釣機率、陸地野兔——唯獨水中
+//! 游魚這一種環境生物，從沒對天氣有過任何反應：不管晴雨，魚永遠用同一個速度、同一圈
+//! 半徑悠游，彷彿水面上下著雨這件事跟牠們毫無關係。**與 1020 野兔刻意方向相反**：野兔是
+//! 陸地生物，淋雨不適、下雨時就地蜷縮躲避、動得更少；魚本就泡在水裡，雨滴打在水面淋不
+//! 到牠們，反而更像現實裡的魚——下雨時游得更起勁、也更愛擠在一塊。世界第一次讓「陸」與
+//! 「水」對同一場雨長出**方向相反**的兩種反應，而非同一招換皮重貼。也與 841（雨天垂釣，
+//! 影響玩家拋竿收竿的**機率**、玩家看不見魚本身）刻意區隔：本節動的是魚**看得見的悠游
+//! 動作**（速度＋聚攏半徑），兩者互不重疊。純加法：不新增任何持久化欄位，兩則純函式吃
+//! 既有的 `raining` 快照即時算出，重啟／斷線零風險。
 
 use crate::voxel::{self, SEA_LEVEL};
 
@@ -85,19 +96,50 @@ pub fn clamp_swim_y(wx: i32, wz: i32, y: f32) -> f32 {
 
 /// 純水平移動一步、無重力/無陸地碰撞（魚浮在水中，不需要陸地那套 AABB 碰撞——
 /// 鏡像 `voxel_residents::step_toward` 的水平部分，但省去重力與實心方塊檢查）。
+/// `speed` 由呼叫端傳入（晴天傳 [`SWIM_SPEED`]、雨天傳 [`effective_swim_speed`] 的結果），
 /// 回傳新座標與是否已抵達（供呼叫端挑下一個閒晃目標）。純函式、確定性、可測。
-pub fn swim_step(x: f32, z: f32, tx: f32, tz: f32, dt: f32) -> (f32, f32, bool) {
+pub fn swim_step(x: f32, z: f32, tx: f32, tz: f32, dt: f32, speed: f32) -> (f32, f32, bool) {
     let dx = tx - x;
     let dz = tz - z;
     let dist = (dx * dx + dz * dz).sqrt();
     if dist < ARRIVE_DIST {
         return (x, z, true);
     }
-    let step = SWIM_SPEED * dt;
+    let step = speed * dt;
     if step >= dist {
         (tx, tz, true)
     } else {
         (x + dx / dist * step, z + dz / dist * step, false)
+    }
+}
+
+// ── 雨天魚群振奮 v1（自主提案切片，ROADMAP 1021）─────────────────────────────
+
+/// 下雨時魚悠游速度的加成倍率——比平常更起勁地游動（陸地野兔遇雨變慢，水中魚遇雨反而更快，
+/// 刻意方向相反）。
+pub const RAIN_SWIM_SPEED_MULT: f32 = 1.6;
+
+/// 依當前是否下雨，回傳這一刻魚該用的悠游速度（方塊/秒）。純函式、確定性，供 `voxel_ws.rs`
+/// 每次呼叫 [`swim_step`] 前現算一次。
+pub fn effective_swim_speed(raining: bool) -> f32 {
+    if raining {
+        SWIM_SPEED * RAIN_SWIM_SPEED_MULT
+    } else {
+        SWIM_SPEED
+    }
+}
+
+/// 下雨時魚群閒晃的聚攏半徑上限（方塊）——比平常（[`WANDER_MAX_R`]）收斂許多，讓魚看起來
+/// 擠得更緊，像被雨聲聚攏成一群，而非各自散開悠游。下限（[`WANDER_MIN_R`]）不變，魚不會被
+/// 迫貼死不動。
+pub const RAIN_WANDER_MAX_R: f32 = 1.6;
+
+/// 依當前是否下雨，回傳這一刻挑選新閒晃目標時該用的半徑上限（方塊）。純函式、確定性。
+pub fn effective_wander_max_r(raining: bool) -> f32 {
+    if raining {
+        RAIN_WANDER_MAX_R
+    } else {
+        WANDER_MAX_R
     }
 }
 
@@ -159,14 +201,14 @@ mod tests {
 
     #[test]
     fn swim_step_arrives_when_already_close() {
-        let (x, z, reached) = swim_step(0.0, 0.0, 0.1, 0.0, 1.0);
+        let (x, z, reached) = swim_step(0.0, 0.0, 0.1, 0.0, 1.0, SWIM_SPEED);
         assert!(reached);
         assert_eq!((x, z), (0.0, 0.0)); // 已抵達不移動，交回呼叫端挑下一個目標
     }
 
     #[test]
     fn swim_step_moves_toward_target_without_overshoot() {
-        let (x, z, reached) = swim_step(0.0, 0.0, 10.0, 0.0, 0.1);
+        let (x, z, reached) = swim_step(0.0, 0.0, 10.0, 0.0, 0.1, SWIM_SPEED);
         assert!(!reached);
         assert!((x - SWIM_SPEED * 0.1).abs() < 1e-4);
         assert_eq!(z, 0.0);
@@ -174,17 +216,51 @@ mod tests {
 
     #[test]
     fn swim_step_snaps_to_target_when_dt_overshoots() {
-        let (x, z, reached) = swim_step(0.0, 0.0, 0.5, 0.0, 10.0); // 大 dt，一步跨過終點
+        let (x, z, reached) = swim_step(0.0, 0.0, 0.5, 0.0, 10.0, SWIM_SPEED); // 大 dt，一步跨過終點
         assert!(reached);
         assert_eq!((x, z), (0.5, 0.0));
     }
 
     #[test]
     fn swim_step_diagonal_direction_is_normalized() {
-        let (x, z, reached) = swim_step(0.0, 0.0, 3.0, 4.0, 1.0); // 3-4-5 三角形，方便驗證單位向量
+        let (x, z, reached) = swim_step(0.0, 0.0, 3.0, 4.0, 1.0, SWIM_SPEED); // 3-4-5 三角形，方便驗證單位向量
         assert!(!reached);
         let moved = (x * x + z * z).sqrt();
         assert!((moved - SWIM_SPEED).abs() < 1e-3);
         assert!((x / z - 3.0 / 4.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn swim_step_respects_custom_speed() {
+        // 傳入雨天加成後的速度，位移量應依新速度而非固定的 SWIM_SPEED 縮放。
+        let speed = effective_swim_speed(true);
+        let (x, z, reached) = swim_step(0.0, 0.0, 10.0, 0.0, 0.1, speed);
+        assert!(!reached);
+        assert!((x - speed * 0.1).abs() < 1e-4);
+        assert_eq!(z, 0.0);
+    }
+
+    #[test]
+    fn effective_swim_speed_faster_when_raining() {
+        assert_eq!(effective_swim_speed(true), SWIM_SPEED * RAIN_SWIM_SPEED_MULT);
+        assert!(effective_swim_speed(true) > SWIM_SPEED);
+    }
+
+    #[test]
+    fn effective_swim_speed_normal_when_dry() {
+        assert_eq!(effective_swim_speed(false), SWIM_SPEED);
+    }
+
+    #[test]
+    fn effective_wander_max_r_tighter_when_raining() {
+        assert_eq!(effective_wander_max_r(true), RAIN_WANDER_MAX_R);
+        assert!(effective_wander_max_r(true) < WANDER_MAX_R);
+        // 收斂後的上限仍必須大於下限，選半徑的算式才不會產生負區間。
+        assert!(RAIN_WANDER_MAX_R > WANDER_MIN_R);
+    }
+
+    #[test]
+    fn effective_wander_max_r_normal_when_dry() {
+        assert_eq!(effective_wander_max_r(false), WANDER_MAX_R);
     }
 }

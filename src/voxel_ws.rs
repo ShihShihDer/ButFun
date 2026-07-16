@@ -15223,17 +15223,22 @@ fn tick_wildlife(dt: f32) {
             }
             WildlifeKind::Fish => {
                 // 魚不怕人：無視玩家、無重力/無陸地碰撞——只在自己的水塘裡悠游。
+                // 雨天魚群振奮 v1（ROADMAP 1021）：下雨時游得更快、聚攏半徑更緊
+                // （與野兔遇雨變慢、就地躲雨方向相反——魚泡在水裡，雨天反而更起勁）。
                 if a.wait_timer > 0.0 {
                     a.wait_timer -= dt;
                 } else {
-                    let (nx, nz, reached) =
-                        vfishlife::swim_step(a.body.x, a.body.z, a.target_x, a.target_z, dt);
+                    let (nx, nz, reached) = vfishlife::swim_step(
+                        a.body.x, a.body.z, a.target_x, a.target_z, dt,
+                        vfishlife::effective_swim_speed(raining),
+                    );
                     a.body.x = nx;
                     a.body.z = nz;
                     if reached {
                         let angle = rand::random::<f32>() * std::f32::consts::TAU;
+                        let max_r = vfishlife::effective_wander_max_r(raining);
                         let radius = vfishlife::WANDER_MIN_R
-                            + rand::random::<f32>() * (vfishlife::WANDER_MAX_R - vfishlife::WANDER_MIN_R);
+                            + rand::random::<f32>() * (max_r - vfishlife::WANDER_MIN_R);
                         let (tx, tz) = vr::wander_target(a.home_x, a.home_z, angle, radius);
                         // 複驗候選目標仍在夠深的水域裡，避免魚游出水塘擱淺在陸地上。
                         if vfishlife::is_deep_water(tx.round() as i32, tz.round() as i32) {
