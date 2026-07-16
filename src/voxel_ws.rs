@@ -124,6 +124,7 @@ use crate::voxel_lover_seek as vlover;
 use crate::voxel_wildlife as vwild;
 use crate::voxel_pettreat as vtreat;
 use crate::voxel_fish as vfishlife;
+use crate::voxel_mount as vmount;
 use crate::voxel_chicken as vchicken;
 use crate::voxel_player_recipe as vprecipe;
 use crate::voxel_diary_peek as vdiarypeek;
@@ -989,6 +990,10 @@ struct WildlifeAnimal {
     /// 幼獸長大 v1：這隻寶寶「長大成兔」的動態牆播報是否已經發過（一生僅一次）。世界初始生成／
     /// 已成年的既有兔子（`born_unix == 0`）恆為 `true`（不會、也不需要再播報）。純記憶體、重啟歸零。
     grown_announced: bool,
+    /// 騎乘馴養夥伴 v1（自主提案切片，ROADMAP 1021）：此刻正騎著牠的玩家名字，`None` = 沒人騎。
+    /// 只有 `tamed` 的兔／雞會用到；魚恆為 `None`（魚游得滑溜，不可騎，見 `voxel_mount` 模組說明）。
+    /// 純記憶體、重啟歸零（比照 `tamed`/`following`/`settled` 同款 wildlife 暫態慣例，零 migration）。
+    mounted_by: Option<String>,
 }
 
 /// 野兔家域點（世界座標偏移，散布在村莊周圍，玩家出生後很快就有機會撞見）。
@@ -1028,6 +1033,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             spooked_secs: 0.0,
             born_unix: 0, // 世界初始生成，一律視為已成年（幼獸長大 v1）
             grown_announced: true,
+            mounted_by: None,
         }
     });
     let fish = FISH_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
@@ -1051,6 +1057,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             spooked_secs: 0.0,
             born_unix: 0, // 世界初始生成，一律視為已成年（幼獸長大 v1）
             grown_announced: true,
+            mounted_by: None,
         }
     });
     let chickens = CHICKEN_HOMES.iter().enumerate().map(|(i, (ox, oz))| {
@@ -1074,6 +1081,7 @@ fn init_wildlife() -> Vec<WildlifeAnimal> {
             spooked_secs: 0.0,
             born_unix: 0, // 世界初始生成，一律視為已成年（幼獸長大 v1）
             grown_announced: true,
+            mounted_by: None,
         }
     });
     rabbits.chain(fish).chain(chickens).collect()
@@ -4184,6 +4192,14 @@ enum ClientMsg {
     /// 水平移動速度乘上固定倍率、且乘筏時下潛意圖被遮罩（筏身撐著不會被拖下水面）。
     #[serde(rename = "set_boating")]
     SetBoating { boating: bool },
+    /// 騎乘馴養夥伴 v1（自主提案切片，ROADMAP 1021）：切換騎乘／下馬指定的野生動物。
+    /// `mounted=true` 時伺服器**必查真實動物狀態**（`animal_id` 存在＋已馴服＋非魚＋沒被
+    /// 別人騎走＋在觸及範圍 `voxel_mount::MOUNT_REACH` 內，見 [`voxel_mount::mount_fail_reason`]）
+    /// 才放行，不信客戶端自報；`mounted=false`（下馬）只清除「這隻動物確實是我在騎」時才生效，
+    /// 否則靜默忽略。成功後翻轉該動物的 `mounted_by`，`tick_wildlife` 據此把牠貼到騎乘者身邊，
+    /// 前端據此把水平移動速度乘上固定倍率（純視覺+移動手感，非玩家可調，零庫存消耗）。
+    #[serde(rename = "set_mounted")]
+    SetMounted { animal_id: String, mounted: bool },
     /// 居民交易 v1：向指定居民請求以物易物（ROADMAP 670）。
     /// 伺服器回 `trade_offer`，玩家再傳 TradeAccept 接受；提案 30 秒後自動過期。
     #[serde(rename = "trade_request")]
@@ -5240,6 +5256,18 @@ async fn handle_socket(
         );
         old_id
     }; // players 寫鎖在此釋放
+
+    // 騎乘馴養夥伴 v1（自主提案切片，ROADMAP 1021）：每次連線都是全新狀態（比照上面
+    // riding/performing/boating 同一創建點歸零的慣例）——把任何仍標記騎著這個名字的動物
+    // 一併鬆開，避免斷線重連後客戶端本地旗標已歸零、但伺服器端動物仍卡在舊騎乘狀態的不一致。
+    {
+        let mut animals = hub().wildlife.write().unwrap();
+        for a in animals.iter_mut() {
+            if a.mounted_by.as_deref() == Some(name.as_str()) {
+                a.mounted_by = None;
+            }
+        }
+    } // wildlife 寫鎖在此釋放
 
     // 鎖外操作：更新踢信號表、送踢信號給舊連線（守 prod 死鎖鐵律：不持鎖 await）。
     {
@@ -9140,6 +9168,91 @@ async fn handle_socket(
                 let _ = out_tx.try_send(Message::Text(
                     serde_json::json!({ "t": "boating_ok", "boating": boating }).to_string(),
                 ));
+            }
+            // ── 騎乘馴養夥伴 v1（自主提案切片，ROADMAP 1021）：騎上／下馬指定的動物 ──────
+            Ok(ClientMsg::SetMounted { animal_id, mounted }) => {
+                // 鎖序：players 讀位置 → wildlife 單次寫鎖內查驗＋落地（查驗與翻轉同一把鎖，
+                // 避免「讀鎖驗證通過、寫鎖前被別人搶騎」的競態），循序取放不巢狀（守死鎖鐵律）。
+                let Some((px, _py, pz)) = player_pos(my_id) else {
+                    continue;
+                };
+                if mounted {
+                    // 濫用防護：能不能騎完全由伺服器權威判定（已馴服＋非魚＋沒被別人騎走＋
+                    // 在觸及範圍內，見 vmount::mount_fail_reason），客戶端不自報合法性；
+                    // 零自由文字、零 LLM、零對外端點、零庫存消耗。
+                    let outcome: Result<(bool, Option<String>), &'static str> = {
+                        let mut animals = hub().wildlife.write().unwrap();
+                        match animals.iter_mut().find(|a| a.id == animal_id) {
+                            Some(a) => {
+                                let dx = px - a.body.x;
+                                let dz = pz - a.body.z;
+                                let dist_sq = dx * dx + dz * dz;
+                                let is_fish = matches!(a.kind, WildlifeKind::Fish);
+                                match vmount::mount_fail_reason(
+                                    a.tamed, is_fish, a.mounted_by.is_some(), dist_sq,
+                                ) {
+                                    Some(reason) => Err(reason),
+                                    None => {
+                                        a.mounted_by = Some(name.clone());
+                                        a.following = false;
+                                        a.settled = false;
+                                        Ok((matches!(a.kind, WildlifeKind::Rabbit), a.name.clone()))
+                                    }
+                                }
+                            }
+                            None => Err("這隻動物已經不在了。"),
+                        }
+                    }; // wildlife 寫鎖釋放
+                    match outcome {
+                        Ok((is_rabbit, pet_name)) => {
+                            // 廣播讓所有在場玩家立即看到牠貼到你身邊（下一次 tick_wildlife
+                            // 才會真的貼上位置，這裡先讓 UI/文字反應跟上，零額外成本）。
+                            broadcast_players();
+                            let pick = rand::random::<u64>() as usize;
+                            let _ = out_tx.try_send(Message::Text(
+                                serde_json::json!({
+                                    "t": "mounted_ok",
+                                    "animal_id": animal_id,
+                                    "mounted": true,
+                                    "say": vmount::mount_line(is_rabbit, pet_name.as_deref(), pick),
+                                }).to_string(),
+                            ));
+                        }
+                        Err(reason) => {
+                            let _ = out_tx.try_send(Message::Text(
+                                serde_json::json!({ "t": "mounted_fail", "reason": reason }).to_string(),
+                            ));
+                        }
+                    }
+                } else {
+                    // 下馬：只有「這隻動物確實是我在騎」才真的落地清除，避免誤清別人的騎乘
+                    // 狀態；但一律回覆確認（即使早已不是我在騎——例如已被自癒鬆開），讓客戶端
+                    // 本地旗標一定能歸零，不會卡在「以為自己還騎著」的假狀態。
+                    let released: Option<(bool, Option<String>)> = {
+                        let mut animals = hub().wildlife.write().unwrap();
+                        animals
+                            .iter_mut()
+                            .find(|a| a.id == animal_id && a.mounted_by.as_deref() == Some(name.as_str()))
+                            .map(|a| {
+                                a.mounted_by = None;
+                                (matches!(a.kind, WildlifeKind::Rabbit), a.name.clone())
+                            })
+                    }; // wildlife 寫鎖釋放
+                    let already_released = released.is_none();
+                    if !already_released {
+                        broadcast_players();
+                    }
+                    let (is_rabbit, pet_name) = released.unwrap_or((true, None));
+                    let pick = rand::random::<u64>() as usize;
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({
+                            "t": "mounted_ok",
+                            "animal_id": animal_id,
+                            "mounted": false,
+                            "say": vmount::dismount_line(is_rabbit, pet_name.as_deref(), pick),
+                        }).to_string(),
+                    ));
+                }
             }
             // ── 集會鐘 v1（自主提案切片）：敲響一座鐘，把附近閒著的居民召到身邊 ─────────
             Ok(ClientMsg::RingBell { x, y, z }) => {
@@ -15093,9 +15206,13 @@ pub async fn voxel_lighthouse_handler() -> axum::response::Response {
 /// 落雞蛋，鎖已釋放後才取)，循序取放、與 `residents` 鎖各自獨立、不巢狀（守 prod 死鎖鐵律）。
 fn tick_wildlife(dt: f32) {
     // 玩家座標快照（短鎖即釋，不與 wildlife 鎖巢狀）。野兔/雞需要，魚不怕人不查。
-    let player_pts: Vec<(f32, f32)> = {
+    // 騎乘馴養夥伴 v1（ROADMAP 1021）：同一把讀鎖多帶一份「玩家名字→完整座標＋朝向」的
+    // 對照表，供本輪騎乘中的動物把自己貼到騎乘者身邊（見下方 `mounted_by` 分支）。
+    let (player_pts, player_named): (Vec<(f32, f32)>, std::collections::HashMap<String, (f32, f32, f32, f32)>) = {
         let players = hub().players.read().unwrap();
-        players.values().map(|p| (p.x, p.z)).collect()
+        let pts = players.values().map(|p| (p.x, p.z)).collect();
+        let named = players.values().map(|p| (p.name.clone(), (p.x, p.y, p.z, p.yaw))).collect();
+        (pts, named)
     }; // 玩家讀鎖在此釋放
     let world = hub().deltas.read().unwrap();
     // 雨天野兔躲雨 v1（ROADMAP 1020，短鎖即釋，不與 wildlife 鎖巢狀）：天氣快照，
@@ -15110,6 +15227,22 @@ fn tick_wildlife(dt: f32) {
     let mut animals = hub().wildlife.write().unwrap();
     for a in animals.iter_mut() {
         let (bx, bz) = (a.body.x, a.body.z);
+        // 騎乘馴養夥伴 v1（ROADMAP 1021）：正被騎乘中——整輪 AI 讓路，只把自己貼到騎乘者
+        // 身邊（純視覺融合，見 `voxel_mount::mount_offset`），不跑受驚/跟隨/閒晃任何分支。
+        // 騎乘者離線／消失（快照裡找不到名字）→ 自動下馬、當輪落回正常 AI（自癒，不需要
+        // 額外的斷線 hook）。
+        if let Some(rider) = a.mounted_by.clone() {
+            if let Some(&(px, py, pz, pyaw)) = player_named.get(&rider) {
+                let (ox, oz) = vmount::mount_offset(pyaw);
+                a.body.x = px + ox;
+                a.body.y = py;
+                a.body.z = pz + oz;
+                a.yaw = pyaw;
+                continue;
+            } else {
+                a.mounted_by = None;
+            }
+        }
         match a.kind {
             WildlifeKind::Rabbit => {
                 // 幼獸長大 v1：一生僅播報一次，長大那一刻翻旗標＋排一句動態牆（既有兔子
@@ -15413,6 +15546,7 @@ fn maybe_breed_rabbits() {
             spooked_secs: 0.0,
             born_unix: now, // 幼獸長大 v1：記下出生時刻，長大前體型偏小且不會被選為親代。
             grown_announced: false,
+            mounted_by: None,
         });
         // 春季誕生用專屬感言（春回兔繁 v1），其餘季節沿用四季通用句。
         if is_spring {

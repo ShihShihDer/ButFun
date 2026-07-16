@@ -211,6 +211,10 @@ const RAFT = 123;
 // 乘筏水平移動速度倍率（水中）——比純游泳快得多，讓渡河不必再繞去唯一那座固定橋（比照
 // RIDING_SPEED_MULT／SWIM_HORIZ_SPEED_MULT 同款寫法，純視覺+移動手感常數，非玩家可調）。
 const BOATING_SPEED_MULT = 1.3;
+// 騎乘馴養夥伴 v1（ROADMAP 1021，自主提案切片）——陸地移動速度倍率：騎上已馴服的兔／雞，
+// 比純徒步快，但不如專屬機械載具（RIDING_SPEED_MULT 1.8）——牠是有生命的夥伴，不是為了
+// 極速代步而生（比照 BOATING_SPEED_MULT 同款寫法，純視覺+移動手感常數，非玩家可調）。
+const MOUNT_SPEED_MULT = 1.4;
 // 方塊顏色（程序生成、純色；不用任何外部美術資產）
 const COLOR = {
   [GRASS]:             [0.36, 0.66, 0.27],
@@ -4717,6 +4721,8 @@ function toggleRiding() {
   const now = Date.now();
   if (now - lastRideMs < 500) return; // 0.5 秒本地防連按
   if (!riding) {
+    // 騎乘馴養夥伴 v1（ROADMAP 1021）：正騎著寵物時先下馬，避免兩種騎乘視覺疊在一起。
+    if (mountedAnimalId) { showMsg("先讓小夥伴下班，才能騎車。"); return; }
     const cnt = (myInv instanceof Map ? myInv.get(STEAM_UNICYCLE) : 0) || 0;
     if (cnt <= 0) { showMsg("背包裡沒有蒸汽獨輪車——在工作台用 4 鐵錠＋2 木頭＋1 乙太礦做一輛吧。"); return; }
   }
@@ -4755,11 +4761,41 @@ function toggleBoating() {
   const now = Date.now();
   if (now - lastBoatMs < 500) return; // 0.5 秒本地防連按
   if (!boating) {
+    // 騎乘馴養夥伴 v1（ROADMAP 1021）：正騎著寵物時先下馬，避免兩種騎乘視覺疊在一起。
+    if (mountedAnimalId) { showMsg("先讓小夥伴下班，才能上筏。"); return; }
     const cnt = (myInv instanceof Map ? myInv.get(RAFT) : 0) || 0;
     if (cnt <= 0) { showMsg("背包裡沒有木筏——用 6 木板做一艘吧（背包 2×2 即可）。"); return; }
   }
   lastBoatMs = now;
   ws.send(JSON.stringify({ t: "set_boating", boating: !boating }));
+}
+
+// ── 騎乘馴養夥伴 v1（ROADMAP 1021，自主提案切片）：騎上／下馬 ────────────────────
+// 本地騎乘旗標只在 mounted_ok 回應（伺服器直接對我這次請求的權威回覆）才翻轉，不樂觀
+// 更新——比照 riding／boating 同款濫用防護慣例，伺服器說了算，UI 只是反應端。與機械
+// 載具不同：這裡騎的是活的動物，不是背包物品，故上騎前用準心挑目標而非查庫存持有。
+let mountedAnimalId = null;
+let lastMountMs = 0; // 本地防連按（伺服器仍是唯一權威，這裡只擋手滑連按 G 洗版）
+
+/** 按 G 切換騎乘／下馬：準心對著一隻已馴服的小夥伴才騎得上去；下馬永遠可送。 */
+function toggleMounted() {
+  if (!wsReady) return;
+  const now = Date.now();
+  if (now - lastMountMs < 500) return; // 0.5 秒本地防連按
+  if (mountedAnimalId) {
+    lastMountMs = now;
+    ws.send(JSON.stringify({ t: "set_mounted", animal_id: mountedAnimalId, mounted: false }));
+    return;
+  }
+  // 上騎前：先下車／下筏，避免同時套用兩種載具的移動手感疊在一起（純視覺一致性，非玩法牴觸）。
+  if (riding || boating) { showMsg("先下車／下筏，才能騎乘小夥伴。"); return; }
+  const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+  const pick = pickWildlife(cx, cy);
+  if (!pick || pick.kind === "fish") { showMsg("準心對準已馴服的小夥伴才能騎上去 🐇"); return; }
+  const ent = wildlifeEnts.get(pick.id);
+  if (!ent || !ent.group.userData.wtamed) { showMsg("先餵食馴服牠，牠才願意讓你騎 🥕"); return; }
+  lastMountMs = now;
+  ws.send(JSON.stringify({ t: "set_mounted", animal_id: pick.id, mounted: true }));
 }
 
 /** 接受指定居民的交易提案（發 TradeAccept）。payWithCoin=true 時改直接付乙太幣代替湊材料（ROADMAP 874）。 */
@@ -7267,6 +7303,9 @@ addEventListener("keydown", (e) => {
   // 木筏 v1（自主提案切片，ROADMAP 1017）：B 切換乘筏／下筏；e.repeat 防瀏覽器按鍵
   // 自動重複觸發把 set_boating 洗版（比照 R/P 同款單鍵切換防呆）。
   if (e.code === "KeyB" && !e.repeat) { e.preventDefault(); toggleBoating(); }
+  // 騎乘馴養夥伴 v1（自主提案切片，ROADMAP 1021）：G 切換騎上／下馬；e.repeat 防瀏覽器
+  // 按鍵自動重複觸發把 set_mounted 洗版（比照 R/P/B 同款單鍵切換防呆）。
+  if (e.code === "KeyG" && !e.repeat) { e.preventDefault(); toggleMounted(); }
   // Esc：關操作設定面板（也讓瀏覽器解除滑鼠鎖定，兩者不衝突）。
   if (e.code === "Escape" && settingsPanelVisible()) closeSettingsPanel();
   // Esc：也收起 ☰ 主選單抽屜（若正開著）。
@@ -7718,6 +7757,9 @@ function connect() {
       // 本地旗標一併歸零，避免重連後顯示與伺服器不同步。
       boating = false;
       setBoating(myAvatar, false);
+      // 騎乘馴養夥伴 v1（自主提案切片，ROADMAP 1021）：同理，每次連線 wildlife 的
+      // `mounted_by` 也是全新 hub 狀態（重啟／重連前的騎乘不會延續），本地旗標一併歸零。
+      mountedAnimalId = null;
       // 出生瞬間先脫困一次（若出生 chunk 已到、地表把人埋住，立刻頂出來）。
       unstuckIfNeeded();
       // 好感度 v1：連線後立即拉取與各居民的好感度，讓指示燈盡快亮起。
@@ -8227,6 +8269,16 @@ function connect() {
     } else if (m.t === "boating_fail") {
       // 木筏 v1：上不了筏（沒有木筏——本地已先擋過一次，這裡是伺服器再驗一次的保底）。
       showErr(m.reason || "沒法乘筏");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
+    } else if (m.t === "mounted_ok") {
+      // 騎乘馴養夥伴 v1（自主提案切片，ROADMAP 1021）：伺服器直接對本次請求的權威回覆——
+      // 本地 mountedAnimalId 只在這裡翻轉（不樂觀更新），驅動移動速度倍率；小夥伴本身
+      // 貼在身邊的視覺完全由伺服器 `tick_wildlife` 每輪覆寫牠的座標廣播，前端零額外 mesh。
+      mountedAnimalId = m.mounted ? (m.animal_id || null) : null;
+      showMsg(m.say || (mountedAnimalId ? "🐇 騎上小夥伴，飛奔起來！" : "下馬了。"));
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 2600);
+    } else if (m.t === "mounted_fail") {
+      showErr(m.reason || "騎不上去");
       setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2000);
     } else if (m.t === "pet_command_ok") {
       // 寵物指令「安置／召回」v1（ROADMAP 898）：切換成功——浮出暖句（💤 待命標記由 players 廣播即時掛上/取下）。
@@ -8753,12 +8805,13 @@ function update(dt) {
   dir.addScaledVector(fwd, mz).addScaledVector(right, mx);
   if (dir.lengthSq() > 1e-4) {
     dir.normalize();
-    // 水中水平比陸地慢（水阻）；陸地騎乘蒸汽獨輪車（ROADMAP 976）更快；水中乘木筏
-    // （ROADMAP 1017）比純游泳快得多——三者互斥於各自的情境（下水視為下車手感，riding/
-    // boating 旗標本身不因情境切換而翻轉，僅暫停/套用加成，情境一變即刻生效）。
+    // 水中水平比陸地慢（水阻）；陸地騎乘蒸汽獨輪車（ROADMAP 976）更快，騎乘馴養夥伴
+    // （ROADMAP 1021）也快但不如機械載具；水中乘木筏（ROADMAP 1017）比純游泳快得多——
+    // 互斥於各自的情境（下水視為下車手感，riding/boating/mountedAnimalId 旗標本身不因
+    // 情境切換而翻轉，僅暫停/套用加成，情境一變即刻生效；上騎前已擋掉 riding/boating 同時開）。
     const horiz = swimming
       ? (boating ? SPEED * BOATING_SPEED_MULT : SPEED * SWIM_HORIZ_SPEED_MULT)
-      : (riding ? SPEED * RIDING_SPEED_MULT : SPEED);
+      : (riding ? SPEED * RIDING_SPEED_MULT : (mountedAnimalId ? SPEED * MOUNT_SPEED_MULT : SPEED));
     moveAxis("x", dir.x * horiz * dt);
     moveAxis("z", dir.z * horiz * dt);
   }
