@@ -1319,7 +1319,7 @@ async fn post_suggestion(
 
 #[cfg(test)]
 mod tests {
-    use super::{inject_gamejs_version, inject_mainjs_version};
+    use super::{inject_gamejs_version, inject_mainjs_version, parse_disable_2d};
 
     /// sha256(content) 前 12 hex 字元——測試用的期望版本算法（與函式一致）。
     fn expected_version(gamejs: &[u8]) -> String {
