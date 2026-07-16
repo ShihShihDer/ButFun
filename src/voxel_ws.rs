@@ -24250,19 +24250,32 @@ fn tick_residents(dt: f32) {
             continue;
         }
         hub().last_custom_day.write().unwrap().insert(*sid, current_day);
-        let mem_line = vcustom::gather_memory_line();
+        let season_zh = current_season.display_name();
+        // 地點／指稱／有無村碑先算好，供每位參與者的記憶句交叉出多樣性（主村＝有村碑腳下、
+        // 殖民地＝只有村心廣場無村碑）；同一 place/label 也用來組動態牆播報，只算一次。
+        let (place, label): (String, &str) = match place_name {
+            Some(name) => (format!("「{name}」的村心廣場"), name.as_str()),
+            None => ("村莊廣場的村碑邊".to_string(), "村子"),
+        };
+        let has_monument = place_name.is_none();
         for (id, name) in members {
+            // 每位參與者按（居民 id × 季節 × 聚落 × 人數 × 世界日）交叉選句，把舊版固定罐頭
+            // 爆成上百種組合、語義不變（黃昏聚廣場、屬於這裡的歸屬感）。同輸入同句可重現、好測。
+            let mem_line = vcustom::gather_memory_line(
+                id,
+                season_zh,
+                members.len(),
+                &place,
+                label,
+                has_monument,
+                current_day,
+            );
             let e = {
                 let mut mem = hub().memory.write().unwrap();
                 mem.add_memory(id, name, &mem_line)
             }; // memory 寫鎖釋放（逐筆即釋、不巢狀）
             vmem::append_memory(&e);
         }
-        let season_zh = current_season.display_name();
-        let (place, label): (String, &str) = match place_name {
-            Some(name) => (format!("「{name}」的村心廣場"), name.as_str()),
-            None => ("村莊廣場的村碑邊".to_string(), "村子"),
-        };
         vfeed::append_feed(
             vcustom::FEED_KIND,
             label,

@@ -123,11 +123,101 @@ pub fn gather_feed_line(season_zh: &str, count: usize, place: &str, label: &str)
     format!("🌆 {season_zh}的黃昏，{count} 位居民又不約而同地聚到{place}閒話家常——這已成了{label}入夜前的老習慣。")
 }
 
+/// 一段字串的確定性雜湊種子（FNV-1a 64-bit）——把居民 id、季節、聚落名等上下文
+/// 攪成一個數，供模板選句用。純函式、跨平台結果一致（不同於 `DefaultHasher` 不保證穩定），
+/// 讓「同一位居民＋同一天＋同一場」永遠選到同一句、但換人／換天／換季就自然錯開。
+fn seed_of(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
 /// 參與暮聚的居民寫進記憶的一句（episodic、第一人稱內心，累積「村子有了自己的習俗、我屬於這裡」
 /// 的歸屬感）。不含任何玩家名／私密渴望，適用於任何一位在場居民；單行、無換行（jsonl 一行一筆）。
-pub fn gather_memory_line() -> String {
-    "每到黃昏，我總會晃到廣場的村碑邊，和大家聚一聚、說幾句話。這成了我們村子的習慣，也讓我覺得，這裡真的是我的家。"
-        .to_string()
+///
+/// **多樣性（純程式、零 LLM）**：舊版對每位參與者、每一天、每一季都寫同一句固定罐頭
+/// （prod 稽核：這一句在 24405 筆記憶裡重複 1410 次，是最大單一重複源）。現在把記憶句拆成
+/// 三段可交叉的維度——①**開場**帶當季（季節詞 × 4）與地點（有無村碑 × 主村／聚落名）、
+/// ②**中段**描寫這場的氣氛（隨在場人數多寡分「小聚／熱鬧」兩路各數句）、③**收尾**那句
+/// 歸屬感——每一段都由 `(居民 id ⊕ 季節 ⊕ 聚落 ⊕ 世界日)` 的確定性種子各自選句。
+/// 於是同輸入永遠同句（可重現、好測），但**換人／換季／換天／換聚落任一維度變動就換句**，
+/// 把單一罐頭爆成上百種組合。語義不變：仍是「黃昏聚到廣場、屬於這裡」的第一人稱歸屬感。
+///
+/// 參數：`resident_id` 居民識別碼（如 `vox_res_3`，穩定的個人維度）、`season_zh` 當季顯示名
+/// （如「秋天」）、`count` 這場參與人數、`place_desc` 聚集地點描述（同 [`gather_feed_line`]，
+/// 主村＝「村莊廣場的村碑邊」、殖民地＝「『風禾屯』的村心廣場」）、`label` 收尾指稱這座聚落
+/// 的詞（主村＝「村子」、殖民地＝聚落名）、`has_monument` 是否圍在真的村碑腳下（殖民地無）、
+/// `day` 世界累計日數（讓同一位居民在不同天寫下不同句、記憶隨日子推移而變）。
+pub fn gather_memory_line(
+    resident_id: &str,
+    season_zh: &str,
+    count: usize,
+    place_desc: &str,
+    label: &str,
+    has_monument: bool,
+    day: u64,
+) -> String {
+    // 三段各用不同鹽攪出獨立種子，避免三段被同一數字綁死、選到相關聯的句子。
+    let base = seed_of(resident_id) ^ seed_of(season_zh) ^ seed_of(label) ^ day.wrapping_mul(0x9e37_79b9);
+    let s_open = (base ^ 0x1111_1111_1111_1111) as usize;
+    let s_mood = (base ^ 0x2222_2222_2222_2222) as usize;
+    let s_belong = (base ^ 0x3333_3333_3333_3333) as usize;
+
+    // ── ① 開場：帶當季 + 地點。村碑腳下與無村碑的聚落各一組（不讓殖民地講出不存在的村碑）。
+    let open = if has_monument {
+        const OPEN_MON: [&str; 4] = [
+            "{season}的黃昏一到，我又晃到了{place}，",
+            "每逢{season}入夜前，我總不由自主走向{place}，",
+            "{season}的暮色裡，我照例來到{place}，",
+            "天要暗了，這{season}的黃昏我還是慢慢踱到{place}，",
+        ];
+        OPEN_MON[s_open % OPEN_MON.len()]
+    } else {
+        const OPEN_NOMON: [&str; 4] = [
+            "{season}的黃昏一到，我又晃到了{place}，",
+            "每逢{season}入夜前，我總會走到{place}，",
+            "{season}的暮色裡，我照例來到{place}，",
+            "天要暗了，這{season}的黃昏我還是慢慢踱到{place}，",
+        ];
+        OPEN_NOMON[s_open % OPEN_NOMON.len()]
+    };
+
+    // ── ② 中段：氣氛隨在場人數分兩路。人少＝三兩人小聚、人多＝一村熱鬧。
+    let mood = if count <= 2 {
+        const MOOD_FEW: [&str; 4] = [
+            "和三兩位鄰居坐下說幾句話。",
+            "就我們幾個湊在一塊，慢慢聊著今天。",
+            "人不多，倒也自在，彼此問候幾句。",
+            "和身邊的老鄰居閒閒地說著話。",
+        ];
+        MOOD_FEW[s_mood % MOOD_FEW.len()]
+    } else {
+        const MOOD_MANY: [&str; 4] = [
+            "大夥兒都聚了過來，說說笑笑好不熱鬧。",
+            "一村的人都到了，你一句我一句地聊開。",
+            "這麼多人圍在一起，笑聲一直沒停過。",
+            "熟面孔一個個都來了，聚成滿滿一圈。",
+        ];
+        MOOD_MANY[s_mood % MOOD_MANY.len()]
+    };
+
+    // ── ③ 收尾：歸屬感那句（點名聚落，語義不變）。
+    const BELONG: [&str; 4] = [
+        "這已成了{label}的習慣，也讓我覺得，這裡真的是我的家。",
+        "這樣的黃昏聚會，是{label}才有的暖，讓我打從心底安穩。",
+        "一天到這時候才算圓滿——{label}的人在，我就在家。",
+        "日子這樣過著，{label}於我，早不只是落腳處了。",
+    ];
+    let belong = BELONG[s_belong % BELONG.len()];
+
+    format!("{open}{mood}{belong}")
+        .replace("{season}", season_zh)
+        .replace("{place}", place_desc)
+        .replace("{label}", label)
+        .replace('\n', " ")
 }
 
 #[cfg(test)]
@@ -248,10 +338,92 @@ mod tests {
 
     #[test]
     fn memory_line_single_line_nonempty_no_leak() {
-        let m = gather_memory_line();
+        let m = gather_memory_line("vox_res_0", "秋天", 3, "村莊廣場的村碑邊", "村子", true, 12);
         assert!(!m.is_empty());
         assert!(!m.contains('\n'), "記憶不得含換行（jsonl 一行一筆）");
-        // episodic 內心句，不該外洩玩家名占位符。
-        assert!(!m.contains('{'));
+        // 占位符全數被替換，不該外洩 {season}/{place}/{label} 骨架。
+        assert!(!m.contains('{'), "占位符未替換乾淨：{m}");
+    }
+
+    #[test]
+    fn memory_line_deterministic_same_input_same_output() {
+        // 同一位居民、同一天、同一場 → 永遠同句（可重現、好稽核、方便測）。
+        let a = gather_memory_line("vox_res_3", "夏天", 5, "村莊廣場的村碑邊", "村子", true, 7);
+        let b = gather_memory_line("vox_res_3", "夏天", 5, "村莊廣場的村碑邊", "村子", true, 7);
+        assert_eq!(a, b, "同輸入應產生同句");
+    }
+
+    #[test]
+    fn memory_line_embeds_season_and_label() {
+        // 語義維度真的進到句子裡：當季詞、聚落指稱都看得到。
+        let m = gather_memory_line("vox_res_1", "冬天", 4, "村莊廣場的村碑邊", "村子", true, 3);
+        assert!(m.contains("冬天"), "應帶當季：{m}");
+        assert!(m.contains("村子"), "應點名聚落：{m}");
+    }
+
+    #[test]
+    fn memory_line_colony_never_mentions_monument() {
+        // 殖民地（無村碑）不論怎麼交叉都不得講出不存在的村碑地標。
+        for id in ["vox_res_0", "vox_res_4", "vox_res_7", "vox_res_9"] {
+            for season in ["春天", "夏天", "秋天", "冬天"] {
+                for day in 0..8u64 {
+                    for count in [1usize, 3, 6] {
+                        let m = gather_memory_line(
+                            id, season, count, "「風禾屯」的村心廣場", "風禾屯", false, day,
+                        );
+                        assert!(!m.contains('碑'), "殖民地記憶不應提及村碑：{m}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn memory_line_diversity_explodes_across_context() {
+        // 稽核止血核心：舊版對每位參與者每天每季都寫同一句（prod 24405 筆裡重複 1410 次）。
+        // 現在跨（居民 × 季節 × 世界日 × 人數）交叉，唯一句數應遠多於 1——這裡窮舉一小片
+        // 上下文空間，斷言產出至少數十種不同句子（實際組合遠不止此）。
+        let ids = ["vox_res_0", "vox_res_1", "vox_res_2", "vox_res_3", "vox_res_4"];
+        let seasons = ["春天", "夏天", "秋天", "冬天"];
+        let mut set = std::collections::HashSet::new();
+        for id in ids {
+            for season in seasons {
+                for day in 0..6u64 {
+                    for count in [1usize, 5] {
+                        set.insert(gather_memory_line(
+                            id, season, count, "村莊廣場的村碑邊", "村子", true, day,
+                        ));
+                    }
+                }
+            }
+        }
+        // 240 種輸入組合。舊版全部塌成 1 句；新版應開出大量不同句子。
+        assert!(
+            set.len() >= 40,
+            "暮聚記憶多樣性不足（僅 {} 種），罐頭化未解決",
+            set.len()
+        );
+    }
+
+    #[test]
+    fn memory_line_count_switches_mood_wording() {
+        // 人少走「小聚」、人多走「熱鬧」兩路措辭——確認人數維度真的影響句子。
+        // 掃過各種上下文，確保「兩三人」與「一村人」在同一開場/收尾種子下能產生不同中段。
+        let few_only_words = ["三兩", "幾個", "人不多"];
+        let many_only_words = ["大夥兒", "一村", "這麼多人", "一個個"];
+        let mut saw_few_marker = false;
+        let mut saw_many_marker = false;
+        for id in ["vox_res_0", "vox_res_2", "vox_res_5"] {
+            let few = gather_memory_line(id, "秋天", 1, "村莊廣場的村碑邊", "村子", true, 4);
+            let many = gather_memory_line(id, "秋天", 6, "村莊廣場的村碑邊", "村子", true, 4);
+            if few_only_words.iter().any(|w| few.contains(w)) {
+                saw_few_marker = true;
+            }
+            if many_only_words.iter().any(|w| many.contains(w)) {
+                saw_many_marker = true;
+            }
+        }
+        assert!(saw_few_marker, "人少場應出現『小聚』措辭");
+        assert!(saw_many_marker, "人多場應出現『熱鬧』措辭");
     }
 }
