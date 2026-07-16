@@ -6199,6 +6199,7 @@ const LANDMARK_ICONS = {
   wonder: "🌳",
   dungeon: "🏺",
   dream: "🌟",
+  shipwreck: "🚢",
 };
 
 function showLandmarkNotes(kind, x, y, z, notes) {
@@ -8044,6 +8045,12 @@ function connect() {
       showMsg(m.line || "你挖穿了深層岩壁，找到了一座人工鑿建的地底遺跡神殿🏺");
       const _dg = document.getElementById("msg");
       if (_dg) { clearTimeout(_dg._hideTimer); _dg._hideTimer = setTimeout(() => { _dg.style.display = "none"; }, 6000); }
+    } else if (m.t === "shipwreck_discovered") {
+      // 沉船地標 v1（自主提案切片，接續 1005/1006/1017）：潛近河流深水核心裡的沉船核心遺物、
+      // 首次抵達的那一刻——浮出一句驚喜提示（只給自己看，多停留一會兒，值得慢慢看清）。
+      showMsg(m.line || "你潛下河底，找到了一艘早已解體的沉船殘骸🚢");
+      const _sw = document.getElementById("msg");
+      if (_sw) { clearTimeout(_sw._hideTimer); _sw._hideTimer = setTimeout(() => { _sw.style.display = "none"; }, 6000); }
     } else if (m.t === "wonder_protected") {
       // 世界奇觀·乙太世界樹 v1：試圖砍奇觀——被後端擋下，浮出一句溫柔說明（別讓路過的人拆掉它）。
       showMsg(m.line || "乙太世界樹是世界唯一的奇觀，它不會為任何人的鎬子讓步。");

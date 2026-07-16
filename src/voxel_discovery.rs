@@ -60,6 +60,11 @@ pub enum LandmarkKind {
     /// 展台），座標由該居民的家＋夢想種類純函式算出（`voxel_lifeproject::LifeDream::anchor_cell`）。
     /// 與前面幾種皆不同：不是世界生成、不是居民刻意立牌，是「一件她默默做完的事」被玩家撞見。
     Dream,
+    /// 沉船殘骸（自主提案切片，接續 1005 世界河流／1006 世界第一座橋／1017 木筏）——全世界
+    /// 唯一一處藏在河流深水核心裡的地標，座標由世界種子確定性決定（`voxel::shipwreck_core_pos`）。
+    /// 與前面幾種皆不同：這是**唯一非潛水／乘筏摸不到**的地標，其餘六種全落在乾燥陸地或
+    /// 深層岩壁，本種第一次要求玩家「先下水」。
+    Shipwreck,
 }
 
 impl LandmarkKind {
@@ -73,6 +78,7 @@ impl LandmarkKind {
             LandmarkKind::Wonder => "乙太世界樹",
             LandmarkKind::Dungeon => "地底遺跡神殿",
             LandmarkKind::Dream => "圓夢角落",
+            LandmarkKind::Shipwreck => "沉船殘骸",
         }
     }
 
@@ -87,6 +93,7 @@ impl LandmarkKind {
             LandmarkKind::Wonder => "wonder",
             LandmarkKind::Dungeon => "dungeon",
             LandmarkKind::Dream => "dream",
+            LandmarkKind::Shipwreck => "shipwreck",
         }
     }
 
@@ -100,6 +107,7 @@ impl LandmarkKind {
             LandmarkKind::Wonder => "🌳",
             LandmarkKind::Dungeon => "🏺",
             LandmarkKind::Dream => "🌟",
+            LandmarkKind::Shipwreck => "🚢",
         }
     }
 }

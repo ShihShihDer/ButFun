@@ -135,6 +135,7 @@ use crate::voxel_proximity_teach as vptteach;
 use crate::voxel_envoy_mark as venvoy;
 use crate::voxel_treasure as vtreasure;
 use crate::voxel_dungeon as vdungeon;
+use crate::voxel_shipwreck as vshipwreck;
 use crate::voxel_busking as vbusk;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
@@ -5640,6 +5641,10 @@ async fn handle_socket(
     // 地底遺跡神殿 v1（ROADMAP 975）：這條連線上一 tick 是否正站在藏寶室核心旁，用來偵測
     // 「剛挖穿石牆走進來」那一刻只嘗試記一次探索紀事＋領一次獎勵（同上，逗留原地省一趟寫鎖）。
     let mut was_near_dungeon = false;
+    // 沉船地標 v1（自主提案切片，接續 1005/1006/1017）：這條連線上一 tick 是否正游近沉船
+    // 核心遺物，用來偵測「剛潛到」那一刻只嘗試記一次探索紀事＋領一次獎勵（同上，逗留原地
+    // 省一趟寫鎖）。
+    let mut was_near_shipwreck = false;
     // 圓夢地標 v1.1（自主提案切片，接續 `voxel_lifeproject` v1）：這條連線上一 tick 是否正站在
     // 某位居民已圓夢的錨點旁，用來偵測「剛走近」那一刻只嘗試記一次探索紀事（同上，逗留原地
     // 省一趟寫鎖；`record()` 本身已冪等，此旗標純粹省鎖非正確性必要）。
@@ -5862,6 +5867,45 @@ async fn handle_socket(
                     }
                 }
                 was_near_dungeon = near_dungeon;
+                // 沉船地標 v1（自主提案切片，接續 1005 世界河流／1006 世界第一座橋／1017 木筏）：
+                // 玩家游泳或乘筏潛近河流深水核心裡的沉船核心遺物的那一刻 → 記一筆探索紀事、
+                // 解鎖里程碑、給一份一次性獎勵、順手看看先前旅人的留言。全世界只有這一處，用
+                // 核心座標（唯一、確定性）當去重鍵，同一玩家只領一次。
+                let near_shipwreck = voxel::near_shipwreck(px, py, pz);
+                if near_shipwreck && !was_near_shipwreck {
+                    let (stx, sty, stz) = voxel::shipwreck_core_pos();
+                    let found = {
+                        let mut d = hub().discovery.write().unwrap();
+                        d.record(&name, vdisc::LandmarkKind::Shipwreck, (stx, stz), stx, sty, stz)
+                    }; // discovery 寫鎖釋放
+                    if let Some(entry) = found {
+                        vdisc::append_discovery(&entry);
+                        try_unlock_milestone(&name, vshipwreck::MILESTONE_ID, &out_tx);
+                        let (rid, rcount) = vshipwreck::relic_reward();
+                        let inv_entry = hub().inventory.write().unwrap().give(&name, rid, rcount);
+                        vinv::append_inv(&inv_entry);
+                        let new_count = hub().inventory.read().unwrap().count(&name, rid);
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({
+                                "t": "inv_update",
+                                "block_id": rid,
+                                "count": new_count
+                            })
+                            .to_string(),
+                        ));
+                        send_landmark_notes(vdisc::LandmarkKind::Shipwreck, (stx, stz), stx, sty, stz, &out_tx)
+                            .await;
+                        let _ = out_tx.try_send(Message::Text(
+                            serde_json::json!({
+                                "t": "shipwreck_discovered",
+                                "line": vshipwreck::relic_discovered_line(),
+                            })
+                            .to_string(),
+                        ));
+                        vfeed::append_feed("探索", &name, &vshipwreck::relic_feed_detail());
+                    }
+                }
+                was_near_shipwreck = near_shipwreck;
                 // 圓夢地標 v1.1（自主提案切片，接續 `voxel_lifeproject` v1）：v1 讓居民的長程
                 // 大夢在世界裡跨天長出來，但圓滿之後什麼都沒留下——跟遺跡/溫泉/邊陲營地/世界
                 // 奇觀/地底遺跡神殿比起來，「居民親手圓的夢」此前是探索紀事系統裡唯一沒被世界
