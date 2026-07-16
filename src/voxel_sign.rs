@@ -295,6 +295,75 @@ impl SignStore {
         events
     }
 
+    /// 舊無主家牌歸戶（玩家個人領地保護 v1，ROADMAP 963；audit-batch2 BROKEN 2）：回傳需 append
+    /// 的回填事件（每筆補上 `owner`/`owner_key`，牌面文字與座標不變、`seq` 由 store 續號），並
+    /// 就地更新 store 內歸屬（供同進程後續判定即時生效）。`resolve_owner(name)` 由呼叫端提供：
+    /// **只在名字恰好對應到唯一登入帳號時回 `Some((顯示名, email))`**，同名多帳號或對應不到回
+    /// `None`（見 [`crate::users::UserStore::resolve_unique_email`]）。
+    ///
+    /// 冪等：只回填「最新現況為家語氣、`owner_key` 為 `None`、且能唯一對應帳號」的座標；已有
+    /// `owner_key` 的牌不碰，故重跑不產生新事件。回傳事件已按座標鍵排序求穩定、可測。
+    ///
+    /// **每帳號僅一塊有效領地**（比照 [`Self::demote_other_claims`] 的既有不變量）：若同一帳號
+    /// 同時有多塊舊無主家牌可回填，只認**座標鍵排序最後**那一塊；若該帳號**已有**一塊有主牌
+    /// （`owner_key` 已佔用），則這批全部跳過、不再新增第二塊。
+    pub fn backfill_owner_key_events<F>(&mut self, mut resolve_owner: F) -> Vec<SignEntry>
+    where
+        F: FnMut(&str) -> Option<(String, String)>,
+    {
+        use std::collections::HashSet;
+        // 該帳號在回填前是否已佔用「一塊有效領地」名額（以 owner_key 為準，比照
+        // demote_other_claims）——若有，這帳號的舊無主家牌一律不再回填，免得冒出第二塊。
+        let already_owned: HashSet<String> = self.owners_key.values().cloned().collect();
+
+        // 收集候選座標（最新現況：有文字、家語氣、無 owner_key），避免借用 signs 期間改動。
+        let mut candidates: Vec<(String, String)> = self
+            .signs
+            .iter()
+            .filter(|(pos, text)| {
+                !self.owners_key.contains_key(pos.as_str())
+                    && crate::voxel_readsign::classify(text)
+                        == crate::voxel_readsign::SignTone::Home
+            })
+            .map(|(pos, text)| (pos.clone(), text.clone()))
+            .collect();
+        candidates.sort_by(|a, b| a.0.cmp(&b.0)); // 同帳號多塊時取排序最後那塊
+
+        // 每個 email 唯一化到一塊：座標排序後者覆蓋前者 → 留最後一塊。
+        let mut chosen: HashMap<String, (String, String)> = HashMap::new(); // email → (pos, display)
+        for (pos, text) in &candidates {
+            let Some(name) = parse_home_owner_name(text) else { continue };
+            let Some((display, email)) = resolve_owner(name) else { continue };
+            if already_owned.contains(&email) {
+                continue; // 該帳號已有一塊有效領地，不再新增
+            }
+            chosen.insert(email, (pos.clone(), display));
+        }
+
+        let mut picks: Vec<(String, String, String)> = chosen
+            .into_iter()
+            .map(|(email, (pos, display))| (pos, display, email))
+            .collect();
+        picks.sort_by(|a, b| a.0.cmp(&b.0)); // 依座標鍵排序輸出求穩定
+
+        let mut events = Vec::new();
+        for (pos, display, email) in picks {
+            let Some(text) = self.signs.get(&pos).cloned() else { continue };
+            self.owners.insert(pos.clone(), display.clone());
+            self.owners_key.insert(pos.clone(), email.clone());
+            let seq = self.next_seq;
+            self.next_seq += 1;
+            events.push(SignEntry {
+                pos,
+                text,
+                seq,
+                owner: Some(display),
+                owner_key: Some(email),
+            });
+        }
+        events
+    }
+
     /// 目前所有告示牌（供新玩家連線時一次送出），已按座標鍵排序求穩定。
     pub fn all(&self) -> Vec<(String, String)> {
         let mut v: Vec<(String, String)> =
@@ -302,6 +371,46 @@ impl SignStore {
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
     }
+}
+
+// ── 舊無主家牌歸戶 migration（玩家個人領地保護 v1，ROADMAP 963；audit-batch2 BROKEN 2）─────
+//
+// **真缺口**：領地保護（`voxel_landclaim`）全走穩定歸屬鍵 `owner_key`（帳號 email）——但
+// `owner_key` 這個欄位是 963 之後才加的（`#[serde(default)]`），在那之前立的「XX的家」牌
+// `owner`/`owner_key` 都是 `None`，於是**所有既有家牌**永遠落在 `resolve_claim_block` 的
+// 「無主＝永不保護」分支，964 的箱子保護、966/967 的信任/拆牌規則對它們全數失效。
+//
+// **這支 migration 做什麼**：啟動時掃過既有牌，把「已可靠對應到某個真實登入帳號」的舊無主
+// 家牌，補上該帳號的 `owner_key`（＋顯示名 `owner`），讓它們納入領地保護。純資料回填、
+// append-only、不改牌面文字、不刪任何行。
+//
+// **資料安全鐵律（絕不誤把 A 的家歸給 B）**：
+//   1. **只認唯一對應**：牌面「XX的家」的「XX」必須在帳號名冊裡**恰好對應到一個** email
+//      才回填（`resolve_owner` 回 `Some`）；同名多帳號、或對應不到（例：牌名其實是 AI 居民
+//      角色名、不是登入帳號）一律**保守留 `None` 不動**——寧可不保護，也不亂歸。
+//   2. **只補、不覆蓋**：已經有 `owner_key` 的牌完全不碰（冪等；重跑不產生新事件）。
+//   3. **只碰「家」語氣**：非家牌（路標/留言）不圈領地，跳過。
+//   4. **只看每座標最新現況**：被清除（最新文字為空）的座標不回填。
+//
+// 純函式、零 IO；讀名冊的 resolver 與 append/備份由 `voxel_ws.rs` 呼叫端提供（那裡才有帳號
+// 名冊與磁碟）。
+
+/// 從「XX的家」這類家牌牌面萃取署名者的名字（「XX」）。沿用居民立牌的署名慣例
+/// （`voxel_player_home` 註解：玩家在自家門前立「{名字}的家」）——取**第一個**「的」字前的
+/// 整段當名字。找不到「的」、或「的」在開頭（沒有名字）、或不是家語氣，一律回 `None`
+/// （保守：無法可靠判定署名者就不歸戶）。純函式、確定性、可測。
+pub fn parse_home_owner_name(text: &str) -> Option<&str> {
+    if crate::voxel_readsign::classify(text) != crate::voxel_readsign::SignTone::Home {
+        return None;
+    }
+    let idx = text.find('的')?;
+    if idx == 0 {
+        return None; // 「的家」開頭沒有署名者
+    }
+    let name = &text[..idx];
+    // 去頭尾空白後仍需非空。
+    let name = name.trim();
+    if name.is_empty() { None } else { Some(name) }
 }
 
 // ── 持久化 IO（在 voxel_ws.rs 的鎖外呼叫）────────────────────────────────────────────
@@ -584,6 +693,156 @@ mod tests {
         assert!(events.is_empty());
         let hits = store.all_within_xz(0.5, 0.5, 1.0);
         assert_eq!(hits[0].owner_key.as_deref(), Some("yoru@example.com"), "別人的領地不受影響");
+    }
+
+    // ── 舊無主家牌歸戶 migration（ROADMAP 963，audit-batch2 BROKEN 2）──────────────────────
+
+    #[test]
+    fn parse_home_owner_name_extracts_prefix() {
+        assert_eq!(parse_home_owner_name("露娜的家"), Some("露娜"));
+        assert_eq!(parse_home_owner_name("阿星的小屋"), Some("阿星")); // 「屋」也是家語氣
+        assert_eq!(parse_home_owner_name("施育群的家"), Some("施育群"));
+    }
+
+    #[test]
+    fn parse_home_owner_name_rejects_non_home_or_unparseable() {
+        assert_eq!(parse_home_owner_name("往礦坑↓"), None); // 非家語氣
+        assert_eq!(parse_home_owner_name("的家"), None); // 沒有署名者
+        assert_eq!(parse_home_owner_name("溫暖的窩"), Some("溫暖")); // 有「的」＋家語氣→取前段
+        assert_eq!(parse_home_owner_name("家"), None); // 家語氣但無「的」→無法判定署名者
+        assert_eq!(parse_home_owner_name("  的家"), None); // 「的」前只有空白
+    }
+
+    #[test]
+    fn backfill_assigns_owner_when_uniquely_resolvable() {
+        let mut store = SignStore::new();
+        store.set("0,0,0", "露娜的家".to_string(), None, None); // 舊無主家牌
+        // resolver：只有「露娜」對應到唯一帳號 luna@x.com。
+        let events = store.backfill_owner_key_events(|name| {
+            (name == "露娜").then(|| ("露娜".to_string(), "luna@x.com".to_string()))
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].pos, "0,0,0");
+        assert_eq!(events[0].owner_key.as_deref(), Some("luna@x.com"));
+        assert_eq!(events[0].text, "露娜的家", "牌面文字不變");
+        // store 內狀態即時生效：查歸屬應已補上。
+        let hit = store.all_within_xz(0.5, 0.5, 1.0).into_iter().next().unwrap();
+        assert_eq!(hit.owner_key.as_deref(), Some("luna@x.com"));
+    }
+
+    #[test]
+    fn backfill_leaves_unresolvable_untouched() {
+        // 對應不到帳號（例：牌名其實是 AI 居民角色名，不是登入帳號）→ 保守留 None 不動。
+        let mut store = SignStore::new();
+        store.set("0,0,0", "米拉的家".to_string(), None, None);
+        let events = store.backfill_owner_key_events(|_name| None);
+        assert!(events.is_empty(), "對應不到不該回填");
+        let hit = store.all_within_xz(0.5, 0.5, 1.0).into_iter().next().unwrap();
+        assert_eq!(hit.owner_key, None, "仍為無主");
+    }
+
+    #[test]
+    fn backfill_skips_non_home_and_already_owned() {
+        let mut store = SignStore::new();
+        store.set("0,0,0", "往礦坑↓".to_string(), None, None); // 非家牌
+        store.set(
+            "10,0,10",
+            "阿星的家".to_string(),
+            Some("阿星".to_string()),
+            Some("astar@x.com".to_string()),
+        ); // 已有 owner_key
+        let events = store.backfill_owner_key_events(|name| {
+            Some((name.to_string(), format!("{name}@x.com")))
+        });
+        assert!(events.is_empty(), "非家牌與已有主的牌都不該被回填");
+    }
+
+    #[test]
+    fn backfill_is_idempotent() {
+        let mut store = SignStore::new();
+        store.set("0,0,0", "露娜的家".to_string(), None, None);
+        let resolver =
+            |name: &str| (name == "露娜").then(|| ("露娜".to_string(), "luna@x.com".to_string()));
+        let first = store.backfill_owner_key_events(resolver);
+        assert_eq!(first.len(), 1);
+        // 第二次跑：已回填，不再產生事件。
+        let second = store.backfill_owner_key_events(resolver);
+        assert!(second.is_empty(), "重跑應冪等、零新事件");
+    }
+
+    #[test]
+    fn backfill_does_not_misassign_across_accounts() {
+        // 兩塊不同署名的舊牌，各自對應到各自的帳號——絕不張冠李戴。
+        let mut store = SignStore::new();
+        store.set("0,0,0", "露娜的家".to_string(), None, None);
+        store.set("5,0,5", "阿星的家".to_string(), None, None);
+        let events = store.backfill_owner_key_events(|name| match name {
+            "露娜" => Some(("露娜".to_string(), "luna@x.com".to_string())),
+            "阿星" => Some(("阿星".to_string(), "astar@x.com".to_string())),
+            _ => None,
+        });
+        assert_eq!(events.len(), 2);
+        let by_pos: std::collections::HashMap<_, _> =
+            events.iter().map(|e| (e.pos.as_str(), e.owner_key.as_deref())).collect();
+        assert_eq!(by_pos["0,0,0"], Some("luna@x.com"));
+        assert_eq!(by_pos["5,0,5"], Some("astar@x.com"));
+    }
+
+    #[test]
+    fn backfill_one_claim_per_account_when_multiple_signs() {
+        // 同一帳號有兩塊舊無主家牌：每帳號僅一塊有效領地，只回填座標排序最後那塊。
+        let mut store = SignStore::new();
+        store.set("0,0,0", "露娜的家".to_string(), None, None);
+        store.set("9,0,9", "露娜的家".to_string(), None, None);
+        let events = store.backfill_owner_key_events(|name| {
+            (name == "露娜").then(|| ("露娜".to_string(), "luna@x.com".to_string()))
+        });
+        assert_eq!(events.len(), 1, "同帳號多塊只回填一塊");
+        assert_eq!(events[0].pos, "9,0,9", "取座標鍵排序最後那塊");
+        // 另一塊仍無主。
+        let hit = store.all_within_xz(0.5, 0.5, 1.0).into_iter().next().unwrap();
+        assert_eq!(hit.owner_key, None);
+    }
+
+    #[test]
+    fn backfill_skips_account_that_already_has_a_claim() {
+        // 帳號已有一塊有主家牌，另有一塊同署名的舊無主牌——不新增第二塊有效領地。
+        let mut store = SignStore::new();
+        store.set(
+            "0,0,0",
+            "露娜的家".to_string(),
+            Some("露娜".to_string()),
+            Some("luna@x.com".to_string()),
+        );
+        store.set("9,0,9", "露娜的家".to_string(), None, None); // 舊無主
+        let events = store.backfill_owner_key_events(|name| {
+            (name == "露娜").then(|| ("露娜".to_string(), "luna@x.com".to_string()))
+        });
+        assert!(events.is_empty(), "該帳號已有領地，舊無主牌不再回填");
+        let hit = store.all_within_xz(9.5, 9.5, 1.0).into_iter().next().unwrap();
+        assert_eq!(hit.owner_key, None);
+    }
+
+    #[test]
+    fn backfill_replayed_events_survive_restart() {
+        // 回填事件 append 後，重啟（from_entries replay）應還原出有主的家牌。
+        let mut store = SignStore::new();
+        store.set("0,0,0", "露娜的家".to_string(), None, None);
+        let events = store.backfill_owner_key_events(|name| {
+            (name == "露娜").then(|| ("露娜".to_string(), "luna@x.com".to_string()))
+        });
+        // 模擬持久化：把原始 set 事件與回填事件一起 replay。
+        let mut all = vec![SignEntry {
+            pos: "0,0,0".into(),
+            text: "露娜的家".into(),
+            seq: 0,
+            owner: None,
+            owner_key: None,
+        }];
+        all.extend(events);
+        let restored = SignStore::from_entries(all);
+        let hit = restored.all_within_xz(0.5, 0.5, 1.0).into_iter().next().unwrap();
+        assert_eq!(hit.owner_key.as_deref(), Some("luna@x.com"), "重啟後仍有主");
     }
 
     #[test]

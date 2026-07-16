@@ -12232,6 +12232,57 @@ fn cleanup(id: Uuid, writer: &tokio::task::JoinHandle<()>) {
 // 「短鎖快照 → drop → spawn async → 下一 tick 用 AgentBus 套用」，絕不持鎖 await。
 
 /// 啟動乙太方界居民 tick 迴圈（main.rs 啟動時呼叫一次）。10Hz。
+/// 舊無主家牌歸戶 migration（玩家個人領地保護 v1，ROADMAP 963；audit-batch2 BROKEN 2）。
+///
+/// **真缺口**：`owner_key`（穩定歸屬鍵＝帳號 email）是 963 之後才加的欄位，在那之前立的
+/// 「XX的家」牌 `owner`/`owner_key` 皆為 `None`，於是全部落在 `resolve_claim_block` 的
+/// 「無主＝永不保護」分支——964 箱子保護、966/967 信任/拆牌規則對它們全數失效。
+///
+/// **做什麼**：啟動時（在 `hub()` 初始化與開始服務之前）掃過既有 `voxel_signs.jsonl`，把
+/// **能可靠對應到唯一登入帳號**的舊無主家牌，append 一筆補上 `owner_key` 的事件；hub 首次
+/// 初始化 replay 時就會把這些牌認成有主、納入領地保護。
+///
+/// **資料安全鐵律（絕不誤把 A 的家歸給 B）**：
+///   - 對應規則走 [`UserStore::resolve_unique_email`]：牌面「XX的家」的「XX」必須在帳號名冊裡
+///     **恰好一個**同名帳號、且該帳號**有 email**（Google 帳號才有；AI 居民帳號 email=None，
+///     不歸戶）才回填；同名多帳號、查無、AI 居民名一律**保守留 None 不動**。
+///   - **只補不覆蓋**（已有 `owner_key` 的牌不碰）＋**每帳號僅一塊有效領地**（見
+///     [`vsign::backfill_owner_key_events`]），故重跑冪等。
+///   - 動檔前**先備份**成 `.bak-claim-<epoch>`（備份失敗即中止本次、下次啟動再試）；只走
+///     既有 append-only 路徑（[`vsign::append_sign`]），**不改寫、不刪任何既有行**，向後相容。
+///
+/// 由 `main.rs` 啟動流程呼叫（此時 `UserStore` 已建好、hub 尚未初始化）；同步、非熱路徑。
+pub fn migrate_backfill_claim_owner(users: &crate::users::UserStore) {
+    // 沒有 sign 檔（乾淨世界）就沒東西可歸戶。
+    if !std::path::Path::new(vsign::SIGN_PATH).exists() {
+        return;
+    }
+    // 先把現況載進臨時 store，算出這批要回填哪些（若一筆都不需要，連備份都免——保持冪等零副作用）。
+    let mut store = vsign::SignStore::from_entries(vsign::load_signs());
+    let events = store.backfill_owner_key_events(|name| users.resolve_unique_email(name));
+    if events.is_empty() {
+        tracing::info!("舊家牌歸戶：無可靠對應到帳號的無主家牌，未回填（冪等）");
+        return;
+    }
+    // 動檔前備份（原檔一定存在，前面已判 exists）。
+    let src = vsign::SIGN_PATH;
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let bak = format!("{src}.bak-claim-{epoch}");
+    if let Err(e) = std::fs::copy(src, &bak) {
+        tracing::warn!("舊家牌歸戶：備份 {src} 失敗，本次略過（下次啟動再試）：{e}");
+        return;
+    }
+    tracing::info!("舊家牌歸戶：已備份 {src} 到 {bak}");
+    // append-only 回填（不改寫既有行）。
+    for ev in &events {
+        vsign::append_sign(ev);
+    }
+    tracing::info!("舊家牌歸戶完成：把 {} 塊既有無主家牌歸給對應帳號、納入領地保護", events.len());
+}
+
 pub fn spawn_residents() {
     tokio::spawn(async move {
         // 觸發 hub 初始化（建出居民），並開一個 10Hz 節拍。

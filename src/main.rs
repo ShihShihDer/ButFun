@@ -656,6 +656,12 @@ async fn main() {
         tracing::warn!("Google OAuth 未設定;走訪客模式(設好 GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI/BUTFUN_SESSION_SECRET 即啟用)");
     }
 
+    // 舊無主家牌歸戶 migration（玩家個人領地保護 v1，ROADMAP 963；audit-batch2 BROKEN 2）：
+    // owner_key 欄位是 963 才加的，之前立的「XX的家」牌全無主、永不受保護。此步在 voxel hub
+    // 初始化（spawn_residents 會觸發）之前，把能可靠對應到唯一登入帳號的舊無主家牌 append 補上
+    // owner_key，重啟 replay 即認成有主。冪等、備份後、只補不覆蓋、絕不誤歸（見 voxel_ws.rs）。
+    voxel_ws::migrate_backfill_claim_owner(&app_state.users);
+
     // 啟動權威遊戲迴圈。
     game::spawn(app_state.clone());
 

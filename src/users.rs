@@ -182,6 +182,21 @@ impl UserStore {
             .cloned()
     }
 
+    /// 依顯示名**無歧義**查找帳號的 email（舊無主家牌歸戶 migration 用，ROADMAP 963）：
+    /// 只有名冊裡**恰好一個**帳號叫這個名字、且該帳號有 email（Google 帳號才有；AI 居民帳號
+    /// `email=None`）時才回 `Some((顯示名, email))`；同名多帳號、查無、或無 email 一律回 `None`
+    /// （保守：無法可靠對應就不歸戶，絕不誤把 A 的家歸給 B）。名字比對大小寫敏感（與顯示一致）。
+    pub fn resolve_unique_email(&self, name: &str) -> Option<(String, String)> {
+        let inner = self.inner.lock().unwrap();
+        let mut it = inner.by_id.values().filter(|u| u.name == name);
+        let first = it.next()?;
+        if it.next().is_some() {
+            return None; // 同名多帳號，無法無歧義對應
+        }
+        let email = first.email.clone()?; // 無 email（AI 居民）不歸戶
+        Some((first.name.clone(), email))
+    }
+
     /// 建一個 `provider="ai"` 的居民帳號(給 AI 自助註冊端點用)。每呼叫一次就是一個新居民
     /// (新 uuid、固定身分),其遊戲進度(位置/乙太)會比照其他登入玩家持久化。`external_id`
     /// 用 uuid 自身保證唯一(AI 居民沒有外部 provider)。`provider="ai"` 標記方便日後把這些
@@ -779,6 +794,30 @@ mod tests {
         assert_eq!(renamed.name, "新名", "新名應過 sanitize（去空白／控制字元）");
         assert_eq!(store.get(u.id).unwrap().name, "新名");
         assert!(store.rename(Uuid::new_v4(), "x").await.is_none(), "查無此人回 None");
+    }
+
+    #[tokio::test]
+    async fn resolve_unique_email_only_when_unambiguous_and_has_email() {
+        // 舊無主家牌歸戶 migration 的對應規則（ROADMAP 963）：唯一同名＋有 email 才回 Some。
+        let store = UserStore::in_memory();
+        // 唯一同名的 Google 帳號（有 email）→ 可對應。
+        store
+            .find_or_create("google", "sub-luna", Some("luna@x.com".into()), "露娜")
+            .await;
+        assert_eq!(
+            store.resolve_unique_email("露娜"),
+            Some(("露娜".to_string(), "luna@x.com".to_string()))
+        );
+        // 查無此名 → None。
+        assert_eq!(store.resolve_unique_email("不存在"), None);
+        // AI 居民帳號（email=None）→ 不歸戶。
+        store.create_ai("米拉", "terran").await;
+        assert_eq!(store.resolve_unique_email("米拉"), None);
+        // 同名多帳號（撞名）→ 無法無歧義對應，回 None。
+        store
+            .find_or_create("google", "sub-luna2", Some("luna2@x.com".into()), "露娜")
+            .await;
+        assert_eq!(store.resolve_unique_email("露娜"), None);
     }
 
     #[test]
