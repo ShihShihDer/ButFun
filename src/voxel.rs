@@ -1272,6 +1272,98 @@ fn bridge_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
     None
 }
 
+// ── 沉船地標 v1（自主提案切片，接續 1005 世界河流／1006 世界第一座橋／1017 木筏）────────
+//
+// 真缺口：河流（1005）與橋（1006）讓世界第一次有一條值得渡的水系，木筏（1017）讓渡河
+// 有了第二種代步工具——但這條河至今純粹是「路過的地形」：沒有任何一處目的地要求玩家
+// 「先下水」才碰得到。既有六種地標（古代遺跡／溫泉／邊陲營地／野外殖民地／世界樹／
+// 地底遺跡神殿）全部落在乾燥陸地——遺跡/溫泉的落點判定明文排除水邊（`h <= SEA_LEVEL + 1`
+// 一律不生成）。本刀在河流固定一處深水核心埋一艘沉船殘骸：全世界唯一一處「非潛水／
+// 乘筏摸不到」的地標，讓河流本身、以及剛拿到的木筏／既有的游泳，第一次有了「為什麼
+// 要去」的理由。
+//
+// 落點手法沿用遺跡／溫泉「每欄用自己的 `height_at` 當地板」的既有安全設計（避免整艘船
+// 用單一固定 Y 貼地，遇到河床局部起伏時懸空或半埋）——固定在單一 z 切片（同橋，世界
+// 唯一一處，值得專程走一趟），x 向鎖在河道中心線 ±1（遠小於 [`RIVER_HALF_WIDTH`]=3，
+// 穩穩落在河核心全深區，不會誤觸緩坡帶變淺處）。核心座標經數學驗證：河核心中心線的
+// 河床高度恆 ≤ `RIVER_WATER_LEVEL - 2`（見 `shipwreck_core_submerged_below_water_level`
+// 測試），船體貼著河床往上兩層，不可能冒出水面。純函式、確定性、零狀態、零 IO；
+// 同座標永遠同結果。無破壞保護——如地底遺跡神殿，找到即探索，不必額外保護一艘早已
+// 解體多年的殘骸。
+
+/// 沉船固定所在的 z 切片——遠離橋（[`BRIDGE_Z`]=230）與四位居民家域核心（[-75,75]），
+/// 河流本身在這裡照樣蜿蜒流過，沉船落在河核心正中央。
+const SHIPWRECK_Z: i32 = -260;
+/// 沉船殘骸 x 向半寬（世界方塊）：中心線 ±1，遠小於 [`RIVER_HALF_WIDTH`]（3），
+/// 保證整艘船都落在河核心全深區，不會越界碰到緩坡帶。
+const SHIPWRECK_HALF_WIDTH: i32 = 1;
+/// 沉船殘骸 z 向半長（世界方塊）：中心 ±2，船身沿河流方向擺放。
+const SHIPWRECK_HALF_LEN: i32 = 2;
+
+/// 沉船核心座標的快取——只由固定常數決定，算一次即定，避免 `block_at` 熱路徑每次都
+/// 重算一次 `height_at`（同 `WORLDTREE_BASE`／`DUNGEON_BASE` 快取手法）。
+static SHIPWRECK_CORE: std::sync::OnceLock<(i32, i32, i32)> = std::sync::OnceLock::new();
+
+/// 沉船殘骸核心座標（艙底正中央，遺物所在）。x 落在該切片的河流中心線上，y 是該欄自己
+/// 的河床（`height_at` 已含河流下凹）正上方一格——同遺跡/溫泉手法，不用固定 Y、逐欄
+/// 貼著真實地形，不會懸空或半埋。純函式、確定性（結果快取）。
+pub fn shipwreck_core_pos() -> (i32, i32, i32) {
+    *SHIPWRECK_CORE.get_or_init(|| {
+        let cx = river_center_x(SHIPWRECK_Z as f32).round() as i32;
+        let h = height_at(cx, SHIPWRECK_Z);
+        (cx, h + 1, SHIPWRECK_Z)
+    })
+}
+
+/// 沉船探索半徑（世界方塊）：泡進船骸範圍內就算「找到」——比遺跡神殿（3.0）同量級，
+/// 沉船殘骸攤在河床上沒有密室，游近即可看見核心遺物。
+pub const SHIPWRECK_DISCOVER_RADIUS: f32 = 3.0;
+
+/// 玩家此刻是否已游近沉船核心遺物（水平＋垂直一起算，同遺跡神殿手法——沉船在水下，
+/// 「游到附近」天然涵蓋深度）。純函式、確定性、零狀態。
+pub fn near_shipwreck(px: f32, py: f32, pz: f32) -> bool {
+    if !px.is_finite() || !py.is_finite() || !pz.is_finite() {
+        return false;
+    }
+    let (tx, ty, tz) = shipwreck_core_pos();
+    let dx = px - tx as f32;
+    let dy = py - ty as f32;
+    let dz = pz - tz as f32;
+    dx * dx + dy * dy + dz * dz <= SHIPWRECK_DISCOVER_RADIUS * SHIPWRECK_DISCOVER_RADIUS
+}
+
+/// 沉船殘骸的方塊：以 [`shipwreck_core_pos`] 為艙底核心，向 ±[`SHIPWRECK_HALF_WIDTH`]／
+/// ±[`SHIPWRECK_HALF_LEN`] 攤開一層破損甲板（沿用既有 `Plank`，同橋的材質語彙），核心格
+/// 改用 `RelicGlow`（同地底遺跡神殿「找到即發光」的視覺語彙），供 [`near_shipwreck`] 判定
+/// 觸及；甲板上方沿中心線（河流方向）立起一截斷裂船脊，一望即知「解體多年」而非完整船體。
+/// 逐欄用該欄自己的 `height_at` 當甲板基準（非固定 Y），船身跨的每一欄地板高度各自貼著
+/// 真實河床，不會因局部起伏懸空或半埋。z 範圍先做整數比較早退（連沉船所在的 z 切片都
+/// 摸不到就不必查任何座標），避免這個函式在世界其餘每一次「地表之上」的方塊查詢裡都
+/// 白白多付一次 [`shipwreck_core_pos`] 查詢成本。純函式、確定性、零狀態、零 IO；
+/// 同座標永遠同結果。
+fn shipwreck_block_at(wx: i32, wy: i32, wz: i32) -> Option<Block> {
+    if (wz - SHIPWRECK_Z).abs() > SHIPWRECK_HALF_LEN {
+        return None; // 早退：連 z 都不在船長範圍內，省掉座標快取查詢
+    }
+    let (cx, _cy, cz) = shipwreck_core_pos();
+    let dx = wx - cx;
+    let dz = wz - cz;
+    if dx.abs() > SHIPWRECK_HALF_WIDTH || dz.abs() > SHIPWRECK_HALF_LEN {
+        return None;
+    }
+    let local_h = height_at(wx, wz);
+    if wy == local_h + 1 {
+        // 甲板層：核心格是發光遺物，其餘皆破損甲板。
+        return Some(if dx == 0 && dz == 0 { Block::RelicGlow } else { Block::Plank });
+    }
+    if wy == local_h + 2 && dx == 0 {
+        // 斷裂船脊：只沿河流方向的中心線（dx==0）立一截，兩側甲板保持低矮、鏤空，
+        // 一眼看出是斷裂殘骸而非完整船艙。
+        return Some(Block::Plank);
+    }
+    None
+}
+
 /// 某格 (cellx,cellz) 是否長樹；長的話回傳該樹（已驗證地表為草、在保護圈外）。
 /// 純函式、確定性（同格永遠同結果）、可測。是「樹是地形一部分」的單一真相來源。
 /// 樹機率依群系：森林 0.95 + 第二棵樹 0.85（每格可長兩棵→實測密度約草原 2.5–3 倍）、
@@ -1786,6 +1878,12 @@ pub fn block_at(wx: i32, wy: i32, wz: i32) -> Block {
     }
     let h = height_at(wx, wz);
     if wy > h {
+        // 沉船地標 v1：世界唯一一處「藏在水下」的地標，優先於河水填補判定——巧合落在
+        // 同一欄位時，殘骸的甲板/船脊/核心遺物理應蓋過原本會填的河水（同橋在陸地上
+        // 優先於原始地表的邏輯，只是這次疊在水裡而非空氣中）。
+        if let Some(swb) = shipwreck_block_at(wx, wy, wz) {
+            return swb;
+        }
         // 地表之上：海平面（含）以下補水。
         if wy <= SEA_LEVEL {
             return Block::Water;
@@ -3733,6 +3831,96 @@ mod tests {
         assert_eq!(Block::from_u8(Block::RelicGlow as u8), Some(Block::RelicGlow));
         assert!(Block::RelicGlow.is_placeable(), "遺跡核心挖下後應可重新擺放當光源");
         assert!(Block::RelicGlow.is_solid());
+    }
+
+    // ── 沉船地標 v1 ──────────────────────────────────────────────────────
+
+    #[test]
+    fn shipwreck_core_pos_is_deterministic() {
+        assert_eq!(shipwreck_core_pos(), shipwreck_core_pos());
+    }
+
+    #[test]
+    fn shipwreck_core_pos_on_river_centerline() {
+        let (cx, _cy, cz) = shipwreck_core_pos();
+        assert_eq!(cz, SHIPWRECK_Z);
+        assert_eq!(cx, river_center_x(SHIPWRECK_Z as f32).round() as i32);
+    }
+
+    #[test]
+    fn shipwreck_core_submerged_below_water_level() {
+        // 核心必須確實泡在水裡（低於全域水位），不能貼著水面或冒出水面——
+        // 否則「先下水才碰得到」的前提就破功。
+        let (_cx, cy, _cz) = shipwreck_core_pos();
+        assert!(cy < RIVER_WATER_LEVEL, "核心 y={cy} 應低於水位 {RIVER_WATER_LEVEL}");
+    }
+
+    #[test]
+    fn near_shipwreck_true_at_core_false_far() {
+        let (tx, ty, tz) = shipwreck_core_pos();
+        assert!(near_shipwreck(tx as f32, ty as f32, tz as f32), "站在核心應判定抵達");
+        assert!(
+            !near_shipwreck(tx as f32 + SHIPWRECK_DISCOVER_RADIUS + 5.0, ty as f32, tz as f32),
+            "超出探索半徑不該判定抵達"
+        );
+        // 出生原點離沉船夠遠，不該誤判抵達。
+        assert!(!near_shipwreck(0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn near_shipwreck_rejects_nonfinite() {
+        assert!(!near_shipwreck(f32::NAN, 0.0, 0.0));
+        assert!(!near_shipwreck(0.0, f32::INFINITY, 0.0));
+    }
+
+    #[test]
+    fn shipwreck_block_at_core_cell_is_relic_glow() {
+        let (cx, cy, cz) = shipwreck_core_pos();
+        assert_eq!(shipwreck_block_at(cx, cy, cz), Some(Block::RelicGlow));
+    }
+
+    #[test]
+    fn shipwreck_block_at_none_far_outside_footprint() {
+        let (cx, cy, cz) = shipwreck_core_pos();
+        assert_eq!(shipwreck_block_at(cx + 500, cy, cz), None);
+        assert_eq!(shipwreck_block_at(cx, cy, cz + 500), None);
+    }
+
+    #[test]
+    fn shipwreck_hull_never_pokes_above_river_water_level() {
+        // 全範圍真掃描（非只測核心一點）：船身跨的每一欄，不論甲板層或船脊層，
+        // 都不該冒出全域水位——這是「沉船」的核心不變式，用真實 `height_at` 逐欄核對，
+        // 不猜固定 Y。
+        let (cx, _cy, cz) = shipwreck_core_pos();
+        let mut hull_cells = 0;
+        for dx in -SHIPWRECK_HALF_WIDTH..=SHIPWRECK_HALF_WIDTH {
+            for dz in -SHIPWRECK_HALF_LEN..=SHIPWRECK_HALF_LEN {
+                let (wx, wz) = (cx + dx, cz + dz);
+                let local_h = height_at(wx, wz);
+                for wy in (local_h + 1)..=(local_h + 2) {
+                    if let Some(b) = shipwreck_block_at(wx, wy, wz) {
+                        assert!(
+                            matches!(b, Block::Plank | Block::RelicGlow),
+                            "沉船應只由木板/遺跡核心組成，實得 {b:?}"
+                        );
+                        assert!(
+                            wy <= RIVER_WATER_LEVEL,
+                            "沉船殘骸不該冒出水面: ({wx},{wy},{wz})，水位 {RIVER_WATER_LEVEL}"
+                        );
+                        hull_cells += 1;
+                    }
+                }
+            }
+        }
+        assert!(hull_cells > 0, "沉船殘骸應確實生成出方塊");
+    }
+
+    #[test]
+    fn block_at_prioritizes_shipwreck_over_river_water() {
+        // 完整走 block_at() 管線（非直接呼叫 shipwreck_block_at）：核心格在全世界生成
+        // 管線裡也該回遺跡核心，而不是被河水填補判定搶先蓋過。
+        let (cx, cy, cz) = shipwreck_core_pos();
+        assert_eq!(block_at(cx, cy, cz), Block::RelicGlow);
     }
 
     // ── 世界河流 v1 ──────────────────────────────────────────────────────

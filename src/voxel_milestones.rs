@@ -93,6 +93,9 @@ pub const MILESTONES: &[MilestoneDef] = &[
     // 圓夢地標 v1.1（自主提案切片，接續 `voxel_lifeproject` v1）：居民親手圓滿的個人大夢，
     // 第一次也被世界記住——地標系統從「天然生成／居民立牌」延伸出「她默默做完的事」。
     MilestoneDef { id: "first_dream_landmark", name_zh: "初見圓夢", desc_zh: "路過，撞見了一位居民親手圓滿的夢想角落", icon: "🌟" },
+    // 沉船地標 v1（自主提案切片，接續 1005 世界河流／1006 世界第一座橋／1017 木筏）：
+    // 全世界唯一一處要求先下水才碰得到的地標，水域探索第一次有了明確目的地。
+    MilestoneDef { id: "first_shipwreck", name_zh: "初探沉船", desc_zh: "潛進河流深處，摸到了一艘早已解體的沉船殘骸", icon: "🚢" },
 ];
 
 /// 查表確認是否為已知里程碑 id（守 store 資料乾淨，未知 id 不寫入）。
