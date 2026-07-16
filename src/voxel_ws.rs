@@ -12645,7 +12645,8 @@ fn tick_farbond() {
                     && r.far_visit.is_none()
                     && r.stroll_partner.is_none()
                     && r.walk_with.is_none()
-                    && r.caravan.is_none();
+                    && r.caravan.is_none()
+                    && r.hotspring_trip.is_none();
                 if vfarv::should_embark(miss_count, r.far_visit_cooldown, idle_free, r.asleep) {
                     r.far_visit =
                         Some((friend_x, friend_z, place.clone(), friend_name.clone()));
@@ -15800,6 +15801,7 @@ fn maybe_wedding() {
             && r.frontier_visit.is_none()
             && r.far_visit.is_none()
             && r.caravan.is_none()
+            && r.hotspring_trip.is_none()
             && r.cheer_target.is_none()
             && r.invent_walk.is_none()
     };
@@ -20668,6 +20670,7 @@ fn tick_residents(dt: f32) {
                     && r.reunion_seek.is_none()
                     && r.expedition.is_none()
                     && r.caravan.is_none()
+                    && r.hotspring_trip.is_none()
                     && !r.asleep;
                 if vreadsign::should_pilgrimage(
                     r.cherished_sign.is_some(),
@@ -21046,6 +21049,7 @@ fn tick_residents(dt: f32) {
                     && r.daybreak_seek.is_none()
                     && r.reunion_seek.is_none()
                     && r.caravan.is_none()
+                    && r.hotspring_trip.is_none()
                     && !r.asleep;
                 if vexp::should_embark(
                     motive.is_some(),
@@ -21444,6 +21448,7 @@ fn tick_residents(dt: f32) {
                     && r.reunion_seek.is_none()
                     && r.far_visit.is_none()
                     && r.caravan.is_none()
+                    && r.hotspring_trip.is_none()
                     && !r.asleep;
                 if town_bound && idle_free && r.say.is_empty() && r.frontier_visit_cooldown <= 0.0 {
                     // 挑第一位交情達老朋友、此刻確實在邊陲的朋友（本世界僅 4 位居民，遍歷成本可忽略）。
@@ -24091,6 +24096,7 @@ fn tick_residents(dt: f32) {
                             && r.frontier_visit.is_none()
                             && r.far_visit.is_none()
                             && r.caravan.is_none()
+                            && r.hotspring_trip.is_none()
                             && r.follow.is_none()
                             && r.summon.is_none()
                             && r.gather.is_none()
@@ -32272,6 +32278,73 @@ mod tests {
         assert!(
             all.iter().any(|p| (p.cx, p.cz) == (outer_sample.cx, outer_sample.cz)),
             "colonist_house_repair 用來比對『既有認領是不是本殖民地地塊』時，外圈居民不能被漏掉"
+        );
+    }
+
+    // ── 溫泉歇腳 v1 review 修復（PR#1329）：hotspring_trip 與相思成行的互斥 ──────────
+    #[test]
+    fn hotspring_trip_blocks_farbond_embark_even_when_otherwise_ready() {
+        // 露娜（vox_res_0）念叨諾娃（vox_res_1）已滿 EMBARK_AFTER_MISSES 次、探親冷卻已到、
+        // 且與諾娃已是隔村老朋友——除了「正在泡溫泉」以外，其餘動身條件全數就緒。
+        // 這條測試守住 review 指出的不變式：hotspring_trip 進行中，tick_farbond 不該讓她
+        // 同時疊上第二個互斥的 far_visit 狀態（否則兩個 trip 同時 Some、彼此搶 target）。
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let stale = now.saturating_sub(vfar::FARBOND_MIN_INTERVAL_SECS + 100);
+
+        // 老朋友：8 次互訪即達 Friend 級（vbonds::FRIEND_VISITS）。
+        {
+            let mut bonds = hub().bonds.write().unwrap();
+            for _ in 0..vbonds::FRIEND_VISITS {
+                bonds.record_visit("露娜", "諾娃");
+            }
+        }
+        // 諾娃搬去隔村（settlement 1），露娜明確留在主村（0）——隔村相思的前提。顯式覆寫兩邊
+        // 而非依賴預設值：這個 worktree 的 `data/voxel_settlements.jsonl` 可能殘留先前手動
+        // 冒煙測試留下的分派紀錄，不能假設「沒設過＝主村」在測試環境仍成立。
+        {
+            let mut settle = hub().settlements.write().unwrap();
+            settle.assign("vox_res_0", vsettle::MAIN_SETTLEMENT);
+            settle.assign("vox_res_1", 1);
+        }
+        // 念叨滿 3 次、且距上次已超過冷卻間隔 → due() 為真。
+        {
+            let mut clock = hub().farbond_clock.write().unwrap();
+            clock.mark("vox_res_0", stale);
+            clock.mark("vox_res_0", stale);
+            clock.mark("vox_res_0", stale);
+        }
+        // 讓露娜此刻正在溫泉之旅中（本刀新增狀態），其餘既定任務全維持預設 None／false。
+        {
+            let mut rs = hub().residents.write().unwrap();
+            let r = rs.iter_mut().find(|r| r.id == "vox_res_0").unwrap();
+            r.asleep = false;
+            r.hotspring_trip = Some((1.0, 1.0));
+            r.far_visit = None;
+            r.far_visit_cooldown = 0.0;
+            r.say.clear();
+        }
+
+        tick_farbond();
+
+        let rs = hub().residents.read().unwrap();
+        let r = rs.iter().find(|r| r.id == "vox_res_0").unwrap();
+        assert!(
+            r.far_visit.is_none(),
+            "hotspring_trip 進行中不該被相思成行疊上第二個互斥狀態"
+        );
+        assert_eq!(
+            r.hotspring_trip,
+            Some((1.0, 1.0)),
+            "溫泉之旅本身不該被這一輪相思 tick 意外改動"
+        );
+        // 若 should_embark 被誤判為 true，跑的會是「⑦' 動身落地」分支（不設 say）；
+        // 落到這裡的「念叨」分支才會冒出點名諾娃的泡泡——藉此確認不是其他前提沒就緒才沒動身。
+        assert!(
+            r.say.contains('諾'),
+            "其餘動身條件皆已就緒，這一輪該落到『念叨』分支、冒出點名諾娃的泡泡"
         );
     }
 }
