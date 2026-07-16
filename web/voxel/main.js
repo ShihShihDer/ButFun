@@ -7370,6 +7370,12 @@ function promptClaimTrust() {
   ws.send(JSON.stringify({ t: "claim_trust", name: trimmed }));
 }
 
+// 領地認領流程 v1（自主提案切片，ROADMAP 1026）：站在自己當初親手署名、卻還沒受保護的
+// 家牌旁按 K，把這塊地正式收進自己名下（伺服器權威判定，見 claim_land_ok/claim_land_fail）。
+function claimLand() {
+  ws.send(JSON.stringify({ t: "claim_land" }));
+}
+
 // ── 輸入 ───────────────────────────────────────────────────────────────────
 const keys = {};
 addEventListener("keydown", (e) => {
@@ -7400,6 +7406,9 @@ addEventListener("keydown", (e) => {
   // 染色頭巾 v1（自主提案切片，ROADMAP 1023）：H 切換戴上／脫下；e.repeat 防瀏覽器按鍵
   // 自動重複觸發把 set_hat 洗版（比照 R/P/B/G 同款單鍵切換防呆）。
   if (e.code === "KeyH" && !e.repeat) { e.preventDefault(); toggleHat(); }
+  // 領地認領流程 v1（自主提案切片，ROADMAP 1026）：K 認領——站在自己當初署名、卻還沒受
+  // 保護的家牌旁按下，把這塊地正式收進自己名下；e.repeat 防瀏覽器按鍵自動重複觸發洗版。
+  if (e.code === "KeyK" && !e.repeat) { e.preventDefault(); claimLand(); }
   // Esc：關操作設定面板（也讓瀏覽器解除滑鼠鎖定，兩者不衝突）。
   if (e.code === "Escape" && settingsPanelVisible()) closeSettingsPanel();
   // Esc：也收起 ☰ 主選單抽屜（若正開著）。
@@ -8210,6 +8219,18 @@ function connect() {
       // 領地信任名單 v2（自主提案切片，ROADMAP 966）：伺服器已切換信任狀態，給自己一句確認。
       showMsg(m.trusted ? ("已把 " + m.name + " 加進你的領地信任名單 🤝") : ("已把 " + m.name + " 移出你的領地信任名單。"));
       setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3000);
+    } else if (m.t === "claim_land_ok") {
+      // 領地認領流程 v1（自主提案切片，ROADMAP 1026）：認領成功／冪等確認。
+      showMsg(m.message || "🔒 這塊地現在受保護了。");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 3000);
+    } else if (m.t === "claim_land_fail") {
+      // 認領被拒絕（附近找不到/不是你的/歧義/已是別人的）——溫柔說明原因。
+      showErr(m.reason || "沒辦法認領這塊地");
+      setTimeout(() => { const e = document.getElementById("err"); if (e) e.style.display = "none"; }, 2500);
+    } else if (m.t === "claim_land_hint") {
+      // 連線時的主動提醒：你有一塊當初署名寫下、至今仍未受保護的家牌。
+      showMsg("你的「" + (m.text || "家") + "」還沒受保護，靠近後按 K 可以認領保護它！");
+      setTimeout(() => { const e = document.getElementById("msg"); if (e) e.style.display = "none"; }, 5000);
     } else if (m.t === "colony_founded") {
       // 分村殖民 v1：世界某處剛奠下一座新村（人人可見的世界大事，稀有）——浮出立村捷報。
       showMsg("🏘️ 世界長出了新村落「" + (m.name || "野外村落") + "」——" + (m.story || ""));

@@ -4324,6 +4324,12 @@ enum ClientMsg {
     /// 撤銷信任不再要求對方在線／在附近後，玩家需要一種方式確認自己到底信任了誰。
     #[serde(rename = "claim_trust_list")]
     ClaimTrustList,
+    /// 領地認領流程 v1（自主提案切片，ROADMAP 1026，接續 963~967）：站在自己當初親手署名、
+    /// 卻還沒補上穩定歸屬鍵的家牌旁（[`vlandclaim::CLAIM_REACH`] 內）按下認領——把這塊地正式
+    /// 收進自己名下。維護者 2026-07-17 拍板 plan B：不做自動歸戶猜測，只認「附近唯一一塊你
+    /// 當初寫下、尚未認領」的家牌，零猜測（見 `vlandclaim::resolve_claim_action`）。
+    #[serde(rename = "claim_land")]
+    ClaimLand,
     /// 漂流瓶 v1：對準水面丟一只瓶中信（自主提案切片 825）。伺服器驗 reach + 目標為水面 +
     /// 登入身分 + 手持空玻璃瓶(83) 後清洗文字、內容審查，扣一只瓶子並存檔，僅廣播座標
     /// （內文絕不外流，只有撿到的人才讀得到）。
@@ -5499,6 +5505,26 @@ async fn handle_socket(
         if out_tx.send(Message::Text(sign_sync)).await.is_err() {
             cleanup(my_id, &writer);
             return;
+        }
+    }
+
+    // 領地認領流程 v1（自主提案切片，ROADMAP 1026）：連線時若你當初親手署名的家牌至今仍未
+    // 受保護（`owner_key` 尚未補上——常見於 963 這個欄位出現前寫下的舊牌），主動提醒一句，
+    // 讓你在按下認領鍵之前就知道這塊地目前「尚未受保護」（維護者 plan B 拍板：不自動歸戶，
+    // 但至少要讓你知道要去認領）。只在連線這一刻掃一次；牌子稀疏，全世界掃過成本可忽略
+    // （比照 `vlandclaim::find_owner_home` 同款全量掃描）。
+    if is_account {
+        let unprotected = hub().sign.read().unwrap().all_hits().into_iter().find(|h| {
+            vlandclaim::is_home_sign(&h.text)
+                && h.owner_key.is_none()
+                && h.owner.as_deref() == Some(name.as_str())
+        });
+        if let Some(hit) = unprotected {
+            let hint = serde_json::json!({ "t": "claim_land_hint", "text": hit.text }).to_string();
+            if out_tx.send(Message::Text(hint)).await.is_err() {
+                cleanup(my_id, &writer);
+                return;
+            }
         }
     }
 
@@ -11255,6 +11281,80 @@ async fn handle_socket(
                     };
                     p.say_timer = PLAYER_SAY_SECS;
                 }
+            }
+
+            // ── 領地認領流程 v1（自主提案切片，ROADMAP 1026，接續 963~967）─────────────────
+            // 稽核批次二 H1：963 之前立的家牌 `owner_key` 全是 `None`，永遠落在「無主＝不保護」
+            // 分支，保護形同虛設；維護者否決自動歸戶猜測（PR #1324），拍板 plan B——只認玩家
+            // 站在牌子旁明確按下認領這一個訊號。伺服器只信自己的位置與登入帳號解出的歸屬鍵，
+            // 判定全交給 `resolve_claim_action`（見該函式說明：零猜測、天生排除居民/系統自建
+            // 的家）。
+            Ok(ClientMsg::ClaimLand) => {
+                let my_email = if is_account { account_email.clone() } else { None };
+                let Some(my_email) = my_email else {
+                    let mut players = hub().players.write().unwrap();
+                    if let Some(p) = players.get_mut(&my_id) {
+                        p.say = "先登入帳號才能認領領地喔。".to_string();
+                        p.say_timer = PLAYER_SAY_SECS;
+                    }
+                    continue;
+                };
+                let Some((px, _py, pz)) = player_pos(my_id) else { continue; };
+                let hits = hub().sign.read().unwrap()
+                    .all_within_xz(px, pz, vlandclaim::CLAIM_REACH);
+                let home: Vec<(String, String, Option<String>)> = hits
+                    .iter()
+                    .filter(|h| vlandclaim::is_home_sign(&h.text))
+                    .map(|h| (h.pos.clone(), h.owner.clone().unwrap_or_default(), h.owner_key.clone()))
+                    .collect();
+                let view: Vec<(&str, &str, Option<&str>)> = home
+                    .iter()
+                    .map(|(pos, disp, key)| (pos.as_str(), disp.as_str(), key.as_deref()))
+                    .collect();
+                let (ok, line) = match vlandclaim::resolve_claim_action(view, &my_email, &name) {
+                    vlandclaim::ClaimOutcome::Claim(pos) => {
+                        let pos = pos.to_string();
+                        let claimed = {
+                            let mut store = hub().sign.write().unwrap();
+                            let Some(ev) = store.claim(&pos, name.clone(), my_email.clone()) else {
+                                continue;
+                            };
+                            let demoted = store.demote_other_claims(&my_email, &pos);
+                            (ev, demoted)
+                        };
+                        let (ev, demoted) = claimed;
+                        vsign::append_sign(&ev);
+                        for d in &demoted {
+                            vsign::append_sign(d);
+                        }
+                        if demoted.is_empty() {
+                            (true, "🔒 這塊地現在受保護了，只有你（和你信任的人）動得了這裡。".to_string())
+                        } else {
+                            (true, "🔒 已認領這塊地；你舊的家牌則不再受保護（每人限一塊領地）。".to_string())
+                        }
+                    }
+                    vlandclaim::ClaimOutcome::AlreadyMine => {
+                        (true, "這裡已經是你的地了，安心地住著吧。".to_string())
+                    }
+                    vlandclaim::ClaimOutcome::TakenByOther(owner) => {
+                        (false, format!("這裡已經是 {owner} 的地了，不能認領別人的家喔。"))
+                    }
+                    vlandclaim::ClaimOutcome::NotEligible => {
+                        (false, "這附近的家牌不是你當初署名寫下的那塊，沒辦法認領喔。".to_string())
+                    }
+                    vlandclaim::ClaimOutcome::Ambiguous => {
+                        (false, "附近有不只一塊你當初寫下的家牌，站近一點再試一次？".to_string())
+                    }
+                    vlandclaim::ClaimOutcome::NotFound => {
+                        (false, "附近沒有家牌，先寫一塊「XX的家」的告示牌吧。".to_string())
+                    }
+                };
+                let msg = if ok {
+                    serde_json::json!({ "t": "claim_land_ok", "message": line }).to_string()
+                } else {
+                    serde_json::json!({ "t": "claim_land_fail", "reason": line }).to_string()
+                };
+                let _ = out_tx.send(Message::Text(msg)).await;
             }
 
             // ── 漂流瓶 v1：丟瓶（自主提案切片 825）───────────────────────────────────

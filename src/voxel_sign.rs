@@ -95,6 +95,10 @@ pub struct SignStore {
 /// [`crate::voxel_landclaim::resolve_claim_block`]）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct SignHit {
+    /// 牌子的世界座標鍵（"wx,wy,wz"）：`cx`/`cz` 只留浮點中心，重建不出精確的 `wy`——領地
+    /// 認領流程 v1（ROADMAP 1026）需要把歸屬寫回**這一塊**牌，故補上原始鍵；本欄位是模組內部
+    /// Rust 型別的一部分，不直接序列化進前端協定，零協議影響。
+    pub pos: String,
     /// 牌子中心世界座標。
     pub cx: f32,
     pub cz: f32,
@@ -238,6 +242,7 @@ impl SignStore {
                 let dz = cz - z;
                 let dist2 = dx * dx + dz * dz;
                 (dist2 <= r2).then(|| SignHit {
+                    pos: k.clone(),
                     cx,
                     cz,
                     text: text.clone(),
@@ -260,6 +265,7 @@ impl SignStore {
             .filter_map(|(k, text)| {
                 let (sx, _sy, sz) = parse_key(k)?;
                 Some(SignHit {
+                    pos: k.clone(),
                     cx: sx as f32 + 0.5,
                     cz: sz as f32 + 0.5,
                     text: text.clone(),
@@ -269,6 +275,20 @@ impl SignStore {
                 })
             })
             .collect()
+    }
+
+    /// 領地認領流程 v1（ROADMAP 1026）：只補上這塊**既有**牌子的歸屬兩欄（`owner`/`owner_key`），
+    /// **不動牌面文字**——與 `set` 需要重新整段改寫文字才會一併記下歸屬不同，本方法服務「牌子
+    /// 早就寫好了，只是當初沒能力／沒登入而沒被記下穩定歸屬鍵」的存量缺口，讓玩家不必重打
+    /// 一次字就能把舊牌收進自己名下。找不到這個座標的牌（呼叫端應已用同一把讀鎖驗過存在，
+    /// 落地拿寫鎖不該落空，防禦式處理避免中間狀態被清掉時 panic）回 `None`。
+    pub fn claim(&mut self, pos: &str, owner: String, owner_key: String) -> Option<SignEntry> {
+        let text = self.signs.get(pos)?.clone();
+        self.owners.insert(pos.to_string(), owner.clone());
+        self.owners_key.insert(pos.to_string(), owner_key.clone());
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        Some(SignEntry { pos: pos.to_string(), text, seq, owner: Some(owner), owner_key: Some(owner_key) })
     }
 
     /// 每帳號僅一塊有效領地（玩家個人領地保護 review 修正 第三輪，堵住「無限插旗」濫用面，
@@ -597,5 +617,45 @@ mod tests {
         let positions: Vec<&str> = events.iter().map(|e| e.pos.as_str()).collect();
         assert!(positions.contains(&"0,0,0"));
         assert!(positions.contains(&"20,0,20"));
+    }
+
+    // ── claim（領地認領流程 v1，ROADMAP 1026）────────────────────────────────────────────
+
+    #[test]
+    fn claim_fills_owner_without_touching_text() {
+        let mut store = SignStore::new();
+        store.set("0,0,0", "阿星的家".to_string(), Some("阿星".to_string()), None);
+        let ev = store.claim("0,0,0", "阿星".to_string(), "astar@example.com".to_string())
+            .expect("既有牌應可認領");
+        assert_eq!(ev.text, "阿星的家", "文字不變");
+        assert_eq!(ev.owner.as_deref(), Some("阿星"));
+        assert_eq!(ev.owner_key.as_deref(), Some("astar@example.com"));
+        assert_eq!(store.get("0,0,0"), Some("阿星的家"));
+        let hit = store.all_within_xz(0.5, 0.5, 1.0).into_iter().next().expect("應命中");
+        assert_eq!(hit.owner_key.as_deref(), Some("astar@example.com"));
+    }
+
+    #[test]
+    fn claim_missing_pos_returns_none() {
+        let mut store = SignStore::new();
+        assert_eq!(store.claim("9,9,9", "阿星".to_string(), "astar@example.com".to_string()), None);
+    }
+
+    #[test]
+    fn claim_does_not_affect_other_signs() {
+        let mut store = SignStore::new();
+        store.set("0,0,0", "阿星的家".to_string(), Some("阿星".to_string()), None);
+        store.set("5,0,5", "小夜的家".to_string(), Some("小夜".to_string()), None);
+        store.claim("0,0,0", "阿星".to_string(), "astar@example.com".to_string());
+        let other = store.all_within_xz(5.5, 5.5, 1.0).into_iter().next().expect("應命中");
+        assert_eq!(other.owner_key, None, "沒被認領的牌不受影響");
+    }
+
+    #[test]
+    fn all_hits_and_all_within_xz_carry_pos_key() {
+        let mut store = SignStore::new();
+        store.set("3,4,5", "阿星的家".to_string(), Some("阿星".to_string()), None);
+        assert_eq!(store.all_hits()[0].pos, "3,4,5");
+        assert_eq!(store.all_within_xz(3.5, 5.5, 1.0)[0].pos, "3,4,5");
     }
 }
