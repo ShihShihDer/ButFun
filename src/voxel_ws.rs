@@ -20031,6 +20031,7 @@ fn tick_residents(dt: f32) {
                 && r.gather.is_none()
                 && r.fetch.is_none()
                 && r.invent_run.is_none()
+                && r.hotspring_trip.is_none()
             {
                 if let Some(partner_name) = sweetheart_of.get(r.name) {
                     if let Some(&(px, pz, partner_asleep, _)) =
@@ -21201,7 +21202,8 @@ fn tick_residents(dt: f32) {
                     && r.frontier_visit.is_none()
                     && r.far_visit.is_none()
                     && r.stroll_partner.is_none()
-                    && r.walk_with.is_none();
+                    && r.walk_with.is_none()
+                    && r.hotspring_trip.is_none();
                 let sid = settlement_snap.get(&r.id).copied().unwrap_or(vsettle::MAIN_SETTLEMENT);
                 // 目的地（v2·殖民地互跑，ROADMAP 997）：從「全世界聚落名冊」裡排除自己這座，
                 // 任兩座聚落之間都能互跑——不再區分「我是主村」或「我是殖民地」。世界還沒有
@@ -32345,6 +32347,155 @@ mod tests {
         assert!(
             r.say.contains('諾'),
             "其餘動身條件皆已就緒，這一輪該落到『念叨』分支、冒出點名諾娃的泡泡"
+        );
+    }
+
+    // ── 溫泉歇腳 v1 review 複核第二輪（PR#1329）：hotspring_trip 與跨村商隊的互斥 ──────
+    #[test]
+    fn hotspring_trip_blocks_caravan_embark_even_when_otherwise_ready() {
+        // review 複核第二輪指出：caravan 的 idle_free 漏了 hotspring_trip 這一項，讓溫泉之旅
+        // 進行中仍可能被疊上跨村商隊、兩個互斥 trip 同時 Some 互搶 r.target。這條測試守住這個
+        // 不變式：推一座測試專用殖民地讓世界確實有處可跑商隊（純記憶體、不落地檔案），把露娜
+        // （vox_res_0）其餘動身條件全數擺就緒、商隊冷卻也歸零，唯獨讓她正泡在溫泉之旅裡——
+        // 跑滿一段時間（跨越 CARAVAN_CHANCE 骰很多次的機率窗），r.caravan 該全程維持 None。
+        {
+            let mut colonies = hub().colonies.write().unwrap();
+            if colonies.all().iter().all(|c| c.seq != 999_001) {
+                colonies.push(vcolony::Colony {
+                    seq: 999_001,
+                    name: "測試風禾屯".to_string(),
+                    cx: 5000,
+                    cz: 5000,
+                    biome: "grassland".to_string(),
+                    founders: vec![],
+                    story: String::new(),
+                    founded_unix: 0,
+                });
+            }
+        }
+        {
+            let mut settle = hub().settlements.write().unwrap();
+            settle.assign("vox_res_0", vsettle::MAIN_SETTLEMENT);
+        }
+        {
+            let mut rs = hub().residents.write().unwrap();
+            let r = rs.iter_mut().find(|r| r.id == "vox_res_0").unwrap();
+            r.asleep = false;
+            r.say.clear();
+            r.caravan = None;
+            r.caravan_cooldown = 0.0;
+            // 讓她已抵達池邊、正舒服泡著（stay 給足餘裕，跑完整段測試迴圈也不會意外「返家」清空）。
+            r.hotspring_trip = Some((1.0, 1.0));
+            r.hotspring_stay = 10_000.0;
+            r.hotspring_shared = true;
+            r.gather = None;
+            r.fetch = None;
+            r.visiting = None;
+            r.cheer_target = None;
+            r.seeking_comfort = false;
+            r.clique_meet = None;
+            r.custom_meet = None;
+            r.follow = None;
+            r.invent_run = None;
+            r.pilgrimage = None;
+            r.daybreak_seek = None;
+            r.reunion_seek = None;
+            r.lover_seek = None;
+            r.expedition = None;
+            r.frontier_visit = None;
+            r.far_visit = None;
+            r.stroll_partner = None;
+            r.walk_with = None;
+        }
+
+        // 關掉 agent LLM 思考 spawn（比照 npc_agent_wire 既有測試手法）：這條測試只跑在裸
+        // `#[test]`（非 tokio runtime），tick_residents 平常會為居民 spawn 無鎖 async 思考，
+        // 沒有 runtime context 會 panic；本刀無關 agent 思考，關掉零副作用。
+        std::env::set_var("BUTFUN_NPC_AGENT", "0");
+
+        // CARAVAN_CHANCE=2%，跑 300 個 tick（每次都重骰）等同讓「guard 若被拿掉」幾乎必然
+        // 現形（1-0.98^300 ≈ 99.8%），guard 若真的在，這裡無論骰幾次都該是恆定 None（非機率性）。
+        for _ in 0..300 {
+            tick_residents(RESIDENT_DT);
+        }
+        std::env::remove_var("BUTFUN_NPC_AGENT");
+
+        let rs = hub().residents.read().unwrap();
+        let r = rs.iter().find(|r| r.id == "vox_res_0").unwrap();
+        assert!(
+            r.caravan.is_none(),
+            "hotspring_trip 進行中不該被跨村商隊疊上第二個互斥狀態"
+        );
+        assert_eq!(
+            r.hotspring_trip,
+            Some((1.0, 1.0)),
+            "溫泉之旅本身不該被這段跨村商隊 tick 意外改動"
+        );
+    }
+
+    // ── 溫泉歇腳 v1 review 複核第二輪（PR#1329）：hotspring_trip 與戀人牽掛的互斥 ──────
+    #[test]
+    fn hotspring_trip_blocks_lover_seek_even_when_otherwise_ready() {
+        // review 複核第二輪同一準則點名「lover_seek 也可能同病」：hotspring 的 idle_free 讓路
+        // 給 lover_seek，但 lover_seek 自己的 depart guard 當時漏了反向排除 hotspring_trip。
+        // 讓露娜（vox_res_0）與諾娃（vox_res_1）締結戀人、諾娃醒著且分得夠遠、牽掛冷卻已到，
+        // 唯獨讓露娜正泡著溫泉——SEEK_CHANCE=12%，跑 300 個 tick 幾乎必然現形，guard 若真的
+        // 在，r.lover_seek 該全程維持 None。
+        {
+            let mut romance = hub().romance.write().unwrap();
+            romance.record_spark("露娜", "諾娃");
+        }
+        {
+            let mut rs = hub().residents.write().unwrap();
+            {
+                let n = rs.iter_mut().find(|r| r.id == "vox_res_1").unwrap();
+                n.asleep = false;
+                n.body.x = 9999.0;
+                n.body.z = 9999.0; // 與露娜分得遠遠超過 MIN_APART_DIST，動身條件之一先就緒。
+            }
+            let r = rs.iter_mut().find(|r| r.id == "vox_res_0").unwrap();
+            r.asleep = false;
+            r.say.clear();
+            r.body.x = 0.0;
+            r.body.z = 0.0;
+            r.lover_seek = None;
+            r.lover_seek_cooldown = 0.0;
+            r.hotspring_trip = Some((1.0, 1.0));
+            r.hotspring_stay = 10_000.0;
+            r.hotspring_shared = true;
+            r.seeking_food = false;
+            r.foraging_food = false;
+            r.seeking_comfort = false;
+            r.cheer_target = None;
+            r.visiting = None;
+            r.clique_meet = None;
+            r.approaching_esteem = None;
+            r.expedition = None;
+            r.pilgrimage = None;
+            r.daybreak_seek = None;
+            r.reunion_seek = None;
+            r.follow = None;
+            r.gather = None;
+            r.fetch = None;
+            r.invent_run = None;
+        }
+
+        std::env::set_var("BUTFUN_NPC_AGENT", "0");
+        for _ in 0..300 {
+            tick_residents(RESIDENT_DT);
+        }
+        std::env::remove_var("BUTFUN_NPC_AGENT");
+
+        let rs = hub().residents.read().unwrap();
+        let r = rs.iter().find(|r| r.id == "vox_res_0").unwrap();
+        assert!(
+            r.lover_seek.is_none(),
+            "hotspring_trip 進行中不該被戀人牽掛疊上第二個互斥狀態"
+        );
+        assert_eq!(
+            r.hotspring_trip,
+            Some((1.0, 1.0)),
+            "溫泉之旅本身不該被這段戀人牽掛 tick 意外改動"
         );
     }
 }
