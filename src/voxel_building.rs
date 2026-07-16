@@ -817,6 +817,48 @@ pub fn house_blocks_at(resident: &str, cx: i32, cy: i32, cz: i32) -> Vec<BuildBl
     generate_blocks(BuildKind::House, cx, cy, cz, &style)
 }
 
+/// 一座家的可重放版型。`x_max`/`z_max` 是主屋 footprint；`blocks` 用來保守核對門床。
+pub struct HouseReplayLayout {
+    pub blocks: Vec<BuildBlock>,
+    pub x_max: i32,
+    pub z_max: i32,
+}
+
+/// 現行版型加上「居家 v2 隔間」上線前的舊版型候選。
+///
+/// prod 既有小屋不會因程式新增 `room_split` 就原地改建；只用今日的
+/// [`house_blocks_at`] 重算會把約半數舊屋的門床及 footprint 認錯。呼叫端依現況門床挑中
+/// 真正存在的候選，既保留新屋行為，也讓舊屋可被夜間補圈等保守維修辨識。
+pub fn house_replay_layouts_at(resident: &str, cx: i32, cy: i32, cz: i32) -> Vec<HouseReplayLayout> {
+    let biome = biome_at_voxel(cx, cz);
+    let current = BuildStyle::for_resident(resident, biome, cx, cz);
+    let mut out = vec![HouseReplayLayout {
+        blocks: generate_blocks(BuildKind::House, cx, cy, cz, &current),
+        x_max: current.x_max,
+        z_max: current.z_max,
+    }];
+    if current.room_split {
+        let h = style_hash(resident, cx, cz);
+        let (x_max, z_max) = match (h >> 6) & 0b11 {
+            0 => (1, 1),
+            1 => (2, 1),
+            2 => (1, 2),
+            _ => (2, 2),
+        };
+        let mut legacy = current;
+        legacy.x_max = x_max;
+        legacy.z_max = z_max;
+        legacy.room_split = false;
+        legacy.annex = (h >> 10) & 1 == 1;
+        out.push(HouseReplayLayout {
+            blocks: generate_blocks(BuildKind::House, cx, cy, cz, &legacy),
+            x_max,
+            z_max,
+        });
+    }
+    out
+}
+
 /// **拆除安全過濾**（純函式、可測）：舊家計畫裡的一格，現在世界上是 `current`——可以拆嗎？
 /// 只有「現況方塊正是她當年放的那塊」才准拆；唯一的寬容是門的開關狀態（她蓋的是
 /// `DoorClosed`，有人開過門變 `DoorOpen`，仍是同一扇她的門）。其餘任何出入
