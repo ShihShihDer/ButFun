@@ -163,7 +163,7 @@ pub struct BuildBlock {
 }
 
 /// 一位居民的建造計畫（jsonl 落地單位）。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BuildPlan {
     pub resident: String,
     /// BuildKind::as_str()，字串供 serde 向後相容。
@@ -249,7 +249,7 @@ impl BuildPlan {
 }
 
 /// 所有居民的建造計畫（每人至多一份 active plan）。
-#[derive(Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct BuildStore {
     pub plans: HashMap<String, BuildPlan>,
     next_seq: u64,
@@ -1088,6 +1088,77 @@ pub fn append_build(plan: &BuildPlan) {
 /// 載回所有建造計畫記錄（伺服器啟動時呼叫一次）。檔不存在 / 壞行皆容忍。
 pub fn load_builds() -> Vec<BuildPlan> {
     read_lines(VOXEL_BUILDS_PATH)
+}
+
+/// 啟動時先完整 replay 建造紀錄，再將已被覆蓋的舊快照安全壓縮。
+/// replay 必須先完成；即使 compact 寫檔失敗，記憶體中的現況仍不受影響。
+pub fn load_build_store_compacted() -> BuildStore {
+    let store = BuildStore::from_entries(load_builds());
+    compact_builds(VOXEL_BUILDS_PATH);
+    store
+}
+
+// voxel_builds.jsonl 是「最終狀態型」append-only log：同居民取最大 seq，且同 seq
+// 最後一行是現況。完成計畫的空 remaining 行是 tombstone，必須保留，否則舊計畫會復活。
+// 因此每位居民只留 replay 會採用的最後一行，即可保留 plans 與 next_seq 的完整語意。
+
+/// 將建造快照壓成「每位居民最後狀態一筆」，以同目錄 temp → rename 原子替換。
+/// 任何讀取、序列化或寫入失敗都放棄替換，rename 前絕不改動原檔。
+pub fn compact_builds(path: &str) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(_) => return,
+    };
+    let mut entries = Vec::new();
+    for line in content.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        match serde_json::from_str::<BuildPlan>(line) {
+            Ok(entry) => entries.push(entry),
+            Err(e) => {
+                tracing::warn!("[voxel_building] builds compact 遇到無法解析的原始行: {e}，保守放棄");
+                return;
+            }
+        }
+    }
+    if entries.is_empty() {
+        return;
+    }
+
+    let mut latest: HashMap<String, BuildPlan> = HashMap::new();
+    for entry in entries {
+        let replace = latest
+            .get(&entry.resident)
+            .map_or(true, |previous| entry.seq >= previous.seq);
+        if replace {
+            latest.insert(entry.resident.clone(), entry);
+        }
+    }
+
+    let mut residents: Vec<_> = latest.keys().cloned().collect();
+    residents.sort();
+    let mut compacted = String::new();
+    for resident in residents {
+        match serde_json::to_string(&latest[&resident]) {
+            Ok(line) => {
+                compacted.push_str(&line);
+                compacted.push('\n');
+            }
+            Err(e) => {
+                tracing::warn!("[voxel_building] builds compact 序列化失敗: {e}，放棄");
+                return;
+            }
+        }
+    }
+
+    let tmp = format!("{path}.compact.tmp");
+    if let Err(e) = std::fs::write(&tmp, compacted) {
+        tracing::warn!("[voxel_building] builds compact temp 寫入失敗: {e}，原檔保留");
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        tracing::warn!("[voxel_building] builds compact rename 失敗: {e}，原檔保留");
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
 
 // ── 居民改動世界的方塊持久化（重啟後蓋的東西/挖的洞還在）──────────────────────
@@ -2050,6 +2121,51 @@ mod tests {
         let s = BuildStore::from_entries(vec![mk(30), mk(15), mk(7)]);
         assert!(s.has_plan("vox_res_1"), "最新一行未蓋完 → 該續蓋");
         assert_eq!(s.plans["vox_res_1"].remaining.len(), 7, "以最新進度續蓋、不倒退回滿");
+    }
+
+    #[test]
+    fn compact_builds_replay_state_equivalent() {
+        use std::io::Write;
+
+        let mk = |resident: &str, seq: u64, remaining: usize| BuildPlan {
+            resident: resident.into(),
+            kind: "house".into(),
+            kind_name: "小木屋".into(),
+            cx: seq as i32,
+            cy: 5,
+            cz: 0,
+            remaining: (0..remaining)
+                .map(|x| BuildBlock { x: x as i32, y: 5, z: 0, b: Block::Wood as u8 })
+                .collect(),
+            total: 3,
+            seq,
+            expansion: false,
+            inspired_by: None,
+            helpers: Vec::new(),
+            stall_material: None,
+        };
+        // 同 seq 後行覆蓋、較小 seq 亂序舊行忽略；done tombstone 也必須留下。
+        let entries = vec![
+            mk("luna", 7, 3),
+            mk("nova", 9, 2),
+            mk("luna", 7, 1),
+            mk("luna", 6, 2),
+            mk("nova", 9, 0),
+        ];
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        for entry in &entries {
+            writeln!(file, "{}", serde_json::to_string(entry).unwrap()).unwrap();
+        }
+        let path = file.path().to_str().unwrap();
+
+        let state_a = BuildStore::from_entries(read_lines(path));
+        compact_builds(path);
+        let compacted = read_lines(path);
+        let state_b = BuildStore::from_entries(compacted.clone());
+
+        assert_eq!(state_a, state_b, "compact 前後 replay 現狀必須完全等價（A==B）");
+        assert_eq!(compacted.len(), 2, "每位居民只應保留最後狀態一行");
+        assert!(!state_b.has_plan("nova"), "done tombstone replay 後不可復活舊計畫");
     }
 
     // ── build_say_line 純函式 ─────────────────────────────────────────────────
