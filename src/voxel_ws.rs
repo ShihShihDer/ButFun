@@ -139,6 +139,7 @@ use crate::voxel_dungeon as vdungeon;
 use crate::voxel_shipwreck as vshipwreck;
 use crate::voxel_busking as vbusk;
 use crate::voxel_festival as vfestival;
+use crate::voxel_wear as vwear;
 use crate::voxel_trade::{self as vtrade, TradeOffer};
 use crate::voxel_visit as vvisit;
 use crate::voxel_fond_greeting as vfond;
@@ -299,6 +300,13 @@ struct VoxelPlayer {
     /// [`ClientMsg::SetBoating`]），下筏永遠放行。廣播給所有人，讓其他玩家也看得到誰正乘筏。
     #[serde(default)]
     boating: bool,
+    /// 染色頭巾 v1（自主提案切片，ROADMAP 1023）：此刻戴著哪頂頭巾的物品 id（`None` = 沒戴）。
+    /// **additive 欄位**——舊前端解析 JSON 時本就會忽略陌生欄位，零協議破壞；預設 `None`
+    /// 不序列化省頻寬。伺服器權威：只有 `SetHat{item_id:Some(id)}` 通過真持有背包驗證才會
+    /// 設值（見 [`ClientMsg::SetHat`]、`voxel_craft::can_wear_hat`），脫下（`None`）永遠放行。
+    /// 廣播給所有人，讓其他玩家也看得到你戴著哪頂頭巾。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hat: Option<u8>,
     /// 上一次 `tick_pathwear` 取樣時這位玩家所在的地面格 (x,z)（居民踏出來的小徑 v3：
     /// 玩家的腳步也算數）。純伺服器內部節拍狀態，不廣播（`#[serde(skip)]`）、不影響協議。
     #[serde(skip)]
@@ -922,6 +930,11 @@ struct VoxelResident {
     /// 家居擺設嚮往冷卻倒數（秒，自主提案切片）：> 0 表示最近才因為走近鄰居家、看到自己
     /// 家還沒有的擺設而心生嚮往過，暫不再觸發，讓「羨慕鄰居家的擺設」稀有有份量、天然防洗版。
     decor_envy_cd: f32,
+    /// 染色頭巾 v1（自主提案切片，ROADMAP 1023）：收到玩家送的頭巾（`Gift`）後就一直戴著哪頂
+    /// （物品 id，`None` = 沒戴），世界第一次能一眼看出「這位收過我的心意」。純記憶體、重啟歸零
+    /// （比照全庫其餘 cosmetic/暫態欄位慣例，如 `stroll_partner`／`custom_meet`）；只由 Gift
+    /// handler 寫入，居民自己不會摘下。
+    hat: Option<u8>,
 }
 
 /// 環境生物的種類（水中游魚 v1，ROADMAP 848 起 wildlife 系統擴充為可延伸的多種類；
@@ -1113,6 +1126,10 @@ struct ResidentView {
     /// additive 欄位，舊前端安全忽略；預設省略序列化以節省頻寬時一律視為 `false`（成年）。
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     is_child: bool,
+    /// 染色頭巾 v1（自主提案切片，ROADMAP 1023）：這位居民此刻戴著哪頂頭巾的物品 id
+    /// （`None` = 沒戴，不序列化省頻寬）。additive 欄位，舊前端安全忽略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hat: Option<u8>,
 }
 
 /// 環境生物序列化視圖（廣播給客戶端渲染：位置/朝向/種類。野兔 v1 ROADMAP 847
@@ -2300,6 +2317,8 @@ fn build_resident(
             // 家居擺設 v1（自主提案切片）：入場沒有嚮往；首次冷卻各自錯開，避免啟動後一群
             // 居民同時路過鄰居家齊聲心生嚮往。
             decor_envy_cd: vdecor::ENVY_COOLDOWN_SECS * 0.5 + i as f32 * 60.0,
+            // 染色頭巾 v1（自主提案切片，ROADMAP 1023）：入場沒戴任何頭巾，等玩家送禮才戴上。
+            hat: None,
     }
 }
 
@@ -3813,7 +3832,7 @@ fn players_snapshot_json() -> String {
     // 同時收集心情補助快照（ROADMAP 681），供後續 mood_map 計算套用。
     // 同時收集睡眠快照（ROADMAP 739）：睡著的居民名牌旁改顯示 💤，蓋過一般心情 emoji。
     let (resident_snaps, snapshot_mood_boosts, snapshot_asleep): (
-        Vec<(String, &'static str, f32, f32, f32, f32, String, u64)>,
+        Vec<(String, &'static str, f32, f32, f32, f32, String, u64, Option<u8>)>,
         HashMap<String, bool>,
         HashMap<String, bool>,
     ) = {
@@ -3821,7 +3840,7 @@ fn players_snapshot_json() -> String {
         let snaps = rs
             .iter()
             .map(|r| {
-                (r.id.clone(), r.name, r.body.x, r.body.y, r.body.z, r.yaw, r.say.clone(), r.birth_unix)
+                (r.id.clone(), r.name, r.body.x, r.body.y, r.body.z, r.yaw, r.say.clone(), r.birth_unix, r.hat)
             })
             .collect();
         let boosts: HashMap<String, bool> =
@@ -3901,7 +3920,7 @@ fn players_snapshot_json() -> String {
         let des = hub().desires.read().unwrap();
         resident_snaps
             .into_iter()
-            .map(|(id, name, x, y, z, yaw, say, birth_unix)| {
+            .map(|(id, name, x, y, z, yaw, say, birth_unix, hat)| {
                 let mood = mood_map.get(&id).cloned();
                 let is_child = vchild::is_child(birth_unix, child_now);
                 ResidentView {
@@ -3915,6 +3934,7 @@ fn players_snapshot_json() -> String {
                     yaw,
                     say,
                     is_child,
+                    hat,
                 }
             })
             .collect()
@@ -4220,6 +4240,13 @@ enum ClientMsg {
     /// 前端據此把水平移動速度乘上固定倍率（純視覺+移動手感，非玩家可調，零庫存消耗）。
     #[serde(rename = "set_mounted")]
     SetMounted { animal_id: String, mounted: bool },
+    /// 染色頭巾 v1（自主提案切片，ROADMAP 1023）：戴上／脫下一頂頭巾。`item_id=Some(id)`
+    /// （戴上）時伺服器**必查該 id 真的是頭巾**（`voxel_craft::is_hat`）**＋真實背包持有** ≥ 1
+    /// （比照 `SetRiding`／`SetPerforming`／`SetBoating` 的持有驗證手法）才放行，不信客戶端
+    /// 自報；`item_id=None`（脫下）永遠放行，不需驗證。成功後翻轉 `VoxelPlayer::hat` 並隨
+    /// `players` 廣播，讓其他人也看得到你戴著哪頂頭巾（純視覺 cosmetic，不影響任何判定）。
+    #[serde(rename = "set_hat")]
+    SetHat { item_id: Option<u8> },
     /// 居民交易 v1：向指定居民請求以物易物（ROADMAP 670）。
     /// 伺服器回 `trade_offer`，玩家再傳 TradeAccept 接受；提案 30 秒後自動過期。
     #[serde(rename = "trade_request")]
@@ -5271,6 +5298,7 @@ async fn handle_socket(
                 riding: false,
                 performing: false,
                 boating: false,
+                hat: None,
                 last_step_cell: None,
             },
         );
@@ -9189,6 +9217,40 @@ async fn handle_socket(
                     serde_json::json!({ "t": "boating_ok", "boating": boating }).to_string(),
                 ));
             }
+            // ── 染色頭巾 v1（自主提案切片，ROADMAP 1023）：戴上／脫下頭巾 ─────────────────
+            Ok(ClientMsg::SetHat { item_id }) => {
+                // 濫用防護：戴上（Some）必查 id 真的是頭巾＋真實背包持有 ≥1，比照 SetRiding／
+                // SetPerforming／SetBoating 的持有驗證手法（不信客戶端自報）；脫下（None）
+                // 永遠放行，不需驗證。零自由文字、零 LLM、零對外端點。
+                let allow = match item_id {
+                    Some(id) => {
+                        let has_item =
+                            vcraft::is_hat(id) && hub().inventory.read().unwrap().count(&name, id) >= 1;
+                        vcraft::can_wear_hat(has_item)
+                    }
+                    None => true,
+                };
+                if !allow {
+                    let _ = out_tx.try_send(Message::Text(
+                        serde_json::json!({
+                            "t": "hat_fail",
+                            "reason": "沒有這頂頭巾——先合成一頂吧（背包 2×2：2 葉片 + 1 野花）"
+                        }).to_string(),
+                    ));
+                    continue;
+                }
+                {
+                    let mut players = hub().players.write().unwrap();
+                    if let Some(p) = players.get_mut(&my_id) {
+                        p.hat = item_id;
+                    }
+                } // players 寫鎖釋放
+                // 廣播讓所有在場玩家立即看到（含自己）。
+                broadcast_players();
+                let _ = out_tx.try_send(Message::Text(
+                    serde_json::json!({ "t": "hat_ok", "item_id": item_id }).to_string(),
+                ));
+            }
             // ── 騎乘馴養夥伴 v1（自主提案切片，ROADMAP 1021）：騎上／下馬指定的動物 ──────
             Ok(ClientMsg::SetMounted { animal_id, mounted }) => {
                 // 鎖序：players 讀位置 → wildlife 單次寫鎖內查驗＋落地（查驗與翻轉同一把鎖，
@@ -9630,6 +9692,10 @@ async fn handle_socket(
                 // 建築藍圖 v1（自主提案）：這份禮是不是一張藍圖？藍圖直接指定她接下來蓋哪一種建物
                 // （非猜關鍵詞），下方 5c) 據此改寫她的心願。
                 let blueprint_kind_hit = vblueprint::blueprint_kind(item_id);
+                // 染色頭巾 v1（自主提案切片，ROADMAP 1023）：這份禮是不是一頂頭巾？是的話她收下
+                // 後會一直戴著（下方 8) residents 寫鎖內設 `r.hat`），世界第一次能一眼看出
+                // 「這位收過我的心意」。
+                let hat_gift_hit = vcraft::is_hat(item_id);
                 // 3) 驗觸及範圍（水平 XZ）。
                 let dx = px - rx;
                 let dz = pz - rz;
@@ -9815,6 +9881,9 @@ async fn handle_socket(
                     } else {
                         vdecor::display_thanks_line(iname, pick)
                     }
+                } else if hat_gift_hit {
+                    // 染色頭巾 v1：世界第一件穿戴外觀，她收下後會一直戴著——比一般贈禮更雀躍的專屬道謝。
+                    vwear::hat_gift_thanks_line(iname, pick)
                 } else if vgift::is_treasure_gift(item_id) {
                     vgift::treasure_gift_thanks_line(&name, affinity, pick)
                 } else if vgift::is_cave_treasure_gift(item_id) {
@@ -9876,6 +9945,11 @@ async fn handle_socket(
                         if soup_care_hit {
                             r.illness_severity =
                                 villness::apply_care(r.illness_severity, villness::SOUP_CARE_BOOST);
+                        }
+                        // 染色頭巾 v1（自主提案切片，ROADMAP 1023）：這份禮是頭巾——她收下後就一直
+                        // 戴著（換頭巾＝再送一頂新的直接覆蓋），世界第一次能一眼看出「這位收過我的心意」。
+                        if hat_gift_hit {
+                            r.hat = Some(item_id);
                         }
                     }
                 }
@@ -9944,6 +10018,13 @@ async fn handle_socket(
                             &vdecor::display_feed_line(rname, decor_name),
                         );
                     }
+                } else if hat_gift_hit {
+                    // 染色頭巾 v1：世界第一件穿戴外觀——讓不在場的玩家回來也讀得到「誰戴上了什麼」。
+                    vfeed::append_feed(
+                        "穿戴外觀",
+                        rname,
+                        &vwear::hat_gift_feed_line(rname, &name, iname),
+                    );
                 } else {
                     vfeed::append_feed(
                         "贈禮",
@@ -31422,6 +31503,25 @@ mod tests {
         }
     }
 
+    /// 染色頭巾 v1（ROADMAP 1023，自主提案切片）：多詞 variant 鎖死
+    /// `#[serde(rename="set_hat")]`，防止重蹈 `chest_and_trade_tags_match_frontend` 註解描述的
+    /// 覆轍——`rename_all="lowercase"` 不分詞會把 `SetHat` 期待成無底線的 `"sethat"`，
+    /// 與前端 `web/voxel/main.js` 實際送的 `"set_hat"` 對不上、悄悄解析失敗零錯誤訊息。
+    #[test]
+    fn set_hat_tag_matches_frontend() {
+        let on: ClientMsg =
+            serde_json::from_str(r#"{"t":"set_hat","item_id":124}"#).unwrap();
+        match on {
+            ClientMsg::SetHat { item_id } => assert_eq!(item_id, Some(124)),
+            _ => panic!("應解析成 SetHat"),
+        }
+        let off: ClientMsg = serde_json::from_str(r#"{"t":"set_hat","item_id":null}"#).unwrap();
+        match off {
+            ClientMsg::SetHat { item_id } => assert_eq!(item_id, None),
+            _ => panic!("應解析成 SetHat"),
+        }
+    }
+
     /// 附近居民貨品一覽 v1（ROADMAP 1013）：多詞 variant 鎖死 `#[serde(rename="nearby_trades")]`
     /// （前車之鑑見上一條 `chest_and_trade_tags_match_frontend`，同款坑）。
     #[test]
@@ -31768,6 +31868,7 @@ mod tests {
             riding: false,
             performing: false,
             boating: false,
+            hat: None,
             last_step_cell: None,
         }
     }

@@ -128,6 +128,9 @@ pub fn item_name_zh(block_id: u8) -> &'static str {
         crate::voxel_craft::STREET_ACCORDION_ID => "街頭手風琴",
         // 木筏 v1（ROADMAP 1017，自主提案切片）：純物品，同一漏洞順手補上，避免餽贈顯示 fallback。
         crate::voxel_craft::RAFT_ID => "木筏",
+        // 染色頭巾 v1（ROADMAP 1023，自主提案切片）：純物品，送給居民她會一直戴著。
+        crate::voxel_craft::RED_BANDANA_ID => "紅頭巾",
+        crate::voxel_craft::BLUE_BANDANA_ID => "藍頭巾",
         _ => "物品",
     }
 }
