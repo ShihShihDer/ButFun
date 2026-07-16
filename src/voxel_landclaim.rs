@@ -169,6 +169,84 @@ pub fn claim_deny_line(owner: &str, pick: usize) -> String {
     DENY_LINES[pick % DENY_LINES.len()].replace("{owner}", owner)
 }
 
+// ── 領地認領流程 v1（ROADMAP 1026，接續 963~967）─────────────────────────────────────
+
+/// 認領動作站近門檻（世界座標，方塊，XZ 平面）——比 [`TrustStore`] 的 `TRUST_REACH`（5.0）
+/// 更近：認領是把一塊地正式收進自己名下的動作，逼你真的站到牌子跟前，而非站在整片保護圈
+/// （[`CLAIM_RADIUS`]=6.0）邊緣就能認領一塊看不清楚是哪塊的牌。
+pub const CLAIM_REACH: f32 = 3.0;
+
+/// 站在自家牌旁按下認領鍵，該讓哪塊牌認領成我的、還是該拒絕（維護者 2026-07-17 拍板 plan
+/// B：不做自動歸戶猜測，只認「附近唯一一塊你當初親手寫下、卻還沒補上穩定歸屬鍵」的家牌）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimOutcome<'a> {
+    /// 附近恰好一塊符合資格的牌——認領它（`pos_key`，呼叫端負責落地寫入）。
+    Claim(&'a str),
+    /// 附近的家牌已經是你自己的（穩定鍵已是你）——冪等，什麼都不用做。
+    AlreadyMine,
+    /// 附近的家牌已經有別人認領——回傳那位主人的顯示名。
+    TakenByOther(&'a str),
+    /// 附近有「家」語氣的牌子，但都不是你當初署名寫下的那塊（含居民/系統自建的家，`owner`
+    /// 恆 `None`；或別人寫的舊牌）——不猜，直接拒絕。
+    NotEligible,
+    /// 附近同時有一塊以上符合資格的牌，不猜是哪一塊。
+    Ambiguous,
+    /// 附近找不到任何「家」語氣的牌子。
+    NotFound,
+}
+
+/// 純判定：`nearby_home` 是呼叫端已篩到 [`CLAIM_REACH`] 內、且已用 [`is_home_sign`] 過濾
+/// 只剩「家」語氣的牌子清單，每項為 `(牌子座標鍵, 立牌時記下的顯示名或空字串, 穩定歸屬鍵)`；
+/// `my_key` 是我登入帳號的穩定鍵，`my_name` 是我目前的顯示名。
+///
+/// **零猜測（維護者拍板 plan B，見模組說明）**：候選資格是「這塊牌當初記下的 `owner`
+/// 顯示名等於我現在的顯示名、且 `owner_key` 仍是 `None`」——比對的是伺服器早就記下的
+/// 結構化欄位（`owner`，居民認得你的家 v1／ROADMAP 830 就在記），**不解析牌面文字**猜測
+/// 「這塊應該是你的」（那正是已被否決的自動 migration 方向，PR #1324）。這條件天生排除
+/// 所有系統/居民自建的家（`owner` 恆 `None`，見 `maybe_build_lovenest`／居民立牌命名 749
+/// 等五處呼叫點）——沒人記下過名字的牌，不會有人的顯示名去匹配到它。恰好一塊候選才動作；
+/// 找不到、已被別人認領、或同時有一塊以上都候選 → 一律拒絕。
+pub fn resolve_claim_action<'a, I>(nearby_home: I, my_key: &str, my_name: &str) -> ClaimOutcome<'a>
+where
+    I: IntoIterator<Item = (&'a str, &'a str, Option<&'a str>)>,
+{
+    let mut eligible: Vec<&str> = Vec::new();
+    let mut mine_claimed = false;
+    let mut other_claimed: Option<&str> = None;
+    let mut any_home = false;
+    for (pos, display, owner_key) in nearby_home {
+        any_home = true;
+        match owner_key {
+            Some(k) if k == my_key => mine_claimed = true,
+            Some(_) => {
+                if other_claimed.is_none() {
+                    other_claimed = Some(display);
+                }
+            }
+            None => {
+                if display == my_name {
+                    eligible.push(pos);
+                }
+            }
+        }
+    }
+    match eligible.len() {
+        1 => ClaimOutcome::Claim(eligible[0]),
+        0 => {
+            if mine_claimed {
+                ClaimOutcome::AlreadyMine
+            } else if let Some(o) = other_claimed {
+                ClaimOutcome::TakenByOther(o)
+            } else if any_home {
+                ClaimOutcome::NotEligible
+            } else {
+                ClaimOutcome::NotFound
+            }
+        }
+        _ => ClaimOutcome::Ambiguous,
+    }
+}
+
 // ── 領地信任名單 v2（ROADMAP 966，自主提案切片）───────────────────────────────────────
 
 /// 站在朋友身邊、按 T 邀請信任時，對方需在這個水平距離內（世界座標，方塊，XZ 平面）——
@@ -351,6 +429,7 @@ mod tests {
 
     fn hit(cx: f32, cz: f32, text: &str, owner_key: Option<&str>) -> SignHit {
         SignHit {
+            pos: "0,0,0".to_string(),
             cx,
             cz,
             text: text.to_string(),
@@ -650,5 +729,71 @@ mod tests {
             TrustedFriend { trusted_key: "d@example.com".into(), trusted_name: "小明".into() },
         ];
         assert!(matches!(resolve_trust_target(&trusted, &[]), TrustLookup::Ambiguous));
+    }
+
+    // ── resolve_claim_action（領地認領流程 v1，ROADMAP 1026）────────────────────────────
+
+    #[test]
+    fn claim_action_single_eligible_sign_is_claimed() {
+        let nearby = vec![("0,0,0", "阿星", None)];
+        assert_eq!(
+            resolve_claim_action(nearby, "astar@example.com", "阿星"),
+            ClaimOutcome::Claim("0,0,0")
+        );
+    }
+
+    #[test]
+    fn claim_action_no_home_sign_nearby_is_not_found() {
+        assert_eq!(resolve_claim_action(vec![], "astar@example.com", "阿星"), ClaimOutcome::NotFound);
+    }
+
+    #[test]
+    fn claim_action_already_owned_by_me_is_already_mine() {
+        let nearby = vec![("0,0,0", "阿星", Some("astar@example.com"))];
+        assert_eq!(
+            resolve_claim_action(nearby, "astar@example.com", "阿星"),
+            ClaimOutcome::AlreadyMine
+        );
+    }
+
+    #[test]
+    fn claim_action_owned_by_other_is_taken() {
+        let nearby = vec![("0,0,0", "小夜", Some("yoru@example.com"))];
+        assert_eq!(
+            resolve_claim_action(nearby, "astar@example.com", "阿星"),
+            ClaimOutcome::TakenByOther("小夜")
+        );
+    }
+
+    #[test]
+    fn claim_action_unclaimed_but_not_my_name_is_not_eligible() {
+        // 別人（或很久以前）寫下、還沒認領的家牌——不是你當初署名的，不能撿現成。
+        let nearby = vec![("0,0,0", "小夜", None)];
+        assert_eq!(resolve_claim_action(nearby, "astar@example.com", "阿星"), ClaimOutcome::NotEligible);
+    }
+
+    #[test]
+    fn claim_action_system_built_home_owner_none_is_never_eligible() {
+        // 鎖死本刀最在意的回歸：居民自建家牌（`maybe_build_lovenest`／立牌命名 749 等）owner
+        // 恆為空字串（呼叫端 `unwrap_or_default()`），不該被任何玩家的顯示名意外匹配到而認領。
+        let nearby = vec![("0,0,0", "", None)];
+        assert_eq!(resolve_claim_action(nearby, "astar@example.com", "阿星"), ClaimOutcome::NotEligible);
+    }
+
+    #[test]
+    fn claim_action_two_eligible_signs_is_ambiguous() {
+        let nearby = vec![("0,0,0", "阿星", None), ("5,0,5", "阿星", None)];
+        assert_eq!(resolve_claim_action(nearby, "astar@example.com", "阿星"), ClaimOutcome::Ambiguous);
+    }
+
+    #[test]
+    fn claim_action_prefers_eligible_over_other_owned() {
+        // 附近同時有一塊我能認領的、和一塊別人已認領的——優先讓我認領自己那塊，不因為範圍內
+        // 有別人的地就卡住。
+        let nearby = vec![("0,0,0", "阿星", None), ("5,0,5", "小夜", Some("yoru@example.com"))];
+        assert_eq!(
+            resolve_claim_action(nearby, "astar@example.com", "阿星"),
+            ClaimOutcome::Claim("0,0,0")
+        );
     }
 }
