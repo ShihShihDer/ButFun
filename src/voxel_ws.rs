@@ -29119,38 +29119,18 @@ fn repair_one_house_fence() -> bool {
 /// 替一座 House 圈院。`require_home` 會先確認現況仍有門與床，供舊家補圈保守辨識。
 /// 鎖紀律：先以唯讀鎖取現況，寫鎖內只蒐集／設 delta，釋鎖後才 append+broadcast。
 fn place_house_fence(rid: &str, anchor: (i32, i32, i32), require_home: bool) -> bool {
-    let house = vbuild::house_blocks_at(rid, anchor.0, anchor.1, anchor.2);
-    let style = vbuild::BuildStyle::for_resident(
-        rid, voxel::biome_at_voxel(anchor.0, anchor.2), anchor.0, anchor.2,
-    );
-    // annex／門前點綴不是主屋 footprint；院界以主屋地板含界矩形計，缺口才會正對 x=0 的門。
-    let fp = vsettle::HouseFootprint {
-        min_x: anchor.0 + vbuild::BuildStyle::X_MIN,
-        max_x: anchor.0 + style.x_max,
-        min_z: anchor.2 + vbuild::BuildStyle::Z_MIN,
-        max_z: anchor.2 + style.z_max,
-    };
-
-    let world = hub().deltas.read().unwrap();
-    if require_home {
-        let has_door = house.iter().filter(|b| b.b == Block::DoorClosed as u8).any(|b| {
-            matches!(voxel::effective_block_at(&world, b.x, b.y, b.z), Block::DoorClosed | Block::DoorOpen)
-        });
-        let has_bed = house.iter().filter(|b| b.b == Block::Bed as u8).any(|b| {
-            voxel::effective_block_at(&world, b.x, b.y, b.z) == Block::Bed
-        });
-        if !has_door || !has_bed { return false; }
-    }
-    let all = vsettle::fence_cells(fp, vsettle::DoorSide::South, vbuild::surface_y, |_, _, _| false);
-    let existing = all.iter().filter(|c| voxel::effective_block_at(&world, c.x, c.y, c.z) == Block::Fence).count();
-    if vsettle::fence_ring_present(existing, all.len()) { return false; }
-    drop(world);
+    let all = {
+        let world = hub().deltas.read().unwrap();
+        let Some(all) = house_fence_plan(rid, anchor, require_home, &world) else { return false };
+        all
+    }; // deltas 讀鎖釋放
 
     let mut placed = Vec::new();
     {
         let mut world = hub().deltas.write().unwrap();
         for c in all {
-            if voxel::effective_block_at(&world, c.x, c.y, c.z) != Block::Air { continue; }
+            let current = voxel::effective_block_at(&world, c.x, c.y, c.z);
+            if current != Block::Air && !current.is_flowing_water() && current != Block::Water { continue; }
             voxel::set_block(&mut world, c.x, c.y, c.z, Block::Fence);
             placed.push(c);
         }
@@ -29160,6 +29140,37 @@ fn place_house_fence(rid: &str, anchor: (i32, i32, i32), require_home: bool) -> 
         broadcast_block(c.x, c.y, c.z, Block::Fence);
     }
     !placed.is_empty()
+}
+
+/// 補圈的唯讀判定核心：挑中現況真正存在的新／舊屋版型，再算出尚未完成的完整院環。
+fn house_fence_plan(
+    rid: &str,
+    anchor: (i32, i32, i32),
+    require_home: bool,
+    world: &WorldDelta,
+) -> Option<Vec<vsettle::FenceCell>> {
+    let layouts = vbuild::house_replay_layouts_at(rid, anchor.0, anchor.1, anchor.2);
+    let layout = layouts.iter().find(|layout| {
+        if !require_home { return true; }
+        let has_door = layout.blocks.iter().filter(|b| b.b == Block::DoorClosed as u8).any(|b| {
+            matches!(voxel::effective_block_at(world, b.x, b.y, b.z), Block::DoorClosed | Block::DoorOpen)
+        });
+        let has_bed = layout.blocks.iter().filter(|b| b.b == Block::Bed as u8).any(|b| {
+            voxel::effective_block_at(world, b.x, b.y, b.z) == Block::Bed
+        });
+        has_door && has_bed
+    });
+    let layout = layout?;
+    // annex／門前點綴不是主屋 footprint；舊屋依實際門床選中當年的 footprint。
+    let fp = vsettle::HouseFootprint {
+        min_x: anchor.0 + vbuild::BuildStyle::X_MIN,
+        max_x: anchor.0 + layout.x_max,
+        min_z: anchor.2 + vbuild::BuildStyle::Z_MIN,
+        max_z: anchor.2 + layout.z_max,
+    };
+    let all = vsettle::fence_cells(fp, vsettle::DoorSide::South, vbuild::surface_y, |_, _, _| false);
+    let existing = all.iter().filter(|c| voxel::effective_block_at(world, c.x, c.y, c.z) == Block::Fence).count();
+    (!vsettle::fence_ring_present(existing, all.len())).then_some(all)
 }
 
 /// 既有已圈院的家補柴堆：每次低頻掃描至多處理一家，節奏與 repair_one_house_fence 共用。
@@ -30130,6 +30141,81 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prod_subset_replay_repairs_both_legacy_grasswave_homes_once() {
+        // 2026-07-16 prod 三檔的最小唯讀子集：兩戶是 room_split 上線前舊屋；其餘三戶已圈。
+        let dir = tempfile::tempdir().unwrap();
+        let goals_json = [
+            ("vox_res_0", 469, 8, 173), ("vox_res_1", -264, 9, 666),
+            ("vox_res_2", -308, 4, 666), ("vox_res_3", 497, 11, -712),
+            ("vox_res_4", -990, 9, -314),
+        ].into_iter().enumerate().map(|(seq, (rid,x,y,z))| format!(
+            "{{\"resident\":\"{rid}\",\"kind\":\"house\",\"seq\":{seq},\"x\":{x},\"y\":{y},\"z\":{z},\"relocated\":true}}\n"
+        )).collect::<String>();
+        std::fs::write(dir.path().join("voxel_goals.jsonl"), goals_json).unwrap();
+        std::fs::write(dir.path().join("voxel_settlements.jsonl"),
+            "{\"resident\":\"vox_res_1\",\"settlement\":2,\"seq\":142}\n{\"resident\":\"vox_res_2\",\"settlement\":2,\"seq\":143}\n").unwrap();
+
+        let goals: Vec<vskill::GoalRecord> = std::fs::read_to_string(dir.path().join("voxel_goals.jsonl")).unwrap()
+            .lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let goals = GoalStore::from_entries(goals);
+        let settlements: Vec<vsettle::SettlementRecord> = std::fs::read_to_string(dir.path().join("voxel_settlements.jsonl")).unwrap()
+            .lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let settlements = vsettle::SettlementStore::from_entries(settlements);
+        assert_eq!(settlements.settlement_of("vox_res_1"), 2);
+        assert_eq!(settlements.settlement_of("vox_res_2"), 2);
+
+        let mut world = WorldDelta::new();
+        let homes = [
+            ("vox_res_0", (469,8,173)), ("vox_res_1", (-264,9,666)),
+            ("vox_res_2", (-308,4,666)), ("vox_res_3", (497,11,-712)),
+            ("vox_res_4", (-990,9,-314)),
+        ];
+        let mut fixture_blocks = Vec::new();
+        for (rid, a) in homes {
+            let layouts = vbuild::house_replay_layouts_at(rid, a.0, a.1, a.2);
+            let layout = if matches!(rid, "vox_res_1" | "vox_res_2") { layouts.last().unwrap() } else { &layouts[0] };
+            for b in layout.blocks.iter().filter(|b| matches!(Block::from_u8(b.b), Some(Block::DoorClosed | Block::Bed))) {
+                voxel::set_block(&mut world, b.x, b.y, b.z, Block::from_u8(b.b).unwrap());
+                fixture_blocks.push(b.clone());
+            }
+            let fp = vsettle::HouseFootprint { min_x:a.0-1, max_x:a.0+layout.x_max, min_z:a.2-1, max_z:a.2+layout.z_max };
+            let ring = vsettle::fence_cells(fp, vsettle::DoorSide::South, vbuild::surface_y, |_,_,_|false);
+            if matches!(rid, "vox_res_0" | "vox_res_3" | "vox_res_4") {
+                for c in ring { voxel::set_block(&mut world,c.x,c.y,c.z,Block::Fence); fixture_blocks.push(vbuild::BuildBlock{x:c.x,y:c.y,z:c.z,b:Block::Fence as u8}); }
+            } else if rid == "vox_res_2" {
+                for c in ring { voxel::set_block(&mut world,c.x,c.y,c.z,Block::Water); fixture_blocks.push(vbuild::BuildBlock{x:c.x,y:c.y,z:c.z,b:Block::Water as u8}); }
+            }
+        }
+        std::fs::write(dir.path().join("voxel_resident_blocks.jsonl"), fixture_blocks.iter()
+            .map(|b| format!("{}\n", serde_json::to_string(b).unwrap())).collect::<String>()).unwrap();
+        let replayed: Vec<vbuild::BuildBlock> = std::fs::read_to_string(dir.path().join("voxel_resident_blocks.jsonl")).unwrap()
+            .lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(replayed.len(), fixture_blocks.len());
+
+        let before_done = ["vox_res_0","vox_res_3","vox_res_4"].map(|rid| {
+            let a=goals.house_of(rid).unwrap(); house_fence_plan(rid,a,true,&world).is_none()
+        });
+        for _ in 0..2 { // repair_one_house_fence 的連續低頻掃描：每輪只補第一戶。
+            for (rid, _) in homes {
+                let a=goals.house_of(rid).unwrap();
+                let Some(cells)=house_fence_plan(rid,a,true,&world) else { continue };
+                let mut placed=0;
+                for c in cells { let cur=voxel::effective_block_at(&world,c.x,c.y,c.z); if cur==Block::Air || cur==Block::Water || cur.is_flowing_water() { voxel::set_block(&mut world,c.x,c.y,c.z,Block::Fence); placed+=1; } }
+                if placed>0 { break; }
+            }
+        }
+        for rid in ["vox_res_1","vox_res_2"] {
+            let a=goals.house_of(rid).unwrap();
+            assert!(house_fence_plan(rid,a,true,&world).is_none(), "{rid} 連掃後應已達冪等完成門檻");
+            let legacy=&vbuild::house_replay_layouts_at(rid,a.0,a.1,a.2)[1];
+            let fp=vsettle::HouseFootprint{min_x:a.0-1,max_x:a.0+legacy.x_max,min_z:a.2-1,max_z:a.2+legacy.z_max};
+            let ring=vsettle::fence_cells(fp,vsettle::DoorSide::South,vbuild::surface_y,|_,_,_|false);
+            assert!(ring.iter().filter(|c| voxel::effective_block_at(&world,c.x,c.y,c.z)==Block::Fence).count() >= 20);
+            let gate_z=fp.max_z+2; assert_ne!(voxel::effective_block_at(&world,a.0,vbuild::surface_y(a.0,gate_z),gate_z),Block::Fence);
+        }
+        assert!(before_done.into_iter().all(|x| x), "已圈三戶掃描前後都不得重疊補放");
+    }
     use super::*;
 
     // ── L8 玩家快照心情快取 ───────────────────────────────────────────────
