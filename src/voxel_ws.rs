@@ -3610,7 +3610,7 @@ fn hub() -> &'static VoxelHub {
             // 啟動時從 data/voxel_social.jsonl 載回居民社交記憶（重啟後仍記得聽到過什麼）。
             social: RwLock::new(SocialStore::from_entries(vrel::load_social())),
             // 啟動時從 data/voxel_builds.jsonl 載回未完成的建造計畫（重啟後繼續蓋）。
-            builds: RwLock::new(BuildStore::from_entries(vbuild::load_builds())),
+            builds: RwLock::new(vbuild::load_build_store_compacted()),
             // 啟動時從 data/voxel_goals.jsonl 載回已完成目標（重啟後不重蓋蓋過的）。
             goals: RwLock::new(GoalStore::from_entries(vskill::load_goals())),
             // 村莊系統 v1：啟動時從 data/voxel_village_plots.jsonl 載回地塊認領（重啟後仍記得誰住哪塊）。
