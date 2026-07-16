@@ -3939,8 +3939,14 @@ fn players_snapshot_json() -> String {
                 id: w.id.clone(), kind: w.kind.wire(), x: w.body.x, y: w.body.y, z: w.body.z, yaw: w.yaw,
                 tamed: w.tamed, name: w.name.clone(), settled: w.settled,
                 // 臨危依偎 v1（903）：受驚倒數 > 0 時掛一枚受驚表情（依 id 雜湊挑一枚、同一隻穩定）。
+                // 雨天野兔躲雨 v1（ROADMAP 1020）：依偎優先權更高，其次才輪到躲雨表情
+                // （只有未馴服的野兔會躲雨，見 `should_shelter_from_rain` 說明）。
                 emote: if vpetfright::is_spooked(w.spooked_secs) {
                     Some(vpetfright::spook_emote(w.id.bytes().map(|b| b as usize).sum()))
+                } else if matches!(w.kind, WildlifeKind::Rabbit) && !w.tamed
+                    && vwild::should_shelter_from_rain(raining, w.fleeing)
+                {
+                    Some(vwild::RAIN_SHELTER_EMOTE)
                 } else {
                     None
                 },
@@ -15092,6 +15098,9 @@ fn tick_wildlife(dt: f32) {
         players.values().map(|p| (p.x, p.z)).collect()
     }; // 玩家讀鎖在此釋放
     let world = hub().deltas.read().unwrap();
+    // 雨天野兔躲雨 v1（ROADMAP 1020，短鎖即釋，不與 wildlife 鎖巢狀）：天氣快照，
+    // 決定未馴服、非受驚逃跑中的野兔要不要就地蜷縮躲雨。
+    let raining: bool = *hub().weather.read().unwrap();
     // 這一 tick 該下蛋的已馴服雞座標，留到 wildlife 寫鎖釋放後才落地掉落物（不巢狀鎖）。
     let mut egg_layers: Vec<(f32, f32, f32)> = Vec::new();
     // 幼獸長大 v1：這一 tick 剛好長大成兔的回饋句，留到 wildlife 寫鎖釋放後才落地 Feed（不巢狀鎖）。
@@ -15191,6 +15200,10 @@ fn tick_wildlife(dt: f32) {
                     }
                     vr::step_toward(&world, &mut a.body, a.target_x, a.target_z, dt, vwild::FLEE_SPEED);
                     a.wait_timer = 0.0; // 受驚時不歇息。
+                } else if vwild::should_shelter_from_rain(raining, a.fleeing) {
+                    // 雨天野兔躲雨 v1（ROADMAP 1020）：就地蜷縮，不找新遊蕩目標，
+                    // 只落重力站穩（同既有小歇分支手法），雨停後自然回到下方 wander 分支。
+                    vr::gravity_step(&world, &mut a.body, dt);
                 } else if a.wait_timer > 0.0 {
                     a.wait_timer -= dt;
                     vr::gravity_step(&world, &mut a.body, dt);
