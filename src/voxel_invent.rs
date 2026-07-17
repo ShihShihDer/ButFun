@@ -120,6 +120,7 @@ use crate::voxel_berry as vberry;
 use crate::voxel_craft as vcraft;
 use crate::voxel_farm as vfarm;
 use crate::voxel_fishing::FISH_ID;
+use crate::voxel_memory_templates as vtpl;
 use crate::voxel_skills::{column_top, spiral_find, GatherResource};
 
 // ── 參數（刻意保守：小而完整）─────────────────────────────────────────────────
@@ -2319,9 +2320,28 @@ pub fn reuse_feed(skill_name: &str, goal_name: &str) -> String {
     format!("用自己發明的「{skill_name}」，又做出{goal_name}了（熟練，一次到位）")
 }
 
-/// 發明失敗的教訓（進記憶，不存技能）。
+/// 發明失敗的教訓（進記憶，不存技能）——**首次失敗**的定版句。
+///
+/// 這是 `attempt_nth == 1` 的等價捷徑，保留原字面（既有呼叫端與測試不受影響）。
+/// 想要「第 N 次失敗、屢敗屢戰的情感梯度」請改用 [`fail_lesson_nth`]。
 pub fn fail_lesson(goal_name: &str) -> String {
     format!("我試著自己想辦法做出{goal_name}，這次沒成功——下次再想想別的路子")
+}
+
+/// 發明失敗的教訓（序次遞進版）——**去罐頭**。
+///
+/// 舊版 [`fail_lesson`] 對同一目標每次失敗都吐同一句，記憶／日記讀起來像複製貼上
+/// （同句在實測裡出現過數百次）。這一版把「第 `attempt_nth` 次嘗試」編進句子，
+/// 委給 [`voxel_memory_templates::invent_fail_line`] 的四檔情感梯度
+/// （1 首挫／2~3 懊惱／4~6 不服輸／≥7 自嘲豁達）：
+/// 「又一次試著做 X、第 N 次了、比上次更懂」——愈試措辭愈不同，不再洗版。
+///
+/// - `goal_name`：想發明／做出來的東西。
+/// - `attempt_nth`：這一目標第幾次嘗試（1 起算；0 視同第 1 次）。
+///
+/// 純函式、零 LLM、確定性——同輸入必同句、不同 `attempt_nth`／不同 `goal` 必不同句。
+pub fn fail_lesson_nth(goal_name: &str, attempt_nth: usize) -> String {
+    vtpl::invent_fail_line(goal_name, attempt_nth)
 }
 
 /// 定向礦井開挖的 Feed 詳情（鑿井尋礦 v1；只在該次發明的**第一口**礦井播，不洗版）。
@@ -2605,9 +2625,27 @@ pub fn curiosity_feed(name: &str) -> String {
     format!("對{name}起了好奇心，想自己摸索著做出來")
 }
 
-/// 好奇心寫進記憶（日記走既有事件管道自然反映）。
+/// 好奇心寫進記憶（日記走既有事件管道自然反映）——**首次好奇**的定版句。
+///
+/// 這是 `cycle == 1` 的等價捷徑，保留原字面（既有呼叫端與測試不受影響）。
+/// 想要「反覆惦記、愈想愈深」的序次梯度請改用 [`curiosity_memory_nth`]。
 pub fn curiosity_memory(name: &str) -> String {
     format!("我對{name}起了好奇心——沒有人教我，我想自己摸索著做出來")
+}
+
+/// 好奇心寫進記憶（序次遞進版）——**去罐頭**。
+///
+/// 舊版 [`curiosity_memory`] 對同一目標每輪好奇都吐同一句（實測裡「對 X 起好奇」
+/// 同句被反覆寫入）。這一版把「第 `cycle` 輪好奇」編進句子，委給
+/// [`voxel_memory_templates::curiosity_line`] 的三檔梯度（1 萌芽／2~3 上心／≥4 執念）：
+/// 剛萌生的探頭探腦 → 反覆惦記後的執念般深入——同一目標愈惦記措辭愈不同，不再洗版。
+///
+/// - `name`：好奇／惦記的東西。
+/// - `cycle`：第幾輪好奇（1 起算；0 視同第 1 次）。
+///
+/// 純函式、零 LLM、確定性——同輸入必同句、不同 `cycle`／不同 `name` 必不同句。
+pub fn curiosity_memory_nth(name: &str, cycle: usize) -> String {
+    vtpl::curiosity_line(name, cycle)
 }
 
 /// 目錄空（能學的全學會了）時的冒泡——**零 LLM**，不打腦。
@@ -4950,6 +4988,86 @@ mod tests {
         let note = skills_talk_note(&["燒玻璃".into()]).unwrap();
         assert!(note.contains("「燒玻璃」"));
         assert!(skills_talk_note(&[]).is_none());
+    }
+
+    // ── 發明失敗記憶去罐頭（M2c-invent · 序次遞進）──────────────────────────────
+
+    #[test]
+    fn fail_lesson_nth_embeds_goal_and_nonempty() {
+        // 每一檔都得含目標名、非空。
+        for n in [1usize, 2, 5, 9] {
+            let s = fail_lesson_nth("風車", n);
+            assert!(!s.is_empty());
+            assert!(s.contains("風車"), "第{n}次應含目標名：{s}");
+        }
+    }
+
+    #[test]
+    fn fail_lesson_nth_attempts_yield_different_lines() {
+        // 同一目標、不同 attempt_nth 跨越四檔情感梯度 → 必各不同句（不再洗版）。
+        let g = "水車";
+        let set: HashSet<String> = [1usize, 2, 5, 9]
+            .into_iter()
+            .map(|n| fail_lesson_nth(g, n))
+            .collect();
+        assert_eq!(set.len(), 4, "四個情感檔位（1/2-3/4-6/≥7）應各異");
+    }
+
+    #[test]
+    fn fail_lesson_nth_same_tier_embeds_attempt_number() {
+        // 同一檔位（2~3）內也用次數區分，避免同檔仍完全罐頭。
+        let a = fail_lesson_nth("鐘", 2);
+        let b = fail_lesson_nth("鐘", 3);
+        assert_ne!(a, b, "同檔不同次數應嵌入不同次數字樣");
+        assert!(a.contains("第2次") && b.contains("第3次"), "a={a} b={b}");
+    }
+
+    #[test]
+    fn fail_lesson_nth_different_goals_yield_different_lines() {
+        // 同一次數、不同目標 → 必不同句。
+        assert_ne!(fail_lesson_nth("風車", 3), fail_lesson_nth("水車", 3));
+    }
+
+    #[test]
+    fn fail_lesson_nth_zero_treated_as_first() {
+        // attempt_nth==0 視同第 1 次，與捷徑語氣一致（首挫）。
+        assert_eq!(fail_lesson_nth("犁", 0), fail_lesson_nth("犁", 1));
+    }
+
+    // ── 好奇記憶去罐頭（M2c-invent · 序次遞進）─────────────────────────────────
+
+    #[test]
+    fn curiosity_memory_nth_embeds_name_and_nonempty() {
+        for c in [1usize, 2, 5] {
+            let s = curiosity_memory_nth("那口古井", c);
+            assert!(!s.is_empty());
+            assert!(s.contains("那口古井"), "第{c}輪應含目標名：{s}");
+        }
+    }
+
+    #[test]
+    fn curiosity_memory_nth_cycles_yield_different_lines() {
+        // 同一目標、不同 cycle 跨越三檔梯度（萌芽/上心/執念）→ 必各不同句。
+        let g = "會發光的礦石";
+        let set: HashSet<String> = [1usize, 2, 5]
+            .into_iter()
+            .map(|c| curiosity_memory_nth(g, c))
+            .collect();
+        assert_eq!(set.len(), 3, "萌芽/上心/執念三檔應各異");
+    }
+
+    #[test]
+    fn curiosity_memory_nth_different_goals_yield_different_lines() {
+        // 同一輪、不同目標 → 必不同句。
+        assert_ne!(
+            curiosity_memory_nth("星圖", 2),
+            curiosity_memory_nth("古井", 2)
+        );
+    }
+
+    #[test]
+    fn curiosity_memory_nth_zero_treated_as_first() {
+        assert_eq!(curiosity_memory_nth("星圖", 0), curiosity_memory_nth("星圖", 1));
     }
 
     #[test]
