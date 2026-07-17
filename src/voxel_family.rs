@@ -212,4 +212,68 @@ mod tests {
         assert!(s.contains("爸爸"));
         assert!(s.contains("媽媽"));
     }
+
+    // ── A1d 出生挑父母·迴歸鎖（釘死「有夫妻→雙親、無夫妻→單親」這條分岔）──────────
+    // 出生節拍（voxel_ws.rs 熱檔）由 `pick_married_couple` 的結果決定新生兒是雙親還是單親：
+    //   let couple = pick_married_couple(pop, &married_couples, seed);
+    //   let parent_i    = match couple { Some((a, _)) => a, None => <單親 fallback> };
+    //   let co_parent_i = couple.map(|(_, b)| b);   // Some ↔ 雙親、None ↔ 單親
+    // 這批測試不碰熱檔，只在**純函式層**把「couple → (parent, co_parent)」這個對映鎖死，
+    // 確保未來改動出生流程時，「有已婚夫妻在＝孩子記雙親；無夫妻＝單親退路」不被悄悄改壞。
+
+    /// 模擬 voxel_ws 出生節拍對 `pick_married_couple` 結果的映射：回 (父 index, 共同父母 index)。
+    /// 完全比照 `voxel_ws.rs` 的 `parent_i` / `co_parent_i` 推導（雙親取 (a,Some(b))、單親取 fallback）。
+    fn derive_parents(
+        pop: usize,
+        couples: &[(usize, usize)],
+        seed: u64,
+        single_fallback: usize,
+    ) -> (usize, Option<usize>) {
+        let couple = pick_married_couple(pop, couples, seed);
+        let parent_i = match couple {
+            Some((a, _)) => a,
+            None => single_fallback,
+        };
+        let co_parent_i = couple.map(|(_, b)| b);
+        (parent_i, co_parent_i)
+    }
+
+    #[test]
+    fn birth_with_married_couple_records_two_parents() {
+        // 村裡有一對成婚夫妻（雙方都在人口內）→ 新生兒記雙親：父＝a、共同父母＝Some(b)。
+        let couples = [(1usize, 2usize)];
+        let (parent_i, co_parent_i) = derive_parents(4, &couples, 0, /*fallback*/ 0);
+        assert_eq!(parent_i, 1, "有夫妻時，父 index 應取婚配對的第一位");
+        assert_eq!(co_parent_i, Some(2), "有夫妻時，共同父母應為 Some(第二位)");
+        // 且父與共同父母互異（絕不自己當自己的另一半）。
+        assert_ne!(Some(parent_i), co_parent_i);
+    }
+
+    #[test]
+    fn birth_without_couple_falls_back_to_single_parent() {
+        // 沒有任何合法夫妻 → 走單親退路：父＝fallback、共同父母＝None。
+        let (parent_i, co_parent_i) = derive_parents(4, &[], 0, /*fallback*/ 3);
+        assert_eq!(parent_i, 3, "無夫妻時，父 index 應取單親 fallback");
+        assert_eq!(co_parent_i, None, "無夫妻時，共同父母必為 None（單親出生）");
+    }
+
+    #[test]
+    fn birth_couple_all_out_of_pop_falls_back_to_single() {
+        // 婚書存在但雙方都已不在當前人口內（越界）→ 被濾掉 → 仍走單親退路（向後相容）。
+        let couples = [(0usize, 9usize), (8, 1)];
+        let (parent_i, co_parent_i) = derive_parents(3, &couples, 5, /*fallback*/ 0);
+        assert_eq!(parent_i, 0);
+        assert_eq!(co_parent_i, None, "夫妻全越界＝等同無夫妻，退回單親");
+    }
+
+    #[test]
+    fn birth_parent_derivation_is_deterministic() {
+        // 同 seed 反覆推導 → 同一對父母（出生是確定性的、可重現、可測）。
+        let couples = [(0usize, 1usize), (2, 3)];
+        let a = derive_parents(4, &couples, 777, 0);
+        let b = derive_parents(4, &couples, 777, 0);
+        assert_eq!(a, b);
+        // 有夫妻時，這對父母一定是雙親（co_parent 為 Some）。
+        assert!(a.1.is_some());
+    }
 }

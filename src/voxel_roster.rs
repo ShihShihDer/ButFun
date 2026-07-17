@@ -376,6 +376,60 @@ mod tests {
         assert_eq!(resident_index("garbage"), usize::MAX);
     }
 
+    // ── A1d 出生挑父母·名冊向後相容鎖 ─────────────────────────────────────────
+    // 出生系統早期只挑「一位」父母（單親），名冊行只有 parent / parent_name，沒有任何
+    // 共同父母（co_parent）欄位。日後若替雙親出生擴充名冊 schema，**舊的單親名冊行
+    // 必須照樣反序列化不 panic**（玩家存檔向後相容鐵律）。這裡把「舊單親名冊行仍可讀」
+    // 釘死：既有欄位齊全即成功、未知多餘欄位被 serde 略過而不炸。
+
+    /// 舊的單親名冊行（就是當前 schema：無任何共同父母欄位）→ 反序列化成功、欄位正確。
+    #[test]
+    fn legacy_single_parent_roster_line_deserializes() {
+        // 模擬歷史 data/voxel_residents_roster.jsonl 落地的一行（單親、無 co_parent）。
+        let line = r#"{"resident":"vox_res_4","name":"米拉","home_base_x":12,"home_base_z":88,"parent":"vox_res_1","parent_name":"諾娃","birth_unix":1700000000}"#;
+        let rec: RosterEntry = serde_json::from_str(line).expect("舊單親名冊行必須能讀回，不得 panic");
+        assert_eq!(rec.resident, "vox_res_4");
+        assert_eq!(rec.parent, "vox_res_1");
+        assert_eq!(rec.parent_name, "諾娃");
+        assert_eq!(rec.birth_unix, 1_700_000_000);
+    }
+
+    /// 帶有未知多餘欄位（例如未來新增而舊 reader 不認得的 co_parent）→ serde 預設略過、不炸。
+    /// 這保證「新舊 reader 交錯讀同一份名冊」時，任一方遇到對方多寫的欄位都能安然略過。
+    #[test]
+    fn roster_line_with_unknown_extra_fields_is_ignored() {
+        let line = r#"{"resident":"vox_res_5","name":"奧瑞","home_base_x":30,"home_base_z":10,"parent":"vox_res_2","parent_name":"露娜","birth_unix":1700000123,"co_parent":"vox_res_3","co_parent_name":"星塵","future_field":42}"#;
+        let rec: RosterEntry =
+            serde_json::from_str(line).expect("含未知欄位的名冊行必須被略過而非 panic");
+        // 既有欄位照樣正確讀出；未知欄位（co_parent 等）被安全忽略。
+        assert_eq!(rec.resident, "vox_res_5");
+        assert_eq!(rec.parent, "vox_res_2");
+        assert_eq!(rec.parent_name, "露娜");
+    }
+
+    /// 整份名冊解析（比照 load_roster 的內核）：舊單親行 + 空行混雜 → 只留合法單親行、不 panic。
+    #[test]
+    fn mixed_legacy_lines_parse_like_load_roster() {
+        let content = concat!(
+            "\n",
+            r#"{"resident":"vox_res_4","name":"米拉","home_base_x":12,"home_base_z":88,"parent":"vox_res_1","parent_name":"諾娃","birth_unix":1700000000}"#,
+            "\n  \n",
+            r#"{"resident":"vox_res_5","name":"奧瑞","home_base_x":30,"home_base_z":10,"parent":"vox_res_2","parent_name":"露娜","birth_unix":1700000123}"#,
+            "\n",
+        );
+        let mut out: Vec<RosterEntry> = content
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim();
+                if l.is_empty() { None } else { serde_json::from_str::<RosterEntry>(l).ok() }
+            })
+            .collect();
+        out.sort_by_key(|e| resident_index(&e.resident));
+        assert_eq!(out.len(), 2, "兩行合法單親記錄都應讀回");
+        assert_eq!(out[0].resident, "vox_res_4");
+        assert_eq!(out[1].resident, "vox_res_5");
+    }
+
     #[test]
     fn load_roster_missing_file_is_empty() {
         // 舊世界沒有名冊檔 → 空（向後相容）：改指向不存在的路徑不易，改測 serde 空行容忍。
