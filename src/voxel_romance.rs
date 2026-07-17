@@ -22,6 +22,12 @@ use serde::{Deserialize, Serialize};
 /// 刻意偏低：戀愛是可遇不可求的稀有質變，不是每對老朋友遲早都會擦出火花。
 pub const SPARK_CHANCE: f32 = 0.12;
 
+/// 「附近」距離平方——兩位老朋友此刻水平距離平方在此門檻內才算「湊在一塊」，供
+/// M1「第二火花入口」判定（除了同坐長椅，白天正巧走到彼此身旁也能擦出火花）。
+/// 取 6 格（6*6=36），與 `voxel_wedding::PAIR_NEAR_SQ` 同一量級、可調——調大讓火花更易發生、
+/// 調小則要更貼近才算數。純常數，實際距離取樣與擲骰在呼叫端。
+pub const PAIR_NEAR_SQ: f32 = 36.0;
+
 /// 一筆持久化記錄：一對戀人（`id_a`/`id_b` 為居民**顯示名**，比照 `voxel_bonds::BondEntry`
 /// 以顯示名記帳，避免系統 id 與顯示名兩套鍵值不一致的既有教訓）。
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -112,6 +118,65 @@ impl ResidentRomance {
 /// 是否擲中心動火花（純函式、roll 由呼叫端 `rand::random::<f32>()` 提供，確定可測）。
 pub fn spark_roll(roll: f32) -> bool {
     roll < SPARK_CHANCE
+}
+
+// ── 戀愛漏斗快照（純函式，供 M1 第二火花入口/觀測用）───────────────────────────
+
+/// 戀愛弧漏斗的一張數字快照：從「夠熟的老朋友對」→「已擦出火花的戀人」→「已成婚」層層收窄，
+/// 讓呼叫端（M1 第二火花入口的觸發掃描、除錯輸出、未來 HUD/Feed）一眼看清目前小社會的
+/// 感情推進到哪一層、還有多少對老朋友尚未擦出火花可供撮合。純數字、無所有權對名單。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FunnelStats {
+    /// 已達「老朋友」門檻的居民對數（漏斗最上層：有機會擦出火花的候選母體）。
+    pub eligible_friend_pairs: usize,
+    /// 已締結成戀人的對數（`sweethearts`）。
+    pub sweethearts: usize,
+    /// 已是老朋友、但還沒成為戀人的對數（＝可供第二火花入口撮合的剩餘候選）。
+    pub unwed_deep_pairs: usize,
+    /// 已成婚的對數（漏斗最底層）。
+    pub weddings: usize,
+}
+
+/// 掃出戀愛弧的漏斗快照（純函式、收唯讀引用、不取鎖）。
+///
+/// - `eligible_friend_pairs`：由 `bonds` 的快照裡數出已達 [`crate::voxel_bonds::BondTier::Friend`]
+///   的對數（漏斗母體）。
+/// - `sweethearts`：直接數 `romance` 的戀人對數。
+/// - `unwed_deep_pairs`：老朋友對之中「還不是戀人」的數量——即第二火花入口還能撮合的剩餘候選；
+///   已成戀人的老朋友對會被排除（`has_partner`/`is_sweetheart` 語意，不重複撮合）。
+/// - `weddings`：直接數 `weddings` 的成婚對數。
+///
+/// 註：`unwed_deep_pairs` 只算「兩人都尚無戀人」的老朋友對——只要其中一方已另有戀人（一生一位，
+/// 見模組說明），這對就不可能再擦出火花，故不列為候選。
+pub fn funnel_snapshot(
+    bonds: &crate::voxel_bonds::ResidentBonds,
+    romance: &ResidentRomance,
+    weddings: &crate::voxel_wedding::ResidentWeddings,
+) -> FunnelStats {
+    use crate::voxel_bonds::FRIEND_VISITS;
+
+    // 從情誼帳本快照數出所有「老朋友」對（visits 已達 Friend 門檻）。
+    let friend_pairs: Vec<(String, String)> = bonds
+        .to_entries()
+        .into_iter()
+        .filter(|e| e.visits >= FRIEND_VISITS)
+        .map(|e| (e.id_a, e.id_b))
+        .collect();
+
+    let eligible_friend_pairs = friend_pairs.len();
+
+    // 老朋友對之中，還能撮合的剩餘候選：兩人都尚無戀人（也就必然還不是彼此的戀人）。
+    let unwed_deep_pairs = friend_pairs
+        .iter()
+        .filter(|(a, b)| !romance.has_partner(a) && !romance.has_partner(b))
+        .count();
+
+    FunnelStats {
+        eligible_friend_pairs,
+        sweethearts: romance.all_pairs().len(),
+        unwed_deep_pairs,
+        weddings: weddings.all_pairs().len(),
+    }
 }
 
 /// 締結戀人當下，雙方各自寫進記憶的一句（掛在對方名下）。
@@ -248,5 +313,90 @@ mod tests {
         assert!(r.is_sweetheart("諾娃", "賽勒"));
         assert!(r.is_sweetheart("露娜", "奧瑞"));
         assert!(!r.is_sweetheart("露娜", "諾娃"));
+    }
+
+    // ── PAIR_NEAR_SQ / funnel_snapshot ─────────────────────────────────────────
+
+    #[test]
+    fn pair_near_sq_is_positive() {
+        assert!(PAIR_NEAR_SQ > 0.0, "附近門檻要是正數才有意義");
+    }
+
+    /// 用真的 `ResidentBonds` 湊出幾對不同交情層級，方便測 funnel 的母體計數。
+    fn bonds_with(pairs: &[(&str, &str, u32)]) -> crate::voxel_bonds::ResidentBonds {
+        let entries = pairs.iter().map(|(a, b, v)| crate::voxel_bonds::BondEntry {
+            id_a: (*a).to_string(),
+            id_b: (*b).to_string(),
+            visits: *v,
+        });
+        crate::voxel_bonds::ResidentBonds::from_entries(entries)
+    }
+
+    #[test]
+    fn funnel_empty_world_is_all_zero() {
+        let bonds = crate::voxel_bonds::ResidentBonds::new();
+        let romance = ResidentRomance::new();
+        let weddings = crate::voxel_wedding::ResidentWeddings::new();
+        let s = funnel_snapshot(&bonds, &romance, &weddings);
+        assert_eq!(s, FunnelStats::default());
+    }
+
+    #[test]
+    fn funnel_counts_only_friend_tier_pairs_as_eligible() {
+        use crate::voxel_bonds::FRIEND_VISITS;
+        // 露娜/奧瑞達老朋友；諾娃/賽勒只到相識門檻下（不算母體）。
+        let bonds = bonds_with(&[("露娜", "奧瑞", FRIEND_VISITS), ("諾娃", "賽勒", 1)]);
+        let romance = ResidentRomance::new();
+        let weddings = crate::voxel_wedding::ResidentWeddings::new();
+        let s = funnel_snapshot(&bonds, &romance, &weddings);
+        assert_eq!(s.eligible_friend_pairs, 1, "只有達 Friend 門檻的對算母體");
+        assert_eq!(s.sweethearts, 0);
+        assert_eq!(s.unwed_deep_pairs, 1, "唯一的老朋友對還沒成戀人");
+        assert_eq!(s.weddings, 0);
+    }
+
+    #[test]
+    fn funnel_sweethearts_excluded_from_unwed_deep() {
+        use crate::voxel_bonds::FRIEND_VISITS;
+        // 兩對都是老朋友；其中露娜/奧瑞已成戀人。
+        let bonds = bonds_with(&[
+            ("露娜", "奧瑞", FRIEND_VISITS),
+            ("諾娃", "賽勒", FRIEND_VISITS + 5),
+        ]);
+        let mut romance = ResidentRomance::new();
+        romance.record_spark("露娜", "奧瑞");
+        let weddings = crate::voxel_wedding::ResidentWeddings::new();
+        let s = funnel_snapshot(&bonds, &romance, &weddings);
+        assert_eq!(s.eligible_friend_pairs, 2, "兩對都是老朋友，母體 2");
+        assert_eq!(s.sweethearts, 1);
+        assert_eq!(s.unwed_deep_pairs, 1, "已成戀人的露娜/奧瑞不再列為撮合候選");
+        assert_eq!(s.weddings, 0);
+    }
+
+    #[test]
+    fn funnel_partner_elsewhere_removes_pair_from_unwed_deep() {
+        use crate::voxel_bonds::FRIEND_VISITS;
+        // 露娜/奧瑞是老朋友，但露娜的戀人其實是別人（凱依）→ 這對不可能再擦火花。
+        let bonds = bonds_with(&[("露娜", "奧瑞", FRIEND_VISITS)]);
+        let mut romance = ResidentRomance::new();
+        romance.record_spark("露娜", "凱依");
+        let weddings = crate::voxel_wedding::ResidentWeddings::new();
+        let s = funnel_snapshot(&bonds, &romance, &weddings);
+        assert_eq!(s.eligible_friend_pairs, 1);
+        assert_eq!(s.sweethearts, 1, "露娜/凱依這對戀人被數到");
+        assert_eq!(s.unwed_deep_pairs, 0, "露娜已另有戀人，露娜/奧瑞不再是候選");
+    }
+
+    #[test]
+    fn funnel_counts_weddings() {
+        use crate::voxel_bonds::FRIEND_VISITS;
+        let bonds = bonds_with(&[("露娜", "奧瑞", FRIEND_VISITS)]);
+        let mut romance = ResidentRomance::new();
+        romance.record_spark("露娜", "奧瑞");
+        let mut weddings = crate::voxel_wedding::ResidentWeddings::new();
+        weddings.record_wedding("露娜", "奧瑞");
+        let s = funnel_snapshot(&bonds, &romance, &weddings);
+        assert_eq!(s.weddings, 1);
+        assert_eq!(s.sweethearts, 1);
     }
 }
