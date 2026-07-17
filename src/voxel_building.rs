@@ -129,11 +129,15 @@ pub fn classify_desire(desire: &str) -> Option<BuildKind> {
     {
         return Some(BuildKind::Workshop);
     }
-    // 磨坊：靠水的水車磨坊（水車／水磨／磨坊）。
+    // 磨坊：靠水的水車磨坊（磨坊／水車／水磨）。刻意**只認「水」字頭**的關鍵詞：
+    // 磨坊本就「靠水而立」（見 `millhouse_site_ok`），語意上與「風車」（陸上、靠風）無關；
+    // 更關鍵的是「風車」會撞既有地標名池（`voxel_structure_name` 的「風車丘」）——居民
+    // 見賢思齊（858）把地標名嵌進心願文字時，「看到『風車丘』…我也好想擁有一座小木屋」
+    // 這種其實想要 House／Monument 的心願會被「風車」搶去誤分成磨坊。故此處不收「風車」，
+    // 讓每種建物的心願文字都能正確 round-trip 回自己的 kind。
     if desire.contains("磨坊")
         || desire.contains("水車")
         || desire.contains("水磨")
-        || desire.contains("風車")
     {
         return Some(BuildKind::Millhouse);
     }
