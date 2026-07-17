@@ -5570,6 +5570,47 @@ const RELATION_TIER_ICON = { friend: "🤝", acquaintance: "🙂", stranger: "·
 const RELATION_TIER_LABEL = { friend: "老朋友", acquaintance: "相識", stranger: "陌生" };
 const RELATION_TIER_RANK = { friend: 2, acquaintance: 1, stranger: 0 };
 
+// 交情門檻（與後端 voxel_bonds.rs 一致）：拜訪 3 次＝相識、8 次＝老朋友。
+// 前端只鏡射這兩個門檻做「進度可視化」，交情累積的權威判定仍全在後端。
+const RELATION_ACQUAINTANCE_VISITS = 3;
+const RELATION_FRIEND_VISITS = 8;
+// 升級後解鎖什麼（純提示文案，對映後端各 tier 早已驅動的社交行為）：
+//   相識 → 開始互相分享餐點、坐長椅閒聊；老朋友 → 互助蓋家、以物易物、傳授技能。
+const RELATION_UNLOCK_AT = {
+  acquaintance: "分享餐點、坐長椅閒聊",
+  friend: "互助蓋家、以物易物、傳授技能",
+};
+
+/** 交情可視化（C4）：把一對居民的拜訪次數換算成「往下一交情級的進度」。純函式、可測。
+ *  回傳 { tier, nextTier, cur, span, frac, remaining, maxed }：
+ *    tier      當前層級 key（stranger/acquaintance/friend）
+ *    nextTier  下一層級 key（已滿級則為 null）
+ *    cur/span  當前層級內已累積 / 該層級跨距（用於進度條與「x/y」文字）
+ *    frac      0~1 進度（滿級為 1）
+ *    remaining 還差幾次拜訪升級（滿級為 0）
+ *    maxed     是否已達最高級（老朋友）
+ * @param {number} visits 這一對的累積拜訪次數
+ */
+export function bondProgress(visits) {
+  const v = Math.max(0, Math.floor(visits || 0));
+  if (v >= RELATION_FRIEND_VISITS) {
+    // 老朋友＝滿級：進度條滿、不再有「還差幾次」。
+    return { tier: "friend", nextTier: null, cur: 1, span: 1, frac: 1, remaining: 0, maxed: true };
+  }
+  if (v >= RELATION_ACQUAINTANCE_VISITS) {
+    // 相識 → 往老朋友：本級跨距＝FRIEND-ACQUAINTANCE。
+    const base = RELATION_ACQUAINTANCE_VISITS;
+    const span = RELATION_FRIEND_VISITS - base;
+    const cur = v - base;
+    return { tier: "acquaintance", nextTier: "friend", cur, span, frac: cur / span,
+      remaining: RELATION_FRIEND_VISITS - v, maxed: false };
+  }
+  // 陌生 → 往相識：本級跨距＝ACQUAINTANCE。
+  const span = RELATION_ACQUAINTANCE_VISITS;
+  return { tier: "stranger", nextTier: "acquaintance", cur: v, span, frac: v / span,
+    remaining: RELATION_ACQUAINTANCE_VISITS - v, maxed: false };
+}
+
 /** 依情誼層級排序（老朋友優先），同層級依拜訪次數多到少排列。純函式、確定性、可測。
  * @param {Array<{a:string,b:string,tier:string,visits:number}>} rows
  * @returns {Array} 排序後的新陣列（不改動原陣列）
@@ -5599,10 +5640,47 @@ function renderRelationsPanel(rows) {
     // 居民戀愛心動 v1（ROADMAP 846）：戀人對在情誼層級之外多標一顆 ❤️，一眼認出誰跟誰在一起。
     const icon = row.sweetheart ? "❤️" : (RELATION_TIER_ICON[row.tier] || "·");
     const label = row.sweetheart ? "戀人" : (RELATION_TIER_LABEL[row.tier] || "陌生");
-    div.innerHTML =
+
+    // ── 上行：icon＋名字＋等級名 ──
+    const top = document.createElement("div");
+    top.className = "relations-row-top";
+    top.innerHTML =
       '<span class="relations-icon">' + icon + '</span>' +
       '<span class="relations-names">' + escHtml(row.a) + ' ↔ ' + escHtml(row.b) + '</span>' +
-      '<span class="relations-tier">' + label + '</span>';
+      '<span class="relations-tier">' + escHtml(label) + '</span>';
+    div.appendChild(top);
+
+    // ── 下行：交情可視化（C4）——進度條＋拜訪次數/門檻＋升級解鎖提示 ──
+    const prog = bondProgress(row.visits);
+    const bar = document.createElement("div");
+    bar.className = "relations-prog";
+    const track = document.createElement("div");
+    track.className = "relations-prog-track";
+    const fill = document.createElement("div");
+    fill.className = "relations-prog-fill";
+    fill.style.width = Math.round(prog.frac * 100) + "%";
+    track.appendChild(fill);
+    const count = document.createElement("span");
+    count.className = "relations-prog-count";
+    // 滿級只標拜訪總數；未滿級標「本級進度/本級跨距」。
+    count.textContent = prog.maxed ? ("🤝 拜訪 " + (row.visits ?? 0)) : (prog.cur + "/" + prog.span);
+    bar.appendChild(track);
+    bar.appendChild(count);
+    div.appendChild(bar);
+
+    // 升級解鎖提示：未滿級＝「再拜訪 x 次升級為 ○○，解鎖○○」；滿級＝一句慶祝。
+    const unlock = document.createElement("div");
+    unlock.className = "relations-unlock" + (prog.maxed ? " maxed" : "");
+    if (prog.maxed) {
+      unlock.textContent = "已是最要好的老朋友 ✨";
+    } else {
+      const nextLabel = RELATION_TIER_LABEL[prog.nextTier] || "更好的朋友";
+      const boon = RELATION_UNLOCK_AT[prog.nextTier];
+      unlock.textContent = "再拜訪 " + prog.remaining + " 次升為「" + nextLabel + "」" +
+        (boon ? "，解鎖" + boon : "");
+    }
+    div.appendChild(unlock);
+
     relationsBodyEl.appendChild(div);
   }
 }
@@ -7145,8 +7223,25 @@ let mining = null; // { x, y, z, bid, progress, total } 或 null
 // 進度條 DOM（在 crosshair 正下方渲染進度）。
 const miningBarEl = document.getElementById("miningBar");
 const miningBarFillEl = document.getElementById("miningBarFill");
+// 視覺蓄力環（C3①）：手機挖鈕上的一圈 conic-gradient 隨採礦進度填滿的 DOM。
+const digBtnEl = document.getElementById("dig");
+
+/** 視覺蓄力環（C3①）：把採礦進度（0~1；null=結束）畫到手機挖鈕的環上。
+ *  只在觸控挖鈕真的按著時才亮環（桌機用中央進度條，不需要在看不見的挖鈕上畫環）。 */
+function updateDigRing(frac) {
+  if (!digBtnEl) return;
+  if (frac === null || !touchDigHeld) {
+    digBtnEl.classList.remove("charging");
+    digBtnEl.style.setProperty("--dig-progress", "0");
+    return;
+  }
+  digBtnEl.classList.add("charging");
+  digBtnEl.style.setProperty("--dig-progress", String(Math.min(1, frac)));
+}
 
 function updateMiningBar(frac) {
+  // 蓄力環與中央進度條共用同一個進度來源，一次更新兩者（手機看環、桌機看條）。
+  updateDigRing(frac);
   if (!miningBarEl) return;
   if (frac === null) {
     miningBarEl.style.display = "none";
@@ -10062,28 +10157,58 @@ function showMsg(text) {
   showMsgFor(text, 3000);
 }
 
+// C1：迎新居民頭像候選臉譜——依名字雜湊挑一張穩定的表情臉，
+// 讓同一位迎新居民每次都同一張臉（可辨識、無需素材、零成本）。
+const ONBOARD_GREETER_FACES = ["🧑‍🌾", "👩‍🎨", "🧑‍🔧", "👵", "🧓", "👨‍🍳", "🧑‍🚀", "👩‍🏫"];
+/** 依居民名字算一張穩定的臉譜（純函式、確定性、可測）。 */
+export function greeterFace(name) {
+  const s = String(name || "");
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return ONBOARD_GREETER_FACES[h % ONBOARD_GREETER_FACES.length];
+}
+
 /** 居民迎新 v1（自主提案切片 ROADMAP 948）：渲染／更新引導小卡。
+ *  C1：加迎新居民頭像＋故事氣泡樣式（下一步提示當成居民「說」的話放進氣泡）。
  *  步驟標籤與提示全由後端策展（i18n 集中一處）；DOM 一律 textContent 組裝，杜絕注入。 */
 function renderOnboardCard(m) {
   const card = document.getElementById("onboardCard");
   if (!card) return;
   card.textContent = "";
+  const greeterName = m.greeter || "居民";
+
+  // ── 頭像列：小圓臉 + 名字 + 「陪你走最初幾步」──
+  const greeterRow = document.createElement("div");
+  greeterRow.className = "ob-greeter";
+  const avatar = document.createElement("div");
+  avatar.className = "ob-avatar";
+  avatar.textContent = greeterFace(greeterName);
   const head = document.createElement("div");
   head.className = "ob-head";
-  head.textContent = "🌱 " + (m.greeter || "居民") + " 陪你走最初幾步";
-  card.appendChild(head);
+  head.textContent = greeterName + " 陪你走最初幾步 🌱";
+  greeterRow.appendChild(avatar);
+  greeterRow.appendChild(head);
+  card.appendChild(greeterRow);
+
+  // ── 故事氣泡：把下一步提示當作迎新居民「對你說」的引導語（有 hint 才出現）──
+  if (m.hint) {
+    const bubble = document.createElement("div");
+    bubble.className = "ob-bubble";
+    bubble.textContent = m.hint;
+    card.appendChild(bubble);
+  }
+
+  // ── 四步清單 ──
+  const steps = document.createElement("div");
+  steps.className = "ob-steps";
   for (const s of (m.steps || [])) {
     const row = document.createElement("div");
     row.className = "ob-step" + (s.done ? " done" : "");
     row.textContent = (s.done ? "✅ " : "⬜ ") + (s.label || "");
-    card.appendChild(row);
+    steps.appendChild(row);
   }
-  if (m.hint) {
-    const hint = document.createElement("div");
-    hint.className = "ob-hint";
-    hint.textContent = "💡 " + m.hint;
-    card.appendChild(hint);
-  }
+  card.appendChild(steps);
+
   card.style.display = "block";
   card.style.opacity = "1";
 }
@@ -10284,6 +10409,11 @@ window.__voxel = {
   refreshRelations() { return refreshRelations(); },
   renderRelationsPanel(rows) { renderRelationsPanel(rows); return relationsBodyEl && relationsBodyEl.innerHTML; },
   sortRelationRows(rows) { return sortRelationRows(rows); },
+  // ── 交情可視化 QA 用（C4）：讀某拜訪次數換算的進度分解，驗門檻/進度/提示對映 ──
+  bondProgress(visits) { return bondProgress(visits); },
+  // ── 居民迎新卡 QA 用（C1）：渲染一則 onboard 卡＋讀迎新頭像臉譜 ──
+  renderOnboardCard(m) { renderOnboardCard(m); return document.getElementById("onboardCard")?.outerHTML; },
+  greeterFace(name) { return greeterFace(name); },
   // ── 小圈子攤開 QA 用（自主提案切片，接續 708+711）──
   renderCliquesSection(cliques) { renderCliquesSection(cliques); return cliquesBodyEl && cliquesBodyEl.innerHTML; },
   // ── 家族樹面板 QA 用（自主提案切片，接續 708+927+928）──
