@@ -188,6 +188,8 @@ mod voxel_visit;
 mod voxel_bonds;
 // 乙太方界·居民生計真身分 v1（A3-livelihood）：把 persona 口吻升成可持久、可轉職的生計身分（農夫/商人/館長/遊者），純資料層，接線在後續 PR。
 mod voxel_livelihood;
+// 乙太方界·居民靈魂常駐角色 context v1：每位居民一段人工著墨的深邃角色卡（soul_prompt），思考 prompt 永遠置頂當「角色設定」底——便宜即時腦被這份豐富角色墊高；新 store 純 additive、缺檔=現況（向後相容）。
+mod voxel_resident_soul;
 // 乙太方界·老友情境問候 v1：好感度達老友時，居民說出記憶驅動的特定台詞（ROADMAP 675）。
 mod voxel_fond_greeting;
 // 乙太方界·居民心情指示 v1：根據情誼與記憶動態計算心情 emoji，廣播給前端（ROADMAP 676）。
