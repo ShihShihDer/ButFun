@@ -89,45 +89,90 @@ pub fn select_participants(candidates: &[(usize, f32, bool)], radius: f32, max: 
     in_range.into_iter().take(max).map(|(i, _)| i).collect()
 }
 
-/// 廣場邊閒話家常的泡泡台詞（通用、不點名、六句輪替，字數短不破泡泡框）。
-/// `pick` 由呼叫端用座標 bits 合成，讓每次挑到的句子自然分散。
+/// 廣場邊閒話家常的泡泡台詞（通用、不點名，字數短不破泡泡框）。
+///
+/// 依「在場人數 `headcount`」×「座標合成的 `pick`」挑句：獨自坐著、三兩人搭話、一群人熱鬧，
+/// 語氣各不同，讓黃昏暮聚的閒聊不再千篇一律。`pick` 由呼叫端用座標 bits 合成，
+/// 讓同一人數檔內每次挑到的句子也自然分散。
 ///
 /// `has_monument`：這場暮聚是不是圍在主村真的立起來的中央紀念柱（村碑）腳下——殖民地暮聚 v1
-/// 只有奠基小廣場、沒有紀念柱，故換一句不提「村碑」的台詞，避免殖民地居民講出不存在的地標。
-pub fn chatter_bubble(pick: usize, has_monument: bool) -> &'static str {
-    const LINES: [&str; 6] = [
-        "黃昏了，來廣場邊坐坐、說說話。",
-        "今天過得怎麼樣？我來聽聽。",
-        "每到這時候聚一聚，心裡就踏實。",
-        "你看這夕陽，把村子都染暖了。",
-        "大家都在，這一天就算圓滿了。",
-        "在村碑邊閒聊幾句，真好。",
+/// 只有奠基小廣場、沒有紀念柱，故換一組不提「村碑」的台詞，避免殖民地居民講出不存在的地標。
+pub fn chatter_bubble(pick: usize, headcount: usize, has_monument: bool) -> &'static str {
+    // 三檔語氣（與 memory_templates 的 headcount_tier 同分檔精神）：獨自 / 三兩人 / 一群人。
+    // 每檔各兩組：有村碑（主村）與無村碑（殖民地），保零回歸又依人數散開。
+    const ALONE: [&str; 3] = [
+        "黃昏了，一個人先在廣場邊坐坐、看著天色暗下來。",
+        "這時候靜一靜，心裡也踏實。",
+        "夕陽把周遭染暖了，我一個人也不覺得冷清。",
     ];
-    const LINES_NO_MONUMENT: [&str; 6] = [
-        "黃昏了，來廣場邊坐坐、說說話。",
-        "今天過得怎麼樣？我來聽聽。",
-        "每到這時候聚一聚，心裡就踏實。",
-        "你看這夕陽，把這裡都染暖了。",
-        "大家都在，這一天就算圓滿了。",
-        "能在這片新落腳的地方聚聚，真好。",
+    const ALONE_MON: [&str; 3] = [
+        "黃昏了，一個人先到村碑邊坐坐、看著天色暗下來。",
+        "在村碑邊靜一靜，心裡也踏實。",
+        "夕陽把村子染暖了，我一個人也不覺得冷清。",
     ];
-    let pool = if has_monument { &LINES } else { &LINES_NO_MONUMENT };
+    const SMALL: [&str; 3] = [
+        "你今天過得怎麼樣？我來聽聽。",
+        "難得碰上了，來廣場邊聊幾句。",
+        "你也來啦？正好一塊兒說說話。",
+    ];
+    const SMALL_MON: [&str; 3] = [
+        "你今天過得怎麼樣？我來聽聽。",
+        "在村碑邊搭句話，這黃昏就不悶了。",
+        "你也來啦？正好在村碑下說說話。",
+    ];
+    const CROWD: [&str; 3] = [
+        "大家都在，這一天就算圓滿了。",
+        "人這麼齊，廣場邊熱熱鬧鬧的真好。",
+        "每到這時候大夥都湊過來，像趕集似的。",
+    ];
+    const CROWD_MON: [&str; 3] = [
+        "大家都在，這一天就算圓滿了。",
+        "一村子的人聚在村碑下，說笑聲不斷。",
+        "每到這時候大夥都湊到村碑邊，像趕集似的。",
+    ];
+    let tier = match headcount {
+        0 | 1 => 0,
+        2..=3 => 1,
+        _ => 2,
+    };
+    let pool: &[&str; 3] = match (tier, has_monument) {
+        (0, true) => &ALONE_MON,
+        (0, false) => &ALONE,
+        (1, true) => &SMALL_MON,
+        (1, false) => &SMALL,
+        (_, true) => &CROWD_MON,
+        (_, false) => &CROWD,
+    };
     pool[pick % pool.len()]
 }
 
-/// 動態牆播報句（帶季節與人數，有「來歷感」——道出這是這座聚落入夜前的固定習俗）。
-/// `season_zh` 為當前季節顯示名（如「深秋」）、`count` 為這場暮聚的參與人數、`place` 為聚集地點
-/// 描述（主村＝「村莊廣場的村碑邊」、殖民地＝「『風禾屯』的村心廣場」）、`label` 為收尾指稱這座
-/// 聚落的詞（主村＝「村子」、殖民地＝聚落名本身，如「風禾屯」）。
-pub fn gather_feed_line(season_zh: &str, count: usize, place: &str, label: &str) -> String {
-    format!("🌆 {season_zh}的黃昏，{count} 位居民又不約而同地聚到{place}閒話家常——這已成了{label}入夜前的老習慣。")
+/// 動態牆播報句（帶季節、人數與「本季第 N 場」，有「來歷感」——道出這是這座聚落入夜前的固定
+/// 習俗，且愈積愈多場、成了整季反覆的老習慣）。
+///
+/// - `season_zh`：當前季節顯示名（如「深秋」）。
+/// - `count`：這場暮聚的參與人數。
+/// - `place`：聚集地點描述（主村＝「村莊廣場的村碑邊」、殖民地＝「『風禾屯』的村心廣場」）。
+/// - `label`：收尾指稱這座聚落的詞（主村＝「村子」、殖民地＝聚落名本身，如「風禾屯」）。
+/// - `nth_this_season`：本季第幾場暮聚（1 起算；0 視同第 1 次）——第一場帶「今季頭一回」的
+///   起頭感，往後帶「本季第 N 場」的積累感，讓動態牆播報不再每天同一句。
+pub fn gather_feed_line(season_zh: &str, count: usize, place: &str, label: &str, nth_this_season: usize) -> String {
+    let nth = nth_this_season.max(1);
+    if nth == 1 {
+        return format!(
+            "🌆 {season_zh}第一次黃昏，{count} 位居民不約而同地聚到{place}閒話家常——這一季的暮聚，就從今天在{label}起頭了。"
+        );
+    }
+    format!("🌆 {season_zh}的黃昏，{count} 位居民又不約而同地聚到{place}閒話家常——這已是本季第 {nth} 場，成了{label}入夜前的老習慣。")
 }
 
 /// 參與暮聚的居民寫進記憶的一句（episodic、第一人稱內心，累積「村子有了自己的習俗、我屬於這裡」
 /// 的歸屬感）。不含任何玩家名／私密渴望，適用於任何一位在場居民；單行、無換行（jsonl 一行一筆）。
-pub fn gather_memory_line() -> String {
-    "每到黃昏，我總會晃到廣場的村碑邊，和大家聚一聚、說幾句話。這成了我們村子的習慣，也讓我覺得，這裡真的是我的家。"
-        .to_string()
+///
+/// 依「本季第 `nth_this_season` 次暮聚」×「在場人數 `headcount`」×「季節中文名 `season_zh`」
+/// 借用記憶模板庫的 [`crate::voxel_memory_templates::dusk_gather_line`]，把 prod 上反覆同句
+/// （曾達 1410 次）的黃昏記憶依上下文散開、去罐頭。
+pub fn gather_memory_line(nth_this_season: usize, headcount: usize, season_zh: &str) -> String {
+    crate::voxel_memory_templates::dusk_gather_line(nth_this_season, headcount, season_zh)
 }
 
 #[cfg(test)]
@@ -194,32 +239,50 @@ mod tests {
     #[test]
     fn chatter_rotates_and_fits_frame() {
         for has_monument in [true, false] {
-            for p in 0..12 {
-                let b = chatter_bubble(p, has_monument);
-                assert!(!b.is_empty());
-                assert!(b.chars().count() <= CHATTER_CHARS, "閒聊泡泡應在上限內：{b}");
+            for hc in [1usize, 3, 8] {
+                for p in 0..12 {
+                    let b = chatter_bubble(p, hc, has_monument);
+                    assert!(!b.is_empty());
+                    assert!(b.chars().count() <= CHATTER_CHARS, "閒聊泡泡應在上限內：{b}");
+                }
+                assert_ne!(
+                    chatter_bubble(0, hc, has_monument),
+                    chatter_bubble(1, hc, has_monument),
+                    "同一人數檔內台詞應輪替"
+                );
             }
-            assert_ne!(
-                chatter_bubble(0, has_monument),
-                chatter_bubble(1, has_monument),
-                "台詞應輪替"
-            );
         }
+    }
+
+    #[test]
+    fn chatter_headcount_changes_wording() {
+        // 同 pick、同紀念柱狀態，只有人數不同 → 至少獨自 vs 一群人措辭不同（依人數散開）。
+        use std::collections::HashSet;
+        let alone = chatter_bubble(0, 1, true);
+        let small = chatter_bubble(0, 3, true);
+        let crowd = chatter_bubble(0, 8, true);
+        let set: HashSet<_> = [alone, small, crowd].into_iter().collect();
+        assert_eq!(set.len(), 3, "獨自/三兩人/一群人的閒聊應各不同句");
     }
 
     #[test]
     fn chatter_no_monument_pool_never_mentions_pillar() {
-        // 殖民地暮聚沒有紀念柱：整組替代台詞不得提「村碑」，避免居民講出不存在的地標。
-        for p in 0..12 {
-            assert!(!chatter_bubble(p, false).contains('碑'), "殖民地台詞不應提及村碑");
+        // 殖民地暮聚沒有紀念柱：三檔人數的替代台詞皆不得提「村碑」，避免居民講出不存在的地標。
+        for hc in [1usize, 3, 8] {
+            for p in 0..12 {
+                assert!(!chatter_bubble(p, hc, false).contains('碑'), "殖民地台詞不應提及村碑");
+            }
         }
-        // 主村台詞池至少有一句仍照舊提及村碑（零回歸：原有台詞氣氛不變）。
-        assert!((0..6).any(|p| chatter_bubble(p, true).contains('碑')));
+        // 主村台詞池至少有一句仍提及村碑（零回歸：原有村碑氣氛不變）。
+        assert!(
+            (0..3).any(|p| chatter_bubble(p, 8, true).contains('碑')),
+            "主村一群人的台詞應仍有村碑指涉"
+        );
     }
 
     #[test]
     fn feed_line_embeds_season_count_place_label_no_newline() {
-        let f = gather_feed_line("深秋", 3, "村莊廣場的村碑邊", "村子");
+        let f = gather_feed_line("深秋", 3, "村莊廣場的村碑邊", "村子", 2);
         assert!(f.contains("深秋"));
         assert!(f.contains('3'));
         assert!(f.contains("村莊廣場的村碑邊"));
@@ -230,28 +293,41 @@ mod tests {
 
     #[test]
     fn feed_line_colony_variant_names_colony_not_village() {
-        let f = gather_feed_line("盛夏", 2, "「風禾屯」的村心廣場", "風禾屯");
+        let f = gather_feed_line("盛夏", 2, "「風禾屯」的村心廣場", "風禾屯", 2);
         assert!(f.contains("風禾屯"));
         assert!(!f.contains("村子"), "殖民地播報不該說成『村子』入夜前的習慣");
         assert!(!f.contains('\n'));
     }
 
     #[test]
-    fn feed_line_main_village_wording_unchanged() {
-        // 零回歸鎖點：呼叫端傳入主村原本寫死的 place/label 時，字面必須與這一刀之前逐字相同。
-        let f = gather_feed_line("深秋", 3, "村莊廣場的村碑邊", "村子");
-        assert_eq!(
-            f,
-            "🌆 深秋的黃昏，3 位居民又不約而同地聚到村莊廣場的村碑邊閒話家常——這已成了村子入夜前的老習慣。"
-        );
+    fn feed_line_first_of_season_differs_from_later() {
+        // 本季第一場 vs 往後場，措辭不同（不再每天同一句）。
+        let first = gather_feed_line("深秋", 3, "村莊廣場的村碑邊", "村子", 1);
+        let later = gather_feed_line("深秋", 3, "村莊廣場的村碑邊", "村子", 3);
+        assert_ne!(first, later, "本季頭一場與往後場的播報應措辭不同");
+        assert!(later.contains("第 3 場"), "往後場應嵌入本季場次：{later}");
+        assert!(!first.contains('\n') && !later.contains('\n'));
     }
 
     #[test]
-    fn memory_line_single_line_nonempty_no_leak() {
-        let m = gather_memory_line();
-        assert!(!m.is_empty());
-        assert!(!m.contains('\n'), "記憶不得含換行（jsonl 一行一筆）");
-        // episodic 內心句，不該外洩玩家名占位符。
-        assert!(!m.contains('{'));
+    fn memory_line_diversifies_by_context() {
+        use std::collections::HashSet;
+        // 黃昏記憶去罐頭核心保證：同一件事（暮聚）放進多種上下文 → 多樣句子，不再千篇一律。
+        let mut seen: HashSet<String> = HashSet::new();
+        for nth in [1usize, 2, 5] {
+            for hc in [1usize, 3, 8] {
+                for season in ["春天", "秋天"] {
+                    let m = gather_memory_line(nth, hc, season);
+                    assert!(!m.is_empty());
+                    assert!(!m.contains('\n'), "記憶不得含換行（jsonl 一行一筆）");
+                    // episodic 內心句，不該外洩玩家名占位符。
+                    assert!(!m.contains('{'));
+                    assert!(m.contains(season), "應嵌入季節名：{m}");
+                    seen.insert(m);
+                }
+            }
+        }
+        // 3 nth × 3 headcount × 2 season = 18 組上下文，去重後應遠多於 1（不罐頭）。
+        assert!(seen.len() >= 10, "黃昏記憶在不同上下文應產出多樣句子，實得 {}", seen.len());
     }
 }

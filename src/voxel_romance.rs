@@ -120,6 +120,33 @@ pub fn spark_roll(roll: f32) -> bool {
     roll < SPARK_CHANCE
 }
 
+/// **第二條火花入口**（M1 成家漏斗拓寬）的獨立擲骰機率——刻意**不複用**上面那條長椅入口的
+/// `SPARK_CHANCE`（0.12），兩條入口機率各自可調、互不影響。
+///
+/// **為何要第二條入口**：既有唯一火花入口（長椅並坐閒聊，`voxel_ws.rs::bench_chat`）要求
+/// 「兩居民並肩坐**同一張長椅** + 都已是老朋友 + 過長椅閒聊機率 + 過 `SPARK_CHANCE`」的複合稀有
+/// 條件；實測 prod 至今火花數＝0（入口流量趨零），整條成家鏈因此恆早退——無戀人→婚禮掃描恆早退
+/// →後代全走單親 fallback。本入口放寬成「兩位老朋友此刻走得夠近（≤ [`PAIR_NEAR_SQ`]）、都醒著、
+/// 都閒著」就有機會，不再要求同坐長椅；因觸發面更廣，機率取得**更低**（0.03，遠低於長椅的 0.12）
+/// 以免洗版，並疊全村冷卻雙重節流。
+pub const NEARBY_SPARK_CHANCE: f32 = 0.03;
+
+/// 第二條火花入口是否擲中心動火花（純函式、roll 由呼叫端提供，確定可測）。
+pub fn nearby_spark_roll(roll: f32) -> bool {
+    roll < NEARBY_SPARK_CHANCE
+}
+
+/// 第二條火花入口締結戀人當下，雙方各自寫進記憶的一句（掛在對方名下）——與長椅版
+/// [`sweetheart_memory_line`] 語意區隔：這是「日常走著走著」而非「並肩坐著閒聊」擦出的火花。
+pub fn nearby_sweetheart_memory_line(other_name: &str) -> String {
+    format!("那天我們正巧走到彼此身旁，四目相接，我心裡忽然為{other_name}漾起漣漪——我們，成了戀人。")
+}
+
+/// 第二條火花入口締結戀人當下，城鎮動態牆的一句播報。
+pub fn nearby_sweetheart_feed_line(a: &str, b: &str) -> String {
+    format!("{a}和{b}在村裡不期而遇，相視間忽然心頭一動——他們，互生情愫，成了戀人。")
+}
+
 // ── 戀愛漏斗快照（純函式，供 M1 第二火花入口/觀測用）───────────────────────────
 
 /// 戀愛弧漏斗的一張數字快照：從「夠熟的老朋友對」→「已擦出火花的戀人」→「已成婚」層層收窄，
@@ -398,5 +425,33 @@ mod tests {
         let s = funnel_snapshot(&bonds, &romance, &weddings);
         assert_eq!(s.weddings, 1);
         assert_eq!(s.sweethearts, 1);
+    }
+
+    // ── 第二火花入口（M1 成家漏斗拓寬）─────────────────────────────────────────
+
+    #[test]
+    fn nearby_spark_chance_is_lower_than_bench() {
+        // 第二入口觸發面更廣，機率刻意比長椅入口更低以免洗版。
+        assert!(NEARBY_SPARK_CHANCE < SPARK_CHANCE, "附近入口機率要比長椅入口更低");
+        assert!(NEARBY_SPARK_CHANCE > 0.0, "但仍要是正機率，才可能締結戀人");
+    }
+
+    #[test]
+    fn nearby_spark_roll_boundary() {
+        assert!(nearby_spark_roll(0.0));
+        assert!(nearby_spark_roll(NEARBY_SPARK_CHANCE - 0.001));
+        assert!(!nearby_spark_roll(NEARBY_SPARK_CHANCE));
+        assert!(!nearby_spark_roll(0.999));
+    }
+
+    #[test]
+    fn nearby_memory_and_feed_lines_embed_names_and_differ_from_bench() {
+        let mem = nearby_sweetheart_memory_line("奧瑞");
+        assert!(mem.contains("奧瑞") && !mem.is_empty());
+        // 與長椅版語意區隔（不同措辭），才不會兩條入口的記憶讀起來一模一樣。
+        assert_ne!(mem, sweetheart_memory_line("奧瑞"));
+        let feed = nearby_sweetheart_feed_line("露娜", "奧瑞");
+        assert!(feed.contains("露娜") && feed.contains("奧瑞"));
+        assert_ne!(feed, sweetheart_feed_line("露娜", "奧瑞"));
     }
 }

@@ -347,6 +347,33 @@ static LAST_COLONY_UNIX: AtomicU64 = AtomicU64::new(0);
 /// 上次迎新居民冒「歡迎泡泡」的 unix 秒（居民迎新 v1，ROADMAP 948）：全域冷卻——
 /// 訪客反覆重連／多開連線也不能讓居民頭上刷屏（引導卡照發，只有泡泡受此限）。
 static LAST_ONBOARD_GREET_UNIX: AtomicU64 = AtomicU64::new(0);
+
+/// 黃昏暮聚「本季第幾場」計數（M2c 黃昏記憶去罐頭）：把「這一季已經聚了幾次」餵給
+/// `vcustom::gather_memory_line`／`gather_feed_line`，讓措辭依場次遞進（第一場帶起頭感、
+/// 往後帶積累感），避免 prod 上黃昏記憶反覆同一句（曾達 1410 次）。
+/// `SEASON_EPOCH`＝上次計數所屬的季節序號（`day / DAYS_PER_SEASON`，逐季遞增）；季節一換就把
+/// `COUNT` 歸零重新起算。純記憶體、無鎖（用原子，不與 std RwLock 巢狀，守死鎖鐵律）；
+/// 重啟後從 0 起算可接受——只影響措辭的「第N場」感，不涉玩家資料。
+static DUSK_GATHER_SEASON_EPOCH: AtomicU64 = AtomicU64::new(u64::MAX);
+static DUSK_GATHER_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// 取這座聚落這一場暮聚的「本季第 N 場」序號（1 起算）。`day`＝當前世界日數。
+/// 季節序號（`day / DAYS_PER_SEASON`）一變就把計數歸零重來，否則沿用同季計數 +1。
+/// 無鎖：季節切換用 `compare_exchange` 搶第一個歸零者、其餘沿用；再 `fetch_add` 取序號。
+/// 同一 tick 可能開多場（主村＋各殖民地），每場各呼叫一次、各自拿到遞增序號。
+fn next_dusk_gather_nth(day: u64) -> usize {
+    let epoch = day / vseason::DAYS_PER_SEASON;
+    let prev = DUSK_GATHER_SEASON_EPOCH.load(Ordering::Relaxed);
+    if prev != epoch
+        && DUSK_GATHER_SEASON_EPOCH
+            .compare_exchange(prev, epoch, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        // 這一輪由本執行緒完成換季 → 歸零計數（其餘同季呼叫者沿用既有計數）。
+        DUSK_GATHER_COUNT.store(0, Ordering::Relaxed);
+    }
+    DUSK_GATHER_COUNT.fetch_add(1, Ordering::Relaxed) + 1
+}
 /// 居民閒晃半徑下/上限（方塊）：挑下一個目標時離當前位置的距離區間。
 const WANDER_MIN_R: f32 = 4.0;
 const WANDER_MAX_R: f32 = 12.0;
@@ -13444,6 +13471,7 @@ pub fn spawn_farm_tick() {
             tick_smelt(); // 熔爐煨煮 v1（自主提案）：同節拍交付熟成的爐（成品入背包 + 廣播）。
             maybe_birth(); // 人口成長 v1：低頻檢查聚落是否有餘裕誕生一位新居民。
             maybe_breed_rabbits(); // 馴服兔子生寶寶 v1（自主提案切片 855）：同節拍檢查是否誕生一隻小兔子。
+            maybe_spark_romance(); // 成家漏斗拓寬 M1：第二條火花入口——兩位老朋友走得夠近、都醒都閒、雙方皆無戀人，過低機率擲骰就地擦出心動、締結戀人（放寬「必須同坐長椅」的既有唯一入口，讓 sweethearts 開始 > 0）。
             maybe_wedding(); // 戀人成婚 v1（自主提案切片 927）：白天好天氣同節拍檢查是否有一對交情夠深、正相鄰的戀人就地結為連理、立起花拱門。
             maybe_build_snowman(); // 居民堆雪人 v1（自主提案切片 918）：冬天飄雪時同節拍檢查是否有閒著的居民堆起一個小雪人。
             maybe_melt_snowmen(); // 居民堆雪人 v1（自主提案切片 918）：冬天一結束就把世界上所有雪人融化清除。
@@ -15939,6 +15967,176 @@ fn maybe_wedding() {
     };
     vmem::append_memory(&mb);
     vfeed::append_feed(vwed::WEDDING_FEED_KIND, name_a, &vwed::wed_feed_line(name_a, name_b));
+}
+
+/// 全域「附近火花」節流時間戳記（M1 成家漏斗拓寬）。純記憶體、重啟歸零——比照 `LAST_WEDDING_UNIX`：
+/// 只用來限制第二火花入口的締結頻率，戀愛帳本本身持久化。冷卻取與辦婚禮相當（`WED_COOLDOWN_SECS`
+/// 300 秒），至多每 5 分鐘由這條入口新締結一對，防洗版。
+static LAST_SPARK_UNIX: AtomicU64 = AtomicU64::new(0);
+
+/// **第二條火花入口**（M1 成家漏斗拓寬，低頻併入 15 秒節拍）：不改既有那條「並肩坐同一張長椅
+/// 閒聊才擦火花」的入口（`bench_chat`，實測 prod 至今火花數＝0，複合條件太稀有），另開一條放寬的
+/// 觸發——**兩位老朋友此刻正巧走得夠近（水平距離平方 ≤ [`vromance::PAIR_NEAR_SQ`]）、都醒著、都閒著、
+/// 雙方都還沒有戀人**，過一個獨立且更低的擲骰（[`vromance::NEARBY_SPARK_CHANCE`] 0.03）就地擦出
+/// 心動火花、締結成戀人。締結後這條戀愛鏈（愛巢→牽掛→成婚→愛的結晶後代）本就是活的，只是入口
+/// 流量趨零；拓寬入口讓 `funnel_snapshot().sweethearts` 開始 > 0，婚禮/後代隨之自然發生。
+///
+/// **鎖紀律**（守 prod 死鎖鐵律，各把鎖短取即釋、循序不巢狀、讀完 clone 成 owned 值再 drop、
+/// 一切判斷/擲骰/寫入都在鎖外或各自獨立 scope，比照 `maybe_wedding`）：
+/// 1. bonds 讀 → 快照所有「老朋友」對（顯示名，owned `Vec`）→ **drop**；
+/// 2. romance 讀 → 濾掉任一方已有戀人的對（含彼此已是戀人）→ owned → **drop**；
+/// 3. residents 讀 → 濾出兩人都醒/閒/距離 ≤ `PAIR_NEAR_SQ` 的第一對，連 id/名字帶出 → owned → **drop**；
+/// 4. 鎖外過獨立擲骰 + 全村冷卻判定；
+/// 5. romance 寫（`record_spark`）→ **drop** → 真正新締結才 romance 讀（`save`）→ **drop**；
+/// 6. residents 寫（雙方各冒一句心動泡泡）→ **drop**；
+/// 7. memory 寫 ×2（雙方各一筆，掛對方名下，各自獨立 scope 短取即釋）→ 鎖外 append_memory + Feed。
+///
+/// **為何無死鎖**：全程任一時刻至多只持有一把 hub 鎖；跨表判斷（bonds↔romance↔residents）全靠
+/// 「先各自 snapshot 成擁有所有權的 owned 值、drop 鎖後再於鎖外比對」，**絕不**在持某把鎖時去取另一把
+/// （例如持 residents 鎖時取 romance/bonds，或反之），因此不存在兩把鎖交錯上鎖的環，無論排程如何交錯
+/// 都不會構成死鎖等待環。
+fn maybe_spark_romance() {
+    let now = vfarm::now_secs();
+    let cooldown_ready = now.saturating_sub(LAST_SPARK_UNIX.load(Ordering::Relaxed))
+        >= vwed::WED_COOLDOWN_SECS;
+    if !cooldown_ready {
+        return;
+    }
+    // 1) 快照所有「老朋友」對（bonds 讀鎖即釋；bonds 以顯示名記帳，to_entries 的 id_a/id_b 即顯示名）。
+    let friend_pairs: Vec<(String, String)> = {
+        let bonds = hub().bonds.read().unwrap();
+        bonds
+            .to_entries()
+            .into_iter()
+            .filter(|e| e.visits >= vbonds::FRIEND_VISITS)
+            .map(|e| (e.id_a, e.id_b))
+            .collect()
+    }; // bonds 讀鎖釋放
+    if friend_pairs.is_empty() {
+        return;
+    }
+    // 2) 濾掉「任一方已有戀人（含彼此已是戀人）」的對——一生只有一位戀人，這些不可能再擦火花
+    //    （romance 讀鎖即釋）。
+    let candidate_pairs: Vec<(String, String)> = {
+        let romance = hub().romance.read().unwrap();
+        friend_pairs
+            .into_iter()
+            .filter(|(a, b)| !romance.has_partner(a) && !romance.has_partner(b))
+            .collect()
+    }; // romance 讀鎖釋放
+    if candidate_pairs.is_empty() {
+        return;
+    }
+    // 3) 在居民中找第一對「都醒＋都閒＋相鄰」的（residents 讀鎖即釋）。挑到就連 id／名字一起帶出，
+    //    供後續寫記憶（memory 以居民 id 記帳）。閒的定義比照 maybe_wedding 的 free 閘。
+    let free = |r: &VoxelResident| -> bool {
+        !r.asleep
+            && r.say.is_empty()
+            && r.pilgrimage.is_none()
+            && r.expedition.is_none()
+            && r.visiting.is_none()
+            && r.clique_meet.is_none()
+            && r.custom_meet.is_none()
+            && r.savoring.is_none()
+            && r.lover_seek.is_none()
+            && r.stroll_partner.is_none()
+            && r.walk_with.is_none()
+            && r.follow.is_none()
+            && r.summon.is_none()
+            && r.gather.is_none()
+            && r.fetch.is_none()
+            && r.frontier_visit.is_none()
+            && r.far_visit.is_none()
+            && r.caravan.is_none()
+            && r.hotspring_trip.is_none()
+            && r.cheer_target.is_none()
+            && r.invent_walk.is_none()
+    };
+    // chosen = (id_a, name_a, id_b, name_b)
+    let chosen: Option<(String, &'static str, String, &'static str)> = {
+        let residents = hub().residents.read().unwrap();
+        let mut found = None;
+        for (na, nb) in &candidate_pairs {
+            let ra = residents.iter().find(|r| r.name == na.as_str());
+            let rb = residents.iter().find(|r| r.name == nb.as_str());
+            let (Some(ra), Some(rb)) = (ra, rb) else {
+                continue;
+            };
+            if !free(ra) || !free(rb) {
+                continue;
+            }
+            let dx = ra.body.x - rb.body.x;
+            let dz = ra.body.z - rb.body.z;
+            if dx * dx + dz * dz > vromance::PAIR_NEAR_SQ {
+                continue;
+            }
+            found = Some((ra.id.clone(), ra.name, rb.id.clone(), rb.name));
+            break;
+        }
+        found
+    }; // residents 讀鎖釋放
+    let Some((id_a, name_a, id_b, name_b)) = chosen else {
+        return;
+    };
+    // 4) 鎖外過獨立擲骰（NEARBY_SPARK_CHANCE，與長椅入口的 SPARK_CHANCE 各自獨立）。沒擲中就本輪放棄、
+    //    不消耗冷卻（讓下一輪仍有機會，冷卻只在真正締結後才卡住）。
+    if !vromance::nearby_spark_roll(rand::random::<f32>()) {
+        return;
+    }
+    // 過關 → 先卡住全村冷卻（避免同拍/下一拍立刻又締結一對，防洗版）。
+    LAST_SPARK_UNIX.store(now, Ordering::Relaxed);
+    // 5) 締結（romance 寫鎖即釋）→ 真正新締結才落地持久化（romance 讀鎖 save 即釋）。
+    let newly_sparked = {
+        let mut romance = hub().romance.write().unwrap();
+        romance.record_spark(name_a, name_b)
+    }; // romance 寫鎖釋放
+    if !newly_sparked {
+        return; // 理論上不會（上面已濾過），保險：既是戀人就不重複洗版。
+    }
+    {
+        let romance = hub().romance.read().unwrap();
+        vromance::save_romance(&romance);
+    } // romance 讀鎖釋放
+    // 6) 雙方各冒一句心動泡泡（residents 寫鎖一次掃完即釋，只在仍閒著時覆蓋）。
+    {
+        let mut residents = hub().residents.write().unwrap();
+        if let Some(r) = residents.iter_mut().find(|r| r.id == id_a && r.say.is_empty()) {
+            r.say = vromance::nearby_sweetheart_feed_line(name_a, name_b)
+                .chars()
+                .take(50)
+                .collect();
+            r.say_timer = SAY_SECS;
+            r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+        }
+        if let Some(r) = residents.iter_mut().find(|r| r.id == id_b && r.say.is_empty()) {
+            r.say = "💗".to_string();
+            r.say_timer = SAY_SECS;
+            r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
+        }
+    } // residents 寫鎖釋放
+    broadcast_players();
+    // 7) 各自把這一刻記進心裡（memory 寫鎖即釋，掛對方名下，各自獨立 scope）＋動態牆。
+    let ma = {
+        hub().memory.write().unwrap().add_memory(
+            &id_a,
+            name_b,
+            &vromance::nearby_sweetheart_memory_line(name_b),
+        )
+    }; // memory 寫鎖釋放
+    vmem::append_memory(&ma);
+    let mb = {
+        hub().memory.write().unwrap().add_memory(
+            &id_b,
+            name_a,
+            &vromance::nearby_sweetheart_memory_line(name_a),
+        )
+    }; // memory 寫鎖釋放
+    vmem::append_memory(&mb);
+    vfeed::append_feed(
+        "心動時刻",
+        name_a,
+        &vromance::nearby_sweetheart_feed_line(name_a, name_b),
+    );
 }
 
 /// 全域堆雪人節流時間戳記（居民堆雪人 v1，自主提案切片，ROADMAP 918）。
@@ -18641,6 +18839,19 @@ fn tick_residents(dt: f32) {
             map
         };
 
+        // 暮聚在場人數表（M2c 黃昏記憶去罐頭）：按「聚集點座標 bits」統計此刻正逗留於各暮聚的
+        // 居民數，供下方閒聊泡泡依人數換一組語氣（獨自／三兩人／一群人）。此處只讀（iter），下方
+        // 迴圈 iter_mut 借第二次前先建好表、避免同一 Vec 二次借用——比照上方 playmate_of 手法。
+        let dusk_headcount: HashMap<(u64, u64), usize> = {
+            let mut map: HashMap<(u64, u64), usize> = HashMap::new();
+            for r in residents.iter() {
+                if let Some((cx, cz)) = r.custom_meet {
+                    *map.entry((cx.to_bits() as u64, cz.to_bits() as u64)).or_insert(0) += 1;
+                }
+            }
+            map
+        };
+
         // 2b) 物理 + 閒晃 + 社交冷卻 + 思考排程。
         for r in residents.iter_mut() {
             // 生病時真的「動作慢下來」（voxel_illness v3，自主提案）：與既有日夜降速相乘
@@ -20452,9 +20663,15 @@ fn tick_residents(dt: f32) {
                         let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                         // 殖民地暮聚 v1：主村暮聚圍在真的立起來的村碑腳下、殖民地暮聚只圍在奠基
                         // 小廣場（沒有紀念柱）——比對這位居民的聚集點是不是主村中心，換一組不提
-                        // 「村碑」的台詞，避免殖民地居民講出根本不存在的地標。
-                        let at_main = village_center_opt == Some((cx, cz));
-                        r.say = vcustom::chatter_bubble(pick, at_main).to_string();
+                        // 「村碑」的台詞（`has_monument`），避免殖民地居民講出根本不存在的地標。
+                        let has_monument = village_center_opt == Some((cx, cz));
+                        // M2c：這場暮聚此刻在場人數（上方 dusk_headcount 預先按聚集點統計），
+                        // 讓閒聊泡泡依「獨自／三兩人／一群人」換一組語氣、不再千篇一律。
+                        let headcount = dusk_headcount
+                            .get(&(cx.to_bits() as u64, cz.to_bits() as u64))
+                            .copied()
+                            .unwrap_or(1);
+                        r.say = vcustom::chatter_bubble(pick, headcount, has_monument).to_string();
                         r.say_timer = SAY_SECS;
                         r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                     }
@@ -24605,7 +24822,13 @@ fn tick_residents(dt: f32) {
             continue;
         }
         hub().last_custom_day.write().unwrap().insert(*sid, current_day);
-        let mem_line = vcustom::gather_memory_line();
+        let season_zh = current_season.display_name();
+        // M2c 黃昏記憶去罐頭：本季第幾場暮聚（換季自動歸零、每場遞增，見 next_dusk_gather_nth）
+        // ×在場人數，餵給記憶／動態牆措辭，讓黃昏記憶不再反覆同一句。同一場對記憶與 Feed 共用同一
+        // 序號（每場只 +1 一次）。
+        let nth_this_season = next_dusk_gather_nth(current_day);
+        let headcount = members.len();
+        let mem_line = vcustom::gather_memory_line(nth_this_season, headcount, season_zh);
         for (id, name) in members {
             let e = {
                 let mut mem = hub().memory.write().unwrap();
@@ -24613,7 +24836,6 @@ fn tick_residents(dt: f32) {
             }; // memory 寫鎖釋放（逐筆即釋、不巢狀）
             vmem::append_memory(&e);
         }
-        let season_zh = current_season.display_name();
         let (place, label): (String, &str) = match place_name {
             Some(name) => (format!("「{name}」的村心廣場"), name.as_str()),
             None => ("村莊廣場的村碑邊".to_string(), "村子"),
@@ -24621,7 +24843,7 @@ fn tick_residents(dt: f32) {
         vfeed::append_feed(
             vcustom::FEED_KIND,
             label,
-            &vcustom::gather_feed_line(season_zh, members.len(), &place, label),
+            &vcustom::gather_feed_line(season_zh, headcount, &place, label, nth_this_season),
         );
     }
 
@@ -30559,6 +30781,14 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
             format!("你最近聽到的鄰居近況：{}", notes.join("；"))
         }
     }; // social 讀鎖在此釋放
+    // 成家漏斗拓寬 M1：短鎖讀戀愛帳本，若這位居民已有戀人，就在自主思考的脈絡裡惦記著對方——
+    //   讓「有戀人」真的滲進她的內心思緒，而非只是一筆關係資料（純字串注入，不打 LLM、drop 後才 spawn）。
+    let romance_note: Option<String> = {
+        let romance = hub().romance.read().unwrap();
+        romance
+            .partner_of(name)
+            .map(|partner| format!("你心裡一直惦記著{partner}——那是你的戀人。"))
+    }; // romance 讀鎖在此釋放
     // 短鎖讀情誼+記憶，計算居民心情（ROADMAP 676）——循序取鎖，不巢狀。
     let (mood_sense_value, mood_note): (i32, String) = {
         let (friends, acq) = {
@@ -30589,6 +30819,9 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
         }
         if !social_note.is_empty() {
             parts.push(social_note);
+        }
+        if let Some(note) = romance_note {
+            parts.push(note);
         }
         parts.push(mood_note);
         parts.concat()
