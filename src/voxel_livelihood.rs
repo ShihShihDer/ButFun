@@ -55,6 +55,45 @@ impl Role {
             Role::Wanderer => "wanderer",
         }
     }
+
+    /// 這個身分「偏好採集／備料」的程度（0.0–1.0，供閒置時的採集擲骰加權）。
+    ///
+    /// **偏好加權、非排他**：這只在居民已無建造主鏈可做（`NextActivity::Wander`）時，
+    /// 影響「偶爾採集 vs 純閒晃」的機率——農夫（`Farmer`）最愛下田備料、遊者（`Wanderer`）
+    /// 最愛四處遊走幾乎不採集。**永遠不會**讓 role 蓋掉建家主鏈的決策（主鏈在
+    /// `choose_activity` 已先行決定，這裡只是主鏈跑完後的傾向）。
+    pub fn idle_gather_weight(self) -> f32 {
+        match self {
+            // 農夫最勤於下田備料（比預設 0.15 明顯偏高，讓「農民真的在務農」被看見）。
+            Role::Farmer => 0.55,
+            // 商人偶爾補貨、館長守著公共空間、遊者幾乎只遊走。
+            Role::Merchant => 0.25,
+            Role::Curator => 0.15,
+            Role::Wanderer => 0.05,
+        }
+    }
+
+    /// 這個身分「今天的日常勞作」記憶文案（第一人稱內心口吻，比照日記慣例）。
+    /// 低頻節拍每（世界）日至多落一筆，靠 [`livelihood_memory_slot`] 去重防洗版。
+    pub fn daily_labor_line(self) -> &'static str {
+        match self {
+            Role::Farmer => "今天又照料了家中的田地，土翻鬆了，心也踏實。",
+            Role::Merchant => "今天在攤區走了幾趟，盤點著手裡的家當，盤算下回的買賣。",
+            Role::Curator => "今天守著鎮中心的廣場，看著往來的人，替這片公共空間掛心。",
+            Role::Wanderer => "今天又四處遊走了一圈，走到哪算哪，心思跟著腳步散開。",
+        }
+    }
+}
+
+/// 每日勞作記憶的記憶帳戶哨兵鍵（不是特定玩家——這是居民自己一天的勞作內心紀錄；
+/// 比照 `voxel_lovenest::NEST_MEMORY_PLAYER` 同款慣例）。
+pub const LIVELIHOOD_MEMORY_PLAYER: &str = "__livelihood__";
+
+/// 每日勞作記憶的去重槽（同一居民、同一身分、同一世界日只落一筆）。
+/// 回傳 `(kind, slot)`——`kind` 固定 `"livelihood"`，`slot` 內含 role 與世界日，
+/// 因此**新的一天＝新的槽**，第一次落地、同日再觸發則被去重折疊掉。純函式、可測。
+pub fn livelihood_memory_slot(role: Role, world_day: u64) -> (&'static str, String) {
+    ("livelihood", format!("{}:{}", role.key(), world_day))
 }
 
 // ── 持久化格式 ────────────────────────────────────────────────────────────────
@@ -218,6 +257,45 @@ mod tests {
         assert_eq!(Role::Merchant.key(), "merchant");
         assert_eq!(Role::Curator.key(), "curator");
         assert_eq!(Role::Wanderer.key(), "wanderer");
+    }
+
+    #[test]
+    fn idle_gather_weight_farmer_prefers_gather_most() {
+        // 偏好加權：農夫最愛下田備料，遊者最不愛採集，四者嚴格遞減。
+        assert!(Role::Farmer.idle_gather_weight() > Role::Merchant.idle_gather_weight());
+        assert!(Role::Merchant.idle_gather_weight() > Role::Curator.idle_gather_weight());
+        assert!(Role::Curator.idle_gather_weight() > Role::Wanderer.idle_gather_weight());
+        // 全在 [0,1] 合法機率區間內。
+        for r in [Role::Farmer, Role::Merchant, Role::Curator, Role::Wanderer] {
+            let w = r.idle_gather_weight();
+            assert!((0.0..=1.0).contains(&w), "{:?} weight={w} 應在 [0,1]", r);
+        }
+    }
+
+    #[test]
+    fn daily_labor_line_non_empty_per_role() {
+        for r in [Role::Farmer, Role::Merchant, Role::Curator, Role::Wanderer] {
+            assert!(!r.daily_labor_line().is_empty(), "{:?} 應有勞作文案", r);
+        }
+        // 農夫的勞作記憶要點出「田地」（務農身分的核心驗收）。
+        assert!(Role::Farmer.daily_labor_line().contains("田地"));
+    }
+
+    #[test]
+    fn livelihood_memory_slot_new_day_new_slot() {
+        // 同身分不同日 → 不同槽（新的一天能再落一筆）。
+        let (k1, s1) = livelihood_memory_slot(Role::Farmer, 3);
+        let (k2, s2) = livelihood_memory_slot(Role::Farmer, 4);
+        assert_eq!(k1, "livelihood");
+        assert_eq!(k2, "livelihood");
+        assert_ne!(s1, s2, "不同世界日應是不同去重槽");
+        assert_eq!(s1, "farmer:3");
+        // 同身分同日 → 同槽（同日只落一筆）。
+        let (_, s1b) = livelihood_memory_slot(Role::Farmer, 3);
+        assert_eq!(s1, s1b);
+        // 同日不同身分 → 不同槽。
+        let (_, sm) = livelihood_memory_slot(Role::Merchant, 3);
+        assert_ne!(s1, sm);
     }
 
     #[test]
