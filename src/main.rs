@@ -180,6 +180,8 @@ mod voxel_trade;
 mod voxel_visit;
 // 乙太方界·居民情誼 v1：拜訪累積情誼層級（陌生→相識→老朋友），持久化跨重啟（ROADMAP 672）。
 mod voxel_bonds;
+// 乙太方界·居民生計真身分 v1（A3-livelihood）：把 persona 口吻升成可持久、可轉職的生計身分（農夫/商人/館長/遊者），純資料層，接線在後續 PR。
+mod voxel_livelihood;
 // 乙太方界·老友情境問候 v1：好感度達老友時，居民說出記憶驅動的特定台詞（ROADMAP 675）。
 mod voxel_fond_greeting;
 // 乙太方界·居民心情指示 v1：根據情誼與記憶動態計算心情 emoji，廣播給前端（ROADMAP 676）。
