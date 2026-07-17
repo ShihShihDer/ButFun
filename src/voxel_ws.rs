@@ -235,6 +235,7 @@ use crate::voxel_stall_notify as vstallnotify;
 use crate::voxel_frontier_find as vffind;
 use crate::voxel_mastery::{self as vmastery, MasteryKind, MasteryStore};
 use crate::voxel_waypoint as vwaypoint;
+use crate::voxel_think_log as vthink_log;
 
 // 水流動模擬純邏輯（來源不乾涸、破口會流、離源太遠乾涸）。
 // 用 `#[path]` 把它掛成 voxel_ws 的私有子模組——**不動 main.rs**（守「別碰 main.rs」邊界），
@@ -348,6 +349,11 @@ static LAST_COLONY_UNIX: AtomicU64 = AtomicU64::new(0);
 /// 上次迎新居民冒「歡迎泡泡」的 unix 秒（居民迎新 v1，ROADMAP 948）：全域冷卻——
 /// 訪客反覆重連／多開連線也不能讓居民頭上刷屏（引導卡照發，只有泡泡受此限）。
 static LAST_ONBOARD_GREET_UNIX: AtomicU64 = AtomicU64::new(0);
+
+/// 居民思考日誌序號（M7 決策落盤）：每次成功 spawn 出一筆決策就 `fetch_add` 取一個單調遞增序號，
+/// 供 `vthink_log::ThinkLogEntry.seq` 排序／去重（比照 memory 的 seq 慣例）。無鎖、`Relaxed` 即足——
+/// 只要求全域單調，不要求跨執行緒的 happens-before。行程內遞增；重啟歸零不影響稽核（檔本身 append-only 保序）。
+static THINK_LOG_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// 黃昏暮聚「本季第幾場」計數（M2c 黃昏記憶去罐頭）：把「這一季已經聚了幾次」餵給
 /// `vcustom::gather_memory_line`／`gather_feed_line`，讓措辭依場次遞進（第一場帶起頭感、
@@ -23402,7 +23408,15 @@ fn tick_residents(dt: f32) {
                 && r.follow.is_none()
                 && r.fetch.is_none()
             {
-                r.think_timer = npc_agent_wire::THINK_INTERVAL_SECS;
+                // 玩家在場調速（M7 接線）：附近有旅人（SENSE_RADIUS 內）時把下一次思考間隔縮短
+                // （見 `think_interval_secs`：一半間隔、下限 45 秒），讓「你來了牠想得更勤、回應更快」；
+                // 沒人時維持長間隔省腦池額度。判定只讀 player_pts 快照（迴圈開始前已鎖外快照好）＋
+                // 純函式，**不新增任何鎖、不 await**，就在既有 residents 寫鎖迴圈內完成。
+                let has_nearby_player = nearest_player_info(r.body.x, r.body.z, &player_pts)
+                    .is_some_and(|(d2, _)| {
+                        d2 <= npc_agent_wire::SENSE_RADIUS * npc_agent_wire::SENSE_RADIUS
+                    });
+                r.think_timer = npc_agent_wire::think_interval_secs(has_nearby_player);
                 think_jobs.push((r.id.clone(), r.name, r.persona, r.body.x, r.body.z));
             }
 
@@ -30811,6 +30825,17 @@ fn relocation_finish(
     );
 }
 
+/// 把一個 `AgentAction` 攤成思考日誌用的可讀動作標籤（M7 決策落盤）。
+/// 例：`Gather`、`Talk:露娜`、`Move:(12,-3)`、`Idle`——稽核端據此定量決策分佈。純函式、確定性。
+fn action_label(action: &AgentAction) -> String {
+    match action {
+        AgentAction::MoveTo { x, y } => format!("Move:({:.0},{:.0})", x, y),
+        AgentAction::Gather => "Gather".to_string(),
+        AgentAction::Talk { target } => format!("Talk:{target}"),
+        AgentAction::Idle => "Idle".to_string(),
+    }
+}
+
 /// 為一位居民發起一次無鎖 async 思考：短鎖讀附近玩家 → drop → spawn → npc_think/npc_pray
 /// → 把決策投進 AgentBus（下一 tick 套用）。比照 game.rs npc_agent_wire 的做法，全程不持遊戲狀態鎖。
 fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona, x: f32, z: f32) {
@@ -30910,26 +30935,48 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
             format!("你的心情：{}", voxel_mood::mood_description_zh(tier)),
         )
     };
+    // 脈絡優先級（M7 接線）：把多層脈絡交給 M0 的純函式 `vthink_log::order_context` 排序，
+    // 而非過去的無腦 concat——玩家在場時把玩家相關層（`recall_note`，對在場玩家的長期記憶）**置頂**，
+    // 讓居民思考時先在意眼前這位旅人；脈絡總長超標時**優先砍寒暄社交層**（`social`），把有限的
+    // token 預算留給當下最該在意的事，不再任由罐頭社交近況淹沒 prompt。
+    //
+    // 標籤沿用 order_context 的前綴約定（`recall_note`＝玩家相關置頂；`social`＝寒暄社交可砍）。
+    // order_context 會把每層渲染成「標籤: 內容」——這些標籤是給思考 LLM 讀的輕結構，讓它一眼看出
+    // 哪段是回憶、哪段是社交近況、哪段是心情，不影響它照人設決策。內容為空的層 order_context 自動略過。
+    let has_player = !nearby_players.is_empty();
+    let recall_layer = if recall_note.is_empty() {
+        String::new()
+    } else {
+        format!("你記得：{recall_note}。")
+    };
+    let desire_layer = resident_desire_note.unwrap_or_default();
+    let catalog_layer = catalog_note.unwrap_or_default();
+    let romance_layer = romance_note.unwrap_or_default();
     let world_news = {
-        let mut parts =
-            vec!["你生活在新生的『乙太方界』——一片由方塊構成的清淨天地。".to_string()];
-        if !recall_note.is_empty() {
-            parts.push(format!("你記得：{recall_note}。"));
+        // 開場定位句永遠先於一切、恆在（不進 order_context 排序，也不帶標籤）。
+        let intro = "你生活在新生的『乙太方界』——一片由方塊構成的清淨天地。\n";
+        // (標籤, 內容)：標籤決定優先級——recall_note＝玩家層置頂、social＝寒暄社交層可砍。
+        let layers: [(&str, &str); 5] = [
+            ("recall_note", recall_layer.as_str()),
+            ("desire", desire_layer.as_str()),
+            ("catalog", catalog_layer.as_str()),
+            ("social", social_note.as_str()),
+            ("mood", mood_note.as_str()),
+        ];
+        // 註：romance_layer 也算「當下惦記」，接在排序脈絡之後（既非玩家層、亦非可砍社交層，
+        // 語氣獨立，直接綴上以維持原本「戀人常在心上」的行為）。
+        let ordered = vthink_log::order_context(&layers, has_player);
+        let mut out = intro.to_string();
+        if !ordered.is_empty() {
+            out.push_str(&ordered);
         }
-        if let Some(note) = resident_desire_note {
-            parts.push(note);
+        if !romance_layer.is_empty() {
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&romance_layer);
         }
-        if let Some(note) = catalog_note {
-            parts.push(note);
-        }
-        if !social_note.is_empty() {
-            parts.push(social_note);
-        }
-        if let Some(note) = romance_note {
-            parts.push(note);
-        }
-        parts.push(mood_note);
-        parts.concat()
+        out
     };
     let sense = SenseInput {
         x,
@@ -30948,6 +30995,24 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
     tokio::spawn(async move {
         // npc_think 內部：有 LLM 走 LLM、沒有就走罐頭規則，永遠回得出決策、不 panic。
         let decision = crate::npc_agent::npc_think(&sense, &persona_str).await;
+
+        // 決策落盤（M7）：把這次思考的軌跡順手記一行到 data/voxel_think_log.jsonl，稽核端才能
+        // 定量「思考頻率／玩家在場佔比／決策分佈／reason 品質」——過去這內心運算過程只被當下消費、
+        // 從不落地（黑盒）。鎖紀律：此刻在 spawn 出的 async task 內、**不持任何 hub 鎖**，append_think_log
+        // 又是鎖外純同步小檔 IO（比照 append_memory / append_prayer），故無跨鎖 await、無死鎖風險。
+        // sparked_desire＝這次決策若順手帶了一個心願（多半為 None），記下供稽核「思考是否誘發新渴望」。
+        {
+            let entry = vthink_log::ThinkLogEntry {
+                resident: resident_name.clone(),
+                seq: THINK_LOG_SEQ.fetch_add(1, Ordering::Relaxed),
+                had_nearby_player: has_player,
+                action: action_label(&decision.action),
+                reason: decision.reason.clone(),
+                sparked_desire: decision.prayer.clone(),
+            };
+            vthink_log::append_think_log(&entry); // 鎖外純 IO
+        }
+
         // 向後相容：模型偶爾在決策 JSON 主動給心願就當 bonus 落地。
         if let Some(prayer) = &decision.prayer {
             crate::npc_agent::append_prayer(&resident_name, prayer);
@@ -30987,6 +31052,22 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn action_label_renders_each_variant() {
+        use crate::npc_agent::AgentAction;
+        // 決策落盤用的可讀標籤：四種手各有其形，稽核端據此定量決策分佈。
+        assert_eq!(super::action_label(&AgentAction::Gather), "Gather");
+        assert_eq!(super::action_label(&AgentAction::Idle), "Idle");
+        assert_eq!(
+            super::action_label(&AgentAction::Talk { target: "露娜".into() }),
+            "Talk:露娜"
+        );
+        assert_eq!(
+            super::action_label(&AgentAction::MoveTo { x: 12.4, y: -3.6 }),
+            "Move:(12,-4)"
+        );
+    }
+
     #[test]
     fn prod_subset_replay_repairs_both_legacy_grasswave_homes_once() {
         // 2026-07-16 prod 三檔的最小唯讀子集：兩戶是 room_split 上線前舊屋；其餘三戶已圈。

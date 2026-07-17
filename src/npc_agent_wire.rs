@@ -27,6 +27,25 @@ pub const AGENT_ENABLED_COUNT: usize = 2;
 /// 讓那些獨立額度也耐用；居民「想事情」沒那麼頻繁，反而更像真人慢生活、不洗版。
 pub const THINK_INTERVAL_SECS: f32 = 90.0;
 
+/// **玩家在場**時的思考間隔（秒）。有旅人在附近時居民想得更勤（一半間隔，下限 [`THINK_INTERVAL_MIN_SECS`]），
+/// 讓「你來了牠更快回應你」；沒人時維持長間隔省腦池額度、更像真人慢生活。
+/// 由 [`think_interval_secs`] 純函式在調速時取用（M7 玩家在場調速接線）。
+pub const THINK_INTERVAL_PLAYER_SECS: f32 = THINK_INTERVAL_SECS * 0.5;
+
+/// 思考間隔的**下限**（秒）：玩家在場調速再快也不低於此，守住腦池額度不被拉爆。
+pub const THINK_INTERVAL_MIN_SECS: f32 = 45.0;
+
+/// 依「附近有沒有玩家」決定下一次思考間隔（純函式、可測）。
+/// 有玩家 → 縮短到 [`THINK_INTERVAL_PLAYER_SECS`]（但不低於 [`THINK_INTERVAL_MIN_SECS`]）；
+/// 沒玩家 → 維持 [`THINK_INTERVAL_SECS`]。把調速規則抽成純函式，讓門檻能被單元測試釘住。
+pub fn think_interval_secs(has_nearby_player: bool) -> f32 {
+    if has_nearby_player {
+        THINK_INTERVAL_PLAYER_SECS.max(THINK_INTERVAL_MIN_SECS)
+    } else {
+        THINK_INTERVAL_SECS
+    }
+}
+
 /// 感知半徑（像素）：蒐集這個範圍內的玩家 / 可採節點餵給 agent 當情境。
 pub const SENSE_RADIUS: f32 = 360.0;
 
@@ -217,5 +236,17 @@ mod tests {
         std::env::set_var("BUTFUN_NPC_AGENT", "0");
         assert!(!agents_enabled(), "設為 0 時應關閉");
         std::env::remove_var("BUTFUN_NPC_AGENT");
+    }
+
+    #[test]
+    fn think_interval_shortens_when_player_present() {
+        // 有玩家在場 → 想得更勤（比沒人短），但不低於下限。
+        let with = think_interval_secs(true);
+        let without = think_interval_secs(false);
+        assert!(with < without, "玩家在場應縮短思考間隔：with={with} without={without}");
+        assert!(with >= THINK_INTERVAL_MIN_SECS, "調速再快也不得低於下限");
+        assert_eq!(without, THINK_INTERVAL_SECS, "沒玩家維持原長間隔");
+        // 目前設定：一半間隔（45）恰等於下限，仍是有效縮短。
+        assert_eq!(with, THINK_INTERVAL_PLAYER_SECS.max(THINK_INTERVAL_MIN_SECS));
     }
 }
