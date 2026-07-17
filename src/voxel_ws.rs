@@ -113,6 +113,7 @@ use crate::voxel_announce as vannounce;
 use crate::voxel_bonds::{self as vbonds, ResidentBonds};
 use crate::voxel_romance::{self as vromance, ResidentRomance};
 use crate::voxel_wedding::{self as vwed, ResidentWeddings};
+use crate::voxel_livelihood::{self as vlive, ResidentLivelihood, Role};
 use crate::voxel_family as vfamily;
 use crate::voxel_sibling as vsibling;
 use crate::voxel_coming_of_age as vcoa;
@@ -448,8 +449,6 @@ const BUILD_INTERVAL_SECS: f32 = 8.0;
 const BUILD_COOLDOWN_SECS: f32 = 300.0;
 /// 居民每蓋一個建物前要先採集幾次（備料感、「她真的在做事」）。
 const GATHER_QUOTA: u32 = 2;
-/// 全部建物蓋完後，閒置時每個 agency tick 觸發一次「散心採集」的機率（低頻、不洗版）。
-const IDLE_GATHER_CHANCE: f32 = 0.15;
 
 /// 一位乙太方界居民的權威運行狀態（位置/朝向 + 閒晃目標 + 思考排程 + 當前冒的話）。
 struct VoxelResident {
@@ -1254,6 +1253,51 @@ fn resident_name_of(rid: &str) -> &'static str {
     RESIDENT_NAMES.get(idx).copied().unwrap_or(RESIDENT_NAMES[0])
 }
 
+/// 每日勞作記憶（M3 生計接線）：每（世界）日至多為這位居民落一筆 role-aligned 的內心
+/// 勞作記憶（農夫「今天又照料了家中田地」…），讓「牠真的靠這個過活」被記住、可回想。
+///
+/// **一級節流**：`livelihood_labor_day` 記下「這位居民上次記勞作的世界日」——只有世界日
+/// 真的往前推進才放行（同日重入立即 return），把低頻 agency tick（每 ~8s 一次）收斂成
+/// 每日至多一筆。**二級保險**：`add_memory_deduped` 以 `livelihood:{role}:{day}` 為去重鍵，
+/// 即使一級閘因重啟歸零而放行也會被記憶層折疊。
+///
+/// **鎖範式（無死鎖）**：world_time 讀 → **drop** → labor_day mutex 短取判斷即 **drop** →
+/// memory 寫短取即 **drop** → `append_memory` IO 在所有鎖外。全程任一時刻至多持一把 hub 鎖，
+/// 且呼叫端（agency tick）呼叫本函式時**未持任何 residents 鎖**——與 romance/bonds 同一無死鎖
+/// 範式：跨表判斷全靠 owned 快照、不巢狀上鎖，因此不存在兩把鎖交錯的環。
+fn maybe_log_daily_labor(rid: &str, role: Role) {
+    // 1) 當前世界日（world_time 讀鎖即釋）。
+    let world_day = { hub().world_time.read().unwrap().days_elapsed() }; // world_time 讀鎖釋放
+
+    // 2) 一級節流：labor_day mutex 短取——僅世界日推進才放行並更新，同日直接 return。
+    {
+        let mut days = hub().livelihood_labor_day.lock().unwrap();
+        match days.get(rid) {
+            Some(&last) if last >= world_day => return, // 今天（或更晚，防呆）已記過。
+            _ => {
+                days.insert(rid.to_string(), world_day);
+            }
+        }
+    } // labor_day mutex 釋放
+
+    // 3) 落一筆 role-aligned 勞作記憶（memory 寫鎖短取即釋）；去重鍵是二級保險。
+    let (kind, slot) = vlive::livelihood_memory_slot(role, world_day);
+    let key = vmem::SemanticDedupKey::new(kind, slot);
+    let outcome = {
+        hub().memory.write().unwrap().add_memory_deduped(
+            rid,
+            vlive::LIVELIHOOD_MEMORY_PLAYER,
+            role.daily_labor_line(),
+            key,
+        )
+    }; // memory 寫鎖釋放
+
+    // 4) 真的新落一筆才 append 落地（IO 在所有鎖外；被去重折疊掉就不寫）。
+    if let vmem::DedupOutcome::Added(entry) = outcome {
+        vmem::append_memory(&entry);
+    }
+}
+
 /// 依居民 id 查詢牠與所有其他居民的情誼計數（Friend/Acquaintance 各幾位）。
 ///
 /// **情誼帳本以居民「顯示名」為鍵**（`record_visit`/`bond_arrive_events` 一路都是傳
@@ -1283,6 +1327,28 @@ fn persona_for(i: usize) -> ResidentPersona {
         2 => ResidentPersona::TownSquare,
         _ => ResidentPersona::Wanderer,
     }
+}
+
+/// 生計帳本啟動載回（M3 生計接線）——**向後相容**：
+/// - `data/voxel_livelihood.jsonl` 有記錄：直接以 `from_entries` 載回（含轉職，最新 seq 為準）。
+/// - 檔案不存在／空（舊部署、首次啟動）：為整個名字池（`0..RESIDENT_NAME_POOL_LEN`）每位
+///   居民以 `persona_for(i)→Role::from_persona` seed 一筆——身分與現況 `persona_for` 一一對應，
+///   接線後行為與現況一致、**舊部署零感知**。未落地任何檔（純記憶體 seed，首次真轉職才寫檔）。
+///
+/// 對整個名字池（非僅在世居民）seed，是為了與建構順序解耦（不依賴 `RESIDENT_POP` 是否已設定）；
+/// 未在世的 id 有多餘一筆身分無妨，`role_of` 只會被在世居民查詢，多餘 key 不佔行為、不寫檔。
+fn seed_livelihood() -> ResidentLivelihood {
+    let entries = vlive::load_livelihood();
+    if !entries.is_empty() {
+        return ResidentLivelihood::from_entries(entries);
+    }
+    // 檔案不存在／空：用 persona seed，保持現況行為。
+    let mut l = ResidentLivelihood::new();
+    for i in 0..vroster::RESIDENT_NAME_POOL_LEN {
+        // since_seq=0：seed 出的預設身分自世界之初生效（真轉職才用較新 seq 蓋過）。
+        l.set_role(&format!("vox_res_{i}"), Role::from_persona(persona_for(i)), 0);
+    }
+    l
 }
 
 // ── 對話 / 招呼純邏輯（抽成可測函式，碰不到 hub / 鎖 / LLM）─────────────────────
@@ -2474,6 +2540,15 @@ struct VoxelHub {
     /// 戀人成婚 v1（ROADMAP 927）：已成婚的戀人對（顯示名，一生一次）。持久化跨重啟，
     /// 與 `romance`/`bonds` 並行、鎖各自獨立短取即釋。
     weddings: RwLock<ResidentWeddings>,
+    /// 居民生計真身分帳本（M3 生計接線）：每位居民的 `Role`（農夫／商人／館長／遊者），
+    /// 持久化到 data/voxel_livelihood.jsonl、跨重啟不忘（可轉職）。與 `romance`/`bonds`
+    /// 並行、鎖各自獨立短取即釋。啟動時：檔案有記錄就載回；無記錄（舊部署／首次）則以
+    /// `persona_for(i)→Role::from_persona` 為每位居民 seed 一筆（行為與現況一致，舊部署零感知）。
+    livelihood: RwLock<ResidentLivelihood>,
+    /// 每日勞作記憶的「上次記錄的世界日」（居民 id → world_day）。純記憶體、重啟歸零
+    /// （比照 `envoy_recall_cd` 慣例；重啟後頂多當天早一點再記一次，零資料風險）。
+    /// 是「每日至多一筆 role-aligned 勞作記憶」的一級節流閘（記憶去重鍵是二級保險）。
+    livelihood_labor_day: std::sync::Mutex<HashMap<String, u64>>,
     /// 欠飯帳本（知恩圖報 v1，ROADMAP 801）：記錄「誰欠誰一口飯」——被分過飯的居民（欠飯者 id）→
     /// 牠欠著一口飯的一群恩人（分食者 id）集合。純記憶體、重啟歸零（過場恩情、零 migration）；
     /// 800 分食 → owe，日後回報 → repay。以居民 id 記帳、與情誼帳本並行、鎖各自獨立短取即釋。
@@ -3721,6 +3796,10 @@ fn hub() -> &'static VoxelHub {
             romance: RwLock::new(ResidentRomance::from_entries(vromance::load_romance())),
             // 戀人成婚 v1（ROADMAP 927）：啟動時從 data/voxel_weddings.jsonl 載回已成婚的戀人對。
             weddings: RwLock::new(ResidentWeddings::from_entries(vwed::load_weddings())),
+            // 生計真身分（M3 生計接線）：檔案有記錄就載回、無記錄則用 persona seed（向後相容，見 seed_livelihood）。
+            livelihood: RwLock::new(seed_livelihood()),
+            // 每日勞作記憶節流閘：純記憶體、啟動空的（重啟當天可再記一次，零資料風險）。
+            livelihood_labor_day: std::sync::Mutex::new(HashMap::new()),
             // 知恩圖報 v1（ROADMAP 801）：欠飯帳本純記憶體、啟動時空的（過場恩情、重啟歸零、零持久化）。
             meal_debts: RwLock::new(vgrat::MealDebts::default()),
             // 啟動時從 data/voxel_chests.jsonl 載回箱子存量（重啟後仍保留儲存物品）。
@@ -27340,6 +27419,29 @@ fn tick_residents(dt: f32) {
                 residents.iter().find(|r| r.id == rid).map_or(0, |r| r.gathered_since_build)
             }; // residents 讀鎖釋放
 
+            // ── 生計真身分傾向（M3 生計接線）：短取 livelihood 讀鎖 → role_of → 立刻釋放，
+            //    得 owned `Role`，鎖外使用。**偏好加權、非排他**：建家主鏈由下方
+            //    `choose_activity` 先行決定（role 完全不介入），role 只在主鏈跑完的 `Wander`
+            //    分支影響「偶爾採集 vs 純閒晃」的擲骰權重——農夫偏好下田備料。未登記則
+            //    fallback 到 persona seed 出的 Role（seed_livelihood 已為整名字池預填，理應恆有）。
+            let role: Role = {
+                let live = hub().livelihood.read().unwrap();
+                live.role_of(&rid)
+            } // livelihood 讀鎖在此釋放
+                .unwrap_or_else(|| {
+                    let idx = rid.trim_start_matches("vox_res_").parse::<usize>().unwrap_or(0);
+                    Role::from_persona(persona_for(idx))
+                });
+
+            // ── 每日勞作記憶（M3 生計接線）：低頻節拍每（世界）日至多落一筆 role-aligned 記憶
+            //    （農夫「今天又照料了家中田地」…），讓「這居民真的靠這個過活」被記住。
+            //    一級節流：labor_day mutex 只在世界日推進時放行（同日重入立即 return）；
+            //    二級保險：add_memory_deduped 以 "livelihood:{role}:{day}" 為去重鍵折疊同日重覆。
+            //    鎖範式：world_time 讀→drop → labor_day mutex 短取判斷即釋 → memory 寫短取即釋 →
+            //    append IO 在所有鎖外。全程任一刻至多持一把 hub 鎖，且**絕不**在持 residents
+            //    寫鎖時取這些鎖——與 romance/bonds 同一無死鎖範式（無交錯上鎖環）。
+            maybe_log_daily_labor(&rid, role);
+
             match vskill::choose_activity(&done_kinds, desired_kind, gathered, GATHER_QUOTA, expansion_count) {
                 NextActivity::Gather => {
                     start_gather(&rid, rx, rz);
@@ -27410,7 +27512,10 @@ fn tick_residents(dt: f32) {
                         }
                     } else if !is_visiting && !is_gathering {
                         // 不探訪、不在聚會：偶爾散心採集（低頻、不洗版），否則純閒晃。
-                        if rand::random::<f32>() < IDLE_GATHER_CHANCE {
+                        // 生計傾向（M3）：以身分的採集偏好權重擲骰——農夫最愛下田備料、遊者
+                        // 幾乎只遊走（見 Role::idle_gather_weight）。只在建家主鏈跑完的 Wander
+                        // 分支生效，永不蓋掉主鏈；館長權重維持既有 0.15＝原「散心採集」的機率。
+                        if rand::random::<f32>() < role.idle_gather_weight() {
                             start_gather(&rid, rx, rz);
                         }
                     }
