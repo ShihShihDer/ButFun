@@ -392,6 +392,44 @@ const COLOR = {
   [BLUE_BANDANA]: [0.20, 0.36, 0.68], // 藍頭巾——靛藍布料色，比青陶磚更柔和
 };
 
+// ── B4 視覺色彩層次：按材質分級的色彩振幅／色偏（零美術，只放大既有 hash 色差）─────────
+// 純色方塊本來只有 ±6% 亮度、±0.05 淡色偏，層次不夠明顯、純色顯得廉價。本刀按「材質手感」
+// 分級：石材粗糙→亮度振幅大＋偏冷；木材中等→偏暖；葉片細膩→振幅小＋微暖綠；泥沙地表→中大
+// 振幅顆粒。讓同種方塊之間有更明顯、但仍自然的深淺顆粒與立體色溫，純色不再髒灰。
+// 全確定性：沿用同一組 hash（同座標永遠同色），只換振幅／色偏係數，不改任何 mesh 結構。
+//   lightAmp：亮度隨座標起伏的「半幅」（值越大顆粒越明顯，粗糙材質給大值）
+//   tintWarm：色相偏移，正值偏暖（紅↑藍↓）、負值偏冷（藍↑紅↓），拉開建材彼此的色溫
+const MAT_STONE = new Set([
+  STONE, STONE_BRICK, SMOOTH_STONE, COAL_ORE, IRON_ORE, FURNACE, AETHER_ORE, ICE_CRYSTAL,
+]);
+const MAT_WOOD = new Set([
+  WOOD, PLANK, WORKBENCH, LADDER, CHEST, DOOR_CLOSED, DOOR_OPEN, SIGN, BENCH,
+  COOP, COOP_READY, TABLE, FLOWERPOT,
+]);
+const MAT_LEAF = new Set([LEAVES, SAPLING, CACTUS, BERRY_BUSH, BERRY_BUSH_RIPE]);
+const MAT_SOIL = new Set([
+  DIRT, GRASS, SAND, FARM_SOIL, FARM_SOIL_SEEDED,
+  CARROT_SEEDED, POTATO_SEEDED, PUMPKIN_SEEDED,
+]);
+// 各材質的振幅／色偏設定；未列入的方塊走 default（沿用接近舊值、溫和的層次）。
+// 亮度半幅（lightAmp）粗細排序：石>土>木>葉——粗糙的石材顆粒最明顯、細膩的葉片最柔。
+const MAT_PROFILE = {
+  stone:   { lightAmp: 0.14, tintWarm: -0.045 }, // 石材——大振幅粗糙感＋偏冷灰藍，立體不髒
+  wood:    { lightAmp: 0.10, tintWarm:  0.060 }, // 木材——中振幅＋偏暖棕，木紋溫潤
+  leaf:    { lightAmp: 0.06, tintWarm:  0.020 }, // 葉片——小振幅細膩＋微暖綠，避免死綠一片
+  soil:    { lightAmp: 0.11, tintWarm:  0.030 }, // 泥土／沙——中大振幅顆粒＋微暖，地表自然起伏
+  default: { lightAmp: 0.08, tintWarm:  0.020 }, // 其餘（含水、雪蓋、功能方塊）——溫和層次
+};
+// 依方塊 id 取材質設定；undefined（如雪蓋、無 id 呼叫）回 default。
+function matProfile(b) {
+  if (b === undefined) return MAT_PROFILE.default;
+  if (MAT_STONE.has(b)) return MAT_PROFILE.stone;
+  if (MAT_WOOD.has(b)) return MAT_PROFILE.wood;
+  if (MAT_LEAF.has(b)) return MAT_PROFILE.leaf;
+  if (MAT_SOIL.has(b)) return MAT_PROFILE.soil;
+  return MAT_PROFILE.default;
+}
+
 // ── 裝飾植物十字貼片渲染 v2 ─────────────────────────────────────────────
 // 維護者玩到時把一顆「藍色方塊」納悶成積木、打掉才發現是小花——根因是每種方塊都被
 // 畫成平色立方體。這批「本該是插在地上的細植物」改走十字貼片（cross-billboard）：
@@ -2398,11 +2436,17 @@ const FACES = [
 ];
 
 // 方塊色只在重建 mesh 時生成：世界座標相同就永遠得到相同微差，不進入每幀更新。
-function variedBlockColor(c, wx, wy, wz) {
+// B4 視覺色彩層次：亮度振幅與色溫偏向改由「材質」決定（見 matProfile）——石材粗糙振幅大偏冷、
+// 木材中等偏暖、葉片細膩振幅小、泥沙中大顆粒。hash 與座標映射保持不變（同座標永遠同色，
+// 確定性不破壞）；b 省略時走 default 設定，行為與舊值同量級（如雪蓋、水面呼叫）。
+function variedBlockColor(c, wx, wy, wz, b) {
+  const prof = matProfile(b);
   let h = Math.imul(wx | 0, 73856093) ^ Math.imul(wy | 0, 19349663) ^ Math.imul(wz | 0, 83492791);
   h = Math.imul(h ^ (h >>> 13), 1274126177);
-  const light = 0.94 + ((h >>> 0) / 4294967295) * 0.12; // 亮度約 ±6%
-  const tint = (((h >>> 9) & 1023) / 1023 - 0.5) * 0.05; // 極淡冷暖色相差，避免髒灰
+  // 亮度：以 1.0 為中心，依材質半幅 lightAmp 上下起伏（石材顆粒最明顯、葉片最柔）。
+  const light = 1.0 + (((h >>> 0) / 4294967295) - 0.5) * 2 * prof.lightAmp;
+  // 色溫：極淡冷暖色相差（避免髒灰）＋材質固定色偏 tintWarm（木偏暖、石偏冷）。
+  const tint = (((h >>> 9) & 1023) / 1023 - 0.5) * 0.05 + prof.tintWarm;
   return [
     Math.min(1, Math.max(0, c[0] * light + tint)),
     Math.min(1, Math.max(0, c[1] * light + tint * 0.25)),
@@ -2481,14 +2525,14 @@ function rebuildChunk(key) {
           // 裝飾植物：走十字貼片（兩片交叉直立四邊形），一眼是「插在地上的一小株」而非方塊。
           // 走獨立 DoubleSide mesh（crossPlantMat），兩面都畫，花不會單面消失／半透明破洞。
           // （window.__qaCubePlants 僅供 QA 對比截圖用，切回舊的整格立方體渲染。）
-          emitCross(cpos, cnorm, ccol, cidx, lx, ly, lz, variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz), b);
+          emitCross(cpos, cnorm, ccol, cidx, lx, ly, lz, variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz, b), b);
         } else if (SHORT_BLOCKS.has(b)) {
           // 玩家裝飾傢俱 v1（ROADMAP 931）：走矮塊／薄片造型（一或多層短箱），一眼是傢俱而非建材。
-          emitFurniture(pos, norm, col, idx, lx, ly, lz, b, variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz));
+          emitFurniture(pos, norm, col, idx, lx, ly, lz, b, variedBlockColor(COLOR[b] || COLOR[STONE], wx, wy, wz, b));
         } else {
           // 四季樹葉 v1：樹葉方塊的基底色隨當前季節換色，其餘方塊沿用固定色。
           const base = b === LEAVES ? foliageLeafColor(worldSeason) : (COLOR[b] || COLOR[STONE]);
-          const c = variedBlockColor(base, wx, wy, wz);
+          const c = variedBlockColor(base, wx, wy, wz, b);
           // 冬雪覆地 v1（ROADMAP 922）：冬天露天的鬆軟地面頂面（f.n[1]===1）鋪一層雪白，側面維持原色。
           const snowCap = winterSnowCapColor(worldSeason, b, wx, wy, wz);
           for (const f of FACES) {
@@ -10387,6 +10431,9 @@ window.__voxel = {
   // 純視覺 QA 用：就地寫一個本地方塊並重建 mesh（伺服器仍權威，串流會覆蓋回真值）。
   // 供「裝飾植物十字貼片」等渲染 QA 直接擺花草截圖，不必先湊背包/放置流程。
   _qaSetBlock(x, y, z, id) { setLocalBlock(x, y, z, id); return getRaw(x, y, z); },
+  // B4 視覺色彩層次 QA 用：直接取某方塊在某座標最終上色（含分材質振幅／色偏），
+  // 供截圖 QA 客觀量「同種方塊有無深淺顆粒」與「材質色溫方向」，純唯讀、無任何權威影響。
+  _qaBlockColor(id, x, y, z) { return variedBlockColor(COLOR[id] || COLOR[STONE], x, y, z, id); },
   CROSS_PLANTS: [...CROSS_PLANTS],
   WILDFLOWER_RED, WILDFLOWER_YELLOW, WILDFLOWER_BLUE, BERRY_BUSH,
   // 玩家裝飾傢俱 v1（ROADMAP 931）QA 用：暴露四樣傢俱 id 供就地擺出佈置一角截圖。
