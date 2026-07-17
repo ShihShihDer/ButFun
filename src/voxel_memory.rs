@@ -127,6 +127,68 @@ pub enum Importance {
     Persistent(SemanticFact),
 }
 
+// ── 語意去重（防同一類日常事件反覆刷屏記憶）─────────────────────────────────
+// 本區塊是前置地基：呼叫源（voxel_custom/relations/invent）接線是後續 PR 的事，
+// 這一版只有單元測試在用，比照未接線純邏輯標 allow(dead_code)。
+
+/// 冷卻窗大小：以 `seq` 差為窗——同 `(居民, 鍵)` 上次落地一筆後，在此序號跨度**以內**的
+/// 同類事件只計數、不新增 episodic；跨度之外才再落一筆。用 seq 差而非系統時鐘，與本模組
+/// 「不寫時鐘、只用單調 seq」的一貫做法對齊，確定性、可測。
+#[allow(dead_code)]
+pub const DEDUP_SEQ_WINDOW: u64 = 12;
+
+/// 一則「反覆會發生的日常事件」的語意去重鍵。
+///
+/// 居民每天都會做同一類事（黃昏採集、發明失敗、好奇某目標…），若每次都往 episodic 塞一筆，
+/// 記憶很快被同類事件洗版、真正獨特的互動被 cap 擠掉。此鍵讓「同一類事件」在**冷卻窗**內
+/// 只計數、不重複新增，窗外才再落一筆。純值型別（可 Hash/Eq），確定性、可測。
+///
+/// 慣例：`kind` 是事件大類（如 `"dusk_gather"`），`slot` 是同類事件的細分（如季節名、
+/// 發明目標名）；兩者相同即視為「同一件反覆的事」。`slot` 別放玩家自由輸入以免鍵爆量。
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
+pub struct SemanticDedupKey {
+    /// 事件大類（穩定字串常數）。
+    pub kind: String,
+    /// 同類事件的細分槽（如季節、目標名）；無細分時給空字串。
+    pub slot: String,
+}
+
+impl SemanticDedupKey {
+    /// 便捷建構子。
+    #[allow(dead_code)]
+    pub fn new(kind: impl Into<String>, slot: impl Into<String>) -> Self {
+        Self { kind: kind.into(), slot: slot.into() }
+    }
+}
+
+/// 單一去重槽的執行期狀態：上次落地的 `seq` + 冷卻窗內被折疊掉的次數。
+/// **不持久化**——`add_memory_deduped` 真正落地的仍是正常 `MemoryEntry`，此狀態純供
+/// 執行期判斷「這次要不要新增」，重啟後從 episodic 重放同一串呼叫即可自然重建，
+/// 零新格式、零 migration、向後相容。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)]
+pub struct DedupSlot {
+    /// 上次真正落地一筆 episodic 的 seq。
+    pub last_seq: u64,
+    /// 自上次落地以來，在冷卻窗內被折疊（只計數、未新增）的同類事件數。
+    pub folded: u64,
+}
+
+/// 去重狀態表：key = (居民 id, 去重鍵) → 槽。純記憶體、重啟從 episodic 重建。
+#[allow(dead_code)]
+pub type DedupState = HashMap<(String, SemanticDedupKey), DedupSlot>;
+
+/// [`VoxelMemory::add_memory_deduped`] 的結果——供呼叫端決定要不要 append 落地。
+#[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)]
+pub enum DedupOutcome {
+    /// 冷卻窗外（或首次）：照常新增了一筆 episodic，回傳供 append 落地。
+    Added(MemoryEntry),
+    /// 冷卻窗內：未新增 episodic，只把該槽的折疊計數 +1（回傳當前累計折疊數）。
+    Folded { folded: u64 },
+}
+
 // ── 記憶 Store ───────────────────────────────────────────────────────────────
 
 /// 乙太方界記憶 store（v2 兩層）：短期對話歷史 + episodic + semantic + 全域序號。
@@ -146,6 +208,10 @@ pub struct VoxelMemory {
     /// 見 [`impression_topic`]）。front 舊、back 新，capped 在 [`IMPRESSION_TOPIC_CAP`]。
     /// 固定標籤集合、絕不含玩家原話——守 `voxel_diary` 「輸出永不含玩家原話」的隱私鐵律。
     impression_topics: HashMap<String, VecDeque<&'static str>>,
+    /// 語意去重狀態：key = (居民 id, 去重鍵) → 槽。純記憶體、不落地，
+    /// 重啟後靠 episodic 重放同一串 `add_memory_deduped` 呼叫自然重建（見 [`DedupState`]）。
+    #[allow(dead_code)]
+    dedup: DedupState,
     /// 全域單調序號（下一筆記憶用）。
     next_seq: u64,
 }
@@ -198,6 +264,7 @@ impl VoxelMemory {
             semantic,
             faded_counts,
             impression_topics,
+            dedup: DedupState::new(),
             next_seq: max_seq.wrapping_add(1),
         }
     }
@@ -253,6 +320,50 @@ impl VoxelMemory {
         }
 
         entry
+    }
+
+    /// 語意去重版新增：專供「反覆會發生的日常事件」（黃昏採集、發明失敗、好奇某目標…）用。
+    ///
+    /// 行為：
+    /// - 冷卻窗**外**（首次，或距上次同 `(居民, key)` 落地的 seq 差 ≥ [`DEDUP_SEQ_WINDOW`]）：
+    ///   走一次正常 [`add_memory`]（含 episodic cap / semantic 提煉），並把該槽重置為「剛落地、
+    ///   折疊歸零」；回傳 [`DedupOutcome::Added`]，供呼叫端 append 落地。
+    /// - 冷卻窗**內**：**不**新增 episodic，只把該槽折疊計數 +1；回傳 [`DedupOutcome::Folded`]。
+    ///
+    /// **既有 [`add_memory`] 完全不受影響**——沒走這條的呼叫源行為一如既往。去重狀態不落地，
+    /// 重啟後由 episodic 重放自然重建（見 [`DedupState`]）。純同步、不 await、確定性、可測。
+    #[allow(dead_code)]
+    pub fn add_memory_deduped(
+        &mut self,
+        resident: &str,
+        player: &str,
+        summary: &str,
+        key: SemanticDedupKey,
+    ) -> DedupOutcome {
+        let map_key = (resident.to_string(), key);
+        // 判斷是否在冷卻窗內：以「即將分配的 next_seq」與該槽 last_seq 的差為準。
+        if let Some(slot) = self.dedup.get(&map_key) {
+            let gap = self.next_seq.wrapping_sub(slot.last_seq);
+            if gap < DEDUP_SEQ_WINDOW {
+                // 窗內：只折疊計數，不動 episodic / semantic。
+                let slot = self.dedup.get_mut(&map_key).expect("剛剛確認過存在");
+                slot.folded = slot.folded.wrapping_add(1);
+                return DedupOutcome::Folded { folded: slot.folded };
+            }
+        }
+        // 窗外（或首次）：照常落一筆，並把槽重置為剛落地。
+        let entry = self.add_memory(resident, player, summary);
+        self.dedup.insert(map_key, DedupSlot { last_seq: entry.seq, folded: 0 });
+        DedupOutcome::Added(entry)
+    }
+
+    /// 讀某去重槽當前累計的折疊次數（測試 / 診斷用；不存在回 0）。純讀。
+    #[allow(dead_code)]
+    pub fn dedup_folded_count(&self, resident: &str, key: &SemanticDedupKey) -> u64 {
+        self.dedup
+            .get(&(resident.to_string(), key.clone()))
+            .map(|s| s.folded)
+            .unwrap_or(0)
     }
 
     /// 回想 episodic：撈某居民「關於這個玩家」的最近記憶（最多 limit 筆，最新在前）。
@@ -1731,5 +1842,121 @@ mod tests {
         // 未知玩家 / 居民 → 空
         assert!(m.all_player_memories("r0", "無此人").is_empty());
         assert!(m.all_player_memories("無此居民", "露娜").is_empty());
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // 新增測試：語意去重（add_memory_deduped / DedupState）
+    // ════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn deduped_first_call_adds() {
+        let mut m = VoxelMemory::new();
+        let key = SemanticDedupKey::new("dusk_gather", "春天");
+        match m.add_memory_deduped("r0", "旅人", "春天黃昏採集", key.clone()) {
+            DedupOutcome::Added(e) => assert_eq!(e.summary, "春天黃昏採集"),
+            DedupOutcome::Folded { .. } => panic!("首次應新增，不該折疊"),
+        }
+        // 首次落地後折疊數仍為 0（尚未有窗內折疊）。
+        assert_eq!(m.dedup_folded_count("r0", &key), 0);
+        assert_eq!(m.recall("r0", "旅人", 9999).len(), 1, "episodic 應有一筆");
+    }
+
+    #[test]
+    fn deduped_within_window_folds_not_adds() {
+        let mut m = VoxelMemory::new();
+        let key = SemanticDedupKey::new("dusk_gather", "春天");
+        m.add_memory_deduped("r0", "旅人", "春天黃昏採集1", key.clone());
+        // 緊接著再來幾次同鍵（seq 差遠小於窗）→ 全部折疊、不新增。
+        for i in 0..3 {
+            match m.add_memory_deduped("r0", "旅人", &format!("春天黃昏採集{i}"), key.clone()) {
+                DedupOutcome::Folded { folded } => assert_eq!(folded, (i + 1) as u64),
+                DedupOutcome::Added(_) => panic!("窗內同鍵應折疊，不該新增"),
+            }
+        }
+        // episodic 仍只有第一筆，折疊計數累到 3。
+        assert_eq!(m.recall("r0", "旅人", 9999).len(), 1, "窗內同鍵不新增 episodic");
+        assert_eq!(m.dedup_folded_count("r0", &key), 3);
+    }
+
+    #[test]
+    fn deduped_outside_window_adds_again_and_resets_fold() {
+        let mut m = VoxelMemory::new();
+        let key = SemanticDedupKey::new("dusk_gather", "春天");
+        m.add_memory_deduped("r0", "旅人", "首次", key.clone()); // seq 0 落地
+        // 折疊一次讓計數 > 0。
+        m.add_memory_deduped("r0", "旅人", "窗內", key.clone());
+        assert_eq!(m.dedup_folded_count("r0", &key), 1);
+        // 用其他非去重寫入把 seq 推出窗外（DEDUP_SEQ_WINDOW 筆）。
+        for i in 0..DEDUP_SEQ_WINDOW {
+            m.add_memory("r0", "旅人", &format!("無關記憶{i}"));
+        }
+        // 現在同鍵再來 → 窗外，應重新落地、折疊歸零。
+        match m.add_memory_deduped("r0", "旅人", "窗外再採", key.clone()) {
+            DedupOutcome::Added(_) => {}
+            DedupOutcome::Folded { .. } => panic!("跨出冷卻窗應重新落地"),
+        }
+        assert_eq!(m.dedup_folded_count("r0", &key), 0, "重新落地後折疊應歸零");
+    }
+
+    #[test]
+    fn deduped_different_keys_are_independent() {
+        let mut m = VoxelMemory::new();
+        let spring = SemanticDedupKey::new("dusk_gather", "春天");
+        let autumn = SemanticDedupKey::new("dusk_gather", "秋天");
+        let invent = SemanticDedupKey::new("invent_fail", "風車");
+        m.add_memory_deduped("r0", "旅人", "春天採集", spring.clone());
+        // 不同 slot（秋天）與不同 kind（發明失敗）各自都是「首次」→ 都應新增。
+        assert!(matches!(
+            m.add_memory_deduped("r0", "旅人", "秋天採集", autumn.clone()),
+            DedupOutcome::Added(_)
+        ));
+        assert!(matches!(
+            m.add_memory_deduped("r0", "旅人", "風車失敗", invent.clone()),
+            DedupOutcome::Added(_)
+        ));
+        // 三個獨立鍵各落一筆。
+        assert_eq!(m.recall("r0", "旅人", 9999).len(), 3);
+    }
+
+    #[test]
+    fn deduped_keyed_per_resident() {
+        let mut m = VoxelMemory::new();
+        let key = SemanticDedupKey::new("dusk_gather", "春天");
+        m.add_memory_deduped("r0", "旅人", "r0 採集", key.clone());
+        // 同鍵但不同居民 → 各自獨立，r1 也是首次應新增。
+        assert!(matches!(
+            m.add_memory_deduped("r1", "旅人", "r1 採集", key.clone()),
+            DedupOutcome::Added(_)
+        ));
+        assert_eq!(m.recall("r0", "旅人", 9999).len(), 1);
+        assert_eq!(m.recall("r1", "旅人", 9999).len(), 1);
+    }
+
+    #[test]
+    fn add_memory_unaffected_by_dedup_path() {
+        // 鐵律驗證：舊 add_memory 完全不受去重影響——連呼 N 次全部照常新增。
+        let mut m = VoxelMemory::new();
+        for i in 0..5 {
+            m.add_memory("r0", "旅人", &format!("普通記憶{i}"));
+        }
+        assert_eq!(m.recall("r0", "旅人", 9999).len(), 5, "舊 add_memory 不去重、每筆都新增");
+        // 且 add_memory 不會在 dedup 表裡留任何槽。
+        assert_eq!(m.dedup_folded_count("r0", &SemanticDedupKey::new("dusk_gather", "春天")), 0);
+    }
+
+    #[test]
+    fn dedup_folded_count_zero_for_unknown() {
+        let m = VoxelMemory::new();
+        assert_eq!(m.dedup_folded_count("r0", &SemanticDedupKey::new("x", "y")), 0);
+    }
+
+    #[test]
+    fn dedup_key_new_builds_expected() {
+        let k = SemanticDedupKey::new("dusk_gather", "春天");
+        assert_eq!(k.kind, "dusk_gather");
+        assert_eq!(k.slot, "春天");
+        // 同值鍵相等（可作 HashMap key）。
+        assert_eq!(k, SemanticDedupKey::new("dusk_gather", "春天"));
+        assert_ne!(k, SemanticDedupKey::new("dusk_gather", "秋天"));
     }
 }

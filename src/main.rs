@@ -121,6 +121,9 @@ mod voxel_residents;
 mod voxel_roster;
 // 乙太方界 AI 居民記憶系統 v1：對話歷史 + 持久記憶 + 回想（記得你、記得聊過什麼）。
 mod voxel_memory;
+// 乙太方界 居民記憶「句子模板庫」：同一件反覆的事（黃昏採集/發明失敗/好奇/搬遷）依
+// 時間第N次×在場人數×序次×情感梯度產出不同措辭，記憶去重不罐頭（純函式、零 LLM、A2）。
+mod voxel_memory_templates;
 // 乙太方界 AI 居民關係系統（切片：居民↔居民偶爾對話，湧現小社會第一顆種子）。
 mod voxel_relations;
 // 乙太方界 AI 居民渴望系統：玩家的話種下居民的夢想，記憶驅動行為 v1。
