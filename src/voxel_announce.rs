@@ -59,6 +59,33 @@ pub fn build_complete_say(resident_name: &str, kind: BuildKind) -> String {
             ];
             lines[idx % lines.len()].to_string()
         }
+        BuildKind::Workshop => {
+            let lines = [
+                "工坊蓋好了！以後在這裡做東西。",
+                "我的工坊完工啦，工作台都擺上了！",
+                "工坊好啦！來看我打鐵吧。",
+                "作坊完成了，可以好好做工了！",
+            ];
+            lines[idx % lines.len()].to_string()
+        }
+        BuildKind::Millhouse => {
+            let lines = [
+                "磨坊蓋好了！水輪轉起來啦。",
+                "我的磨坊完工啦，靠著水邊真好！",
+                "磨坊好啦，聽那水車嘎吱嘎吱～",
+                "水車磨坊完成了，快來瞧瞧！",
+            ];
+            lines[idx % lines.len()].to_string()
+        }
+        BuildKind::Monument => {
+            let lines = [
+                "紀念碑立起來了！遠遠就看得見。",
+                "我的紀念碑完工啦，記住這一刻。",
+                "石碑高高立好了，來看看吧！",
+                "紀念碑完成了，碑頂的燈夜裡好亮。",
+            ];
+            lines[idx % lines.len()].to_string()
+        }
     }
 }
 

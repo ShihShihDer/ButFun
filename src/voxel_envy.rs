@@ -141,6 +141,30 @@ mod tests {
         }
     }
 
+    /// 回歸守衛（M4 新建物關鍵字碰撞真 bug）：見賢思齊的心願文字會把**真實地標名池**
+    /// （`voxel_structure_name`）的名字嵌進去，任一名字都不得讓任何 kind 的心願文字被
+    /// 誤分類——「風車丘」曾撞上磨坊新關鍵字「風車」，害 House／Monument 心願被吃成
+    /// Millhouse。用真名池 × **全部 8 種 kind**（含 Workshop／Millhouse／Monument）交叉，
+    /// 確保每種心願文字都能 round-trip 回自己的 kind，未來新增地標名／建物關鍵字撞車即紅。
+    #[test]
+    fn envy_desire_text_roundtrips_for_all_real_names_and_kinds() {
+        use crate::voxel_building::BuildKind::*;
+        const ALL_KINDS: &[BuildKind] =
+            &[House, Well, Tower, Garden, Pavilion, Workshop, Millhouse, Monument];
+        // 掃過整個地標名池（pick_name 對池取模，掃一圈即覆蓋所有名字）。
+        for pick in 0..40 {
+            let name = crate::voxel_structure_name::pick_name(pick);
+            for &kind in ALL_KINDS {
+                let text = envy_desire_text(name, kind);
+                assert_eq!(
+                    crate::voxel_building::classify_desire(&text),
+                    Some(kind),
+                    "地標名「{name}」× 種類={kind:?} 的心願文字被誤分類（關鍵字碰撞）"
+                );
+            }
+        }
+    }
+
     // ── envy_say_line ────────────────────────────────────────────────────────
     #[test]
     fn envy_say_line_contains_name_and_kind_and_fits_frame() {

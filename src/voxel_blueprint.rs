@@ -26,12 +26,17 @@
 
 use crate::voxel_building::BuildKind;
 
-/// 五張藍圖的物品 id（純物品，不可放置；接續空玻璃瓶 83 之後的空號）。
+/// 藍圖的物品 id（純物品，不可放置；接續空玻璃瓶 83 之後的空號）。
+/// 前五張沿用 84~88；工坊／磨坊／紀念碑三種新建物（M4-B1）續用 115~117（避開已被
+/// 陶瓦 89~92／溫泉 93 等佔用的號段，落在確認為空的 115~121 區間）。
 pub const BLUEPRINT_HOUSE: u8 = 84;
 pub const BLUEPRINT_WELL: u8 = 85;
 pub const BLUEPRINT_TOWER: u8 = 86;
 pub const BLUEPRINT_GARDEN: u8 = 87;
 pub const BLUEPRINT_PAVILION: u8 = 88;
+pub const BLUEPRINT_WORKSHOP: u8 = 115;
+pub const BLUEPRINT_MILLHOUSE: u8 = 116;
+pub const BLUEPRINT_MONUMENT: u8 = 117;
 
 /// 由物品 id 查出它指定的建物種類（非藍圖 id 回 `None`）——供 `voxel_ws.rs` 判斷這份禮
 /// 是不是一張藍圖。
@@ -42,6 +47,9 @@ pub fn blueprint_kind(item_id: u8) -> Option<BuildKind> {
         BLUEPRINT_TOWER => Some(BuildKind::Tower),
         BLUEPRINT_GARDEN => Some(BuildKind::Garden),
         BLUEPRINT_PAVILION => Some(BuildKind::Pavilion),
+        BLUEPRINT_WORKSHOP => Some(BuildKind::Workshop),
+        BLUEPRINT_MILLHOUSE => Some(BuildKind::Millhouse),
+        BLUEPRINT_MONUMENT => Some(BuildKind::Monument),
         _ => None,
     }
 }
@@ -54,6 +62,9 @@ pub fn blueprint_item_id(kind: BuildKind) -> u8 {
         BuildKind::Tower => BLUEPRINT_TOWER,
         BuildKind::Garden => BLUEPRINT_GARDEN,
         BuildKind::Pavilion => BLUEPRINT_PAVILION,
+        BuildKind::Workshop => BLUEPRINT_WORKSHOP,
+        BuildKind::Millhouse => BLUEPRINT_MILLHOUSE,
+        BuildKind::Monument => BLUEPRINT_MONUMENT,
     }
 }
 
@@ -67,6 +78,9 @@ pub fn blueprint_desire_text(kind: BuildKind) -> &'static str {
         BuildKind::Tower => "我想要一座瞭望台",
         BuildKind::Garden => "我想要一個花圃",
         BuildKind::Pavilion => "我想要一座涼亭",
+        BuildKind::Workshop => "我想要一間工坊",
+        BuildKind::Millhouse => "我想要一座磨坊",
+        BuildKind::Monument => "我想要一座紀念碑",
     }
 }
 
@@ -105,12 +119,15 @@ pub fn blueprint_feed_line(player_name: &str, resident_name: &str, kind: BuildKi
 mod tests {
     use super::*;
 
-    const ALL_KINDS: [BuildKind; 5] = [
+    const ALL_KINDS: [BuildKind; 8] = [
         BuildKind::House,
         BuildKind::Well,
         BuildKind::Tower,
         BuildKind::Garden,
         BuildKind::Pavilion,
+        BuildKind::Workshop,
+        BuildKind::Millhouse,
+        BuildKind::Monument,
     ];
 
     #[test]
@@ -127,9 +144,12 @@ mod tests {
         let before = ids.len();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), before, "五張藍圖的物品 id 不應重複");
+        assert_eq!(ids.len(), before, "各張藍圖的物品 id 不應重複");
         for id in ids {
-            assert!((84..=88).contains(&id), "藍圖 id 應落在 84..=88（接續空玻璃瓶 83 之後）");
+            assert!(
+                (84..=88).contains(&id) || (115..=117).contains(&id),
+                "藍圖 id 應落在 84..=88（前五種）或 115..=117（M4-B1 三種新建物）：{id}"
+            );
         }
     }
 
