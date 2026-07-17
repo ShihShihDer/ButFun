@@ -30,6 +30,15 @@ pub enum BuildKind {
     /// 刻意**不封牆**——與封閉的小木屋、高聳的瞭望台、種花的花圃、蓄水的水井都不同，
     /// 給世界第一座「開放式公共歇腳／遮雨」的建物，也是居民「想有個乘涼避雨的地方」渴望的落地。
     Pavilion,
+    /// 工坊：比小木屋更大（5×4）的做工空間——三面牆＋正面敞口，露台一角擺工作台／熔爐，
+    /// 讓「想有個能安心打鐵／做東西的地方」落地成一座真的能認得出是工坊的建物。
+    Workshop,
+    /// 磨坊：靠水而立（錨點旁 2 格內須有水才允許此 kind），石基木架撐起一座水輪造型，
+    /// 是世界第一座「必須挑對地點才蓋得成」的建物——水邊限定，離水就蓋不了。
+    Millhouse,
+    /// 紀念碑：小佔地（3×3）卻高聳（5 層）的石柱，頂上一盞燈——不住人、不做工，
+    /// 純為「想立個能被遠遠望見、記住某件事的地標」而生。
+    Monument,
 }
 
 impl BuildKind {
@@ -41,6 +50,9 @@ impl BuildKind {
             BuildKind::Tower => "瞭望台",
             BuildKind::Garden => "花圃",
             BuildKind::Pavilion => "涼亭",
+            BuildKind::Workshop => "工坊",
+            BuildKind::Millhouse => "磨坊",
+            BuildKind::Monument => "紀念碑",
         }
     }
 
@@ -51,6 +63,9 @@ impl BuildKind {
             BuildKind::Tower => "tower",
             BuildKind::Garden => "garden",
             BuildKind::Pavilion => "pavilion",
+            BuildKind::Workshop => "workshop",
+            BuildKind::Millhouse => "millhouse",
+            BuildKind::Monument => "monument",
         }
     }
 
@@ -62,6 +77,9 @@ impl BuildKind {
             "tower" => Some(BuildKind::Tower),
             "garden" => Some(BuildKind::Garden),
             "pavilion" => Some(BuildKind::Pavilion),
+            "workshop" => Some(BuildKind::Workshop),
+            "millhouse" => Some(BuildKind::Millhouse),
+            "monument" => Some(BuildKind::Monument),
             _ => None,
         }
     }
@@ -98,6 +116,35 @@ pub fn classify_desire(desire: &str) -> Option<BuildKind> {
         || desire.contains("遮蔽")
     {
         return Some(BuildKind::Pavilion);
+    }
+    // 工坊：做工／打鐵／手作的地方（比 House 更具體，須排在 House 前）。
+    if desire.contains("工坊")
+        || desire.contains("作坊")
+        || desire.contains("工作坊")
+        || desire.contains("工作室")
+        || desire.contains("打鐵")
+        || desire.contains("鐵匠")
+        || desire.contains("鍛造")
+        || desire.contains("手作")
+    {
+        return Some(BuildKind::Workshop);
+    }
+    // 磨坊：靠水的水車磨坊（水車／水磨／磨坊）。
+    if desire.contains("磨坊")
+        || desire.contains("水車")
+        || desire.contains("水磨")
+        || desire.contains("風車")
+    {
+        return Some(BuildKind::Millhouse);
+    }
+    // 紀念碑：立碑紀念的地標。
+    if desire.contains("紀念")
+        || desire.contains("石碑")
+        || desire.contains("碑")
+        || desire.contains("方尖")
+        || desire.contains("地標")
+    {
+        return Some(BuildKind::Monument);
     }
     if desire.contains("小屋")
         || desire.contains("家")
@@ -137,6 +184,35 @@ pub fn classify_desire(desire: &str) -> Option<BuildKind> {
 /// 這位居民就再也種不出新的自發渴望。
 pub fn build_fulfills_desire(desire_text: &str, already_fulfilled: bool, completed: BuildKind) -> bool {
     !already_fulfilled && classify_desire(desire_text) == Some(completed)
+}
+
+/// 磨坊靠水 gating（純函式、可測）：磨坊必須挑對地點——錨點 (cx,cz) 周圍水平 2 格內
+/// （Chebyshev 距離 ≤ 2）、地面層 cy 或其下一層 cy-1，任一格是水（來源／流動／溫泉皆算）
+/// 才允許蓋磨坊。用注入的 `is_water` 述詞查方塊（呼叫端傳 `|x,y,z| block_at(x,y,z).is_any_water()`），
+/// 讓本判定完全純粹、可離線測試（不碰真實世界方塊）。
+///
+/// 只有 `BuildKind::Millhouse` 受此 gating 約束；其餘 kind 一律回 true（不挑地點）。
+/// 呼叫端在選定 kind／錨點後、`new_plan` 之前呼叫；不通過就換地點或改蓋別的。
+pub fn millhouse_site_ok<F: Fn(i32, i32, i32) -> bool>(
+    kind: BuildKind,
+    cx: i32,
+    cy: i32,
+    cz: i32,
+    is_water: F,
+) -> bool {
+    if kind != BuildKind::Millhouse {
+        return true; // 只有磨坊挑地點
+    }
+    for dx in -2i32..=2 {
+        for dz in -2i32..=2 {
+            for dy in [-1i32, 0] {
+                if is_water(cx + dx, cy + dy, cz + dz) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// 一句自主禱告（`npc_pray` 產出）要不要提升成持久渴望（純函式、可測）。
@@ -795,6 +871,130 @@ fn generate_blocks(kind: BuildKind, cx: i32, cy: i32, cz: i32, style: &BuildStyl
             add(&mut out, cx, cy, cz, Block::Torch);
             // 共 9 + 4×body_h + 9 + 1（+1 尖頂）塊
         }
+
+        BuildKind::Workshop => {
+            // 工坊：比小木屋更大的 5×4 做工空間——三面封牆＋正面全敞（做工要透氣、進料方便），
+            // 內部一角擺工作台與熔爐（皆既有方塊，零美術）。材質依居民/群系 style，牆高固定 3 層。
+            // 佔地相對錨點：x ∈ [-2,2]（寬 5）、z ∈ [-1,2]（深 4）；正面 = z_max（最大 z）敞口。
+            let (x0, x1) = (-2i32, 2i32);
+            let (z0, z1) = (-1i32, 2i32);
+            let wall_h = 3i32;
+            let front_z = z1; // 正面敞口那一側
+            // 地板（cy-1，實心填滿，style.floor）。
+            for x in x0..=x1 {
+                for z in z0..=z1 {
+                    add(&mut out, cx + x, cy - 1, cz + z, style.floor);
+                }
+            }
+            // 牆（三面封、正面敞口）：邊框才砌，且正面那一整排（z==front_z）不砌牆——敞口。
+            for layer in 0..wall_h {
+                let y = cy + layer;
+                for x in x0..=x1 {
+                    for z in z0..=z1 {
+                        let border = x == x0 || x == x1 || z == z0 || z == z1;
+                        if !border || z == front_z {
+                            continue; // 非邊框、或正面敞口那排 → 不砌
+                        }
+                        // 側牆中點開窗（第 1 層、z 在中間、x 為左右牆），透光。
+                        if style.windows && layer == 1 && z == 0 && (x == x0 || x == x1) {
+                            add(&mut out, cx + x, y, cz + z, Block::Glass);
+                            continue;
+                        }
+                        add(&mut out, cx + x, y, cz + z, style.wall);
+                    }
+                }
+            }
+            // 屋頂（cy+wall_h，實心填滿，style.roof）。
+            let roof_y = cy + wall_h;
+            for x in x0..=x1 {
+                for z in z0..=z1 {
+                    add(&mut out, cx + x, roof_y, cz + z, style.roof);
+                }
+            }
+            // 做工設備（站立層 cy，內部後排——恆落在牆內、不與牆重疊、不擋正面敞口、彼此不重疊）：
+            // 內部 x ∈ {-1,0,1}、z ∈ {0,1}（邊框才砌牆，內部這兩排是空的）；取內部後排 z==0
+            // （最深、遠離正面敞口 z==2）的左右兩端 x=-1 / x=1 擺工作台與熔爐。
+            add(&mut out, cx - 1, cy, cz, Block::Workbench);
+            add(&mut out, cx + 1, cy, cz, Block::Furnace);
+        }
+
+        BuildKind::Millhouse => {
+            // 磨坊：石基木架撐起一座「水輪」造型（皆既有方塊：石／木／拋光石），靠水而立。
+            // 錨點自身是磨坊主體，水輪貼在正面（+z 側）向外一格垂直立起——刻意伸出主體之外，
+            // 象徵「浸在旁邊水裡轉動」。3×3 主體 + 水輪，材質部分依 style 讓各座略有不同。
+            let (x0, x1) = (-1i32, 1i32);
+            let (z0, z1) = (-1i32, 1i32);
+            let wall_h = 3i32;
+            // 石基（cy-1，3×3 Stone 實心，穩固扎在水邊）。
+            for dx in x0..=x1 {
+                for dz in z0..=z1 {
+                    add(&mut out, cx + dx, cy - 1, cz + dz, Block::Stone);
+                }
+            }
+            // 磨坊主體牆（邊框，木架感 → 用 style.wall；正面中央下兩層留門洞可進出）。
+            let front_z = z1;
+            for layer in 0..wall_h {
+                let y = cy + layer;
+                for dx in x0..=x1 {
+                    for dz in z0..=z1 {
+                        let border = dx == x0 || dx == x1 || dz == z0 || dz == z1;
+                        if !border {
+                            continue;
+                        }
+                        if dx == 0 && dz == front_z && layer < 2 {
+                            add(&mut out, cx + dx, y, cz + dz, Block::DoorClosed);
+                            continue;
+                        }
+                        add(&mut out, cx + dx, y, cz + dz, style.wall);
+                    }
+                }
+            }
+            // 屋頂（cy+wall_h，3×3 style.roof 實心）。
+            let roof_y = cy + wall_h;
+            for dx in x0..=x1 {
+                for dz in z0..=z1 {
+                    add(&mut out, cx + dx, roof_y, cz + dz, style.roof);
+                }
+            }
+            // 水輪：貼在正面外一格（z = z1+1 = 2）的垂直圓輪造型——用拋光石圈出輪框（四個
+            // 上下左右點）＋木製輪軸中心，立在 cy..cy+2 三層高。恆落在主體佔地之外、彼此不重疊。
+            let wheel_z = cz + z1 + 1;
+            // 輪軸（中心，站立層 cy 起上下三格的中間 cy+1，木）。
+            add(&mut out, cx, cy + 1, wheel_z, Block::Wood);
+            // 輪框（上下左右四點，拋光石）：上 cy+2、下 cy、左 cx-1@cy+1、右 cx+1@cy+1。
+            add(&mut out, cx, cy + 2, wheel_z, Block::SmoothStone);
+            add(&mut out, cx, cy, wheel_z, Block::SmoothStone);
+            add(&mut out, cx - 1, cy + 1, wheel_z, Block::SmoothStone);
+            add(&mut out, cx + 1, cy + 1, wheel_z, Block::SmoothStone);
+        }
+
+        BuildKind::Monument => {
+            // 紀念碑：小佔地（3×3 石基）卻高聳——一根 5 層石柱直上，頂上一盞燈遠遠可見。
+            // 不住人、不做工，純地標。柱身用拋光石（比普通石更「碑」的質感），基座 Stone。
+            let (x0, x1) = (-1i32, 1i32);
+            let (z0, z1) = (-1i32, 1i32);
+            let pillar_h = 5i32;
+            // 基座（cy-1，3×3 Stone 實心）。
+            for dx in x0..=x1 {
+                for dz in z0..=z1 {
+                    add(&mut out, cx + dx, cy - 1, cz + dz, Block::Stone);
+                }
+            }
+            // 底座圈（cy 層，3×3 外框 style.wall，讓碑腳有一圈基座感、中心留給柱身）。
+            for dx in x0..=x1 {
+                for dz in z0..=z1 {
+                    if dx.abs() == 1 || dz.abs() == 1 {
+                        add(&mut out, cx + dx, cy, cz + dz, style.wall);
+                    }
+                }
+            }
+            // 中央石柱（cy..cy+pillar_h-1，拋光石，高聳）。
+            for layer in 0..pillar_h {
+                add(&mut out, cx, cy + layer, cz, Block::SmoothStone);
+            }
+            // 碑頂一盞燈（柱頂再上一格，火把——夜裡遠遠可見的地標光）。
+            add(&mut out, cx, cy + pillar_h, cz, Block::Torch);
+        }
     }
 
     out
@@ -1368,6 +1568,60 @@ mod tests {
         assert_eq!(classify_desire("我想種花"), Some(BuildKind::Garden));
     }
 
+    // ── 新建物種類分類（M4-B1：工坊 / 磨坊 / 紀念碑）──────────────────────────────
+
+    #[test]
+    fn classify_workshop() {
+        assert_eq!(classify_desire("我想蓋一間工坊"), Some(BuildKind::Workshop));
+        assert_eq!(classify_desire("好想有個能打鐵的作坊"), Some(BuildKind::Workshop));
+        assert_eq!(classify_desire("我夢想有座工作坊"), Some(BuildKind::Workshop));
+        assert_eq!(classify_desire("想要一個手作的地方"), Some(BuildKind::Workshop));
+    }
+
+    #[test]
+    fn classify_millhouse() {
+        assert_eq!(classify_desire("我想蓋一座磨坊"), Some(BuildKind::Millhouse));
+        assert_eq!(classify_desire("好想看水車轉動"), Some(BuildKind::Millhouse));
+        assert_eq!(classify_desire("我想要一台水磨"), Some(BuildKind::Millhouse));
+    }
+
+    #[test]
+    fn classify_monument() {
+        assert_eq!(classify_desire("我想立一座紀念碑"), Some(BuildKind::Monument));
+        assert_eq!(classify_desire("想蓋個石碑記住這件事"), Some(BuildKind::Monument));
+        assert_eq!(classify_desire("盼有個能被遠遠望見的地標"), Some(BuildKind::Monument));
+    }
+
+    #[test]
+    fn classify_new_kinds_do_not_steal_existing() {
+        // 三種新建物關鍵詞不得誤搶既有分類（家/塔/井/花/涼亭仍各歸各的）。
+        assert_eq!(classify_desire("我想有一個家"), Some(BuildKind::House));
+        assert_eq!(classify_desire("我想蓋一座塔"), Some(BuildKind::Tower));
+        assert_eq!(classify_desire("我想要一口水井"), Some(BuildKind::Well));
+        assert_eq!(classify_desire("我想種花"), Some(BuildKind::Garden));
+        assert_eq!(classify_desire("好想有座涼亭"), Some(BuildKind::Pavilion));
+    }
+
+    #[test]
+    fn build_kind_str_roundtrips_for_all_kinds() {
+        // as_str ↔ from_str 對所有 kind 皆可往返（持久化向後相容的地基）。
+        for kind in [
+            BuildKind::House,
+            BuildKind::Well,
+            BuildKind::Tower,
+            BuildKind::Garden,
+            BuildKind::Pavilion,
+            BuildKind::Workshop,
+            BuildKind::Millhouse,
+            BuildKind::Monument,
+        ] {
+            assert_eq!(BuildKind::from_str(kind.as_str()), Some(kind), "{kind:?} 往返失敗");
+            assert!(!kind.display_name().is_empty(), "{kind:?} 應有顯示名");
+        }
+        // 未知字串仍回 None。
+        assert_eq!(BuildKind::from_str("不存在的種類"), None);
+    }
+
     #[test]
     fn classify_generic_build_falls_to_house() {
         assert_eq!(classify_desire("我想蓋些什麼"), Some(BuildKind::House));
@@ -1617,6 +1871,142 @@ mod tests {
         assert_eq!(lantern.map(|b| b.b), Some(Block::Torch as u8), "涼亭中心應有一盞燈");
     }
 
+    // ── 新建物：工坊 / 磨坊 / 紀念碑（M4-B1）──────────────────────────────────────
+
+    #[test]
+    fn workshop_block_count_and_bounds_small_style() {
+        let blocks = generate_blocks(BuildKind::Workshop, 0, 5, 0, &style_small());
+        // 佔地 5×4=20。地板 20；牆三面（正面 z=z1 那排敞口）3 層；屋頂 20；設備 2。
+        // 牆邊框格數（含正面）：周長 = 2*(5)+2*(4)-4 = 14；扣掉正面那排 5 格 → 9 格/層 × 3 層 = 27。
+        // 但正面兩角本已含在正面 5 格內；其餘三面邊框恰 9 格。20 + 27 + 20 + 2 = 69。
+        assert_eq!(blocks.len(), 69, "工坊方塊數應為 69");
+        // 佔地邊界：x ∈ [-2,2]、z ∈ [-1,2]。
+        for b in &blocks {
+            assert!(b.x >= -2 && b.x <= 2, "x 越界: {}", b.x);
+            assert!(b.z >= -1 && b.z <= 2, "z 越界: {}", b.z);
+        }
+        // 正面敞口：z==2（front）站立層邊框處不得有牆（只有地板/屋頂那層才在該排放方塊）。
+        let front_wall = blocks
+            .iter()
+            .any(|b| b.z == 2 && b.y >= 5 && b.y <= 7 && b.b == Block::Wood as u8);
+        assert!(!front_wall, "工坊正面應敞口，不砌牆");
+        // 內部有恰好一個工作台與一個熔爐。
+        assert_eq!(
+            blocks.iter().filter(|b| b.b == Block::Workbench as u8).count(),
+            1,
+            "應恰一座工作台"
+        );
+        assert_eq!(
+            blocks.iter().filter(|b| b.b == Block::Furnace as u8).count(),
+            1,
+            "應恰一座熔爐"
+        );
+    }
+
+    #[test]
+    fn millhouse_block_count_and_wheel_offset() {
+        let blocks = generate_blocks(BuildKind::Millhouse, 0, 5, 0, &style_small());
+        // 石基 9 + 牆 8×3（含門洞取代不改總數）+ 屋頂 9 + 水輪 5 = 9+24+9+5 = 47。
+        assert_eq!(blocks.len(), 47, "磨坊方塊數應為 47");
+        // 水輪貼在正面外一格（z=2），共 5 塊、全在主體佔地（z ≤ 1）之外。
+        let wheel: Vec<_> = blocks.iter().filter(|b| b.z == 2).collect();
+        assert_eq!(wheel.len(), 5, "水輪應為 5 塊，位於正面外一格");
+        // 主體帶門洞（正面中央下兩層）。
+        assert!(
+            blocks.iter().any(|b| b.x == 0 && b.z == 1 && b.y == 5 && b.b == Block::DoorClosed as u8),
+            "磨坊正面應有門洞"
+        );
+    }
+
+    #[test]
+    fn monument_is_tall_and_small_footprint() {
+        let blocks = generate_blocks(BuildKind::Monument, 0, 5, 0, &style_small());
+        // 基座 9 + 底座圈 8 + 石柱 5 + 頂燈 1 = 23。
+        assert_eq!(blocks.len(), 23, "紀念碑方塊數應為 23");
+        // 佔地小（3×3），但高聳：最高一塊（頂燈）落在 cy+5=10。
+        let max_y = blocks.iter().map(|b| b.y).max().unwrap();
+        assert_eq!(max_y, 10, "紀念碑應高聳至 cy+5");
+        for b in &blocks {
+            assert!(b.x >= -1 && b.x <= 1 && b.z >= -1 && b.z <= 1, "紀念碑佔地應為 3×3");
+        }
+        // 頂端一盞燈。
+        assert!(
+            blocks.iter().any(|b| b.x == 0 && b.z == 0 && b.y == 10 && b.b == Block::Torch as u8),
+            "碑頂應有一盞燈"
+        );
+    }
+
+    #[test]
+    fn new_kinds_are_deterministic_and_overlap_free() {
+        // 建築生成鐵律：同居民同錨點恆生出逐塊相同、且無重疊的藍圖。
+        for kind in [BuildKind::Workshop, BuildKind::Millhouse, BuildKind::Monument] {
+            for rid in ["vox_res_0", "vox_res_1", "露娜", "諾娃"] {
+                for biome in [
+                    VoxelBiome::Grassland,
+                    VoxelBiome::Forest,
+                    VoxelBiome::Desert,
+                    VoxelBiome::Snow,
+                ] {
+                    let s = BuildStyle::for_resident(rid, biome, 12, 34);
+                    let a = generate_blocks(kind, 12, 5, 34, &s);
+                    let b = generate_blocks(kind, 12, 5, 34, &s);
+                    assert_eq!(a, b, "{kind:?}/{rid}/{biome:?} 應逐塊確定性一致");
+                    let mut seen = std::collections::HashSet::new();
+                    for bb in &a {
+                        assert!(
+                            seen.insert((bb.x, bb.y, bb.z)),
+                            "{kind:?}/{rid}/{biome:?} 方塊重疊於 ({},{},{})",
+                            bb.x, bb.y, bb.z
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // ── 磨坊靠水 gating（millhouse_site_ok）──────────────────────────────────────
+
+    #[test]
+    fn millhouse_site_ok_requires_water_within_two() {
+        // 只有磨坊受約束：錨點旁 2 格內（cy 或 cy-1）有水才准蓋。
+        // 造一個「(2,4,0) 有水」的世界（正好落在 dx=2、dy=-1 範圍內）。
+        let has_water = |x: i32, y: i32, z: i32| (x, y, z) == (2, 4, 0);
+        assert!(
+            millhouse_site_ok(BuildKind::Millhouse, 0, 5, 0, has_water),
+            "旁 2 格內有水應允許蓋磨坊"
+        );
+        // 完全沒水 → 不准。
+        assert!(
+            !millhouse_site_ok(BuildKind::Millhouse, 0, 5, 0, |_, _, _| false),
+            "無水應不准蓋磨坊"
+        );
+        // 水在 3 格外（dx=3）→ 超出範圍，不准。
+        let far_water = |x: i32, y: i32, z: i32| (x, y, z) == (3, 5, 0);
+        assert!(
+            !millhouse_site_ok(BuildKind::Millhouse, 0, 5, 0, far_water),
+            "水在 3 格外應不准"
+        );
+    }
+
+    #[test]
+    fn millhouse_site_ok_other_kinds_unconstrained() {
+        // 其餘建物種類不挑地點，無水也恆允許（gating 只約束磨坊）。
+        for kind in [
+            BuildKind::House,
+            BuildKind::Well,
+            BuildKind::Tower,
+            BuildKind::Garden,
+            BuildKind::Pavilion,
+            BuildKind::Workshop,
+            BuildKind::Monument,
+        ] {
+            assert!(
+                millhouse_site_ok(kind, 0, 5, 0, |_, _, _| false),
+                "{kind:?} 不該受靠水約束"
+            );
+        }
+    }
+
     #[test]
     fn all_blocks_have_valid_block_type_across_residents() {
         // 掃過多位居民 × 四群系 × 四種建物，任何組合生出的方塊都必須是合法方塊 id。
@@ -1634,6 +2024,9 @@ mod tests {
                     BuildKind::Tower,
                     BuildKind::Garden,
                     BuildKind::Pavilion,
+                    BuildKind::Workshop,
+                    BuildKind::Millhouse,
+                    BuildKind::Monument,
                 ] {
                     let blocks = generate_blocks(kind, 0, 5, 0, &style);
                     for bb in &blocks {

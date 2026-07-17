@@ -24,6 +24,9 @@ fn kind_suffix(kind: BuildKind) -> &'static str {
         BuildKind::Tower => "的瞭望台",
         BuildKind::Garden => "的花圃",
         BuildKind::Pavilion => "的涼亭",
+        BuildKind::Workshop => "的工坊",
+        BuildKind::Millhouse => "的磨坊",
+        BuildKind::Monument => "的紀念碑",
     }
 }
 
