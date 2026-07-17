@@ -42,6 +42,7 @@ use crate::voxel_building::{self as vbuild, BuildStore};
 use crate::voxel_blueprint as vblueprint;
 use crate::voxel_skills::{self as vskill, GatherSkill, GoalStore, NextActivity};
 use crate::voxel_invent as vinvent;
+use crate::voxel_life_pursuit as vpursuit;
 use crate::voxel_desires::{self as vdes, DesireStore};
 use crate::voxel_diary;
 use crate::voxel_feed as vfeed;
@@ -2556,6 +2557,15 @@ struct VoxelHub {
     /// （比照 `envoy_recall_cd` 慣例；重啟後頂多當天早一點再記一次，零資料風險）。
     /// 是「每日至多一筆 role-aligned 勞作記憶」的一級節流閘（記憶去重鍵是二級保險）。
     livelihood_labor_day: std::sync::Mutex<HashMap<String, u64>>,
+    /// 居民人生志業底本（人生志業 tick 接線）：F5 著墨的靜態多階里程碑之路，
+    /// 啟動時 `load_pursuits` 讀 data/voxel_life_pursuits.jsonl 一次、之後**唯讀常駐**
+    /// （執行期不改寫、無 save）。缺檔＝空表 → 無志業居民不受影響（向後相容、純 additive）。
+    /// 低頻 tick 查真實累積成就餵引擎推進里程碑；鎖各自獨立短取即釋、絕不與別的 store 巢狀。
+    life_pursuits: RwLock<vpursuit::PursuitStore>,
+    /// 居民人生志業進度帳本（人生志業 tick 接線）：每位居民走到第幾階（只前進不倒退）。
+    /// 啟動 `load_progress` 載回、每次推進短取寫鎖 `set_stage` → 鎖外 `save_progress` 落地
+    /// （append-only last-wins，比照 livelihood 慣例）。與 `life_pursuits` 分檔存放、各自獨立短取即釋。
+    life_pursuit_progress: RwLock<vpursuit::PursuitProgress>,
     /// 居民靈魂常駐角色 context（v1）：居民 id → 人工著墨的深邃角色卡（soul_prompt），
     /// 啟動時從 data/voxel_resident_soul.jsonl 載入一次、之後**唯讀常駐**（執行期不改寫、
     /// 無 save）。思考 prompt 組脈絡時短取讀鎖 → soul_of → clone 即釋，永不巢狀、絕不在
@@ -3813,6 +3823,10 @@ fn hub() -> &'static VoxelHub {
             livelihood: RwLock::new(seed_livelihood()),
             // 每日勞作記憶節流閘：純記憶體、啟動空的（重啟當天可再記一次，零資料風險）。
             livelihood_labor_day: std::sync::Mutex::new(HashMap::new()),
+            // 人生志業 tick 接線：啟動 load_pursuits（F5 底本，缺檔＝空表向後相容）＋ load_progress
+            //（進度帳本，缺檔＝空帳本）。之後底本唯讀、進度只由低頻 tick 推進落地。
+            life_pursuits: RwLock::new(vpursuit::load_pursuits()),
+            life_pursuit_progress: RwLock::new(vpursuit::load_progress()),
             // 居民靈魂常駐角色 context v1：啟動時從 data/voxel_resident_soul.jsonl 載入一次
             //（唯讀常駐；缺檔=空 store=現況行為，向後相容）。
             resident_souls: RwLock::new(vsoul::load_souls()),
@@ -13580,6 +13594,7 @@ pub fn spawn_farm_tick() {
             maybe_encounter_barter(); // 居民以物易物 v1（ROADMAP 888）：同節拍檢查有無餘料互補的老朋友走得夠近、湊成一樁雙向互利的背包對換。
             maybe_found_colony(); // 分村殖民 v1：低頻檢查主村是否夠成熟、該外派拓荒隊奠下第二座村。
             maybe_build_lovenest(); // 戀人愛巢 v1：低頻檢查有無戀人對還沒築巢、擲中就在村邊合力蓋起共同的家。
+            tick_life_pursuits(); // 人生志業 tick 接線：低頻查每位居民的真實累積成就、湧現推進志業里程碑（每居民每拍至多推進 1 階）。
             tick_dropitem_expire(); // 掉落物 v1（自主提案切片 828）：同節拍清掉沒人撿的過期掉落物。
             tick_stall_expire(); // 玩家自由市集 v1（自主提案切片 832）：同節拍清掉逾時沒人接手的攤位、退還材料。
             // 供需驅動漲價 v1（ROADMAP 958）：每 DEMAND_DECAY_EVERY_N_TICKS 個節拍才退燒一次
@@ -13622,6 +13637,261 @@ fn tick_stall_expire() {
         let refund = hub().inventory.write().unwrap().give(&stall.owner, stall.give_item, stall.give_count);
         vinv::append_inv(&refund);
         broadcast_stall_removed(stall.x, stall.y, stall.z);
+    }
+}
+
+// ── 人生志業 tick 接線 ────────────────────────────────────────────────────────────
+
+/// 人生志業進展記憶的「玩家」欄位哨符（非玩家、內心進展）：比照 `voxel_livelihood`
+/// 的 `LIVELIHOOD_MEMORY_PLAYER` 慣例，用一個不與任何真實帳號撞名的內部標記，把這類
+/// 「跟自己這一路有關」的記憶與「跟某位玩家有關」的記憶分帳。
+const PURSUIT_MEMORY_PLAYER: &str = "__life_pursuit__";
+
+/// 把 [`vself::SelfDomain`] 映成 `domain:<D>` trigger 用的**穩定英文變體名**（"Builder"／
+/// "Farmer"…，對齊 `AchievementSnapshot::dominant_domain` 文件範例）。`epithet` 是繁中且私有，
+/// 不適合當機器鍵；這裡集中一處映射，F5 底本的 `domain:` trigger 便照此對照。
+fn self_domain_token(d: vself::SelfDomain) -> &'static str {
+    match d {
+        vself::SelfDomain::Builder => "Builder",
+        vself::SelfDomain::Farmer => "Farmer",
+        vself::SelfDomain::Miner => "Miner",
+        vself::SelfDomain::Angler => "Angler",
+        vself::SelfDomain::Stargazer => "Stargazer",
+        vself::SelfDomain::Wanderer => "Wanderer",
+        vself::SelfDomain::Caretaker => "Caretaker",
+        vself::SelfDomain::Companion => "Companion",
+    }
+}
+
+/// 把一步發明原語映成一個「門道」token，供 `invent:<x>` trigger 的種類判定（現況引擎只特判
+/// `invent:smelt`，這裡一併把各步型攤成 token，日後加 `invent:craft` 等 trigger 免改此處）。
+/// `UseSkill` 是「引用已學會的技能」的間接步、非一門具體門道 → 不產 token。
+fn invent_step_kind_token(step: &vinvent::PrimStep) -> Option<&'static str> {
+    match step {
+        vinvent::PrimStep::Smelt { .. } => Some("smelt"),
+        vinvent::PrimStep::Craft { .. } | vinvent::PrimStep::CraftWb { .. } => Some("craft"),
+        vinvent::PrimStep::Gather { .. } => Some("gather"),
+        vinvent::PrimStep::Place { .. } => Some("place"),
+        vinvent::PrimStep::Fish { .. } => Some("fish"),
+        vinvent::PrimStep::Harvest { .. } => Some("harvest"),
+        vinvent::PrimStep::UseSkill { .. } => None,
+    }
+}
+
+/// 人生志業低頻 tick（掛 15 秒農作節拍）：查每位居民「真的累積了什麼」，在牠恰好跨過某個
+/// 里程碑門檻的那一刻，替志業往前推一階、吐一句第一人稱內心獨白。**零腳本、零硬推**——
+/// 全靠 [`vpursuit::advance_if_ready`] 這支確定性純函式對照一份鎖外組好的真實成就快照。
+///
+/// ── 無死鎖鐵律（本 tick 讀很多 store，最容易踩死鎖）─────────────────────────────
+/// **每把鎖各自 read／write → 立即取出 owned 快照 → 當場 drop**；全程**絕不同時持兩把鎖**、
+/// 絕不在持一把時去取另一把、更不在持任何鎖時做 IO／廣播。逐位居民循序處理，一位收尾了才
+/// 下一位（不長時間持鎖）。跨表判斷全靠先各自 snapshot 成 owned 再於鎖外組合。
+///
+/// **鎖取得順序（每把即釋、彼此無巢狀）**：
+/// 1. `life_pursuits` 讀鎖 → 若空表（缺志業檔／無人有志業）立即 return（向後相容早退）→ drop。
+/// 2. `residents` 讀鎖 → 抄出 `(id, name)` 清單 → drop（之後全程不再碰 residents）。
+/// 3. `vroster::load_roster()` → 純檔案 IO、**零鎖**，一次讀好整份名冊供逐位數孩子。
+/// 4. 逐位居民，各 store **各自**短取讀鎖、取完 owned 立即 drop（順序固定、彼此不巢狀）：
+///    goals → builds_by_kind／invented → 三個發明維度／romance → sweethearts／
+///    weddings → marriages／lovenests → has_lovenest／settlements → settlement／
+///    colonies → colony_founded／memory → mems（owned）→ 出鎖才算 dominant_domain。
+/// 5. `life_pursuits` 讀鎖（第二次、短取）→ `store.get(id).cloned()` → owned `Pursuit` → drop。
+/// 6. `life_pursuit_progress` 讀鎖（短取）→ `stage_of(id)` → u32 → drop。
+///    ——用這兩份 owned 值就地建**本地** store／progress，`advance_if_ready` 在**零持鎖**下評估。
+/// 7. 若判定該推進：`life_pursuit_progress` 寫鎖（短取）→ `set_stage` → drop。
+/// 8. **所有鎖釋放後**才做 IO／廣播：`save_progress`＋`append_feed`＋`add_memory_deduped`。
+///
+/// gather／craft：**無現成 per-resident 可信來源 → 給空 map**（引擎照保守鐵律自然評 false、
+/// 志業停在原地不虛構）。每居民每拍**至多推進 1 階**（`advance_if_ready` 一次只跨一階，且本
+/// tick 每人只呼叫一次）——剛上線一堆里程碑已滿足時，居民一階一階慢慢走，像真的活過來。
+fn tick_life_pursuits() {
+    // 1) 缺志業檔／無人有志業 → 最便宜早退（連 residents 都不碰）。
+    if hub().life_pursuits.read().unwrap().is_empty() {
+        return; // life_pursuits 讀鎖在此釋放
+    }
+
+    // 2) 抄出全體居民 (id, name) → 立即釋放 residents 讀鎖，之後全程不再持它。
+    let roster_ids: Vec<(String, &'static str)> = {
+        let residents = hub().residents.read().unwrap();
+        residents.iter().map(|r| (r.id.clone(), r.name)).collect()
+    }; // residents 讀鎖釋放
+
+    // 3) 一次讀好家族名冊（純檔案 IO、零鎖），供逐位居民數孩子。
+    let roster = vroster::load_roster();
+
+    // 4) 逐位居民循序處理（一位收尾才下一位，不長時間持鎖）。
+    for (rid, rname) in &roster_ids {
+        // 4a) 已蓋成的建物按 kind → builds_by_kind（done_kinds 已去重，每種計 1，滿足 build:<kind> 的 ≥1）。
+        //     鍵用 `BuildKind::as_str()`（"well"／"pavilion"…，與 voxel_goals.jsonl 持久鍵一致）。
+        let builds_by_kind: HashMap<String, u32> = {
+            let goals = hub().goals.read().unwrap();
+            goals
+                .done_kinds(rid)
+                .into_iter()
+                .map(|k| (k.as_str().to_string(), 1u32))
+                .collect()
+        }; // goals 讀鎖釋放
+
+        // 4b) 發明三維度（invented store 一把讀鎖內全取好 → 釋放）。
+        let (invented_count, invented_kinds, taught_count): (u32, HashSet<String>, u32) = {
+            let inv = hub().invented.read().unwrap();
+            // 自己摸索發明（source == None）的筆數。
+            let count = inv.self_invented_count(rid) as u32;
+            // 自己發明技能裡出現過的門道 token 集合（供 invent:smelt 這類「發明了某門道」）。
+            let mut kinds: HashSet<String> = HashSet::new();
+            for rec in inv.records_for(rid) {
+                if rec.source.is_none() {
+                    for step in &rec.steps {
+                        if let Some(tok) = invent_step_kind_token(step) {
+                            kinds.insert(tok.to_string());
+                        }
+                    }
+                }
+            }
+            // 教會別人的人次：全村記錄中「師承標記＝true 且老師名＝本居民名」的筆數
+            //（learn_from 在學生名下落一筆、source＝老師顯示名、taught＝true）。
+            let taught = inv
+                .all()
+                .iter()
+                .filter(|r| r.taught && r.source.as_deref() == Some(*rname))
+                .count() as u32;
+            (count, kinds, taught)
+        }; // invented 讀鎖釋放
+
+        // 4c) 心上人（romance 以顯示名記帳，一生至多一位 → 收成集合）。
+        let sweethearts: HashSet<String> = {
+            let rom = hub().romance.read().unwrap();
+            rom.partner_of(rname).into_iter().collect()
+        }; // romance 讀鎖釋放
+
+        // 4d) 成親對象（weddings 以顯示名記帳 → 掃 all_pairs 撿出含本人的那半邊）。
+        let marriages: HashSet<String> = {
+            let wed = hub().weddings.read().unwrap();
+            wed.all_pairs()
+                .into_iter()
+                .filter_map(|(a, b)| {
+                    if a == *rname {
+                        Some(b)
+                    } else if b == *rname {
+                        Some(a)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }; // weddings 讀鎖釋放
+
+        // 4e) 是否已與戀人築起愛巢（nests 以顯示名記帳）。
+        let has_lovenest: bool = {
+            let nests = hub().lovenests.read().unwrap();
+            nests.all().iter().any(|n| n.a == *rname || n.b == *rname)
+        }; // lovenests 讀鎖釋放
+
+        // 4f) 遷居代號：以 id 查歸屬聚落；只取「是否已離開主村」的語意（映成 0／1，
+        //     避開聚落 id 若為 2^32 倍數時 cast u32 意外歸零的坑，settle:migrate 只看 ≠0）。
+        let settlement: u32 = {
+            let st = hub().settlements.read().unwrap();
+            if st.settlement_of(rid) == vsettle::MAIN_SETTLEMENT {
+                0
+            } else {
+                1
+            }
+        }; // settlements 讀鎖釋放
+
+        // 4g) 是否奠基過殖民地（colony.founders 以顯示名記）。
+        let colony_founded: bool = {
+            let col = hub().colonies.read().unwrap();
+            col.all().iter().any(|c| c.founders.iter().any(|f| f.as_str() == *rname))
+        }; // colonies 讀鎖釋放
+
+        // 4h) 主導生活領域：memory 短讀鎖抄出 owned 記憶 → 釋放 → 鎖外昇華（純函式）。
+        let mems = { hub().memory.read().unwrap().all_memories_for(rid) }; // memory 讀鎖釋放
+        let dominant_domain: Option<String> =
+            vself::dominant_domain(&mems).map(|(dom, _)| self_domain_token(dom).to_string());
+
+        // 4i) 孩子數：家族名冊中 parent／co_parent 指向本居民 id 的筆數（roster 純 owned、零鎖）。
+        let child_count: u32 = roster
+            .iter()
+            .filter(|e| e.parent == *rid || e.co_parent.as_deref() == Some(rid.as_str()))
+            .count() as u32;
+
+        // 組成真實成就快照（全 owned、無任何鎖／引用）。gather／craft 無可信來源 → 空 map（保守）。
+        let snap = vpursuit::AchievementSnapshot {
+            builds_by_kind,
+            invented_count,
+            invented_kinds,
+            taught_count,
+            sweethearts,
+            marriages,
+            has_lovenest,
+            child_count,
+            colony_founded,
+            settlement,
+            dominant_domain,
+            gather_counts: HashMap::new(),
+            craft_counts: HashMap::new(),
+        };
+
+        // 5) 取本居民志業底本（owned clone）→ 釋放 life_pursuits 讀鎖。無志業就跳過這位。
+        let pursuit = { hub().life_pursuits.read().unwrap().get(rid).cloned() }; // life_pursuits 讀鎖釋放
+        let Some(pursuit) = pursuit else { continue };
+
+        // 6) 取本居民當前階（owned u32）→ 釋放 progress 讀鎖。用兩份 owned 值建本地 store／progress，
+        //    讓 advance_if_ready 在**零持鎖**下評估（絕不同時持底本與進度兩把鎖）。
+        let current_stage = { hub().life_pursuit_progress.read().unwrap().stage_of(rid) }; // progress 讀鎖釋放
+        let mut local_store = vpursuit::PursuitStore::new();
+        local_store.insert(pursuit);
+        let local_progress = vpursuit::PursuitProgress::from_entries([vpursuit::ProgressEntry {
+            resident: rid.clone(),
+            stage: current_stage,
+        }]);
+
+        let Some(result) = vpursuit::advance_if_ready(&local_store, &local_progress, &snap, rid)
+        else {
+            continue; // 下一階未達 → 志業原地不動（湧現，不硬推），處理下一位。
+        };
+
+        // 7) 真的要推進：progress 寫鎖短取 → set_stage（只前進不倒退）→ 釋放。
+        //    set_stage 回 false（併發下已被別處推過同階）＝這輪沒新事實，別重複落地／廣播。
+        let advanced = {
+            hub()
+                .life_pursuit_progress
+                .write()
+                .unwrap()
+                .set_stage(rid, result.new_stage)
+        }; // progress 寫鎖釋放
+        if !advanced {
+            continue;
+        }
+
+        // 8) 所有鎖已釋放 —— 才做 IO／廣播：整份進度快照落地 + 廣播里程碑 Feed + 記第一人稱進展記憶。
+        {
+            let snapshot = hub().life_pursuit_progress.read().unwrap();
+            vpursuit::save_progress(&snapshot);
+        } // progress 讀鎖釋放（save 期間只短暫持讀鎖抄快照，寫檔本身在 to_entries 之後）
+
+        vfeed::append_feed("人生志業", rname, &result.milestone_feed);
+
+        // 第一人稱進展記憶（去重鍵掛在階數上＝二級保險，就算同階被重放也不重記）。
+        let key = vmem::SemanticDedupKey::new("life_pursuit", format!("stage:{}", result.new_stage));
+        let outcome = {
+            hub().memory.write().unwrap().add_memory_deduped(
+                rid,
+                PURSUIT_MEMORY_PLAYER,
+                &result.milestone_feed,
+                key,
+            )
+        }; // memory 寫鎖釋放
+        if let vmem::DedupOutcome::Added(entry) = outcome {
+            vmem::append_memory(&entry);
+        }
+
+        // 走到志業最後一階 → 再播一則「一生的夢」大事件 Feed（更重的那一刻）。
+        if result.is_final {
+            if let Some(final_line) = result.final_line {
+                vfeed::append_feed("志業圓夢", rname, &final_line);
+            }
+        }
     }
 }
 
