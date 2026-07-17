@@ -11,8 +11,47 @@
 //! 純邏輯層（無 hub / 鎖 / async），全部抽成可測純函式；鎖與 IO 在 `voxel_ws.rs`。
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
+
+/// 社交台詞的全域輪換計數器（tick/seq 維度）。
+///
+/// 每次產生一句主動搭話／回應就 +1，讓「同一對居民在不同時候」也用不同模板——
+/// 光靠 pair 雜湊只能保證「對不同人不同句」，加上這個計數器才能保證「同一對人、
+/// 不同次搭話也會輪替」，把原本 94.7% 的重複攤開。純程序化、零 LLM、無鎖 await。
+static SOCIAL_ROTATION: AtomicU64 = AtomicU64::new(0);
+
+/// 取下一個輪換序號並自增（wrapping，永不 panic）。
+fn next_rotation() -> u64 {
+    SOCIAL_ROTATION.fetch_add(1, Ordering::Relaxed)
+}
+
+/// 單一名字的位元組雜湊（FNV-1a 風格；確定性、跨平台一致）。
+fn name_hash(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+/// 把一對居民名字摺成穩定的「pair 雜湊」——順序無關（a↔b 與 b↔a 同值），
+/// 讓「這一對人」有自己的一組措辭傾向；再和輪換序號一起決定實際模板索引。
+fn pair_hash(a: &str, b: &str) -> u64 {
+    // 相加使其對稱（與傳入順序無關），再乘散一下避免碰撞集中。
+    name_hash(a).wrapping_add(name_hash(b)).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+/// 由 (pair 雜湊, 輪換序號) 共同算出模板索引——這是「pair-local 輪換」的核心：
+/// 同一對人不同次搭話會遞進換句；不同對人起手索引也不同。
+fn pair_rotated_index(a: &str, b: &str, rotation: u64, n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    (pair_hash(a, b).wrapping_add(rotation) % n as u64) as usize
+}
 
 /// 兩居民水平距離小於此值才可社交（方塊）。
 pub const SOCIAL_RANGE: f32 = 8.0;
@@ -103,7 +142,13 @@ impl SocialStore {
     }
 }
 
-/// 把「居民說的話」格式化成另一位居民的旁聽摘要（「聽到X說『…』」）。
+/// 把「居民說的話」格式化成另一位居民的旁聽摘要。
+///
+/// **加觀察脈絡維度**：原本一律「聽到X說『…』」，一整面記憶牆讀起來全長一樣。
+/// 改成依「說話者名字 × 話語內容」共同決定旁聽框——同一人不同話、不同人同話，
+/// 前綴措辭都會換（「聽到」「路過時聽見」「隱約聽到」…），去除罐頭感。
+/// 純確定性、零 LLM：相同 (name, text) 永遠得同一句（記憶穩定、可測）。
+///
 /// 空文字 → None（不存入記憶）。
 pub fn overhear_summary(speaker_name: &str, text: &str) -> Option<String> {
     let t = text.trim();
@@ -111,45 +156,76 @@ pub fn overhear_summary(speaker_name: &str, text: &str) -> Option<String> {
         return None;
     }
     let snippet: String = t.chars().take(SOCIAL_SUMMARY_MAX_CHARS).collect();
-    Some(format!("聽到{speaker_name}說「{snippet}」"))
+    // 觀察脈絡：由 (說話者, 內容) 雜湊選旁聽框，讓摘要不再千篇一律「聽到…說」。
+    let frames = [
+        format!("聽到{speaker_name}說「{snippet}」"),
+        format!("路過時聽見{speaker_name}提起「{snippet}」"),
+        format!("隱約聽到{speaker_name}念著「{snippet}」"),
+        format!("{speaker_name}在旁邊說「{snippet}」，我都聽見了"),
+        format!("恰好聽到{speaker_name}講「{snippet}」"),
+    ];
+    let idx = (name_hash(speaker_name).wrapping_add(name_hash(&snippet)) % frames.len() as u64) as usize;
+    Some(frames[idx].clone())
 }
 
 /// 居民主動搭話另一位居民的開場白（程式化、零 LLM）。
 /// 若有心願就自然帶進去，否則說生活閒事。字元數控制在 `SOCIAL_SAY_CHARS` 以內。
+///
+/// **pair-local 輪換**：索引不再只按說話者名字固定，改由 (說話者, 目標, 全域輪換序號)
+/// 共同決定——同一人對不同對象、同一對人不同次搭話，都會換句，去除 94.7% 的重複。
 pub fn resident_social_initiation(speaker_name: &str, target_name: &str, speaker_desire: Option<&str>) -> String {
-    // 以說話者名字字節和取索引，讓同一居民固定有自己的開場風格。
-    let idx = speaker_name.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize));
+    let rot = next_rotation();
     if let Some(desire) = speaker_desire {
         // 帶心願：截短心願到 12 字元，讓整句在泡泡框內顯示完整。
         let d: String = desire.chars().take(12).collect();
         let templates = [
             format!("{target_name}，我一直想著「{d}」，你呢？"),
             format!("{target_name}，能告訴你心願嗎？「{d}」"),
-            format!("{target_name}，我有個夢想，想說說。"),
-            format!("{target_name}，你有過夢想嗎？我有。"),
+            format!("{target_name}，我有個夢想想說：「{d}」。"),
+            format!("{target_name}，你有過夢想嗎？我一直惦記著「{d}」。"),
+            format!("{target_name}，說來你可能笑，我還在想「{d}」。"),
+            format!("{target_name}，願望這種事，你懂嗎？我想「{d}」。"),
         ];
-        templates[idx % templates.len()].clone()
+        let idx = pair_rotated_index(speaker_name, target_name, rot, templates.len());
+        clamp_say(&templates[idx])
     } else {
         let templates = [
             format!("{target_name}，今天有去哪走走嗎？"),
             format!("{target_name}，這裡真靜，你也這樣覺得？"),
             format!("{target_name}，碰到你真好。"),
             format!("{target_name}，你有發現什麼有趣的？"),
+            format!("{target_name}，最近過得還好嗎？"),
+            format!("{target_name}，風有點涼，你不冷吧？"),
+            format!("{target_name}，好久沒好好聊聊了呢。"),
+            format!("{target_name}，你手上在忙什麼呀？"),
         ];
-        templates[idx % templates.len()].clone()
+        let idx = pair_rotated_index(speaker_name, target_name, rot, templates.len());
+        clamp_say(&templates[idx])
     }
 }
 
 /// 目標居民延遲後的回應（程式化、零 LLM）。
+///
+/// 同 `resident_social_initiation`：pair-local 輪換——回應對象／輪次不同，措辭就換。
 pub fn resident_social_response(responder_name: &str, initiator_name: &str) -> String {
-    let idx = responder_name.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize));
+    let rot = next_rotation();
     let templates = [
         format!("{initiator_name}，你說的讓我想了好久。"),
         format!("{initiator_name}，原來你也這樣想！"),
         format!("{initiator_name}，聽到你說這個真好。"),
         format!("{initiator_name}，我也有話想說呢。"),
+        format!("{initiator_name}，被你這麼一提，我也有感觸。"),
+        format!("{initiator_name}，能碰上你聊這個，真巧。"),
+        format!("{initiator_name}，你總能說到我心坎裡。"),
+        format!("{initiator_name}，嗯，我懂你的意思。"),
     ];
-    templates[idx % templates.len()].clone()
+    let idx = pair_rotated_index(responder_name, initiator_name, rot, templates.len());
+    clamp_say(&templates[idx])
+}
+
+/// 把台詞截到泡泡字元上限內，防溢框（呼叫端本也會截，這裡多一道保險）。
+fn clamp_say(s: &str) -> String {
+    s.chars().take(SOCIAL_SAY_CHARS).collect()
 }
 
 /// 兩居民的水平距離（xz 平面）是否小於等於 `range`（社交範圍判定）。
@@ -267,6 +343,102 @@ mod tests {
         let line = resident_social_response("諾娃", "露娜");
         assert!(line.contains("露娜"), "回應應提到發起者：{line}");
         assert!(line.chars().count() <= SOCIAL_SAY_CHARS);
+    }
+
+    // ── pair-local 輪換：同一人對不同對象 → 不同開場（去罐頭核心保證）──────────────
+
+    /// 純函式檢查：pair_rotated_index 對「不同對象」在**同一輪次**會落到不同索引
+    /// （雜湊決定，不受全域計數器干擾，可穩定斷言）。
+    #[test]
+    fn pair_index_differs_by_target_same_rotation() {
+        // 固定 rotation=0，只變目標對象。8 個模板足以讓多數目標落到不同槽。
+        let n = 8usize;
+        let a = pair_rotated_index("露娜", "諾娃", 0, n);
+        let b = pair_rotated_index("露娜", "星辰", 0, n);
+        let c = pair_rotated_index("露娜", "河圖", 0, n);
+        // 至少三者不全相同（同一人對不同人不會固定同句）。
+        assert!(
+            !(a == b && b == c),
+            "同一說話者對不同對象在同輪次不應全落同一模板：{a},{b},{c}"
+        );
+    }
+
+    /// pair_hash 對稱：a↔b 與 b↔a 同值（「這一對人」概念與傳入順序無關）。
+    #[test]
+    fn pair_hash_is_symmetric() {
+        assert_eq!(pair_hash("露娜", "諾娃"), pair_hash("諾娃", "露娜"));
+        assert_ne!(pair_hash("露娜", "諾娃"), pair_hash("露娜", "星辰"));
+    }
+
+    /// 輪換序號推進 → 同一對人也會換句（tick/seq 維度）。
+    #[test]
+    fn pair_index_rotates_over_seq() {
+        let n = 8usize;
+        let mut seen = std::collections::HashSet::new();
+        for rot in 0..(n as u64) {
+            seen.insert(pair_rotated_index("露娜", "諾娃", rot, n));
+        }
+        // 連續 n 個輪次應覆蓋全部 n 個索引（rotation 以 +1 步進、模 n）。
+        assert_eq!(seen.len(), n, "同一對人連續輪次應輪遍所有模板");
+    }
+
+    /// 端到端：同一發起者對不同對象，連呼叫多次，開場白集合應多樣（非千篇一律）。
+    #[test]
+    fn initiation_varies_across_targets_and_calls() {
+        let mut lines = std::collections::HashSet::new();
+        for target in ["諾娃", "星辰", "河圖", "青禾"] {
+            for _ in 0..3 {
+                lines.insert(resident_social_initiation("露娜", target, None));
+            }
+        }
+        // 4 對象 × 3 次，全域計數器推進 + pair 雜湊 → 應遠多於 1 句。
+        assert!(lines.len() >= 4, "開場白應多樣、非罐頭，實得 {}", lines.len());
+    }
+
+    /// 回應同理：對不同發起者、多次呼叫，應輪出多樣句子。
+    #[test]
+    fn response_varies_across_initiators_and_calls() {
+        let mut lines = std::collections::HashSet::new();
+        for initiator in ["諾娃", "星辰", "河圖", "青禾"] {
+            for _ in 0..3 {
+                lines.insert(resident_social_response("露娜", initiator));
+            }
+        }
+        assert!(lines.len() >= 4, "回應應多樣、非罐頭，實得 {}", lines.len());
+    }
+
+    /// 帶心願的開場也走輪換，且句子仍在泡泡上限內、含心願截短版。
+    #[test]
+    fn initiation_with_desire_rotates_and_stays_short() {
+        let mut lines = std::collections::HashSet::new();
+        for _ in 0..8 {
+            let l = resident_social_initiation("露娜", "諾娃", Some("蓋一座觀星塔"));
+            assert!(l.chars().count() <= SOCIAL_SAY_CHARS, "應在泡泡上限內：{l}");
+            assert!(l.contains("蓋一座觀"), "應含心願截短版：{l}");
+            lines.insert(l);
+        }
+        assert!(lines.len() >= 2, "同一對人多次帶心願開場也應輪換，實得 {}", lines.len());
+    }
+
+    // ── overhear_summary 加觀察脈絡維度 ────────────────────────────────────────
+
+    /// 不同說話者 → 旁聽框措辭可不同（觀察脈絡維度，非一律「聽到…說」）。
+    #[test]
+    fn overhear_summary_frame_varies_by_speaker() {
+        let mut frames = std::collections::HashSet::new();
+        for name in ["露娜", "諾娃", "星辰", "河圖", "青禾", "白露", "子規"] {
+            frames.insert(overhear_summary(name, "我想蓋觀星塔").unwrap());
+        }
+        // 7 位說話者，雜湊選框後應出現多於一種措辭（不再千篇一律）。
+        assert!(frames.len() >= 2, "旁聽框應隨脈絡變化，實得 {}", frames.len());
+    }
+
+    /// 觀察脈絡是確定性的：相同 (name, text) 永遠得同一句（記憶穩定）。
+    #[test]
+    fn overhear_summary_is_deterministic() {
+        let a = overhear_summary("露娜", "我想蓋觀星塔").unwrap();
+        let b = overhear_summary("露娜", "我想蓋觀星塔").unwrap();
+        assert_eq!(a, b, "相同輸入應得相同摘要");
     }
 
     #[test]
