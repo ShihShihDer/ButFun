@@ -347,6 +347,33 @@ static LAST_COLONY_UNIX: AtomicU64 = AtomicU64::new(0);
 /// 上次迎新居民冒「歡迎泡泡」的 unix 秒（居民迎新 v1，ROADMAP 948）：全域冷卻——
 /// 訪客反覆重連／多開連線也不能讓居民頭上刷屏（引導卡照發，只有泡泡受此限）。
 static LAST_ONBOARD_GREET_UNIX: AtomicU64 = AtomicU64::new(0);
+
+/// 黃昏暮聚「本季第幾場」計數（M2c 黃昏記憶去罐頭）：把「這一季已經聚了幾次」餵給
+/// `vcustom::gather_memory_line`／`gather_feed_line`，讓措辭依場次遞進（第一場帶起頭感、
+/// 往後帶積累感），避免 prod 上黃昏記憶反覆同一句（曾達 1410 次）。
+/// `SEASON_EPOCH`＝上次計數所屬的季節序號（`day / DAYS_PER_SEASON`，逐季遞增）；季節一換就把
+/// `COUNT` 歸零重新起算。純記憶體、無鎖（用原子，不與 std RwLock 巢狀，守死鎖鐵律）；
+/// 重啟後從 0 起算可接受——只影響措辭的「第N場」感，不涉玩家資料。
+static DUSK_GATHER_SEASON_EPOCH: AtomicU64 = AtomicU64::new(u64::MAX);
+static DUSK_GATHER_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// 取這座聚落這一場暮聚的「本季第 N 場」序號（1 起算）。`day`＝當前世界日數。
+/// 季節序號（`day / DAYS_PER_SEASON`）一變就把計數歸零重來，否則沿用同季計數 +1。
+/// 無鎖：季節切換用 `compare_exchange` 搶第一個歸零者、其餘沿用；再 `fetch_add` 取序號。
+/// 同一 tick 可能開多場（主村＋各殖民地），每場各呼叫一次、各自拿到遞增序號。
+fn next_dusk_gather_nth(day: u64) -> usize {
+    let epoch = day / vseason::DAYS_PER_SEASON;
+    let prev = DUSK_GATHER_SEASON_EPOCH.load(Ordering::Relaxed);
+    if prev != epoch
+        && DUSK_GATHER_SEASON_EPOCH
+            .compare_exchange(prev, epoch, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        // 這一輪由本執行緒完成換季 → 歸零計數（其餘同季呼叫者沿用既有計數）。
+        DUSK_GATHER_COUNT.store(0, Ordering::Relaxed);
+    }
+    DUSK_GATHER_COUNT.fetch_add(1, Ordering::Relaxed) + 1
+}
 /// 居民閒晃半徑下/上限（方塊）：挑下一個目標時離當前位置的距離區間。
 const WANDER_MIN_R: f32 = 4.0;
 const WANDER_MAX_R: f32 = 12.0;
@@ -18812,6 +18839,19 @@ fn tick_residents(dt: f32) {
             map
         };
 
+        // 暮聚在場人數表（M2c 黃昏記憶去罐頭）：按「聚集點座標 bits」統計此刻正逗留於各暮聚的
+        // 居民數，供下方閒聊泡泡依人數換一組語氣（獨自／三兩人／一群人）。此處只讀（iter），下方
+        // 迴圈 iter_mut 借第二次前先建好表、避免同一 Vec 二次借用——比照上方 playmate_of 手法。
+        let dusk_headcount: HashMap<(u64, u64), usize> = {
+            let mut map: HashMap<(u64, u64), usize> = HashMap::new();
+            for r in residents.iter() {
+                if let Some((cx, cz)) = r.custom_meet {
+                    *map.entry((cx.to_bits() as u64, cz.to_bits() as u64)).or_insert(0) += 1;
+                }
+            }
+            map
+        };
+
         // 2b) 物理 + 閒晃 + 社交冷卻 + 思考排程。
         for r in residents.iter_mut() {
             // 生病時真的「動作慢下來」（voxel_illness v3，自主提案）：與既有日夜降速相乘
@@ -20623,9 +20663,15 @@ fn tick_residents(dt: f32) {
                         let pick = (r.body.x.to_bits() ^ r.body.z.to_bits()) as usize;
                         // 殖民地暮聚 v1：主村暮聚圍在真的立起來的村碑腳下、殖民地暮聚只圍在奠基
                         // 小廣場（沒有紀念柱）——比對這位居民的聚集點是不是主村中心，換一組不提
-                        // 「村碑」的台詞，避免殖民地居民講出根本不存在的地標。
-                        let at_main = village_center_opt == Some((cx, cz));
-                        r.say = vcustom::chatter_bubble(pick, at_main).to_string();
+                        // 「村碑」的台詞（`has_monument`），避免殖民地居民講出根本不存在的地標。
+                        let has_monument = village_center_opt == Some((cx, cz));
+                        // M2c：這場暮聚此刻在場人數（上方 dusk_headcount 預先按聚集點統計），
+                        // 讓閒聊泡泡依「獨自／三兩人／一群人」換一組語氣、不再千篇一律。
+                        let headcount = dusk_headcount
+                            .get(&(cx.to_bits() as u64, cz.to_bits() as u64))
+                            .copied()
+                            .unwrap_or(1);
+                        r.say = vcustom::chatter_bubble(pick, headcount, has_monument).to_string();
                         r.say_timer = SAY_SECS;
                         r.mood_boost_secs = r.mood_boost_secs.max(voxel_mood::MOOD_BOOST_TALK);
                     }
@@ -24776,7 +24822,13 @@ fn tick_residents(dt: f32) {
             continue;
         }
         hub().last_custom_day.write().unwrap().insert(*sid, current_day);
-        let mem_line = vcustom::gather_memory_line();
+        let season_zh = current_season.display_name();
+        // M2c 黃昏記憶去罐頭：本季第幾場暮聚（換季自動歸零、每場遞增，見 next_dusk_gather_nth）
+        // ×在場人數，餵給記憶／動態牆措辭，讓黃昏記憶不再反覆同一句。同一場對記憶與 Feed 共用同一
+        // 序號（每場只 +1 一次）。
+        let nth_this_season = next_dusk_gather_nth(current_day);
+        let headcount = members.len();
+        let mem_line = vcustom::gather_memory_line(nth_this_season, headcount, season_zh);
         for (id, name) in members {
             let e = {
                 let mut mem = hub().memory.write().unwrap();
@@ -24784,7 +24836,6 @@ fn tick_residents(dt: f32) {
             }; // memory 寫鎖釋放（逐筆即釋、不巢狀）
             vmem::append_memory(&e);
         }
-        let season_zh = current_season.display_name();
         let (place, label): (String, &str) = match place_name {
             Some(name) => (format!("「{name}」的村心廣場"), name.as_str()),
             None => ("村莊廣場的村碑邊".to_string(), "村子"),
@@ -24792,7 +24843,7 @@ fn tick_residents(dt: f32) {
         vfeed::append_feed(
             vcustom::FEED_KIND,
             label,
-            &vcustom::gather_feed_line(season_zh, members.len(), &place, label),
+            &vcustom::gather_feed_line(season_zh, headcount, &place, label, nth_this_season),
         );
     }
 
