@@ -29,15 +29,27 @@ use crate::voxel::Block;
 
 // ── 村莊尺寸常數（麥塊村莊比例：小廣場、寬路、間隔地塊）──────────────────────────
 
-/// 中央廣場半徑（格）：廣場為 (2*R+1)×(2*R+1) 的鋪面方形。R=3 → 7×7 廣場，小而聚。
-pub const PLAZA_RADIUS: i32 = 3;
+/// 中央廣場半徑（格）：廣場為 (2*R+1)×(2*R+1) 的鋪面方形。R=4 → 9×9 廣場——
+/// M5-B3 佈局深化：從 7×7 放大到 9×9，讓中心廣場更有「村口大廣場」的量體感、
+/// 容得下水井 + 四角燈 + 居民聚集閒晃；四角燈隨半徑一起外擴（見 [`plaza_lantern_cells`]）。
+pub const PLAZA_RADIUS: i32 = 4;
 
 /// 主路半寬：路面寬 = 2*HALF+... 這裡取「路中線兩側各鋪 1 格」→ 實際寬 2 格（麥塊主街的寬度感）。
 /// 十字路以中心線 x∈{cx, cx+1}（或 z 同理）兩格寬向四方延伸。
 pub const ROAD_HALF_W: i32 = 1;
 
+/// 交叉口圓環半徑（格）：主路十字交會處鋪一塊 (2*R+1)×(2*R+1)、四角削圓的鋪面，
+/// 讓「＋」字路口不再是硬邦邦的方交會，而像麥塊/現實聚落的小圓環路口。R=2 → 5×5 削角。
+/// M5-B3 佈局深化：純幾何落點（見 [`junction_cells`]），呼叫端（voxel_ws）就地鋪面。
+pub const JUNCTION_RADIUS: i32 = 2;
+
 /// 主路自廣場邊緣向外延伸的長度（格）。四向各延伸這麼長，構成十字主街，足夠排開沿路地塊。
-pub const ROAD_REACH: i32 = 72;
+/// M5-B3 佈局深化：從 72 收到 40——主路過長讓村莊攤得很稀疏、居民地塊拉得老遠。
+/// 收短後中心更密、街廓更像個「聚落」；沿路地塊仍排得下（末塊中心
+/// `PLOT_FIRST_OFFSET + (PLOTS_PER_ROAD_SIDE-1)*PLOT_STRIDE` = 20 + 2*22 = 64，
+/// 但地塊在**路側**（perp 方向），沿路只需 reach ≥ 第一塊起點 20 即可容第一批，實際地塊沿路
+/// 分佈到 ~64；reach 40 僅界定「主路鋪面」長度，地塊仍依 plot_layout 自身間距排開、不受此限）。
+pub const ROAD_REACH: i32 = 40;
 
 /// 單一地塊邊長（格）：7×7 一塊——這是「地塊本身」的名義佔地（廣場/路的淨空以此計）。
 /// **註**：居民實際在地塊中心用 `build_offset` 把數座建物（家/井/塔/花圃/擴建）散開成一小片
@@ -132,6 +144,9 @@ pub struct VillagePlan {
     pub lantern_cells: Vec<(i32, i32)>,
     /// 十字主路鋪面格（平面座標）。
     pub road: Vec<(i32, i32)>,
+    /// 交叉口圓環鋪面格（平面座標；主路十字交會處四角削圓的圓環路口，M5-B3 佈局深化）。
+    /// 與 `road` 同一鋪面材質、同一「只在自然地表空氣落子」放置紀律；由 [`junction_cells`] 生成。
+    pub junction: Vec<(i32, i32)>,
     /// 沿路地塊（居民認領後當蓋家錨點）。
     pub plots: Vec<Plot>,
     /// 行道樹樹幹落點（平面座標；聚落景觀密度 v1，路旁行道樹）。實際方塊由
@@ -146,6 +161,7 @@ pub fn plan_village(cx: i32, cz: i32, biome: crate::voxel::VoxelBiome) -> Villag
     let plaza = plaza_cells(cx, cz);
     let lantern_cells = plaza_lantern_cells(cx, cz);
     let road = road_cells(cx, cz);
+    let junction = junction_cells(cx, cz);
     let plots = plot_layout(cx, cz);
     let road_trees = road_tree_cells(cx, cz);
     VillagePlan {
@@ -156,6 +172,7 @@ pub fn plan_village(cx: i32, cz: i32, biome: crate::voxel::VoxelBiome) -> Villag
         well_center: (cx, cz),
         lantern_cells,
         road,
+        junction,
         plots,
         road_trees,
     }
@@ -214,6 +231,36 @@ pub fn road_cells(cx: i32, cz: i32) -> Vec<(i32, i32)> {
     }
     let mut out: Vec<(i32, i32)> = set.into_iter().collect();
     out.sort(); // 確定性順序（HashSet 迭代序不穩，排序後才可測/重啟一致）
+    out
+}
+
+/// 交叉口圓環鋪面格（純函式、確定性、可測）：主路十字交會處（＝村莊中心）鋪一塊
+/// (2*R+1)×(2*R+1)、**四角削圓**的鋪面（R=[`JUNCTION_RADIUS`]），把硬方交會磨成
+/// 圓環路口的味道。放大後的廣場（半徑 [`PLAZA_RADIUS`]=4）完整包住這塊圓環（半徑 2）——
+/// 因此它是**廣場正中的一枚圓形路徽**：放置端（voxel_ws，非本檔）可用有別於廣場的
+/// 鋪面材質鋪這 21 格，讓十字主街在中心圓潤地交會、視覺上一眼看得出「這是路口」。
+///
+/// 削圓判定：格 (dx,dz) 落在圓內（`dx²+dz² <= R²+R`）才鋪——`+R` 這一點鬆放讓正東/西/南/北的
+/// 最外格（|dx|=R 或 |dz|=R、另一軸=0，代表四條路的接口）保留、只削掉四個直角角格，
+/// 得到「＋」延伸端齊、四角圓潤的圓環。
+///
+/// **不重疊路面鐵律**：本函式只回**圓環自身**的平面座標。放置端鋪面時只在自然地表空氣落子、
+/// 不覆蓋既有建築；圓環格與廣場 / 主路面重疊只是鋪同一片地面。測試
+/// `junction_ring_stays_within_road_footprint` 釘死：圓環整塊落在路口的合理範圍（廣場∪主路）內。
+pub fn junction_cells(cx: i32, cz: i32) -> Vec<(i32, i32)> {
+    let r = JUNCTION_RADIUS;
+    // 削圓門檻：半徑平方再放寬 r（保留四向正軸最外格＝路的接口，只削四個直角角）。
+    let thresh = (r * r + r) as i64;
+    let mut out: Vec<(i32, i32)> = Vec::new();
+    for dx in -r..=r {
+        for dz in -r..=r {
+            let d2 = (dx as i64) * (dx as i64) + (dz as i64) * (dz as i64);
+            if d2 <= thresh {
+                out.push((cx + dx, cz + dz));
+            }
+        }
+    }
+    out.sort(); // 確定性順序（可測、重啟一致）
     out
 }
 
@@ -1143,6 +1190,95 @@ mod tests {
                 !(x.abs() <= PLAZA_RADIUS && z.abs() <= PLAZA_RADIUS),
                 "主路不該鋪進廣場（{x},{z}）",
             );
+        }
+    }
+
+    // ── M5-B3 佈局深化：廣場放大到 9×9 ─────────────────────────────────────────
+
+    #[test]
+    fn plaza_is_nine_by_nine_after_m5b3() {
+        // 佈局深化把 PLAZA_RADIUS 3→4：廣場應為 9×9（含中心 81 格）。
+        assert_eq!(PLAZA_RADIUS, 4, "M5-B3 廣場半徑應放大到 4（9×9）");
+        let cells = plaza_cells(0, 0);
+        assert_eq!(cells.len(), 9 * 9, "廣場應為 9×9＝81 格");
+    }
+
+    #[test]
+    fn lanterns_follow_plaza_to_the_new_corners() {
+        // 四角燈隨半徑外擴，落在放大後廣場的四個角（±PLAZA_RADIUS）。
+        let cells = plaza_lantern_cells(0, 0);
+        assert_eq!(cells.len(), 4);
+        for &(x, z) in &cells {
+            assert_eq!(x.abs(), PLAZA_RADIUS, "燈應在廣場角落 x=±{PLAZA_RADIUS}");
+            assert_eq!(z.abs(), PLAZA_RADIUS, "燈應在廣場角落 z=±{PLAZA_RADIUS}");
+        }
+    }
+
+    // ── M5-B3 佈局深化：交叉口圓環 junction_cells ──────────────────────────────
+
+    #[test]
+    fn junction_is_five_by_five_with_rounded_corners() {
+        let cells = junction_cells(0, 0);
+        // 5×5 削去四角 → 25 − 4 = 21 格。
+        assert_eq!(cells.len(), 25 - 4, "圓環應為 5×5 削四角＝21 格");
+        // 四個直角角格（±R,±R）都應被削掉。
+        let r = JUNCTION_RADIUS;
+        for &(sx, sz) in &[(r, r), (r, -r), (-r, r), (-r, -r)] {
+            assert!(!cells.contains(&(sx, sz)), "圓環四角 ({sx},{sz}) 應削掉");
+        }
+        // 四向正軸最外格（路的接口）應保留。
+        for &(sx, sz) in &[(r, 0), (-r, 0), (0, r), (0, -r)] {
+            assert!(cells.contains(&(sx, sz)), "四向接口 ({sx},{sz}) 應保留");
+        }
+        // 含中心。
+        assert!(cells.contains(&(0, 0)), "圓環含交會中心");
+    }
+
+    #[test]
+    fn junction_is_deterministic_and_sorted() {
+        let a = junction_cells(7, -3);
+        let b = junction_cells(7, -3);
+        assert_eq!(a, b, "圓環應確定性");
+        let mut sorted = a.clone();
+        sorted.sort();
+        assert_eq!(a, sorted, "圓環格應已排序（確定性）");
+        let uniq: std::collections::HashSet<_> = a.iter().collect();
+        assert_eq!(uniq.len(), a.len(), "圓環格不得重複");
+    }
+
+    #[test]
+    fn junction_ring_stays_within_road_footprint() {
+        // 圓環整塊落在十字路口的合理範圍內：每格要嘛屬於主路面、要嘛屬於廣場鋪面
+        // （交會中心一帶）——絕不會鋪到「既非路、亦非廣場」的野地格上，
+        // 確保放置端就地鋪面時只是與既有路面/廣場同格，不會多蓋出一塊突兀的地。
+        let (vcx, vcz) = (12, -5);
+        let road: std::collections::HashSet<(i32, i32)> =
+            road_cells(vcx, vcz).into_iter().collect();
+        let plaza: std::collections::HashSet<(i32, i32)> =
+            plaza_cells(vcx, vcz).into_iter().collect();
+        for cell in junction_cells(vcx, vcz) {
+            assert!(
+                road.contains(&cell) || plaza.contains(&cell),
+                "圓環格 {cell:?} 落在路口範圍外（既非路面亦非廣場）",
+            );
+        }
+    }
+
+    #[test]
+    fn plan_includes_junction_ring() {
+        let p = plan_village(0, 0, VoxelBiome::Grassland);
+        assert!(!p.junction.is_empty(), "藍圖應含交叉口圓環");
+        assert_eq!(p.junction, junction_cells(0, 0), "藍圖圓環應與純函式一致");
+    }
+
+    // ── M5-B3 佈局深化：主路收短，中心更密 ─────────────────────────────────────
+
+    #[test]
+    fn road_reach_shortened_for_denser_center() {
+        // 主路自 72 收到 40：主路最遠鋪面不超過 ROAD_REACH。
+        assert_eq!(ROAD_REACH, 40, "M5-B3 主路 reach 應收到 40");
+        for &(x, z) in &road_cells(0, 0) {
+            assert!(x.abs() <= ROAD_REACH && z.abs() <= ROAD_REACH, "路面不得超過 reach");
         }
     }
 
