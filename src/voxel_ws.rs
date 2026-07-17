@@ -111,6 +111,7 @@ use crate::voxel_worldboss as vboss;
 use crate::voxel_time::{self as vt, WorldTime, TimePhase};
 use crate::voxel_announce as vannounce;
 use crate::voxel_bonds::{self as vbonds, ResidentBonds};
+use crate::voxel_resident_soul::{self as vsoul, SoulStore};
 use crate::voxel_romance::{self as vromance, ResidentRomance};
 use crate::voxel_wedding::{self as vwed, ResidentWeddings};
 use crate::voxel_livelihood::{self as vlive, ResidentLivelihood, Role};
@@ -2555,6 +2556,12 @@ struct VoxelHub {
     /// （比照 `envoy_recall_cd` 慣例；重啟後頂多當天早一點再記一次，零資料風險）。
     /// 是「每日至多一筆 role-aligned 勞作記憶」的一級節流閘（記憶去重鍵是二級保險）。
     livelihood_labor_day: std::sync::Mutex<HashMap<String, u64>>,
+    /// 居民靈魂常駐角色 context（v1）：居民 id → 人工著墨的深邃角色卡（soul_prompt），
+    /// 啟動時從 data/voxel_resident_soul.jsonl 載入一次、之後**唯讀常駐**（執行期不改寫、
+    /// 無 save）。思考 prompt 組脈絡時短取讀鎖 → soul_of → clone 即釋，永不巢狀、絕不在
+    /// 持任何寫鎖時取（唯讀資料無寫者，讀鎖恆不阻塞——無死鎖）。缺檔＝空 store，居民
+    /// fallback 現況行為（向後相容、新 store 純 additive）。
+    resident_souls: RwLock<SoulStore>,
     /// 欠飯帳本（知恩圖報 v1，ROADMAP 801）：記錄「誰欠誰一口飯」——被分過飯的居民（欠飯者 id）→
     /// 牠欠著一口飯的一群恩人（分食者 id）集合。純記憶體、重啟歸零（過場恩情、零 migration）；
     /// 800 分食 → owe，日後回報 → repay。以居民 id 記帳、與情誼帳本並行、鎖各自獨立短取即釋。
@@ -3806,6 +3813,9 @@ fn hub() -> &'static VoxelHub {
             livelihood: RwLock::new(seed_livelihood()),
             // 每日勞作記憶節流閘：純記憶體、啟動空的（重啟當天可再記一次，零資料風險）。
             livelihood_labor_day: std::sync::Mutex::new(HashMap::new()),
+            // 居民靈魂常駐角色 context v1：啟動時從 data/voxel_resident_soul.jsonl 載入一次
+            //（唯讀常駐；缺檔=空 store=現況行為，向後相容）。
+            resident_souls: RwLock::new(vsoul::load_souls()),
             // 知恩圖報 v1（ROADMAP 801）：欠飯帳本純記憶體、啟動時空的（過場恩情、重啟歸零、零持久化）。
             meal_debts: RwLock::new(vgrat::MealDebts::default()),
             // 啟動時從 data/voxel_chests.jsonl 載回箱子存量（重啟後仍保留儲存物品）。
@@ -30843,6 +30853,14 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
     if !hub().agent_bus.try_begin_thinking(&id) {
         return;
     }
+    // 靈魂常駐角色底（居民靈魂 context v1）：短取 resident_souls 讀鎖 → soul_of(id) →
+    // clone 成 owned String → 立刻釋放，鎖外才拼 prompt——絕不巢狀、絕不持鎖 spawn。
+    // 它是啟動載入後的唯讀常駐資料（無寫者），這把讀鎖恆不阻塞；未登記靈魂的居民回空字串
+    // → 下方組脈絡時不注入，維持現況行為（向後相容）。
+    let soul_layer: String = {
+        let souls = hub().resident_souls.read().unwrap();
+        souls.soul_of(&id).map(str::to_string).unwrap_or_default()
+    }; // resident_souls 讀鎖在此釋放
     // 短鎖讀附近玩家快照（把 voxel 的 z 當成 SenseInput 的 y——prompt 只用座標當情境）。
     let nearby_players: Vec<NearbyPlayer> = {
         let players = hub().players.read().unwrap();
@@ -30990,7 +31008,20 @@ fn spawn_resident_think(id: String, name: &'static str, persona: ResidentPersona
         nearby_nodes: Vec::new(),
         world_news,
     };
-    let persona_str = npc_agent_wire::resident_agent_persona(name, persona);
+    // 靈魂常駐角色底（居民靈魂 context v1）：soul_prompt 當「角色設定」**永遠置頂**——
+    // 拼在 persona 最前面，落進思考 prompt 的【你的人設】段（整份 prompt 的第一段），
+    // 恆在 recall_note／desire／social／mood 等動態層（世界近況段）之前；也不進 M7
+    // order_context 的排序／裁切（那套優先級機制只管動態情境層——角色是誰不是情境，是底）。
+    // 泛用 persona 接在 soul 之後，補上行為傾向與「只輸出 JSON 決策」的收尾指示。
+    // 無 soul 的居民（未登記／缺檔）→ 完全不注入，prompt 與現況一字不差（向後相容）。
+    let persona_str = {
+        let base = npc_agent_wire::resident_agent_persona(name, persona);
+        if soul_layer.is_empty() {
+            base
+        } else {
+            format!("{soul_layer}\n{base}")
+        }
+    };
     let resident_name = name.to_string();
     tokio::spawn(async move {
         // npc_think 內部：有 LLM 走 LLM、沒有就走罐頭規則，永遠回得出決策、不 panic。
