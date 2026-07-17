@@ -34,6 +34,8 @@
 //   BFQA_CHROME    google-chrome 路徑（預設 /usr/bin/google-chrome）
 //   BFQA_SECS      靜止與移動各量幾秒（預設 12）
 //   BFQA_OUT       截圖輸出目錄（預設 本檔旁 ./out）
+//   BFQA_MOBILE    1=手機視口（iPhone 直式 390×844 + isMobile + hasTouch），否則桌面 1280×800
+//                  這解鎖手機版面的前端驗收（手機一面牆 emoji、UI 重疊等只在窄視口才現形）。
 //
 // 不抄外部碼；全繁中註解；node --check 過。
 
@@ -48,6 +50,14 @@ const URL = process.env.BFQA_URL || "https://peregrine.but-fun.com/3d/?debug=1";
 const CHROME = process.env.BFQA_CHROME || "/usr/bin/google-chrome";
 const SAMPLE_SECS = Number(process.env.BFQA_SECS || 12);
 const OUT_DIR = process.env.BFQA_OUT || join(__dirname, "out");
+
+// 手機視口：BFQA_MOBILE=1 時改用 iPhone 直式（390×844, DPR3, isMobile+hasTouch），
+// 否則維持既有桌面 1280×800。手機版面的問題（一面牆 emoji、UI 底部重疊、觸控命中）
+// 只在窄視口 + 觸控環境才現形，這把整條前端手機驗收解鎖。
+const MOBILE = process.env.BFQA_MOBILE === "1";
+const VIEWPORT = MOBILE
+  ? { width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true }
+  : { width: 1280, height: 800 };
 
 // 預設用 headless（new headless）：實測這台機器上，headless new 模式才會真的吃到
 // 硬體 GPU（ANGLE→Mesa Intel）、rAF 以 60Hz 真的在跑、又能可靠截圖；
@@ -68,7 +78,8 @@ const GPU_ARGS = [
   "--use-gl=angle",
   "--use-angle=gl",
   "--disable-dev-shm-usage", // /dev/shm 太小會讓 Chrome 崩，QA 機常見
-  "--window-size=1280,800",
+  `--window-size=${VIEWPORT.width},${VIEWPORT.height}`, // 隨視口（手機/桌面）調整
+
   // 防「分頁被當背景／被遮擋」而把 requestAnimationFrame 節流到趴下（否則量到 0 幀）：
   "--disable-background-timer-throttling",
   "--disable-backgrounding-occluded-windows",
@@ -101,13 +112,14 @@ async function main() {
   console.log(`模式     : ${HEADLESS ? "headless" : "有頭(headful)"}` +
     (process.env.DISPLAY ? `  DISPLAY=${process.env.DISPLAY}` : "  （無 DISPLAY）"));
   console.log(`每段取樣 : ${SAMPLE_SECS}s`);
+  console.log(`視口     : ${MOBILE ? `手機 ${VIEWPORT.width}×${VIEWPORT.height} (DPR${VIEWPORT.deviceScaleFactor}, touch)` : `桌面 ${VIEWPORT.width}×${VIEWPORT.height}`}`);
   console.log("─".repeat(60));
 
   const browser = await puppeteer.launch({
     executablePath: CHROME,
     headless: HEADLESS ? "new" : false, // new headless 才吃硬體 GPU 且 rAF 真的跑
     args: GPU_ARGS,
-    defaultViewport: { width: 1280, height: 800 },
+    defaultViewport: VIEWPORT, // BFQA_MOBILE=1 → 手機直式 390×844；否則桌面 1280×800
   });
 
   const report = { url: URL, mode: HEADLESS ? "headless" : "headful", display: process.env.DISPLAY || null };
