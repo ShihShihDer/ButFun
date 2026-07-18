@@ -202,30 +202,52 @@ impl GatherResource {
     }
 }
 
-/// **舊坑一次性修復判定**（純函式、可測）：給定世界 delta 與一格座標，若它是一個
-/// 「採集留下的地表淺坑」就回傳該回填的地表材料，否則 `None`（保守：不誤填水井/礦道/地下室）。
+/// 一座軟土坑「地表下至多幾格」才算可自癒的淺坑；更深＝刻意深井/礦道/地窖，一律不碰。
+/// 每次觸發至多補「最底一格」，2~3 格深的坑靠後續每次採集再補一層，逐層自癒到接近地表，
+/// 而非一次填多格（維持 call site 的 `Option<Block>`＝「這一格該填什麼／不填」契約不變）。
+const MAX_PIT_DEPTH: i32 = 3;
+
+/// **採集軟土坑就地回填判定**（純函式、確定性、可測；由 v1 的「單格淺坑」保守擴深而來）。
+/// 給定世界 delta 與一格座標，若它是「開放天空下、地表下 1~3 格內的**軟質**（草/沙/泥）地表坑」
+/// 的**最底一層空氣格**，就回傳該回填的地表材料填平這一格；否則 `None`。
+/// 深坑不一次填多格——靠「後續每次觸發都再補最底一格」逐層往上自癒到接近地表。
 ///
-/// 判定四條**同時**成立才算淺坑（把水井/礦道/地下室/深洞全排除在外）：
-/// 1. 該格目前有效方塊是 `Air`（真的是個洞；水坑等非 Air 一律不動）。
-/// 2. 洞底下一格是實心（1 格淺坑、有實心地板；深井/礦道的下方也是 Air → 被排除）。
-/// 3. 該格的**自然程序地表材料**是可採地面覆蓋層（草/沙/泥），且回填後為實心
-///    （石頭→採礦道不回填；木/葉→樹不回填，均由 `refill_after_gather` 回傳 Air 濾掉）。
-/// 4. 該格正是該柱的**自然地表頂**（正上方自然方塊非實心）——地下室/井底那種
-///    「上方自然仍是實心土層」的格子不符，故只補真正暴露在地表那一層的坑。
+/// 五道保守條件**同時**成立才回填（把礦道／水井／地窖／室內／深洞／水下全排除在外）：
+/// 1. 該格目前有效方塊是 `Air`（真的是個坑；水／既有方塊等非 Air 一律不動）。
+/// 2. 正下一格有效方塊實心——該格是這座坑的**最底層空氣格**（踩在實心地板上、逐層往上補，
+///    永不懸空補到半空）。深井／礦道底下仍是 Air → 不符 → 排除。
+/// 3. 該柱**自然地表頂**（`height_at`）須在陸地（高於海平面，避免填海底／湖底），且該格落在
+///    地表頂**之下至多 `MAX_PIT_DEPTH` 格**——再深就是刻意的深井／礦道，不碰。
+/// 4. **上方須開放到天**：從該格上一格一路掃到自然地表頂，每一格有效方塊都須是 `Air`；
+///    中間只要有任何實心（自然土層屋頂＝地窖，或玩家／居民蓋的結構＝室內），代表這不是
+///    暴露在天空下的坑 → 跳過（這是不誤填地窖／室內的主要防線）。
+/// 5. 該格的**自然材料**須是可採軟質地面覆蓋層（草／沙／泥）且回填後為實心——
+///    石頭→採礦道回 `Air`（濾掉，**絕不回填礦道**）；木／礦石同理。
 pub fn surface_hole_refill(world: &WorldDelta, x: i32, y: i32, z: i32) -> Option<Block> {
-    // 1) 目前必須是空氣洞。
+    // 1) 目前必須是空氣坑。
     if voxel::effective_block_at(world, x, y, z) != Block::Air {
         return None;
     }
-    // 2) 洞底下須實心（1 格淺坑、非深井/礦道）。
+    // 2) 正下一格須實心 → 該格是這座坑的最底層空氣格（站在實心地板上逐層往上補，永不懸空補）。
     if !voxel::effective_block_at(world, x, y - 1, z).is_solid() {
         return None;
     }
-    // 4) 須為自然地表頂：正上方自然方塊非實心（排除樹幹柱間、地下室/井底埋在土層裡的格）。
-    if voxel::block_at(x, y + 1, z).is_solid() {
+    // 3) 自然地表頂須在陸地、且該格落在地表頂下至多 MAX_PIT_DEPTH 格（更深＝刻意深井／礦道，不碰）。
+    let nat_top = voxel::height_at(x, z);
+    if nat_top <= voxel::SEA_LEVEL + 1 {
+        return None; // 水邊／水下窪地不填（避免補到海底／湖底）。
+    }
+    // y > nat_top：懸空格不是地表坑；nat_top - y >= MAX_PIT_DEPTH：這一格已在地表下 3 格以外（深洞）。
+    if y > nat_top || nat_top - y >= MAX_PIT_DEPTH {
         return None;
     }
-    // 3) 自然材料須是可採地面覆蓋層、且回填為實心（石/木回 Air → 濾掉，不誤填礦道/樹）。
+    // 4) 上方須開放到天：該格之上一路到自然地表頂全為有效空氣（中間任何實心＝地窖屋頂／室內結構）。
+    for uy in (y + 1)..=nat_top {
+        if voxel::effective_block_at(world, x, uy, z).is_solid() {
+            return None;
+        }
+    }
+    // 5) 自然材料須是可採軟質地面（草／沙／泥）、回填為實心 → 石／木／礦回 Air 被濾掉，絕不填礦道／樹。
     let res = GatherResource::from_block(voxel::block_at(x, y, z))?;
     let refill = res.refill_after_gather();
     refill.is_solid().then_some(refill)
@@ -1291,20 +1313,72 @@ mod tests {
     }
 
     #[test]
-    fn surface_hole_refill_never_fills_deep_hole() {
-        // 保守鐵律：深井/礦道/地下室（多格深洞）一律不回填——只補真正的地表淺坑。
+    fn surface_hole_refill_fills_two_deep_soft_pit_bottom_up() {
+        // ① v2 擴深：2 格深軟土坑，最底一層空氣格會被回填成合適材質（逐層往上自癒）。
         let (x, h, z) = gatherable_land_point();
         let mut world = WorldDelta::new();
-        // 挖 3 格深洞（h、h-1、h-2 全成 Air），底下 h-3 仍實心。
+        // 挖 2 格深坑（h、h-1 成 Air），底下 h-2 仍是自然實心土層。
+        voxel::set_block(&mut world, x, h, z, Block::Air);
+        voxel::set_block(&mut world, x, h - 1, z, Block::Air);
+        // 最底層空氣格（h-1）：踩在實心地板 h-2 上、上方開放到天 → 回填實心軟土。
+        let bottom = surface_hole_refill(&world, x, h - 1, z);
+        assert!(bottom.is_some(), "2 格深軟土坑的最底層應被回填");
+        assert!(bottom.unwrap().is_solid(), "回填塊須實心");
+        // 這一輪只補最底一格：上層（h）底下仍是 Air（坑未收斂）→ 這一格先不補（下一輪才輪到）。
+        assert_eq!(surface_hole_refill(&world, x, h, z), None, "同一輪不一次填多格，只補最底層");
+    }
+
+    #[test]
+    fn surface_hole_refill_fills_three_deep_soft_pit_bottom() {
+        // ② 3 格深軟土坑仍在自癒範圍：最底層空氣格會回填（逐層往上補到接近地表）。
+        let (x, h, z) = gatherable_land_point();
+        let mut world = WorldDelta::new();
         for dy in 0..3 {
             voxel::set_block(&mut world, x, h - dy, z, Block::Air);
         }
-        // 頂層：底下是 Air（深洞）→ 不填。
-        assert_eq!(surface_hole_refill(&world, x, h, z), None);
-        // 中層：底下是 Air → 不填。
+        // 最底層（h-2）：底下 h-3 實心、上方開放 → 回填；上兩層底下仍 Air → 不補（等下一輪）。
+        assert!(surface_hole_refill(&world, x, h - 2, z).is_some(), "3 格深軟土坑最底層應回填");
         assert_eq!(surface_hole_refill(&world, x, h - 1, z), None);
-        // 底層：底下實心，但「上方自然仍是實心土層」（非自然地表頂）→ 不填（不誤填井底/地下室）。
-        assert_eq!(surface_hole_refill(&world, x, h - 2, z), None);
+        assert_eq!(surface_hole_refill(&world, x, h, z), None);
+    }
+
+    #[test]
+    fn surface_hole_refill_never_fills_too_deep_hole() {
+        // ③ 保守鐵律：超過 MAX_PIT_DEPTH（此處 4 格深）的洞視為刻意深井 → 一律不碰。
+        let (x, h, z) = gatherable_land_point();
+        let mut world = WorldDelta::new();
+        for dy in 0..4 {
+            voxel::set_block(&mut world, x, h - dy, z, Block::Air);
+        }
+        // 最底層（h-3）雖踩在實心地板上，但已在地表下 3 格以外 → 不填（深洞保護）。
+        assert_eq!(surface_hole_refill(&world, x, h - 3, z), None, "深洞（>3 格）不回填");
+    }
+
+    #[test]
+    fn surface_hole_refill_never_fills_covered_cellar() {
+        // ④ 地窖/室內保護：坑上方被實心蓋住（地表頂 h 未被挖開）→ 不誤填。
+        let (x, h, z) = gatherable_land_point();
+        let mut world = WorldDelta::new();
+        // 只掏空 h-1、h-2（地表頂 h 仍是自然實心＝屋頂），底下 h-3 實心。
+        voxel::set_block(&mut world, x, h - 1, z, Block::Air);
+        voxel::set_block(&mut world, x, h - 2, z, Block::Air);
+        // 最底層（h-2）踩在實心上、且落在深度內，但上方到地表頂 h 有實心屋頂 → 不填（非開放坑）。
+        assert_eq!(surface_hole_refill(&world, x, h - 2, z), None, "上方被蓋住的地窖不誤填");
+    }
+
+    #[test]
+    fn surface_hole_refill_never_fills_stone_mine_shaft() {
+        // ⑤ 採礦道保留：自然材料是石頭的格（礦道）永不回填——回 None/Air，維持礦道。
+        let (x, h, z) = gatherable_land_point();
+        // 由地表往下找第一塊自然石頭（軟土層 h-3..h 之下即石頭層）。
+        let sy = (0..h - 3)
+            .rev()
+            .find(|&y| voxel::block_at(x, y, z) == Block::Stone)
+            .expect("軟土層下方應有石頭層");
+        let mut world = WorldDelta::new();
+        // 模擬垂直礦道：把該石頭格挖成 Air（底下仍是實心石頭地板）。
+        voxel::set_block(&mut world, x, sy, z, Block::Air);
+        assert_eq!(surface_hole_refill(&world, x, sy, z), None, "石頭礦道不回填、留礦道");
     }
 
     // ── within_gather_reach ───────────────────────────────────────────────────

@@ -512,6 +512,30 @@ pub enum AnnexPos {
     Right,
 }
 
+/// 靈魂驅動的個人建築「創意引擎」——房子的**點綴主題**，由居民的建築性格卡
+/// （`voxel_arch_style`）確定性決定，讓親手蓋的家一眼看得出是「這個人」蓋的。
+/// 每種主題在 [`push_house`] 尾端加一組確定性、restore-safe、不與門/牆/樓梯井重疊的
+/// 附加方塊（`Open` 例外——它是「地面層略過隔間內牆」成開放大廳，於隔間生成處消費）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Accent {
+    /// 無點綴（素樸）。
+    None,
+    /// 花圃：背牆外一排沿牆擺 FlowerPot（在草地上）。
+    Garden,
+    /// 水：主屋一側外挖一口迷你井（Water + StoneBrick 框）。
+    Water,
+    /// 燈火：屋頂四角＋門口兩側各一 Torch。
+    Lights,
+    /// 紀念碑：門外前立 StoneBrick 柱＋頂上 Torch。
+    Monument,
+    /// 灶：後室多一座 Furnace＋一根 SmoothStone 煙囪貫穿屋頂。
+    Hearth,
+    /// 書齋：後室多鋪 Carpet＋Table＋FlowerPot。
+    Library,
+    /// 開放大廳：地面層略過隔間內牆與門，成開放無隔間空間。
+    Open,
+}
+
 /// 一座建物的樣式（由居民/群系/座標確定性決定）。純資料、無 IO。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BuildStyle {
@@ -547,6 +571,10 @@ pub struct BuildStyle {
     pub stories: i32,
     /// 多層大宅生成器：是否在地基下挖一層地下酒窖（儲藏室）。3 層大宅不再加（控制方塊數上限）。
     pub basement: bool,
+    /// 靈魂驅動的個人建築「創意引擎」——點綴主題（由居民建築性格卡確定性決定）。
+    /// hash-based 建構處預設 [`Accent::None`]；[`BuildStyle::for_resident`] 尾端若查得性格
+    /// 卡則覆蓋。見 [`Accent`] 與 [`push_house`] 尾端的 accent 步驟。
+    pub accent: Accent,
 }
 
 impl BuildStyle {
@@ -597,17 +625,102 @@ impl BuildStyle {
         let x_max = width - 2;
         let z_max = depth - 2;
         // 地下酒窖：只給 5×5 且非 3 層的家（避免 6 見方 + 多層 + 酒窖逼近上千塊、蓋數小時）。
-        let basement = (h >> 18) & 1 == 1 && stories < 3 && width == 5 && depth == 5;
+        // basement_bit 抽出來獨立保留：套用建築性格改動 stories 後需依同一公式重評（見尾端）。
+        let basement_bit = (h >> 18) & 1 == 1;
+        let basement = basement_bit && stories < 3 && width == 5 && depth == 5;
         // 地板由牆材質衍生（木系→木板、沙→沙、其餘→拋石），保持質感一致。
         let floor = match wall {
             Block::Wood | Block::Plank => Block::Plank,
             Block::Sand => Block::Sand,
             _ => Block::SmoothStone,
         };
-        BuildStyle {
+        let mut style = BuildStyle {
             wall, roof, floor, peaked, windows, wall_h, x_max, z_max, decor, annex, annex_pos,
-            room_split, stories, basement,
+            room_split, stories, basement, accent: Accent::None,
+        };
+
+        // ── 靈魂驅動的個人建築「創意引擎」──────────────────────────────────────────
+        // 算完 hash-based 樣式後，若這位居民有一張手工著墨的建築性格卡（資料層
+        // `voxel_arch_style`），就**確定性地**把牆材／屋頂／尖頂／樓層傾向／點綴主題套上去，
+        // 讓親手蓋的家一眼看得出是「這個人」。資料檔穩定 → 同居民同錨點永遠同一份家，
+        // 與 `house_blocks_at`／`new_plan`／`try_player_help` 全鏈一致（拆除/replay 安全）。
+        // 缺卡（多數自主 spawn 的居民、或缺檔）→ 完全維持原 hash-based 樣式，向後相容。
+        if let Some(a) = crate::voxel_arch_style::arch_of(resident) {
+            // 牆／屋頂：字串→Block；認不得的字串保留原 hash-based 值（安靜降級）。
+            if let Some(b) = wall_block_from_str(&a.wall) {
+                style.wall = b;
+            }
+            if let Some(b) = roof_block_from_str(&a.roof) {
+                style.roof = b;
+            }
+            style.peaked = a.peaked;
+            // 樓層傾向：0→矮（原本 >2 降到 2）；2→高（僅 5×5 可升 3，絕不讓 6×6×3）；1→維持。
+            let is_5x5 = style.x_max == 3 && style.z_max == 3;
+            match a.stories_bias {
+                0 => {
+                    if style.stories > 2 {
+                        style.stories = 2;
+                    }
+                }
+                2 => {
+                    if is_5x5 {
+                        style.stories = 3;
+                    }
+                }
+                _ => {} // 1（或其他）：維持既有樓層
+            }
+            // 點綴主題：字串→Accent。
+            style.accent = accent_from_str(&a.accent);
+            // 地板依新牆材重算（木系→木板、沙→沙、其餘→拋石），與牆質感一致。
+            style.floor = match style.wall {
+                Block::Wood | Block::Plank => Block::Plank,
+                Block::Sand => Block::Sand,
+                _ => Block::SmoothStone,
+            };
+            // 地下酒窖依新樓層重評（照原公式）：升到 3 層就不再有酒窖；降到 2 層則回到
+            // 「原本的 basement_bit 是否為真」——footprint（x_max/z_max）不動，5×5 判定不變。
+            style.basement = basement_bit && style.stories < 3 && is_5x5;
         }
+
+        style
+    }
+}
+
+/// 建築性格卡的牆材字串 → Block（認不得回 None，呼叫端保留原值）。
+fn wall_block_from_str(s: &str) -> Option<Block> {
+    Some(match s {
+        "wood" => Block::Wood,
+        "plank" => Block::Plank,
+        "stone" => Block::Stone,
+        "brick" => Block::StoneBrick,
+        "smoothstone" => Block::SmoothStone,
+        "sand" => Block::Sand,
+        _ => return None,
+    })
+}
+
+/// 建築性格卡的屋頂字串 → Block（認不得回 None，呼叫端保留原值）。
+fn roof_block_from_str(s: &str) -> Option<Block> {
+    Some(match s {
+        "wood" => Block::Wood,
+        "stone" => Block::Stone,
+        "smoothstone" => Block::SmoothStone,
+        "leaves" => Block::Leaves,
+        _ => return None,
+    })
+}
+
+/// 建築性格卡的點綴字串 → Accent（認不得回 [`Accent::None`]）。
+fn accent_from_str(s: &str) -> Accent {
+    match s {
+        "garden" => Accent::Garden,
+        "water" => Accent::Water,
+        "lights" => Accent::Lights,
+        "monument" => Accent::Monument,
+        "hearth" => Accent::Hearth,
+        "library" => Accent::Library,
+        "open" => Accent::Open,
+        _ => Accent::None,
     }
 }
 
@@ -809,6 +922,11 @@ fn push_house(out: &mut Vec<BuildBlock>, cx: i32, cy: i32, cz: i32, style: &Buil
     // ── 隔間內牆＋門（每層分前後兩室；大宅才做）─────────────────────────────────
     if grand {
         for k in 0..stories {
+            // 靈魂驅動·開放大廳（Accent::Open）：地面層（k==0）**略過**那道 mid_z 內牆與門，
+            // 成一個開放無隔間的大廳（樓上各層仍照常隔間）。純「少放方塊」，無 churn 疑慮。
+            if style.accent == Accent::Open && k == 0 {
+                continue;
+            }
             let sb = story_base(k);
             for dy in 0..3 {
                 let y = sb + dy;
@@ -876,6 +994,106 @@ fn push_house(out: &mut Vec<BuildBlock>, cx: i32, cy: i32, cz: i32, style: &Buil
     } else {
         // 小屋（legacy footprint）：一張床落在錨點（恆為內部）。
         add(out, bed_ground.0, cy, bed_ground.1, Block::Bed);
+    }
+
+    // ── 靈魂驅動的個人建築「創意引擎」·點綴（accent）──────────────────────────────
+    // 依居民建築性格的點綴主題，在傢俱之後加一組確定性、restore-safe、不與門/牆/樓梯井
+    // 重疊的附加方塊，讓親手蓋的家一眼看得出是「這個人」。
+    //
+    // **churn 鐵律論證**：每種 accent 放下的方塊，其 `demolition_restore`（該座標「自然地表
+    // 方塊」）都 ≠ 放置值，故 `demolish_should_remove(placed, placed, restore)` 一旦拆完就
+    // `current==restore` 為偽、收斂到收尾，絕不踩「restore==placed→無限拆蓋 churn」：
+    // - StoneBrick / SmoothStone / Torch / Furnace / FlowerPot / Carpet / Table 皆是**加工品**，
+    //   自然地形 `block_at` 永不生成它們 → restore 恆 ≠ 放置值。
+    // - Water 放下後非「可放置實心」→ `demolition_restore` 回 Air ≠ Water。
+    // 另外全部 accent 方塊都刻意避開門格（正面 z1 那扇、隔間 mid_z 那扇）、邊框牆與樓梯井
+    // (lx,lz)：外掛在 footprint 之外（Garden/Water/Lights/Monument）或落在明確空著的內部欄位
+    // （Hearth/Library 用後室非樓梯井、非自動傢俱首格的欄位；煙囪自 cy+1 起，基座那格擺爐）。
+    match style.accent {
+        Accent::None | Accent::Open => {
+            // None：不加點綴。Open：已於「隔間內牆」生成處消費（地面層不隔間成開放大廳），
+            // 此處無附加方塊。
+        }
+        Accent::Garden => {
+            // 背牆（z0）外一排、z=z0-1，沿牆在草地上擺 2~3 個 FlowerPot（站立層 cy）。
+            // 落在 footprint 之外，與門（正面 z1）分居兩端；restore=Air/自然地表 ≠ FlowerPot。
+            let mut placed = 0;
+            for x in (x0 + 1)..=(x1 - 1) {
+                if placed >= 3 {
+                    break;
+                }
+                add(out, x, cy, z0 - 1, Block::FlowerPot);
+                placed += 1;
+            }
+        }
+        Accent::Water => {
+            // 主屋左側外（x0-2 那欄）挖一口迷你井：中心一格 Water（cy-1），四周 cy-1..cy
+            // 圍 StoneBrick 框（照 Well 分支範式；用 StoneBrick 而非原 Stone——原 Stone 在
+            // 石質群系可能等於自然 restore 而 churn，StoneBrick 是加工品、自然永不生成、恆安全）。
+            let (wx, wz) = (x0 - 2, cz);
+            for dy in -1..=0 {
+                let y = cy + dy;
+                for dx in -1i32..=1 {
+                    for dz in -1i32..=1 {
+                        if dx.abs() == 1 || dz.abs() == 1 {
+                            add(out, wx + dx, y, wz + dz, Block::StoneBrick);
+                        }
+                    }
+                }
+            }
+            add(out, wx, cy - 1, wz, Block::Water);
+        }
+        Accent::Lights => {
+            // 屋頂四角各一 Torch（roof_y+1，坐在角落實心屋頂上；尖頂只蓋內圈、四角恆空著）。
+            for &(x, z) in &[(x0, z0), (x0, z1), (x1, z0), (x1, z1)] {
+                add(out, x, roof_y + 1, z, Block::Torch);
+            }
+            // 門口兩側各一 Torch（正面 z1+1 外、站立層 cy），避開門格本身。
+            add(out, door_x - 1, cy, z1 + 1, Block::Torch);
+            add(out, door_x + 1, cy, z1 + 1, Block::Torch);
+        }
+        Accent::Monument => {
+            // 門外正前、緊鄰大門兩側各立一根兩格 StoneBrick 柱（cy..cy+1，z1+1），頂上（cy+2）
+            // 一 Torch——刻意分居門的左右、不擋門洞本身（門在 door_x，z1）。加工品，restore=Air。
+            for side in [-1i32, 1] {
+                let mx = door_x + side;
+                add(out, mx, cy, z1 + 1, Block::StoneBrick);
+                add(out, mx, cy + 1, z1 + 1, Block::StoneBrick);
+                add(out, mx, cy + 2, z1 + 1, Block::Torch);
+            }
+        }
+        Accent::Hearth => {
+            // 後室多一座 Furnace＋一根 SmoothStone 煙囪貫穿屋頂（僅大宅有後室概念）。
+            // 選後室內部欄位 (x0+2, z0+1)：非樓梯井 (x1-1,z0+1)、非自動傢俱首格 (x0+1,z0+1)、
+            // 非門、非邊框。爐坐 cy，煙囪自 cy+1 一路上穿到 roof_y+1（貫穿樓板/屋頂）。
+            if grand {
+                let (hx, hz) = (x0 + 2, z0 + 1);
+                add(out, hx, cy, hz, Block::Furnace);
+                for y in (cy + 1)..=(roof_y + 1) {
+                    add(out, hx, y, hz, Block::SmoothStone);
+                }
+            }
+        }
+        Accent::Library => {
+            // 後室多鋪 Carpet＋Table＋FlowerPot（書齋感；僅大宅有後室概念）。落在後室內部、
+            // 非樓梯井的欄位（站立層 cy）；加工品 restore=Air，churn-safe。
+            if grand {
+                let items = [Block::Carpet, Block::Table, Block::FlowerPot];
+                let mut idx = 0;
+                'lib: for x in (x0 + 1)..=(x1 - 1) {
+                    for z in (z0 + 1)..=(mid_z - 1) {
+                        if (x, z) == (lx, lz) {
+                            continue; // 避開樓梯井
+                        }
+                        if idx >= items.len() {
+                            break 'lib;
+                        }
+                        add(out, x, cy, z, items[idx]);
+                        idx += 1;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1844,6 +2062,7 @@ mod tests {
             room_split: false,
             stories: 1,
             basement: false,
+            accent: Accent::None,
         }
     }
 
@@ -1975,6 +2194,146 @@ mod tests {
                 let a = generate_blocks(BuildKind::House, cx, cy, cz, &s);
                 let b = generate_blocks(BuildKind::House, cx, cy, cz, &s);
                 assert_eq!(a, b, "{rid}@({cx},{cy},{cz}) 大宅應逐塊確定性一致");
+            }
+        }
+    }
+
+    // ── 靈魂驅動的個人建築「創意引擎」·點綴（accent）─────────────────────────────
+
+    /// 一個確定性的「大宅」樣式（5×5×2、grand），可指定 accent 供點綴測試控制變因。
+    fn style_grand(accent: Accent) -> BuildStyle {
+        BuildStyle {
+            wall: Block::Wood,
+            roof: Block::Stone,
+            floor: Block::Plank,
+            peaked: false,
+            windows: false,
+            wall_h: 3,
+            x_max: 3, // width 5（x0..x1 = cx-1..cx+3）
+            z_max: 3, // depth 5
+            decor: Decor::None,
+            annex: false,
+            annex_pos: AnnexPos::Back,
+            room_split: false,
+            stories: 2,
+            basement: false,
+            accent,
+        }
+    }
+
+    #[test]
+    fn accent_blocks_appear_and_house_stays_intact() {
+        // 每種「加方塊」的 accent 都應真的出現對應方塊，且房子結構（門/床/樓梯/窗）不受損。
+        let (cx, cy, cz) = (0, 64, 0);
+        let cases = [
+            (Accent::Garden, Block::FlowerPot),
+            (Accent::Water, Block::Water),
+            (Accent::Lights, Block::Torch),
+            (Accent::Monument, Block::StoneBrick),
+            // Hearth：用煙囪 SmoothStone 當標記（style_grand 的牆/頂/地板皆非 SmoothStone，
+            // 故它專屬 Hearth 煙囪，比 Furnace 更能證明真加了東西——素樸大宅本就有爐）。
+            (Accent::Hearth, Block::SmoothStone),
+            (Accent::Library, Block::Carpet),
+        ];
+        for (accent, marker) in cases {
+            let s = style_grand(accent);
+            let blocks = generate_blocks(BuildKind::House, cx, cy, cz, &s);
+            assert!(
+                blocks.iter().any(|b| b.b == marker as u8),
+                "{accent:?} 應放出 {marker:?}"
+            );
+            // 房子結構完好：仍有正面門、床、樓梯、窗。
+            assert!(blocks.iter().any(|b| b.b == Block::DoorClosed as u8), "{accent:?} 門應仍在");
+            assert!(blocks.iter().any(|b| b.b == Block::Bed as u8), "{accent:?} 床應仍在");
+            assert!(blocks.iter().any(|b| b.b == Block::Ladder as u8), "{accent:?} 樓梯應仍在");
+            assert!(blocks.iter().any(|b| b.b == Block::Glass as u8), "{accent:?} 窗應仍在");
+        }
+    }
+
+    #[test]
+    fn accent_open_removes_ground_partition_wall() {
+        // Open：地面層（k==0、y ∈ cy..cy+2）不應有 mid_z 那道**內部**隔間牆；樓上仍隔間。
+        // 只看內部 x（x0<x<x1）——邊框側牆本就落在 z==mid_z，不算隔間內牆。
+        let (cx, cy, cz) = (0, 64, 0);
+        let x0 = cx + BuildStyle::X_MIN;
+        let x1 = cx + 3;
+        let mid_z = (cz + BuildStyle::Z_MIN + cz + 3) / 2; // (z0+z1)/2
+        let has_interior_partition = |blocks: &[BuildBlock], y_lo: i32, y_hi: i32| {
+            blocks.iter().any(|b| {
+                b.z == mid_z
+                    && b.x > x0
+                    && b.x < x1
+                    && b.y >= y_lo
+                    && b.y <= y_hi
+                    && b.b == Block::Wood as u8
+            })
+        };
+        // 對照組（非 Open）地面層 mid_z 內部隔間牆存在。
+        let closed = generate_blocks(BuildKind::House, cx, cy, cz, &style_grand(Accent::None));
+        assert!(has_interior_partition(&closed, cy, cy + 2), "非 Open 大宅地面層應有隔間內牆（對照）");
+        // Open：地面層那道內部隔間牆消失。
+        let open = generate_blocks(BuildKind::House, cx, cy, cz, &style_grand(Accent::Open));
+        assert!(!has_interior_partition(&open, cy, cy + 2), "Open 大宅地面層不應有隔間內牆");
+        // 但樓上（k==1，y ∈ cy+4..）仍應保有隔間內牆。
+        assert!(has_interior_partition(&open, cy + 4, cy + 6), "Open 大宅樓上仍應隔間");
+    }
+
+    #[test]
+    fn accent_is_deterministic_blockwise() {
+        // 確定性鐵律：同 style（含 accent）兩次生成 → 逐塊完全相同。
+        for accent in [
+            Accent::None,
+            Accent::Garden,
+            Accent::Water,
+            Accent::Lights,
+            Accent::Monument,
+            Accent::Hearth,
+            Accent::Library,
+            Accent::Open,
+        ] {
+            let s = style_grand(accent);
+            let a = generate_blocks(BuildKind::House, 3, 8, -7, &s);
+            let b = generate_blocks(BuildKind::House, 3, 8, -7, &s);
+            assert_eq!(a, b, "{accent:?} 應逐塊確定性一致");
+        }
+    }
+
+    #[test]
+    fn accent_blocks_are_churn_safe_restore_differs_from_placed() {
+        // churn 鐵律：accent 新增的每一格，其 demolition_restore（自然地表方塊）都必須
+        // ≠ 放置值——否則拆完 current==restore 恆真 → 無限拆蓋 churn（露娜補蓋十幾小時真兇）。
+        // 走真實 demolition_restore / demolish_should_remove 進入點逐格驗（非只信純函式）。
+        use std::collections::HashSet;
+        for accent in [
+            Accent::Garden,
+            Accent::Water,
+            Accent::Lights,
+            Accent::Monument,
+            Accent::Hearth,
+            Accent::Library,
+        ] {
+            // 掃多個錨點/群系：涵蓋草原/沙漠/石質等不同自然地表，確保沒有一個群系會讓
+            // accent 放置值恰等於自然 restore。
+            for &(cx, cy, cz) in &[(0, 64, 0), (-150, 9, 80), (37, 8, -12), (200, 40, 200)] {
+                let base = generate_blocks(BuildKind::House, cx, cy, cz, &style_grand(Accent::None));
+                let base_set: HashSet<(i32, i32, i32, u8)> =
+                    base.iter().map(|b| (b.x, b.y, b.z, b.b)).collect();
+                let full = generate_blocks(BuildKind::House, cx, cy, cz, &style_grand(accent));
+                // 只檢查「accent 相對素樸大宅新增/覆蓋」的那些格。
+                for blk in full.iter().filter(|b| !base_set.contains(&(b.x, b.y, b.z, b.b))) {
+                    let restore = demolition_restore(blk.x, blk.y, blk.z);
+                    assert_ne!(
+                        blk.b, restore as u8,
+                        "{accent:?} 於 ({},{},{}) 放置值 == restore {:?} → 會無限 churn",
+                        blk.x, blk.y, blk.z, restore
+                    );
+                    // 再走真實收斂閘：拆到 restore 後不該再判可拆（收斂、不 churn）。
+                    assert!(
+                        !demolish_should_remove(blk.b, restore, restore),
+                        "{accent:?} 於 ({},{},{}) 拆到 restore 後仍判可拆 → churn",
+                        blk.x, blk.y, blk.z
+                    );
+                }
             }
         }
     }
