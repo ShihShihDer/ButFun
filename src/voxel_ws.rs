@@ -73,6 +73,7 @@ use crate::voxel_anglerest as vangler;
 use crate::voxel_vocation as vvoc;
 use crate::voxel_raincover as vrain;
 use crate::voxel_homegaze as vhome;
+use crate::voxel_home_life as vhomelife;
 use crate::voxel_birthday as vbday;
 use crate::voxel_campfire as vcamp;
 use crate::voxel_campfire_tale as vtale;
@@ -1304,6 +1305,87 @@ fn maybe_log_daily_labor(rid: &str, role: Role) {
     if let vmem::DedupOutcome::Added(entry) = outcome {
         vmem::append_memory(&entry);
     }
+}
+
+/// A 居民住進靈魂之家 v1：每位居民「上次回家做靈魂之事」的 unix 秒。
+/// 純記憶體、重啟歸零（比照 wedding／snowman 冷卻同款慣例，不落持久化）。
+static HOME_LIFE_LAST_UNIX: std::sync::LazyLock<std::sync::Mutex<HashMap<String, u64>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// 每位居民回家做靈魂之事的冷卻（秒）：至多每 6 分鐘一次，稀少才有份量、天然防洗版。
+const HOME_LIFE_COOLDOWN_SECS: u64 = 360;
+/// 過了冷卻後仍需擲過這個機率才真的動身回家（低頻，不搶主鏈、不洗版）。
+const HOME_LIFE_CHANCE: f32 = 0.12;
+
+/// A 居民住進靈魂之家 v1（純行為、不動世界方塊、churn 零風險）：
+/// 真的沒事做時（choose_activity 回 Wander 的閒置分支），偶爾回到自己的家域，做一件
+/// 符合建築性格 accent 的靈魂之事——守灶生火、井邊打水、入夜點燈、侍弄花圃、翻書、
+/// 佇立碑前、敞門迎客——走回家＋冒泡說一句自己的台詞＋落一則城鎮動態。
+/// **絕不** `set_block`／放方塊；建家／搬家／被指派的主鏈永遠優先（只在此 Wander 分支觸發）。
+///
+/// 觸發嚴格節流：先擲低機率（[`HOME_LIFE_CHANCE`]）、再查全居民錯開的
+/// [`HOME_LIFE_COOLDOWN_SECS`] 冷卻，兩關都過才動身。回傳 `true` 表示這一拍已安排回家
+/// （呼叫端就別再散心採集）。
+///
+/// **鎖紀律**（守 prod 死鎖鐵律，各把鎖短取即釋、循序不巢狀，比照 `maybe_wedding`）：
+/// arch 讀（無鎖 LazyLock store）→ world_time 讀即釋 → cooldown mutex 短取即釋 →
+/// residents 寫短取設目標＋台詞即釋 → Feed append 在所有鎖外。
+fn maybe_home_life(rid: &str, rname: &str, rx: i32, rz: i32) -> bool {
+    // 1) 先擲低機率（最便宜的閘），沒中就當沒事、照舊閒晃。
+    if rand::random::<f32>() >= HOME_LIFE_CHANCE {
+        return false;
+    }
+    // 2) 查建築性格 accent → 家務；Rest（none／無性格卡）就不特別回家，照舊閒晃。
+    let Some(arch) = crate::voxel_arch_style::arch_of(rid) else {
+        return false;
+    };
+    let act = vhomelife::act_for_accent(&arch.accent);
+    if act == vhomelife::HomeAct::Rest {
+        return false;
+    }
+    // 3) 查時間：點燈只有入夜（黃昏／夜晚）才合宜，其餘全時段皆可（world_time 讀鎖即釋）。
+    let is_dusk_or_night = {
+        let wt = hub().world_time.read().unwrap();
+        matches!(wt.phase(), TimePhase::Dusk | TimePhase::Evening | TimePhase::Night)
+    }; // world_time 讀鎖釋放
+    if !vhomelife::act_apt_now(act, is_dusk_or_night) {
+        return false;
+    }
+    // 4) 全居民錯開的冷卻：至多每 HOME_LIFE_COOLDOWN_SECS 一次（cooldown mutex 短取即釋）。
+    let now = vfarm::now_secs();
+    {
+        let mut last = HOME_LIFE_LAST_UNIX.lock().unwrap();
+        if let Some(&t) = last.get(rid) {
+            if now.saturating_sub(t) < HOME_LIFE_COOLDOWN_SECS {
+                return false;
+            }
+        }
+        last.insert(rid.to_string(), now);
+    } // cooldown mutex 釋放
+    // 5) 挑一句自己的台詞（確定性：salt 用位置 bits＋now，讓同一居民不同時刻換句）。
+    let salt = (rx as i64 as u64)
+        .wrapping_mul(31)
+        .wrapping_add(rz as i64 as u64)
+        .wrapping_add(now);
+    let line = vhomelife::pick_line(rid, salt).unwrap_or_default();
+    // 6) 設目標回家域＋冒泡說話（residents 寫鎖短取即釋）；清掉會打架的小歇狀態。
+    {
+        let mut residents = hub().residents.write().unwrap();
+        if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+            r.target_x = r.home_x;
+            r.target_z = r.home_z;
+            r.wait_timer = 0.0;
+            if !line.is_empty() {
+                r.say = line.clone();
+                r.say_timer = SAY_SECS;
+            }
+        } else {
+            return false; // 找不到這位居民（理論上不會）：別發 Feed。
+        }
+    } // residents 寫鎖釋放
+    // 7) 落一則城鎮動態（IO 在所有鎖外）：kind＝家務動詞、detail＝這位居民自己的台詞。
+    vfeed::append_feed(vhomelife::act_verb_zh(act), rname, &line);
+    true
 }
 
 /// 依居民 id 查詢牠與所有其他居民的情誼計數（Friend/Acquaintance 各幾位）。
@@ -3386,6 +3468,118 @@ fn migrate_fill_surface_holes(deltas: &mut WorldDelta, loaded: &[vbuild::BuildBl
     tracing::info!("舊坑修復完成：回填了 {filled} 個採集地表淺坑（保守判定，未動深洞/水井/礦道）");
 }
 
+/// B 世界一次性清理·marker（跑過一次就寫，冪等：之後啟動直接跳過）。
+const WORLD_CLEANUP_MARKER: &str = "data/.world_cleanup_v1";
+
+/// **B 一次性世界清理（churn-safe、保守、只清無主孤葉＋回填開放軟土坑）**。
+///
+/// 背景：早期居民砍樹／採集在村莊一帶留下浮空孤葉與零星淺坑。此步在啟動時**一次性**掃
+/// 村莊中心周圍**有界**半徑，清掉「再也連不回任何樹幹」的孤葉、回填「開放天空下的軟土坑」，
+/// 讓村容恢復整潔——判定全部沿用既有純幾何函式（[`clear_orphan_leaves`] 的多源 BFS 支撐
+/// 判定、[`vskill::surface_hole_refill`] 的五道保守回填判定），不另立一套。
+///
+/// **雙閘（都過才跑）**：① 環境變數 `BUTFUN_WORLD_CLEANUP=1`（預設 OFF，發現不對勁移除
+/// 該變數即秒關，比照 `BUTFUN_HOME_UPGRADE` kill-switch）②marker [`WORLD_CLEANUP_MARKER`]
+/// 不存在（跑完寫 marker，冪等一次）。
+///
+/// **churn-safe**：清葉寫 Air（≠Leaves）、填坑寫實心地表材（≠Air），還原恆≠放置，
+/// 絕無「還原值＝放置值恆真」的無限收斂循環。**絕不**動玩家放的方塊／實心結構／居民房屋——
+/// 只碰無支撐的 `Leaves` 與開放軟土坑最底層空氣格。
+///
+/// **時序／鎖**：只在 `hub()` 建構 closure 裡、hub 尚未公開前呼叫（比照 `migrate_fill_surface_holes`
+/// 等既有一次性遷移鏈），此刻無任何連線、無鎖競爭；改動走 append-only 的 `append_world_block`
+/// 落地（重啟 replay 後生效），無需也無法 `broadcast_block`（hub 未成形、無連線）。
+fn run_world_cleanup_once(deltas: &mut WorldDelta, residents: &[VoxelResident]) {
+    // ① 環境變數 kill-switch（預設 OFF）。
+    let enabled = std::env::var("BUTFUN_WORLD_CLEANUP")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if !enabled {
+        return;
+    }
+    // ② marker 冪等：跑過一次就跳過。
+    if std::path::Path::new(WORLD_CLEANUP_MARKER).exists() {
+        return;
+    }
+
+    // 村莊中心 = 居民 home_base 群聚質心（與 migrate_lay_out_village 同源；空則退回出生點 0,0）。
+    let home_bases: Vec<(i32, i32)> = residents
+        .iter()
+        .map(|r| (r.home_x.floor() as i32, r.home_z.floor() as i32))
+        .collect();
+    let (vcx, vcz) = vvillage::village_center(&home_bases);
+
+    // 有界掃描範圍（別掃爆無限世界）：中心 ±RADIUS 的水平方格；Y 只掃海平面以上到世界頂。
+    // 97×97×(SEA_LEVEL..世界頂) ≈ 數十萬格，一次性、非熱路徑（守「別掃爆」）。
+    const RADIUS: i32 = 48;
+    let y_lo = voxel::SEA_LEVEL; // 海平面（含）以上才碰，避免動海底／湖底
+    let y_hi = (CY_MAX + 1) * voxel::CHUNK - 1; // 世界最高格
+
+    // ── 孤葉清理：沿用 clear_orphan_leaves 的多源 BFS 支撐判定，不另寫一套 ──────────
+    // 對掃描區內每一顆「還連不回任何樹幹」的孤葉清成空氣；已處理過的 R-cube 記進 seen，
+    // 避免對同區的支撐葉重覆 BFS（把一次性掃描成本壓在數十萬格量級內）。
+    let mut seen: std::collections::HashSet<(i32, i32, i32)> = std::collections::HashSet::new();
+    let mut cleared_leaves: Vec<(i32, i32, i32)> = Vec::new();
+    for x in (vcx - RADIUS)..=(vcx + RADIUS) {
+        for z in (vcz - RADIUS)..=(vcz + RADIUS) {
+            for y in y_lo..=y_hi {
+                if seen.contains(&(x, y, z)) {
+                    continue;
+                }
+                if voxel::effective_block_at(deltas, x, y, z) != Block::Leaves {
+                    continue;
+                }
+                // 重用既有判定：以這顆葉為中心跑多源 BFS，清掉其 R-cube 內所有無支撐孤葉。
+                let removed = clear_orphan_leaves(deltas, x, y, z);
+                cleared_leaves.extend_from_slice(&removed);
+                // 標記本次 R-cube 已處理（含仍有支撐的葉），別再對同區重覆掃。
+                for dx in -LEAF_CLEAR_RADIUS..=LEAF_CLEAR_RADIUS {
+                    for dy in -LEAF_CLEAR_RADIUS..=LEAF_CLEAR_RADIUS {
+                        for dz in -LEAF_CLEAR_RADIUS..=LEAF_CLEAR_RADIUS {
+                            seen.insert((x + dx, y + dy, z + dz));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // 孤葉改動落地（append-only；寫 Air ≠ 原 Leaves，churn-safe）。
+    for (lx, ly, lz) in &cleared_leaves {
+        vbuild::append_world_block(*lx, *ly, *lz, Block::Air as u8);
+    }
+
+    // ── 軟土坑回填：沿用 vskill::surface_hole_refill 的五道保守判定，不另寫一套 ──────
+    // 每格獨立判定「開放天空下、地表下 1~3 格的軟土坑最底層空氣格」，是就回填地表材
+    // （≠Air，churn-safe）。Y 升序就地回填：填了最底一層，上一層下方變實心，這一趟即可
+    // 由下往上把 2~3 格深的坑一次補到接近地表（不誤填水井／礦道／地窖／室內，見判定五條）。
+    let mut filled = 0usize;
+    for x in (vcx - RADIUS)..=(vcx + RADIUS) {
+        for z in (vcz - RADIUS)..=(vcz + RADIUS) {
+            for y in y_lo..=y_hi {
+                if let Some(fill) = vskill::surface_hole_refill(deltas, x, y, z) {
+                    voxel::set_block(deltas, x, y, z, fill);
+                    vbuild::append_world_block(x, y, z, fill as u8);
+                    filled += 1;
+                }
+            }
+        }
+    }
+
+    // ③ 寫 marker（冪等：下次啟動直接跳過）。
+    if let Some(parent) = std::path::Path::new(WORLD_CLEANUP_MARKER).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(WORLD_CLEANUP_MARKER, b"1");
+    tracing::info!(
+        "世界一次性清理完成：清了 {} 顆浮空孤葉、回填了 {} 個開放軟土坑（中心 ({},{}) 半徑 {}）",
+        cleared_leaves.len(),
+        filled,
+        vcx,
+        vcz,
+        RADIUS
+    );
+}
+
 /// 村莊系統 v1 一次性整理（冪等、保守、只加不拆）：把散落的居民家連成一座有街廓的村莊。
 ///
 /// **資料安全鐵律**（絕不刪居民已蓋的作品）：
@@ -3753,6 +3947,10 @@ fn hub() -> &'static VoxelHub {
         // 聚落景觀密度 v1（冪等、備份後）：村莊十字主路兩側補種一排行道樹——獨立旗標，
         // 專治「已經整理過」的既有村莊也能補上這一刀，不必重跑前兩步。只加不拆、絕不覆蓋。
         migrate_plant_road_trees(&mut deltas, &residents);
+        // B 一次性世界清理（雙閘：env `BUTFUN_WORLD_CLEANUP=1` ＋ marker 冪等；churn-safe）：
+        // 掃村莊中心有界半徑，清掉浮空孤葉、回填開放軟土坑，讓村容整潔。判定沿用既有純幾何
+        // （clear_orphan_leaves／surface_hole_refill），絕不動玩家方塊／實心結構／居民房屋。
+        run_world_cleanup_once(&mut deltas, &residents);
         // 乙太營火 v1：從已 replay 的 delta 掃出所有既存營火座標，重建取暖清單（重啟後居民
         // 仍會被重啟前蓋的火堆吸引）。掃描發生在 deltas 被 move 進 RwLock 之前，一次性、非熱路徑。
         let campfires = vcamp::scan_campfires(&deltas);
@@ -27902,12 +28100,19 @@ fn tick_residents(dt: f32) {
                             );
                         }
                     } else if !is_visiting && !is_gathering {
-                        // 不探訪、不在聚會：偶爾散心採集（低頻、不洗版），否則純閒晃。
-                        // 生計傾向（M3）：以身分的採集偏好權重擲骰——農夫最愛下田備料、遊者
-                        // 幾乎只遊走（見 Role::idle_gather_weight）。只在建家主鏈跑完的 Wander
-                        // 分支生效，永不蓋掉主鏈；館長權重維持既有 0.15＝原「散心採集」的機率。
-                        if rand::random::<f32>() < role.idle_gather_weight() {
-                            start_gather(&rid, rx, rz);
+                        // A 居民住進靈魂之家 v1：真的沒事做時，偶爾回到自己家域做一件符合建築
+                        // 性格 accent 的靈魂之事（守灶／打水／點燈／侍弄花圃／翻書／佇碑／迎客）——
+                        // 純行為（回家＋冒泡＋城鎮動態），**不動世界方塊**、churn 零風險。冷卻＋低機率
+                        // 嚴格節流，稀少才有份量；建家／被指派主鏈永遠優先（只在此 Wander 分支觸發）。
+                        // 這一拍安排了回家就別再散心採集（讓「回家做自己的事」蓋過閒晃採集）。
+                        if !maybe_home_life(&rid, rname, rx, rz) {
+                            // 不探訪、不在聚會、也沒回家：偶爾散心採集（低頻、不洗版），否則純閒晃。
+                            // 生計傾向（M3）：以身分的採集偏好權重擲骰——農夫最愛下田備料、遊者
+                            // 幾乎只遊走（見 Role::idle_gather_weight）。只在建家主鏈跑完的 Wander
+                            // 分支生效，永不蓋掉主鏈；館長權重維持既有 0.15＝原「散心採集」的機率。
+                            if rand::random::<f32>() < role.idle_gather_weight() {
+                                start_gather(&rid, rx, rz);
+                            }
                         }
                     }
                 }

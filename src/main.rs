@@ -194,6 +194,8 @@ mod voxel_life_pursuit;
 mod voxel_resident_soul;
 // 乙太方界·居民建築性格 v1（靈魂驅動的個人建築創意引擎）：每位居民一段建築性格卡（牆材／屋頂／尖頂／點綴／樓層傾向），for_resident 算完 hash 樣式後確定性套用——親手蓋的家一眼看得出是「這個人」；新 store 純 additive、缺檔=現況（向後相容）。
 mod voxel_arch_style;
+// 乙太方界·居民靈魂之家生活 v1：每位居民依建築性格 accent（爐火／水井／燈火／花圃／書齋／碑）在閒暇回家做符合自己靈魂的事——純行為（回家＋Feed＋說話），不動世界方塊。介面契約供 voxel_ws.rs 呼叫。
+mod voxel_home_life;
 // 乙太方界·老友情境問候 v1：好感度達老友時，居民說出記憶驅動的特定台詞（ROADMAP 675）。
 mod voxel_fond_greeting;
 // 乙太方界·居民心情指示 v1：根據情誼與記憶動態計算心情 emoji，廣播給前端（ROADMAP 676）。
