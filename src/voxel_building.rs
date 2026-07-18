@@ -538,11 +538,15 @@ pub struct BuildStyle {
     pub annex: bool,
     /// 建築創作第三刀：annex 貼在主屋的哪一側，只有 `annex` 為真時才有意義。
     pub annex_pos: AnnexPos,
-    /// 居家 v2·隔間 v1（房間概念，維護者親玩回饋硬性優先項第二項）：內部是否隔成
-    /// 臥室／起居兩間房，而不是四面牆包一張床的空殼。為真時佔地固定拉大到 5×5
-    /// （3×3 內部，才擠得下一道隔間牆＋走道），且與 `annex` 互斥（一次一刀，不疊加
-    /// 另一種形狀變化）。
+    /// 居家 v2·隔間 v1（舊欄位保留）：多層大宅生成器（見下）已讓每座家一律有房間概念，
+    /// 此旗如今僅供 [`house_replay_layouts_at`] 辨識「隔間上線前的舊屋版型」時據以是否
+    /// 補一份 legacy 候選（見該函式）；大宅結構本身不再讀它。
     pub room_split: bool,
+    /// 多層大宅生成器（ROADMAP·把 3×3 方盒重寫成有房間概念的多層大宅）：地面以上樓層數
+    /// （1~3，每層淨高 3 格）。與 `width`/`depth`/`basement` 一起把家撐成多層多房間大宅。
+    pub stories: i32,
+    /// 多層大宅生成器：是否在地基下挖一層地下酒窖（儲藏室）。3 層大宅不再加（控制方塊數上限）。
+    pub basement: bool,
 }
 
 impl BuildStyle {
@@ -556,14 +560,10 @@ impl BuildStyle {
         let roof = ROOF_PALETTE[((h >> 1) & 0b11) as usize];
         let peaked = (h >> 3) & 1 == 1;
         let windows = (h >> 4) & 1 == 1;
-        let wall_h = 2 + ((h >> 5) & 1) as i32; // 2 或 3 層
-        // 佔地：3×3 / 4×3 / 3×4 / 4×4（小變化，別太大顆拖效能）。
-        let (x_max, z_max) = match (h >> 6) & 0b11 {
-            0 => (1, 1),
-            1 => (2, 1),
-            2 => (1, 2),
-            _ => (2, 2),
-        };
+        let wall_h = 2 + ((h >> 5) & 1) as i32; // 舊欄位保留（大宅結構不讀，見 push_house）
+        // decor / annex / annex_pos / room_split 皆為舊欄位：大宅結構不再讀它們，但
+        // `house_replay_layouts_at` 仍靠 room_split（及 bits 6-7 重算的舊 footprint）辨識
+        // 「隔間上線前的舊屋」候選，故照原 bit 保留計算、維持既有 prod 維修行為不回歸。
         let decor = match (h >> 8) & 0b11 {
             0 => Decor::None,
             1 => Decor::Torch,
@@ -571,17 +571,33 @@ impl BuildStyle {
             _ => Decor::Pillar,
         };
         let annex = (h >> 10) & 1 == 1;
-        // annex 位置（建築創作第三刀）：背／左／右三選一，背牆機率較高（0、1 皆選背）。
         let annex_pos = match (h >> 11) & 0b11 {
             0 | 1 => AnnexPos::Back,
             2 => AnnexPos::Left,
             _ => AnnexPos::Right,
         };
-        // 居家 v2·隔間 v1：約半數的家改隔成臥室／起居兩間房——固定拉大到 5×5 佔地
-        // （3×3 內部）才擠得下隔間牆＋走道，annex 一律關閉（不與另一種形狀變化疊加）。
         let room_split = (h >> 13) & 1 == 1;
-        let (x_max, z_max) = if room_split { (3, 3) } else { (x_max, z_max) };
-        let annex = if room_split { false } else { annex };
+        // ── 多層大宅維度（ROADMAP·多層大宅生成器）───────────────────────────────
+        // 佔地一律拉大到 5~6 見方（比舊 3×3~4×4 方盒大得多，容得下多房間＋樓梯井）。
+        // 佔地以 x0 = cx + X_MIN（= cx-1）起算，故 x_max = width-2 → footprint 恰為 width 格寬，
+        // 與院牆/夜間補圈等消費端沿用的「min = 錨點-1、max = 錨點+x_max」footprint 慣例一致。
+        let width = 5 + ((h >> 14) & 1) as i32; // 5 或 6
+        let depth = 5 + ((h >> 15) & 1) as i32; // 5 或 6
+        // 樓層：5×5 見方可達 1~3 層（1:2:3 比約 1:2:1，偶爾一層小巧、偶爾三層高聳）；
+        // 較大佔地（6 見方）一律 2 層——多層為主，且避免 6 見方 ×3 層逼近上千塊。
+        let stories = if width == 5 && depth == 5 {
+            match (h >> 16) & 0b11 {
+                0 => 1,
+                3 => 3,
+                _ => 2,
+            }
+        } else {
+            2
+        };
+        let x_max = width - 2;
+        let z_max = depth - 2;
+        // 地下酒窖：只給 5×5 且非 3 層的家（避免 6 見方 + 多層 + 酒窖逼近上千塊、蓋數小時）。
+        let basement = (h >> 18) & 1 == 1 && stories < 3 && width == 5 && depth == 5;
         // 地板由牆材質衍生（木系→木板、沙→沙、其餘→拋石），保持質感一致。
         let floor = match wall {
             Block::Wood | Block::Plank => Block::Plank,
@@ -590,7 +606,7 @@ impl BuildStyle {
         };
         BuildStyle {
             wall, roof, floor, peaked, windows, wall_h, x_max, z_max, decor, annex, annex_pos,
-            room_split,
+            room_split, stories, basement,
         }
     }
 }
@@ -634,6 +650,235 @@ fn wall_palette(biome: VoxelBiome) -> [Block; 2] {
 /// 屋頂材質候選（4 選 1）。
 const ROOF_PALETTE: [Block; 4] = [Block::Stone, Block::Wood, Block::Leaves, Block::SmoothStone];
 
+// ── 多層大宅生成器（ROADMAP·把 3×3 方盒重寫成有房間概念的多層大宅）──────────────
+
+/// 生成一座「多層多房間大宅」的方塊清單並推入 `out`（純函式、確定性、可測）。
+///
+/// 取代舊的 3×3 單間方盒。佈局全由 `style` 確定性決定（同輸入永遠生出**逐塊相同**的清單，
+/// 與 replay／玩家逐塊幫忙 `try_player_help` 完全相容）：
+/// - **佔地**：footprint = `[cx+X_MIN ..= cx+x_max] × [cz+Z_MIN ..= cz+z_max]`
+///   （`for_resident` 給 5~6 見方）。x0 固定在 `cx-1`，故 footprint 恰為 `width` 格寬，
+///   與院牆/夜間補圈等消費端沿用的「min = 錨點-1、max = 錨點+x_max」慣例一致。
+///   （`house_replay_layouts_at` 辨識隔間上線前舊屋時會傳入更小的 legacy footprint；本函式
+///   對 3×3 起的任何尺寸都能生出合法不重疊、且含門與床的房子。）
+/// - **樓層**：`stories` 層（每層淨高 3 格）＋可選地下酒窖 `basement`（地基下挖空一層儲藏室）。
+/// - **樓梯**：一條 `Ladder`（非實心、可攀爬）垂直樓梯井貫穿各層，樓板在該欄位穿孔，真能上下走。
+/// - **隔間**：夠大（≥5 見方）時每層以「內牆＋門(DoorClosed)」隔成前後兩間房；地面層＝起居
+///   （桌/地毯）＋廚房角（爐）、樓上＝臥室（床/床頭櫃）、地下室＝儲藏（箱）。
+/// - **窗**：每層兩側牆中段開玻璃窗採光（`windows` 風格再於背牆多開一扇）。
+/// - **屋頂**：實心平頂，`peaked` 時再疊一圈縮小的脊成斜尖頂。
+/// - **大門**：正面（z1 側）牆中央、地面層下兩層一扇木門。
+fn push_house(out: &mut Vec<BuildBlock>, cx: i32, cy: i32, cz: i32, style: &BuildStyle) {
+    let add = |out: &mut Vec<BuildBlock>, x: i32, y: i32, z: i32, b: Block| {
+        out.push(BuildBlock { x, y, z, b: b as u8 });
+    };
+    let wall = style.wall;
+    let roof = style.roof;
+    let floor = style.floor;
+
+    // 佔地（footprint）：x0..=x1 × z0..=z1。x0/z0 固定在錨點 -1（沿用 X_MIN/Z_MIN 慣例）。
+    let x0 = cx + BuildStyle::X_MIN;
+    let x1 = cx + style.x_max;
+    let z0 = cz + BuildStyle::Z_MIN;
+    let z1 = cz + style.z_max;
+    let stories = style.stories.clamp(1, 3);
+
+    // 夠大到值得隔間／地下室／獨立樓梯井嗎（內部至少 3×3、即寬深皆 ≥5）？
+    let grand = (x1 - x0) >= 4 && (z1 - z0) >= 4;
+    let basement = style.basement && grand;
+
+    // 大門 x：對齊錨點欄位 cx（恆為正面牆的內部欄位、非轉角）——與院牆南面留的門口
+    // 缺口（在 x=錨點）對齊，居民出門正對缺口不被圍籬擋住；也沿用舊屋門在 cx 的慣例。
+    // 隔間內牆 z：footprint 中線，把每層分前後兩室。
+    let door_x = cx;
+    let mid_z = (z0 + z1) / 2;
+
+    // 第 k 層可站立內部底面 y：sb(k)=cy+4k（牆 sb..sb+2）；其可走樓板 slab_y(k)=cy-1+4k。
+    let story_base = |k: i32| cy + 4 * k;
+    let slab_y = |k: i32| cy - 1 + 4 * k;
+    let roof_y = slab_y(stories); // 頂層樓板之上即屋頂
+
+    // 樓梯井欄位（lx,lz）：大宅放後排靠右內部欄位（恆非邊界、非隔間線、非大門、非床）；
+    // 小屋退回「內部任一非床欄位」，找不到（3×3 內部只有錨點一格）就不設樓梯井。
+    let bed_ground = (cx, cz); // 小屋的床落在錨點（恆為內部）
+    let (lx, lz, has_shaft) = if grand {
+        (x1 - 1, z0 + 1, stories >= 2 || basement)
+    } else {
+        let mut pick = None;
+        'outer: for x in (x0 + 1)..=(x1 - 1) {
+            for z in (z0 + 1)..=(z1 - 1) {
+                if (x, z) != bed_ground {
+                    pick = Some((x, z));
+                    break 'outer;
+                }
+            }
+        }
+        match pick {
+            Some((x, z)) => (x, z, stories >= 2),
+            None => (cx, cz, false),
+        }
+    };
+    // 樓梯井上下範圍：有地下室從 cy-4 起，否則從地面層站立面 cy 起；上抵頂層樓板。
+    let shaft_bottom = if basement { cy - 4 } else { cy };
+    let shaft_top = slab_y(stories - 1);
+    // 某層樓板是否被樓梯井穿孔（井經過它）。
+    let slab_holed = |k: i32| has_shaft && slab_y(k) >= shaft_bottom && slab_y(k) <= shaft_top;
+
+    // ── 地下酒窖：挖空一間儲藏室（四壁＝天然泥石，天花＝地面層樓板），擺箱與火把 ──────
+    let cellar_chest = (x0 + 1, cy - 4, z0 + 1);
+    let cellar_torch = (x0 + 1, cy - 2, z1 - 1);
+    if basement {
+        for x in (x0 + 1)..=(x1 - 1) {
+            for z in (z0 + 1)..=(z1 - 1) {
+                for y in (cy - 4)..=(cy - 2) {
+                    if x == lx && z == lz {
+                        continue; // 井位稍後統一鋪梯
+                    }
+                    let b = if (x, y, z) == cellar_chest {
+                        Block::Chest
+                    } else if (x, y, z) == cellar_torch {
+                        Block::Torch
+                    } else {
+                        Block::Air // 挖空成房（天然實心 → 空氣）
+                    };
+                    add(out, x, y, z, b);
+                }
+            }
+        }
+    }
+
+    // ── 各層樓板（含地面層；樓梯井欄位穿孔）──────────────────────────────────────
+    for k in 0..stories {
+        let y = slab_y(k);
+        let holed = slab_holed(k);
+        for x in x0..=x1 {
+            for z in z0..=z1 {
+                if holed && x == lx && z == lz {
+                    continue;
+                }
+                add(out, x, y, z, floor);
+            }
+        }
+    }
+
+    // ── 牆（每層 3 格高、只邊框）＋大門＋採光窗 ─────────────────────────────────
+    for k in 0..stories {
+        let sb = story_base(k);
+        for dy in 0..3 {
+            let y = sb + dy;
+            for x in x0..=x1 {
+                for z in z0..=z1 {
+                    if x != x0 && x != x1 && z != z0 && z != z1 {
+                        continue; // 只邊框
+                    }
+                    // 正面大門（地面層中央下兩層）。
+                    if k == 0 && x == door_x && z == z1 && dy < 2 {
+                        add(out, x, y, z, Block::DoorClosed);
+                        continue;
+                    }
+                    // 側牆採光窗（每層兩側牆中段）。
+                    if dy == 1 && (x == x0 || x == x1) && z == mid_z {
+                        add(out, x, y, z, Block::Glass);
+                        continue;
+                    }
+                    // 背牆窗（開窗風格多一扇）。
+                    if style.windows && dy == 1 && z == z0 && x == door_x {
+                        add(out, x, y, z, Block::Glass);
+                        continue;
+                    }
+                    add(out, x, y, z, wall);
+                }
+            }
+        }
+    }
+
+    // ── 屋頂（實心平頂 + 可選斜尖頂）────────────────────────────────────────────
+    for x in x0..=x1 {
+        for z in z0..=z1 {
+            add(out, x, roof_y, z, roof);
+        }
+    }
+    if style.peaked {
+        for x in (x0 + 1)..=(x1 - 1) {
+            for z in (z0 + 1)..=(z1 - 1) {
+                add(out, x, roof_y + 1, z, roof);
+            }
+        }
+    }
+
+    // ── 隔間內牆＋門（每層分前後兩室；大宅才做）─────────────────────────────────
+    if grand {
+        for k in 0..stories {
+            let sb = story_base(k);
+            for dy in 0..3 {
+                let y = sb + dy;
+                for x in (x0 + 1)..=(x1 - 1) {
+                    if x == door_x {
+                        // 房間之間留門：下層一扇門、中層通行留空、上層過梁。
+                        if dy == 0 {
+                            add(out, x, y, mid_z, Block::DoorClosed);
+                        } else if dy == 2 {
+                            add(out, x, y, mid_z, wall);
+                        }
+                    } else {
+                        add(out, x, y, mid_z, wall);
+                    }
+                }
+            }
+        }
+    }
+
+    // ── 樓梯井（Ladder 貫穿，含地下室段）────────────────────────────────────────
+    if has_shaft {
+        for y in shaft_bottom..=shaft_top {
+            add(out, lx, y, lz, Block::Ladder);
+        }
+    }
+
+    // ── 傢俱（住人的痕跡）────────────────────────────────────────────────────────
+    if grand {
+        // 房間格清單（排除樓梯井格），供傢俱依序落位、保證不重疊、不越界、不擋門。
+        let room_cells = |z_lo: i32, z_hi: i32| -> Vec<(i32, i32)> {
+            let mut v = Vec::new();
+            for x in (x0 + 1)..=(x1 - 1) {
+                for z in z_lo..=z_hi {
+                    if (x, z) != (lx, lz) {
+                        v.push((x, z));
+                    }
+                }
+            }
+            v
+        };
+        let front = room_cells(mid_z + 1, z1 - 1); // 前室（近正門那半）
+        let back = room_cells(z0 + 1, mid_z - 1); // 後室（樓梯井那半）
+        let place = |out: &mut Vec<BuildBlock>, cells: &[(i32, i32)], y: i32, items: &[Block]| {
+            for (i, b) in items.iter().enumerate() {
+                if let Some(&(x, z)) = cells.get(i) {
+                    add(out, x, y, z, *b);
+                }
+            }
+        };
+        if stories == 1 {
+            // 單層大宅：前室兼臥室（床+桌+地毯）、後室廚房（爐+花盆）。
+            place(out, &front, cy, &[Block::Bed, Block::Table, Block::Carpet]);
+            place(out, &back, cy, &[Block::Furnace, Block::FlowerPot]);
+        } else {
+            // 地面層起居（桌+地毯）＋廚房角（爐）。
+            place(out, &front, cy, &[Block::Table, Block::Carpet]);
+            place(out, &back, cy, &[Block::Furnace]);
+            // 樓上每層：前室臥室（床+床頭櫃）、後室書房（地毯+花盆）。
+            for k in 1..stories {
+                let sb = story_base(k);
+                place(out, &front, sb, &[Block::Bed, Block::Table]);
+                place(out, &back, sb, &[Block::Carpet, Block::FlowerPot]);
+            }
+        }
+    } else {
+        // 小屋（legacy footprint）：一張床落在錨點（恆為內部）。
+        add(out, bed_ground.0, cy, bed_ground.1, Block::Bed);
+    }
+}
+
 // ── 建物方塊生成（純函式，可測）────────────────────────────────────────────────
 
 /// 生成建物的方塊清單（從底層往上，讓 tick 逐塊放置時玩家看到「由下往上長出」）。
@@ -647,121 +892,10 @@ fn generate_blocks(kind: BuildKind, cx: i32, cy: i32, cz: i32, style: &BuildStyl
 
     match kind {
         BuildKind::House => {
-            let s = style;
-            let (x0, x1) = (BuildStyle::X_MIN, s.x_max);
-            let (z0, z1) = (BuildStyle::Z_MIN, s.z_max);
-            // 地板（cy-1 層，實心填滿佔地，style.floor）——替換地表讓地基清晰。
-            for x in x0..=x1 {
-                for z in z0..=z1 {
-                    add(&mut out, cx + x, cy - 1, cz + z, s.floor);
-                }
-            }
-            // 牆壁 wall_h 層（只邊框，中心空，style.wall）；正面中央（x=0, z=z_max）下兩層
-            // 疊放木門讓家「能被打開」（ROADMAP·門洞 v1）；side 牆中點依 windows 開玻璃窗。
-            let front_z = z1;
-            for layer in 0..s.wall_h {
-                let y = cy + layer;
-                for x in x0..=x1 {
-                    for z in z0..=z1 {
-                        let border = x == x0 || x == x1 || z == z0 || z == z1;
-                        if !border {
-                            continue;
-                        }
-                        // 門：正面中央下兩層。
-                        if x == 0 && z == front_z && layer < 2 {
-                            add(&mut out, cx + x, y, cz + z, Block::DoorClosed);
-                            continue;
-                        }
-                        // 窗：側牆中點（z=0、x 在左右牆），第 1 層，且開窗。
-                        if s.windows && layer == 1 && z == 0 && (x == x0 || x == x1) {
-                            add(&mut out, cx + x, y, cz + z, Block::Glass);
-                            continue;
-                        }
-                        add(&mut out, cx + x, y, cz + z, s.wall);
-                    }
-                }
-            }
-            // 屋頂（cy+wall_h 層，實心填滿，style.roof）。
-            let roof_y = cy + s.wall_h;
-            for x in x0..=x1 {
-                for z in z0..=z1 {
-                    add(&mut out, cx + x, roof_y, cz + z, s.roof);
-                }
-            }
-            // 尖頂：再疊一層縮小的方塊（斜頂感）。3×3 → 單塊小尖；更大 → 一小條脊。
-            if s.peaked {
-                for x in (x0 + 1)..=(x1 - 1) {
-                    for z in (z0 + 1)..=(z1 - 1) {
-                        add(&mut out, cx + x, roof_y + 1, cz + z, s.roof);
-                    }
-                }
-            }
-            if s.room_split {
-                // 居家 v2·隔間 v1：3×3 內部（x0+1..x1-1、z0+1..z1-1 恆為 0..=2）一分為二——
-                // 門在 x==0，走道就沿 x==0 那一列從門口直通到底；隔間牆立在中排 z==1、
-                // 扣掉走道那格；前排 z==2（貼近正門）是起居（桌+箱），後排 z==0（最深處）
-                // 是臥室（床）。三者互不相鄰、也都不落在走道 x==0 上，永不擋路。
-                for &ix in &[1i32, 2] {
-                    for layer in 0..s.wall_h {
-                        add(&mut out, cx + ix, cy + layer, cz + 1, s.wall);
-                    }
-                }
-                add(&mut out, cx + 1, cy, cz, Block::Bed);
-                add(&mut out, cx + 1, cy, cz + 2, Block::Table);
-                add(&mut out, cx + 2, cy, cz + 2, Block::Chest);
-            } else {
-                // 床鋪 v1（居民親手佈置新家）：內部從沒放過任何家具，蓋好只是四面牆包著空氣——
-                // 放在建物錨點正上方（x0=z0=X_MIN/Z_MIN 恆為 -1，故 x0+1=z0+1=0，正是 cx/cz 本身）：
-                // 恆落在內部（border 只在 x==x0/x1 或 z==z0/z1，0 永遠不是邊界）、不與門重疊
-                // （門在 z=z1≠0）、不與任何裝飾/annex 座標相撞，無論房子多小都至少有這一格可站。
-                // 讓「蓋好的家」第一次真的有人住的痕跡，不再是空氣包空氣的空殼。
-                add(&mut out, cx, cy, cz, Block::Bed);
-            }
-            // 門口點綴（正面外一格，不動地基/不與牆重疊；每家不同的小細節）。
-            let dz = front_z + 1;
-            match s.decor {
-                Decor::None => {}
-                Decor::Torch => add(&mut out, cx - 1, cy, cz + dz, Block::Torch),
-                Decor::Flowerbed => {
-                    add(&mut out, cx, cy - 1, cz + dz, Block::Grass);
-                    add(&mut out, cx, cy, cz + dz, Block::Leaves);
-                }
-                Decor::Pillar => {
-                    for layer in 0..2 {
-                        add(&mut out, cx + 1, cy + layer, cz + dz, s.wall);
-                    }
-                }
-            }
-            // 附屬小棚（annex，建築創作第二／三刀）：再長出一間矮棚，讓房子第一次有不同
-            // 的形狀輪廓——不是換色/換尺寸，是「同一種房子」也可能長得不一樣。
-            // 棚高＝主屋牆高少一層（`wall_h-1`，恆 ≥1），棚頂＝`annex_roof_y = cy+annex_wall_h`，
-            // 恆比主屋屋頂（`roof_y = cy+wall_h`）矮「整整一層」——無論主屋是 2 層牆還是
-            // 3 層牆的房子，錯落效果都一定看得出來（修正第二刀棚頂寫死 `cy+2`、當主屋恰好
-            // 也是 2 層牆時兩者同高、錯落效果失效的舊 bug）。
-            // annex_pos 決定貼在哪一側：背牆外（沿用第二刀原始位置）／左牆外／右牆外——
-            // 三側皆貼在房子的「後半段」（z0..=z0+1），數學上恆落在主屋佔地與正面門洞之外。
-            if s.annex {
-                let annex_wall_h = (s.wall_h - 1).max(1);
-                let annex_roof_y = cy + annex_wall_h;
-                let mut lay_annex = |cells: [(i32, i32); 2]| {
-                    for (ax, az) in cells {
-                        add(&mut out, cx + ax, cy - 1, cz + az, s.floor);
-                    }
-                    for layer in 0..annex_wall_h {
-                        for (ax, az) in cells {
-                            add(&mut out, cx + ax, cy + layer, cz + az, s.wall);
-                        }
-                    }
-                    for (ax, az) in cells {
-                        add(&mut out, cx + ax, annex_roof_y, cz + az, s.roof);
-                    }
-                };
-                match s.annex_pos {
-                    AnnexPos::Back => lay_annex([(0, z0 - 1), (1, z0 - 1)]),
-                    AnnexPos::Left => lay_annex([(x0 - 1, z0), (x0 - 1, z0 + 1)]),
-                    AnnexPos::Right => lay_annex([(x1 + 1, z0), (x1 + 1, z0 + 1)]),
-                }
-            }
+            // 多層大宅生成器（ROADMAP·把 3×3 方盒重寫成有房間概念的多層大宅）：整段佈局
+            // 抽到 `push_house`（純函式、確定性），依 style 生出多層多房間、樓梯貫通、
+            // 可含地下酒窖、室內有傢俱的大宅。
+            push_house(&mut out, cx, cy, cz, style);
         }
 
         BuildKind::Well => {
@@ -1708,22 +1842,23 @@ mod tests {
             annex: false,
             annex_pos: AnnexPos::Back,
             room_split: false,
+            stories: 1,
+            basement: false,
         }
     }
 
     #[test]
     fn house_block_count_small_style() {
+        // style_small 是退化的 3×3 單層小屋（legacy footprint，走 push_house 的小屋分支）：
+        // 地板 9 + 牆 3 層×8=24（含 2 門洞 + 2 側窗，皆為替換不改總數）+ 屋頂 9 + 床 1 = 43。
         let blocks = generate_blocks(BuildKind::House, 0, 5, 0, &style_small());
-        // 地板 9 + 牆 8+8 + 屋頂 9 + 床 1 = 35（門洞取代 2 塊木牆，總數不變；床鋪 v1 新增）
-        assert_eq!(blocks.len(), 35);
+        assert_eq!(blocks.len(), 43);
     }
 
     #[test]
-    fn house_has_exactly_one_bed_inside_never_on_wall_or_door() {
-        // 床鋪 v1（居家 v2 隔間後仍守此不變式）：不管尺寸/風格如何變化，家的內部
-        // 永遠恰好一張床，落在內部（非邊界牆、非門格），讓蓋好的家第一次真的有人住
-        // 的痕跡。隔間房的床不再固定在錨點正上方（挪進臥室），故只驗「落在內部」，
-        // 無隔間時才驗「仍在錨點」（守舊行為零回歸）。
+    fn house_has_beds_inside_never_on_wall_or_door() {
+        // 多層大宅生成器：每座家都有臥室，至少一張床，且每張床都落在室內（非邊界牆、
+        // 非門格），並落在某層可站立面（y = cy + 4k）。讓蓋好的家真的有人住的痕跡。
         for rid in ["vox_res_0", "vox_res_1", "露娜", "諾娃"] {
             for biome in [
                 VoxelBiome::Grassland,
@@ -1731,91 +1866,116 @@ mod tests {
                 VoxelBiome::Desert,
                 VoxelBiome::Snow,
             ] {
-                let style = BuildStyle::for_resident(rid, biome, 3, 9);
-                let blocks = generate_blocks(BuildKind::House, 3, 5, 9, &style);
+                let (cx, cy, cz) = (3, 5, 9);
+                let style = BuildStyle::for_resident(rid, biome, cx, cz);
+                let blocks = generate_blocks(BuildKind::House, cx, cy, cz, &style);
                 let beds: Vec<_> = blocks.iter().filter(|b| b.b == Block::Bed as u8).collect();
-                assert_eq!(beds.len(), 1, "{rid}/{biome:?} 應恰好一張床");
-                let bed = beds[0];
-                assert_eq!(bed.y, 5, "床應落在站立層");
-                let (x_lo, x_hi) = (3 + BuildStyle::X_MIN + 1, 3 + style.x_max - 1);
-                let (z_lo, z_hi) = (9 + BuildStyle::Z_MIN + 1, 9 + style.z_max - 1);
-                assert!(bed.x >= x_lo && bed.x <= x_hi, "{rid}/{biome:?} 床 x 應落在內部");
-                assert!(bed.z >= z_lo && bed.z <= z_hi, "{rid}/{biome:?} 床 z 應落在內部");
-                // 不與門重疊（門在 z=z1=cz+style.z_max，恆 ≠ 內部任何 z）。
-                assert_ne!(bed.z, 9 + style.z_max);
-                if !style.room_split {
-                    assert_eq!((bed.x, bed.z), (3, 9), "無隔間時床仍應落在建物錨點座標");
+                assert!(!beds.is_empty(), "{rid}/{biome:?} 大宅應至少一張床");
+                let (x0, x1) = (cx + BuildStyle::X_MIN, cx + style.x_max);
+                let (z0, z1) = (cz + BuildStyle::Z_MIN, cz + style.z_max);
+                for bed in beds {
+                    // 落在某層可站立面（cy、cy+4、cy+8…）。
+                    assert_eq!((bed.y - cy).rem_euclid(4), 0, "{rid}/{biome:?} 床應落在某層站立面");
+                    assert!(bed.y >= cy, "{rid}/{biome:?} 床不應在地下室");
+                    // 內部：不在邊界牆、不在正面門那一排。
+                    assert!(bed.x > x0 && bed.x < x1, "{rid}/{biome:?} 床 x 應落在內部");
+                    assert!(bed.z > z0 && bed.z < z1, "{rid}/{biome:?} 床 z 應落在內部");
                 }
             }
         }
     }
 
-    // ── 隔間（room_split，居家 v2 v1）────────────────────────────────────────────
+    // ── 多層大宅結構（ROADMAP·多層大宅生成器）────────────────────────────────────
 
     #[test]
-    fn house_room_split_variant_exists_and_is_well_formed() {
-        // 隔間並非死開關：真的存在會觸發它的居民/群系組合，且觸發時佔地固定拉大、
-        // 不疊加 annex（一次一刀）。
-        let mut saw_split = false;
-        for rid in ["vox_res_0", "vox_res_1", "vox_res_2", "vox_res_3", "露娜", "諾娃", "米雅"] {
+    fn grand_house_is_multi_floor_with_rooms_stairs_and_furniture() {
+        // 掃過多位居民×四群系，逐一驗大宅該有的結構：多層（多個不同 y 的樓板）、
+        // 內牆隔間門＋正面大門、樓梯（Ladder）貫通、傢俱（床/桌），有地下室的還要真的
+        // 挖空成房（地面層以下有空氣）並有一口箱子。
+        let mut saw_multi_story = false;
+        let mut saw_basement = false;
+        let mut saw_three = false;
+        for i in 0..24 {
+            let rid = format!("vox_res_{i}");
             for biome in [
                 VoxelBiome::Grassland,
                 VoxelBiome::Forest,
                 VoxelBiome::Desert,
                 VoxelBiome::Snow,
             ] {
-                let style = BuildStyle::for_resident(rid, biome, 0, 0);
-                if style.room_split {
-                    saw_split = true;
-                    assert!(!style.annex, "隔間房不該疊加 annex");
-                    assert_eq!((style.x_max, style.z_max), (3, 3), "隔間房固定 5×5 佔地");
+                let (cx, cy, cz) = (0, 64, 0);
+                let s = BuildStyle::for_resident(&rid, biome, cx, cz);
+                let blocks = generate_blocks(BuildKind::House, cx, cy, cz, &s);
+                // 正面大門（≥1 扇 DoorClosed）。
+                assert!(
+                    blocks.iter().any(|b| b.b == Block::DoorClosed as u8),
+                    "{rid}/{biome:?} 大宅應有門"
+                );
+                // 傢俱：至少一張床、一張桌。
+                assert!(blocks.iter().any(|b| b.b == Block::Bed as u8), "{rid}/{biome:?} 應有床");
+                assert!(blocks.iter().any(|b| b.b == Block::Table as u8), "{rid}/{biome:?} 應有桌");
+                // 側牆採光窗。
+                assert!(blocks.iter().any(|b| b.b == Block::Glass as u8), "{rid}/{biome:?} 應有窗");
+                if s.stories >= 2 {
+                    saw_multi_story = true;
+                    if s.stories == 3 {
+                        saw_three = true;
+                    }
+                    // 樓層之間確有樓梯（Ladder）真的能上下。
+                    assert!(
+                        blocks.iter().any(|b| b.b == Block::Ladder as u8),
+                        "{rid}/{biome:?} 多層大宅應有樓梯（Ladder）"
+                    );
+                    // 多個不同的樓板 y（地面層 + 樓上）。
+                    let floor_ys: std::collections::HashSet<i32> = blocks
+                        .iter()
+                        .filter(|b| b.b == s.floor as u8)
+                        .map(|b| b.y)
+                        .collect();
+                    assert!(floor_ys.len() >= 2, "{rid}/{biome:?} 多層應有 ≥2 個樓板高度");
+                    // 隔間門（門洞在 z=footprint 中線，非正面 z_max 那排）。
+                    let z1 = cz + s.z_max;
+                    assert!(
+                        blocks.iter().any(|b| b.b == Block::DoorClosed as u8 && b.z != z1),
+                        "{rid}/{biome:?} 應有隔間內門"
+                    );
+                }
+                if s.basement {
+                    saw_basement = true;
+                    // 地下室真的挖空成房（地面層以下 y<cy-1 有空氣格）。
+                    assert!(
+                        blocks.iter().any(|b| b.b == Block::Air as u8 && b.y < cy - 1),
+                        "{rid}/{biome:?} 地下室應挖空（有空氣格）"
+                    );
+                    // 儲藏：一口箱子。
+                    assert!(
+                        blocks.iter().any(|b| b.b == Block::Chest as u8),
+                        "{rid}/{biome:?} 地下室應有箱子"
+                    );
+                    // 樓梯井延伸到地下（有 y<cy 的 Ladder）。
+                    assert!(
+                        blocks.iter().any(|b| b.b == Block::Ladder as u8 && b.y < cy),
+                        "{rid}/{biome:?} 樓梯井應下探地下室"
+                    );
                 }
             }
         }
-        assert!(saw_split, "應存在至少一組居民/群系觸發隔間變體");
+        assert!(saw_multi_story, "24 位居民中應有人蓋出 ≥2 層大宅");
+        assert!(saw_three, "24 位居民中應有人蓋出 3 層大宅");
+        assert!(saw_basement, "24 位居民中應有人蓋出含地下室的大宅");
     }
 
     #[test]
-    fn house_room_split_has_partition_walkway_bed_table_chest_no_overlap() {
-        // 隔間房：恰好一床（臥室）＋一桌一箱（起居），隔間牆立在中排、扣走道那格，
-        // 走道從門口貫通到底，任何方塊都不重疊。
-        let mut s = style_small();
-        s.x_max = 3;
-        s.z_max = 3;
-        s.annex = false;
-        s.room_split = true;
-        let (cx, cy, cz) = (10, 5, 20);
-        let blocks = generate_blocks(BuildKind::House, cx, cy, cz, &s);
-
-        assert_eq!(blocks.iter().filter(|b| b.b == Block::Bed as u8).count(), 1, "恰好一床");
-        assert_eq!(blocks.iter().filter(|b| b.b == Block::Table as u8).count(), 1, "恰好一桌");
-        assert_eq!(blocks.iter().filter(|b| b.b == Block::Chest as u8).count(), 1, "恰好一箱");
-
-        // 走道（x==cx, z==cz+1）在隔間牆那一整排高度都淨空，貫通正門到後排臥室。
-        for layer in 0..s.wall_h {
-            let y = cy + layer;
-            assert!(
-                blocks.iter().all(|b| !(b.x == cx && b.y == y && b.z == cz + 1)),
-                "走道不該被隔間牆佔住"
-            );
-        }
-        // 隔間牆確實立在中排（x=cx+1、cx+2，z=cz+1），高度同外牆。
-        for ix in [1i32, 2] {
-            for layer in 0..s.wall_h {
-                let hit = blocks.iter().any(|b| {
-                    b.x == cx + ix && b.y == cy + layer && b.z == cz + 1 && b.b == s.wall as u8
-                });
-                assert!(hit, "隔間牆應立在 (cx+{ix}, layer {layer})");
+    fn grand_house_is_deterministic_blockwise() {
+        // 確定性鐵律：同居民同錨點兩次生成 → 逐塊完全相同（replay／玩家逐塊幫忙安全）。
+        for rid in ["vox_res_0", "vox_res_5", "露娜"] {
+            for &(cx, cy, cz) in &[(0, 64, 0), (-150, 9, 80), (37, 8, -12)] {
+                let biome = biome_at_voxel(cx, cz);
+                let s = BuildStyle::for_resident(rid, biome, cx, cz);
+                let a = generate_blocks(BuildKind::House, cx, cy, cz, &s);
+                let b = generate_blocks(BuildKind::House, cx, cy, cz, &s);
+                assert_eq!(a, b, "{rid}@({cx},{cy},{cz}) 大宅應逐塊確定性一致");
             }
-        }
-
-        let mut seen = std::collections::HashSet::new();
-        for b in &blocks {
-            assert!(
-                seen.insert((b.x, b.y, b.z)),
-                "隔間房出現重疊方塊於 ({},{},{})",
-                b.x, b.y, b.z
-            );
         }
     }
 
@@ -2096,11 +2256,10 @@ mod tests {
                 s.roof as u8,
                 s.peaked,
                 s.windows,
-                s.wall_h,
+                s.stories,
                 s.x_max,
                 s.z_max,
-                s.decor,
-                s.annex,
+                s.basement,
             ));
             let blocks = generate_blocks(BuildKind::House, 0, 5, 0, &s);
             // 以「排序後的方塊清單」當整棟房子的指紋。
@@ -2148,7 +2307,8 @@ mod tests {
 
     #[test]
     fn house_foundation_floor_is_always_solid_fill() {
-        // 防破地基：無論尺寸怎麼變，cy-1 地板層都必須把整個佔地填滿實心（無空洞）。
+        // 防破地基：cy-1 地面層樓板必須把整個佔地填滿——除了樓梯井下探地下室時在該欄位
+        // 留一格供 Ladder 通行的孔（那格是可攀爬的樓梯，非破洞）。故每格非實心即為 Ladder。
         for i in 0..8 {
             let rid = format!("vox_res_{i}");
             let s = BuildStyle::for_resident(&rid, VoxelBiome::Grassland, 7, 0);
@@ -2158,9 +2318,10 @@ mod tests {
                 for z in BuildStyle::Z_MIN..=s.z_max {
                     let cell = blocks
                         .iter()
-                        .find(|b| b.x == cx + x && b.y == cy - 1 && b.z == cz + z);
-                    let filled = cell.and_then(|b| Block::from_u8(b.b)).map_or(false, |bl| bl.is_solid());
-                    assert!(filled, "地板 ({x},{z}) 應為實心地基：{rid}");
+                        .find(|b| b.x == cx + x && b.y == cy - 1 && b.z == cz + z)
+                        .and_then(|b| Block::from_u8(b.b));
+                    let ok = cell.map_or(false, |bl| bl.is_solid() || bl == Block::Ladder);
+                    assert!(ok, "地面層 ({x},{z}) 應為實心地基或樓梯井格：{rid}");
                 }
             }
         }
@@ -2168,18 +2329,19 @@ mod tests {
 
     #[test]
     fn house_always_has_two_layer_front_door() {
-        // 防回歸：無論尺寸/材質/裝飾怎麼變，正面中央（x=0, z=z_max）下兩層永遠是門，
-        // 讓每間家都「打得開走得進」（門洞 v1 + 完工錨點 #967 不受影響）。
+        // 防回歸：無論尺寸/材質怎麼變，正面牆中央（door_x, z=z_max）下兩層永遠是門，
+        // 讓每間家都「打得開走得進」（完工錨點 #967 不受影響）。
         for i in 0..8 {
             let rid = format!("vox_res_{i}");
             let s = BuildStyle::for_resident(&rid, VoxelBiome::Grassland, 7, 0);
             let (cx, cy, cz) = (10, 5, 20);
             let blocks = generate_blocks(BuildKind::House, cx, cy, cz, &s);
+            let door_x = cx; // 大門對齊錨點欄位（與院牆門口缺口對齊）。
             let door_z = cz + s.z_max;
             for layer in 0..2 {
                 let d = blocks
                     .iter()
-                    .find(|b| b.x == cx && b.y == cy + layer && b.z == door_z);
+                    .find(|b| b.x == door_x && b.y == cy + layer && b.z == door_z);
                 assert_eq!(
                     d.map(|b| b.b),
                     Some(Block::DoorClosed as u8),
@@ -2191,9 +2353,8 @@ mod tests {
 
     #[test]
     fn house_block_count_stays_bounded() {
-        // 效能：房子方塊數不得暴增（尺寸變化有上限）。掃過所有變化維度，皆 ≤ 120
-        // （居家 v2 隔間房固定 5×5×3 牆約 25+25+54=104 塊 + 隔間牆 6 + 家具 3 + 點綴
-        // 最多 2，上限抓 118，留餘裕上限 120；無隔間的舊尺寸house仍遠低於此，一併涵蓋）。
+        // 效能：多層大宅方塊數要落在合理範圍（標準約 150~230、幸運的 5×5 三層/含地下室
+        // 上限 ~294，蓋起來約 20~40 分鐘）；設 90 ≤ n ≤ 300，別暴增成蓋數小時的摩天樓。
         for rid in ["vox_res_0", "vox_res_1", "vox_res_2", "vox_res_3", "vox_res_9"] {
             for biome in [
                 VoxelBiome::Grassland,
@@ -2203,152 +2364,14 @@ mod tests {
             ] {
                 let s = BuildStyle::for_resident(rid, biome, 7, 0);
                 let n = generate_blocks(BuildKind::House, 0, 5, 0, &s).len();
-                assert!(n <= 120, "房子方塊數暴增（{n}）：{rid}/{biome:?}");
-                assert!(n >= 30, "房子方塊數異常過少（{n}）：{rid}/{biome:?}");
+                assert!(n <= 300, "房子方塊數暴增（{n}）：{rid}/{biome:?}");
+                assert!(n >= 90, "房子方塊數異常過少（{n}）：{rid}/{biome:?}");
             }
         }
     }
 
-    // ── 附屬小棚（annex，建築創作第二／三刀）───────────────────────────────────
-
-    #[test]
-    fn house_annex_adds_expected_block_count_and_no_overlap() {
-        // annex 應恰好比無 annex 多 `4 + 2*annex_wall_h` 塊（地板 2 + 牆 2×annex_wall_h + 棚頂 2），
-        // 且新增方塊不得與主屋任何方塊重疊（同一棟房子不能有兩塊落在同一格）。
-        // wall_h=2（style_small）→ annex_wall_h=1 → 多 6 塊。
-        let mut without = style_small();
-        without.annex = false;
-        let mut with = style_small();
-        with.annex = true;
-
-        let blocks_without = generate_blocks(BuildKind::House, 0, 5, 0, &without);
-        let blocks_with = generate_blocks(BuildKind::House, 0, 5, 0, &with);
-        assert_eq!(blocks_with.len(), blocks_without.len() + 6, "wall_h=2 時 annex 應恰好多 6 塊");
-
-        let mut seen = std::collections::HashSet::new();
-        for b in &blocks_with {
-            assert!(
-                seen.insert((b.x, b.y, b.z)),
-                "annex 版本出現重疊方塊於 ({},{},{})",
-                b.x, b.y, b.z
-            );
-        }
-    }
-
-    #[test]
-    fn house_annex_roof_always_one_layer_below_main_roof() {
-        // 建築創作第三刀修正：annex 棚頂必須永遠比主屋屋頂矮「整整一層」，無論主屋
-        // 是 2 層牆還是 3 層牆——這是第二刀的舊 bug（棚頂寫死 cy+2，主屋恰好也是 2 層
-        // 牆時兩者同高、錯落效果失效，僅約半數房子看得出效果）。三種 annex_pos 皆驗。
-        for wall_h in [2, 3] {
-            for pos in [AnnexPos::Back, AnnexPos::Left, AnnexPos::Right] {
-                let mut s = style_small();
-                s.wall_h = wall_h;
-                s.annex = true;
-                s.annex_pos = pos;
-                let (cx, cy, cz) = (0, 5, 0);
-                let blocks = generate_blocks(BuildKind::House, cx, cy, cz, &s);
-                let main_roof_y = cy + wall_h;
-                let annex_roof_y = blocks
-                    .iter()
-                    .filter(|b| b.b == s.roof as u8 && b.y != main_roof_y)
-                    .map(|b| b.y)
-                    .max();
-                assert_eq!(
-                    annex_roof_y,
-                    Some(main_roof_y - 1),
-                    "wall_h={wall_h}/{pos:?}：annex 棚頂應恰好比主屋屋頂矮一層"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn house_annex_back_sits_behind_back_wall_never_touches_door() {
-        // annex（背牆位）貼在背牆（z0 側）外一排，門在正面 z_max 側——兩者座標不該有任何交集。
-        let mut s = style_small();
-        s.annex = true;
-        s.annex_pos = AnnexPos::Back;
-        let blocks = generate_blocks(BuildKind::House, 10, 5, 20, &s);
-        let door_z = 20 + s.z_max;
-        let annex_z = 20 + BuildStyle::Z_MIN - 1;
-        assert_ne!(door_z, annex_z, "門與 annex 座標理當永遠不同（分居前後兩側）");
-        // annex 那一排（az）不該出現任何門方塊。
-        assert!(
-            blocks.iter().filter(|b| b.z == annex_z).all(|b| b.b != Block::DoorClosed as u8),
-            "annex 那一排不該混進門方塊"
-        );
-    }
-
-    #[test]
-    fn house_annex_left_and_right_never_overlap_house_or_door() {
-        // annex 貼左／右牆外一格，x 座標數學上恆落在主屋佔地（x0..=x1）之外，
-        // 且落在房子「後半段」（z0..=z0+1），不可能碰到正面門洞（z_max）。
-        for pos in [AnnexPos::Left, AnnexPos::Right] {
-            for size_bits in 0..4u64 {
-                let mut s = style_small();
-                s.annex = true;
-                s.annex_pos = pos;
-                (s.x_max, s.z_max) = match size_bits {
-                    0 => (1, 1),
-                    1 => (2, 1),
-                    2 => (1, 2),
-                    _ => (2, 2),
-                };
-                let (cx, cy, cz) = (10, 5, 20);
-                let blocks = generate_blocks(BuildKind::House, cx, cy, cz, &s);
-                let door_x = cx;
-                let door_z = cz + s.z_max;
-                let mut seen = std::collections::HashSet::new();
-                for b in &blocks {
-                    assert!(
-                        seen.insert((b.x, b.y, b.z)),
-                        "{pos:?}/size={size_bits}：annex 與主屋出現重疊方塊於 ({},{},{})",
-                        b.x, b.y, b.z
-                    );
-                }
-                // 門確實仍存在且未被 annex 波及。
-                let door = blocks.iter().find(|b| b.x == door_x && b.z == door_z && b.y == cy);
-                assert_eq!(door.map(|b| b.b), Some(Block::DoorClosed as u8), "{pos:?}：門洞不該被 annex 影響");
-            }
-        }
-    }
-
-    #[test]
-    fn house_annex_present_for_some_residents_absent_for_others() {
-        // 走過多位居民，annex 這個 bit 本身要有變化（不是恆真或恆假），否則不算真的多樣。
-        let mut any_true = false;
-        let mut any_false = false;
-        for i in 0..8 {
-            let rid = format!("vox_res_{i}");
-            let s = BuildStyle::for_resident(&rid, VoxelBiome::Grassland, 7, 0);
-            if s.annex {
-                any_true = true;
-            } else {
-                any_false = true;
-            }
-        }
-        assert!(any_true, "8 位居民中應有人的房子帶 annex");
-        assert!(any_false, "8 位居民中應有人的房子不帶 annex");
-    }
-
-    #[test]
-    fn house_annex_pos_varies_across_residents() {
-        // annex_pos 本身也要有變化（背/左/右都可能出現），否則第三刀等於沒做。
-        let mut seen = std::collections::HashSet::new();
-        for i in 0..24 {
-            let rid = format!("vox_res_{i}");
-            let s = BuildStyle::for_resident(&rid, VoxelBiome::Grassland, 7, 0);
-            if s.annex {
-                seen.insert(s.annex_pos);
-            }
-        }
-        assert!(
-            seen.len() >= 2,
-            "24 位居民的 annex 位置太雷同（只有 {} 種）",
-            seen.len()
-        );
-    }
+    // ── （舊 annex 測試已隨多層大宅生成器取代 3×3 方盒＋小棚而移除；
+    //     大宅結構改由上方 grand_house_* 系列測試把關）─────────────────────────────
 
     // ── BuildStore 純函式 ─────────────────────────────────────────────────────
 
@@ -2933,32 +2956,28 @@ mod tests {
     // ── 居民搬新家：舊家方塊集合重算 + 拆除安全過濾 ─────────────────────────────
 
     #[test]
-    fn mira_flowerbed_grass_is_the_churn_cell() {
-        // prod 真 bug 定位（第四修根因）：米拉（vox_res_4）舊家 (-27,9,8) 是草原（Grassland）
-        // 樣式，帶花圃裝飾（Decor::Flowerbed）——花圃在地表層 (cy-1=8, cz+z_max+1=10) 放一塊
-        // `Grass`。該座標的自然地表本就是 `Grass`，於是 `demolition_restore` 回復的也是 `Grass`：
-        // 拆完現況 == 她放的那塊，`demolish_allowed(Grass, Grass)` 恆 true → 這一格永遠churn。
-        let biome = biome_at_voxel(-27, 8);
-        assert_eq!(biome, VoxelBiome::Grassland, "prod 米拉舊家在草原");
-        let expected = house_blocks_at("vox_res_4", -27, 9, 8);
-        // 舊行為（只看 demolish_allowed）：恰好有一格會無限churn。
-        let churn_old: Vec<_> = expected
-            .iter()
-            .filter(|bb| {
-                let restore = demolition_restore(bb.x, bb.y, bb.z);
-                demolish_allowed(bb.b, restore) // 拆完回復值仍被判定為「可拆」
-            })
-            .collect();
-        assert_eq!(churn_old.len(), 1, "prod 恰好一格會churn（花圃草地）");
-        let c = churn_old[0];
-        assert_eq!((c.x, c.y, c.z), (-27, 8, 10), "churn 格正是花圃草地");
-        assert_eq!(c.b, Block::Grass as u8, "放的是草");
-        // 新行為（demolish_should_remove）：這格拆了世界不變 → 不再被判定為「還可拆」。
-        let restore = demolition_restore(c.x, c.y, c.z);
-        assert!(
-            !demolish_should_remove(c.b, restore, restore),
-            "拆完現況已等於自然回復值 → 不該再拆（收斂閘）"
-        );
+    fn grand_house_placed_equals_natural_cells_never_cause_churn() {
+        // prod 真 bug（demolish churn）承接：多層大宅生成器取代舊 3×3 方盒＋花圃裝飾後，
+        // 那格「花圃在草地上放草」的自我還原churn 已不復存在；但沙漠沙地板鋪在天然沙上等
+        // 情形仍可能讓某格「放的＝天然回復值」。鐵律（承接 `demolish_should_remove` 收斂修）：
+        // 任何這種格拆了世界不變 → 必被判為「不必拆」、拆除迴圈確定性收斂、永不churn。
+        // 掃過多位居民×多錨點逐格驗證（涵蓋各群系與有無地下室）。
+        for rid in ["vox_res_0", "vox_res_3", "vox_res_4", "vox_res_5", "米拉"] {
+            for &(cx, cy, cz) in &[(-27, 9, 8), (0, 64, 0), (300, 9, 300), (-500, 9, 120)] {
+                let blocks = house_blocks_at(rid, cx, cy, cz);
+                for bb in &blocks {
+                    let restore = demolition_restore(bb.x, bb.y, bb.z);
+                    // 「放的＝天然回復值」的churn候選格：收斂閘必須把它判為「不必拆」。
+                    if demolish_allowed(bb.b, restore) {
+                        assert!(
+                            !demolish_should_remove(bb.b, restore, restore),
+                            "{rid}@({},{},{}) 放的＝天然值卻仍被判可拆 → 會churn",
+                            bb.x, bb.y, bb.z
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -3026,10 +3045,10 @@ mod tests {
         // 拆掉的塊數＝她真放下、且拆了會改變世界的那些（花圃草地那格因拆了不變、被正確跳過，
         // 所以拆的塊數 < 全部塊數；這正是修好後該有的結果）。
         assert!(total_removed > 0, "應真的拆掉了牆/門/屋頂等塊");
-        assert!(
-            total_removed < expected.len(),
-            "花圃草地那格拆了世界不變，該被跳過不重複拆——舊churn正是死在這格"
-        );
+        // 注意：多層大宅生成器取代 3×3 方盒＋花圃後，舊那格「花圃草地」churn 已不存在；
+        // 此 e2e 的核心保證是「拆除迴圈確定性收斂、不無限churn」（converged_step 為 Some），
+        // 而非特定一格被跳過。地下室的空氣格與沙漠沙地板等「放的＝天然值」的格仍會被
+        // demolish_should_remove 正確跳過，不影響收斂。
 
         // 收斂後世界的最終狀態：門(43)/床(45)/牆等都回復成自然（不再是她放的那塊）。
         let door_gone = expected
