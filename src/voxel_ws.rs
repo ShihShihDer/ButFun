@@ -4657,6 +4657,77 @@ fn broadcast_block(x: i32, y: i32, z: i32, b: Block) {
     let _ = hub().tx.send(msg);
 }
 
+/// 樹葉浮空清理·掃描半徑（以被破壞的樹幹為中心，只清這格周圍這麼近的樹葉）。
+const LEAF_CLEAR_RADIUS: i32 = 4;
+/// 樹葉浮空清理·最大連通步數（一片樹葉只要「經樹葉相鄰 ≤ 這麼多步」還搆得到任一樹幹
+/// 就算有依附、不清）。半徑與步數都刻意小，最壞掃 9³ 格、只在玩家/居民砍樹那一刻觸發，
+/// 非熱路徑（守「別掃爆」）。
+const LEAF_CLEAR_MAX_STEPS: i32 = 5;
+
+/// **樹葉浮空清理**（純幾何、確定性）：砍掉一段樹幹（Wood）後，掃描以 (x,y,z) 為中心
+/// 半徑 [`LEAF_CLEAR_RADIUS`] 內的樹葉（Leaves），把「再也連不回任何樹幹」的孤葉一起
+/// 清成空氣，別在天上留一坨浮葉。
+///
+/// 判定用**多源 BFS**：附近所有 Wood 當距離 0 的源點，只經 Leaves 往外傳播——凡在
+/// [`LEAF_CLEAR_MAX_STEPS`] 步內被傳到的樹葉都算「有樹幹撐著」；掃描區內沒被傳到的樹葉
+/// ＝孤葉。被砍掉的那格此刻已是空氣（不是 Wood 源點），所以只有原本「單靠這段被砍樹幹
+/// 撐著、且離其餘樹幹夠遠」的葉子才會被清，仍連著別段樹幹的葉子安然無恙。
+///
+/// 呼叫端須持有 `deltas` 寫鎖傳入 `world`；本函式只改 delta（set Air），**回傳被清座標的
+/// 清單**，讓呼叫端釋鎖後才 `broadcast_block` + `append_world_block`（守死鎖鐵律、且重啟
+/// replay 後浮葉不再冒回來）。確定性：座標掃描與 BFS 佇列皆固定順序、零亂數 → replay 一致。
+fn clear_orphan_leaves(world: &mut WorldDelta, x: i32, y: i32, z: i32) -> Vec<(i32, i32, i32)> {
+    use std::collections::{HashSet, VecDeque};
+    const R: i32 = LEAF_CLEAR_RADIUS;
+    // 多源 BFS 種子：略放大半徑（R+1）內的所有樹幹當距離 0 源點，確保掃描區邊緣的葉子
+    // 也能被剛好在邊界外一格的鄰近樹幹判定為「有依附」。
+    let mut supported: HashSet<(i32, i32, i32)> = HashSet::new();
+    let mut q: VecDeque<((i32, i32, i32), i32)> = VecDeque::new();
+    for dx in -(R + 1)..=(R + 1) {
+        for dy in -(R + 1)..=(R + 1) {
+            for dz in -(R + 1)..=(R + 1) {
+                let (wx, wy, wz) = (x + dx, y + dy, z + dz);
+                if voxel::effective_block_at(world, wx, wy, wz) == Block::Wood {
+                    q.push_back(((wx, wy, wz), 0));
+                }
+            }
+        }
+    }
+    const NEI: [(i32, i32, i32); 6] =
+        [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)];
+    while let Some(((cx, cy, cz), d)) = q.pop_front() {
+        if d >= LEAF_CLEAR_MAX_STEPS {
+            continue; // 已達最大步數，不再往外傳
+        }
+        for (ox, oy, oz) in NEI {
+            let n = (cx + ox, cy + oy, cz + oz);
+            if supported.contains(&n) {
+                continue;
+            }
+            if voxel::effective_block_at(world, n.0, n.1, n.2) == Block::Leaves {
+                supported.insert(n);
+                q.push_back((n, d + 1));
+            }
+        }
+    }
+    // 掃描半徑 R 內的樹葉：沒被任何樹幹在步數內撐到的就是孤葉 → 清成空氣。
+    let mut removed = Vec::new();
+    for dx in -R..=R {
+        for dy in -R..=R {
+            for dz in -R..=R {
+                let (lx, ly, lz) = (x + dx, y + dy, z + dz);
+                if voxel::effective_block_at(world, lx, ly, lz) == Block::Leaves
+                    && !supported.contains(&(lx, ly, lz))
+                {
+                    voxel::set_block(world, lx, ly, lz, Block::Air);
+                    removed.push((lx, ly, lz));
+                }
+            }
+        }
+    }
+    removed
+}
+
 /// 殖民地集體里程碑檢查（自主提案切片；補 `voxel_settle` 頭註自己留白的地基缺口——紀念柱／
 /// 村莊集體里程碑此前只認主村）：某聚落人口剛好變動（遷居/誕生）後呼叫一次。`sid` 為主村
 /// 時直接早退（主村已有自己的 856/885 那一套，兩份帳本刻意不共用）。短鎖循序即釋、廣播與
@@ -6373,6 +6444,19 @@ async fn handle_socket(
                     // 水流動：剛挖出一個空格 → 排入這格 + 鄰格，讓相鄰水體往缺口流過來
                     //（delta 鎖已釋放，只短暫持 water_queue 鎖，不 await，守鎖紀律）。
                     enqueue_water_around(x, y, z);
+                    // 樹葉浮空清理 v1：砍掉的若是樹幹（Wood），順手清掉再也連不回任何樹幹的
+                    // 孤葉，別在天上留一坨浮葉（deltas 寫鎖短取即釋、蒐集清單，釋鎖後才廣播＋
+                    // 持久化，守死鎖鐵律；append Air 讓重啟 replay 後浮葉不再冒回來）。
+                    if matches!(target_block, Block::Wood) {
+                        let cleared = {
+                            let mut world = hub().deltas.write().unwrap();
+                            clear_orphan_leaves(&mut world, x, y, z)
+                        }; // deltas 寫鎖釋放
+                        for (lx, ly, lz) in cleared {
+                            broadcast_block(lx, ly, lz, Block::Air);
+                            vbuild::append_world_block(lx, ly, lz, Block::Air as u8);
+                        }
+                    }
                     // 居民迎新 v1（948）：第一次成功敲下方塊＝完成「採集」一步。
                     for m in onboard_step(&mut onboard, vonboard::STEP_BREAK, &name) {
                         let _ = out_tx.send(Message::Text(m)).await;
@@ -25382,6 +25466,19 @@ fn tick_residents(dt: f32) {
             }
             // 持久化這次世界改動（重啟後回填/挖掉的結果還在）。
             vbuild::append_world_block(gx, gy, gz, refill as u8);
+            // 樹葉浮空清理 v1：居民砍掉樹幹（Wood→Air）也走同一套清孤葉（與玩家 Break 路徑
+            // 共用 clear_orphan_leaves）；只有回填成空氣的樹幹採集才需要（refill==Air ⇔ 砍樹）。
+            // deltas 寫鎖已於上面釋放，這裡短取即釋、釋鎖後才廣播＋持久化。
+            if res == vskill::GatherResource::Wood && refill == Block::Air {
+                let cleared = {
+                    let mut world = hub().deltas.write().unwrap();
+                    clear_orphan_leaves(&mut world, gx, gy, gz)
+                }; // deltas 寫鎖釋放
+                for (lx, ly, lz) in cleared {
+                    broadcast_block(lx, ly, lz, Block::Air);
+                    vbuild::append_world_block(lx, ly, lz, Block::Air as u8);
+                }
+            }
         }
         // 入居民小背包（純記憶體）——採集產出的材料數量不變（回填不影響入袋）。
         // 播種自給（第九刀）：草皮／泥土額外附贈一顆胡蘿蔔／馬鈴薯種子，比照玩家破壞同型
@@ -30135,6 +30232,250 @@ const RELOC_ARRIVE_DIST: f32 = 9.0;
 /// 搬家中居民的閒晃半徑（緊貼工地打轉，看得出她在忙搬家）。
 const RELOC_WANDER_RADIUS: f32 = 3.0;
 
+// ── 既有房子翻新（讓玩家上去看得到舊小屋長成大宅）───────────────────────────────
+//
+// **真缺口**：多層大宅生成器（`house_blocks_at`）上線後，`new_plan` 蓋的新家都是大宅，
+// 但 prod 上「生成器上線前」蓋的既有小屋不會自己重蓋——玩家走過去看到的還是舊方盒。
+//
+// **本刀·加法式重蓋（最安全，避開 churn）**：paced（全村冷卻、一次一位）挑一位「家還沒
+// 升級」的居民，走**既有 BuildPlan 引擎**在她家原錨點排入一份大宅計畫，建造 tick 逐塊
+// （8s/塊）把大宅蓋上去。新大宅 footprint（5~6 見方）⊇ 舊小屋（3~4 見方），大部分舊格
+// 直接被覆蓋；footprint 內「不在新設計裡」的結構殘塊另以 churn-safe 方式清掉（見
+// `upgrade_clear_residual`）。完工收尾（錨點登記／圈院／柴堆）全走建造引擎既有唯一路徑。
+//
+// **不與建家主鏈打架**：掛在 `tick_home_relocation` 的「無進行中搬家」分支、且排在所有
+// 搬家／殖民補蓋／圍籬柴堆補放之後——搬家與補蓋永遠優先；本機制冷卻又長（分鐘級），
+// 平時掃描只付一次早退成本。挑人時 `has_plan`／`active_reloc` 一律讓路，絕不插隊。
+
+/// 既有房子翻新·全村冷卻時間戳（比照 [`LAST_WEDDING_UNIX`]：`AtomicU64`、純記憶體、
+/// 重啟歸零——重啟後至多多觸發一次，冪等判定會擋住已升級的家，安全）。
+static LAST_HOME_UPGRADE_UNIX: AtomicU64 = AtomicU64::new(0);
+/// 兩次翻新之間的全村冷卻（秒）。保守（寧慢勿亂）：這會動 prod 真實世界，一次一位、慢慢來。
+const HOME_UPGRADE_COOLDOWN_SECS: u64 = 600; // 10 分鐘
+/// 需升級判定的匹配率門檻（百分比）：世界上與目標大宅相符的「結構格」達此比率視為「已是
+/// 大宅」。<100 容錯——玩家事後敲破一兩扇窗、開了門，不該讓整座家被判成「還沒升級」而重蓋。
+const HOME_UPGRADE_MATCH_PCT: u32 = 85;
+
+/// **既有房子翻新·需升級判定**（純函式、可測，收斂關鍵）：世界是否**已經就是**目標大宅
+/// `target`？只比對 `target` 裡的「實心結構格」——`Air` 內裝挖空格不計（舊小屋上方本就是
+/// 空氣，計進來會把匹配率灌高、誤判「已升級」）。相符格數 ÷ 結構格數 ≥
+/// [`HOME_UPGRADE_MATCH_PCT`]% 就算已升級。`world_at` 給「查某格現值(u8)」。
+///
+/// **冪等／收斂論證**（守記憶鐵律「絕不用『等於目標』當停止條件」——這裡是「已到位就
+/// skip、不再排」而非「拆到等於目標」的無限迴圈）：
+/// - 重蓋**完成後**世界幾乎每個結構格都 == target → 匹配率 ≈ 100% ≥ 門檻 → 判「已升級」
+///   → 之後每輪掃描都 skip、**永不再次觸發**（零 churn、不佔搬遷名額、不餓死全村）。
+/// - 重蓋**之前**的舊小屋 footprint 小、樓層少，target 多數上層牆／樓板／屋頂格在世界上還是
+///   空氣或自然地表 → 匹配率低（舊 3×3 單層盒子對多層大宅約 ~20%）→ 觸發**一次**翻新。
+/// - `total==0`（理論極少）→ 視為已到位（回 true），不觸發、不 churn。
+fn house_is_upgraded(target: &[vbuild::BuildBlock], world_at: impl Fn(i32, i32, i32) -> u8) -> bool {
+    let mut total = 0u32;
+    let mut matched = 0u32;
+    for bb in target {
+        if bb.b == Block::Air as u8 {
+            continue; // 內裝挖空格不計入結構比對
+        }
+        total += 1;
+        if world_at(bb.x, bb.y, bb.z) == bb.b {
+            matched += 1;
+        }
+    }
+    if total == 0 {
+        return true;
+    }
+    matched * 100 >= total * HOME_UPGRADE_MATCH_PCT
+}
+
+/// **既有房子翻新·殘塊白名單**（純函式）：翻新舊小屋成大宅時，footprint 內「不在新設計裡」
+/// 的殘塊只清這些「牆／地板／屋頂／窗」的結構材——傢俱／箱子／床／門／梯／告示牌／玩家的
+/// 擺設一律不碰（留著無害，寧留不誤拆，守資料安全鐵律）。
+fn is_house_structural(b: Block) -> bool {
+    matches!(
+        b,
+        Block::Wood
+            | Block::Plank
+            | Block::Stone
+            | Block::StoneBrick
+            | Block::SmoothStone
+            | Block::Glass
+            | Block::Sand
+            | Block::Grass
+            | Block::Dirt
+            | Block::Leaves
+    )
+}
+
+/// 翻新前 churn-safe 清掉「舊小屋在新大宅 footprint 內、但不在新設計裡」的結構殘塊
+/// （例如舊屋遠端邊牆在大宅裡變成室內、卻沒被任何新格覆蓋的浮牆）。回傳清掉的格數。
+///
+/// **資料安全 / churn-safe**（守記憶鐵律）：只動「持久化紀錄裡她當年放過、現況仍是那塊」
+/// 的結構材，且只有 [`vbuild::demolish_should_remove`] 為真（拆了會真的改變世界、
+/// `current != restore`）才拆——
+/// - 玩家事後改過的格：`current != 當年放的塊` → `demolish_allowed` 不成立 → 不碰。
+/// - `restore == placed`（放的就是自然地表值）的格：`current == restore` → 不碰（絕不無限
+///   churn，這正是花圃補蓋餓死全村事故的教訓）。
+/// - 非結構材（傢俱/箱子/門…）：白名單擋掉 → 不碰。
+/// - 在 `target`（新設計會蓋的格，含挖空 Air）內的座標：交給建造引擎覆蓋 → 不在此拆。
+///
+/// 一次性：只在翻新 kickoff 呼叫一次（隨後 `has_plan` 成立，後續掃描不再進來），非迴圈。
+fn upgrade_clear_residual(target: &[vbuild::BuildBlock]) -> usize {
+    use std::collections::{HashMap, HashSet};
+    // 新設計會碰到的座標（含挖空 Air 格）——這些交給建造引擎，殘塊清理略過。
+    let target_set: HashSet<(i32, i32, i32)> =
+        target.iter().map(|b| (b.x, b.y, b.z)).collect();
+    // footprint 包圍盒（取 target 座標 min/max）。舊小屋 footprint ⊆ 新大宅（共用錨點角、
+    // 大宅更寬更高），故舊殘塊必落在此盒內；只掃這盒、絕不外溢碰到鄰居建物／路面。
+    let (mut minx, mut miny, mut minz) = (i32::MAX, i32::MAX, i32::MAX);
+    let (mut maxx, mut maxy, mut maxz) = (i32::MIN, i32::MIN, i32::MIN);
+    for b in target {
+        minx = minx.min(b.x);
+        miny = miny.min(b.y);
+        minz = minz.min(b.z);
+        maxx = maxx.max(b.x);
+        maxy = maxy.max(b.y);
+        maxz = maxz.max(b.z);
+    }
+    if minx > maxx {
+        return 0; // target 空（理論極少）
+    }
+    // 持久化的既有方塊（append-only，最後一筆為現況）→ 只留包圍盒內、每座標最後一筆
+    //（last-write-wins，比照 compact_world_blocks 語意）當「她當年放的那塊」。
+    let mut placed_last: HashMap<(i32, i32, i32), u8> = HashMap::new();
+    for bb in vbuild::load_world_blocks() {
+        if bb.x < minx || bb.x > maxx || bb.y < miny || bb.y > maxy || bb.z < minz || bb.z > maxz {
+            continue;
+        }
+        placed_last.insert((bb.x, bb.y, bb.z), bb.b);
+    }
+    if placed_last.is_empty() {
+        return 0;
+    }
+    // deltas 寫鎖內只蒐集＋set restore（鎖外才廣播＋持久化，守死鎖鐵律）。
+    let mut removed: Vec<(i32, i32, i32, Block)> = Vec::new();
+    {
+        let mut world = hub().deltas.write().unwrap();
+        for (&(bx, by, bz), &placed) in &placed_last {
+            if target_set.contains(&(bx, by, bz)) {
+                continue; // 新設計會蓋這格 → 交給建造引擎
+            }
+            let Some(pb) = Block::from_u8(placed) else { continue };
+            if !is_house_structural(pb) {
+                continue; // 只清牆/地板/屋頂結構材，傢俱/玩家擺設不碰
+            }
+            let current = voxel::effective_block_at(&world, bx, by, bz);
+            let restore = vbuild::demolition_restore(bx, by, bz);
+            // churn-safe：只有「現況正是她當年放的那塊 且 拆了會真的改變世界」才拆。
+            if vbuild::demolish_should_remove(placed, current, restore) {
+                voxel::set_block(&mut world, bx, by, bz, restore);
+                removed.push((bx, by, bz, restore));
+            }
+        }
+    } // deltas 寫鎖釋放
+    for (bx, by, bz, restore) in &removed {
+        broadcast_block(*bx, *by, *bz, *restore);
+        enqueue_water_around(*bx, *by, *bz);
+        vbuild::append_world_block(*bx, *by, *bz, *restore as u8);
+    }
+    removed.len()
+}
+
+/// **既有房子翻新·paced kickoff**：全村冷卻到、挑第一位「家還沒升級成大宅、此刻又閒著」的
+/// 居民，先 churn-safe 清掉舊殘塊，再走既有 BuildPlan 引擎在原錨點排入大宅重蓋（逐塊放置、
+/// 完工收尾全沿用）。一次至多開一件（回 `true`＝這輪開了工，讓上層跳過都更 kickoff）。
+fn upgrade_one_house(say_updates: &mut Vec<(String, String)>) -> bool {
+    // 世界級變動 kill-switch（守資料安全鐵律）：翻新會拆重蓋既有居民的家，預設 **OFF**——
+    // main / 測試 / 一般部署一律不動 prod 世界；上 prod 要「看得到既有房子長大」時，由維護窗
+    // 設環境變數 `BUTFUN_HOME_UPGRADE=1` 才啟用，發現不對勁移除該變數即秒關（下次 tick 生效）。
+    static UPGRADE_ENABLED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        std::env::var("BUTFUN_HOME_UPGRADE").map(|v| v == "1").unwrap_or(false)
+    });
+    if !*UPGRADE_ENABLED {
+        return false;
+    }
+    // 全村冷卻（比照 maybe_wedding）：沒到就零成本早退，不掃全村。
+    let now = vfarm::now_secs();
+    if now.saturating_sub(LAST_HOME_UPGRADE_UNIX.load(Ordering::Relaxed)) < HOME_UPGRADE_COOLDOWN_SECS
+    {
+        return false;
+    }
+    // 進行中搬家的居民（新家由搬家引擎蓋，翻新讓路）。relocations 讀鎖即釋。
+    let active_reloc: Option<String> =
+        { hub().relocations.read().unwrap().active().map(|a| a.resident.clone()) };
+    let residents: Vec<String> =
+        hub().residents.read().unwrap().iter().map(|r| r.id.clone()).collect();
+    for rid in residents {
+        if active_reloc.as_deref() == Some(rid.as_str()) {
+            continue; // 搬家中：新家由搬家引擎負責
+        }
+        if hub().builds.read().unwrap().has_plan(&rid) {
+            continue; // 正在蓋東西（含翻新中）→ 冪等擋重複開工
+        }
+        let Some(anchor) = hub().goals.read().unwrap().house_of(&rid) else {
+            continue; // 沒有家座標（遠古資料失傳）→ 交給殖民補蓋那條，不在此處理
+        };
+        let (cx, cy, cz) = anchor;
+        // 當前大宅設計（確定性重算，與 new_plan 同一套 BuildStyle）。
+        let target = vbuild::house_blocks_at(&rid, cx, cy, cz);
+        // 需升級判定（冪等/收斂關鍵）：已是大宅就 skip、永不重複觸發。
+        let already = {
+            let world = hub().deltas.read().unwrap();
+            house_is_upgraded(&target, |bx, by, bz| {
+                voxel::effective_block_at(&world, bx, by, bz) as u8
+            })
+        }; // deltas 讀鎖釋放
+        if already {
+            continue;
+        }
+        // 此刻在忙（被指派/發明/跑腿/跟隨/睡著）→ 這輪先跳過她（比照 colonist_house_repair）。
+        if hub().directed_tasks.read().unwrap().contains_key(&rid) {
+            continue;
+        }
+        let busy = {
+            let residents = hub().residents.read().unwrap();
+            residents.iter().find(|r| r.id == rid).map_or(true, |r| {
+                r.invent_run.is_some() || r.fetch.is_some() || r.follow.is_some() || r.asleep
+            })
+        }; // residents 讀鎖釋放
+        if busy {
+            continue;
+        }
+        // 先 churn-safe 清掉舊殘塊（footprint 內、不在新設計裡的舊結構）。
+        let cleared = upgrade_clear_residual(&target);
+        // 排入重蓋：走既有 BuildPlan 引擎（她的樣式/放塊節奏/進度冒泡/完工收尾與圈院立牌
+        // 全沿用，零新建造路徑）。同錨點、House——完工時 anchor_built 早登記過（冪等，不重蓋）。
+        let plan = {
+            let mut builds = hub().builds.write().unwrap();
+            if builds.has_plan(&rid) {
+                None // double-check 併發安全
+            } else {
+                Some(builds.new_plan(&rid, vbuild::BuildKind::House, cx, cy, cz, false, None))
+            }
+        }; // builds 寫鎖釋放
+        let Some(p) = plan else { continue };
+        vbuild::append_build(&p);
+        let rname = resident_name_of(&rid);
+        vfeed::append_feed("老屋翻新", rname, &format!("{rname}要把舊家翻新成氣派的大宅了！"));
+        say_updates.push((rid.clone(), "老屋該翻新啦，蓋成像樣的大宅！".to_string()));
+        {
+            let mut residents = hub().residents.write().unwrap();
+            if let Some(r) = residents.iter_mut().find(|r| r.id == rid) {
+                r.gather = None; // 翻新是大事：自發的散步採集先放下
+                r.build_cooldown = 0.0; // 別讓建造冷卻卡住翻新收尾
+                r.target_x = cx as f32 + 0.5;
+                r.target_z = cz as f32 + 0.5;
+                r.wait_timer = 0.0;
+            }
+        } // residents 寫鎖釋放
+        LAST_HOME_UPGRADE_UNIX.store(now, Ordering::Relaxed);
+        tracing::info!(
+            resident = %rid, anchor = ?anchor, cleared_residual = cleared,
+            "老屋翻新：churn-safe 清殘塊後動工把舊小屋重蓋成當前大宅"
+        );
+        return true; // 一次只開一件（錯開）
+    }
+    false
+}
+
 /// 搬家任務主 tick（tick_residents 每輪呼叫；節奏閘讓平時只付一次倒數遞減成本）。
 /// 無進行中搬家 → 低頻掃待都更名單開新的一件；有 → 依階段推進（蓋新家加放 / 拆舊家）。
 fn tick_home_relocation(dt: f32, say_updates: &mut Vec<(String, String)>) {
@@ -30157,6 +30498,7 @@ fn tick_home_relocation(dt: f32, say_updates: &mut Vec<(String, String)>) {
             && !repair_one_house_fence()
             && !repair_one_house_woodpile()
             && !repair_one_street_link()
+            && !upgrade_one_house(say_updates)
         {
             relocation_kickoff(say_updates);
         }
@@ -32939,6 +33281,132 @@ mod tests {
         // 同一 XZ 位置，但垂直落差超過 STATION_RANGE_Y——不同樓層的工作台不算數。
         voxel::set_block(&mut deltas, 0, 5 + STATION_RANGE_Y + 3, 0, Block::Workbench);
         assert!(!station_nearby(&deltas, 0.5, 5.0, 0.5, Block::Workbench));
+    }
+
+    // ── 既有房子翻新·需升級判定（冪等/收斂關鍵）─────────────────────────────────
+    #[test]
+    fn house_is_upgraded_true_when_world_matches_all_structure() {
+        let target = vec![
+            vbuild::BuildBlock { x: 0, y: 10, z: 0, b: Block::Wood as u8 },
+            vbuild::BuildBlock { x: 1, y: 10, z: 0, b: Block::Stone as u8 },
+            // 內裝挖空 Air 格不計入結構比對——即使世界那格不是 Air 也不影響判定。
+            vbuild::BuildBlock { x: 0, y: 11, z: 0, b: Block::Air as u8 },
+        ];
+        assert!(house_is_upgraded(&target, |x, y, z| {
+            match (x, y, z) {
+                (0, 10, 0) => Block::Wood as u8,
+                (1, 10, 0) => Block::Stone as u8,
+                _ => Block::Air as u8,
+            }
+        }));
+    }
+
+    #[test]
+    fn house_is_upgraded_false_when_old_box_barely_overlaps() {
+        // 20 塊結構的大宅，世界上只有 2 塊相符（舊小屋殘存）＝10% ≪ 門檻 → 還沒升級。
+        let target: Vec<_> = (0..20)
+            .map(|i| vbuild::BuildBlock { x: i, y: 10, z: 0, b: Block::Wood as u8 })
+            .collect();
+        let upgraded = house_is_upgraded(&target, |x, y, z| {
+            if (y, z) == (10, 0) && x < 2 { Block::Wood as u8 } else { Block::Air as u8 }
+        });
+        assert!(!upgraded, "只有零星相符不該判成已升級（否則永不翻新）");
+    }
+
+    #[test]
+    fn house_is_upgraded_tolerates_a_few_broken_cells() {
+        // 20 塊結構、世界相符 18 塊（玩家敲破 2 格窗）＝90% ≥85% → 仍算已升級（不反覆重蓋）。
+        let target: Vec<_> = (0..20)
+            .map(|i| vbuild::BuildBlock { x: i, y: 10, z: 0, b: Block::Stone as u8 })
+            .collect();
+        let upgraded = house_is_upgraded(&target, |x, y, z| {
+            if (y, z) == (10, 0) && x < 18 { Block::Stone as u8 } else { Block::Air as u8 }
+        });
+        assert!(upgraded, "破幾格窗不該把已升級的家判成又要翻新");
+    }
+
+    #[test]
+    fn house_is_upgraded_true_when_target_all_air() {
+        // 目標全是挖空 Air（理論極少）→ 無結構可蓋 → 視為已到位、不觸發、不 churn。
+        let target = vec![vbuild::BuildBlock { x: 0, y: 10, z: 0, b: Block::Air as u8 }];
+        assert!(house_is_upgraded(&target, |_, _, _| Block::Grass as u8));
+    }
+
+    #[test]
+    fn is_house_structural_whitelist() {
+        for b in [
+            Block::Wood, Block::Plank, Block::Stone, Block::StoneBrick,
+            Block::SmoothStone, Block::Glass, Block::Sand, Block::Grass,
+            Block::Dirt, Block::Leaves,
+        ] {
+            assert!(is_house_structural(b), "{b:?} 應算結構材");
+        }
+        // 傢俱／擺設／門／梯不在白名單——翻新殘塊清理絕不碰。
+        for b in [Block::Bed, Block::Chest, Block::DoorClosed, Block::Ladder, Block::Air, Block::Table] {
+            assert!(!is_house_structural(b), "{b:?} 不該被當結構材清掉");
+        }
+    }
+
+    // ── 樹葉浮空清理（多源 BFS、確定性）─────────────────────────────────────────
+    #[test]
+    fn clear_orphan_leaves_removes_disconnected_leaf() {
+        // 高空（y=100 procedural=Air），一片孤葉、附近沒有樹幹 → 清掉。
+        let mut w = WorldDelta::new();
+        voxel::set_block(&mut w, 5000, 100, 5000, Block::Leaves);
+        let removed = clear_orphan_leaves(&mut w, 5000, 100, 5000);
+        assert_eq!(removed, vec![(5000, 100, 5000)]);
+        assert_eq!(voxel::effective_block_at(&w, 5000, 100, 5000), Block::Air);
+    }
+
+    #[test]
+    fn clear_orphan_leaves_keeps_leaf_next_to_trunk() {
+        // 樹幹旁緊貼的葉子有依附 → 不清。
+        let mut w = WorldDelta::new();
+        voxel::set_block(&mut w, 5000, 100, 5000, Block::Wood);
+        voxel::set_block(&mut w, 5000, 101, 5000, Block::Leaves); // 樹幹正上方，距離 1
+        let removed = clear_orphan_leaves(&mut w, 5000, 100, 5000);
+        assert!(removed.is_empty(), "貼著樹幹的葉子不該被清");
+        assert_eq!(voxel::effective_block_at(&w, 5000, 101, 5000), Block::Leaves);
+    }
+
+    #[test]
+    fn clear_orphan_leaves_respects_max_steps() {
+        // 一條蜿蜒葉鏈：距樹幹 1..=6 步。步數 >LEAF_CLEAR_MAX_STEPS(5) 的最遠葉清掉、其餘保留。
+        let mut w = WorldDelta::new();
+        voxel::set_block(&mut w, 5000, 100, 5000, Block::Wood);
+        // 沿 x 走 3 格再沿 y 走 3 格（皆在半徑 4 內），圖距離 1..6。
+        let chain = [
+            (5001, 100, 5000), // d1
+            (5002, 100, 5000), // d2
+            (5003, 100, 5000), // d3
+            (5003, 101, 5000), // d4
+            (5003, 102, 5000), // d5
+            (5003, 103, 5000), // d6（超過 5 步）
+        ];
+        for &(x, y, z) in &chain {
+            voxel::set_block(&mut w, x, y, z, Block::Leaves);
+        }
+        let removed = clear_orphan_leaves(&mut w, 5000, 100, 5000);
+        assert_eq!(removed, vec![(5003, 103, 5000)], "只清超過 5 步的孤葉");
+        // d5 以內的葉子都還在。
+        assert_eq!(voxel::effective_block_at(&w, 5003, 102, 5000), Block::Leaves);
+        assert_eq!(voxel::effective_block_at(&w, 5003, 103, 5000), Block::Air);
+    }
+
+    #[test]
+    fn clear_orphan_leaves_deterministic_repeat() {
+        // 確定性：同輸入跑兩次結果一致（replay 安全）。
+        let build = || {
+            let mut w = WorldDelta::new();
+            voxel::set_block(&mut w, 6000, 100, 6000, Block::Leaves);
+            voxel::set_block(&mut w, 6002, 100, 6000, Block::Leaves);
+            w
+        };
+        let mut a = build();
+        let mut b = build();
+        let ra = clear_orphan_leaves(&mut a, 6000, 100, 6000);
+        let rb = clear_orphan_leaves(&mut b, 6000, 100, 6000);
+        assert_eq!(ra, rb);
     }
 
     // ── 殖民地擴建圈 fallback（PR #1298 review：三個呼叫端共用同一份語意）──────

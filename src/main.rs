@@ -192,6 +192,8 @@ mod voxel_livelihood;
 mod voxel_life_pursuit;
 // 乙太方界·居民靈魂常駐角色 context v1：每位居民一段人工著墨的深邃角色卡（soul_prompt），思考 prompt 永遠置頂當「角色設定」底——便宜即時腦被這份豐富角色墊高；新 store 純 additive、缺檔=現況（向後相容）。
 mod voxel_resident_soul;
+// 乙太方界·居民建築性格 v1（靈魂驅動的個人建築創意引擎）：每位居民一段建築性格卡（牆材／屋頂／尖頂／點綴／樓層傾向），for_resident 算完 hash 樣式後確定性套用——親手蓋的家一眼看得出是「這個人」；新 store 純 additive、缺檔=現況（向後相容）。
+mod voxel_arch_style;
 // 乙太方界·老友情境問候 v1：好感度達老友時，居民說出記憶驅動的特定台詞（ROADMAP 675）。
 mod voxel_fond_greeting;
 // 乙太方界·居民心情指示 v1：根據情誼與記憶動態計算心情 emoji，廣播給前端（ROADMAP 676）。
