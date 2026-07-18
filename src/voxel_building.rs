@@ -1095,6 +1095,25 @@ fn push_house(out: &mut Vec<BuildBlock>, cx: i32, cy: i32, cz: i32, style: &Buil
             }
         }
     }
+
+    // ── accent 去重（保留最後放的）──────────────────────────────────────────────
+    // accent 方塊可能與既有結構/傢俱落在同格（如 Hearth 煙囪由 cy+1 上穿各層樓板與屋頂、
+    // Library 覆蓋後室廚房角傢俱）。同格兩塊會違反 `house_never_has_overlapping_blocks`
+    // 不變式，也讓 replay／玩家逐塊幫忙比對錯位。此處掃一遍**保留每格最後放置的那塊**
+    // （accent 一律最後放 → 取代同格既有塊，語義上正是「這格改成煙囪／書齋」），去掉重複。
+    // 確定性：同輸入 → 同去重結果（穩定保留最後出現者、其餘相對序不變），replay 安全。
+    {
+        use std::collections::HashSet;
+        let mut seen: HashSet<(i32, i32, i32)> = HashSet::new();
+        let mut deduped: Vec<BuildBlock> = Vec::with_capacity(out.len());
+        for bb in out.iter().rev() {
+            if seen.insert((bb.x, bb.y, bb.z)) {
+                deduped.push(bb.clone());
+            }
+        }
+        deduped.reverse();
+        *out = deduped;
+    }
 }
 
 // ── 建物方塊生成（純函式，可測）────────────────────────────────────────────────
@@ -2581,7 +2600,14 @@ mod tests {
     #[test]
     fn wall_material_follows_biome() {
         // 牆材質限定在該群系的候選內（森林木系、沙漠沙/拋石、雪原拋石/雪）。
-        for rid in ["vox_res_0", "vox_res_1", "vox_res_2", "vox_res_3"] {
+        // 註：此為 **hash／群系路徑** 的不變式；有靈魂建築性格（arch）的居民其牆材由性格卡
+        // 指定、刻意覆蓋群系（如露娜恆木牆、不管在哪個群系），故本測試改用**無 arch 登記**的
+        // id 驗純群系邏輯；前置斷言 arch_of 為 None，防日後誤替這些 id 加性格卡而讓本測試失真。
+        for rid in ["群系測試_甲", "群系測試_乙", "群系測試_丙", "群系測試_丁"] {
+            assert!(
+                crate::voxel_arch_style::arch_of(rid).is_none(),
+                "{rid} 不應有 arch 登記（否則本測試驗的是 arch 覆蓋而非群系邏輯）"
+            );
             let forest = BuildStyle::for_resident(rid, VoxelBiome::Forest, 7, 0).wall;
             assert!(
                 matches!(forest, Block::Wood | Block::Plank),
