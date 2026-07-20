@@ -1,0 +1,16 @@
+# cargo-audit 設定：明確「已評估、接受」的例外（附理由），其餘一律照掃。
+# 用意：真正可修的漏洞要修（如 quinn-proto 已升 0.11.16）；無修可升又打不到的、
+# 以及 yanked（非漏洞）在此白名單化，讓掃描維持「乾淨或真中招」的訊號、不被噪音淹沒。
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 — rsa 0.9.10「Marvin Attack」timing 側通道（MEDIUM 5.9）。
+    # 無修正版可升（上游未釋出）。且本專案 sqlx 只開 `postgres` feature、程式碼 0 處用
+    # MySQL；rsa 僅由 sqlx 巨集在**編譯期**拉入（query! 檢查全驅動），**runtime 的 MySQL
+    # RSA 認證路徑從不執行** → 此 timing 攻擊在 ButFun 不可達。已評估：接受。
+    "RUSTSEC-2023-0071",
+]
+
+[yanked]
+# spin 0.9.8 遭 yank（非漏洞，只是版本被撤）。為 lazy_static/flume→sqlx 的傳遞依賴，
+# 非本專案直接相依、無安全影響。不因單一 yanked 傳遞依賴讓掃描報警。
+enabled = false
