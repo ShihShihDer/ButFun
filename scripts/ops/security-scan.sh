@@ -10,21 +10,31 @@ cd "$REPO" || exit 1
 
 findings=""
 
-# Rust（cargo audit）
+# Rust（cargo audit）——真正的 prod 伺服器依賴。用 exit code 判定（有漏洞→非 0），
+# 已評估接受的例外由 .cargo/audit.toml 白名單（rsa 打不到、spin yanked），故乾淨時 exit 0。
 if command -v cargo-audit >/dev/null 2>&1 || cargo audit --version >/dev/null 2>&1; then
-  out="$(cargo audit 2>&1)"
-  if echo "$out" | grep -qiE 'Vulnerabilit(y|ies) found|error: [0-9]+ vulnerabilit'; then
-    findings+="### Rust（cargo audit）\n$(echo "$out" | grep -iE 'ID|Crate|Title|Severity|Solution|vulnerabilit' | head -40)\n\n"
+  cout="$(cargo audit --quiet 2>&1)"; crc=$?
+  if [ "$crc" -ne 0 ] && printf '%s' "$cout" | grep -qiE 'vulnerabilit|RUSTSEC'; then
+    findings+="### Rust（cargo audit）\n$(printf '%s' "$cout" | grep -iE 'Crate|Title|Severity|Solution|RUSTSEC|ID:|Dependency' | head -40)\n\n"
   fi
 else
-  echo "[security-scan] cargo-audit 未安裝，跳過 Rust 掃描"
+  echo "[security-scan] cargo-audit 未安裝，跳過 Rust 掃描（⚠️ 真正的 prod 依賴未稽核！請 cargo install cargo-audit --locked）"
 fi
 
-# 前端（npm audit）
+# 前端（npm audit）——純 QA/開發工具（ws/puppeteer-core），不上 prod。
+# 改用 --json 拿「真實漏洞總數」分辨：乾淨(0) / 中招(>0) / audit 失敗(離線等，解析不出)。
+# 失敗一律**不判中招**（舊版「只要不是 found 0 就中招」→ audit 一失敗就空手喊狼，是先前每週誤報的元凶）。
 if [ -f package.json ]; then
-  nout="$(npm audit 2>&1)"
-  if ! echo "$nout" | grep -qiE 'found 0 vulnerabilities'; then
-    findings+="### 前端（npm audit）\n$(echo "$nout" | grep -iE 'vulnerabilit|severity|advisory|fix' | head -30)\n\n"
+  njson="$(npm audit --json 2>/dev/null)"
+  ntotal="$(printf '%s' "$njson" | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin); print(d.get("metadata",{}).get("vulnerabilities",{}).get("total",-1))
+except Exception:
+    print(-1)' 2>/dev/null || echo -1)"
+  if [ "$ntotal" = "-1" ]; then
+    echo "[security-scan] npm audit 無法解析（離線/失敗），不判中招（不喊狼）"
+  elif [ "$ntotal" != "0" ]; then
+    findings+="### 前端（npm audit）：$ntotal 個漏洞\n$(npm audit 2>&1 | grep -iE 'severity|advisory|fix|>=|<' | head -30)\n\n"
   fi
 fi
 
